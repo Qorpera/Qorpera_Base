@@ -38,7 +38,14 @@ import {
 import { type SearchAnswer, searchView } from "./search.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
-import { type CommandWindow, CommandWindows, type CreditedUnit, CreditTags } from "./windows.ts";
+import {
+	type Before,
+	type Changed,
+	type CommandWindow,
+	CommandWindows,
+	type CreditedUnit,
+	CreditTags,
+} from "./windows.ts";
 
 /** What a machine's feed connection is sent. */
 export interface ChangeMessage {
@@ -196,21 +203,6 @@ function heardOf(answer: Answer | undefined): Heard {
  * without its run). */
 function mayLift(refused: Report["refused"]): boolean {
 	return refused === "stopped" || refused === "run_ended";
-}
-
-/** What a change changed, for a test machine's credits (F3 6b): these paths, or a rename's. */
-type Changed = readonly string[] | { readonly from: string; readonly to: string };
-
-/** The nodes the view moved to the paths a change may remove (the paths it names, or a rename's target), with their
- * origins, whose removal is not pending yet: one the change removes is published as the removal of its origin. */
-function movedHere(pending: PendingView, changed: Changed): (readonly [string, string])[] {
-	const moved: (readonly [string, string])[] = [];
-	for (const path of "from" in changed ? [changed.to] : changed) {
-		const r = pending.resolve(path);
-		const origin = r?.kind === "node" ? r.node.origin?.path : undefined;
-		if (origin !== undefined && origin !== path && !pending.removed().has(origin)) moved.push([path, origin]);
-	}
-	return moved;
 }
 
 /** A change set refused whole that is not settled: what it carried stays pending, to be published again. A command's
@@ -947,6 +939,8 @@ export class FolderService {
 				const cuts = file !== undefined && Math.ceil(size / CHUNK_BYTES) < (file.content?.chunks.length ?? 0);
 				const cut = cuts ? this.#pathOfNode(view, file) : undefined;
 				const node = await this.#change(view, cut ? [cut] : [], (pending) => pending.close(handle, size), tags);
+				// The chunks the close fixed are the file's now, and so are the tags they were sent under.
+				if (tags !== undefined) view.credit.fixed(node);
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
@@ -1639,15 +1633,14 @@ export class FolderService {
 		await this.#quiet(view);
 		const pending = view.pending;
 		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
-		// What the change may remove that the view moved here, as it is when the change is made.
-		let moved: (readonly [string, string])[] = [];
-		const make = (): T => {
-			if (tags !== undefined) moved = movedHere(pending, changed);
-			return change(pending);
+		// What the change may remove and what it changes showed, as they are when it is made.
+		const make = (): readonly [T, Before | undefined] => {
+			const seen = tags === undefined ? undefined : view.credit.before(pending, changed);
+			return [change(pending), seen];
 		};
-		let answer: T;
+		let made: readonly [T, Before | undefined];
 		try {
-			answer = make();
+			made = make();
 		} catch (error) {
 			if (!(error instanceof PublishFirst)) throw error;
 			await this.#publish(view);
@@ -1655,35 +1648,17 @@ export class FolderService {
 			// then the view still holds what that boundary published, and settling it would undo the change (BUSY).
 			await this.#quiet(view);
 			try {
-				answer = make();
+				made = make();
 			} catch (again) {
 				if (again instanceof PublishFirst) throw new ProtocolError(ErrorCode.busy, again.message);
 				throw again;
 			}
 		}
-		if (tags !== undefined) this.#credit(view, pending, changed, tags, moved);
+		const [answer, seen] = made;
+		// A test machine's change is tagged (F3 6b): the removal it recorded, and the node it made, moved or changed.
+		if (tags !== undefined && seen !== undefined) view.credit.after(pending, seen, tags);
 		this.#touch(view);
 		return answer;
-	}
-
-	/** Tags a test machine's change (F3 6b). A node the view moved to a path the change removed (unlinked, or replaced
-	 * by a rename) is published as the removal of its origin, which takes the path's tags. A path the change left
-	 * nothing pending at (a file made and removed again) keeps none, so what is made there next is credited afresh. */
-	#credit(
-		view: View,
-		pending: PendingView,
-		changed: Changed,
-		tags: readonly string[],
-		moved: readonly (readonly [string, string])[],
-	): void {
-		for (const [path, origin] of moved) if (pending.removed().has(origin)) view.credit.carry(path, origin, tags);
-		if ("from" in changed) {
-			view.credit.rename(changed.from, changed.to, tags);
-			return;
-		}
-		view.credit.tag(changed, tags);
-		const left = (path: string): boolean => pending.nodes().has(path) || pending.removed().has(path);
-		for (const path of changed) view.credit.forget(path, left);
 	}
 
 	/** What a test machine's change made now is credited to (F3 6b): its open windows' commands, or its starter. None
@@ -1798,7 +1773,15 @@ export class FolderService {
 				upload.upload?.abort();
 				view.uploads.delete(key);
 			}
+		// A test machine's file whose last handle this was loses the chunks no close fixed, and their tags (F3 6b).
+		let file: PendingFile | undefined;
+		try {
+			file = this.#windowsOf(view) === undefined ? undefined : view.pending?.file(handle);
+		} catch {
+			// Closed already: nothing of it is left to abandon.
+		}
 		view.pending?.abandon(handle);
+		if (file !== undefined && file.open === 0) view.credit.abandoned(file);
 	}
 
 	/** One part of a chunk. The first part opens the chunk's own intent (its bytes are known, its file's are not) and
@@ -1880,10 +1863,7 @@ export class FolderService {
 				? error
 				: new ProtocolError(ErrorCode.unavailable, "The chunk could not be saved now");
 		}
-		if (tags) {
-			const path = this.#pathOfNode(view, pending.file(part.handle));
-			if (path !== undefined) view.credit.tag([path], tags);
-		}
+		if (tags !== undefined) view.credit.wrote(pending.file(part.handle), tags);
 		this.#touch(view);
 	}
 
@@ -2089,9 +2069,10 @@ export class FolderService {
 		const plan = planBoundary(pending, (node) =>
 			node.staged?.version === node.version ? node.staged.file : undefined,
 		);
-		// A test machine's paths keep their credits while the plan names them (F3 6b). A change undone before it was
-		// published, as a move moved back, leaves nothing to name: its credits go, even when nothing is published.
-		view.credit.prune([...plan.units.flatMap((u) => u.paths), ...plan.keep, ...plan.dropped.map((d) => d.path)]);
+		// A test machine's units are credited from what they publish, as planned (F3 6b). A change undone before it was
+		// published, as a move moved back, leaves nothing to publish: its tags go, even when nothing is published.
+		const credited = view.credit.credits(plan.units, pending);
+		view.credit.prune(pending);
 		entries.push(...waitingOf(plan));
 		if (final && plan.waiting.length > 0) {
 			view.heard = "open";
@@ -2148,7 +2129,7 @@ export class FolderService {
 		);
 		// A test machine's units name the commands they are credited to (F3 6b); asked again, they name the same.
 		const units = structured.map((unit, i): CreditedUnit => {
-			const credits = view.credit.credits(plan.units[i]?.paths ?? []);
+			const credits = credited[i];
 			return credits ? { ...unit, credits } : unit;
 		});
 		const key = `folder-view:${view.key}:${randomUUID()}`;
@@ -2689,7 +2670,7 @@ export class FolderService {
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
 		// What still waits keeps its credits, to go with it when it is published (F3 6b).
-		view.credit.prune([...pending.nodes().keys(), ...pending.removed().keys()]);
+		view.credit.prune(pending);
 		if (pending.empty) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.

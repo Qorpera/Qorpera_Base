@@ -8,9 +8,9 @@ import { DESKTOP_QUIET_MS, MountGrants } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { CHUNK_BYTES } from "../src/folder-service/pending.ts";
 import type { BridgeInfo, Hello } from "../src/folder-service/protocol.ts";
-import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
+import { FolderService, type MachineBoundary, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
-import { type CommandWindow, type CreditedUnit, CreditTags, STARTER } from "../src/folder-service/windows.ts";
+import { type CommandWindow, type CreditedUnit, STARTER } from "../src/folder-service/windows.ts";
 import {
 	CODING,
 	CODING_PROJECT,
@@ -176,7 +176,7 @@ describe("test machine views", () => {
 		expect(core.commits.map((c) => c.final)).toEqual([false, false, false]);
 	});
 
-	it("keeps a renamed path's credits; a unit mixing the starter's changes with a command's is the command's", async () => {
+	it("keeps a renamed file's credits; a unit with starter and command changes is the command's", async () => {
 		const { core, service, open } = await company();
 		const view = await open();
 		service.openWindow(PLACEMENT, windowOf(FIRST));
@@ -353,52 +353,278 @@ describe("test machine views", () => {
 		await wait(DESKTOP_QUIET_MS + 500);
 		expect(core.commits).toHaveLength(1);
 	});
+
+	it("credits a moved file's removal to its command when a new file made at its origin replaces it", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		// docs/a.md moved to docs/b.md; a new docs/a.md, moved over it: what is published is the removal of docs/a.md
+		// (the moved file's origin) and the new file at docs/b.md, both the command's.
+		await view.rename({ from: "docs/a.md", to: "docs/b.md", noReplace: false });
+		await write(view, "docs/a.md", "new");
+		await view.rename({ from: "docs/a.md", to: "docs/b.md", noReplace: false });
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/a.md", [FIRST]],
+				["docs/b.md", [FIRST]],
+			],
+		]);
+		expect(core.entries.has("docs/a.md")).toBe(false);
+		expect(core.entries.get("docs/b.md")?.fileSha256).toBe(hashOf("new"));
+	});
+
+	it("credits a file removed and made again to its maker alone, not a command whose refused file it was", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
+		const view = await open();
+		// The starter moved docs/a.md away; the first command made a new docs/a.md, and its boundary was refused whole.
+		await view.rename({ from: "docs/a.md", to: "docs/b.md", noReplace: false });
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await write(view, "docs/a.md", "first");
+		core.commitRefusal = "stopped";
+		const refused = await service.closeWindow(PLACEMENT, FIRST);
+		expect(refused).toMatchObject({ views: [{ report: { refused: "stopped" } }] });
+		core.commitRefusal = undefined;
+		core.endedCommands.add(FIRST);
+		// The second removes the first's file (the live docs/a.md, moved away, stays hidden) and makes its own.
+		service.openWindow(PLACEMENT, windowOf(SECOND));
+		await view.unlink("docs/a.md", undefined);
+		await write(view, "docs/a.md", "second");
+		const answer = await service.closeWindow(PLACEMENT, SECOND);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/b.md", undefined],
+				["docs/a.md", [FIRST]],
+			],
+			[
+				["docs/b.md", undefined],
+				["docs/a.md", [SECOND]],
+			],
+		]);
+		expect(answer.views[0]?.report?.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("second"));
+		expect(core.entries.get("docs/b.md")?.fileSha256).toBe(hashOf("a"));
+	});
 });
 
-describe("credit tags", () => {
-	it("moves a renamed path's tags and those under it, and forgets what is no longer pending", () => {
-		const tags = new CreditTags();
-		tags.tag(["build/out.txt", "build/lib/a.js"], [FIRST]);
-		tags.tag(["dist/old.txt"], [SECOND]);
-		tags.rename("build", "dist", [STARTER]);
-		expect(tags.credits(["dist/out.txt"])).toEqual([FIRST]);
-		expect(tags.credits(["dist/lib/a.js"])).toEqual([FIRST]);
-		// The renamed folder itself is the starter's alone; what it replaced is gone.
-		expect(tags.credits(["dist"])).toBeUndefined();
-		expect(tags.credits(["dist/old.txt", "build/out.txt"])).toBeUndefined();
-		tags.tag(["dist/out.txt"], [SECOND]);
-		expect(tags.credits(["dist/out.txt", "dist"])).toEqual([FIRST, SECOND]);
-		tags.prune(["dist/out.txt"]);
-		expect(tags.credits(["dist/lib/a.js"])).toBeUndefined();
-		expect(tags.credits(["dist/out.txt"])).toEqual([FIRST, SECOND]);
-	});
+/** A seeded generator (mulberry32): a seed gives the same sequence at every run. */
+function seeded(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (state + 0x6d2b79f5) >>> 0;
+		let t = state;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
 
-	it("gives a moved path's removal to its origin, and forgets a path left with nothing pending", () => {
-		const tags = new CreditTags();
-		tags.rename("docs/a.md", "docs/b.md", [FIRST]);
-		// docs/b.md, moved from docs/a.md, is unlinked: its removal is docs/a.md's.
-		tags.carry("docs/b.md", "docs/a.md", [SECOND]);
-		tags.forget("docs/b.md", () => false);
-		expect(tags.credits(["docs/a.md"])).toEqual([FIRST, SECOND]);
-		expect(tags.credits(["docs/b.md"])).toBeUndefined();
-		// A path still pending keeps its tags; so does one also tagged at another spelling, until a boundary prunes it.
-		tags.tag(["docs/new.txt"], [FIRST]);
-		tags.forget("docs/new.txt", () => true);
-		expect(tags.credits(["docs/new.txt"])).toEqual([FIRST]);
-		tags.tag(["docs/X.txt"], [FIRST]);
-		tags.tag(["docs/x.txt"], [SECOND]);
-		tags.forget("docs/x.txt", () => false);
-		expect(tags.credits(["docs/X.txt"])).toEqual([FIRST, SECOND]);
-		tags.prune(["docs/a.md"]);
-		expect(tags.credits(["docs/new.txt", "docs/x.txt"])).toBeUndefined();
-		expect(tags.credits(["docs/a.md"])).toEqual([FIRST, SECOND]);
-		// A rename keeps the spelling its tags were taken at.
-		tags.tag(["build/out.txt"], [SECOND]);
-		tags.rename("build", "dist", [STARTER]);
-		expect(tags.credits(["dist/out.txt"])).toEqual([SECOND]);
-		tags.forget("dist/out.txt", () => false);
-		expect(tags.credits(["dist/out.txt"])).toBeUndefined();
-	});
+interface ModelFile {
+	/** The live path it was opened or moved from; none for a new file. */
+	origin: string | undefined;
+	/** It has bytes of its own. */
+	dirty: boolean;
+	/** The tags of the changes made to it since it last had nothing to publish. */
+	readonly tags: Set<string>;
+}
+
+/** A unit as a commit names it: its op, the path it publishes (a move's target), and its credits. */
+type ModelUnit = readonly [string, string, readonly string[] | undefined];
+
+/** The credit rule, on a model of a test machine's pending files kept apart from PendingView: a unit is credited to
+ * the commands whose windows were open when a change now in it was made. A pending file has the tags of the changes
+ * made to it since it last had nothing to publish; a pending removal of a live path has those of the change that
+ * removed it and of the file it took. */
+class CreditModel {
+	live: ReadonlySet<string> = new Set();
+	readonly files = new Map<string, ModelFile>();
+	readonly hidden = new Set<string>();
+	readonly removals = new Map<string, ReadonlySet<string>>();
+
+	shows(path: string): boolean {
+		return this.files.has(path) || (this.live.has(path) && !this.hidden.has(path));
+	}
+
+	/** A write is made at once but to a file the view moved, which publishes first (the model leaves that out). */
+	canWrite(path: string): boolean {
+		const origin = this.files.get(path)?.origin;
+		return origin === undefined || origin === path;
+	}
+
+	write(path: string, tags: readonly string[]): void {
+		const file = this.files.get(path) ?? {
+			origin: this.shows(path) ? path : undefined,
+			dirty: false,
+			tags: new Set<string>(),
+		};
+		file.dirty = true;
+		for (const tag of tags) file.tags.add(tag);
+		this.files.set(path, file);
+	}
+
+	remove(path: string, tags: readonly string[]): void {
+		const file = this.files.get(path);
+		const at = file === undefined ? path : file.origin;
+		if (at !== undefined) this.removals.set(at, new Set([...(file?.tags ?? []), ...tags]));
+		this.files.delete(path);
+		if (this.live.has(path)) this.hidden.add(path);
+	}
+
+	/** A rename is made at once but for a changed file with an origin, or moves that take each other's places. */
+	canRename(from: string, to: string): boolean {
+		if (from === to || !this.shows(from)) return false;
+		const file = this.files.get(from);
+		if (file?.origin !== undefined && file.dirty) return false;
+		const origin = file === undefined ? from : file.origin;
+		return this.shows(to) || origin === undefined || !this.#cycle(origin, to);
+	}
+
+	rename(from: string, to: string, tags: readonly string[]): void {
+		const file = this.files.get(from) ?? { origin: from, dirty: false, tags: new Set<string>() };
+		if (this.shows(to)) this.remove(to, tags);
+		this.files.delete(from);
+		if (this.live.has(from)) this.hidden.add(from);
+		for (const tag of tags) file.tags.add(tag);
+		// Moved back to its origin with nothing of its own, it has nothing to publish: the live file shows again.
+		if (file.origin === to && !file.dirty) this.hidden.delete(to);
+		else this.files.set(to, file);
+	}
+
+	/** The units a boundary publishes: one per pending file, and one per removal but one a new file at its path is the
+	 * next version of. */
+	units(): ModelUnit[] {
+		const credits = (tags: Iterable<string>): readonly string[] | undefined => {
+			const ids = [...new Set(tags)].filter((tag) => tag !== STARTER).sort();
+			return ids.length === 0 ? undefined : ids;
+		};
+		const units: ModelUnit[] = [];
+		const replaced = new Set<string>();
+		for (const [path, file] of this.files) {
+			const removal = file.origin === undefined ? this.removals.get(path) : undefined;
+			if (removal !== undefined) replaced.add(path);
+			const op = file.origin === undefined || file.origin === path ? "write" : "move";
+			units.push([op, path, credits([...file.tags, ...(removal ?? [])])]);
+		}
+		for (const [at, tags] of this.removals) if (!replaced.has(at)) units.push(["delete", at, credits(tags)]);
+		return sortUnits(units);
+	}
+
+	/** After a boundary the core answered: what it kept pending stays, with its tags; the rest is live now, or gone. */
+	settle(kept: ReadonlySet<string>, live: ReadonlySet<string>): void {
+		for (const path of [...this.files.keys()]) if (!kept.has(path)) this.files.delete(path);
+		this.removals.clear();
+		this.hidden.clear();
+		this.live = live;
+	}
+
+	#cycle(origin: string, target: string): boolean {
+		const seen = new Set<string>();
+		for (let at = target; ; ) {
+			const next = [...this.files].find(([path, file]) => file.origin === at && path !== at)?.[0];
+			if (next === undefined) return false;
+			if (next === origin) return true;
+			if (seen.has(next)) return false;
+			seen.add(next);
+			at = next;
+		}
+	}
+}
+
+function sortUnits(units: ModelUnit[]): ModelUnit[] {
+	return units.sort((a, b) => `${a[1]} ${a[0]}`.localeCompare(`${b[1]} ${b[0]}`));
+}
+
+describe("test machine credits against a model", () => {
+	const THIRD = "c0aa0003-0000-4a00-8b00-000000000003";
+	const COMMANDS = [FIRST, SECOND, THIRD];
+	const PATHS = ["docs/a.md", "docs/b.md", "docs/c.md"];
+	const STEPS = 14;
+
+	/** One seeded sequence of changes, windows and boundaries (accepted, or refused whole as `stopped`), with every
+	 * boundary's units and credits checked against the model's. */
+	async function sequence(seed: number): Promise<void> {
+		const random = seeded(seed);
+		const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2), await storeFile(root, "docs/b.md", "b", 3)]);
+		const view = await open();
+		const model = new CreditModel();
+		model.live = new Set(["docs/a.md", "docs/b.md"]);
+		const windows = new Set<string>();
+		const ended = new Set<string>();
+		const steps: string[] = [];
+		const tags = (): string[] => (windows.size === 0 ? [STARTER] : [...windows]);
+		const boundary = async (run: () => Promise<MachineBoundary>, stopped: boolean): Promise<void> => {
+			steps.push(stopped ? "boundary (stopped)" : "boundary");
+			const why = `seed ${seed}: ${steps.join(", ")}`;
+			const expected = model.units();
+			const before = core.commits.length;
+			core.commitRefusal = stopped ? "stopped" : undefined;
+			const answer = await run();
+			core.commitRefusal = undefined;
+			const commits = core.commits.slice(before);
+			expect(commits.length, why).toBe(expected.length === 0 ? 0 : 1);
+			if (expected.length === 0) return;
+			const units: ModelUnit[] = [];
+			for (const u of commits[0]?.units ?? [])
+				units.push([u.op, u.op === "move" ? u.to : u.path, (u as CreditedUnit).credits]);
+			expect(sortUnits(units), why).toEqual(expected);
+			const report = answer.views[0]?.report;
+			expect(report?.refused, why).toBe(stopped ? "stopped" : undefined);
+			if (stopped) return;
+			const kept = new Set(report?.paths.filter((p) => p.kept).map((p) => p.path));
+			model.settle(kept, new Set(PATHS.filter((p) => core.entries.get(p)?.kind === "file")));
+		};
+		for (let step = 0; step < STEPS; step++) {
+			const roll = random();
+			const path = pick(PATHS);
+			const other = pick(PATHS);
+			if (roll < 0.3) {
+				if (!model.canWrite(path)) continue;
+				steps.push(`write ${path}`);
+				await write(view, path, `${seed}.${step}`);
+				model.write(path, tags());
+			} else if (roll < 0.55) {
+				if (!model.canRename(path, other)) continue;
+				steps.push(`rename ${path} ${other}`);
+				await view.rename({ from: path, to: other, noReplace: false });
+				model.rename(path, other, tags());
+			} else if (roll < 0.67) {
+				if (!model.shows(path)) continue;
+				steps.push(`unlink ${path}`);
+				await view.unlink(path, undefined);
+				model.remove(path, tags());
+			} else if (roll < 0.77) {
+				const free = COMMANDS.filter((c) => !windows.has(c) && !ended.has(c));
+				if (free.length === 0) continue;
+				const command = pick(free);
+				steps.push(`open ${COMMANDS.indexOf(command) + 1}`);
+				service.openWindow(PLACEMENT, windowOf(command));
+				windows.add(command);
+			} else if (roll < 0.9) {
+				if (windows.size === 0) continue;
+				const command = pick([...windows]);
+				steps.push(`close ${COMMANDS.indexOf(command) + 1}`);
+				windows.delete(command);
+				await boundary(() => service.closeWindow(PLACEMENT, command), random() < 0.3);
+				// The command ended: the core refuses what is credited to it from now on.
+				if (random() < 0.5) {
+					steps.push(`end ${COMMANDS.indexOf(command) + 1}`);
+					ended.add(command);
+					core.endedCommands.add(command);
+				}
+			} else await boundary(() => service.boundary(PLACEMENT), random() < 0.3);
+		}
+		await boundary(() => service.boundary(PLACEMENT), false);
+		for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	}
+
+	for (const first of [1, 51, 101, 151])
+		it(`credits each unit as the model does, seeds ${first} to ${first + 49}`, { timeout: 60_000 }, async () => {
+			for (let seed = first; seed < first + 50; seed++) await sequence(seed);
+		});
 });
 
 describe("the control socket's command windows", () => {
