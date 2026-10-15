@@ -8,7 +8,6 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PROFILE_NAME_LENGTH = 120;
 const MAX_SESSION_TITLE_LENGTH = 256;
 const MAX_AGENT_ID_LENGTH = 128;
-const MAX_EVENT_BODY_BYTES = 256 * 1024;
 const MAX_TREE_BYTES = 1024 * 1024 * 1024 * 1024;
 const MAX_REACHABILITY_STORAGE_BYTES = 2 * 1024 * 1024 * 1024 * 1024;
 
@@ -271,43 +270,11 @@ export interface HostedCompanyOperation {
 	createdAt: string;
 }
 
-export interface HostedOperationExecution {
-	kind: "turn" | "wake";
-	id: string;
-	claimantId: string;
-}
-
 export interface HostedPresenceIdentity {
 	clientId: string;
 	userId: string;
 	name: string;
 	publicKey: string;
-}
-
-export type HostedOperationReceiptBegin =
-	| { started: true; status: "executing" }
-	| { started: false; status: "executing" }
-	| { started: false; status: "completed"; result: JsonValue };
-
-export interface CreateHostedSessionInput {
-	environmentId: string;
-	clientSessionId: string;
-	title: string;
-	staffAgentId?: string;
-	parentSessionId?: string;
-	executionScope?: JsonValue;
-	companySnapshotId?: string;
-	staffVersion?: number;
-}
-
-export interface AppendHostedSessionEventInput {
-	sessionId: string;
-	eventId: string;
-	eventType: HostedSessionEventType;
-	body: JsonValue;
-	/** Last sequence observed by the caller. The append fails if the trail advanced. */
-	expectedSequence?: number;
-	execution?: ExecutionIdentity;
 }
 
 export interface HostedPrimaryTransport {
@@ -334,25 +301,12 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	removeMember(input: { p_profile_id: string; p_member_user_id: string }): Promise<unknown>;
 	listStaff(input: { p_profile_id: string }): Promise<unknown>;
-	createSession(input: {
-		p_environment_id: string;
-		p_client_session_id: string;
-		p_title: string;
-		p_staff_agent_id: string | null;
-		p_parent_session_id: string | null;
-		p_execution_scope: JsonValue;
-		p_company_snapshot_id: string | null;
-		p_staff_version: number | null;
-	}): Promise<unknown>;
-	closeSession(input: { p_session_id: string }): Promise<unknown>;
-	listSessions(input: { p_environment_id: string }): Promise<unknown>;
 	listSessionsPage(input: {
 		p_environment_id: string;
 		p_after_updated_at: string | null;
 		p_after_id: string | null;
 		p_limit: number;
 	}): Promise<unknown>;
-	getSessionByClient(input: { p_environment_id: string; p_client_session_id: string }): Promise<unknown>;
 	ensureStaffSession(input: {
 		p_environment_id: string;
 		p_staff_agent_id: string;
@@ -368,38 +322,6 @@ export interface HostedPrimaryTransport {
 	listSessionInputs(input: { p_session_id: string; p_after_position: number; p_limit: number }): Promise<unknown>;
 	listStaffExecutionActivity(input: { p_environment_id: string }): Promise<unknown>;
 	resolveFailedExecutionRun(input: { p_run_id: string; p_action: "retry" | "discard" }): Promise<unknown>;
-	beginOperationReceipt(input: {
-		p_execution_kind: HostedOperationExecution["kind"];
-		p_execution_id: string;
-		p_claimant_id: string;
-		p_operation_id: string;
-		p_operation_kind: string;
-		p_input_sha256: string;
-	}): Promise<unknown>;
-	stageOperationReceiptObjects(input: {
-		p_execution_id: string;
-		p_claimant_id: string;
-		p_operation_id: string;
-		p_objects: JsonValue;
-	}): Promise<unknown>;
-	completeOperationReceipt(input: {
-		p_execution_id: string;
-		p_claimant_id: string;
-		p_operation_id: string;
-		p_result: JsonValue;
-	}): Promise<unknown>;
-	resolveOperationReceipt(input: {
-		p_operation_id: string;
-		p_resolution: "confirmed_completed" | "confirmed_not_run";
-		p_result: JsonValue | null;
-	}): Promise<unknown>;
-	resolveRunOperationReceipt(input: {
-		p_receipt_id: string;
-		p_resolution: "confirmed_completed" | "confirmed_not_run";
-		p_result: JsonValue | null;
-		p_output_snapshot_id: string | null;
-		p_proposal_id: string | null;
-	}): Promise<unknown>;
 	registerPresenceDevice(input: { p_profile_id: string; p_client_id: string; p_public_key: string }): Promise<unknown>;
 	listPresenceDevices(input: { p_profile_id: string; p_client_ids: string[] }): Promise<unknown>;
 	unregisterPresenceDevice(input: { p_profile_id: string; p_client_id: string }): Promise<unknown>;
@@ -407,16 +329,6 @@ export interface HostedPrimaryTransport {
 	listFriends(): Promise<unknown>;
 	respondFriendRequest(input: { p_user_id: string; p_accept: boolean }): Promise<unknown>;
 	removeFriend(input: { p_user_id: string }): Promise<unknown>;
-	appendAccountEvent(input: {
-		p_session_id: string;
-		p_event_id: string;
-		p_event_type: HostedSessionEventType;
-		p_body: JsonValue;
-		p_expected_sequence: number | null;
-		p_execution_kind: ExecutionIdentity["kind"] | null;
-		p_execution_id: string | null;
-		p_execution_claimant_id: string | null;
-	}): Promise<unknown>;
 	readSessionEvents(input: { p_session_id: string; p_after_sequence: number; p_limit: number }): Promise<unknown>;
 	getCompanyFile(input: { p_environment_id: string }): Promise<unknown>;
 }
@@ -464,21 +376,6 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_list_profile_staff: { Args: { p_profile_id: string }; Returns: JsonValue };
-			qorpera_create_shared_session_v4: {
-				Args: {
-					p_environment_id: string;
-					p_client_session_id: string;
-					p_title: string;
-					p_staff_agent_id: string | null;
-					p_parent_session_id: string | null;
-					p_execution_scope: JsonValue;
-					p_company_snapshot_id: string | null;
-					p_staff_version: number | null;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_close_shared_session: { Args: { p_session_id: string }; Returns: JsonValue };
-			qorpera_list_shared_sessions: { Args: { p_environment_id: string }; Returns: JsonValue };
 			qorpera_list_shared_sessions_page: {
 				Args: {
 					p_environment_id: string;
@@ -486,10 +383,6 @@ export interface HostedPrimaryDatabase {
 					p_after_id: string | null;
 					p_limit: number;
 				};
-				Returns: JsonValue;
-			};
-			qorpera_get_shared_session_by_client: {
-				Args: { p_environment_id: string; p_client_session_id: string };
 				Returns: JsonValue;
 			};
 			qorpera_ensure_staff_session: {
@@ -512,49 +405,6 @@ export interface HostedPrimaryDatabase {
 				Args: { p_run_id: string; p_action: string };
 				Returns: JsonValue;
 			};
-			qorpera_begin_operation_receipt: {
-				Args: {
-					p_execution_kind: HostedOperationExecution["kind"];
-					p_execution_id: string;
-					p_claimant_id: string;
-					p_operation_id: string;
-					p_operation_kind: string;
-					p_input_sha256: string;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_stage_operation_receipt_objects: {
-				Args: {
-					p_execution_id: string;
-					p_claimant_id: string;
-					p_operation_id: string;
-					p_objects: JsonValue;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_complete_operation_receipt: {
-				Args: {
-					p_execution_id: string;
-					p_claimant_id: string;
-					p_operation_id: string;
-					p_result: JsonValue;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_resolve_operation_receipt: {
-				Args: { p_operation_id: string; p_resolution: string; p_result: JsonValue | null };
-				Returns: JsonValue;
-			};
-			qorpera_resolve_run_operation_receipt: {
-				Args: {
-					p_receipt_id: string;
-					p_resolution: string;
-					p_result: JsonValue | null;
-					p_output_snapshot_id: string | null;
-					p_proposal_id: string | null;
-				};
-				Returns: JsonValue;
-			};
 			qorpera_register_presence_device: {
 				Args: { p_profile_id: string; p_client_id: string; p_public_key: string };
 				Returns: JsonValue;
@@ -571,19 +421,6 @@ export interface HostedPrimaryDatabase {
 			qorpera_list_friends: { Args: Record<string, never>; Returns: JsonValue };
 			qorpera_respond_friend_request: { Args: { p_user_id: string; p_accept: boolean }; Returns: JsonValue };
 			qorpera_remove_friend: { Args: { p_user_id: string }; Returns: JsonValue };
-			qorpera_append_account_event: {
-				Args: {
-					p_session_id: string;
-					p_event_id: string;
-					p_event_type: HostedSessionEventType;
-					p_body: JsonValue;
-					p_expected_sequence: number | null;
-					p_execution_kind: ExecutionIdentity["kind"] | null;
-					p_execution_id: string | null;
-					p_execution_claimant_id: string | null;
-				};
-				Returns: JsonValue;
-			};
 			qorpera_read_session_events: {
 				Args: { p_session_id: string; p_after_sequence: number; p_limit: number };
 				Returns: JsonValue;
@@ -694,46 +531,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
-	async beginOperationReceipt(
-		input: Parameters<HostedPrimaryTransport["beginOperationReceipt"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_begin_operation_receipt", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async stageOperationReceiptObjects(
-		input: Parameters<HostedPrimaryTransport["stageOperationReceiptObjects"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_stage_operation_receipt_objects", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async completeOperationReceipt(
-		input: Parameters<HostedPrimaryTransport["completeOperationReceipt"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_operation_receipt", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async resolveOperationReceipt(
-		input: Parameters<HostedPrimaryTransport["resolveOperationReceipt"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_resolve_operation_receipt", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async resolveRunOperationReceipt(
-		input: Parameters<HostedPrimaryTransport["resolveRunOperationReceipt"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_resolve_run_operation_receipt", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
 	async registerPresenceDevice(
 		input: Parameters<HostedPrimaryTransport["registerPresenceDevice"]>[0],
 	): Promise<unknown> {
@@ -818,38 +615,8 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
-	async createSession(input: Parameters<HostedPrimaryTransport["createSession"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_shared_session_v4", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async closeSession(input: Parameters<HostedPrimaryTransport["closeSession"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_close_shared_session", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listSessions(input: Parameters<HostedPrimaryTransport["listSessions"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_shared_sessions", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
 	async listSessionsPage(input: Parameters<HostedPrimaryTransport["listSessionsPage"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_list_shared_sessions_page", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getSessionByClient(input: Parameters<HostedPrimaryTransport["getSessionByClient"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_shared_session_by_client", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async appendAccountEvent(input: Parameters<HostedPrimaryTransport["appendAccountEvent"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_append_account_event", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1443,18 +1210,6 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 	};
 }
 
-function parseOperationReceiptBegin(value: unknown): HostedOperationReceiptBegin {
-	const receipt = record(value, "operation receipt");
-	if (receipt.status === "completed") {
-		if (receipt.started !== false) throw new Error("Hosted primary returned inconsistent operation receipt");
-		return { started: false, status: "completed", result: jsonValue(receipt.result) };
-	}
-	if (receipt.status !== "executing" || typeof receipt.started !== "boolean" || receipt.result != null) {
-		throw new Error("Hosted primary returned invalid operation receipt");
-	}
-	return { started: receipt.started, status: "executing" };
-}
-
 function parsePresenceIdentity(value: unknown): HostedPresenceIdentity {
 	const identity = record(value, "presence identity");
 	return {
@@ -1705,129 +1460,6 @@ export class QorperaHostedPrimary {
 		}
 	}
 
-	async beginOperationReceipt(
-		execution: HostedOperationExecution,
-		operationId: string,
-		operationKind: string,
-		inputSha256: string,
-	): Promise<HostedOperationReceiptBegin> {
-		requiredUuid(execution.id, "Operation execution id");
-		requiredUuid(execution.claimantId, "Operation claimant id");
-		requiredUuid(operationId, "Operation id");
-		if (!/^[a-z][a-z0-9_]{0,63}$/.test(operationKind) || !SHA256_PATTERN.test(inputSha256)) {
-			throw new Error("Operation receipt is invalid");
-		}
-		return parseOperationReceiptBegin(
-			await this.transport.beginOperationReceipt({
-				p_execution_kind: execution.kind,
-				p_execution_id: execution.id,
-				p_claimant_id: execution.claimantId,
-				p_operation_id: operationId,
-				p_operation_kind: operationKind,
-				p_input_sha256: inputSha256,
-			}),
-		);
-	}
-
-	async completeOperationReceipt(
-		execution: HostedOperationExecution,
-		operationId: string,
-		result: JsonValue,
-	): Promise<JsonValue> {
-		requiredUuid(execution.id, "Operation execution id");
-		requiredUuid(execution.claimantId, "Operation claimant id");
-		requiredUuid(operationId, "Operation id");
-		return jsonValue(
-			await this.transport.completeOperationReceipt({
-				p_execution_id: execution.id,
-				p_claimant_id: execution.claimantId,
-				p_operation_id: operationId,
-				p_result: result,
-			}),
-		);
-	}
-
-	async stageOperationReceiptObjects(
-		execution: HostedOperationExecution,
-		operationId: string,
-		objects: Array<{ sha256: string; bytes: number }>,
-	): Promise<void> {
-		requiredUuid(execution.id, "Operation execution id");
-		requiredUuid(execution.claimantId, "Operation claimant id");
-		requiredUuid(operationId, "Operation id");
-		if (
-			objects.length < 1 ||
-			objects.length > 65 ||
-			objects.some(
-				(object) =>
-					!SHA256_PATTERN.test(object.sha256) ||
-					!Number.isSafeInteger(object.bytes) ||
-					object.bytes < 0 ||
-					object.bytes > 8 * 1024 * 1024,
-			)
-		) {
-			throw new Error("Operation receipt objects are invalid");
-		}
-		const result = record(
-			await this.transport.stageOperationReceiptObjects({
-				p_execution_id: execution.id,
-				p_claimant_id: execution.claimantId,
-				p_operation_id: operationId,
-				p_objects: objects as JsonValue,
-			}),
-			"operation receipt object staging",
-		);
-		boundedInteger(result.staged, "Staged operation object count", objects.length, objects.length);
-	}
-
-	async resolveOperationReceipt(
-		operationId: string,
-		resolution: "confirmed_completed" | "confirmed_not_run",
-		result?: JsonValue,
-	): Promise<{ status: "completed" | "cancelled"; resolution: typeof resolution; result?: JsonValue }> {
-		requiredUuid(operationId, "Operation id");
-		const value = record(
-			await this.transport.resolveOperationReceipt({
-				p_operation_id: operationId,
-				p_resolution: resolution,
-				p_result: result ?? null,
-			}),
-			"operation recovery result",
-		);
-		if (
-			(value.status !== "completed" && value.status !== "cancelled") ||
-			(value.resolution !== "confirmed_completed" && value.resolution !== "confirmed_not_run")
-		) {
-			throw new Error("Hosted primary returned invalid operation recovery result");
-		}
-		return {
-			status: value.status,
-			resolution: value.resolution,
-			...(value.result === null || value.result === undefined ? {} : { result: jsonValue(value.result) }),
-		};
-	}
-
-	async resolveRunOperationReceipt(
-		operationId: string,
-		resolution: "confirmed_completed" | "confirmed_not_run",
-	): Promise<{ status: "completed" | "cancelled"; recoveryResolution: typeof resolution }> {
-		requiredUuid(operationId, "Run operation id");
-		const value = record(
-			await this.transport.resolveRunOperationReceipt({
-				p_receipt_id: operationId,
-				p_resolution: resolution,
-				p_result: resolution === "confirmed_completed" ? { recovered: true } : null,
-				p_output_snapshot_id: null,
-				p_proposal_id: null,
-			}),
-			"run operation recovery result",
-		);
-		if ((value.status !== "completed" && value.status !== "cancelled") || value.recovery_resolution !== resolution) {
-			throw new Error("Hosted primary returned invalid run operation recovery result");
-		}
-		return { status: value.status, recoveryResolution: resolution };
-	}
-
 	async registerPresenceDevice(
 		profileId: string,
 		clientId: string,
@@ -1947,44 +1579,6 @@ export class QorperaHostedPrimary {
 		return parseCompanyFile(await this.transport.getCompanyFile({ p_environment_id: environmentId }));
 	}
 
-	async createSession(input: CreateHostedSessionInput): Promise<HostedSession> {
-		requiredUuid(input.environmentId, "Environment id");
-		requiredUuid(input.clientSessionId, "Client session id");
-		if (input.parentSessionId) requiredUuid(input.parentSessionId, "Parent session id");
-		if ((input.companySnapshotId === undefined) !== (input.staffVersion === undefined)) {
-			throw new Error("Session execution revisions must be provided together");
-		}
-		if (input.companySnapshotId) requiredUuid(input.companySnapshotId, "Company snapshot id");
-		if (input.staffVersion !== undefined && (!Number.isSafeInteger(input.staffVersion) || input.staffVersion < 1)) {
-			throw new Error("Staff version must be a positive integer");
-		}
-		const executionScope = jsonValue(input.executionScope ?? {});
-		if (!executionScope || typeof executionScope !== "object" || Array.isArray(executionScope)) {
-			throw new Error("Session execution scope must be an object");
-		}
-		return parseSession(
-			await this.transport.createSession({
-				p_environment_id: input.environmentId,
-				p_client_session_id: input.clientSessionId,
-				p_title: requiredText(input.title, "Session title", MAX_SESSION_TITLE_LENGTH),
-				p_staff_agent_id: input.staffAgentId
-					? requiredText(input.staffAgentId, "Staff agent id", MAX_AGENT_ID_LENGTH)
-					: null,
-				p_parent_session_id: input.parentSessionId ?? null,
-				p_execution_scope: executionScope,
-				p_company_snapshot_id: input.companySnapshotId ?? null,
-				p_staff_version: input.staffVersion ?? null,
-			}),
-		);
-	}
-
-	async listSessions(environmentId: string): Promise<HostedSession[]> {
-		requiredUuid(environmentId, "Environment id");
-		return array(await this.transport.listSessions({ p_environment_id: environmentId }), "session list").map(
-			parseSession,
-		);
-	}
-
 	async listSessionsPage(
 		environmentId: string,
 		after?: { updatedAt: string; sessionId: string },
@@ -2015,53 +1609,6 @@ export class QorperaHostedPrimary {
 				: { nextUpdatedAt: timestamp(nextUpdatedAt, "Session page next cursor time") }),
 			...(nextId === null || nextId === undefined ? {} : { nextId: uuid(nextId, "Session page next cursor id") }),
 		};
-	}
-
-	async getSessionByClient(environmentId: string, clientSessionId: string): Promise<HostedSession | undefined> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(clientSessionId, "Client session id");
-		const value = await this.transport.getSessionByClient({
-			p_environment_id: environmentId,
-			p_client_session_id: clientSessionId,
-		});
-		return value === null || value === undefined ? undefined : parseSession(value);
-	}
-
-	async closeSession(sessionId: string): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requireTrue(await this.transport.closeSession({ p_session_id: sessionId }), "session close result");
-	}
-
-	async appendAccountEvent(input: AppendHostedSessionEventInput): Promise<HostedSessionEvent> {
-		requiredUuid(input.sessionId, "Session id");
-		requiredUuid(input.eventId, "Event id");
-		if (!HOSTED_SESSION_EVENT_TYPES.includes(input.eventType)) throw new Error("Session event type is invalid");
-		const eventBody = jsonValue(input.body);
-		if (
-			input.expectedSequence !== undefined &&
-			(!Number.isSafeInteger(input.expectedSequence) || input.expectedSequence < 0)
-		) {
-			throw new Error("Expected sequence must be a non-negative integer");
-		}
-		if (Buffer.byteLength(JSON.stringify(eventBody), "utf-8") > MAX_EVENT_BODY_BYTES) {
-			throw new Error("Session event body is too large");
-		}
-		if (input.execution) {
-			requiredUuid(input.execution.id, "Event execution id");
-			requiredUuid(input.execution.claimantId, "Event execution claimant id");
-		}
-		return parseEvent(
-			await this.transport.appendAccountEvent({
-				p_session_id: input.sessionId,
-				p_event_id: input.eventId,
-				p_event_type: input.eventType,
-				p_body: eventBody,
-				p_expected_sequence: input.expectedSequence ?? null,
-				p_execution_kind: input.execution?.kind ?? null,
-				p_execution_id: input.execution?.id ?? null,
-				p_execution_claimant_id: input.execution?.claimantId ?? null,
-			}),
-		);
 	}
 
 	async readSessionEvents(sessionId: string, afterSequence = 0, limit = 200): Promise<HostedSessionEvent[]> {

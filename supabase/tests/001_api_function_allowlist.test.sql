@@ -258,6 +258,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_execution_host_call(text,text,text,jsonb)', true, false, 'execution host (G2-3e): the host''s credential is checked first, with no lock; only the listed calls, each held to the host''s provider adapter'),
 	('public.qorpera_execution_host_call_long(text,text,text,jsonb)', true, false, 'execution host (G2-3e): as qorpera_execution_host_call, for the release''s 25 s budget'),
 	('public.qorpera_native_run_model_authority(uuid,uuid,text,uuid,text)', true, true, 'internal: runner broker: service_role or secret-broker session + runner session token + job lease token; anon only through the platform default, authenticated only through the platform default'),
+	('public.qorpera_offer_interface_agent(uuid,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company, not paused; the caller offers a hired agent to a supervised area''s supervisor (I9b)'),
 	('public.qorpera_offer_interface_cell(uuid,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company, not paused; the caller offers their own or an empty cell (I9c)'),
 	('public.qorpera_open_company_founding(uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_open_runtime_office_screen(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),

@@ -26,6 +26,7 @@ const row = {
 	was: null,
 	to: id(43),
 	state: "open",
+	agent: null,
 	at: timestamp,
 	closedAt: null,
 };
@@ -39,6 +40,7 @@ const offer = {
 	was: null,
 	to: id(43),
 	state: "open",
+	agent: null,
 	at: timestamp,
 };
 
@@ -67,6 +69,19 @@ describe("the offer calls (I9c)", () => {
 			offers: [{ ...offer, key: [3, true, ["a", "b"], null] }],
 			truncated: true,
 		});
+		// An agent's offer to an area's supervisor (I9b) names the agent; an answer from before it has none.
+		const agent = cloudOf({
+			schema: "qorpera.member-interface-offers/v1",
+			offers: [
+				{ ...row, folder: "tables/areas", key: ["Sales"], column: "agents", agent: id(81) },
+				{ ...row, agent: undefined },
+			],
+			truncated: false,
+		});
+		await expect(agent.calls.list()).resolves.toEqual({
+			offers: [{ ...offer, folder: "tables/areas", key: ["Sales"], column: "agents", agent: id(81) }, offer],
+			truncated: false,
+		});
 	});
 
 	it("refuses an answer of another shape", async () => {
@@ -76,6 +91,7 @@ describe("the offer calls (I9c)", () => {
 			{ schema: "qorpera.member-interface-offers/v1", offers: [{ ...row, table: "cards" }], truncated: false },
 			{ schema: "qorpera.member-interface-offers/v1", offers: [{ ...row, key: [{ a: 1 }] }], truncated: false },
 			{ schema: "qorpera.member-interface-offers/v1", offers: [{ ...row, state: "maybe" }], truncated: false },
+			{ schema: "qorpera.member-interface-offers/v1", offers: [{ ...row, agent: "agent-b" }], truncated: false },
 		])
 			await expect(cloudOf(answer).calls.list()).rejects.toBeInstanceOf(CloudShapeError);
 	});
@@ -159,6 +175,25 @@ describe("the company's offers reader (I9c)", () => {
 		window.dispatchEvent(new Event("focus"));
 		await offers.refresh();
 		expect(calls.list).toHaveBeenCalledTimes(4);
+	});
+
+	it("leaves out the offers of agents to an area's supervisor, which the pages don't draw (I9b)", async () => {
+		const agent = {
+			...offer,
+			id: id(905),
+			folder: "tables/areas",
+			key: ["Sales"],
+			column: "agents",
+			agent: id(81),
+		} as MemberInterfaceOffers["offers"][number];
+		let answer: MemberInterfaceOffers = { offers: [agent, ...listed(901).offers], truncated: false };
+		const { published, offers } = reader(async () => answer);
+		await offers.refresh();
+		expect(published).toEqual([listed(901)]);
+		// Only an agent's offer changed: nothing new to publish.
+		answer = { offers: [{ ...agent, id: id(906) }, ...listed(901).offers], truncated: false };
+		await offers.refresh();
+		expect(published).toEqual([listed(901)]);
 	});
 
 	it("publishes no offers where the calls aren't there or don't answer the member, and keeps them on a failure", async () => {

@@ -3,7 +3,6 @@ import {
 	type HostedSessionEventType,
 	QorperaHostedPrimary,
 } from "@qorpera/cloud-client/hosted-primary";
-import type { JsonValue } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -27,7 +26,6 @@ const pathVersionId = "11111111-1111-4111-8111-111111111117";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
 const snapshotId = "44444444-4444-4444-8444-444444444444";
 const artifactIndexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const objectProofId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const treeManifestSha256 = "b".repeat(64);
 
 function profileRecord() {
@@ -283,20 +281,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 			run_id: input.p_run_id,
 			action: input.p_action,
 		})),
-		beginOperationReceipt: vi.fn(async () => ({ started: true, status: "executing", result: null })),
-		stageOperationReceiptObjects: vi.fn(async (input) => ({ staged: (input.p_objects as JsonValue[]).length })),
-		completeOperationReceipt: vi.fn(async (input) => input.p_result),
-		resolveOperationReceipt: vi.fn(async (input) => ({
-			operation_id: input.p_operation_id,
-			status: input.p_resolution === "confirmed_completed" ? "completed" : "cancelled",
-			resolution: input.p_resolution,
-			result: input.p_result,
-		})),
-		resolveRunOperationReceipt: vi.fn(async (input) => ({
-			receipt_id: input.p_receipt_id,
-			status: input.p_resolution === "confirmed_completed" ? "completed" : "cancelled",
-			recovery_resolution: input.p_resolution,
-		})),
 		registerPresenceDevice: vi.fn(async (input) => ({
 			client_id: input.p_client_id,
 			user_id: actorUserId,
@@ -304,17 +288,12 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		})),
 		listPresenceDevices: vi.fn(async () => []),
 		unregisterPresenceDevice: vi.fn(async () => null),
-		createSession: vi.fn(async (input) => ({ ...sessionRecord(), execution_scope: input.p_execution_scope })),
-		closeSession: vi.fn(async () => true),
-		listSessions: vi.fn(async () => [sessionRecord()]),
 		listSessionsPage: vi.fn(async () => ({
 			items: [sessionRecord()],
 			has_more: false,
 			next_updated_at: createdAt,
 			next_id: sessionId,
 		})),
-		getSessionByClient: vi.fn(async () => sessionRecord()),
-		appendAccountEvent: vi.fn(async (input) => eventRecord(input.p_event_type)),
 		readSessionEvents: vi.fn(async () => [eventRecord()]),
 		getCompanyFile: vi.fn(async () => companyFileRecord()),
 		...overrides,
@@ -427,61 +406,26 @@ describe("Qorpera hosted primary", () => {
 		await expect(malformed.profileTeam(profileId)).rejects.toThrow("inconsistent");
 	});
 
-	it("keeps worktree identity separate from the shared session identity", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.createSession({
-				environmentId,
-				clientSessionId,
-				title: "Financial Officer",
-				staffAgentId: "financial-officer",
-				executionScope: {
-					attended: false,
-					autonomousLabel: "Daily finance close",
-				},
-			}),
-		).resolves.toEqual({
-			sessionId,
-			clientSessionId,
-			profileId,
-			environmentId,
-			title: "Financial Officer",
-			staffAgentId: "financial-officer",
-			executionScope: { attended: false, autonomousLabel: "Daily finance close" },
-			companySnapshotId: snapshotId,
-			staffVersion: 3,
-			audience: { kind: "company" },
-			status: "open",
-			createdByUserId: actorUserId,
-			createdAt,
-			updatedAt: createdAt,
-		});
-		expect(fake.createSession).toHaveBeenCalledWith({
-			p_environment_id: environmentId,
-			p_client_session_id: clientSessionId,
-			p_title: "Financial Officer",
-			p_staff_agent_id: "financial-officer",
-			p_parent_session_id: null,
-			p_execution_scope: { attended: false, autonomousLabel: "Daily finance close" },
-			p_company_snapshot_id: null,
-			p_staff_version: null,
-		});
-
+	it("parses the shared session audience on a session page", async () => {
+		const page = (session: Record<string, unknown>) =>
+			vi.fn(async () => ({ items: [session], has_more: false, next_updated_at: null, next_id: null }));
 		const privatePrimary = new QorperaHostedPrimary(
 			transport({
-				listSessions: vi.fn(async () => [
-					{ ...sessionRecord(), audience_kind: "member_private", audience_user_id: actorUserId },
-				]),
+				listSessionsPage: page({
+					...sessionRecord(),
+					audience_kind: "member_private",
+					audience_user_id: actorUserId,
+				}),
 			}),
 		);
-		await expect(privatePrimary.listSessions(environmentId)).resolves.toEqual([
-			expect.objectContaining({ audience: { kind: "member_private", userId: actorUserId } }),
-		]);
+		await expect(privatePrimary.listSessionsPage(environmentId)).resolves.toEqual({
+			items: [expect.objectContaining({ sessionId, audience: { kind: "member_private", userId: actorUserId } })],
+			hasMore: false,
+		});
 		const malformedAudience = new QorperaHostedPrimary(
-			transport({ listSessions: vi.fn(async () => [{ ...sessionRecord(), audience_user_id: actorUserId }]) }),
+			transport({ listSessionsPage: page({ ...sessionRecord(), audience_user_id: actorUserId }) }),
 		);
-		await expect(malformedAudience.listSessions(environmentId)).rejects.toThrow("invalid session audience");
+		await expect(malformedAudience.listSessionsPage(environmentId)).rejects.toThrow("invalid session audience");
 	});
 
 	it("parses durable session queues, staff activity, and recovery resolutions", async () => {
@@ -534,19 +478,6 @@ describe("Qorpera hosted primary", () => {
 			},
 		]);
 		await expect(primary.resolveFailedExecutionRun(runId, "discard")).resolves.toBeUndefined();
-		await expect(primary.resolveOperationReceipt(objectProofId, "confirmed_not_run")).resolves.toEqual({
-			status: "cancelled",
-			resolution: "confirmed_not_run",
-		});
-		expect(fake.resolveOperationReceipt).toHaveBeenCalledWith({
-			p_operation_id: objectProofId,
-			p_resolution: "confirmed_not_run",
-			p_result: null,
-		});
-		await expect(primary.resolveRunOperationReceipt(objectProofId, "confirmed_not_run")).resolves.toEqual({
-			status: "cancelled",
-			recoveryResolution: "confirmed_not_run",
-		});
 	});
 
 	it("lists authoritative staff with their versions", async () => {
@@ -557,39 +488,6 @@ describe("Qorpera hosted primary", () => {
 			id: staffAgentId,
 			displayName: "Financial Officer",
 			version: 1,
-		});
-	});
-
-	it("appends idempotent account events against an observed trail sequence", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.appendAccountEvent({
-				sessionId,
-				eventId,
-				eventType: "message",
-				body: { text: "What is our runway?" },
-				expectedSequence: 0,
-			}),
-		).resolves.toEqual({
-			sessionId,
-			sequence: 1,
-			eventId,
-			eventType: "message",
-			actorUserId,
-			body: { text: "What is our runway?" },
-			eventHash,
-			createdAt,
-		});
-		expect(fake.appendAccountEvent).toHaveBeenCalledWith({
-			p_session_id: sessionId,
-			p_event_id: eventId,
-			p_event_type: "message",
-			p_body: { text: "What is our runway?" },
-			p_expected_sequence: 0,
-			p_execution_kind: null,
-			p_execution_id: null,
-			p_execution_claimant_id: null,
 		});
 	});
 
@@ -614,14 +512,7 @@ describe("Qorpera hosted primary", () => {
 			p_limit: 50,
 		});
 		await expect(primary.readSessionEvents(sessionId, -1)).rejects.toThrow("cursor");
-		await expect(
-			primary.appendAccountEvent({
-				sessionId,
-				eventId,
-				eventType: "message",
-				body: "x".repeat(256 * 1024),
-			}),
-		).rejects.toThrow("too large");
+		await expect(primary.readSessionEvents(sessionId, 0, 501)).rejects.toThrow("page size");
 
 		const malformed = new QorperaHostedPrimary(
 			transport({ listProfiles: vi.fn(async () => [{ ...profileRecord(), role: "root" }]) }),
