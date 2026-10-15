@@ -1,4 +1,4 @@
--- 20260930396300: step 5b, part 3 of 4: git's leases and publish on the folder (deploy/first-node/RUNTIME-FOLDER-CODING-
+-- 20260930446300: step 5b, part 3 of 4: git's leases and publish on the folder (deploy/first-node/RUNTIME-FOLDER-CODING-
 -- MACHINES.md, "Code areas and git"; RUNTIME-COMPANY-FOLDER.md §6 "Git on the mount", as amended there).
 -- git takes a shared file X (refs/**, packed-refs, shallow) by creating X.lock and publishes it by renaming X.lock over X.
 -- The folder program (step 5d) maps them to these calls, which take a coding session's or a code host's view:
@@ -12,7 +12,7 @@
 -- 3. qorpera_folder_git_lease_release (X.lock unlinked, perhaps publishing a delete or a reflog) and
 --    qorpera_folder_git_leases_drop (a command's end: every lease the view holds).
 -- 4. qorpera_folder_git_gc_begin and _end: a code host's block on a repository's new leases while git gc runs.
--- Every patched body names this migration (20260930396300), and every earlier marker in it stays.
+-- Every patched body names this migration (20260930446300), and every earlier marker in it stays.
 
 set local lock_timeout = '3s';
 
@@ -233,14 +233,14 @@ end $$;
 -- 4. The commit. -------------------------------------------------------------------------------------------------------
 
 select pg_temp.s5b_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', array[
-	$old$v_git_class text; v_git_worker uuid; v_unchanged boolean; -- 20260930396200$old$,
-	$new$v_git_class text; v_git_worker uuid; v_unchanged boolean; -- 20260930396200
+	$old$v_git_class text; v_git_worker uuid; v_unchanged boolean; -- 20260930446200$old$,
+	$new$v_git_class text; v_git_worker uuid; v_unchanged boolean; -- 20260930446200
 	v_git_request jsonb; v_git_lease public.qorpera_folder_git_leases%rowtype; v_git_group text[];
-	v_git_moved boolean := false; -- 20260930396300$new$,
+	v_git_moved boolean := false; -- 20260930446300$new$,
 	$old$	v_git_worker := case when v_view.kind = 'coding_session' then v_view.worker_id end;
 $old$,
 	$new$	v_git_worker := case when v_view.kind = 'coding_session' then v_view.worker_id end;
-	-- 20260930396300 (step 5b): a git publish or lock removal (qorpera_folder_git_land) names its lease, which must be
+	-- 20260930446300 (step 5b): a git publish or lock removal (qorpera_folder_git_land) names its lease, which must be
 	-- this view's; the lease's X and logs/X are its group. A replay was answered at step 0.
 	if coalesce(current_setting('qorpera.folder_git', true), '') <> '' then
 		v_git_request := current_setting('qorpera.folder_git', true)::jsonb;
@@ -260,17 +260,17 @@ $new$,
 		end if;
 $old$,
 	$new$			v_reason := public.qorpera_folder_git_unit_refusal(p_environment_id, v_unit, v_key, v_to_key, v_git_class, v_git_worker);
-			-- 20260930396300: the lease's own X and logs/X, a file written or deleted, need no other lease.
+			-- 20260930446300: the lease's own X and logs/X, a file written or deleted, need no other lease.
 			if v_reason = 'git_lease_required' and v_key = any(v_git_group) and (v_op = 'write' or (v_op = 'delete' and v_row.kind = 'file')) then
 				v_reason := null; end if;
 			v_ok := v_reason is null;
 		end if;
-		-- 20260930396300 (step 5b): X and logs/X land together. If either one's version moved, both are 'version_changed'.
+		-- 20260930446300 (step 5b): X and logs/X land together. If either one's version moved, both are 'version_changed'.
 		if v_ok and v_git_moved and v_key = any(v_git_group) then
 			v_ok := false; v_reason := 'version_changed'; end if;
 $new$,
 	$old$	-- Steps 7-8. Decide each unit from the locked rows, in order, and apply each clean one before the next is$old$,
-	$new$	-- 20260930396300 (step 5b): a git publish's X and logs/X, checked on the locked rows before any unit is decided.
+	$new$	-- 20260930446300 (step 5b): a git publish's X and logs/X, checked on the locked rows before any unit is decided.
 	if v_git_group is not null then
 		v_git_moved := exists (select 1 from jsonb_array_elements(p_units) u
 			where u ->> 'op' in ('write','delete') and public.qorpera_folder_key(u ->> 'path') = any(v_git_group)
@@ -284,7 +284,7 @@ $new$,
 -- 5. Publish and release. ----------------------------------------------------------------------------------------------
 
 -- One commit under a lease: the folders above the caller's units, below repo.git, that are missing (each made, or saved
--- as it stands when there: 20260930396200), then the caller's units, with qorpera.folder_git naming the lease for the
+-- as it stands when there: 20260930446200), then the caller's units, with qorpera.folder_git naming the lease for the
 -- commit. A publish's units are objects of the lease's repository, written, and X written, with logs/X if git wrote it;
 -- a release's are X's and logs/X's, written or deleted. The answer is the commit's with the caller's units only, and
 -- published: X's and logs/X's units all saved. A publish that saves them ends the lease; a release always does.

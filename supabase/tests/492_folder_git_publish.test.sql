@@ -1,5 +1,5 @@
 -- @fixture 490_folder_git_rules.test.sql until "-- A coding session writes its own worktree"
--- git's publish and release under a lease (20260930396300; F3 step 5b, part 3: deploy/first-node/RUNTIME-FOLDER-CODING-
+-- git's publish and release under a lease (20260930446300; F3 step 5b, part 3: deploy/first-node/RUNTIME-FOLDER-CODING-
 -- MACHINES.md, "Code areas and git"). A publish is one commit: the folders above its units that are missing, the
 -- session's objects, then X and logs/X, which land together or not at all. If either one's version moved, both are
 -- conflicts and the lease stays; a publish that lands them ends it. A release ends the lease, landing what it names.

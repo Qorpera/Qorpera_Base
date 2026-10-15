@@ -4,7 +4,7 @@
 -- of its session's agent and repository, as the session's own uid; a machine stays while its own sessions are open.
 -- A company on the folder, one member, one executor with its node and coding provider, and seven leased sessions:
 --   s1 agent a1, acme/app; s2 agent a1, Acme/App; s3 agent a2, acme/app; s4 agent a1, acme/web; s5 to s7 agent a1, acme/app.
--- H adds the read set (20260930395000): a turn already leased moves onto a machine with its session and takes in the
+-- H adds the read set (20260930445000): a turn already leased moves onto a machine with its session and takes in the
 -- machine's reads.
 begin;
 

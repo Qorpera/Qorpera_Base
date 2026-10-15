@@ -1,5 +1,5 @@
 -- @fixture 630_folder_core_foundation.test.sql until "-- Writes, conflicts, missing parents"
--- Names under code/ (20260930396100; F3 step 5b: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas and
+-- Names under code/ (20260930446100; F3 step 5b: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas and
 -- git"). '.git' and 'repo.git' are refused at any depth outside code/<owner>/<name>/ and accepted inside it; under code/ a
 -- name may hold '%' and ':' or be a device name, and NFC, trailing dots and case-only siblings stay refused. The company,
 -- its members and the helpers are 630's.
