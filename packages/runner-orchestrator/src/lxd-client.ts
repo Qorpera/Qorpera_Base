@@ -1368,14 +1368,22 @@ async function pipeInput(
 		if (!(await send(stdin))) return false;
 	} else if (stdin !== undefined) {
 		const source = stdin[Symbol.asyncIterator]();
-		const stopped = new Promise<undefined>((resolveStopped) => {
-			if (stop.aborted) resolveStopped(undefined);
-			else stop.addEventListener("abort", () => resolveStopped(undefined), { once: true });
-		});
+		// One abort listener for the whole input, which ends only the read pending at the time: racing each read
+		// against one promise for the abort would keep every read's reaction on it until the call ends.
+		let stopRead: (() => void) | undefined;
+		const stopped = () => stopRead?.();
+		stop.addEventListener("abort", stopped, { once: true });
 		let open = true;
 		try {
 			for (;;) {
-				const next = await Promise.race([source.next(), stopped]);
+				if (stop.aborted) return false;
+				const pending = source.next();
+				const next = await new Promise<IteratorResult<Uint8Array> | undefined>((resolveNext, rejectNext) => {
+					stopRead = () => resolveNext(undefined);
+					if (stop.aborted) resolveNext(undefined);
+					Promise.resolve(pending).then(resolveNext, rejectNext);
+				});
+				stopRead = undefined;
 				if (next === undefined) return false;
 				if (next.done) {
 					open = false;
@@ -1385,6 +1393,7 @@ async function pipeInput(
 				if (!(await send(next.value))) return false;
 			}
 		} finally {
+			stop.removeEventListener("abort", stopped);
 			// Not awaited: an async generator closes only once its pending read settles.
 			if (open) {
 				try {
