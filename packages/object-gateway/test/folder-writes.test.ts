@@ -298,6 +298,30 @@ describe("writes through the mount", () => {
 		expect(core.entries.has("todo.md")).toBe(false);
 	});
 
+	it("makes a save renamed over the file another machine renamed only in case one replacement of that", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("plan.md")!;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: old.version, noReplace: false });
+		// Another machine renames the file only in case, and its change reaches the view.
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "Plan.md", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// The save renamed over it replaces the version the machine saw there, as one unit.
+		await view.rename({ from: "plan.md", to: "Plan.md", toBase: v(8), noReplace: false });
+		expect(await read(view, "Plan.md")).toBe("mine");
+		expect((await view.publish()).paths).toEqual([{ path: "Plan.md", outcome: "saved" }]);
+		const units = core.commits.at(-1)!.units;
+		expect(units).toEqual([expect.objectContaining({ op: "write", path: "Plan.md", expectedVersion: v(8) })]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		expect(core.entries.get("Plan.md")!.version).not.toBe(v(8));
+	});
+
 	it("keeps a stale save as a conflict when the service restarted between the read and the save", async () => {
 		const { root, core, open, restart } = await fixture();
 		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);

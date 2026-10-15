@@ -885,7 +885,7 @@ export class PendingView {
 			// A file replaced by a save keeps the save's base, so the save conflicts instead.
 			if (!save && r.entry.kind !== "folder" && base !== undefined && base !== r.entry.version)
 				fail(ErrorCode.stale, "The file changed since the machine saw it");
-			this.#removed.set(r.source, {
+			this.#setRemoved(r.source, {
 				path: r.source,
 				kind: r.entry.kind,
 				version: base ?? r.entry.version,
@@ -904,12 +904,21 @@ export class PendingView {
 				return;
 			}
 			if (origin)
-				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+				this.#setRemoved(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
 			// A new file or link that replaced a live one the feed has changed since: the newer version shows again. (One
 			// renamed over it, `save`, replaces the same version in its place.)
 			else if (!save && r.node.kind !== "folder" && this.#dropReplaced(r.path)) return;
 		}
 		this.#hide(r.path);
+	}
+
+	/** Records the removal of the live entry at `path`, the one the machine sees there: it stands for the path in any
+	 * case. A removal of the same path spelled otherwise whose live entry has gone since (another machine renamed it
+	 * only in case, to `path`) goes, so a new file or link there replaces one version, the one the machine saw. */
+	#setRemoved(path: string, ref: LiveRef): void {
+		const key = folderKey(path);
+		for (const p of [...this.#removed.keys()]) if (p !== path && folderKey(p) === key) this.#dropStale(p);
+		this.#removed.set(path, ref);
 	}
 
 	/** A live file or link the view removed at `path` that a new one holds: one at that path, in any case, whose unit

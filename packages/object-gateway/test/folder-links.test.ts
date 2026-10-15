@@ -336,6 +336,38 @@ describe("links on protocol 4", () => {
 		expect(core.entries.has("docs/NEXT")).toBe(false);
 	});
 
+	it("makes `ln -sf`'s link renamed over the old one another machine renamed only in case one replacement of that", async () => {
+		const { core, service, open } = await fixture();
+		core.seed([folder("docs"), link("docs/latest", "v1.md", 3)]);
+		const view = await open();
+		const made = await view.symlink("docs/CuXXXXXX", "v2.md");
+		await view.rename({
+			from: "docs/CuXXXXXX",
+			fromBase: made.version,
+			to: "docs/latest",
+			toBase: v(3),
+			noReplace: false,
+		});
+		// Another machine renames the old link only in case, and its change reaches the view: both names show.
+		const old = core.entries.get("docs/latest")!;
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "docs/LATEST", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		expect(names(await view.list("docs", undefined))).toEqual(["LATEST", "latest"]);
+		// The new link renamed over it replaces the version the machine saw there, as one unit.
+		await view.rename({ from: "docs/latest", to: "docs/LATEST", toBase: v(8), noReplace: false });
+		expect(names(await view.list("docs", undefined))).toEqual(["LATEST"]);
+		expect((await view.publish()).paths).toEqual([{ path: "docs/LATEST", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			{ op: "symlink", path: "docs/LATEST", target: "v2.md", expectedVersion: v(8) },
+		]);
+		expect(core.entries.get("docs/LATEST")).toMatchObject({ kind: "symlink", target: "v2.md" });
+		expect(core.entries.has("docs/latest")).toBe(false);
+	});
+
 	it("makes a hard link to a live file a write of the source's own reference, putting no byte again", async () => {
 		const { root, core, uploads, open } = await fixture();
 		const source = await storeFile(root, "docs/a.md", "alpha", 2, BIG);
