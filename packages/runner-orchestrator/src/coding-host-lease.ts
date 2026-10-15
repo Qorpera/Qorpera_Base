@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { isUuid } from "@qorpera/contracts";
 import { lxdCodingMachineName } from "./coding-machine.ts";
 import type { LxdClient, LxdHostInventoryClient } from "./lxd-client.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
@@ -19,7 +20,6 @@ const NAME = /^qorpera-coding-machine-[0-9a-f]{32}$/;
 const FILE = /^(qorpera-coding-machine-[0-9a-f]{32})\.json$/;
 const TEMPORARY = /^\.qorpera-coding-machine-[0-9a-f]{32}\.[0-9a-f-]{36}\.tmp$/;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
-const BOOT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** LXD's status code for a stopped instance: anything else may still run. */
 const STOPPED = 102;
 
@@ -33,7 +33,7 @@ export interface CodingHostClock {
 export const linuxCodingHostClock: CodingHostClock = {
 	async bootId() {
 		const id = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
-		if (!BOOT.test(id)) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
+		if (!isUuid(id)) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
 		return id;
 	},
 	async uptimeMs() {
@@ -208,7 +208,7 @@ export class CodingHostLeases {
 		await protectedRoot(this.#root);
 		const bootId = await this.#clock.bootId(),
 			now = await this.#clock.uptimeMs();
-		if (!BOOT.test(bootId) || !Number.isSafeInteger(now) || now < 0) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
+		if (!isUuid(bootId) || !Number.isSafeInteger(now) || now < 0) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
 		const lease: CodingHostLease = {
 			schema: SCHEMA,
 			project: holder.project,
@@ -347,7 +347,7 @@ export async function runCodingHostWatchdog(options: {
 	if (!candidates.length) return [];
 	const bootId = await clock.bootId(),
 		now = await clock.uptimeMs();
-	if (!BOOT.test(bootId) || !Number.isSafeInteger(now) || now < 0) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
+	if (!isUuid(bootId) || !Number.isSafeInteger(now) || now < 0) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
 	const outcomes = await Promise.all(
 		candidates.map(async ({ name }): Promise<CodingHostWatchdogOutcome | null> => {
 			const verdict = await judge(root, options.project, name, bootId, now, CODING_HOST_LEASE_TTL_MS);

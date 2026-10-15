@@ -22,7 +22,7 @@ async function fixture() {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "coding-host-lease-")));
 	roots.push(root);
 	await chmod(root, 0o700);
-	const now = { bootId: randomUUID(), uptimeMs: 3_600_000 };
+	const now: { bootId: string; uptimeMs: number } = { bootId: randomUUID(), uptimeMs: 3_600_000 };
 	const clock: CodingHostClock = { bootId: async () => now.bootId, uptimeMs: async () => now.uptimeMs };
 	const leases = new CodingHostLeases({ root, clock });
 	const machine = (machineId = randomUUID()) => ({
@@ -286,9 +286,10 @@ describe("the host watchdog", () => {
 			{ name: garbled.name, verdict: "unreadable", state: "stopped" },
 			{ name: starting.name, verdict: "missing", state: "stopped" },
 		]);
-		expect(stops()).toEqual(
-			[lapsed, missing, earlier, garbled, starting].map(({ name }) => ["coding", name, "stop"]),
-		);
+		// The stops run side by side, in no set order.
+		const expected = [lapsed, missing, earlier, garbled, starting].map(({ name }) => ["coding", name, "stop"]);
+		expect(stops()).toHaveLength(expected.length);
+		expect(stops()).toEqual(expect.arrayContaining(expected));
 		// Each stop runs under the watchdog's own deadline.
 		expect(client.setInstancePower.mock.calls.every((call) => call[3] === signal)).toBe(true);
 	});
