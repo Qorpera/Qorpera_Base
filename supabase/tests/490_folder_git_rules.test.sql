@@ -226,6 +226,38 @@ begin
 		jsonb_build_object('op','mkdir','path',d || 'worktrees/' || w1 || '/src'))), 1, 'conflict', 'exists');
 end $$;
 
+-- An object's own bytes in other chunks (another manifest of the same file, media type and bit) are saved as they stand
+-- too, at the object's version and its manifest, with no seq. The same bytes as another media type are other bytes.
+do $$
+declare cv jsonb := pg_temp.cv(1); p text := 'code/acme/app/repo.git/objects/ab/' || repeat('d', 38);
+	v_obj text := pg_temp.ver(p); r jsonb; v_seal jsonb; f jsonb[];
+	v_manifest text := (select manifest_sha256 from public.qorpera_folder_entries
+		where environment_id = '63200000-0000-4000-8000-000000000020'
+			and key_sha256 = extensions.digest(public.qorpera_folder_key(p), 'sha256'));
+	t text := format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":8,"mediaType":"%%s","executable":false,'
+		'"chunks":[{"sha256":"%s","bytes":4},{"sha256":"%s","bytes":4}]}',
+		encode(extensions.digest(convert_to('git-beta', 'utf8'), 'sha256'), 'hex'),
+		encode(extensions.digest(convert_to('git-', 'utf8'), 'sha256'), 'hex'),
+		encode(extensions.digest(convert_to('beta', 'utf8'), 'sha256'), 'hex'));
+	m text;
+begin
+	foreach m in array array[format(t, 'text/plain'), format(t, 'application/octet-stream')] loop
+		v_seal := pg_temp.seal_v2('63200000-0000-4000-8000-000000000020', '{"kind":"platform"}', m);
+		if v_seal ->> 'state' is distinct from 'sealed' then raise exception 'Staging: %', v_seal; end if;
+		insert into pg_temp.fixture_files values (v_seal -> 'file' ->> 'manifestSha256', m);
+		f := array_append(f, v_seal -> 'file');
+	end loop;
+	if v_manifest is null or f[1] ->> 'manifestSha256' = v_manifest then raise exception 'Another manifest: %', f; end if;
+	r := pg_temp.vcommit(cv, 'git-w1-rechunked', jsonb_build_array(jsonb_build_object('op','write','path',p,'file',f[1])));
+	if (pg_temp.expect(r, 1, 'saved') ->> 'version') is distinct from v_obj or r -> 'seq' <> 'null'::jsonb
+		or pg_temp.ver(p) is distinct from v_obj
+		or (select manifest_sha256 from public.qorpera_folder_entries where environment_id = '63200000-0000-4000-8000-000000000020'
+			and key_sha256 = extensions.digest(public.qorpera_folder_key(p), 'sha256')) is distinct from v_manifest then
+		raise exception 'Other chunks, saved as it stands: %', r; end if;
+	perform pg_temp.refused(pg_temp.vcommit(cv, 'git-w1-retyped', jsonb_build_array(
+		jsonb_build_object('op','write','path',p,'file',f[2]))), array['git_object_delete']);
+end $$;
+
 -- A member restores: other workers' worktrees and refs with no lease; not git's objects, main/ or its admin files, or the
 -- stash. A folder that is there is saved as it stands for a member too.
 do $$
