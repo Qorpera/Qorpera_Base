@@ -227,6 +227,41 @@ describe("writes through the mount", () => {
 		expect(core.entries.get("plan.md")?.fileSha256).toBe(hashOf("mine"));
 	});
 
+	it("keeps a save that replaced a file a conflict once another machine removed that file, never making it again", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG), await storeFile(root, "todo.md", "v1", 2, BIG)]);
+		const view = await open();
+		const plan = core.entries.get("plan.md")!.version;
+		const todo = core.entries.get("todo.md")!.version;
+		// A save through a temporary file, and a file made again, in another case, where one was removed.
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: plan, noReplace: false });
+		await view.unlink("todo.md", todo);
+		await write(view, "TODO.md", "mine");
+		// Another machine removes both before the boundary, and its change reaches the view: the saves still show.
+		core.remove("plan.md");
+		core.remove("todo.md");
+		await service.poll();
+		await service.settled();
+		expect(await read(view, "plan.md")).toBe("mine");
+		expect(await read(view, "TODO.md")).toBe("mine");
+		const report = await view.publish();
+		const units = core.commits.at(-1)!.units;
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: plan }),
+				expect.objectContaining({ op: "write", path: "TODO.md", expectedVersion: todo }),
+			]),
+		);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "TODO.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		expect(core.entries.has("TODO.md")).toBe(false);
+	});
+
 	it("keeps a stale save as a conflict when the service restarted between the read and the save", async () => {
 		const { root, core, open, restart } = await fixture();
 		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);

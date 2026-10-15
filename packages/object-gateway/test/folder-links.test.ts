@@ -201,6 +201,92 @@ describe("links on protocol 4", () => {
 		expect(core.entries.has("docs/CuXXXXXX")).toBe(false);
 	});
 
+	it("tries `ln -sf` at the version it replaced after another machine removed that, never making the old name again", async () => {
+		const { core, service, open } = await fixture();
+		core.seed([folder("docs"), link("docs/latest", "v1.md", 3), link("docs/next", "v1.md", 4)]);
+		const view = await open();
+		const lnsf = async (name: string, base: string) => {
+			const made = await view.symlink("docs/CuXXXXXX", "v2.md");
+			await view.rename({
+				from: "docs/CuXXXXXX",
+				fromBase: made.version,
+				to: `docs/${name}`,
+				toBase: base,
+				noReplace: false,
+			});
+			return made.version;
+		};
+		// One refused at a boundary first, the other not published yet.
+		await lnsf("latest", v(3));
+		core.refuse = (path) => path === "docs/latest";
+		expect((await view.publish()).paths).toEqual([
+			{ path: "docs/latest", outcome: "denied", reason: "denied", kept: true },
+		]);
+		core.refuse = () => false;
+		const next = await lnsf("next", v(4));
+		// Another machine removes both old links, and its change reaches the view: the new ones still show.
+		core.remove("docs/latest");
+		core.remove("docs/next");
+		await service.poll();
+		await service.settled();
+		expect(names(await view.list("docs", undefined))).toEqual(["latest", "next"]);
+		expect(await readAt(view, "docs/next", next)).toBe("v2.md");
+		// Each still names the version it replaced, so the core finds it gone: a conflict kept on the receipt.
+		const report = await view.publish();
+		const units = core.commits.at(-1)!.units;
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: v(3) },
+				{ op: "symlink", path: "docs/next", target: "v2.md", expectedVersion: v(4) },
+			]),
+		);
+		const kept = { outcome: "conflict", reason: "version_changed", receipt: report.commitId, target: "v2.md" };
+		expect(report.paths).toHaveLength(2);
+		expect(report.paths).toEqual(
+			expect.arrayContaining([
+				{ path: "docs/latest", ...kept },
+				{ path: "docs/next", ...kept },
+			]),
+		);
+		expect(core.entries.has("docs/latest")).toBe(false);
+		expect(core.entries.has("docs/next")).toBe(false);
+		expect(names(await view.list("docs", undefined))).toEqual([]);
+	});
+
+	it("shows another machine's newer link again once the link that replaced the old one is removed or moved away", async () => {
+		const { core, open, elsewhere } = await fixture();
+		core.seed([folder("docs"), link("docs/latest", "v1.md", 3), link("docs/next", "v1.md", 4)]);
+		const view = await open();
+		for (const [name, base] of [
+			["latest", v(3)],
+			["next", v(4)],
+		]) {
+			const made = await view.symlink("docs/CuXXXXXX", "v2.md");
+			await view.rename({
+				from: "docs/CuXXXXXX",
+				fromBase: made.version,
+				to: `docs/${name}`,
+				toBase: base,
+				noReplace: false,
+			});
+		}
+		await elsewhere(link("docs/latest", "v3.md", 6));
+		await elsewhere(link("docs/next", "v3.md", 7));
+		await view.unlink("docs/latest", undefined);
+		await view.rename({ from: "docs/next", to: "docs/mine", noReplace: false });
+		const listed = await view.list("docs", undefined);
+		expect(names(listed)).toEqual(["latest", "mine", "next"]);
+		expect(named(listed, "latest")).toMatchObject({ kind: "symlink", version: v(6) });
+		expect(named(listed, "next")).toMatchObject({ kind: "symlink", version: v(7) });
+		expect(await readAt(view, "docs/latest", v(6))).toBe("v3.md");
+		// Neither old link's removal is published: the machine never saw what is there now.
+		expect((await view.publish()).paths).toEqual([{ path: "docs/mine", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([{ op: "symlink", path: "docs/mine", target: "v2.md" }]);
+		expect(core.entries.get("docs/latest")).toMatchObject({ target: "v3.md", version: v(6) });
+		expect(core.entries.get("docs/next")).toMatchObject({ target: "v3.md", version: v(7) });
+	});
+
 	it("makes a hard link to a live file a write of the source's own reference, putting no byte again", async () => {
 		const { root, core, uploads, open } = await fixture();
 		const source = await storeFile(root, "docs/a.md", "alpha", 2, BIG);

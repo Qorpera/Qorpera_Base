@@ -521,16 +521,17 @@ describe("a view's pending changes", () => {
 		f.change("D/f", "v2");
 		// The machine's name still showed v1: the removal is refused, and it looks again.
 		refused(() => f.view.unlink("D/f", seen), "STALE");
-		// A save over it with a stale base keeps that base (it would conflict); if the saved file then goes and the
-		// folder with it, the folder's removal is not published, since it would take v2 unseen.
+		// A save over it with a stale base keeps that base (it would conflict). If the saved file then goes, v2 shows
+		// again, as a changed file's newer version does (below), so no removal of D/f or of the folder can take it unseen.
 		write(f.view, "D/t", "mine");
 		f.view.rename("D/t", "D/f", { noReplace: false, toBase: seen });
 		f.view.unlink("D/f");
 		f.view.unlink("D/g");
-		f.view.rmdir("D");
-		const plan = f.plan();
-		expect(plan.units).toEqual([]);
-		expect(plan.dropped.map((d) => d.path).sort()).toEqual(["D", "D/f", "D/g"]);
+		expect(shown(f.view)).toEqual({ D: "folder", "D/f": hash("manifest:v2") });
+		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+		expect(f.plan().units.map((u) => u.unit)).toEqual([
+			{ op: "delete", path: "D/g", expectedVersion: f.tree().get("D/g")!.version },
+		]);
 	});
 
 	it("drops a removed change whose file moved on, and shows the newer version", () => {

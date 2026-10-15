@@ -764,7 +764,9 @@ export class PendingView {
 		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
-		this.#hide(from);
+		// A new file or link moving off what it replaced, which the feed has changed since: the newer version shows.
+		const left = node.kind !== "folder" && node.origin === undefined && this.#dropReplaced(from);
+		if (!left) this.#hide(from);
 		this.#dropUnder(to);
 		this.#set(to, node);
 		for (const [path, n] of moved) this.#set(to + path.slice(from.length), n);
@@ -792,15 +794,11 @@ export class PendingView {
 
 	/** The feed changed these live paths. A removal whose live entry changed since is dropped, so the view shows the
 	 * newer version again: a removal never takes a version the machine did not see. (A subtree removal or a move
-	 * refuses changes it did not see by its `asOfSeq`; a save conflicts by its base.) */
+	 * refuses changes it did not see by its `asOfSeq`; a save conflicts by its base.) A removal a new file or link
+	 * replaced stays while that node does: its unit names the version replaced, so the core refuses it as a conflict
+	 * rather than writing over, or bringing back, a version the machine never saw. */
 	liveChanged(paths: readonly string[]): void {
-		for (const path of paths) {
-			const removed = this.#removed.get(path);
-			if (!removed || removed.kind === "folder") continue;
-			if (this.#live().get(path)?.version === removed.version) continue;
-			this.#removed.delete(path);
-			if (this.#nodes.get(path)?.kind === "gone") this.#unset(path);
-		}
+		for (const path of paths) if (!this.#replacing(path)) this.#dropStale(path);
 	}
 
 	// ---- Inside ----------------------------------------------------------------------------------------------------
@@ -902,8 +900,43 @@ export class PendingView {
 			}
 			if (origin)
 				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+			// A new file or link that replaced a live one the feed has changed since: the newer version shows again. (One
+			// renamed over it, `save`, replaces the same version in its place.)
+			else if (!save && r.node.kind !== "folder" && this.#dropReplaced(r.path)) return;
 		}
 		this.#hide(r.path);
+	}
+
+	/** A live file or link the view removed at `path` that a new one holds: one at that path, in any case, whose unit
+	 * replaces that version (an editor's save through a temporary file, `ln -sf`, or a file made where one was
+	 * removed). */
+	#replacing(path: string): boolean {
+		if (!this.#removed.has(path)) return false;
+		const key = folderKey(path);
+		for (const name of this.#children.get(parentOf(path)) ?? []) {
+			const at = join(parentOf(path), name);
+			const node = this.#nodes.get(at);
+			if ((node?.kind === "file" || node?.kind === "symlink") && !node.origin && folderKey(at) === key) return true;
+		}
+		return false;
+	}
+
+	/** A new file or link at `path` goes (removed, or moved away): the removal of the live one it replaced goes with it
+	 * if the feed has changed that since, and the newer version shows. Answers whether it did. */
+	#dropReplaced(path: string): boolean {
+		const key = folderKey(path);
+		for (const p of this.#removed.keys()) if (folderKey(p) === key) return this.#dropStale(p);
+		return false;
+	}
+
+	/** Drops a file's or link's removal whose live entry changed since the machine saw it. Answers whether it did. */
+	#dropStale(path: string): boolean {
+		const removed = this.#removed.get(path);
+		if (!removed || removed.kind === "folder") return false;
+		if (this.#live().get(path)?.version === removed.version) return false;
+		this.#removed.delete(path);
+		if (this.#nodes.get(path)?.kind === "gone") this.#unset(path);
+		return true;
 	}
 
 	/** The live version now at a live path (the planner checks a removal it would fold into its folder's). */
