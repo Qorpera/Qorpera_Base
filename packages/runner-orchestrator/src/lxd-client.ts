@@ -226,7 +226,8 @@ export interface LxdExecPipeRequest {
 	/** An absolute path in the instance. */
 	readonly cwd: string;
 	/** Streamed to the command's stdin, which is then closed; without it stdin is closed at once. Never recorded or
-	 * logged. */
+	 * logged. A source the call does not read to its end is closed (its `return()`) when the call ends, also while a
+	 * read is pending; an async generator runs its own close once that read settles. */
 	readonly stdin?: Uint8Array | AsyncIterable<Uint8Array>;
 	/** A command printing more than this on stdout is killed and the call fails. */
 	readonly maxStdoutBytes: number;
@@ -1343,16 +1344,17 @@ function validExecPipe(request: LxdExecPipeRequest): boolean {
 }
 
 /** Hands `stdin` to an exec's stdin websocket in messages of at most 64 KiB, each sent once the last has drained, then
- * its end. True once all of it and the end are sent; false when the websocket closed first or `stop` says the call is
- * over. A source that fails, or yields something other than bytes, throws. */
+ * its end. True once all of it and the end are sent; false when the websocket closed first or `stop` ends the call. A
+ * source that fails, or yields something other than bytes, throws. A source not read to its end is told to close (its
+ * `return()`) as soon as the input stops, also while a read is pending: `stop` ends the wait for that read. */
 async function pipeInput(
 	socket: NodeWebSocket,
 	stdin: Uint8Array | AsyncIterable<Uint8Array> | undefined,
-	stop: () => boolean,
+	stop: AbortSignal,
 ): Promise<boolean> {
 	const send = async (chunk: Uint8Array): Promise<boolean> => {
 		for (let offset = 0; offset < chunk.byteLength; offset += EXEC_PIPE_MESSAGE_BYTES) {
-			if (stop()) return false;
+			if (stop.aborted) return false;
 			const length = Math.min(EXEC_PIPE_MESSAGE_BYTES, chunk.byteLength - offset);
 			try {
 				await socket.sendBinaryDrained(Buffer.from(chunk.buffer, chunk.byteOffset + offset, length));
@@ -1365,12 +1367,35 @@ async function pipeInput(
 	if (stdin instanceof Uint8Array) {
 		if (!(await send(stdin))) return false;
 	} else if (stdin !== undefined) {
-		for await (const chunk of stdin) {
-			if (!(chunk instanceof Uint8Array)) throw new Error("LXD exec pipe input is invalid");
-			if (!(await send(chunk))) return false;
+		const source = stdin[Symbol.asyncIterator]();
+		const stopped = new Promise<undefined>((resolveStopped) => {
+			if (stop.aborted) resolveStopped(undefined);
+			else stop.addEventListener("abort", () => resolveStopped(undefined), { once: true });
+		});
+		let open = true;
+		try {
+			for (;;) {
+				const next = await Promise.race([source.next(), stopped]);
+				if (next === undefined) return false;
+				if (next.done) {
+					open = false;
+					break;
+				}
+				if (!(next.value instanceof Uint8Array)) throw new Error("LXD exec pipe input is invalid");
+				if (!(await send(next.value))) return false;
+			}
+		} finally {
+			// Not awaited: an async generator closes only once its pending read settles.
+			if (open) {
+				try {
+					Promise.resolve(source.return?.()).catch(() => undefined);
+				} catch {
+					// A source that cannot close has nothing more to give the command.
+				}
+			}
 		}
 	}
-	if (stop()) return false;
+	if (stop.aborted) return false;
 	try {
 		socket.send("");
 		return true;
@@ -3400,7 +3425,8 @@ export class LxdUnixClient
 	 * command gets its environment and working directory, its input streams in beside its output (one message at a
 	 * time, each once the last has drained, so the source is read no faster than the command reads), stdout is kept up
 	 * to its bound and only the end of stderr. The output's end messages, not a deadline, end the wait; the signal is
-	 * the only bound. As there, every early exit closes the stdout websocket, on which LXD kills the command. */
+	 * the only bound. As there, every early exit closes the stdout websocket, on which LXD kills the command; the end of
+	 * the call also closes a source it did not read to its end. */
 	async execInstancePipe(
 		project: string,
 		name: string,
@@ -3455,7 +3481,8 @@ export class LxdUnixClient
 		let stdoutEnded = false;
 		let stderrEnded = false;
 		let inputSent = false;
-		let stopped = false;
+		// Stops the input, which closes a source not read to its end.
+		const inputStop = new AbortController();
 		const sockets: NodeWebSocket[] = [];
 		let failure: Error | undefined;
 		let settle: () => void = () => undefined;
@@ -3465,6 +3492,7 @@ export class LxdUnixClient
 		// Ends the call: the stdout websocket closes first, which kills a command still running.
 		const fail = (error: Error): void => {
 			failure ??= error;
+			inputStop.abort();
 			for (const socket of sockets) socket.close();
 			settle();
 		};
@@ -3509,7 +3537,7 @@ export class LxdUnixClient
 			}
 			// The input runs beside the output: a command may print before it has read all of its stdin. Only the
 			// source's own failure fails the call; a websocket that closed under the input leaves it to the exit code.
-			pipeInput(sockets[2]!, stdin, () => stopped || failure !== undefined).then(
+			pipeInput(sockets[2]!, stdin, inputStop.signal).then(
 				(sent) => {
 					inputSent = sent;
 				},
@@ -3530,7 +3558,7 @@ export class LxdUnixClient
 			fail(error instanceof Error ? error : new Error("LXD exec pipe failed"));
 			throw failure;
 		} finally {
-			stopped = true;
+			inputStop.abort();
 			signal.removeEventListener("abort", aborted);
 			for (const socket of sockets) socket.close();
 		}

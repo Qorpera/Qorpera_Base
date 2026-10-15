@@ -247,6 +247,27 @@ describe("LXD exec pipe", () => {
 			closed.done = true;
 		}
 	};
+	// A source whose first read settles only once it is told to close, as a body that stopped arriving.
+	function stalled() {
+		const state = { reads: 0, closes: 0 };
+		let release = (): void => undefined;
+		const stdin: AsyncIterable<Uint8Array> = {
+			[Symbol.asyncIterator]: () => ({
+				next: () => {
+					state.reads++;
+					return new Promise<IteratorResult<Uint8Array>>((resolveRead) => {
+						release = () => resolveRead({ done: true, value: undefined });
+					});
+				},
+				return: async () => {
+					state.closes++;
+					release();
+					return { done: true, value: undefined };
+				},
+			}),
+		};
+		return { stdin, state };
+	}
 
 	it("runs the command with its environment and directory and hands it its stdin, in no request body", async () => {
 		const exec = await fake(async (io) => {
@@ -364,6 +385,71 @@ describe("LXD exec pipe", () => {
 		await expect(call).rejects.toThrow("LXD exec pipe was stopped");
 		await vi.waitFor(() => expect(exec.killed).toBe(true));
 		await vi.waitFor(() => expect(closed.done).toBe(true), { timeout: 3000 });
+	});
+
+	it("closes a source whose read is pending when the call ends, by its signal or the command's exit", async () => {
+		const stopped = await fake(async (io) => {
+			await io.input();
+			return 0;
+		});
+		const first = stalled();
+		const controller = new AbortController();
+		const call = run(stopped, { stdin: first.stdin }, controller.signal);
+		await vi.waitFor(() => expect(first.state.reads).toBe(1));
+		controller.abort();
+		await expect(call).rejects.toThrow("LXD exec pipe was stopped");
+		await vi.waitFor(() => expect(stopped.killed).toBe(true));
+		await vi.waitFor(() => expect(first.state.closes).toBe(1));
+		const exited = await fake(async (io) => {
+			io.print("stderr", Buffer.from("fatal: no pack"));
+			return 128;
+		});
+		const second = stalled();
+		expect(await run(exited, { stdin: second.stdin })).toEqual({
+			exitCode: 128,
+			stdout: Buffer.alloc(0),
+			stderrTail: Buffer.from("fatal: no pack"),
+		});
+		await vi.waitFor(() => expect(second.state.closes).toBe(1));
+		// Neither source is read again.
+		expect([first.state.reads, second.state.reads]).toEqual([1, 1]);
+	});
+
+	it("closes a generator stalled in a read once that read settles, and reads it no further", async () => {
+		const exec = await fake(async (io) => {
+			await io.input();
+			return 0;
+		});
+		const state = { pulled: 0, closed: false };
+		let arrive = (): void => undefined;
+		const controller = new AbortController();
+		const call = run(
+			exec,
+			{
+				stdin: (async function* () {
+					try {
+						for (;;) {
+							state.pulled++;
+							await new Promise<void>((resolveArrival) => {
+								arrive = resolveArrival;
+							});
+							yield Buffer.from("PACK");
+						}
+					} finally {
+						state.closed = true;
+					}
+				})(),
+			},
+			controller.signal,
+		);
+		await vi.waitFor(() => expect(state.pulled).toBe(1));
+		controller.abort();
+		await expect(call).rejects.toThrow("LXD exec pipe was stopped");
+		expect(state.closed).toBe(false);
+		arrive();
+		await vi.waitFor(() => expect(state.closed).toBe(true));
+		expect(state.pulled).toBe(1);
+		expect(exec.input.byteLength).toBe(0);
 	});
 
 	it("fails with the source's own error, or on a chunk that is not bytes, and kills the command", async () => {
