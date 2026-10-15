@@ -277,8 +277,13 @@ outside its company in the database ("coding session is unavailable to this
 broker", SQL test 399), so the fallback releases nothing.
 
 All of these up to bundle v88's pass `nginx -t` (nginx 1.28.3, node 2's build,
-in a scratch prefix with a stand-in capture map); check 5j-3's with `nginx -t`
-when it is added. A regex with `{}` must stay quoted. The callback's
+in a scratch prefix with a stand-in capture map). 5j-3's passes too (nginx
+1.28.3, the `nginx:1.28-alpine` image on the test machine, scratch prefix,
+stand-in map). There, a 16 MiB synthetic answer to an executor that read nothing
+for 5 s logged no "buffered to a temporary file" warning, and the same block
+without `proxy_buffering off;` logged one. nginx unlinks a temporary file as
+soon as it opens it, so look for that warning, not for files under
+`proxy_temp_path`. A regex with `{}` must stay quoted. The callback's
 `error_log … crit` was chosen over accepting the leak: with the broker down,
 nginx's default "error" level would record `request: "GET
 /v1/oauth/callback?code=…&state=…"`; at "crit" a scratch run with a refused
