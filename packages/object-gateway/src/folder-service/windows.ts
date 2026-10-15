@@ -61,25 +61,33 @@ export class CommandWindows {
 	}
 }
 
-/** Whether `key` is `prefix` or a path under it (both folded). */
+/** Whether `key` is `prefix` or a path under it (both folded, or both as spelled). */
 function under(key: string, prefix: string): boolean {
 	return key === prefix || key.startsWith(`${prefix}/`);
 }
 
+/** A folded path's tags, and the one spelling of it they were tagged at: none once two spellings were (the core folds
+ * them into one path, as a file removed at one spelling and made again at another). */
+interface Tagged {
+	readonly tags: Set<string>;
+	path: string | undefined;
+}
+
 /** What each pending path of a test machine's view was changed under, by folded path: command ids, or the starter. */
 export class CreditTags {
-	readonly #tags = new Map<string, Set<string>>();
+	readonly #tags = new Map<string, Tagged>();
 
 	/** A change to these paths, made under these tags. */
 	tag(paths: readonly string[], tags: readonly string[]): void {
 		for (const path of paths) {
 			const key = folderKey(path);
-			let set = this.#tags.get(key);
-			if (set === undefined) {
-				set = new Set();
-				this.#tags.set(key, set);
+			const tagged = this.#tags.get(key);
+			if (tagged === undefined) {
+				this.#tags.set(key, { tags: new Set(tags), path });
+				continue;
 			}
-			for (const tag of tags) set.add(tag);
+			if (tagged.path !== path) tagged.path = undefined;
+			for (const tag of tags) tagged.tags.add(tag);
 		}
 	}
 
@@ -89,11 +97,29 @@ export class CreditTags {
 	rename(from: string, to: string, tags: readonly string[]): void {
 		const source = folderKey(from);
 		const target = folderKey(to);
-		const moved: [string, Set<string>][] = [];
-		for (const [key, set] of this.#tags) if (under(key, source)) moved.push([target + key.slice(source.length), set]);
+		const moved: [string, Tagged][] = [];
+		for (const [key, { tags: set, path }] of this.#tags)
+			if (under(key, source)) {
+				const spelled = path !== undefined && under(path, from) ? to + path.slice(from.length) : undefined;
+				moved.push([target + key.slice(source.length), { tags: set, path: spelled }]);
+			}
 		for (const key of [...this.#tags.keys()]) if (under(key, source) || under(key, target)) this.#tags.delete(key);
-		for (const [key, set] of moved) this.#tags.set(key, set);
+		for (const [key, tagged] of moved) this.#tags.set(key, tagged);
 		this.tag([to], tags);
+	}
+
+	/** The node at `path`, which the view had moved there from `origin`, was removed under these tags (unlinked, or
+	 * replaced by a rename): its removal is published at `origin`, which takes the tags of `path` and the removal's. */
+	carry(path: string, origin: string, tags: readonly string[]): void {
+		this.tag([origin], [...(this.#tags.get(folderKey(path))?.tags ?? []), ...tags]);
+	}
+
+	/** A change left nothing pending at `path` (`left` says what is): a file made and removed again, or one moved here
+	 * and removed (its removal is its origin's). Its tags go, so what is made there next is credited afresh. Tags also
+	 * taken at another spelling of the path stay until a boundary prunes them (`prune`). */
+	forget(path: string, left: (path: string) => boolean): void {
+		const key = folderKey(path);
+		if (this.#tags.get(key)?.path === path && !left(path)) this.#tags.delete(key);
 	}
 
 	/** The commands a unit publishing these paths is credited to, sorted; none when only the starter changed them.
@@ -102,12 +128,14 @@ export class CreditTags {
 	credits(paths: readonly string[]): readonly string[] | undefined {
 		const ids = new Set<string>();
 		for (const path of paths)
-			for (const tag of this.#tags.get(folderKey(path)) ?? []) if (tag !== STARTER) ids.add(tag);
+			for (const tag of this.#tags.get(folderKey(path))?.tags ?? []) if (tag !== STARTER) ids.add(tag);
 		return ids.size === 0 ? undefined : [...ids].sort();
 	}
 
-	/** After a boundary settled: forgets every path but these, which are still pending. */
+	/** At a boundary: forgets every path but these, which are still pending (what it publishes or keeps, or what it
+	 * kept once settled). A change undone before it was published (a move made and moved back) has none left. */
 	prune(pending: Iterable<string>): void {
+		if (this.#tags.size === 0) return;
 		const left = new Set<string>();
 		for (const path of pending) left.add(folderKey(path));
 		for (const key of [...this.#tags.keys()]) if (!left.has(key)) this.#tags.delete(key);

@@ -201,6 +201,18 @@ function mayLift(refused: Report["refused"]): boolean {
 /** What a change changed, for a test machine's credits (F3 6b): these paths, or a rename's. */
 type Changed = readonly string[] | { readonly from: string; readonly to: string };
 
+/** The nodes the view moved to the paths a change may remove (the paths it names, or a rename's target), with their
+ * origins, whose removal is not pending yet: one the change removes is published as the removal of its origin. */
+function movedHere(pending: PendingView, changed: Changed): (readonly [string, string])[] {
+	const moved: (readonly [string, string])[] = [];
+	for (const path of "from" in changed ? [changed.to] : changed) {
+		const r = pending.resolve(path);
+		const origin = r?.kind === "node" ? r.node.origin?.path : undefined;
+		if (origin !== undefined && origin !== path && !pending.removed().has(origin)) moved.push([path, origin]);
+	}
+	return moved;
+}
+
 /** A change set refused whole that is not settled: what it carried stays pending, to be published again. A command's
  * (only its final closes its view), and a desktop's refused in a way that may lift (F3 4c). A coding session's too, but
  * at its last boundary, where a refusal that may not lift is final (F3 5c, the plan's rule 4). */
@@ -924,6 +936,8 @@ export class FolderService {
 			},
 			close: async (handle, size) => {
 				if (!view.handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
+				// A cut is credited to the windows open as the machine closed the file, not as its origin's bytes came.
+				const tags = this.#windowsOf(view);
 				// A file whose bytes are still its origin's, closed at another size: cut (on the 4 MiB grid, or to nothing)
 				// with no chunk sent. Its bytes become its own from the origin's chunks first, and the close cuts them.
 				const origin = view.pending?.originToCopy(handle);
@@ -932,7 +946,7 @@ export class FolderService {
 				const file = view.pending?.file(handle);
 				const cuts = file !== undefined && Math.ceil(size / CHUNK_BYTES) < (file.content?.chunks.length ?? 0);
 				const cut = cuts ? this.#pathOfNode(view, file) : undefined;
-				const node = await this.#change(view, cut ? [cut] : [], (pending) => pending.close(handle, size));
+				const node = await this.#change(view, cut ? [cut] : [], (pending) => pending.close(handle, size), tags);
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
@@ -1613,17 +1627,27 @@ export class FolderService {
 
 	/** One change to the view's pending changes. A change that needs what is pending published first publishes it,
 	 * then is made again; if it is still blocked then, the machine hears BUSY. `changed`: what it changes, for a test
-	 * machine's credits (F3 6b). */
-	async #change<T>(view: View, changed: Changed, change: (pending: PendingView) => T): Promise<T> {
-		// Credited to the command windows open as the machine asked it, before it waits for a boundary: a window that
-		// closes meanwhile keeps it.
-		const tags = this.#windowsOf(view);
+	 * machine's credits (F3 6b), which go to `tags`: the command windows open as the machine asked it, taken before
+	 * anything is awaited (a request that awaits before its change passes those it took on entry). A window that closes
+	 * while the change waits for a boundary keeps it. */
+	async #change<T>(
+		view: View,
+		changed: Changed,
+		change: (pending: PendingView) => T,
+		tags = this.#windowsOf(view),
+	): Promise<T> {
 		await this.#quiet(view);
 		const pending = view.pending;
 		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
+		// What the change may remove that the view moved here, as it is when the change is made.
+		let moved: (readonly [string, string])[] = [];
+		const make = (): T => {
+			if (tags !== undefined) moved = movedHere(pending, changed);
+			return change(pending);
+		};
 		let answer: T;
 		try {
-			answer = change(pending);
+			answer = make();
 		} catch (error) {
 			if (!(error instanceof PublishFirst)) throw error;
 			await this.#publish(view);
@@ -1631,18 +1655,35 @@ export class FolderService {
 			// then the view still holds what that boundary published, and settling it would undo the change (BUSY).
 			await this.#quiet(view);
 			try {
-				answer = change(pending);
+				answer = make();
 			} catch (again) {
 				if (again instanceof PublishFirst) throw new ProtocolError(ErrorCode.busy, again.message);
 				throw again;
 			}
 		}
-		if (tags !== undefined) {
-			if ("from" in changed) view.credit.rename(changed.from, changed.to, tags);
-			else view.credit.tag(changed, tags);
-		}
+		if (tags !== undefined) this.#credit(view, pending, changed, tags, moved);
 		this.#touch(view);
 		return answer;
+	}
+
+	/** Tags a test machine's change (F3 6b). A node the view moved to a path the change removed (unlinked, or replaced
+	 * by a rename) is published as the removal of its origin, which takes the path's tags. A path the change left
+	 * nothing pending at (a file made and removed again) keeps none, so what is made there next is credited afresh. */
+	#credit(
+		view: View,
+		pending: PendingView,
+		changed: Changed,
+		tags: readonly string[],
+		moved: readonly (readonly [string, string])[],
+	): void {
+		for (const [path, origin] of moved) if (pending.removed().has(origin)) view.credit.carry(path, origin, tags);
+		if ("from" in changed) {
+			view.credit.rename(changed.from, changed.to, tags);
+			return;
+		}
+		view.credit.tag(changed, tags);
+		const left = (path: string): boolean => pending.nodes().has(path) || pending.removed().has(path);
+		for (const path of changed) view.credit.forget(path, left);
 	}
 
 	/** What a test machine's change made now is credited to (F3 6b): its open windows' commands, or its starter. None
@@ -2048,6 +2089,9 @@ export class FolderService {
 		const plan = planBoundary(pending, (node) =>
 			node.staged?.version === node.version ? node.staged.file : undefined,
 		);
+		// A test machine's paths keep their credits while the plan names them (F3 6b). A change undone before it was
+		// published, as a move moved back, leaves nothing to name: its credits go, even when nothing is published.
+		view.credit.prune([...plan.units.flatMap((u) => u.paths), ...plan.keep, ...plan.dropped.map((d) => d.path)]);
 		entries.push(...waitingOf(plan));
 		if (final && plan.waiting.length > 0) {
 			view.heard = "open";

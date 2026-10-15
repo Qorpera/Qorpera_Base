@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createControlServer } from "../src/folder-service/control.ts";
 import { DESKTOP_QUIET_MS, MountGrants } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
+import { CHUNK_BYTES } from "../src/folder-service/pending.ts";
 import type { BridgeInfo, Hello } from "../src/folder-service/protocol.ts";
 import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
@@ -83,7 +84,7 @@ async function company() {
 		handles.push(handle);
 		return handle;
 	};
-	return { core, service, open };
+	return { root, core, objects, service, open };
 }
 
 /** A small file, written as the folder program writes it: opened with truncate, its one chunk, closed. */
@@ -228,6 +229,89 @@ describe("test machine views", () => {
 		expect(core.entries.has("docs/late.txt")).toBe(false);
 	});
 
+	it("credits the removal of a renamed file, published at its origin, to the command that removed it", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/notes.md", "the notes", 2)]);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		// Renamed, then unlinked before the boundary: what is published is the removal of the origin.
+		await view.rename({ from: "docs/plan.md", to: "docs/moved.md", noReplace: false });
+		await view.unlink("docs/moved.md", undefined);
+		// Renamed, then replaced by a rename over it: likewise.
+		await view.rename({ from: "docs/notes.md", to: "docs/old.md", noReplace: false });
+		await write(view, "docs/new.md", "n");
+		await view.rename({ from: "docs/new.md", to: "docs/old.md", noReplace: false });
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/plan.md", [FIRST]],
+				["docs/notes.md", [FIRST]],
+				["docs/old.md", [FIRST]],
+			],
+		]);
+		expect([...core.entries.keys()].sort()).toEqual(["docs", "docs/old.md"]);
+	});
+
+	it("credits a cut to the windows open as the machine closed the file, not as its origin's bytes came", async () => {
+		const { root, core, objects, service, open } = await company();
+		core.seed([await storeFile(root, "docs/log.txt", "lines", 2, CHUNK_BYTES)]);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await view.open({ path: "docs/log.txt", create: false, exclusive: false, truncate: false });
+		// Cut to nothing, the file takes its origin's bytes first; their manifest is held while the windows change.
+		let reached!: () => void;
+		const reading = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const read = objects.manifestChunks.bind(objects);
+		objects.manifestChunks = async (...args) => {
+			objects.manifestChunks = read;
+			reached();
+			await held;
+			return read(...args);
+		};
+		const closing = view.close(handle, 0);
+		await reading;
+		service.openWindow(PLACEMENT, windowOf(SECOND));
+		await service.closeWindow(PLACEMENT, FIRST);
+		release();
+		await closing;
+		await service.closeWindow(PLACEMENT, SECOND);
+		expect(core.commits.map(creditsOf)).toEqual([[["docs/log.txt", [FIRST]]]]);
+		expect(core.entries.get("docs/log.txt")?.fileSha256).toBe(hashOf(""));
+	});
+
+	it("forgets an undone change's credits, so what is made there next is credited to its maker alone", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		// A file made and removed again, and a rename moved back: nothing is left to publish.
+		await write(view, "docs/scratch.txt", "s");
+		await view.unlink("docs/scratch.txt", undefined);
+		await view.rename({ from: "docs/plan.md", to: "docs/tmp.md", noReplace: false });
+		await view.rename({ from: "docs/tmp.md", to: "docs/plan.md", noReplace: false });
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+		// The command ended; the next makes both paths again, and its units name it alone.
+		core.endedCommands.add(FIRST);
+		service.openWindow(PLACEMENT, windowOf(SECOND));
+		await write(view, "docs/scratch.txt", "t");
+		await write(view, "docs/plan.md", "v2");
+		await service.closeWindow(PLACEMENT, SECOND);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/plan.md", [SECOND]],
+				["docs/scratch.txt", [SECOND]],
+			],
+		]);
+		expect(core.entries.get("docs/scratch.txt")?.fileSha256).toBe(hashOf("t"));
+		expect(core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("v2"));
+	});
+
 	it("publishes a test machine's view about 2 s after its last change", async () => {
 		const { core, open } = await company();
 		const view = await open();
@@ -287,6 +371,33 @@ describe("credit tags", () => {
 		tags.prune(["dist/out.txt"]);
 		expect(tags.credits(["dist/lib/a.js"])).toBeUndefined();
 		expect(tags.credits(["dist/out.txt"])).toEqual([FIRST, SECOND]);
+	});
+
+	it("gives a moved path's removal to its origin, and forgets a path left with nothing pending", () => {
+		const tags = new CreditTags();
+		tags.rename("docs/a.md", "docs/b.md", [FIRST]);
+		// docs/b.md, moved from docs/a.md, is unlinked: its removal is docs/a.md's.
+		tags.carry("docs/b.md", "docs/a.md", [SECOND]);
+		tags.forget("docs/b.md", () => false);
+		expect(tags.credits(["docs/a.md"])).toEqual([FIRST, SECOND]);
+		expect(tags.credits(["docs/b.md"])).toBeUndefined();
+		// A path still pending keeps its tags; so does one also tagged at another spelling, until a boundary prunes it.
+		tags.tag(["docs/new.txt"], [FIRST]);
+		tags.forget("docs/new.txt", () => true);
+		expect(tags.credits(["docs/new.txt"])).toEqual([FIRST]);
+		tags.tag(["docs/X.txt"], [FIRST]);
+		tags.tag(["docs/x.txt"], [SECOND]);
+		tags.forget("docs/x.txt", () => false);
+		expect(tags.credits(["docs/X.txt"])).toEqual([FIRST, SECOND]);
+		tags.prune(["docs/a.md"]);
+		expect(tags.credits(["docs/new.txt", "docs/x.txt"])).toBeUndefined();
+		expect(tags.credits(["docs/a.md"])).toEqual([FIRST, SECOND]);
+		// A rename keeps the spelling its tags were taken at.
+		tags.tag(["build/out.txt"], [SECOND]);
+		tags.rename("build", "dist", [STARTER]);
+		expect(tags.credits(["dist/out.txt"])).toEqual([SECOND]);
+		tags.forget("dist/out.txt", () => false);
+		expect(tags.credits(["dist/out.txt"])).toBeUndefined();
 	});
 });
 
