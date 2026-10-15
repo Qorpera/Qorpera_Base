@@ -685,7 +685,7 @@ begin
 		is distinct from 'closed' then raise exception 'The final closes its view'; end if;
 end $$;
 
--- M. A coding view's commit checks its own read set and its machine's at rank 10 without writing them (20260930395000),
+-- M. A coding view's commit checks its own read set and its machine's at rank 10 without writing them (20260930445000),
 -- so it holds no read-set row while it waits for its session at the anchor step. A commit that re-stamped a moved pair
 -- there would close a cycle: qorpera_keep_coding_attachments holds the session FOR UPDATE and waits to mark the machine
 -- busy, and a release holds the machine FOR SHARE and waits for the pair (40P01). The session archived in C comes back;

@@ -1,4 +1,4 @@
--- 20260930395000: step 5a, the coding machine's read set (deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Reads").
+-- 20260930445000: step 5a, the coding machine's read set (deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Reads").
 -- With root in the guest, one session can read through another session's mount on the same machine, so a read is the
 -- machine's, not one session's. The machine read set replaces the per-session carry of qorpera_folder_view_open.
 -- 1. qorpera_coding_machine_reads and qorpera_coding_machine_read_records hold the machine's pairs and released reads.
@@ -13,7 +13,7 @@
 --    read set is rechecked, but writes none: the order is session, machine, read set, and the commit takes its session
 --    last.
 -- 5. A coding view no longer carries its session's previous view's reads: the machine's set holds them.
--- Every patched body names this migration (20260930395000), and every earlier marker in it stays.
+-- Every patched body names this migration (20260930445000), and every earlier marker in it stays.
 
 set local lock_timeout = '3s';
 
@@ -226,7 +226,7 @@ select pg_temp.s5a_patch('public.qorpera_folder_record_view_release(uuid,uuid,js
 	$old$		if v_run_actor is not null then
 			perform 1 from public.qorpera_runner_jobs where id = (v_run_actor ->> 'jobId')::uuid and run_id = (v_run_actor ->> 'runId')::uuid
 			for key share;$old$,
-	$new$		-- 20260930395000 (step 5a): a coding view's reads are its machine's and reach every turn leased on the machine,
+	$new$		-- 20260930445000 (step 5a): a coding view's reads are its machine's and reach every turn leased on the machine,
 		-- each such turn's job KEY SHARE first, in id order (the view's own turn among them).
 		select machine_id into v_machine from public.qorpera_folder_views where id = v_view_id and kind = 'coding_session';
 		if v_machine is not null then
@@ -245,7 +245,7 @@ select pg_temp.s5a_patch('public.qorpera_folder_record_view_release(uuid,uuid,js
 		if v_run_actor is not null then
 			perform public.qorpera_folder_run_enter(p_environment_id, p_profile_id, v_run_actor);
 		end if;
-		-- 20260930395000 (step 5a): the machine row FOR SHARE, which a turn taking in the machine's set holds FOR NO KEY
+		-- 20260930445000 (step 5a): the machine row FOR SHARE, which a turn taking in the machine's set holds FOR NO KEY
 		-- UPDATE and a session moving onto the machine FOR UPDATE. Every turn leased on the machine now must be one whose
 		-- job is held above; a turn leased since refuses as retryable.
 		if v_machine is not null then
@@ -269,7 +269,7 @@ select pg_temp.s5a_patch('public.qorpera_folder_record_view_release(uuid,uuid,js
 			jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), p_output_sha256
 		from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
 	end if;$old$,
-	$new$	-- 20260930395000 (step 5a): a coding view's reads go to its machine's set, under the same release id.
+	$new$	-- 20260930445000 (step 5a): a coding view's reads go to its machine's set, under the same release id.
 	if v_machine is not null then
 		if exists (select 1 from public.qorpera_coding_machine_read_records where coding_machine_id = v_machine and release_id = p_release_id) then
 			raise exception 'Release id was used for other reads' using errcode = '22023'; end if;
@@ -280,7 +280,7 @@ select pg_temp.s5a_patch('public.qorpera_folder_record_view_release(uuid,uuid,js
 			jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), p_output_sha256
 		from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
 	end if;
-	-- The view's run, and (20260930395000) every turn leased on its machine, in id order.
+	-- The view's run, and (20260930445000) every turn leased on its machine, in id order.
 	for v_turn in select distinct turn.id from unnest(coalesce(v_turns, '{}') || (v_run_actor ->> 'runId')::uuid) turn(id)
 		where turn.id is not null order by turn.id loop
 		-- The run's records are keyed by release id too: an id the run already used is refused, never half-filed.
@@ -302,7 +302,7 @@ select pg_temp.s5a_patch('public.qorpera_folder_read_wake(jsonb)', array[
 	$old$	v_p31_release uuid;$old$,
 	$new$	v_p31_release uuid; v_machine uuid;$new$,
 	$old$	perform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id, v_tool -> 'resolved');$old$,
-	$new$	-- 20260930395000 (step 5a): a coding turn takes in its machine's read set at its lease (rule 1). The session KEY
+	$new$	-- 20260930445000 (step 5a): a coding turn takes in its machine's read set at its lease (rule 1). The session KEY
 	-- SHARE waits out a run authority in flight, which holds it FOR UPDATE and takes the set in itself; the machine FOR
 	-- NO KEY UPDATE waits out releases in flight on the machine, which hold it FOR SHARE and fan out to this turn.
 	if v_wake.wake_kind = 'agent' and v_wake.source_kind = 'worker-dispatch' then
@@ -322,7 +322,7 @@ select pg_temp.s5a_patch('public.qorpera_authorize_coding_machine_run(uuid,uuid,
 	end if;$old$,
 	$new$	if v_session.vm_allocation_id is distinct from v_machine.id then
 		update public.qorpera_coding_sessions set vm_allocation_id = v_machine.id, updated_at = clock_timestamp() where worker_id = v_worker.id;
-		-- 20260930395000 (step 5a): a turn already leased moves with its session and takes in the machine's read set
+		-- 20260930445000 (step 5a): a turn already leased moves with its session and takes in the machine's read set
 		-- here, under the machine FOR UPDATE above; a turn leased later takes it in when it reads its wake.
 		perform public.qorpera_coding_machine_take_in(v_worker.environment_id, v_worker.profile_id, v_machine.id, turn.run_id,
 			public.qorpera_folder_run_reader(v_worker.profile_id, turn.run_id))
@@ -335,7 +335,7 @@ select pg_temp.s5a_patch('public.qorpera_authorize_coding_machine_run(uuid,uuid,
 
 select pg_temp.s5a_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', array[
 	$old$		perform public.qorpera_folder_view_reads_current(p_environment_id, v_file.profile_id, v_view.id, v_auth_actor);$old$,
-	$new$		-- 20260930395000 (step 5a): a coding view's own read set and its machine's, under the view's actor, checked
+	$new$		-- 20260930445000 (step 5a): a coding view's own read set and its machine's, under the view's actor, checked
 		-- without writing.
 		if v_view.kind = 'coding_session' then
 			perform public.qorpera_coding_reads_hold(p_environment_id, v_file.profile_id, v_auth_actor, null, v_view.machine_id,
@@ -345,7 +345,7 @@ select pg_temp.s5a_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uui
 		end if;$new$,
 	$old$			perform public.qorpera_folder_run_reads_current(p_environment_id, v_file.profile_id,
 				public.qorpera_folder_run_reader(v_file.profile_id, v_turn_run));$old$,
-	$new$			-- 20260930395000 (step 5a): checked without writing, as the machine's set is.
+	$new$			-- 20260930445000 (step 5a): checked without writing, as the machine's set is.
 			perform public.qorpera_coding_reads_hold(p_environment_id, v_file.profile_id,
 				public.qorpera_folder_run_reader(v_file.profile_id, v_turn_run), v_turn_run, null, null);$new$
 ]);
@@ -359,13 +359,14 @@ select pg_temp.s5a_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)
 	-- coding session while it stays on the same machine. A restart, a seat changing agent or a move to another machine
 	-- starts clean: that is also the way out for a machine whose programs saw a file that has since been narrowed.$old$,
 	$new$	-- The machine's previous view, open or not (locked above): its read set follows the machine while the machine runs
-	-- on (§6). A desktop carries it within one seat assignment and one power-on (the same generation and activation). A
-	-- restart or a seat changing agent starts clean: that is also the way out for a machine whose programs saw a file that
-	-- has since been narrowed. 20260930395000 (step 5a): a coding session carries nothing of its own; its reads are its
-	-- machine's (qorpera_coding_machine_reads).$new$,
+	-- on (§6). A desktop carries it within one seat assignment and one power-on (the same generation and activation), a
+	-- test machine within one placement. A restart or a seat changing agent starts clean: that is also the way out for a
+	-- machine whose programs saw a file that has since been narrowed. 20260930445000 (step 5a): a coding session carries
+	-- nothing of its own; its reads are its machine's (qorpera_coding_machine_reads).$new$,
 	$old$	where (p_kind = 'computer_desktop' and newest.screen_generation = v_screen.generation and newest.activation_id = v_activation)
-		or (p_kind = 'coding_session' and newest.machine_id = v_machine);$old$,
-	$new$	where p_kind = 'computer_desktop' and newest.screen_generation = v_screen.generation and newest.activation_id = v_activation;$new$
+		or (p_kind = 'coding_session' and newest.machine_id = v_machine) or p_kind = 'test_machine'; -- 20260930420000$old$,
+	$new$	where (p_kind = 'computer_desktop' and newest.screen_generation = v_screen.generation and newest.activation_id = v_activation)
+		or p_kind = 'test_machine'; -- 20260930420000$new$
 ]);
 
 -- 7. The disk. --------------------------------------------------------------------------------------------------------
