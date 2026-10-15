@@ -35,9 +35,11 @@
 #   verify says why;
 # - a company whose last machine goes gives its resolver and its port back; the exit's stop (step 1's undo) stops every
 #   resolver and leaves nothing behind;
-# - with QORPERA_AGENT_EXIT_PROOF_PREVIOUS (a previous release's deploy/agent-exit folder): on an exit that release
-#   switched on, step 9 and its undo (a release before E8b-2), or step 10 and its undo (a release with E8b-2: an "only
-#   listed" company's resolver restarts and its machine's connection ends).
+# - with QORPERA_AGENT_EXIT_PROOF_PREVIOUS (a previous release's deploy/agent-exit folder), with the queue modules
+#   unloaded again first: on an exit that release switched on, step 9 and its undo (a release before E8b-2), step 10
+#   and its undo (a release with E8b-2: an "only listed" company's resolver restarts and its machine's connection ends),
+#   or steps 11 and 12 and their undo (a release with E8c-1: the server name check's code changes nothing, then the
+#   modules and the reload start the check; the undo unloads them).
 # The plug and the names reconciler run at their own intervals (5 and 2 seconds). Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
@@ -208,6 +210,10 @@ diagnose() {
 	journal=$(journalctl -u 'qorpera-agent-exit-resolver@*.service' --no-pager -n 30 2>&1 || true)
 	echo "--- the resolvers"
 	echo "$journal"
+	echo "--- the server name checker (E8c-2)"
+	cat "$RUN/sni.json" 2>&1 || true
+	journalctl -u qorpera-agent-exit-sni.service --no-pager -o cat -n 30 2>&1 || true
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni 2>&1 || true
 	echo "--- dns.log"
 	tail -n 30 "$LOGS/dns.log" 2>&1 || true
 	echo "--- upstream.log"
@@ -428,12 +434,12 @@ os.replace(path + ".tmp", path)
 EOF
 rules() { python3 "$work/db.py" "$db" "$@"; }
 # A TLS client for the server name check (E8c-2), run in a machine: `hello.py ADDRESS NAME [--pieces N,N..] [--gap S]
-# [--pad BYTES] [--wait S] [--timeout S] [--plain]` sends its ClientHello for NAME ("-": no server name) to port 443 in
-# pieces of these sizes (the rest last), GAP seconds apart, ends the handshake, waits WAIT seconds and asks for "/". It
-# prints the answer ("ok"), "refused" (the connection reset), "timeout" or "failed: why". --pad makes the ClientHello
-# that much bigger (ALPN names); --plain sends a plain HTTP request instead.
+# [--pad BYTES] [--wait S] [--go FILE] [--timeout S] [--plain]` sends its ClientHello for NAME ("-": no server name) to
+# port 443 in pieces of these sizes (the rest last), GAP seconds apart, ends the handshake, waits WAIT seconds (and until
+# FILE is there) and asks for "/". It prints the answer ("ok"), "refused" (the connection reset), "timeout" or "failed:
+# why". --pad makes the ClientHello that much bigger (ALPN names); --plain sends a plain HTTP request instead.
 cat >"$work/hello.py" <<'EOF'
-import argparse, socket, ssl, time
+import argparse, os, socket, ssl, time
 p = argparse.ArgumentParser()
 p.add_argument("address")
 p.add_argument("name")
@@ -441,6 +447,7 @@ p.add_argument("--pieces", default="")
 p.add_argument("--gap", type=float, default=0.3)
 p.add_argument("--pad", type=int, default=0)
 p.add_argument("--wait", type=float, default=0)
+p.add_argument("--go", default="")
 p.add_argument("--timeout", type=float, default=10)
 p.add_argument("--plain", action="store_true")
 a = p.parse_args()
@@ -482,6 +489,8 @@ def answer():
     s.sendall(hello[at:])
     run(tls.do_handshake)
     time.sleep(a.wait)
+    while a.go and not os.path.exists(a.go):
+        time.sleep(0.2)
     run(lambda: tls.write(b"GET / HTTP/1.0\r\n\r\n"))
     return run(lambda: tls.read(65536))
 try:
@@ -779,11 +788,12 @@ pass "$C2 back to open: its resolver asks for every name again, only_10002 and a
 SNI=qorpera-agent-exit-sni.service
 sni_state() { systemctl is-active "$SNI" 2>/dev/null || true; }
 sni_pid() { systemctl show -p MainPID --value "$SNI"; }
-hello() { in_m m2 python3 /root/hello.py "$@" 2>&1; }
+# m2's, or the machine in $hello_on.
+hello() { in_m "${hello_on:-m2}" python3 /root/hello.py "$@" 2>&1; }
 expect_hello() {
 	local got
 	got=$(hello "${@:2}") || true
-	[[ $got == "$1" ]] || fail "m2's hello ${*:2}: \"$got\", not \"$1\""
+	[[ $got == "$1" ]] || fail "${hello_on:-m2}'s hello ${*:2}: \"$got\", not \"$1\""
 }
 name_refusals() {
 	local text
@@ -816,7 +826,9 @@ refused=$(name_refusals)
 expect_hello ok 198.51.100.1 listed.example.com
 flow_is '[A-Z_]*' 2 || fail "a listed name's flow is not marked judged (2)"
 expect_hello ok 198.51.100.1 two.listed.example.com
-expect_hello ok 198.51.100.1 listed.example.com --pad 3000 --pieces 1,5,100
+# Under 0.2 s apart (Linux's least retransmission time): the held bytes are not acknowledged, and past that the
+# machine's TCP sends only its first segment again until an answer comes (README.md, the server name check's limits).
+expect_hello ok 198.51.100.1 listed.example.com --pad 3000 --pieces 1,5,100 --gap 0.03
 expect_hello refused 198.51.100.1 no.listed.example.com
 expect_hello refused 198.51.100.1 unlisted.example.com
 flow_is '[A-Z_]*' 3 || fail "a refused flow is not marked refused (3)"
@@ -945,14 +957,20 @@ all_off() {
 within 30 all_off
 pass "step 1's undo with C1's resolver running and the names reconciler stopped: within 30 s every qorpera-agent-* unit is inactive and none enabled, no resolver runs, and no namespace, bridge or nft table of the exit is left"
 
-# --- Step 9 or 10 from the previous release, and its undo ---------------------------------------------------------
-# Step 9 (E8b-2) from a release before E8b-2; step 10 (E8c-1) from one with E8b-2 (it has the names tool).
+# --- Step 9, 10 or 11 and 12 from the previous release, and the undo ----------------------------------------------
+# Step 9 (E8b-2) from a release before E8b-2; step 10 (E8c-1) from one with E8b-2 (it has the names tool); steps 11 and
+# 12 (E8c-2) from one with E8c-1 (its rules have the reach map). The nodes have no queue modules until step 12: the
+# exit's stop left no queue rule and no checker, so they unload.
 if [[ -z $previous ]]; then
-	echo "SKIP: step 9 or 10 from a previous release and its undo (no QORPERA_AGENT_EXIT_PROOF_PREVIOUS)"
+	echo "SKIP: step 9, 10 or 11 and 12 from a previous release and the undo (no QORPERA_AGENT_EXIT_PROOF_PREVIOUS)"
 else
+	modprobe -r nft_queue nfnetlink_queue || fail "cannot unload the queue modules after the exit's stop"
+	queue_gone() { [[ ! -d /sys/module/nft_queue && ! -d /sys/module/nfnetlink_queue ]]; }
+	queue_gone || fail "the queue modules are still loaded"
 	step=9 names_unit=()
 	if [[ -e $previous/qorpera-agent-exit-names.py ]]; then
 		step=10 names_unit=(qorpera-agent-exit-names.service)
+		if grep -q '^[[:space:]]*map reach {' "$previous/qorpera-agent-exit.nft"; then step=11; fi
 	fi
 	rm -rf /usr/local/libexec/qorpera-agent-exit "$STATE" "$RUN" "$LOGS" /etc/systemd/system/qorpera-agent-exit* \
 		/etc/systemd/system/qorpera-agent-plug.service
@@ -964,8 +982,8 @@ else
 		fail "the previous release's install: $(cat "$work/install-previous.out")"
 	install -d -m 0700 "$STATE/rules"
 	install -d -m 0755 /run/qorpera-agent-exit-rules
-	if ((step == 10)); then
-		# E8b-2 runs "only listed" as its block list alone, every other name answered.
+	if ((step >= 10)); then
+		# E8b-2 runs "only listed" as its block list alone, every other name answered; E8c-1 by address.
 		rules "$C1=only:blocked.example.com+listed.example.com"
 	fi
 	# The previous release's step 1 (with E8b-2: its names reconciler too).
@@ -1032,7 +1050,7 @@ if [[ -n $previous ]] && ((step == 9)); then
 	within 30 undone
 	expect_tcp m3 198.51.100.1 80 open
 	pass "step 9's undo: within 30 s m3 resolves blocked.example.com again, no resolver runs, the names unit is off and disabled, and the previous release's exit is healthy; m3 reaches 198.51.100.1:80"
-elif [[ -n $previous ]]; then
+elif [[ -n $previous ]] && ((step == 10)); then
 	# E8b-2 runs C1's resolver with its block list alone: every other name is answered and m3 goes anywhere. m3 holds a
 	# connection through step 10 (its output not on this script's, which the VM's exec waits to close).
 	within 30 'says m3 10.210.0.1 blocked.example.com NXDOMAIN && says m3 10.210.0.1 open.example.com "NOERROR 198.51.100.1"'
@@ -1080,6 +1098,78 @@ elif [[ -n $previous ]]; then
 	within 30 undone
 	expect_tcp m3 198.51.100.1 80 open
 	pass "step 10's undo: within 30 s the previous release's exit is healthy and runs $C1's resolver on port 10001 again; m3 has blocked.example.com blocked, open.example.com answered and reaches 198.51.100.1:80"
+elif [[ -n $previous ]]; then
+	# E8c-1 has C1 "only listed" by address: once m3 asked for listed.example.com it reaches 198.51.100.1 on 443,
+	# whatever name its ClientHello gives. m3 holds such a connection (its flow unmarked) through steps 11 and 12, and
+	# one made after step 11 (marked 1) through step 12: each asks for "/" once /root/go is there.
+	hello_on=m3
+	lx file push "$work/hello.py" m3/root/hello.py >/dev/null
+	m3_flow() { shows "$1 src=$a3 dst=198.51.100.1 sport=[0-9]* dport=443 .* mark=$2 " ip netns exec qexit conntrack -L -s "$a3" 2>/dev/null; }
+	m3_listed() { says m3 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10001) == 198.51.100.1 ]]; }
+	within 30 m3_listed
+	expect_hello ok 198.51.100.1 unlisted.example.com
+	hello 198.51.100.1 unlisted.example.com --go /root/go >"$work/held-e8c1.out" 2>&1 &
+	pids+=($!)
+	within 30 'm3_flow ESTABLISHED 0'
+	r1=$(main_pid 10001)
+	pass "the previous release (E8c-1), installed and switched on with its own step 1, is healthy; m3 ($C1, \"only listed\") at $a3 reaches 198.51.100.1:443 by address with a ClientHello for a name not listed, and holds such a connection"
+
+	{
+		bash "$here/install-agent-exit.sh" "$package" &&
+			systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service &&
+			systemctl reload qorpera-agent-exit.service &&
+			systemctl restart qorpera-agent-plug.service
+	} >"$work/step11.out" 2>&1 || fail "step 11: $(cat "$work/step11.out")"
+	stepped11() { healthy && names_is "s['reach'] == {'$a3': 'only_10001'} and s['problems'] == []" && [[ $(reach_map) == "$a3:only_10001" ]]; }
+	within 30 stepped11
+	[[ $(main_pid 10001) == "$r1" ]] || fail "step 11 restarted $C1's resolver ($r1 -> $(main_pid 10001))"
+	[[ $(sni_state) != active ]] || fail "the server name checker runs after step 11, without the queue modules"
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain after step 11"
+	queue_gone || fail "a queue module loaded after step 11"
+	shows 'only listed by address alone (no queue modules)' "$X" check || fail "check after step 11: $("$X" check 2>&1)"
+	within 30 m3_listed
+	expect_hello ok 198.51.100.1 unlisted.example.com
+	m3_flow ESTABLISHED 0 || fail "m3's connection from before step 11 ended"
+	hello 198.51.100.1 unlisted.example.com --go /root/go >"$work/held-step11.out" 2>&1 &
+	pids+=($!)
+	within 30 'm3_flow ESTABLISHED 1'
+	pass "ROLLOUT.md step 11 on the previous release's exit: healthy within 30 s, $C1's resolver kept; no checker, no sni chain and no queue module, and check says so; m3 reaches 198.51.100.1:443 by address alone, its new flow marked as not yet judged (1), and its connection from before goes on"
+
+	# Step 12 as ROLLOUT.md writes it (the modules and their file, in this VM only).
+	{
+		printf '%s\n' nft_queue nfnetlink_queue >/etc/modules-load.d/qorpera-agent-exit-sni.conf &&
+			modprobe nft_queue &&
+			modprobe nfnetlink_queue &&
+			"$X" check &&
+			systemctl reload qorpera-agent-exit.service
+	} >"$work/step12.out" 2>&1 || fail "step 12: $(cat "$work/step12.out")"
+	grep -q 'server names checked' "$work/step12.out" || fail "step 12's check: $(cat "$work/step12.out")"
+	within 30 '[[ $(sni_state) == active ]] && healthy'
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null || fail "no sni chain after step 12"
+	within 30 m3_listed
+	expect_hello ok 198.51.100.1 listed.example.com
+	expect_hello refused 198.51.100.1 unlisted.example.com
+	in_m m3 touch /root/go
+	within 30 '[[ -s $work/held-step11.out && -s $work/held-e8c1.out ]]'
+	[[ $(cat "$work/held-step11.out") == refused ]] ||
+		fail "m3's connection from step 11, after step 12: $(cat "$work/held-step11.out")"
+	[[ $(cat "$work/held-e8c1.out") == ok ]] || fail "m3's connection from before step 11, after step 12: $(cat "$work/held-e8c1.out")"
+	pass "ROLLOUT.md step 12 (the queue modules, here only): within 30 s the checker runs and verify is healthy; m3 reaches 198.51.100.1:443 with a ClientHello for listed.example.com only; its connection from step 11 is reset at its next data, the one from before step 11 goes on"
+
+	{
+		bash "$previous/install-agent-exit.sh" "$package" &&
+			systemctl reload qorpera-agent-exit.service &&
+			systemctl restart qorpera-agent-exit-names.service qorpera-agent-plug.service qorpera-agent-exit-log.service &&
+			systemctl stop qorpera-agent-exit-sni.service &&
+			rm /etc/modules-load.d/qorpera-agent-exit-sni.conf &&
+			modprobe -r nft_queue nfnetlink_queue
+	} >"$work/step12-undo.out" 2>&1 || fail "the undo of steps 12 and 11: $(cat "$work/step12-undo.out")"
+	queue_gone || fail "the queue modules after the undo"
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain after the undo"
+	within 30 'healthy && m3_listed'
+	expect_hello ok 198.51.100.1 unlisted.example.com
+	expect_tcp m3 198.51.100.1 80 refused
+	pass "the undo of steps 12 and 11: the previous release's exit has no sni chain and the queue modules unload; within 30 s it is healthy, and m3 reaches 198.51.100.1:443 by address alone again (with a ClientHello for a name not listed), not port 80"
 fi
 
 echo "ALL PASSED"
