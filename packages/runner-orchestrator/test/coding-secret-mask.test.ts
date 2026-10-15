@@ -33,9 +33,9 @@ function splits(text: string): Uint8Array[][] {
 	return out;
 }
 
-function expectEverySplit(mask: CodingSecretMask, text: string, expected: string, joinMasks = false): void {
+function expectEverySplit(mask: CodingSecretMask, text: string, expected: string): void {
 	for (const chunks of splits(text)) {
-		const out = joinMasks ? run(mask, chunks).replace(/(\*\*\*)+/g, "***") : run(mask, chunks);
+		const out = run(mask, chunks);
 		if (out !== expected) expect({ chunks: chunks.map((chunk) => chunk.length), out }).toEqual({ expected });
 	}
 }
@@ -111,18 +111,33 @@ describe("coding secret mask", () => {
 		const nested = new CodingSecretMask(["abcdefgh12345678", "12345678"]);
 		expectEverySplit(nested, "[abcdefgh12345678]", "[***]");
 		expectEverySplit(nested, "[12345678 12345678]", "[*** ***]");
-		// A chunk boundary between two touching matches may leave two masks.
-		expectEverySplit(nested, "[12345678abcdefgh12345678]", "[***]", true);
+		expectEverySplit(nested, "[12345678abcdefgh12345678]", "[***]");
+		const crossed = new CodingSecretMask(["12345678", "5678abcd"]);
+		expectEverySplit(crossed, "[12345678abcd]", "[***]");
+		expectEverySplit(crossed, "[1234567 5678abc]", "[1234567 5678abc]");
 	});
 
 	it("never holds back more than the longest form could take", () => {
 		const stream = mask.stream();
-		const encoded = bytes(percentEveryByte(SPACED, true).slice(0, -1));
-		expect(stream.push(encoded)).toHaveLength(0);
+		const encoded = percentEveryByte(SPACED, true).slice(0, -1);
+		expect(stream.push(bytes(encoded))).toHaveLength(0);
 		expect(stream.pending()).toBe(encoded.length);
 		expect(stream.pending()).toBeLessThan(3 * bytes(SPACED).length);
-		expect(Buffer.from(stream.push(bytes("!\n"))).toString()).toBe(`${percentEveryByte(SPACED, true).slice(0, -1)}!\n`);
+		expect(Buffer.from(stream.push(bytes("!\n"))).toString()).toBe(`${encoded}!\n`);
 		expect(stream.pending()).toBe(0);
+	});
+
+	it("holds back no more for a long run of overlapping matches", () => {
+		const periodic = new CodingSecretMask(["abababab"]);
+		const stream = periodic.stream();
+		const parts: Uint8Array[] = [];
+		for (let i = 0; i < 100; i++) {
+			parts.push(stream.push(bytes("ab")));
+			expect(stream.pending()).toBeLessThan(3 * 8);
+		}
+		parts.push(stream.end());
+		expect(Buffer.concat(parts).toString()).toBe("***");
+		expectEverySplit(periodic, "[ababababab]", "[***]");
 	});
 
 	it("masks UTF-8 and binary values", () => {
@@ -131,7 +146,8 @@ describe("coding secret mask", () => {
 		expectEverySplit(unicode, `p=${encodeURIComponent("pässwörd-ünïcode")};`, "p=***;");
 		const binary = Uint8Array.from([0, 255, 13, 10, 37, 43, 32, 128, 7, 9]);
 		const stream = new CodingSecretMask([binary]).stream();
-		const out = Buffer.concat([stream.push(Buffer.concat([Buffer.from("<"), binary, Buffer.from(">")])), stream.end()]);
+		const framed = Buffer.concat([Buffer.from("<"), binary, Buffer.from(">")]);
+		const out = Buffer.concat([stream.push(framed), stream.end()]);
 		expect(out.toString()).toBe("<***>");
 	});
 

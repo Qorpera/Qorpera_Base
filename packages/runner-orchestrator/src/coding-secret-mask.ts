@@ -1,6 +1,6 @@
-/** The shortest secret value a coding machine may be given: the broker refuses
- * a shorter environment secret when it is captured, so every injected value is
- * masked. */
+/** The shortest value the mask takes. The broker is to refuse a shorter
+ * environment secret when it is captured (F3 5j-3), so every value a coding
+ * machine is given can be masked. */
 export const CODING_SECRET_MASK_MINIMUM_BYTES = 8;
 
 const MASK = new TextEncoder().encode("***");
@@ -17,7 +17,9 @@ const AFTER_PERCENT = 1;
 const AFTER_DIGIT = 2;
 const AFTER_CR = 3;
 
-interface Partial {
+/** A form matched up to `index`, in `phase` after it (with `digit`, the first
+ * hex digit after a `%`), from the raw offset `start`. */
+interface Candidate {
 	form: number;
 	index: number;
 	phase: number;
@@ -98,16 +100,19 @@ export class CodingSecretMask {
 }
 
 /** One byte stream's masking: stdout and stderr each take one, and so does a
- * terminal. `push` may hold back the tail that could still start a value
- * (`pending` raw bytes, at most three times the longest form); `end` lets it
- * through. */
+ * terminal. `push` holds back the tail that could still start a value
+ * (`pending` raw bytes, less than three times the longest form), and `end`
+ * lets it through. Overlapping or touching matches become one `***`, wherever
+ * the chunk boundaries fall. */
 export class CodingSecretMaskStream {
 	readonly #forms: readonly Uint8Array[];
 	readonly #byFirst: ReadonlyMap<number, readonly number[]>;
 	#held = new Uint8Array(0);
 	#emitted = 0;
-	#partials: Partial[] = [];
+	#candidates: Candidate[] = [];
 	#masked: [number, number][] = [];
+	/** Whether the bytes returned so far end inside a masked range. */
+	#joined = false;
 	#ended = false;
 
 	constructor(forms: readonly Uint8Array[], byFirst: ReadonlyMap<number, readonly number[]>) {
@@ -134,56 +139,54 @@ export class CodingSecretMaskStream {
 		this.#held = held;
 		for (let i = 0; i < chunk.length; i++) this.#step(chunk[i], base + i);
 		let boundary = this.#emitted + this.#held.length;
-		for (const partial of this.#partials) boundary = Math.min(boundary, partial.start);
-		for (const [start, end] of this.#masked) {
-			if (start < boundary && boundary < end) boundary = start;
-		}
+		for (const candidate of this.#candidates) boundary = Math.min(boundary, candidate.start);
 		return this.#emit(boundary);
 	}
 
 	end(): Uint8Array {
 		if (this.#ended) return new Uint8Array(0);
 		this.#ended = true;
-		this.#partials = [];
+		this.#candidates = [];
 		return this.#emit(this.#emitted + this.#held.length);
 	}
 
 	#step(byte: number, offset: number): void {
-		const starts = byte === PERCENT ? this.#forms.keys() : (this.#byFirst.get(byte) ?? []);
-		if (this.#partials.length === 0 && byte !== PERCENT && !this.#byFirst.has(byte)) return;
-		// Partials are kept in order of their start, so the first one kept for a
+		if (this.#candidates.length === 0 && byte !== PERCENT && !this.#byFirst.has(byte)) return;
+		// Candidates are kept in order of their start, so the first one kept for a
 		// state is the longest, and it alone can mask that state's match.
-		const next = new Map<number, Partial>();
+		const next = new Map<number, Candidate>();
 		const count = this.#forms.length;
-		const keep = (partial: Partial) => {
-			if (partial.phase === NEXT && partial.index === this.#forms[partial.form].length) {
-				this.#mask(partial.start, offset + 1);
+		const keep = (candidate: Candidate) => {
+			if (candidate.phase === NEXT && candidate.index === this.#forms[candidate.form].length) {
+				this.#mask(candidate.start, offset + 1);
 				return;
 			}
-			const key = ((partial.index * 4 + partial.phase) * 16 + partial.digit) * count + partial.form;
-			if (!next.has(key)) next.set(key, partial);
+			const key = ((candidate.index * 4 + candidate.phase) * 16 + candidate.digit) * count + candidate.form;
+			if (!next.has(key)) next.set(key, candidate);
 		};
-		for (const partial of this.#partials) this.#advance(partial, byte, keep);
+		for (const candidate of this.#candidates) this.#advance(candidate, byte, keep);
+		const starts = byte === PERCENT ? this.#forms.keys() : (this.#byFirst.get(byte) ?? []);
 		for (const form of starts) this.#advance({ form, index: 0, phase: NEXT, digit: 0, start: offset }, byte, keep);
-		this.#partials = [...next.values()];
+		this.#candidates = [...next.values()];
 	}
 
-	#advance(partial: Partial, byte: number, keep: (partial: Partial) => void): void {
-		const expected = this.#forms[partial.form][partial.index];
-		if (partial.phase === NEXT) {
-			if (byte === expected || (expected === SPACE && byte === PLUS)) keep({ ...partial, index: partial.index + 1 });
-			if (byte === PERCENT) keep({ ...partial, phase: AFTER_PERCENT });
-			if (expected === LF && byte === CR) keep({ ...partial, phase: AFTER_CR });
-		} else if (partial.phase === AFTER_PERCENT) {
+	#advance(candidate: Candidate, byte: number, keep: (candidate: Candidate) => void): void {
+		const expected = this.#forms[candidate.form][candidate.index];
+		if (candidate.phase === NEXT) {
+			const literal = byte === expected || (expected === SPACE && byte === PLUS);
+			if (literal) keep({ ...candidate, index: candidate.index + 1 });
+			if (byte === PERCENT) keep({ ...candidate, phase: AFTER_PERCENT });
+			if (expected === LF && byte === CR) keep({ ...candidate, phase: AFTER_CR });
+		} else if (candidate.phase === AFTER_PERCENT) {
 			const digit = hexDigit(byte);
-			if (digit >= 0) keep({ ...partial, phase: AFTER_DIGIT, digit });
-		} else if (partial.phase === AFTER_DIGIT) {
+			if (digit >= 0) keep({ ...candidate, phase: AFTER_DIGIT, digit });
+		} else if (candidate.phase === AFTER_DIGIT) {
 			const digit = hexDigit(byte);
-			if (digit >= 0 && partial.digit * 16 + digit === expected) {
-				keep({ ...partial, index: partial.index + 1, phase: NEXT, digit: 0 });
+			if (digit >= 0 && candidate.digit * 16 + digit === expected) {
+				keep({ ...candidate, index: candidate.index + 1, phase: NEXT, digit: 0 });
 			}
 		} else if (byte === LF) {
-			keep({ ...partial, index: partial.index + 1, phase: NEXT });
+			keep({ ...candidate, index: candidate.index + 1, phase: NEXT });
 		}
 	}
 
@@ -199,22 +202,35 @@ export class CodingSecretMaskStream {
 		this.#masked = merged;
 	}
 
+	/** Returns the raw bytes before `boundary` with each masked range as `***`.
+	 * A range the boundary falls inside is split there, so a run of overlapping
+	 * matches is never held back whole, and a range that starts where the last
+	 * one returned ended continues that `***` rather than writing another. */
 	#emit(boundary: number): Uint8Array {
 		const count = boundary - this.#emitted;
 		if (count <= 0) return new Uint8Array(0);
 		const parts: Uint8Array[] = [];
-		let at = this.#emitted;
 		const rest: [number, number][] = [];
+		let at = this.#emitted;
+		let joined = this.#joined;
 		for (const [start, end] of this.#masked) {
 			if (start >= boundary) {
 				rest.push([start, end]);
 				continue;
 			}
-			if (start > at) parts.push(this.#held.subarray(at - this.#emitted, start - this.#emitted));
-			parts.push(MASK);
-			at = end;
+			if (start > at) {
+				parts.push(this.#held.subarray(at - this.#emitted, start - this.#emitted));
+				joined = false;
+			}
+			if (!joined) parts.push(MASK);
+			joined = true;
+			at = Math.min(end, boundary);
+			if (end > boundary) rest.push([boundary, end]);
 		}
-		if (boundary > at) parts.push(this.#held.subarray(at - this.#emitted, boundary - this.#emitted));
+		if (boundary > at) {
+			parts.push(this.#held.subarray(at - this.#emitted, boundary - this.#emitted));
+			joined = false;
+		}
 		const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
 		let length = 0;
 		for (const part of parts) {
@@ -224,6 +240,7 @@ export class CodingSecretMaskStream {
 		this.#held = this.#held.slice(count);
 		this.#emitted = boundary;
 		this.#masked = rest;
+		this.#joined = joined;
 		return out;
 	}
 }
