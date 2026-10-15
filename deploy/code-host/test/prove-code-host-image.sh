@@ -141,7 +141,9 @@ set +e
 	jq . "$WORK/image-build.json"
 	FINGERPRINT=$(jq -er .imageFingerprint "$WORK/image-build.json")
 	lxc image info --project default "$FINGERPRINT" </dev/null | grep -E '^(Fingerprint|Size|Architecture|Type):'
-	[[ -z $(lxc image list --project "$BUILD" -c F -f csv </dev/null) ]] || fail "the build project keeps an image"
+	# The builder's base image stays cached in the build project; the published one must have left it.
+	lxc image list --project "$BUILD" -c F -f csv </dev/null >"$WORK/build-images"
+	if grep -qx "$FINGERPRINT" "$WORK/build-images"; then fail "the build project keeps the published image"; fi
 	pass "the image built in $(((SECONDS - start) / 60)) min and is in the default project's store only"
 
 	echo "--- the code hosts"
