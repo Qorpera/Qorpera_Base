@@ -76,6 +76,8 @@ test("the in-guest installer reads the recipe the way the recipe is written", ()
 test("the in-guest installer stays offline and leaves swap off", () => {
 	assert.match(installer, /sha256sum --check --strict/);
 	assert.match(installer, /apt-get install --yes --no-install-recommends --no-download -o DPkg::Lock::Timeout=600 /);
+	// --no-download refuses a deb named on the command line unless it already sits in apt's archive cache.
+	assert.match(installer, /-o Dir::Cache::Archives="\$dir\/debs\/" -o DPkg::Options::=--force-confold "\$dir"\/debs\/\*\.deb/);
 	assert.match(installer, /npm install --global --prefix \/usr --offline /);
 	assert.match(installer, /systemctl mask swap\.target/);
 	assert.match(installer, /wc -l <\/proc\/swaps\) == 1/);
