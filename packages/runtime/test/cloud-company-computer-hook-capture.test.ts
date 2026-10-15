@@ -26,7 +26,8 @@ interface FakeBox {
 }
 
 /** Stripe's endpoint page: `before` until the click, then each of `shown` in turn (the last stays) and the box
- * `revealedBox` until a reload, which shows `reloaded`. Its `boxes` are always there. */
+ * `revealedBox` until a reload, which shows `reloaded`. Its `boxes` are always there. An element's open shadow root
+ * shows `shadow.revealed` after the click and `shadow.reloaded` after a reload, beside a value it does not render. */
 function fakeStripe(
 	options: {
 		url?: string;
@@ -35,6 +36,7 @@ function fakeStripe(
 		reloaded?: string;
 		boxes?: FakeBox[];
 		revealedBox?: FakeBox;
+		shadow?: { revealed?: string; reloaded?: string };
 		inFrame?: boolean;
 		reloadFails?: boolean;
 		clickFails?: boolean;
@@ -44,6 +46,7 @@ function fakeStripe(
 	let text = options.before ?? endpoint;
 	let reads: string[] = [];
 	let revealed = false;
+	let reloaded = false;
 	const mainFrame = {};
 	const send = vi.fn(async (method: string, _params?: unknown) => {
 		calls.push(method);
@@ -70,6 +73,7 @@ function fakeStripe(
 			if (options.reloadFails) throw new Error("Timeout 6000ms exceeded");
 			reads = [];
 			revealed = false;
+			reloaded = true;
 			text = options.reloaded ?? endpoint;
 		}),
 		waitForLoadState: vi.fn(async () => undefined),
@@ -87,9 +91,28 @@ function fakeStripe(
 				shadowRoot: null,
 				hasAttribute: (name: string) => box.private === true && name === "data-qorpera-private",
 			}));
+			const shadowText = reloaded ? options.shadow?.reloaded : revealed ? options.shadow?.revealed : undefined;
+			const hosts =
+				shadowText === undefined
+					? []
+					: [
+							{
+								tagName: "STRIPE-SECRET",
+								shadowRoot: {
+									querySelectorAll: () => [],
+									childNodes: [
+										{ nodeType: 3, textContent: "Signing secret" },
+										{ nodeType: 1, textContent: "", innerText: `${secret}0`, checkVisibility: () => false },
+										{ nodeType: 1, textContent: "", innerText: shadowText, checkVisibility: () => true },
+									],
+								},
+								hasAttribute: () => false,
+								checkVisibility: () => true,
+							},
+						];
 			(globalThis as { document?: unknown }).document = {
 				body: { innerText: current() },
-				querySelectorAll: () => boxes,
+				querySelectorAll: () => [...boxes, ...hosts],
 			};
 			return (script as (arg: unknown) => unknown)(arg);
 		}),
@@ -156,6 +179,16 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 			secret,
 		);
 		expect(stripe.calls.filter((call) => call === "reload")).toHaveLength(1);
+	});
+
+	it("reads a value an open shadow root renders, never one it does not", async () => {
+		const stripe = fakeStripe({ shown: [endpoint], shadow: { revealed: `${secret} Hide` } });
+		const seen: string[] = [];
+		await expect(
+			captureCompanyHookSecret(stripe.page, stripe.control, hook, (value) => seen.push(value), timing),
+		).resolves.toBe(secret);
+		expect(seen).not.toContain(`${secret}0`);
+		expect(stripe.calls).toContain("uncover");
 	});
 
 	it("refuses a page that is not the hook's site, before anything is clicked or covered", async () => {
@@ -262,7 +295,12 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 	});
 
 	it("keeps the cover on a page that still shows the value after the reload, or cannot reload: the tab must go", async () => {
-		for (const options of [{ reloaded: `${endpoint} ${secret}` }, { reloadFails: true }]) {
+		// The value left in an open shadow root counts too: a host's text leaves its shadow root out.
+		for (const options of [
+			{ reloaded: `${endpoint} ${secret}` },
+			{ shadow: { reloaded: secret } },
+			{ reloadFails: true },
+		]) {
 			const stripe = fakeStripe(options);
 			const seen: string[] = [];
 			expect(
@@ -279,6 +317,66 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 		expect(await refusal(captureCompanyHookSecret(both.page, both.control, hook, () => undefined, timing))).toBe(
 			"VAULT_CAPTURE_NOT_HIDDEN",
 		);
+	});
+
+	it("asks after the click, before the reload, whether the page shows a human check, and refuses with the stop", async () => {
+		// The click brings up a CAPTCHA instead of the value: the page no longer shows the hook, and the reload clears it.
+		const check = fakeStripe({ shown: ["Verify you are human"] });
+		const stopShown = vi.fn(async () => {
+			check.calls.push("stop?");
+			return true;
+		});
+		expect(
+			await refusal(captureCompanyHookSecret(check.page, check.control, hook, () => undefined, timing, stopShown)),
+		).toBe("VAULT_CAPTURE_STOPPED");
+		expect(check.calls.slice(check.calls.indexOf("click"))).toEqual([
+			"click",
+			"stop?",
+			"Runtime.evaluate",
+			"reload",
+			"Page.removeScriptToEvaluateOnNewDocument",
+			"uncover",
+			"detach",
+		]);
+		// Over the value: refused all the same, so no value leaves.
+		const over = fakeStripe();
+		const seen: string[] = [];
+		expect(
+			await refusal(
+				captureCompanyHookSecret(
+					over.page,
+					over.control,
+					hook,
+					(value) => seen.push(value),
+					timing,
+					async () => true,
+				),
+			),
+		).toBe("VAULT_CAPTURE_STOPPED");
+		// What it showed is private all the same.
+		expect(new Set(seen)).toEqual(new Set([secret]));
+		// No check: the read's own refusal; a page refused before the click is never asked.
+		const plain = fakeStripe({ shown: ["Verify you are human"] });
+		expect(
+			await refusal(
+				captureCompanyHookSecret(
+					plain.page,
+					plain.control,
+					hook,
+					() => undefined,
+					timing,
+					async () => false,
+				),
+			),
+		).toBe("VAULT_CAPTURE_WRONG_HOOK");
+		const elsewhere = fakeStripe({ url: "https://evil.example/webhooks" });
+		const asked = vi.fn(async () => true);
+		expect(
+			await refusal(
+				captureCompanyHookSecret(elsewhere.page, elsewhere.control, hook, () => undefined, timing, asked),
+			),
+		).toBe("VAULT_CAPTURE_WRONG_SITE");
+		expect(asked).not.toHaveBeenCalled();
 	});
 });
 

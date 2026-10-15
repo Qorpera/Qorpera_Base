@@ -1205,6 +1205,8 @@ describe("vault_capture of a Stripe hook's signing secret on the Company Compute
 			expect.anything(),
 			expect.objectContaining({ address, site: "dashboard.stripe.com" }),
 			expect.any(Function),
+			undefined,
+			expect.any(Function),
 		);
 		// What the page showed stays hidden from the agent from now on.
 		expect(f.filled.current()).toEqual([hookSecret]);
@@ -1266,5 +1268,36 @@ describe("vault_capture of a Stripe hook's signing secret on the Company Compute
 		expect(await answer(shown)).toMatchObject({ completed: false, refused: { code: "SITE_STOPPED" } });
 		expect(shown.captureTarget).not.toHaveBeenCalled();
 		expect(captureSecret).toHaveBeenCalledOnce();
+	});
+
+	it("answers a check the click brought up instead of the value with the stop, recorded before the reload clears it", async () => {
+		// As the page read does: the office reads the check after the click, then the reload that masks the page again
+		// takes it away, and the read refuses (cloud-company-computer-hook-capture.test.ts).
+		const f = capturing();
+		captureSecret.mockImplementationOnce(async (_page, _control, _hook, _seen, _timing, stopShown) => {
+			f.shown.title = "Just a moment…";
+			const stopped = await stopShown?.();
+			f.shown.title = "Webhooks";
+			throw new CompanyHookCaptureRefusedError(stopped ? "VAULT_CAPTURE_STOPPED" : "VAULT_CAPTURE_NOT_SHOWN");
+		});
+		expect(await answer(f)).toMatchObject({
+			action: "vault_capture",
+			completed: true,
+			stop: "SITE_STOP_HUMAN_CHECK",
+		});
+		expect(f.captures.take(computerEffect().receiptId)).toBeUndefined();
+		expect(f.page.close).not.toHaveBeenCalled();
+		// The site stays stopped: the next call is refused before the database is asked.
+		expect(await answer(f)).toMatchObject({ completed: false, refused: { code: "SITE_STOPPED" } });
+		expect(f.captureTarget).toHaveBeenCalledOnce();
+		// A page that cannot be masked again still loses its tab, and its site stays stopped.
+		const both = capturing();
+		captureSecret.mockImplementationOnce(async (_page, _control, _hook, _seen, _timing, stopShown) => {
+			both.shown.title = "Just a moment…";
+			await stopShown?.();
+			throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_NOT_HIDDEN");
+		});
+		expect(await caught(both)).toMatchObject({ message: "VAULT_CAPTURE_NOT_HIDDEN" });
+		expect(both.page.close).toHaveBeenCalled();
 	});
 });

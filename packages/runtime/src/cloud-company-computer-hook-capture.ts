@@ -11,7 +11,8 @@ import { EVENT_HOOK_CAPTURE_LIFETIME_MS, EVENT_HOOK_CAPTURE_SECRET } from "./clo
  * no secret before the click. A cover goes over the whole page first, so the live view and any screen capture show
  * the cover, never the value. The value must then show alone, twice the same 300 ms apart, and whole. After the read,
  * whether it was taken or refused, the clipboard is cleared and the page reloaded, so Stripe masks the value again;
- * only a page that no longer shows it is uncovered. The value is sealed to the vault by the caller. */
+ * only a page that no longer shows it is uncovered. A human check the click brought up is read before that reload and
+ * stops the read. The value is sealed to the vault by the caller. */
 
 export type CompanyHookCaptureRefusal =
 	| "VAULT_CAPTURE_WRONG_SITE"
@@ -24,7 +25,9 @@ export type CompanyHookCaptureRefusal =
 	/** Cut off: an ellipsis or masking characters after it, or not a whole secret's length. */
 	| "VAULT_CAPTURE_PARTIAL"
 	/** The page still shows the value after the reload (or could not be reloaded): the tab must go, cover and all. */
-	| "VAULT_CAPTURE_NOT_HIDDEN";
+	| "VAULT_CAPTURE_NOT_HIDDEN"
+	/** The click brought up a human check, which the caller recorded before the reload: its answer is the stop. */
+	| "VAULT_CAPTURE_STOPPED";
 
 export class CompanyHookCaptureRefusedError extends Error {
 	readonly reason: CompanyHookCaptureRefusal;
@@ -52,7 +55,9 @@ const CUT = /^(?:…|\.\.|[•●○◦∙·⋅*▪■█])/u;
  * showing `hook.address`). Every value read after the click goes to `seen` before anything else happens, so the
  * screen's private values hide it from then on, also when the read is refused. Refuses (no value) a page that is
  * not the hook's, a control in a frame, and a value that is not shown alone, steadily and whole; refuses with
- * VAULT_CAPTURE_NOT_HIDDEN when the page cannot be made to mask it again (the caller closes the tab).
+ * VAULT_CAPTURE_NOT_HIDDEN when the page cannot be made to mask it again (the caller closes the tab). After the click,
+ * read or not, `stopShown` says (and the caller records) whether the page shows a human check, before the reload can
+ * take it away; one that does refuses with VAULT_CAPTURE_STOPPED, never a value.
  */
 export async function captureCompanyHookSecret(
 	page: Page,
@@ -60,6 +65,7 @@ export async function captureCompanyHookSecret(
 	hook: { readonly address: string; readonly site: string },
 	seen: (value: string) => void,
 	timing: CompanyHookCaptureTiming = TIMING,
+	stopShown: () => Promise<boolean> = async () => false,
 ): Promise<string> {
 	if (companyAccountFillHost(page.url(), [hook.site]) === null)
 		throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_WRONG_SITE");
@@ -75,7 +81,7 @@ export async function captureCompanyHookSecret(
 		// Only the page's own document: a frame could be another website inside Stripe's.
 		if ((await handle.ownerFrame()) !== page.mainFrame())
 			throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_IN_FRAME");
-		return await covered(page, handle, hook, seen, timing);
+		return await covered(page, handle, hook, seen, timing, stopShown);
 	} finally {
 		await handle.dispose().catch(() => undefined);
 	}
@@ -88,6 +94,7 @@ async function covered(
 	hook: { readonly address: string; readonly site: string },
 	seen: (value: string) => void,
 	timing: CompanyHookCaptureTiming,
+	stopShown: () => Promise<boolean>,
 ): Promise<string> {
 	const session = await page.context().newCDPSession(page);
 	const key = `__qorperaCover${randomUUID().replaceAll("-", "")}`;
@@ -107,6 +114,9 @@ async function covered(
 	} catch (error) {
 		outcome = { error };
 	}
+	// A check the click brought up (a CAPTCHA instead of the value, or over it) stops the read, taken or not. It is
+	// read now: the reload that masks the value again may take it away.
+	const stopped = clicked && (await stopShown().catch(() => false));
 	const hidden = !clicked || (await maskedAgain(page, session, seen, timing));
 	if (script !== undefined)
 		await session.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: script }).catch(() => undefined);
@@ -115,6 +125,7 @@ async function covered(
 	await session.detach().catch(() => undefined);
 	// It outranks the read's own answer: the tab must go.
 	if (!hidden) throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_NOT_HIDDEN");
+	if (stopped) throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_STOPPED");
 	if ("error" in outcome) throw outcome.error;
 	return outcome.value;
 }
@@ -185,15 +196,23 @@ interface PageNode {
 	readonly value?: unknown;
 	readonly shadowRoot: PageRoot | null;
 	hasAttribute(name: string): boolean;
+	checkVisibility?(): boolean;
 }
 interface PageRoot {
 	querySelectorAll(selector: string): Iterable<PageNode>;
+	/** A shadow root's own children: elements (1) and text (3). */
+	readonly childNodes?: Iterable<{
+		readonly nodeType: number;
+		readonly textContent: string | null;
+		readonly innerText?: string;
+		checkVisibility?(): boolean;
+	}>;
 }
 
 /**
  * What a person sees on the page's own document: its rendered text and the values its boxes show, in open shadow
- * roots too. A password box shows dots, and a box the vault filled holds a value of the vault's own, so neither is
- * read.
+ * roots too (a host's text leaves its shadow root out, so each root's rendered children are read). A password box
+ * shows dots, and a box the vault filled holds a value of the vault's own, so neither is read.
  */
 async function readTopDocument(page: Page): Promise<{ url: string; text: string }> {
 	const text: unknown = await page.evaluate((attribute) => {
@@ -210,7 +229,12 @@ async function readTopDocument(page: Page): Promise<{ url: string; text: string 
 					!node.hasAttribute(attribute)
 				)
 					parts.push(node.value);
-				if (node.shadowRoot) walk(node.shadowRoot);
+				if (!node.shadowRoot) continue;
+				// Read unless the browser says it is not rendered: text there is the host's to show.
+				for (const child of node.shadowRoot.childNodes ?? [])
+					if (child.nodeType === 1 && child.checkVisibility?.() !== false) parts.push(child.innerText ?? "");
+					else if (child.nodeType === 3 && node.checkVisibility?.() !== false) parts.push(child.textContent ?? "");
+				walk(node.shadowRoot);
 			}
 		};
 		walk(document);

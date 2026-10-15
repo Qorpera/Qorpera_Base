@@ -43,6 +43,7 @@ import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.t
 import {
 	COMPANY_COMPUTER_SITE_STOP_CODES,
 	COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	type CompanyComputerSiteStopReason,
 	CompanyComputerSiteStops,
 	readCompanyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
@@ -790,6 +791,8 @@ export class CompanyComputerGuestAutomation {
 			}
 			// A vault_capture's box, held for the call's answer only once the page shows no check (a stop answer has none).
 			let captured: Readonly<Record<string, string>> | undefined;
+			// A check a vault_capture's click brought up, recorded before the reload that masks the value again.
+			const captureStop: { reason?: CompanyComputerSiteStopReason } = {};
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
 			else if (action.action === "click" || action.action === "fill") {
@@ -889,8 +892,17 @@ export class CompanyComputerGuestAutomation {
 				const field = action.field;
 				try {
 					// Every value the page shows is hidden from then on, wherever the agent would see it.
-					const value = await captureCompanyHookSecret(page, control, target, (shown) =>
-						this.#filled.add(shown, field),
+					const value = await captureCompanyHookSecret(
+						page,
+						control,
+						target,
+						(shown) => this.#filled.add(shown, field),
+						undefined,
+						async () => {
+							captureStop.reason = await readCompanyComputerSiteStop(page);
+							if (captureStop.reason) this.#siteStops.add(page.url(), captureStop.reason);
+							return captureStop.reason !== undefined;
+						},
 					);
 					captured = sealEventHookCapture({ value, site: target.site }, target.capturePublicKey, {
 						companyId: target.companyId,
@@ -901,18 +913,19 @@ export class CompanyComputerGuestAutomation {
 						field: target.field,
 					});
 				} catch (error) {
-					// Shown where nothing can mask it again: the tab goes, with the secret in it.
-					const cause =
-						error instanceof CompanyHookCaptureRefusedError && error.reason === "VAULT_CAPTURE_NOT_HIDDEN"
-							? await closeShowingTab(this.#browser.context, page)
-							: undefined;
-					// The reason, never the value: another error's message may quote the page.
-					throw new CompanyComputerActionFailedError(
-						new Error(
-							error instanceof CompanyHookCaptureRefusedError ? error.reason : "VAULT_CAPTURE_FAILED",
-							cause === undefined ? undefined : { cause },
-						),
-					);
+					const reason = error instanceof CompanyHookCaptureRefusedError ? error.reason : "VAULT_CAPTURE_FAILED";
+					// A check the click brought up: the call's answer is the stop (below), with no box.
+					if (reason !== "VAULT_CAPTURE_STOPPED" || !captureStop.reason) {
+						// Shown where nothing can mask it again: the tab goes, with the secret in it.
+						const cause =
+							reason === "VAULT_CAPTURE_NOT_HIDDEN"
+								? await closeShowingTab(this.#browser.context, page)
+								: undefined;
+						// The reason, never the value: another error's message may quote the page.
+						throw new CompanyComputerActionFailedError(
+							new Error(reason, cause === undefined ? undefined : { cause }),
+						);
+					}
 				}
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -929,7 +942,7 @@ export class CompanyComputerGuestAutomation {
 			};
 			if (action.action !== "snapshot") {
 				// The action happened; what the page shows now stops the agent, in the call's answer.
-				const stop = await stopAt();
+				const stop = captureStop.reason ?? (await stopAt());
 				if (stop)
 					return {
 						kind: "json",

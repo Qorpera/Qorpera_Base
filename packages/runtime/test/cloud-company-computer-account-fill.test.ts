@@ -391,6 +391,13 @@ describe("filled values on one screen", () => {
 			"https://x.example/hooks?[hidden]",
 		);
 		expect(filled.showsDecoded(encodeURIComponent(`https://x.example/?s=${encodeURIComponent(secret)}`))).toBe(true);
+		// Encoded twice or more, the whole secret is hidden, never down to its first escape (whose rest decodes back).
+		const twice = encodeURIComponent(encodeURIComponent(secret));
+		expect(filled.hide(`https://x.example/?s=${twice}&a=1`)).toBe("https://x.example/?s=[hidden]&a=1");
+		expect(filled.hideText(`Moved to https://x.example/?s=${twice}`)).toBe("Moved to https://x.example/?s=[hidden]");
+		expect(filled.hide("whsec_A%252BBCDEFGHIJKLMNOP and whsec_Q%25252FRSTUVWXYZ012345")).toBe(
+			"[hidden] and [hidden]",
+		);
 		for (const text of ["Signing secret whsec_•••••••• Reveal", "Starts with whsec_", "whsec_... (hidden)"])
 			expect(filled.shows(text), text).toBe(false);
 	});
