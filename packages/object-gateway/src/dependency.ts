@@ -25,9 +25,8 @@ export class ObjectStatementTimeout extends ObjectDependencyError {
 }
 
 /** A serialization failure, deadlock or lock timeout (40001, 40P01, 55P03) on an RPC whose callers must keep
- * seeing an unavailable dependency (503): the replication reconciler blocks an object on any other refusal, and a
- * profile read drops its member's read leases on one. The database answered about one company's rows, so the
- * circuit stays as it is (`ObjectDependency.run`). */
+ * seeing an unavailable dependency (503): the replication reconciler blocks an object on any other refusal. The
+ * database answered about one company's rows, so the circuit stays as it is (`ObjectDependency.run`). */
 export class ObjectLockConflict extends ObjectDependencyError {
 	constructor() {
 		super(503, true);
@@ -154,7 +153,7 @@ export async function boundedObjectOperation<T>(operation: () => Promise<T>, tim
 	}
 }
 
-/** A bounded circuit, not an authorization cache. Only an explicit lease can serve a read while open. */
+/** A bounded circuit, not an authorization cache. */
 export class ObjectDependency {
 	readonly #timeoutMs: number;
 	readonly #cooldownMs: number;

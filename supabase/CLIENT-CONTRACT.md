@@ -1149,8 +1149,11 @@ only after durable storage.
   On folder-v2 the routes move onto `qorpera_room_image_begin`, `qorpera_room_image_commit` and
   `qorpera_room_image_download` with the gateway change that follows 20260930260000; until it deploys they serve
   snapshot-v1 sessions only.
-- `POST /v1/read-leases/revoke` — revoke a read lease
 - `/healthz`, `/livez`, `/readyz`
+
+`/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
+gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
+leases and no member file exports.
 
 Uploads and downloads are always explicit, typed member interactions
 (contract 12.2); a client never grants an agent access to the member's
