@@ -1,0 +1,27 @@
+# Qorpera agent exit (E8c-2): the server name check of "only listed". qorpera-agent-exit.sh loads it with
+# qorpera-agent-exit.nft in one transaction, and only while the kernel has nft_queue and nfnetlink_queue loaded
+# already: the queue rule would make the kernel load nft_queue. Without both modules (on the nodes until Jonas says yes
+# to them) "only listed" goes by address alone.
+#
+# An only_P chain sets ct mark 1 on the first packet of a port 443 flow to a listed address. Every packet of a flow
+# marked 1, both ways, goes to queue 0, where qorpera-agent-exit-sni.py reads the machine's ClientHello. It lets packets
+# on unchanged, or answers with a meta mark and runs this chain again (NF_REPEAT):
+# - 0x80000001: the server acknowledged a ClientHello that names a listed server; the flow becomes 2 and is never
+#   queued again;
+# - 0x80000002: refused; the flow becomes 3 and every packet of it is dropped from then on.
+# With no checker on queue 0 (it stopped, or restarts) the kernel drops the packets (no bypass): a flow being judged
+# then is refused, never let through unread. The brake's marks are 1..0x7FFFFFFF, so bit 31 never meets them.
+table inet qorpera_agent_exit {
+	# After forward (priority filter), so it sees every packet forward accepted, established ones too.
+	chain sni {
+		type filter hook forward priority filter + 1; policy accept;
+		ct mark 1 jump sni_judge
+		ct mark 3 drop
+	}
+
+	chain sni_judge {
+		meta mark 0x80000001 meta mark set 0 ct mark set 2 accept
+		meta mark 0x80000002 ct mark set 3 update @refused_names { ip saddr . ip daddr } counter name "refused_name" goto refuse
+		queue num 0
+	}
+}

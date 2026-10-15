@@ -196,9 +196,22 @@ def set_addresses(text):
     return found
 
 
-def rule_for(key, reach=None, allowed=None):
+def name_pairs(text):
+    """`nft -j list set ... refused_names` output to its (machine, server) pairs."""
+    pairs = set()
+    for item in json.loads(text).get("nftables", []):
+        for elem in item.get("set", {}).get("elem", []) or []:
+            value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
+            concat = value.get("concat") if isinstance(value, dict) else None
+            if concat and len(concat) == 2:
+                pairs.add((str(concat[0]), str(concat[1])))
+    return pairs
+
+
+def rule_for(key, reach=None, allowed=None, named=None):
     """Which of the exit's refusals a refused flow came from. reach is the reach map (None: no map, rules from before
-    E8c), allowed each only_P chain's allow_P addresses ({"only_P": set})."""
+    E8c), allowed each only_P chain's allow_P addresses ({"only_P": set}), named the (machine, server) pairs whose port
+    443 flow the server name checker refused (E8c-2)."""
     src, dst, proto = key[0], key[1], key[2]
     try:
         if any(ipaddress.ip_address(dst) in network for network in INTERNAL):
@@ -207,6 +220,8 @@ def rule_for(key, reach=None, allowed=None):
         return "unknown"
     if proto == "tcp" and len(key) == 4 and str(key[3]) == "25":
         return "mail"
+    if proto == "tcp" and len(key) == 4 and str(key[3]) == "443" and (src, dst) in (named or ()):
+        return "name_not_listed"
     if reach is not None:
         where = reach.get(src)
         if where is None:
@@ -416,6 +431,14 @@ def reach_now(netns):
     return reach, allowed
 
 
+def named_now(netns):
+    """The pairs the server name checker refused, for rule_for; none without the set (rules from before E8c-2)."""
+    try:
+        return name_pairs(nft_json(netns, "set", "inet", "qorpera_agent_exit", "refused_names"))
+    except subprocess.CalledProcessError:
+        return set()
+
+
 def poll_refused(netns, writer, interval, guard):
     seen = {}
     unlogged = None
@@ -427,9 +450,10 @@ def poll_refused(netns, writer, interval, guard):
                 current.update(parse_set(nft_json(netns, "set", "inet", "qorpera_agent_exit", name)))
             fresh = new_refusals(seen, current)
             reach, allowed = reach_now(netns) if fresh else (None, None)
+            named = named_now(netns) if fresh else None
             for key in fresh:
                 record = {"ts": time.time(), "event": "refused", "src": key[0], "dst": key[1], "proto": key[2],
-                          "rule": rule_for(key, reach, allowed)}
+                          "rule": rule_for(key, reach, allowed, named)}
                 if len(key) == 4:
                     record["dport"] = key[3]
                 guard.see(record)
@@ -967,14 +991,16 @@ def main():
         return
     if args.diff_sets:
         # Test mode: stdin {"previous": [[key, expires], ...], "current": [...], "reach": `nft -j list map` output or
-        # absent, "allowed": {"only_P": `nft -j list set` output}}; prints each key to log, with its rule.
+        # absent, "allowed": {"only_P": `nft -j list set` output}, "named": `nft -j list set` output of refused_names or
+        # absent}; prints each key to log, with its rule.
         both = json.load(sys.stdin)
         previous = {tuple(k): e for k, e in both["previous"]}
         current = {tuple(k): e for k, e in both["current"]}
         reach = reach_map(json.dumps(both["reach"])) if "reach" in both else None
         allowed = {where: set_addresses(json.dumps(text)) for where, text in both.get("allowed", {}).items()}
+        named = name_pairs(json.dumps(both["named"])) if "named" in both else None
         for key in new_refusals(previous, current):
-            print(json.dumps([list(key), rule_for(key, reach, allowed)]))
+            print(json.dumps([list(key), rule_for(key, reach, allowed, named)]))
         return
     if not (args.netns and args.log_dir and args.heartbeat and args.pause_file and args.failing_file):
         parser.error("--netns, --log-dir, --heartbeat, --pause-file and --failing-file are required")

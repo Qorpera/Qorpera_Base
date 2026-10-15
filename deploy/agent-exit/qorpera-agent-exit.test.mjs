@@ -467,6 +467,31 @@ describe("the connection logger", () => {
 			// A listed address on 443 refused anyway was refused by the open bounds.
 			["open_limit", "rules_unknown", "open_limit", "not_listed", "not_listed", "not_listed", "not_listed", "mail"],
 		);
+		// E8c-2: a pair in refused_names on 443 was refused by the server name checker, whatever its address was.
+		const named = {
+			nftables: [
+				{
+					set: {
+						family: "inet",
+						name: "refused_names",
+						table: "qorpera_agent_exit",
+						elem: [
+							{ concat: ["10.210.1.2", "203.0.113.5"] },
+							{ elem: { val: { concat: ["10.210.1.1", "8.8.4.4"] }, timeout: 3600, expires: 3500 } },
+						],
+					},
+				},
+			],
+		};
+		const byName = run(
+			"--diff-sets",
+			JSON.stringify({ previous: [], current: keys.map((key) => [key, 3600]), reach, allowed, named }),
+		);
+		const nameRules = new Map(byName.map(([key, rule]) => [JSON.stringify(key), rule]));
+		assert.deepEqual(
+			keys.map((key) => nameRules.get(JSON.stringify(key))),
+			["name_not_listed", "rules_unknown", "name_not_listed", "not_listed", "not_listed", "not_listed", "not_listed", "mail"],
+		);
 	});
 });
 
@@ -1719,7 +1744,7 @@ rules(c1=ruled(block=["b.test"]), c2=None, c3=ruled(), c4=ruled(mode="only-liste
 			"add set inet qorpera_agent_exit allow_10004 { type ipv4_addr; size 65536; }",
 			"add chain inet qorpera_agent_exit only_10004",
 			"flush chain inet qorpera_agent_exit only_10004",
-			"add rule inet qorpera_agent_exit only_10004 tcp dport 443 ip daddr @allow_10004 goto open",
+			"add rule inet qorpera_agent_exit only_10004 tcp dport 443 ip daddr @allow_10004 ct mark set 1 goto open",
 			'add rule inet qorpera_agent_exit only_10004 counter name "refused_not_listed" goto refuse',
 			"add element inet qorpera_agent_exit dns_port { 10.210.1.2 : 53, 10.210.1.6 : 10004, 10.210.1.10 : 10001 }",
 			"add element inet qorpera_agent_exit dns_allowed { 10.210.1.2 . 53, 10.210.1.6 . 10004, 10.210.1.10 . 10001 }",
