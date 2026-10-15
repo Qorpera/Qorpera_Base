@@ -8,15 +8,22 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const CLOSE_GRACE_MS = 1000;
 
 export interface NodeWebSocketHandlers {
-	/** One complete text message. Binary messages are dropped. */
+	/** One complete text message. */
 	message(text: string): void;
+	/** One complete binary message. Without this handler, binary messages are dropped. */
+	binary?(payload: Buffer): void;
 	/** Called once, when the connection ends for any reason. */
 	close(reason: string): void;
 }
 
-/** A text-only WebSocket client (RFC 6455) on node:http and node:https. It needs no WebAssembly, so it runs
- * under `--jitless`, where Node's own WebSocket (Undici) does not. It answers pings, reassembles fragments and
- * refuses masked, reserved-bit or oversized frames from the server by closing. */
+export interface NodeWebSocketOptions {
+	/** Connect over this Unix socket (a `ws:` URL; its host is then only the Host header). */
+	readonly socketPath?: string;
+}
+
+/** A WebSocket client (RFC 6455) on node:http and node:https. It needs no WebAssembly, so it runs under
+ * `--jitless`, where Node's own WebSocket (Undici) does not. It answers pings, reassembles fragments and refuses
+ * masked, reserved-bit or oversized frames from the server by closing. */
 export class NodeWebSocket {
 	readonly #socket: Socket;
 	readonly #handlers: NodeWebSocketHandlers;
@@ -38,15 +45,22 @@ export class NodeWebSocket {
 	}
 
 	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails or takes longer than `timeoutMs`. */
-	static connect(url: URL, handlers: NodeWebSocketHandlers, timeoutMs = 10_000): Promise<NodeWebSocket> {
+	static connect(
+		url: URL,
+		handlers: NodeWebSocketHandlers,
+		timeoutMs = 10_000,
+		options: NodeWebSocketOptions = {},
+	): Promise<NodeWebSocket> {
 		if (url.protocol !== "wss:" && url.protocol !== "ws:") throw new Error("WebSocket URL must use ws: or wss:");
 		const secure = url.protocol === "wss:";
+		if (options.socketPath !== undefined && secure) throw new Error("A Unix socket WebSocket URL must use ws:");
 		const key = randomBytes(16).toString("base64");
 		return new Promise((resolve, reject) => {
 			const request = (secure ? httpsRequest : httpRequest)({
 				protocol: secure ? "https:" : "http:",
-				hostname: url.hostname,
-				port: url.port || (secure ? 443 : 80),
+				...(options.socketPath === undefined
+					? { hostname: url.hostname, port: url.port || (secure ? 443 : 80) }
+					: { socketPath: options.socketPath, hostname: url.hostname }),
 				path: `${url.pathname}${url.search}`,
 				method: "GET",
 				headers: {
@@ -89,6 +103,11 @@ export class NodeWebSocket {
 	send(text: string): void {
 		if (this.#closing || this.#closed) throw new Error("WebSocket is closed");
 		this.#write(0x1, Buffer.from(text, "utf-8"));
+	}
+
+	sendBinary(payload: Buffer): void {
+		if (this.#closing || this.#closed) throw new Error("WebSocket is closed");
+		this.#write(0x2, payload);
 	}
 
 	/** Sends a normal close and lets the connection end; the close handler runs once it has. */
@@ -194,7 +213,10 @@ export class NodeWebSocket {
 			const text = this.#fragmentOpcode === 0x1;
 			this.#fragments = [];
 			this.#fragmentBytes = 0;
-			if (!text) continue;
+			if (!text) {
+				this.#handlers.binary?.(message);
+				continue;
+			}
 			let decoded: string;
 			try {
 				decoded = new TextDecoder("utf-8", { fatal: true }).decode(message);
