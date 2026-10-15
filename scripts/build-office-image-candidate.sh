@@ -233,15 +233,31 @@ lx exec "$vm" -- systemd-run --quiet --wait --pipe --collect --unit qorpera-tool
 	--property "ReadWritePaths=$probe" --property RuntimeMaxSec=900 \
 	/usr/bin/node "$probe/company-computer-linux-toolbox-probe.mjs" "$probe" "$probe/office-image-dependencies.json" \
 	>"$work/probe.json" || probe_status=$?
-# AppArmor's denials while it ran go into the evidence. A command's output reaches the shell host over a socket, and
-# a confined program whose profile has no unix rule gets that descriptor replaced on exec (file_inherit): it exits 0
-# and prints nothing.
+# AppArmor's denials while it ran go into the evidence. A file_inherit denial means a probed command lost a descriptor
+# on exec, so the shell host may have read nothing from it although it exited 0.
 lx exec "$vm" -- journalctl -o cat --no-pager --since "@$since" | { grep 'apparmor="DENIED"' || true; } |
 	sort -u >"$work/apparmor-denials"
 ((probe_status == 0)) || fail "toolbox probe exited $probe_status; AppArmor denials: $(cat "$work/apparmor-denials")"
 jq -e '.result == "passed" and .uid == '"$office_id" "$work/probe.json" >/dev/null || fail "toolbox probe: $(cat "$work/probe.json")"
 ! grep -q 'operation="file_inherit"' "$work/apparmor-denials" ||
 	fail "AppArmor took a descriptor from a probed command: $(cat "$work/apparmor-denials")"
+# fusermount3 printed nothing from a computer's shell in an earlier candidate. Evidence only, as root and outside any
+# sandbox: the VM's kernel, fusermount3's AppArmor mode, and its version through Node's stdio (UNIX socketpairs, as the
+# shell host's) and through an anonymous pipe, with AppArmor's denials meanwhile.
+since=$(lx exec "$vm" -- date +%s)
+lx exec "$vm" -- /usr/bin/node -e '
+const { spawnSync } = require("node:child_process");
+const run = (file, args) => {
+	const r = spawnSync(file, args, { encoding: "utf8" });
+	return { status: r.status, out: `${r.stdout}${r.stderr}`.trim() };
+};
+const pipe = run("bash", ["-c", "fusermount3 --version 2>&1 | cat"]);
+console.log(JSON.stringify({ socketpair: run("fusermount3", ["--version"]), pipe }));
+' >"$work/fusermount3-stdio.json"
+lx exec "$vm" -- sh -c 'uname -r; grep "^fusermount3 " /sys/kernel/security/apparmor/profiles || echo none' \
+	>"$work/fusermount3-profile"
+lx exec "$vm" -- journalctl -o cat --no-pager --since "@$since" | { grep 'apparmor="DENIED"' || true; } |
+	sort -u >"$work/fusermount3-denials"
 
 # After the whole build the office service is still disabled and has never started. Its credentials exist only once
 # the node's preparation writes them for a boot; the node's activation starts it (preparation, then service-start).
@@ -290,12 +306,15 @@ jq -n --slurpfile measured "$work/measured.json" --slurpfile probe "$work/probe.
 	--arg package "$(sha256sum "$push/package/manifest.json" | awk '{print $1}')" \
 	--arg closure "$(wc -l <"$work/wanted")" --rawfile root "$work/root-toolbox.txt" --rawfile office "$work/office-unit" \
 	--arg folder "$(awk '{print $1}' "$work/folder-program")" --rawfile folderUnits "$work/folder-unit-files" \
-	--rawfile denials "$work/apparmor-denials" \
+	--rawfile denials "$work/apparmor-denials" --slurpfile fuseStdio "$work/fusermount3-stdio.json" \
+	--rawfile fuseProfile "$work/fusermount3-profile" --rawfile fuseDenials "$work/fusermount3-denials" \
 	'{base: $base, candidate: $candidate, staged: (if $staged == "" then null else $staged end), recipeSha256: $recipe,
 	packageManifestSha256: $package, aptClosurePackages: ($closure | tonumber), dependencies: $measured[0],
 	rootToolbox: ($root | split("\n") | map(select(startswith("toolbox: ")) | ltrimstr("toolbox: "))), shellToolbox: $probe[0],
 	rootFolder: ($root | split("\n") | map(select(startswith("folder: ")) | ltrimstr("folder: "))),
 	probeAppArmorDenials: ($denials | split("\n") | map(select(. != ""))),
+	fusermount3AsRoot: {kernel: ($fuseProfile | split("\n")[0]), appArmor: ($fuseProfile | split("\n")[1]),
+		stdio: $fuseStdio[0], appArmorDenials: ($fuseDenials | split("\n") | map(select(. != "")))},
 	officeUnit: ($office | split("\n") | map(select(. != "") | split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries),
 	folderProgramSha256: $folder, folderUnitFiles: ($folderUnits | split("\n") | map(select(. != "") | split(" ") | map(select(. != "")))),
 	network: "none"}' >"$work/evidence.json"

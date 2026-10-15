@@ -52,7 +52,7 @@ test("apt installs each package once, and the toolbox covers the contract's list
 	const commands = recipe.toolbox.map(([command]) => command);
 	assert.equal(new Set(commands).size, commands.length);
 	for (const command of CONTRACT_TOOLBOX) assert.ok(commands.includes(command), `${command} is missing from the toolbox`);
-	// FUSE is root's: a computer's shell can mount nothing, and AppArmor's fusermount3 profile takes its output there.
+	// FUSE is root's: the folder helper mounts, and a computer's shell can mount nothing.
 	assert.ok(!commands.includes("fusermount3"));
 	for (const [command, ...args] of recipe.toolbox) {
 		assert.match(command, /^[a-z][a-z0-9]*$/);
@@ -101,9 +101,12 @@ test("the candidate builder copies every confinement key of the office unit and 
 	assert.match(source, /--vm --no-profiles /);
 	assert.match(source, /fail "nested VM unexpectedly has a NIC"/);
 	assert.match(source, /\[\[ \$\(hostname\) == qorpera-testvm-node01 \]\]/);
-	// A command whose output descriptor AppArmor replaced exits 0 and prints nothing: such a denial fails the build.
+	// A file_inherit denial means a probed command lost a descriptor on exec: it fails the build.
 	assert.match(source, /journalctl -o cat --no-pager --since "@\$since" \| \{ grep 'apparmor="DENIED"' \|\| true; \}/);
 	assert.match(source, /! grep -q 'operation="file_inherit"' "\$work\/apparmor-denials" \|\|\n\tfail /);
+	// fusermount3 as root is evidence only: it never fails the build.
+	assert.match(source, /' >"\$work\/fusermount3-stdio.json"\n/);
+	assert.match(source, /fusermount3AsRoot: \{kernel: /);
 });
 
 test("the candidate carries the pinned folder program and leaves the folder's units stopped", () => {
