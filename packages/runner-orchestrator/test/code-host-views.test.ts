@@ -161,7 +161,11 @@ class FakeControl implements CodeHostControl {
 				if (this.open) return this.open();
 				const view = { viewId: randomUUID(), pass: randomBytes(32).toString("base64url") };
 				this.views.push(view);
-				return { schema: "qorpera.folder-view/v1", ...view, leaseUntil: new Date(Date.now() + 120_000).toISOString() };
+				return {
+					schema: "qorpera.folder-view/v1",
+					...view,
+					leaseUntil: new Date(Date.now() + 120_000).toISOString(),
+				};
 			}
 			case "qorpera_folder_view_close":
 				return this.close ? this.close() : { closed: true };
@@ -332,7 +336,9 @@ describe("CodeHostJobs", () => {
 	it("publishes nothing for a cancelled job, and still takes the mount and the view down on their own deadlines", async () => {
 		const { lxd, control, jobs, host } = setup();
 		host.job = (_argv, signal) =>
-			new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+			new Promise((_resolve, reject) =>
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+			);
 		const controller = new AbortController();
 		const running = jobs.run(COMPANY, ENVIRONMENT, controller.signal, oneCommand);
 		await until(() => lxd.labels().includes("/usr/local/bin/git --version"));
@@ -610,7 +616,9 @@ describe("CodeHostJobs", () => {
 		for (const [company, environment] of [
 			["not-a-uuid", ENVIRONMENT],
 			[COMPANY, "not-a-uuid"],
-			[COMPANY.toUpperCase(), ENVIRONMENT],
+			// COMPANY and ENVIRONMENT have no letters to upper-case.
+			["AAAAAAAA-1111-4111-8111-111111111111", ENVIRONMENT],
+			[COMPANY, "BBBBBBBB-3333-4333-8333-333333333333"],
 		] as const)
 			await expect(jobs.run(company, environment, signal(), oneCommand)).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		for (const option of ["mountWaitMs", "publishWaitMs", "cleanMs", "callMs", "pollMs"] as const)

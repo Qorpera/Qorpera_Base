@@ -237,10 +237,12 @@ export class CodeHostJobs {
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
 	): Promise<T> {
 		const shell = lxdCodeHostShell(this.#client, host);
-		await this.#clean(shell, AbortSignal.any([signal, AbortSignal.timeout(this.#cleanMs)])).catch((error: unknown) => {
-			signal.throwIfAborted();
-			throw error;
-		});
+		await this.#clean(shell, AbortSignal.any([signal, AbortSignal.timeout(this.#cleanMs)])).catch(
+			(error: unknown) => {
+				signal.throwIfAborted();
+				throw error;
+			},
+		);
 		const view = await this.#open(environmentId, signal);
 		let failure: { error: unknown } | undefined, result: T | undefined;
 		try {
@@ -255,7 +257,8 @@ export class CodeHostJobs {
 			result = await job({ shell, layout: CODE_HOST_LAYOUT, signal }, this.#gcBlock(view));
 			const published = await this.#publish(shell, signal);
 			if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
-			if (published.answer === "refused") throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
+			if (published.answer === "refused")
+				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
 			if (published.answer === "unanswered")
 				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
 		} catch (error) {
@@ -266,7 +269,11 @@ export class CodeHostJobs {
 		);
 		// Best effort: a view no folder program renews also ends with its lease.
 		await this.#control
-			.call("qorpera_folder_view_close", { p_view_id: view.viewId, p_pass: view.pass }, AbortSignal.timeout(this.#callMs))
+			.call(
+				"qorpera_folder_view_close",
+				{ p_view_id: view.viewId, p_pass: view.pass },
+				AbortSignal.timeout(this.#callMs),
+			)
 			.catch((error: unknown) =>
 				this.#log({ event: "code-host-view-error", step: "close", project: host.project, error }),
 			);
@@ -396,7 +403,11 @@ export class CodeHostJobs {
 		return result;
 	}
 
-	#call(method: (typeof CODE_HOST_RPCS)[number], args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+	#call(
+		method: (typeof CODE_HOST_RPCS)[number],
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<unknown> {
 		return this.#control.call(method, args, AbortSignal.any([signal, AbortSignal.timeout(this.#callMs)]));
 	}
 }
@@ -417,7 +428,9 @@ export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostP
 	if (
 		!isRecord(report) ||
 		!Array.isArray(report.paths) ||
-		!report.paths.every((entry) => isRecord(entry) && typeof entry.path === "string" && typeof entry.outcome === "string")
+		!report.paths.every(
+			(entry) => isRecord(entry) && typeof entry.path === "string" && typeof entry.outcome === "string",
+		)
 	)
 		return { answer: "unanswered" };
 	const refused = report.refused === undefined || report.refused === null ? undefined : String(report.refused);
