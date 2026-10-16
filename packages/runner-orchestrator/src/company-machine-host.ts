@@ -1302,7 +1302,7 @@ export class LxdCompanyMachineHost {
 		// so it is checked after each.
 		const ended = () => {
 			const now = this.#folders.get(authority.placementId);
-			return now?.bootId === authority.bootId && now.state === "ended";
+			return now?.state === "ended" && now.bootId === authority.bootId;
 		};
 		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
 		if (request.action === "start" || ended() || (receipt.state === "running" && receipt.log.totalBytes === 0))
