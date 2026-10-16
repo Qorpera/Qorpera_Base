@@ -288,3 +288,16 @@ test("beside runs two commands at once, prints the second's output after the fir
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+test("deploy-node runs every Node test file under deploy/ once, then Python's tests", () => {
+	const [node, python, ...rest] = STEPS.find((candidate) => candidate.name === "deploy-node").commands;
+	assert.deepEqual(rest, []);
+	assert.match(node, /^node --test [^;&|]+$/);
+	const named = node.slice("node --test ".length).split(" ");
+	// node --test skips a named file that is not there, without failing, as long as another name is a file.
+	const files = filesUnder(repositoryRoot, join(repositoryRoot, "deploy")).filter((file) => file.endsWith(".test.mjs"));
+	assert.ok(files.includes("deploy/agent-exit/qorpera-agent-exit-proof.test.mjs"));
+	assert.equal(new Set(named).size, named.length, named.join(" "));
+	assert.deepEqual(set(named), set(files));
+	assert.equal(python, "python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'");
+});

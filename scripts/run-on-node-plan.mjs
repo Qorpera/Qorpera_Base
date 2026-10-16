@@ -233,8 +233,9 @@ export const STEPS = [
 		name: "deploy-node",
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
+		// node --test runs its files side by side, the agent exit's root proof in a file of its own.
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},

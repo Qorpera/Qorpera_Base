@@ -4,7 +4,7 @@
 # (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1 on the tailnet. It
 # builds the exit with the real tool and rules, plugs the agent machine in, and checks what reaches what. The agent
 # plug's reconciler (E2) runs against a stand-in for LXD: a JSON file of instances the proof rewrites.
-# qorpera-agent-exit.test.mjs builds the container and runs this file. Prints PASS lines; any failure exits 1.
+# qorpera-agent-exit-proof.test.mjs builds the container and runs this file. Prints PASS lines; any failure exits 1.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

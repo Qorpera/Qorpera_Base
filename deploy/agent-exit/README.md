@@ -680,9 +680,10 @@ the lookup on a `dns.log` where the main dnsmasq and a company's resolver give o
 `packages/runtime/test/agent-exit-rules.test.ts` tests the reader itself (the companies of the client map, the rules
 file and when it changes, a failing database or client map, rows refused, a restart), and
 `scripts/package-agent-exit-rules.test.mjs` its package.
-On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
-with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
-a kernel module (the kernel loads nftables' own on demand).
+On Linux with Docker, `qorpera-agent-exit-proof.test.mjs` runs `test/proof.sh` in a privileged container with no
+network of its own (`ubuntu:26.04` with the packages above, built once and cached). It is a file of its own so that
+`node --test` runs it beside `qorpera-agent-exit.test.mjs`. The proof never leaves the container's namespaces and
+never unloads a kernel module (the kernel loads nftables' own on demand).
 The proof plays a node: an agent road machine plugged into `qagent0` by a creator (a member of the plug group, umask
 077), the office network (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1
 on the tailnet. It checks:
