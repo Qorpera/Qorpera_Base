@@ -753,14 +753,27 @@ describe("CodeHostJobs", () => {
 			{ ...session, headSha: "b".repeat(40) },
 			{ ...session, companyId: "not-a-uuid" },
 			{ ...session, environmentId: undefined },
+			{ ...session, workerId: "worker" },
+			{ ...session, workerId: undefined },
+			{ ...session, baseSha: "main" },
+			{ ...session, baseSha: "A".repeat(40) },
+			{ ...session, baseSha: 7 },
 		])
 			await expect(jobs.attach(bad as typeof session, broker, signal())).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		await expect(
 			jobs.attach({ ...session, repository: { ...session.repository, owner: "../x" } }, broker, signal()),
 		).rejects.toThrow("INVALID_CODING_REPOSITORY");
-		await expect(
-			jobs.export(session as typeof session & { headSha: string }, { maximumBytes: 1024 }, signal()),
-		).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		for (const bad of [
+			session,
+			{ ...session, headSha: "main" },
+			{ ...session, headSha: "b".repeat(39) },
+			{ ...session, headSha: null },
+			{ ...session, baseSha: "main", headSha: "b".repeat(40) },
+			{ ...session, workerId: "worker", headSha: "b".repeat(40) },
+		])
+			await expect(
+				jobs.export(bad as typeof session & { headSha: string }, { maximumBytes: 1024 }, signal()),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		expect(lxd.execs).toEqual([]);
 		expect(control.calls).toEqual([]);
 

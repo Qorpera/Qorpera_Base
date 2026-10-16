@@ -237,7 +237,7 @@ export class CodeHostJobs {
 		options: { maximumBytes: number },
 		signal: AbortSignal,
 	): Promise<{ headSha: string; bundle: Buffer | null }> {
-		const { companyId, environmentId, repository, workerId, baseSha, headSha } = sessionOf(value, ["headSha"]);
+		const { companyId, environmentId, repository, workerId, baseSha, headSha } = sessionOf(value, true);
 		return await this.run(companyId, environmentId, signal, (job) =>
 			exportCodeBranch(job, { repository, workerId, baseSha, headSha }, options),
 		);
@@ -509,10 +509,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const SESSION_KEYS = ["baseSha", "companyId", "environmentId", "repository", "workerId"];
+const SHA = /^[0-9a-f]{40}$/;
 
-/** A session's fields and no others; `run` and the jobs check each one. */
-function sessionOf<T extends CodeHostSession>(value: T, extra: readonly string[] = []): T {
-	if (!isRecord(value) || Object.keys(value).sort().join() !== [...SESSION_KEYS, ...extra].sort().join())
+/** A session's fields and no others, each of the shape its job takes (with `headSha` for an export), checked before any
+ * view opens; `run` checks the company and environment. */
+function sessionOf<T extends CodeHostSession>(value: T, head = false): T {
+	const isSha = (commit: unknown) => typeof commit === "string" && SHA.test(commit);
+	if (
+		!isRecord(value) ||
+		Object.keys(value).sort().join() !== [...SESSION_KEYS, ...(head ? ["headSha"] : [])].sort().join() ||
+		!isUuid(value.workerId) ||
+		!isSha(value.baseSha) ||
+		(head && !isSha(value.headSha))
+	)
 		throw new Error("INVALID_CODE_HOST_JOB");
 	return { ...value, repository: parseCloudCodingRepository(value.repository) } as T;
 }

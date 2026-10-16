@@ -124,8 +124,11 @@ export async function withCodeAreaSeed<T>(
 				"fetch.fsckObjects=true",
 			].flatMap((config) => ["-c", config]),
 		];
+		// Authority is checked right before and after each git command, and before a token is taken: authority lost
+		// while the token comes stops the fetch before it starts.
 		const git = async (args: string[], network = false, directory = cwd): Promise<string> => {
 			const invoke = async (token?: string): Promise<string> => {
+				await authorize();
 				const environment = { ...env };
 				if (token !== undefined) {
 					if (!/^[A-Za-z0-9_]{20,512}$/.test(token))
@@ -134,7 +137,7 @@ export async function withCodeAreaSeed<T>(
 					environment.GIT_CONFIG_KEY_0 = `http.${remote}.extraHeader`;
 					environment.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
 				}
-				return (broker.runGit ?? runCodingBrokerGit)({
+				const result = await (broker.runGit ?? runCodingBrokerGit)({
 					cwd: directory,
 					scratchRoot: scratch,
 					network,
@@ -142,18 +145,18 @@ export async function withCodeAreaSeed<T>(
 					env: environment,
 					signal,
 				});
+				await authorize();
+				return result;
 			};
-			await authorize();
-			let output: string;
 			try {
-				output = network ? await broker.withRepositoryToken(repository, invoke, signal) : await invoke();
+				if (!network) return await invoke();
+				await authorize();
+				return await broker.withRepositoryToken(repository, invoke, signal);
 			} catch (error) {
 				signal.throwIfAborted();
 				if (error instanceof CodeHostJobFailure) throw error;
 				throw new CodeHostJobFailure("CODE_HOST_SEED_UNCONFIRMED");
 			}
-			await authorize();
-			return output;
 		};
 		await git(["init", "--bare", "--template=", cwd], false, scratch);
 		await git(

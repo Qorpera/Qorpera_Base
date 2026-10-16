@@ -187,8 +187,8 @@ describe("the code area's seed from GitHub", () => {
 			}
 		}
 		expect(f.state.tokens).toBe(1);
-		// Before the first process, around each one, and before the bundle is handed over.
-		expect(f.state.authorizations).toBe(1 + 2 * f.calls.length + 1);
+		// Before the first process, around each one, before the token is taken, and before the bundle is handed over.
+		expect(f.state.authorizations).toBe(1 + 2 * f.calls.length + 1 + 1);
 	});
 
 	it("leaves out what the code area has while the base branch reaches it, and sends it all otherwise", async () => {
@@ -250,7 +250,7 @@ describe("the code area's seed from GitHub", () => {
 		expect(await readdir(f.journalRoot)).toEqual([]);
 	});
 
-	it("stops before any git process when authority is revoked, and before handing over a bundle when it ends meanwhile", async () => {
+	it("stops before any git process when authority is revoked, before the fetch when it ends while the token comes, and before handing over a bundle when it ends meanwhile", async () => {
 		const f = await fixture();
 		let used = false;
 		const use = async () => {
@@ -263,6 +263,14 @@ describe("the code area's seed from GitHub", () => {
 			code: "CODE_HOST_SEED_AUTHORITY_UNAVAILABLE",
 		});
 		expect(f.calls).toEqual([]);
+
+		f.state.revoked = () => f.state.tokens > 0;
+		await expect(withCodeAreaSeed(request, f.broker, signal(), use)).rejects.toMatchObject({
+			name: "CodeHostJobFailure",
+			code: "CODE_HOST_SEED_AUTHORITY_UNAVAILABLE",
+		});
+		expect(f.state.tokens).toBe(1);
+		expect(f.calls.map((call) => call.args[27])).toEqual(["init"]);
 
 		f.state.revoked = () => f.calls.some(isFetch);
 		await expect(withCodeAreaSeed(request, f.broker, signal(), use)).rejects.toThrow(
