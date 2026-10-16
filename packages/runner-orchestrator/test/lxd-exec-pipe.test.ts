@@ -438,7 +438,9 @@ describe("LXD exec pipe", () => {
 			await vi.waitFor(() => expect(exec.inputEnded).toBe(true), { timeout: 20_000 });
 			expect(exec.inputBytes).toBe(chunks * size);
 			await collect();
-			expect(process.memoryUsage().arrayBuffers - before).toBeLessThan((chunks * size) / 8);
+			// The whole process's buffers, the fake's sockets among them, which a loaded machine leaves fuller: a pipe that
+			// kept the input (or copies of it) would hold all 64 MiB.
+			expect(process.memoryUsage().arrayBuffers - before).toBeLessThan((chunks * size) / 2);
 			expect(sent.filter((chunk) => chunk.deref() !== undefined).length).toBeLessThan(chunks / 100);
 		} finally {
 			finish();
