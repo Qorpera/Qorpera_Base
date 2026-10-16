@@ -445,7 +445,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					},
 				},
 			}),
-			folders ? { folders, environmentId: binding.environmentId } : {},
+			folders ? { folders, environmentId: binding.environmentId, screenId: binding.screenId } : {},
 		);
 		return screen.shell;
 	}
@@ -1375,10 +1375,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	};
 	/**
 	 * `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. A drain request
-	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary before it answers (F3 4d, "Drains
-	 * and stops"), and the drain fails when the boundary has no final answer by then. Any other stop lets the mount go
-	 * after it. A stop that cannot confirm what it closed gone (the screen's sessions, private surface, browser or shell)
-	 * fails, and the mount stays for the stop control: the browser's namespace, say, may still read it.
+	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary, and each mount of its shell's
+	 * commands its final boundary, before it answers (F3 4d, "Drains and stops"), and the drain fails when a mount is
+	 * still there by then. Any other stop lets the mount go after it. A stop that cannot confirm what it closed gone (the
+	 * screen's sessions, private surface, browser or shell) fails, and the mount stays for the stop control: the
+	 * browser's namespace, say, may still read it.
 	 */
 	async stopResources(
 		binding: CompanyComputerScreenBinding,
@@ -1454,14 +1455,22 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		if (screen) screen.closing ??= drain();
 		await cloudToolRequest(() => screen?.closing ?? drain(), signal, 30000);
-		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it.
-		if (stop.until !== undefined)
-			await this.#options.folders?.drain(
-				binding.screenId,
-				signal,
-				stop.until,
-				() => !this.#screens.has(binding.screenOrdinal),
-			);
+		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it; and
+		// the mounts of the shell's commands, which ended with it, go once their final boundaries have their answers.
+		if (stop.until !== undefined) {
+			const until = stop.until;
+			const drained = await Promise.allSettled([
+				this.#options.folders?.drain(
+					binding.screenId,
+					signal,
+					until,
+					() => !this.#screens.has(binding.screenOrdinal),
+				),
+				this.#options.commandFolders?.drain(binding.screenId, signal, until),
+			]);
+			const failed = drained.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failed) throw failed.reason;
+		}
 	}
 	close(): Promise<void> {
 		this.#stop.abort();

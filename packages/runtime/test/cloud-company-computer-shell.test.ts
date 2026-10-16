@@ -740,16 +740,18 @@ class StandInFolder {
 }
 
 const FOLDER_ENVIRONMENT = "00000000-0000-4000-8000-0000000000e1";
+const FOLDER_SCREEN = "00000000-0000-4000-8000-0000000000e3";
 const OTHER_RUN = "00000000-0000-4000-8000-0000000000c2";
 
 /** A shell with the company folder: every command runs through its own stand-in folder, never the shell host. */
 function folderFixture(options: { init?: number | null } = {}) {
 	const folders: StandInFolder[] = [];
 	const commands = {
-		command: (receipt: string) => {
+		command: (receipt: string, screenId: string) => {
 			const folder = new StandInFolder();
 			folders.push(folder);
 			expect(receipt).toMatch(/^key-/);
+			expect(screenId).toBe(FOLDER_SCREEN);
 			return folder;
 		},
 	} as unknown as CompanyComputerCommandFolders;
@@ -766,7 +768,7 @@ function folderFixture(options: { init?: number | null } = {}) {
 			pid: 801,
 			...(options.init === null ? {} : { init: options.init ?? 802 }),
 		}),
-		{ folders: commands, environmentId: FOLDER_ENVIRONMENT },
+		{ folders: commands, environmentId: FOLDER_ENVIRONMENT, screenId: FOLDER_SCREEN },
 	);
 	shells.push(shell);
 	const signal = new AbortController().signal;
@@ -958,11 +960,14 @@ describe("a shell command in the company folder", () => {
 			signal: f.signal,
 		});
 		expect(await f.read(networked.sessionId)).toMatchObject({ state: "exited", exitCode: 0, output: "hi\n" });
-		expect(
-			() =>
-				new CompanyComputerLinuxShell(f.launch, {
-					folders: {} as CompanyComputerCommandFolders,
-				}),
-		).toThrow("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
+		// The folder needs the environment for its mounts and the screen whose drain waits for them.
+		for (const ids of [{}, { environmentId: FOLDER_ENVIRONMENT }, { screenId: FOLDER_SCREEN }])
+			expect(
+				() =>
+					new CompanyComputerLinuxShell(f.launch, {
+						folders: {} as CompanyComputerCommandFolders,
+						...ids,
+					}),
+			).toThrow("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
 	});
 });

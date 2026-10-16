@@ -247,17 +247,22 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#releasing = 0;
 	#processes = 0;
 	#closing?: Promise<void>;
-	/** With the company folder, every command runs through the folder helper with a mount of its own. */
-	readonly #folders?: { commands: CompanyComputerCommandFolders; environmentId: string };
+	/** With the company folder, every command runs through the folder helper with a mount of its own, which the
+	 * drain of the shell's screen waits for. */
+	readonly #folders?: { commands: CompanyComputerCommandFolders; environmentId: string; screenId: string };
 
 	constructor(
 		launch: CompanyComputerShellEnvironmentLauncher,
-		options: { folders?: CompanyComputerCommandFolders; environmentId?: string } = {},
+		options: { folders?: CompanyComputerCommandFolders; environmentId?: string; screenId?: string } = {},
 	) {
 		this.#launch = launch;
 		if (options.folders) {
-			if (!options.environmentId) throw new Error("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
-			this.#folders = { commands: options.folders, environmentId: options.environmentId };
+			if (!options.environmentId || !options.screenId) throw new Error("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
+			this.#folders = {
+				commands: options.folders,
+				environmentId: options.environmentId,
+				screenId: options.screenId,
+			};
 		}
 	}
 
@@ -658,7 +663,12 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			total: 0,
 			readTo: 0,
 			waiters: new Set(),
-			...(this.#folders ? { folder: this.#folders.commands.command(input.key), abort: new AbortController() } : {}),
+			...(this.#folders
+				? {
+						folder: this.#folders.commands.command(input.key, this.#folders.screenId),
+						abort: new AbortController(),
+					}
+				: {}),
 		};
 		this.#sessions.set(session.id, session);
 		this.#keys.set(input.key, session.id);
