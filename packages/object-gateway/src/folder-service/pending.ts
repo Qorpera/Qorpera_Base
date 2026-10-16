@@ -939,7 +939,7 @@ export class PendingView {
 		// in code/): all checked before anything moves.
 		const moved: [string, Node][] = [];
 		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
-		for (const [path, n] of moved) if (n.kind !== "gone") checkNewPath(to + path.slice(from.length));
+		for (const [path, n] of moved) if (n.kind !== "gone") checkNewPath(to + path.slice(from.length), this.#codeHost);
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder | PendingLink;
 		if (source.kind === "node") node = source.node;
