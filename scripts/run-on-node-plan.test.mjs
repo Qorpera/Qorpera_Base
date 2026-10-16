@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
@@ -17,6 +17,7 @@ import {
 	STOP,
 	splitPlan,
 } from "./run-on-node-plan.mjs";
+import { POSTGRES_IMAGE } from "./test-hosted-db.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -417,15 +418,31 @@ test("fail-fast, one step at a time: the shortest first, and no step starts afte
 	}
 });
 
-test("fail-fast side by side: a failure ends the running steps' whole process trees and their hosted-db containers, and starts no more", () => {
+test("fail-fast side by side: a failure ends the running steps' whole process trees and their containers, and starts no more", () => {
 	const bin = mkdtempSync(join(tmpdir(), "plan-docker-"));
 	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
 	try {
-		// A stand-in docker lists a container named after the stopped step's grandchild and one named after another
-		// process, and logs what it is asked to remove.
+		// A stand-in docker lists, until removed: a container named after the stopped step's grandchild, one named after
+		// another process, one binding a path in the run's directory and one binding a directory whose name only starts
+		// like it. It logs what it is asked to remove. (bash starts in the physical directory.)
+		const here = realpathSync(cwd);
+		const inspect = {
+			c1: `/qorpera-hosted-db-$(cat '${cwd}/grandchild.pid')-0123abcd`,
+			c2: "/qorpera-hosted-db-1-0123abcd",
+			c3: `/eager_turing /var/lib/docker/volumes/v/_data ${here}/crates/qorpera-folder`,
+			c4: `/other ${here}-other`,
+		};
 		writeFileSync(
 			join(bin, "docker"),
-			`#!/bin/sh\nif [ "$1" = ps ]; then echo "c1 qorpera-hosted-db-$(cat '${cwd}/grandchild.pid')-0123abcd"; echo "c2 qorpera-hosted-db-1-0123abcd"; else echo "$*" >>'${cwd}/docker.log'; fi\n`,
+			[
+				"#!/bin/sh",
+				'case "$1" in',
+				`ps) for c in c1 c2 c3 c4; do grep -qx "$c" '${cwd}/removed' 2>/dev/null || echo "$c"; done ;;`,
+				`inspect) shift 3; for c in "$@"; do case "$c" in ${Object.entries(inspect).map(([id, rest]) => `${id}) echo "${id} ${rest}" ;;`).join(" ")} esac; done ;;`,
+				`rm) echo "$*" >>'${cwd}/docker.log'; shift 3; for c in "$@"; do echo "$c" >>'${cwd}/removed'; done ;;`,
+				"esac",
+				"",
+			].join("\n"),
 			{ mode: 0o755 },
 		);
 		const steps = [
@@ -450,10 +467,49 @@ test("fail-fast side by side: a failure ends the running steps' whole process tr
 		assert.match(result.stdout, /== changed: failed: bad\n== changed: stopped \(--fail-fast\): slow later\n$/);
 		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "failed_steps=bad\nstopped_steps=slow,later\n");
 		for (const file of ["child.pid", "grandchild.pid"]) assert.ok(gone(Number(readFileSync(join(cwd, file), "utf8"))), file);
-		assert.equal(readFileSync(join(cwd, "docker.log"), "utf8"), "rm -f -v c1\n");
+		// Once: the second look, after the trees are gone, finds none of the run's left.
+		assert.equal(readFileSync(join(cwd, "docker.log"), "utf8"), "rm -f -v c1 c3\n");
 	} finally {
 		rmSync(bin, { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
+
+test("fail-fast side by side on docker: the containers of the stopped steps end with them, and no other", { skip: dockerUsable ? false : "needs Linux with Docker" }, () => {
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	const other = mkdtempSync(join(tmpdir(), "plan-other-"));
+	const label = `qorpera.plan-test=${process.pid}-${Date.now()}`;
+	const listed = () => spawnSync("docker", ["ps", "-aq", "--filter", `label=${label}`], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+	const container = (args, command) => `docker run --rm --label ${label} --network none ${args} --entrypoint sh ${POSTGRES_IMAGE} -c '${command}'`;
+	try {
+		// Another run's: it binds its own directory, and outlives this run.
+		const kept = spawnSync("bash", ["-c", container(`--detach -v ${other}:/w:ro`, "sleep 600")], { encoding: "utf8" });
+		assert.equal(kept.status, 0, kept.stderr);
+		const steps = [
+			// folder-program's shape: attached, the run's directory bound, a shell as PID 1 that ignores the TERM the
+			// client passes on.
+			{ name: "program", commands: [`${container('-v "$PWD:/w:ro"', "sleep 600")} & echo $! >client.pid; wait`], seconds: 100 },
+			// hosted-db's: detached, named after the process that started it.
+			{ name: "db", commands: [`${container("--detach --name qorpera-hosted-db-$BASHPID-0123abcd", "sleep 600")} && sleep 600`], seconds: 90 },
+			// Fails once the three containers run.
+			{ name: "bad", commands: [`for _ in $(seq 600); do n=$(docker ps -q --filter label=${label} | wc -l); [ "$n" = 3 ] && break; sleep 0.1; done; echo "up: $n"; false`], seconds: 50 },
+		];
+		const started = Date.now();
+		const result = spawnSync("bash", ["-c", planScript(steps, { cores: 3, failFast: true })], { cwd, encoding: "utf8", env: env(), timeout: 120_000 });
+		assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+		assert.match(result.stdout, /== changed: bad\nup: 3\n== changed: bad FAILED after \d+ s\n/);
+		assert.match(result.stdout, /== changed: failed: bad\n== changed: stopped \(--fail-fast\): program db\n$/);
+		// Long before the 600 s sleeps would end.
+		assert.ok(Date.now() - started < 60_000, String(Date.now() - started));
+		assert.ok(gone(Number(readFileSync(join(cwd, "client.pid"), "utf8"))), "the docker client");
+		assert.deepEqual(listed(), [kept.stdout.trim().slice(0, 12)]);
+	} finally {
+		const left = listed();
+		if (left.length) spawnSync("docker", ["rm", "-f", "-v", ...left], { stdio: "ignore" });
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(other, { recursive: true, force: true });
 	}
 });
 

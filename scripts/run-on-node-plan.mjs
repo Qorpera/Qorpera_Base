@@ -454,6 +454,13 @@ export const STOP = ".run-on-node-stop";
 const DESCENDANTS =
 	'BEGIN { n = split(tree, t, " "); for (k = 1; k <= n; k++) seen[t[k]] = 1 } { pid[NR] = $1; parent[NR] = $2 } END { do { grown = 0; for (j = 1; j <= NR; j++) if (!(pid[j] in seen) && (parent[j] in seen)) { seen[pid[j]] = 1; grown = 1 } } while (grown); for (p in seen) printf "%s ", p }';
 
+/** Of `docker inspect` lines (id, /name, bind sources), the containers the processes under awk's `tree` made: hosted-db's
+ * are named after the process that started them (test-hosted-db.mjs buildContainerName: qorpera-hosted-db-PID-HEX), and
+ * folder-program's and the agent-exit proof's bind a path in the run's directory (`here`, `real` without symlinks),
+ * which no other run uses (run-on-node.mjs: runs/RUN). */
+const OWNED =
+	'BEGIN { n = split(tree, t, " "); for (k = 1; k <= n; k++) mine[t[k]] = 1 } { name = substr($2, 2); split(name, p, "-"); hit = index(name, "qorpera-hosted-db-") == 1 && (p[4] in mine); for (k = 3; k <= NF; k++) if ($k == here || $k == real || index($k, here "/") == 1 || index($k, real "/") == 1) hit = 1; if (hit) print $1 }';
+
 /** Every step runs, even after another failed; the exit code is 1 if any failed. Without `cores`, one step at a time in
  * plan order, each running its `alone` commands after its others.
  *
@@ -470,8 +477,8 @@ const DESCENDANTS =
  *
  * `failFast` (run-on-node.mjs --fail-fast, for pr-loop's batch runs, which are bisected when they fail): after the first
  * failed step, or once the file STOP is in the run's directory, no step starts, and the steps running side by side are
- * ended, their whole process trees and the hosted-db containers those made (named after their pids); the run lists
- * them as stopped. One step at a time, the shortest (`seconds`) run first and a step that has started runs to its end. */
+ * ended, their whole process trees and the containers those made (OWNED); the run lists them as stopped. One step at a
+ * time, the shortest (`seconds`) run first and a step that has started runs to its end. */
 export function planScript(steps, { cores = null, stepWorkers = true, failFast = false } = {}) {
 	const halted = `{ [ -n "$failed" ] || [ -e ${STOP} ]; }`;
 	const fail = failFast
@@ -542,9 +549,13 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 		'alive() { local _pid _comm state parent; { read -r _pid _comm state parent _ <"/proc/$1/stat"; } 2>/dev/null && [ "$state" != Z ] && [ "$parent" = "$BASHPID" ]; }',
 		...(failFast
 			? [
+					// Docker runs a step's containers outside its process tree: a killed docker client leaves its container
+					// running, and a shell as a container's PID 1 ignores the TERM the client passes on.
+					`drop_containers() { docker ps -aq 2>/dev/null | xargs -r docker inspect --format '{{.Id}} {{.Name}}{{range .Mounts}} {{.Source}}{{end}}' 2>/dev/null | awk -v tree="$1" -v here="$PWD" -v real="$(pwd -P)" '${OWNED}' | xargs -r docker rm -f -v >/dev/null 2>&1; }`,
 					// Ends the running steps: their process trees, frozen (SIGSTOP) a pass at a time until a pass finds no new
-					// process, as a frozen one starts none; then TERM, KILL after 10 s, and the hosted-db containers they made
-					// (test-hosted-db.mjs buildContainerName: qorpera-hosted-db-PID-HEX). The steps not started are stopped too.
+					// process, as a frozen one starts none; then TERM, and KILL after 10 s. The containers they made (OWNED)
+					// are removed right after the TERM, so their clients end with them, and again once the trees are gone, for
+					// one whose start was under way. The steps not started are stopped too.
 					"stop() {",
 					'\tlocal i tree="" more',
 					'\tfor i in $running; do tree="$tree ${pid[i]}"; done',
@@ -555,10 +566,11 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 					'\t\t\t[ "$(wc -w <<<"$more")" = "$(wc -w <<<"$tree")" ] && break; tree=$more',
 					"\t\tdone",
 					"\t\tkill -TERM $tree 2>/dev/null; kill -CONT $tree 2>/dev/null",
+					'\t\tdrop_containers "$tree"',
 					`\t\tfor _ in $(seq 20); do ps -o stat= -p "$(echo $tree | tr ' ' ,)" | grep -qv '^Z' || break; sleep 0.5; done`,
 					"\t\tkill -KILL $tree 2>/dev/null",
 					'\t\tfor i in $running; do wait "${pid[i]}" 2>/dev/null; echo "== changed: ${names[i]} stopped after $(( seconds[i] + $(date +%s) - began[i] )) s (--fail-fast)"; stopped="$stopped ${names[i]}"; done',
-					`\t\tdocker ps -a --filter name=qorpera-hosted-db- --format '{{.ID}} {{.Names}}' 2>/dev/null | awk -v tree="$tree" 'BEGIN { n = split(tree, t, " "); for (k = 1; k <= n; k++) mine[t[k]] = 1 } { split($2, p, "-"); if (p[4] in mine) print $1 }' | xargs -r docker rm -f -v >/dev/null 2>&1`,
+					'\t\tdrop_containers "$tree"',
 					"\tfi",
 					'\tfor i in $pending; do [ "${code[i]}" = 0 ] && stopped="$stopped ${names[i]}"; done',
 					'\trunning=""; pending=""',
