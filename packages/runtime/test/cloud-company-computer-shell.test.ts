@@ -776,11 +776,12 @@ function folderFixture(options: { init?: number | null } = {}) {
 		await vi.waitFor(() => expect(folders[keys - 1]?.start).toHaveBeenCalled());
 		return { sessionId, folder: folders[keys - 1] };
 	};
-	const read = (sessionId: string, runId: string | undefined = SHELL_RUN, waitMs = 0) =>
+	/** `null`: a read with no run. */
+	const read = (sessionId: string, runId: string | null = SHELL_RUN, waitMs = 0) =>
 		shell.result({
 			sessionId,
 			waitMs,
-			...(runId === undefined ? {} : { runId }),
+			...(runId === null ? {} : { runId }),
 			until: performance.now() + 30000,
 			signal,
 		});
@@ -844,7 +845,7 @@ describe("a shell command in the company folder", () => {
 		const { sessionId, folder } = await f.start("make");
 		folder.answer({ ran: true });
 		folder.out("one\n");
-		for (const runId of [OTHER_RUN, undefined])
+		for (const runId of [OTHER_RUN, null])
 			expect(await f.read(sessionId, runId)).toEqual({
 				sessionId,
 				state: "running",

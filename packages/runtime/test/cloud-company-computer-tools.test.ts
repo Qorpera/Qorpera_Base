@@ -678,6 +678,9 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(variants).toEqual(["start", "read", "write", "stop", "stop", "list"]);
 		expect(shell.description).not.toContain("15 seconds");
 		expect(shell.description).toContain("public internet");
+		// F3 4d: commands run in the company folder, offline unless the start asks for the network.
+		expect(shell.description).toContain("with the company folder at /company");
+		expect(shell.description).toContain("unless start sets network: true");
 		// One idle rule: only a busy shell keeps the machine awake; the next run is told what sleep stopped.
 		expect(shell.description).toContain(
 			"Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake",
