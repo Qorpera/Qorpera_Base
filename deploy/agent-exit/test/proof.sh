@@ -1330,6 +1330,7 @@ bash "$tool" verify >/dev/null || fail "verify with the brake on: $(bash "$tool"
 pass "the founder's levels in the node's settings switch the brake on: its share rule is in the exit, nothing braked yet"
 
 [[ $(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 12 3) == 12 ]] || fail "a burst before the brake did not all get through"
+burst_end=$(date +%s)
 wait_for "grep -q '\"company\":\"cB\",\"event\":\"braked\",\"reason\":\"[0-9]* new connections in 10 seconds (level 5)\"' $LOG/flows-$today.jsonl"
 wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 1)]\""
 number=$(brake_get "s['braked'][0]['number']")
@@ -1337,7 +1338,10 @@ until_before=$(brake_get "s['braked'][0]['until']")
 wait_for "rules_are dropped \"r['machines'] == {'10.210.1.26': $number}\""
 pass "a company past a level is braked: a braked line, and its machine in the exit's braked map with its number"
 # Its share: 2 of 10 new connections at once get through, the rest are dropped (and resent once, at 1 second, before
-# they give up), each counted once. Another company's machine is not braked.
+# they give up), each counted once. Another company's machine is not braked. On a loaded machine the brake can land
+# before the burst's last connections start, and they take the share's tokens; the share is full again 10 seconds after
+# its last token was taken.
+while (($(date +%s) < burst_end + 11)); do sleep 0.5; done
 let_through=$(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 10 2)
 [[ $let_through == 2 ]] || fail "a braked company got $let_through of 10 new connections at once through, not its share of 2"
 for _ in 1 2 3; do connects agent 1.1.1.1 443 || fail "another company's machine was braked"; done
