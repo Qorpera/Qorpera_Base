@@ -22,10 +22,10 @@
 --    the session runs; the repository credential stays for preparing and publishing. Audited as repository_fetch_used.
 -- 5. Members: qorpera_list_coding_mcp_sign_ins (origins, headers and owners; never a value).
 -- Both broker reads share 5j-1's session checks and lock order (qorpera_coding_relay_session), with the session
--- member's row taken at rank 1 (shared) so a demotion or a removal cannot commit while one serves; 5j-1's
--- qorpera_authorize_coding_environment is patched to take it too. The broker refuses a private address when it connects
--- (5j-6b); this database only refuses names that never resolve publicly. The patched bodies name 20260930440000, for
--- the deploy guard.
+-- member's row taken at rank 1 (shared) so a demotion or a removal cannot commit while one serves, and the role taken
+-- there decides; 5j-1's qorpera_authorize_coding_environment is patched to do so too. The broker refuses a private
+-- address when it connects (5j-6b); this database only refuses names that never resolve publicly. The patched bodies
+-- name 20260930440000, for the deploy guard.
 
 set local lock_timeout = '3s';
 
@@ -177,7 +177,15 @@ $new$);
 -- 5j-1's environment read checks the session member without a lock, after the session and before it waits for the
 -- secrets (rank 8), so a demotion or a removal (the member row FOR UPDATE at rank 1) could commit while it waits, and it
 -- would serve a member who may no longer write (review r1 of #1159). It now takes that row at rank 1 too, as the relay
--- reads below do.
+-- reads below do, and checks the role it took there (review r2): a member row that was not there at rank 1 (the member
+-- had left, and joined again while this waited) is not the session's.
+select pg_temp.coding_mcp_patch(
+	'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'::regprocedure,
+	$old$	v_secrets jsonb := '[]'::jsonb;
+$old$,
+	$new$	v_secrets jsonb := '[]'::jsonb;
+	v_member_role public.qorpera_profile_members.role%type; -- 20260930440000 (5j-6a)
+$new$);
 select pg_temp.coding_mcp_patch(
 	'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'::regprocedure,
 	$old$	-- The company row first (rank 0): the audit rows' key needs it.
@@ -190,9 +198,9 @@ $old$,
 		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
 		where authority.id = p_broker_authority_id) for key share;
 	-- 20260930440000 (5j-6a): the session member's row at rank 1, shared, named by the worker (whose owner never
-	-- changes). A demotion or a removal takes it FOR UPDATE at rank 1, so one that committed first is read below, and none
-	-- commits while this serves.
-	perform 1 from public.qorpera_profile_members as member
+	-- changes), and its role kept for the member check below. A demotion or a removal takes it FOR UPDATE at rank 1, so
+	-- one that committed first is read here, and none commits while this serves.
+	select member.role into v_member_role from public.qorpera_profile_members as member
 	join public.qorpera_runtime_workers as worker
 		on worker.profile_id = member.profile_id and worker.owner_user_id = member.user_id
 	where worker.id = p_worker_id and worker.profile_id = (
@@ -200,12 +208,25 @@ $old$,
 		where authority.id = p_broker_authority_id)
 	for share of member;
 $new$);
+select pg_temp.coding_mcp_patch(
+	'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'::regprocedure,
+	$old$	if not exists (
+		select 1 from public.qorpera_profile_members as member
+		where member.profile_id = v_session.profile_id and member.user_id = v_worker.owner_user_id
+			and member.role in ('owner','admin','contributor')
+	) then
+		raise exception 'coding session member is unavailable' using errcode = '42501';
+$old$,
+	$new$	-- 20260930440000 (5j-6a): the member row taken at rank 1; none there means none for this session.
+	if v_member_role is null or v_member_role not in ('owner','admin','contributor') then
+		raise exception 'coding session member is unavailable' using errcode = '42501';
+$new$);
 
 -- The coding session a relay read serves, checked and taken as qorpera_authorize_coding_environment takes it: the
--- company row's key share first (rank 0), the session member's row (rank 1), the broker's authority, the session on a
+-- company row's key share first (rank 0), the session member's row and its role (rank 1), the broker's authority, the session on a
 -- live lease of this executor in a phase that runs commands, the worker and its executor, the agent's grant for the
--- session's repository, and a member who may still write. The callers check the broker's role and the request's shape
--- first.
+-- session's repository, and that the member row taken at rank 1 may still write. The callers check the broker's role
+-- and the request's shape first.
 create function public.qorpera_coding_relay_session(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -219,13 +240,15 @@ declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_session public.qorpera_coding_sessions%rowtype;
 	v_worker public.qorpera_runtime_workers%rowtype;
+	v_member_role public.qorpera_profile_members.role%type;
 begin
 	perform 1 from public.qorpera_profiles as profile where profile.id = (
 		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
 		where authority.id = p_broker_authority_id) for key share;
-	-- Rank 1: the session member's row, named by the worker (whose owner never changes), shared. A demotion or a removal
-	-- takes it FOR UPDATE at rank 1, so one that committed first is read below, and none commits while this serves.
-	perform 1 from public.qorpera_profile_members as member
+	-- Rank 1: the session member's row, named by the worker (whose owner never changes), shared, and its role kept for the
+	-- member check below. A demotion or a removal takes it FOR UPDATE at rank 1, so one that committed first is read here,
+	-- and none commits while this serves. With no row here the session has no member, even if one joins while this waits.
+	select member.role into v_member_role from public.qorpera_profile_members as member
 	join public.qorpera_runtime_workers as worker
 		on worker.profile_id = member.profile_id and worker.owner_user_id = member.user_id
 	where worker.id = p_worker_id and worker.profile_id = (
@@ -275,11 +298,7 @@ begin
 	) then
 		raise exception 'coding repository grant is unavailable' using errcode = '42501';
 	end if;
-	if not exists (
-		select 1 from public.qorpera_profile_members as member
-		where member.profile_id = v_session.profile_id and member.user_id = v_worker.owner_user_id
-			and member.role in ('owner','admin','contributor')
-	) then
+	if v_member_role is null or v_member_role not in ('owner','admin','contributor') then
 		raise exception 'coding session member is unavailable' using errcode = '42501';
 	end if;
 	return v_session;

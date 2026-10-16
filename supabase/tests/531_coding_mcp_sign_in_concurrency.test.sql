@@ -8,6 +8,8 @@
 --    refused.
 -- 2. A sign-in read waiting behind an open step-down sees it once it commits: refused.
 -- 3. The same for 5j-1's environment read (qorpera_authorize_coding_environment, patched by 20260930440000).
+-- 4. A read that finds no member row at rank 1 is refused even when the row is back by its member check (the member left
+--    and joined again while it waited at the session): both reads (review r2).
 -- Alice (the owner, …01) holds the session; the administrator (…04) is made a founder first, so Alice may step down,
 -- and makes her a founder again between the cases.
 
@@ -288,6 +290,51 @@ begin
 	perform pg_temp.base_assert(v_step_down ->> 'role' = 'viewer'
 			and pg_temp.r531_served(v_read) = '42501:coding session member is unavailable',
 		format('3: the environment read behind the step-down served: %s, %s', v_step_down, pg_temp.r531_served(v_read)));
+end $$;
+
+-- 4. Alice has left; a holder keeps her session row. Each read finds no member row, waits at the session, and her row
+--    comes back meanwhile (she joined again). The read is refused; the next one serves. Her row is taken out and put
+--    back under replica, so no removal or join trigger runs and only the reads' own checks decide.
+select pg_temp.r531_restore();
+do $$
+declare v_member jsonb; v_read jsonb; v_next text;
+	v_calls text[] := array[pg_temp.r531_read(), pg_temp.r531_environment()];
+	v_serves text[] := array['company.2:mcp envelope company-2', 'secrets:0'];
+	v_where text := format('profile_id = %L and user_id = %L', '92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000001');
+begin
+	execute 'select to_jsonb(member) from public.qorpera_profile_members as member where ' || v_where
+	into strict v_member;
+	perform dblink_exec('r531_member', 'reset role');
+	for v_index in 1..2 loop
+		perform dblink_exec('r531_hold', 'begin');
+		perform dblink_exec('r531_hold', 'set local session_replication_role = replica');
+		perform dblink_exec('r531_hold', 'delete from public.qorpera_profile_members where ' || v_where);
+		perform dblink_exec('r531_hold', 'commit');
+		perform dblink_exec('r531_hold', 'begin');
+		perform 1 from dblink('r531_hold', format(
+			'select 1 from public.qorpera_coding_sessions where worker_id = %L for update',
+			current_setting('qorpera_test.r531_worker'))) as held(one integer);
+		perform dblink_send_query('r531_broker', v_calls[v_index]);
+		if not pg_temp.r531_waits('broker', 'hold', 'public.qorpera_coding_sessions') then
+			perform dblink_exec('r531_hold', 'rollback');
+			raise exception '4.%: the read must wait for the holder at the session: %', v_index,
+				pg_temp.r531_collect('r531_broker');
+		end if;
+		perform dblink_exec('r531_member', 'begin');
+		perform dblink_exec('r531_member', 'set local session_replication_role = replica');
+		perform dblink_exec('r531_member', format('insert into public.qorpera_profile_members
+			select (jsonb_populate_record(null::public.qorpera_profile_members, %L::jsonb)).*', v_member));
+		perform dblink_exec('r531_member', 'commit');
+		perform dblink_exec('r531_hold', 'commit');
+		v_read := pg_temp.r531_collect('r531_broker');
+		v_next := pg_temp.r531_now(v_calls[v_index]);
+		perform pg_temp.base_assert(pg_temp.r531_served(v_read) = '42501:coding session member is unavailable'
+				and v_next = v_serves[v_index],
+			format('4.%s: a read that found no member row served the one that came back: %s, then %s', v_index,
+				pg_temp.r531_served(v_read), v_next));
+	end loop;
+	perform dblink_exec('r531_member', 'set role authenticated');
 end $$;
 
 select pg_temp.r531_cleanup();
