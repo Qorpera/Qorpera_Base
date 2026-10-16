@@ -140,18 +140,20 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 		const t = object(value, ["kind", "path", "match", "timeZone", "report"], ["kind", "path", "timeZone"]);
 		const match = t.match ?? "exact";
 		if (match !== "exact" && match !== "subtree") throw new Error("Invalid routine path match");
+		// A folder is often written with a slash at the end (inbox/l23/): it is dropped, as the routine file's
+		// parser does. Any other bad path is refused with the parser's reason, so the model can correct it.
+		const path = typeof t.path === "string" ? t.path.replace(/\/+$/, "") : "";
 		if (
-			typeof t.path !== "string" ||
-			!t.path ||
-			Buffer.byteLength(t.path) > 1024 ||
-			t.path.startsWith("/") ||
-			t.path.split("/").some((part) => !part || part === "." || part === "..")
+			!path ||
+			Buffer.byteLength(path) > 1024 ||
+			path.startsWith("/") ||
+			path.split("/").some((part) => !part || part === "." || part === "..")
 		)
-			throw new Error("Invalid routine path");
+			throw new CloudToolArgumentRefusal("path is a folder or file path inside the company, like sales/leads");
 		return {
 			kind: "listener",
 			source: "company-file",
-			path: t.path,
+			path,
 			match,
 			timeZone: timeZone(t.timeZone),
 			replyPolicy: reply(t.report),

@@ -159,6 +159,49 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
+	// Run a2d48302 (16 Oct 2026): inbox/l23/ was refused as INVALID_ARGUMENTS with no reason, before any review.
+	it("drops a slash at the end of a watched path, as the routine file does", async () => {
+		const f = await fixture();
+		try {
+			for (const [operationKey, path] of [
+				["s1", "orders/incoming/"],
+				["s2", "inbox/l23//"],
+			] as const) {
+				const result = await f.boundary.invoke(operationKey, "qorpera", "manage_routine", {
+					...weekly,
+					operationKey,
+					trigger: { kind: "file_change", path, match: "subtree", timeZone: "UTC" },
+				});
+				expect(result.success, JSON.stringify(result)).toBe(true);
+			}
+			expect(f.saved().map((request) => (request.trigger as { path: string }).path)).toEqual([
+				"orders/incoming",
+				"inbox/l23",
+			]);
+		} finally {
+			f.run.close();
+		}
+	});
+	it.each(["../secrets", "/orders/incoming", "orders//incoming", "./orders", "orders/../secrets", "/"])(
+		"refuses the watched path %s with the reason, before the writer sees it",
+		async (path) => {
+			const f = await fixture();
+			try {
+				const response = await f.boundary.invoke("p", "qorpera", "manage_routine", {
+					...weekly,
+					trigger: { kind: "file_change", path, timeZone: "UTC" },
+				});
+				expect(response.success).toBe(false);
+				expect(response.contentItems[0].text).toContain(
+					"INVALID_ARGUMENTS: path is a folder or file path inside the company, like sales/leads",
+				);
+				expect(f.writer.check).not.toHaveBeenCalled();
+				expect(f.writer.change).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		},
+	);
 	it("compiles an event listener on a hook, with and without a type filter", async () => {
 		const f = await fixture();
 		const hookId = "3B2C9E4A-1D7F-4E60-9A2B-5C8D0E1F2A3B";
