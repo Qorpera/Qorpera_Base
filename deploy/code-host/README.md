@@ -99,4 +99,6 @@ and the build project again, checking that the test machine is as it was. `<out 
 each file's name, size and sha-256, in the order `lxc image import` takes them. LXD's fingerprint is the sha-256 of
 those files in that order, so the script checks it before it writes the record, and `lxc image import <files...>`
 gives the same image in the VM's default store. The folder program is the one this tree records, so the VM's node
-side, built from the same tree, runs the same program. On failure `<out dir>` is removed.
+side, built from the same tree, runs the same program. On failure `<out dir>` is removed. One export runs at a time
+on a test machine: a run holds `/run/lock/qorpera-export-code-host-image.lock` until it exits, and a second run stops
+at once, before it claims or removes anything.

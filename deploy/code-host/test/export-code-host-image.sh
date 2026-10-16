@@ -24,6 +24,9 @@
 # nft ruleset, links and LXD state are listed before and after (../coding-machine/test/host-state.sh): anything that
 # differs fails the run, as does a run beside another one that adds an image to the default store. On failure <out dir>
 # is removed. Prints EXPORTED <fingerprint> last.
+#
+# One export runs at a time on a test machine: a run holds $LOCK_FILE from its start until it exits, its cleanup and
+# checks included, and a second run stops at once, before it claims or removes anything.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -31,6 +34,7 @@ REPO=$(cd "$HERE/../.." && pwd)
 BUILD=qorpera-export-code-host-build
 POOL=default
 NETWORK=lxdbr0
+LOCK_FILE=/run/lock/qorpera-export-code-host-image.lock
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -41,7 +45,11 @@ fail() {
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
 export PATH=$PATH:/snap/bin
-for tool in lxc jq nft python3 sysctl setpriv docker node sha256sum; do command -v "$tool" >/dev/null || fail "no $tool here"; done
+for tool in lxc jq nft python3 sysctl setpriv docker node sha256sum flock; do command -v "$tool" >/dev/null || fail "no $tool here"; done
+# Held on this open file until the process exits (the EXIT trap runs first), so no other export claims the build
+# project's name between this run's teardown and its checks.
+exec {LOCK}>>"$LOCK_FILE"
+flock -n "$LOCK" || fail "another code host image export runs here (it holds $LOCK_FILE)"
 PARENT=$(cd "$(dirname "$1")" && pwd) || fail "no directory $(dirname "$1")"
 OUT=$PARENT/$(basename "$1")
 [[ ! -e $OUT ]] || fail "$OUT exists already"
@@ -69,9 +77,10 @@ built_image() {
 	jq -er '.imageFingerprint | select(test("^[0-9a-f]{64}$"))' "$WORK/image-build.json" 2>/dev/null ||
 		sed -n 's/^published \([0-9a-f]\{64\}\) .*/\1/p' "$WORK/build.log" 2>/dev/null | tail -n 1
 }
-# Everything in the claimed project, and this run's image in the default store. Safe to run twice.
+# Everything in the claimed project, and this run's image in the default store. Safe to run twice. A project leaves
+# CLAIMED as soon as it is deleted: its name is free then, and nothing later in this run touches that name again.
 teardown() {
-	local project name image
+	local project name image left=()
 	for project in "${CLAIMED[@]}"; do
 		for name in $(lxc list --project "$project" -c n -f csv </dev/null 2>/dev/null); do
 			lxc delete --project "$project" --force "$name" </dev/null >/dev/null 2>&1 || true
@@ -79,10 +88,13 @@ teardown() {
 		for name in $(lxc image list --project "$project" -c F -f csv </dev/null 2>/dev/null); do
 			lxc image delete --project "$project" "$name" </dev/null >/dev/null 2>&1 || true
 		done
-		if lxc project show "$project" </dev/null >/dev/null 2>&1; then
-			lxc project delete "$project" </dev/null >/dev/null 2>&1 || echo "could not delete LXD project $project" >&2
+		if lxc project show "$project" </dev/null >/dev/null 2>&1 &&
+			! lxc project delete "$project" </dev/null >/dev/null 2>&1; then
+			echo "could not delete LXD project $project" >&2
+			left+=("$project")
 		fi
 	done
+	CLAIMED=("${left[@]}")
 	image=$(built_image || true)
 	if [[ -n $image ]] && lxc image info --project default "$image" </dev/null >/dev/null 2>&1; then
 		lxc image delete --project default "$image" </dev/null >/dev/null 2>&1 || echo "could not delete image $image" >&2
@@ -111,18 +123,19 @@ sleep 15
 snapshot before
 compare calibrate before >/dev/null || echo "(changes in the 15 seconds before, left out where they are sysctls)"
 
-# The build project is this run's claim on the name (a second run stops here and removes nothing of this one). It has
-# its own image store, so the builder's base image never enters the test machine's own store.
+# The build project is this run's claim on the name (a project of that name that this run did not make stops it here,
+# and it removes nothing of it). It has its own image store, so the builder's base image never enters the test machine's
+# own store.
 claim=$(lxc project create "$BUILD" -c features.images=true -c features.profiles=false </dev/null 2>&1) ||
-	fail "cannot claim LXD project $BUILD (another code host image export may run here): $claim"
+	fail "cannot claim LXD project $BUILD (no other export runs here: a run that was killed may have left it): $claim"
 CLAIMED+=("$BUILD")
 mkdir -m 0755 "$OUT"
 MADE_OUT=1
-# The way out for the builder: the proxy, as nobody, on the bridge's own address.
+# The way out for the builder: the proxy, as nobody, on the bridge's own address (without the lock's file).
 BRIDGE=$(lxc network get "$NETWORK" ipv4.address </dev/null)
 [[ $BRIDGE =~ ^[0-9.]+/[0-9]+$ ]] || fail "$NETWORK has no IPv4 address ($BRIDGE)"
 setpriv --reuid=65534 --regid=65534 --clear-groups python3 -I - "${BRIDGE%/*}" "$BRIDGE" \
-	<"$HERE/../coding-machine/test/proof-proxy.py" >"$WORK/proxy.port" 2>"$WORK/proxy.log" &
+	<"$HERE/../coding-machine/test/proof-proxy.py" >"$WORK/proxy.port" 2>"$WORK/proxy.log" {LOCK}>&- &
 PROXY_PID=$!
 for _ in $(seq 1 50); do [[ -s $WORK/proxy.port ]] && break; sleep 0.2; done
 PORT=$(head -n 1 "$WORK/proxy.port")
@@ -183,13 +196,12 @@ fi
 # --- The test machine is as it was ------------------------------------------------------------------------------------
 IMAGE=$(built_image || true)
 teardown
-for project in "${CLAIMED[@]}"; do
-	! lxc project show "$project" </dev/null >/dev/null 2>&1 || fail "LXD project $project is still there"
-done
+((${#CLAIMED[@]} == 0)) || fail "LXD project ${CLAIMED[*]} is still there"
+# Deleted, so no longer this run's: a project of that name now is someone else's, and the cleanup leaves it.
+! lxc project show "$BUILD" </dev/null >/dev/null 2>&1 || fail "an LXD project $BUILD is there again, not this run's"
 if [[ -n $IMAGE ]]; then
 	! lxc image info --project default "$IMAGE" </dev/null >/dev/null 2>&1 || fail "the image $IMAGE is still there"
 fi
-CLAIMED=()
 snapshot after
 compare before after || fail "the run changed the test machine (above)"
 ((BUILT == 0)) || fail "the build or the export failed (above)"
