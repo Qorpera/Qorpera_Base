@@ -281,8 +281,9 @@ over `X` is the publish point inside the syscall, a lock's removal publishes `X`
 (5b, §7 item 9 as amended here):
 
 - `.git` and `repo.git` refused at any depth outside `code/<owner>/<name>/`, accepted inside;
-- leases on shared files in `repo.git` (objects, `refs/`, `packed-refs`, `shallow` and their reflogs), with the version
-  check at the rename as the correctness rule;
+- leases on the shared files in `repo.git` (`refs/`, `packed-refs`, `shallow`), with the version check at the rename
+  as the correctness rule: `X` and its reflog `logs/X` land together or not at all. A lease lives as long as its view.
+  Objects take no lease: a session writes them freely and never removes them;
 - the per-worker rule: only a worker's session and the platform write under `worktrees/<workerId>/` and
   `repo.git/worktrees/<workerId>/`, and no session takes a lease on another worker's branch
   `refs/heads/qorpera/coding/<other>`;
