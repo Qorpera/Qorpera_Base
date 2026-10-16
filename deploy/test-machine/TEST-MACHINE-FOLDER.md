@@ -91,7 +91,10 @@ machine when it takes the reads in.
    `qorpera_folder_run_inherit_view_reads` for Alice's run (her machine's view),
    then for Bob's run, whose agent's view it is not. 6a-3 lets a run with the
    company audience whose agent and member read the root take it in, and refuses
-   any other with 42501 ("only with the company-wide view"). The record keeps
+   any other with 42501 ("only with the company-wide view"). The fixture gives
+   Bob's run both, so it must take the reads in: the record keeps what SQL says
+   of Bob's run before the take-in (`bobAuthority`: its audience, its agent, and
+   whether its agent and member read the root, `qorpera_folder_reads_root`) and
    Bob's read rows before and after.
 4. **`overlap`.** Bob's run starts B, which writes `bob-only.txt`, then after 6 s
    appends to `shared.txt`. Carol's run starts C 3 s after B, which appends to
@@ -121,8 +124,10 @@ machine when it takes the reads in.
      (`qorpera-machine-<random>`) and made from the same image, is prepared
      through its own helper, then given the hand-over the host gave the real guest
      (its `folder-mount` stdin, kept in memory, never logged). The service
-     refuses its open: its instance is not the view's placement. The real
-     machine's next command still reads `/company`.
+     refuses its open `VIEW_REFUSED`: its instance is not the view's placement.
+     The guest's folder program then stops for good, and the helper answers
+     `closed` for the view. The real machine's next command still reads
+     `/company`.
 6. **`stop`.** Alice's run stops `p4` (`qorpera_native_machine_manage`,
    `stop`). The host's stop runs a boundary and then the final boundary with
    the view, powers the VM off and sends `restarted` for the machine; SQL has
@@ -136,16 +141,16 @@ machine when it takes the reads in.
 | Check | Passes when |
 |---|---|
 | `bootMounted` | the host's pass reported `FOLDER_MOUNTED`; SQL has the boot's `test_machine` view open; the first command succeeded and printed the seed |
-| `heldUntilReleased` | while held, a gateway read of A got `running`, empty output and a null exit code, and boundaries were asked; the read after the hold got A's output and exit 0, after a boundary answered `released` |
+| `heldUntilReleased` | while held, A's start and a later gateway read of A both got `running`, empty output, a null exit code and a log of 0 bytes, and boundaries were asked; the read after the hold got A's output, a log with bytes and exit 0, after a boundary answered `released` |
 | `creditedToCommand` | `p4/alice.txt` is committed with credits `[A]`, actor `staff_agent` Alice, run R and requester the owner, from the `test_machine` view |
 | `overlapCredited` | `bob-only.txt` is credited `[B]` with actor Bob, `shared.txt` `[B, C]`, and `carol-after.txt` `[C]` with actor Carol; B and C exited 0 |
-| `readsTakenIn` | the view's read set and Alice's run hold `p4/seed.md`; Alice's run's take-in answered for the view; Bob's run held no read before, and either took them in or was refused as a run without the company-wide view, its reads unchanged |
+| `readsTakenIn` | the reads are the boot view's; its read set and Alice's run hold `p4/seed.md`; Alice's run's take-in answered for the view; SQL has Bob's run as another agent's (not the view's), with the company audience and its agent and member reading the root; Bob's run held no read before, its take-in answered for the view with reads (not a replay), and its reads after are exactly the view's. A refusal fails the check |
 | `endedRefused` | K is `lost` with an end time; its start sent again is refused `MACHINE_COMMAND_ENDED`; `k.txt`'s unit is answered `command_ended` and `k.txt` is not in the folder; `m.txt` is committed credited `[M]` |
-| `otherMachineRefused` | the second VM's mount is not `mounted`, the service saw its open and refused every one, and the real machine reads afterwards |
+| `otherMachineRefused` | the hand-over was of the boot's view; the service saw the second VM's opens of that view, found the VM, and refused every one `VIEW_REFUSED`; the guest answered `closed` for that view; and the real machine reads afterwards. `unanswered`, `UNAVAILABLE`, `BUSY` or an open of another view fails the check |
 | `stopClosed` | the stop's outcome is `done`, the final boundary named the view, `restarted` was answered, SQL has the view closed and LXD has the VM stopped |
 | `secondBoot` | the second start mounted with a new boot id and a new view id, and its command reads the files |
 | `serviceClean` | no step raised, no host pass failed or threw, every cleanup closed, and the folder bridge did not exit on its own |
-| `noSecretsInEvidence` | no holder token, view pass or service token of the run appears in the record (the record the wrapper prints) |
+| `noSecretsInEvidence` | no holder token, view pass (of either boot) or service token of the run appears in the record (the record the wrapper prints) |
 
 ## Stood in
 
@@ -218,8 +223,10 @@ machine when it takes the reads in.
   are in the object store the service reads, and committed as the owner.
 
 Tokens, holders and view passes are made per run, held in memory and never
-printed. `noSecretsInEvidence` checks the record for every one of them, and the
-record is written with them redacted if one slipped in.
+printed. Each view pass is added to the run's secrets the moment its hand-over
+is seen, before the guest is asked, so every boot's pass is looked for, in a
+run that fails early too. `noSecretsInEvidence` checks the record for every one
+of them, and the record is written with them redacted if one slipped in.
 
 ## Limitations
 

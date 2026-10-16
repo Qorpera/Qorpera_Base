@@ -181,8 +181,8 @@ $$;`,
 
 /** The LXD client the host is given: the machines' NIC is left out of what LXD makes (this proof makes no network on
  * the shared test machine), and put back in what LXD answers, so the host's own instance check holds; each view's
- * hand-over (folder-mount's stdin) is kept in memory for the second machine's attempt. */
-export function nicStandIn(client, nics = new Map(), handovers = []) {
+ * hand-over (folder-mount's stdin) goes to `onHandover` before the guest is asked. */
+export function nicStandIn(client, nics = new Map(), onHandover = () => {}) {
 	const withNic = (instance, nic) => {
 		if (!instance || typeof instance !== "object") return instance;
 		const next = { ...instance };
@@ -209,13 +209,28 @@ export function nicStandIn(client, nics = new Map(), handovers = []) {
 			if (property === "execInstanceStream")
 				return async (project, name, request, signal) => {
 					if (request?.command?.at(-1) === "folder-mount")
-						handovers.push({ project, name, stdin: Buffer.from(request.stdin) });
+						onHandover({ project, name, stdin: Buffer.from(request.stdin) });
 					return target.execInstanceStream(project, name, request, signal);
 				};
 			const value = Reflect.get(target, property, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
+}
+
+/** Keeps each hand-over in memory, for the second machine's attempt, with the view it names; and its pass among the
+ * run's secrets the moment it is seen, so the record is checked for every boot's pass, a run that fails early too. A
+ * hand-over that is not the JSON expected is kept whole as the secret. */
+export function keepHandover(handovers, secrets) {
+	return (handover) => {
+		const text = handover.stdin.toString("utf8");
+		let said = null;
+		try {
+			said = JSON.parse(text);
+		} catch {}
+		secrets[`viewPass${handovers.length + 1}`] = typeof said?.pass === "string" ? said.pass : text;
+		handovers.push({ ...handover, viewId: typeof said?.viewId === "string" ? said.viewId : null });
+	};
 }
 
 /** Which of the run's secrets (name to value) appear in `text`. */
@@ -253,12 +268,15 @@ export function judge(evidence, leaks = []) {
 		"the host's pass mounted the boot's test_machine view and a command read the company's file under /company",
 	);
 	const credit = s.credit ?? {};
+	// A receipt that shows nothing yet: no output, no end and an empty log.
+	const withheld = (r) => r?.state === "running" && r.output === "" && r.exitCode === null && r.totalBytes === 0;
 	check(
 		"heldUntilReleased",
-		credit.heldRead?.state === "running" && credit.heldRead?.output === "" && credit.heldRead?.exitCode === null &&
-			credit.heldBoundaries > 0 && credit.released?.state === "succeeded" && credit.released?.exitCode === 0 &&
-			credit.released?.output?.includes("wrote-alice") && credit.releasedFirst === true,
-		"while no boundary answered, a read of the finished command got running/''/null; output came after a released boundary",
+		withheld(credit.start) && withheld(credit.heldRead) && credit.heldBoundaries > 0 &&
+			credit.released?.state === "succeeded" && credit.released?.exitCode === 0 &&
+			credit.released?.output?.includes("wrote-alice") && credit.released?.totalBytes > 0 && credit.releasedFirst === true,
+		"while no boundary answered, the start and a read of the finished command both got running, no output, no exit " +
+			"code and an empty log; the output and its end came after a released boundary",
 	);
 	const a = unitOf(credit.commits, "p4/alice.txt");
 	check(
@@ -280,16 +298,21 @@ export function judge(evidence, leaks = []) {
 		"overlapping commands of Bob's and Carol's runs: bob-only.txt [B], shared.txt [B,C], carol-after.txt [C]",
 	);
 	const reads = s.reads ?? {};
-	const took = (t) => t?.schema === "qorpera.folder-inherit/v1" && t.viewId === reads.viewId && typeof t.reads === "number";
+	const took = (t) =>
+		t?.schema === "qorpera.folder-inherit/v1" && t.viewId === reads.viewId && t.replay === false && Number.isInteger(t.reads) &&
+		t.reads > 0;
+	// Bob's run may take the view in only as a company-audience run whose agent and member read the root (6a-3): the
+	// fixture gives it both, so a refusal is a failure.
+	const bob = reads.bobAuthority ?? {};
 	check(
 		"readsTakenIn",
-		reads.viewReads?.includes("p4/seed.md") && reads.aliceRunReads?.includes("p4/seed.md") && took(reads.alice) &&
-			reads.bobBefore?.includes("p4/seed.md") === false &&
-			(took(reads.bob)
-				? reads.bobAfter?.includes("p4/seed.md")
-				: /only with the company-wide view/.test(reads.bob?.error ?? "") && reads.bobAfter?.includes("p4/seed.md") === false),
-		"the view's reads reached Alice's run and her run took them in (6a-3, through SQL); Bob's run took them in, or was " +
-			"refused as a run without the company-wide view",
+		reads.viewId && reads.viewId === boot.view?.id && reads.viewReads?.includes("p4/seed.md") &&
+			reads.aliceRunReads?.includes("p4/seed.md") && took(reads.alice) &&
+			bob.staffAgentId === STAFF.bob && bob.staffAgentId !== boot.view?.staffAgentId && bob.audience === "company" &&
+			bob.readsRoot === true && Array.isArray(reads.bobBefore) && reads.bobBefore.length === 0 && took(reads.bob) &&
+			sameSet(reads.bobAfter, reads.viewReads),
+		"the view's reads reached Alice's run and her run took them in (6a-3, through SQL); Bob's run, another agent's with " +
+			"the company audience and the root, had none and took in exactly the view's",
 	);
 	const refusals = s.refusals ?? {};
 	const k = refusals.k ?? {};
@@ -301,11 +324,20 @@ export function judge(evidence, leaks = []) {
 		"a command ended in SQL is refused again at the gateway and its write is refused command_ended at the boundary",
 	);
 	const intruder = refusals.intruder ?? {};
+	// Refused for who it is: the service found the second machine and said VIEW_REFUSED to every open of this view, and the
+	// guest's folder program stopped for good (closed). Unavailable, busy or no answer is not a refusal.
 	check(
 		"otherMachineRefused",
-		intruder.mount && intruder.mount !== "mounted" && intruder.opens?.length > 0 && intruder.opens.every((o) => !o.ok) &&
+		intruder.viewId && intruder.viewId === boot.view?.id && intruder.answer?.schema === "qorpera.machine-guest-folder/v1" &&
+			intruder.answer.viewId === intruder.viewId && intruder.answer.mount === "closed" && intruder.mount === "closed" &&
+			intruder.opens?.length > 0 &&
+			intruder.opens.every(
+				(o) => o.viewId === intruder.viewId && o.machine === intruder.name && o.lookup === "found" && o.ok === false &&
+					o.code === "VIEW_REFUSED",
+			) &&
 			refusals.stillReads?.exitCode === 0 && refusals.stillReads?.output?.includes("a"),
-		"a second machine in the project, with this view's hand-over, was refused by the service; the machine still reads",
+		"a second machine in the project, with this view's hand-over, was refused the view (VIEW_REFUSED) by the service " +
+			"and its folder program closed; the machine still reads",
 	);
 	const stop = s.stop ?? {};
 	check(
@@ -770,7 +802,7 @@ async function prove(options, evidence, cleanups, secrets) {
 	const control = new code.CodingExecutorHttpControl({ supabaseUrl: `${ORIGIN}/`, serviceRoleKey: STAND_IN, fetch: stand.fetch });
 	const host = new code.LxdCompanyMachineHost({
 		control, owner: EXECUTOR, machineIdSha256: nodeSha, policy,
-		client: nicStandIn(lxd, new Map(), handovers), journalRoot,
+		client: nicStandIn(lxd, new Map(), keepHandover(handovers, secrets)), journalRoot,
 		storagePolicy: {
 			schema: "qorpera.coding-nas-policy/v1", mountPoint: join(work, "nas"), source: "192.0.2.1:/p4", serverAddress: "192.0.2.1",
 			rootPath: join(work, "nas"),
@@ -971,8 +1003,15 @@ async function prove(options, evidence, cleanups, secrets) {
 	steps.reads.viewReads = readPaths("qorpera_folder_view_read_records", "view_id", bootView.id);
 	steps.reads.aliceRunReads = readPaths("qorpera_folder_run_read_records", "run_id", runs.alice.binding.runId);
 	steps.reads.bobBefore = readPaths("qorpera_folder_run_read_records", "run_id", runs.bob.binding.runId);
-	// The take-in as the run that reads a command's output would make it: Alice's run (her machine's view), and Bob's,
-	// whose agent's view it is not (6a-3 lets a company-audience run take it in, and refuses any other).
+	// What 6a-3 asks of Bob's run, whose agent's view it is not: the company audience, and its agent and member reading
+	// the root now.
+	steps.reads.bobAuthority = db.json(`select jsonb_build_object('audience', r.audience_kind, 'staffAgentId', r.staff_agent_id,
+		'requesterUserId', r.requested_by_user_id, 'readsRoot', public.qorpera_folder_reads_root(r.environment_id, f.profile_id,
+			r.staff_agent_id, r.requested_by_user_id))
+		from public.qorpera_execution_runs r join public.qorpera_company_files f on f.environment_id = r.environment_id
+		where r.id = ${literal(runs.bob.binding.runId)}`);
+	// The take-in as the run that reads a command's output would make it: Alice's run (her machine's view), and Bob's
+	// (6a-3 lets a company-audience run take it in, and refuses any other).
 	const takeIn = async (who) => {
 		const b = runs[who].binding;
 		try {
@@ -1014,7 +1053,7 @@ async function prove(options, evidence, cleanups, secrets) {
 		() => commandRow(overB.commandId)?.endedAt && commandRow(overC.commandId)?.endedAt,
 		{ timeoutMs: 120_000, signal },
 	);
-	steps.overlap ={ b: overB.commandId, c: overC.commandId, receipts: { b: receiptB, c: receiptC }, commits: commits() };
+	steps.overlap = { b: overB.commandId, c: overC.commandId, receipts: { b: receiptB, c: receiptC }, commits: commits() };
 	say(`overlap: B ${receiptB.state} C ${receiptC.state}`);
 
 	// 5a. Refusals: a command ended in SQL is refused (the gateway's start again, and its write at the boundary).
@@ -1059,9 +1098,8 @@ async function prove(options, evidence, cleanups, secrets) {
 	// 5b. Another machine in the project, given this view's hand-over, cannot mount it.
 	const handover = handovers.at(-1);
 	assert(handover?.name === lxdName, "P4: no hand-over of the machine's view was seen");
-	secrets.viewPass = JSON.parse(handover.stdin.toString("utf8")).pass;
 	const intruder = `qorpera-machine-${randomBytes(16).toString("hex")}`;
-	steps.refusals.intruder = { name: intruder };
+	steps.refusals.intruder = { name: intruder, viewId: handover.viewId };
 	const made = await lxc(project, ["init", image, intruder, "--vm", "--no-profiles", "--storage", pool, "-d", "root,size=10GiB",
 		"-c", "limits.cpu=1", "-c", "limits.memory=1GiB", "-c", "boot.mode=uefi-secureboot", "-c", "boot.autostart=false"]);
 	const ran = made.status === 0 ? await lxc(project, ["start", intruder]) : made;
@@ -1095,7 +1133,7 @@ async function prove(options, evidence, cleanups, secrets) {
 		steps.refusals.intruder.prepare = await guest(["prepare", machineId, "1"]);
 		const answer = await guest(["folder-mount"], handover.stdin);
 		steps.refusals.intruder.answer = answer;
-		steps.refusals.intruder.mount = answer?.mount ?? answer?.code ?? null;
+		steps.refusals.intruder.mount = answer?.mount ?? null;
 		steps.refusals.intruder.opens = opens.filter((o) => o.t >= triedAt && o.machine === intruder);
 		steps.refusals.intruder.removed = (await lxc(project, ["delete", "--force", intruder])).status;
 	}

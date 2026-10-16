@@ -8,6 +8,7 @@ import {
 	findSecrets,
 	fixtureSql,
 	judge,
+	keepHandover,
 	literal,
 	nicStandIn,
 	parseArgs,
@@ -133,11 +134,11 @@ function fakeClient() {
 	};
 }
 
-test("the stand-in client makes machines without their NIC, answers with it, and keeps each folder hand-over", async () => {
+test("the stand-in client makes machines without their NIC, answers with it, and hands over each folder hand-over", async () => {
 	const client = fakeClient();
 	const nics = new Map();
 	const handovers = [];
-	const proxied = nicStandIn(client, nics, handovers);
+	const proxied = nicStandIn(client, nics, (handover) => handovers.push({ ...handover, callsBefore: client.calls.length }));
 	const nic = { type: "nic", network: "qagent0", hwaddr: "0e:51:0a:d2:01:0a" };
 	const request = { name: "qorpera-machine-1", devices: { root: { type: "disk" }, network: nic }, config: {} };
 	await proxied.submitInstanceOperation("qtm-0123abcd", { action: "create", request });
@@ -162,14 +163,45 @@ test("the stand-in client makes machines without their NIC, answers with it, and
 	assert.equal(handovers.length, 1);
 	assert.equal(handovers[0].name, "qorpera-machine-1");
 	assert.equal(handovers[0].stdin.toString(), '{"viewId":"v"}');
+	assert.equal(handovers[0].callsBefore, 4, "the hand-over is taken before the guest is asked");
 	assert.equal(client.calls.filter((call) => call[0] === "stream").length, 2);
 	assert.equal(proxied.describe(), "kept", "other methods keep their client");
 	assert.equal(proxied.secret, "kept");
 });
 
+test("every boot's view pass is a secret the moment its hand-over is seen, a run that fails early too", async () => {
+	const client = fakeClient();
+	const handovers = [];
+	const secrets = { objectsToken: "o".repeat(43) };
+	const proxied = nicStandIn(client, new Map(), keepHandover(handovers, secrets));
+	const mount = (stdin) =>
+		proxied.execInstanceStream("qtm-0123abcd", "qorpera-machine-1", {
+			command: ["/usr/bin/node", "/opt/qorpera-machine/cloud-machine-guest.mjs", "n", "folder-mount"], stdin: Buffer.from(stdin),
+		});
+	const handover = (viewId, pass) => JSON.stringify({ environmentId: "env", viewId, pass });
+	await mount(handover("view-1", "p".repeat(43)));
+	// The second boot's view: a pass of its own.
+	await mount(handover("view-2", "q".repeat(43)));
+	assert.deepEqual(handovers.map((h) => [h.name, h.viewId]), [["qorpera-machine-1", "view-1"], ["qorpera-machine-1", "view-2"]]);
+	assert.deepEqual(secrets, { objectsToken: "o".repeat(43), viewPass1: "p".repeat(43), viewPass2: "q".repeat(43) });
+	assert.deepEqual(findSecrets(JSON.stringify({ first: "p".repeat(43), second: "q".repeat(43) }), secrets), ["viewPass1", "viewPass2"]);
+	assert.deepEqual(findSecrets(`{"wake":"${"q".repeat(43)}"}`, secrets), ["viewPass2"], "the second boot's pass is looked for too");
+	// The guest is never asked (the run fails there): the pass is a secret already.
+	client.execInstanceStream = async () => {
+		throw new Error("LXD_UNAVAILABLE");
+	};
+	await assert.rejects(mount(handover("view-3", "r".repeat(43))), /LXD_UNAVAILABLE/);
+	assert.equal(secrets.viewPass3, "r".repeat(43));
+	// A hand-over that is not the JSON expected is a secret whole.
+	await assert.rejects(mount("a hand-over that is not JSON at all"), /LXD_UNAVAILABLE/);
+	assert.equal(secrets.viewPass4, "a hand-over that is not JSON at all");
+	assert.equal(handovers[3].viewId, null);
+	assert.equal(handovers.length, 4);
+});
+
 test("the record's secrets are found by value, and short values are not secrets", () => {
-	const secrets = { "holder:alice": "x".repeat(43), viewPass: "y".repeat(43), short: "abc" };
-	assert.deepEqual(findSecrets(`{"a":"${"y".repeat(43)}","b":"abc"}`, secrets), ["viewPass"]);
+	const secrets = { "holder:alice": "x".repeat(43), viewPass1: "y".repeat(43), short: "abc" };
+	assert.deepEqual(findSecrets(`{"a":"${"y".repeat(43)}","b":"abc"}`, secrets), ["viewPass1"]);
 	assert.deepEqual(findSecrets("nothing here", secrets), []);
 });
 
@@ -186,12 +218,13 @@ function passing() {
 	return {
 		steps: {
 			boot: {
-				mounted: true, view: { kind: "test_machine", state: "open" },
+				mounted: true, view: { id: "view-1", kind: "test_machine", state: "open", staffAgentId: STAFF.alice },
 				receipt: { state: "succeeded", exitCode: 0, output: "# P4\n\nThe company folder, as a test machine reads it.\n" },
 			},
 			credit: {
-				commandId: ids.a, runId: "run-alice", heldRead: { state: "running", output: "", exitCode: null }, heldBoundaries: 3,
-				released: { state: "succeeded", exitCode: 0, output: "wrote-alice\n" }, releasedFirst: true,
+				commandId: ids.a, runId: "run-alice", start: { state: "running", exitCode: null, output: "", totalBytes: 0 },
+				heldRead: { state: "running", exitCode: null, output: "", totalBytes: 0 }, heldBoundaries: 3,
+				released: { state: "succeeded", exitCode: 0, output: "wrote-alice\n", totalBytes: 12 }, releasedFirst: true,
 				commits: [commit("alice", [ids.a], [["p4/alice.txt", [ids.a]]])],
 			},
 			overlap: {
@@ -203,15 +236,24 @@ function passing() {
 				],
 			},
 			reads: {
-				viewId: "view-1", viewReads: ["p4/seed.md"], aliceRunReads: ["p4/seed.md"], bobBefore: [], bobAfter: ["p4/seed.md"],
-				bob: { schema: "qorpera.folder-inherit/v1", viewId: "view-1", reads: 2, replay: false },
-				alice: { schema: "qorpera.folder-inherit/v1", viewId: "view-1", reads: 2, replay: false },
+				viewId: "view-1", viewReads: ["p4", "p4/alice.txt", "p4/seed.md"], aliceRunReads: ["p4", "p4/alice.txt", "p4/seed.md"],
+				bobBefore: [], bobAfter: ["p4/seed.md", "p4", "p4/alice.txt"],
+				bobAuthority: { audience: "company", staffAgentId: STAFF.bob, requesterUserId: OWNER, readsRoot: true },
+				bob: { schema: "qorpera.folder-inherit/v1", viewId: "view-1", reads: 3, replay: false },
+				alice: { schema: "qorpera.folder-inherit/v1", viewId: "view-1", reads: 3, replay: false },
 			},
 			refusals: {
 				m: { commandId: ids.m, entries: 1 },
 				k: { row: { state: "lost", endedAt: "t" }, resend: "MACHINE_COMMAND_ENDED", report: { path: "p4/k.txt", outcome: "refused", reason: "command_ended" }, entries: 0 },
 				commits: [commit("carol", [ids.m], [["p4/m.txt", [ids.m]]])],
-				intruder: { mount: "refused", opens: [{ ok: false }] },
+				intruder: {
+					name: "qorpera-machine-2", viewId: "view-1", mount: "closed",
+					answer: { schema: "qorpera.machine-guest-folder/v1", viewId: "view-1", mount: "closed" },
+					opens: [
+						{ viewId: "view-1", role: "feed", lookup: "found", machine: "qorpera-machine-2", ok: false, code: "VIEW_REFUSED" },
+						{ viewId: "view-1", role: "feed", lookup: "found", machine: "qorpera-machine-2", ok: false, code: "VIEW_REFUSED" },
+					],
+				},
 				stillReads: { exitCode: 0, output: "a\n" },
 			},
 			stop: {
@@ -230,7 +272,8 @@ const failing = {
 		e.steps.boot.receipt.output = "";
 	},
 	heldUntilReleased: (e) => {
-		e.steps.credit.heldRead.output = "wrote-alice\n";
+		// The start answered with the output while every boundary was held.
+		e.steps.credit.start = { state: "running", exitCode: null, output: "wrote-alice\n", totalBytes: 12 };
 	},
 	creditedToCommand: (e) => {
 		e.steps.credit.commits[0].actorId = STAFF.bob;
@@ -239,13 +282,15 @@ const failing = {
 		e.steps.overlap.commits[1].units[0].credits = [ids.b];
 	},
 	readsTakenIn: (e) => {
+		e.steps.reads.bob = { error: "psql:<stdin>:4: ERROR:  42501: A run inherits a test machine's reads only with the company-wide view" };
 		e.steps.reads.bobAfter = [];
 	},
 	endedRefused: (e) => {
 		e.steps.refusals.k.entries = 1;
 	},
 	otherMachineRefused: (e) => {
-		e.steps.refusals.intruder.opens = [{ ok: true }];
+		e.steps.refusals.intruder.mount = "unanswered";
+		e.steps.refusals.intruder.answer.mount = "unanswered";
 	},
 	stopClosed: (e) => {
 		e.steps.stop.view.state = "open";
@@ -271,7 +316,7 @@ test("the checks pass on complete evidence and each fails on its own when its ev
 		const failed = Object.entries(judge(evidence)).filter(([, c]) => !c.ok).map(([n]) => n);
 		assert.deepEqual(failed, [name], name);
 	}
-	assert.deepEqual(Object.entries(judge(passing(), ["viewPass"])).filter(([, c]) => !c.ok).map(([n]) => n), ["noSecretsInEvidence"]);
+	assert.deepEqual(Object.entries(judge(passing(), ["viewPass2"])).filter(([, c]) => !c.ok).map(([n]) => n), ["noSecretsInEvidence"]);
 	assert.equal(judge({}).bootMounted.ok, false);
 	const errored = passing();
 	errored.error = "P4_TIMEOUT: the machine stops";
@@ -284,23 +329,93 @@ test("the checks pass on complete evidence and each fails on its own when its ev
 	assert.equal(judge(passThrew).serviceClean.ok, false, "a host pass that threw fails the run");
 });
 
-test("another agent's run either takes the machine's reads in or is refused as a run without the company-wide view", () => {
-	const refused = passing();
-	refused.steps.reads.bob = { error: "psql:<stdin>:4: ERROR:  42501: A run inherits a test machine's reads only with the company-wide view" };
-	refused.steps.reads.bobAfter = [];
-	assert.equal(judge(refused).readsTakenIn.ok, true);
-	refused.steps.reads.bobAfter = ["p4/seed.md"];
-	assert.equal(judge(refused).readsTakenIn.ok, false, "a refused take-in leaves the run's reads as they were");
-	const otherError = passing();
-	otherError.steps.reads.bob = { error: "psql:<stdin>:4: ERROR:  42501: A run inherits only its own agent's and member's views" };
-	otherError.steps.reads.bobAfter = [];
-	assert.equal(judge(otherError).readsTakenIn.ok, false);
-	const aliceRefused = passing();
-	aliceRefused.steps.reads.alice = { error: "refused" };
-	assert.equal(judge(aliceRefused).readsTakenIn.ok, false);
-	const otherView = passing();
-	otherView.steps.reads.alice.viewId = "view-2";
-	assert.equal(judge(otherView).readsTakenIn.ok, false);
+/** Whether `check` fails on the evidence each spoiler makes, and only `check`. */
+function failsOnly(check, spoilers) {
+	for (const [name, spoil] of Object.entries(spoilers)) {
+		const evidence = passing();
+		spoil(evidence);
+		const failed = Object.entries(judge(evidence)).filter(([, c]) => !c.ok).map(([n]) => n);
+		assert.deepEqual(failed, [check], name);
+	}
+}
+
+test("the start's receipt and a read while boundaries are held show nothing: no output, no end, an empty log", () => {
+	const early = { state: "succeeded", exitCode: 0, output: "wrote-alice\n", totalBytes: 12 };
+	failsOnly("heldUntilReleased", {
+		"the start has the output": (e) => Object.assign(e.steps.credit.start, { output: "wrote-alice\n" }),
+		"the start has an exit code": (e) => Object.assign(e.steps.credit.start, { exitCode: 0 }),
+		"the start is finished": (e) => Object.assign(e.steps.credit.start, { state: "succeeded" }),
+		"the start's log has bytes": (e) => Object.assign(e.steps.credit.start, { totalBytes: 12 }),
+		"the start answered it all": (e) => Object.assign(e.steps.credit, { start: early }),
+		"the start has no log size": (e) => delete e.steps.credit.start.totalBytes,
+		"no start was recorded": (e) => delete e.steps.credit.start,
+		"the held read has the output": (e) => Object.assign(e.steps.credit.heldRead, { output: "wrote-alice\n" }),
+		"the held read's log has bytes": (e) => Object.assign(e.steps.credit.heldRead, { totalBytes: 12 }),
+		"the held read has an exit code": (e) => Object.assign(e.steps.credit.heldRead, { exitCode: 0 }),
+		"no boundary was held": (e) => Object.assign(e.steps.credit, { heldBoundaries: 0 }),
+		"the released read has an empty log": (e) => Object.assign(e.steps.credit.released, { totalBytes: 0 }),
+		"no boundary released before the output": (e) => Object.assign(e.steps.credit, { releasedFirst: false }),
+	});
+});
+
+test("another agent's company-audience run that reads the root takes in exactly the machine's reads; a refusal fails", () => {
+	const refusal = "psql:<stdin>:4: ERROR:  42501: A run inherits a test machine's reads only with the company-wide view";
+	failsOnly("readsTakenIn", {
+		"Bob's run was refused, its reads as they were": (e) => Object.assign(e.steps.reads, { bob: { error: refusal }, bobAfter: [] }),
+		"Bob's run was refused, with reads": (e) => Object.assign(e.steps.reads.bob, { schema: undefined, error: refusal }),
+		"Bob's run was refused otherwise": (e) =>
+			Object.assign(e.steps.reads, { bob: { error: "A run inherits only its own agent's and member's views" }, bobAfter: [] }),
+		"Bob's take-in carried nothing": (e) => Object.assign(e.steps.reads.bob, { reads: 0 }),
+		"Bob's take-in was a replay": (e) => Object.assign(e.steps.reads.bob, { replay: true }),
+		"Bob's take-in was of another view": (e) => Object.assign(e.steps.reads.bob, { viewId: "view-2" }),
+		"Bob's run has fewer reads than the view": (e) => Object.assign(e.steps.reads, { bobAfter: ["p4", "p4/seed.md"] }),
+		"Bob's run has more reads than the view": (e) => e.steps.reads.bobAfter.push("p4/other.md"),
+		"Bob's run had reads before": (e) => Object.assign(e.steps.reads, { bobBefore: ["p4/seed.md"] }),
+		"Bob's run's reads before are unknown": (e) => delete e.steps.reads.bobBefore,
+		"Bob's run is not of the company audience": (e) => Object.assign(e.steps.reads.bobAuthority, { audience: "member" }),
+		"Bob's agent or member does not read the root": (e) => Object.assign(e.steps.reads.bobAuthority, { readsRoot: false }),
+		"Bob's authority was not recorded": (e) => delete e.steps.reads.bobAuthority,
+		"the run is the view's own agent's": (e) => Object.assign(e.steps.reads.bobAuthority, { staffAgentId: STAFF.alice }),
+		"the view read nothing of the company's": (e) => Object.assign(e.steps.reads, { viewReads: ["p4"], bobAfter: ["p4"] }),
+		"the reads are of another view": (e) => Object.assign(e.steps.reads, { viewId: "view-2" }),
+		"Alice's run was refused": (e) => Object.assign(e.steps.reads, { alice: { error: "refused" } }),
+		"Alice's take-in was of another view": (e) => Object.assign(e.steps.reads.alice, { viewId: "view-2" }),
+	});
+});
+
+test("the second machine is refused the view for who it is; unavailable, busy or no answer is not a refusal", () => {
+	const intruder = (e) => e.steps.refusals.intruder;
+	const opens = (e, change) => {
+		for (const open of intruder(e).opens) Object.assign(open, change);
+	};
+	const mount = (e, value) => {
+		intruder(e).mount = value;
+		intruder(e).answer.mount = value;
+	};
+	failsOnly("otherMachineRefused", {
+		"the folder program is unanswered": (e) => mount(e, "unanswered"),
+		"the folder program mounted": (e) => mount(e, "mounted"),
+		"the folder program said nothing": (e) => mount(e, null),
+		"the guest's exec failed": (e) => Object.assign(intruder(e), { answer: { exec: "LXD_UNAVAILABLE" }, mount: null }),
+		"the guest's reply is unreadable": (e) => Object.assign(intruder(e), { answer: { reply: "not found" }, mount: null }),
+		"the answer is for another view": (e) => Object.assign(intruder(e).answer, { viewId: "view-2" }),
+		"the service was unavailable": (e) => opens(e, { code: "UNAVAILABLE" }),
+		"the service was busy": (e) => opens(e, { code: "BUSY" }),
+		"the view was closed": (e) => opens(e, { code: "VIEW_CLOSED" }),
+		"one open was unavailable": (e) => Object.assign(intruder(e).opens[1], { code: "UNAVAILABLE" }),
+		"one open was let in": (e) => Object.assign(intruder(e).opens[1], { ok: true, code: undefined }),
+		"no open reached the service": (e) => Object.assign(intruder(e), { opens: [] }),
+		"the opens were of another view": (e) => opens(e, { viewId: "view-2" }),
+		"the bridge did not find the machine": (e) => opens(e, { lookup: "missing", machine: null }),
+		"the opens were another machine's": (e) => opens(e, { machine: "qorpera-machine-1" }),
+		"the hand-over was of another view": (e) => {
+			Object.assign(intruder(e), { viewId: "view-2" });
+			Object.assign(intruder(e).answer, { viewId: "view-2" });
+			opens(e, { viewId: "view-2" });
+		},
+		"the hand-over's view is unknown": (e) => delete intruder(e).viewId,
+		"the machine no longer reads": (e) => Object.assign(e.steps.refusals.stillReads, { exitCode: 1, output: "" }),
+	});
 });
 
 test("a change credited for the whole commit counts when its unit carries none", () => {
