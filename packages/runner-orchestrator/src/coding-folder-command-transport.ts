@@ -477,6 +477,30 @@ const absolute = (path: unknown): path is string =>
 	posix.normalize(path) === path &&
 	!path.endsWith("/");
 
+/** A command as the host kept it when it started: its turn and its text, as the executor reports a machine's running
+ * commands (5g-6a). Undefined when the host kept no start of it in `custody`. */
+export async function codingFolderKeptCommand(
+	custody: string,
+	workerId: string,
+	commandId: string,
+): Promise<{ turn: number; command: string } | undefined> {
+	if (!absolute(custody) || !isUuid(workerId) || !isUuid(commandId)) throw new Error("CODING_COMMAND_BINDING_INVALID");
+	await assertFolder(custody, false);
+	const commands = `${custody}/host-commands`,
+		folder = `${commands}/${commandId.replaceAll("-", "")}`;
+	try {
+		await assertFolder(commands, true);
+		await assertFolder(folder, true);
+	} catch (error) {
+		if (errno(error) === "ENOENT") return undefined;
+		throw error;
+	}
+	const bytes = await readKept(`${folder}/request.json`, 0o400);
+	if (!bytes) return undefined;
+	const { turn, command } = requestOf(bytes, { workerId, commandId });
+	return { turn, command };
+}
+
 /** The session a turn's commands run in, as the host set it up. */
 export interface LxdCodingFolderCommandSession {
 	/** The session user's ids in the guest. */
