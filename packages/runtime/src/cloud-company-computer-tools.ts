@@ -63,7 +63,9 @@ export type CompanyComputerAction =
 	| { kind: "desktop"; action: "scroll"; direction: "up" | "down"; amount: number }
 	| { kind: "desktop"; action: "press"; key: string }
 	| { kind: "desktop"; action: "type"; text: string }
-	| { kind: "shell"; action: "start"; command: string; waitMs: number }
+	/** network (F3 4d): whether the command reaches the internet. A run's own tool always says it (false unless the
+	 * model asks); a start without it is an older runtime's, reviewed as networked. */
+	| { kind: "shell"; action: "start"; command: string; waitMs: number; network?: boolean }
 	| { kind: "shell"; action: "read"; sessionId: string; waitMs: number }
 	| { kind: "shell"; action: "write"; sessionId: string; text: string; endInput: boolean; waitMs: number }
 	| { kind: "shell"; action: "stop"; sessionId?: string }
@@ -371,8 +373,17 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 			return input.sessionId;
 		};
 		if (input.action === "start") {
-			keys(input, ["kind", "action", "command", ...optional(["waitMs"])]);
-			return { kind: "shell", action: "start", command: text(input.command, 16_384), waitMs: wait() };
+			keys(input, ["kind", "action", "command", ...optional(["waitMs", "network"])]);
+			if (input.network !== undefined && typeof input.network !== "boolean")
+				throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			// Only when given: the office checks that the operation it receives parses to itself.
+			return {
+				kind: "shell",
+				action: "start",
+				command: text(input.command, 16_384),
+				waitMs: wait(),
+				...(input.network === undefined ? {} : { network: input.network }),
+			};
 		}
 		if (input.action === "read") {
 			keys(input, ["kind", "action", "sessionId", ...optional(["waitMs"])]);
@@ -552,9 +563,14 @@ const actionSchemas = {
 		actionSchema("desktop", "type", { text: { type: "string", maxLength: 16384 } }),
 	],
 	shell: [
-		withOptional(actionSchema("shell", "start", { command: { type: "string", maxLength: 16384 }, waitMs }), [
-			"waitMs",
-		]),
+		withOptional(
+			actionSchema("shell", "start", {
+				command: { type: "string", maxLength: 16384 },
+				waitMs,
+				network: { type: "boolean" },
+			}),
+			["waitMs", "network"],
+		),
 		withOptional(actionSchema("shell", "read", { sessionId, waitMs }), ["waitMs"]),
 		withOptional(
 			actionSchema("shell", "write", {
@@ -577,6 +593,9 @@ export function createCompanyComputerTools(options: {
 	operations: CompanyComputerOperations;
 	screens: CompanyComputerScreenLeaseControl;
 	endpoint: CompanyComputerCloudEndpoint;
+	/** The run's own offline commands (F3 4d): each one this run started without the network, by its session id, so
+	 * the review lets input to it through as it lets its start through. */
+	offlineShells?: Set<string>;
 }): { tools: readonly CompanyComputerTool[]; close(): Promise<void> } {
 	const scope = Object.freeze({ ...options.scope });
 	const resourceTarget = structuredClone(options.endpoint.resourceTarget);
@@ -603,6 +622,14 @@ export function createCompanyComputerTools(options: {
 				) {
 					throw new Error("COMPUTER_TOOL_UNAVAILABLE");
 				}
+				// A command is offline unless the model asks for the network (F3 4d). It is filled in here, so the review
+				// classifies the start the office runs, and an office from before offline commands refuses it.
+				if (
+					parsed.action.kind === "shell" &&
+					parsed.action.action === "start" &&
+					parsed.action.network === undefined
+				)
+					return { ...parsed, action: { ...parsed.action, network: false } };
 				return parsed;
 			};
 			return {
@@ -623,11 +650,13 @@ export function createCompanyComputerTools(options: {
 					"Transfer export reads one relative workbench file into an immutable cloud asset, retaining source and receipt. It never reads a member device or Company File path; transfers require the shell/workbench grant. " +
 					"Transfer import accepts a completed shared object asset or a Company File path and exact version obtained from company_list/company_read. It checks current path authority, verifies immutable bytes, and never overwrites the workbench destination. " +
 					"Company File changes use governed file tools. Model-provider subscription credentials never belong on the Company Computer. " +
-					"Shell: start runs a command in this agent's own shell on its computer and replies after waitMs (default 10000, at most 15000) or when it ends; a command still running keeps going as long as the work needs. " +
+					"Shell: start runs a command in this agent's own shell on its computer, in the company folder at /company, and replies after waitMs (default 10000, at most 15000) or when it ends; a command still running keeps going as long as the work needs. " +
 					"Use read with its sessionId for later output, write to send it input (default wait 1000; endInput closes it), stop to end it, stop without a sessionId to end everything in the shell, and list to see commands. " +
-					"Commands share the shell's localhost (not the browser's) and /tmp. A command runs until it ends, is stopped, or its computer closes or sleeps. " +
+					"A command is offline unless its start sets network: true. An offline command reaches no network, not even the shell's localhost (it has its own), and runs without review, as does this run's input to it. " +
+					"A networked command is reviewed first, as is input to it (and to an offline command another run started); it reaches the public internet on any port and protocol (private and local addresses, the machine and other computers are blocked) and shares the shell's localhost (not the browser's). " +
+					"What a command changes in /company is saved to the company folder about two seconds after its last change, when its output is read and when it ends; a reply says when a save was refused or output was held back, and why. " +
+					"Commands share /tmp. A command runs until it ends, is stopped, or its computer closes or sleeps. " +
 					"Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake, and one busy for hours brings check-ins; a waiting server stops when it sleeps, and your next run is told. " +
-					"The shell has its own network: the public internet on any port and protocol; private and local addresses, the machine and other computers are blocked. " +
 					"Shell commands cannot open windows on the screen; open programs there with desktop actions. " +
 					"If the machine runs low on memory or processes, the largest shell is stopped first, with a note. " +
 					"Each command keeps its last 1 MiB of output; a reply shows at most 16 KiB (skippedBytes counts the rest). Redirect to a file to keep everything. " +
@@ -713,6 +742,15 @@ export function createCompanyComputerTools(options: {
 							return { content: await options.endpoint.perform(exact, active.lease, effect) };
 						},
 					});
+					const started = content.kind === "json" ? (content.value as { sessionId?: unknown } | null) : null;
+					if (
+						parsed.action.kind === "shell" &&
+						parsed.action.action === "start" &&
+						parsed.action.network === false &&
+						typeof started?.sessionId === "string" &&
+						COMPANY_COMPUTER_UUID.test(started.sessionId)
+					)
+						options.offlineShells?.add(started.sessionId);
 					if (parsed.action.kind === "screen" && parsed.action.action === "release") {
 						closed = true;
 						await active.close();

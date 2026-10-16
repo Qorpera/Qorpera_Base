@@ -609,6 +609,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				stage = "native-tools";
 				// Whether the run had a machine, whose changes are noted after it (Interfaces I10, below).
 				let machine = false;
+				// The run's own offline commands (F3 4d): its computer tools add each one it starts, and its action review
+				// lets input to them through as it lets their start through.
+				const offlineShells = new Set<string>();
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -689,6 +692,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							request: cloudActionReviewRequest(context, wake),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							offlineShells,
 							facts: {
 								coworkers: new Map(context.coworkers.map((coworker) => [coworker.id, coworker.name])),
 								timeZone: wake.time.timeZone,
@@ -702,7 +706,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							)
 						)
 							throw new Error("Cloud context identity changed before execution");
-						const computer = await this.#computerSession?.(run, operations);
+						const computer = await this.#computerSession?.(run, operations, { offlineShells });
 						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
 						// too: it only reads.
