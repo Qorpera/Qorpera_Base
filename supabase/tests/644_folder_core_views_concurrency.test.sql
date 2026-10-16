@@ -156,11 +156,12 @@ create function pg_temp.vactor(p_name text) returns jsonb language sql as $$
 	select jsonb_build_object('kind','view','viewId',v ->> 'viewId','pass',v ->> 'pass')
 	from (select current_setting('qorpera_test.' || p_name)::jsonb v) x
 $$;
--- Keeps a view's 120 s lease fresh before each race.
+-- Keeps a view's 120 s lease fresh before each race. One folder service renews them all (a coding session's view needs
+-- one, 20260930446000).
 create function pg_temp.renew(p_name text) returns void language plpgsql as $$
 declare v jsonb := current_setting('qorpera_test.' || p_name)::jsonb; r jsonb;
 begin
-	r := public.qorpera_folder_view_renew((v ->> 'viewId')::uuid, v ->> 'pass', null);
+	r := public.qorpera_folder_view_renew((v ->> 'viewId')::uuid, v ->> 'pass', null, '64400000-0000-4000-8000-0000000005e1');
 	if (select state from public.qorpera_folder_views where id = (v ->> 'viewId')::uuid) <> 'open' then
 		raise exception 'The % view must still be open: %', p_name, r; end if;
 end $$;
