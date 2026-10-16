@@ -386,7 +386,7 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
   and machine allocation (#880), and from then on the service serves:
   - a run box only to a `runBoxHosts` machine, read-only;
   - a computer desktop only to the company machine named after its allocation, read-write;
-  - any other kind (a coding session's: step 5) to no machine yet.
+  - any other kind to no machine yet (a coding session's and a code host's from step 5c, below).
   A hello from any other machine is `VIEW_REFUSED`, like every refusal, also when it joins a view that is open. The
   core never changes a view's kind or machine; a renewal that says otherwise closes the view, losing what it had
   pending.
@@ -596,8 +596,84 @@ publication of closed files on last leave while one stays open, dead-program pub
 seals, uncertain-commit replay, fixed grace expiry, stale pooled replies and retained lost logs. This is implementation and test coverage, not a
 live rollout record; the production helper remains slice 4d.
 
+## Step 5c: coding views
+
+In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-CODING-MACHINES.md, "Views and machines",
+"Reads" and "Boundaries"), against 5a's core (migration `20260930396000`):
+
+- **Which machine.** A renewal's open answer also says the view's company (`companyId`, every kind) and coding machine
+  (`codingMachineId`, a coding session's; null otherwise). A `coding_session` view is served only to the machine named
+  after its coding machine, `qorpera-coding-machine-<its id without dashes>`, in one of the node's
+  `codingMachineProjects`; a `code_host` view only to a machine in its company's code host project,
+  `qorpera-codehost-<company id without dashes>`. Both write over protocol 3 and publish 2 s after their last change. A
+  core view's hello is also taken from those machines; the first renewal decides, as in 4a. An open answer without a
+  company is not one the service takes: it needs 5a's core.
+- **Which service.** Every renewal names this run of the service (`p_service`, a random uuid new at each start). The
+  core marks a coding or code host view with the first one (`served_by`) and closes it for any other
+  (`service_crashed`): a run that did not stop cleanly may have served reads it never released, so its views end, and
+  the executor restarts their machines and opens them again (the plan's rule 4).
+- **The read record.** With root, one session can read through another session's mount, so the service, not the
+  machine, records a coding session's reads, in memory, before the answer leaves (rule 1): a folder's listing (but the
+  root's), a file's bytes, a search's reads, and an existing file opened for writing, each with the version and
+  receipt shown. A read recorded once is not recorded again. The machine's `I` frames are taken and answered as in 4c
+  and count for nothing, `lost` included: its root could rewrite that log. A code host's view records nothing; its
+  reads reach no model (5a).
+- **Releases.** Before any commit of a coding machine's view (a quiet publish, a `P`, a boundary) the service releases
+  the recorded reads of every view of that machine, each with its own view as the actor, under 4c's rules (at most
+  10,000 at a time, the same id asked again). The core fans each release out to the machine's read set and to every
+  turn leased on the machine.
+- **Boundaries.** The coding executor asks for a machine's boundary on a host-local control socket
+  (`/run/qorpera-folder-control/control.sock`, `qorpera-folder-control.socket`), one JSON line each way, in order:
+  `{"op":"boundary","machine":"<coding machine id>","final":["<view id>", …]}` answers
+  `{"boundary":{"machine","reads","views":[{"viewId","report" or "error"}…]}}` or `{"error":{"code","message"}}`. Every view of
+  the machine with something pending publishes, then the reads served meanwhile are released, and only then does the
+  answer leave (rule 3). One view may be served more while another's release is out, so the release is asked again
+  until, in the step that answers, no open view of the machine holds a read unreleased; after 8 rounds the boundary
+  answers `unanswered`. `reads` is `released`, the release's refusal (4c's reasons), `unanswered`, or `unproven`;
+  each view's report is 4c's, with its reasons. A view named final that this service does not hold open is a
+  `VIEW_CLOSED` entry in `views`. `{"op":"restarted","machine":"<coding machine id>"}` answers
+  `{"restarted":{"machine"}}`: the executor sends it once it has stopped the machine and before the machine starts
+  again (below).
+- **Held.** A coding view's refused boundary holds what it had pending, its bytes and folders alike, and the view stays
+  kept until the core closes it: `stopped` and `run_ended` may lift, `denied` holds, `unreadable` (a release's, or a
+  commit's "A read is no longer readable", which 4c calls `denied`) moves the machine. At a boundary that names the
+  view final, a refusal is final: what has no bytes (a folder) is let go, and changed files stay pending for the
+  executor to report.
+- **A view that goes with reads unreleased.** Its reads reached its machine, where any session may save what was made
+  of them, even once every view of it has closed. So the machine is lost: its boundaries answer `reads: "unproven"`,
+  and every view of it open now or opened later answers its own boundaries `unproven`, until the executor says it
+  restarted the machine (`restarted`). A view opened after that is proven again; one still open then stays
+  `unproven`, and if one of those still held a read unreleased, all of them lose their logs. A boundary of the machine
+  still out at the restart answers `unproven`: a view may have gone meanwhile with a read the restart cleared. The lost state is kept in
+  memory only (the plan's durable read ledger, P3, is not built): a run that ends with a machine lost does not stop
+  cleanly, so the next run's renewals close the machine's views (`service_crashed`), and the host stops a machine
+  whose last attachment ended.
+- **Who may connect.** Node cannot read a Unix connection's peer credentials (`SO_PEERCRED`), so the kernel checks the
+  uid: connecting needs write permission on the socket's file. The unit makes the file the executor's
+  (`qorpera-coding-executor`), mode 0600, in a root-owned folder (0755). The service serves a connection only while the
+  file is a socket of the configured `codingExecutorUid`, with no group or other bits, under folders only root or the
+  executor may change (or sticky ones); otherwise it answers `VIEW_REFUSED`, closes the connection and logs why. No
+  uid configured refuses every connection. Root may connect, as it may do anything on the host.
+- **A clean stop.** On SIGTERM the service stops serving, waits for what is running, asks a boundary of every coding
+  machine it serves and publishes every code host view, for up to 45 s (`TimeoutStopSec=60s`). When every such view
+  has every read released and nothing pending, and no machine is lost, it calls `qorpera_folder_service_stopped` and
+  the core clears `served_by`: the next run serves those views. Otherwise `served_by` stays and the next run's
+  renewals close them (`service_crashed`). A lost machine counts even with none of its views open: a view this run let
+  go may still be open in the core, marked as served by it.
+- **Tests.** `packages/object-gateway/test/folder-coding-views.test.ts`, against the stand-in core: a coding view is
+  refused from another coding machine, an office, the execution host, an unlisted project and the code host, and a
+  code host's from another company's code host and a coding machine; a read is recorded before its answer; a boundary
+  is answered only after every read of the machine is released, one served during the last release included; a
+  refused release holds, as do `unreadable` and `denied` until the final; a machine that lost a read stays `unproven`
+  after its last view closes and until `restarted`, and keeps the service from stopping cleanly; a boundary a restart
+  crossed answers `unproven`; a clean stop clears
+  `served_by` and an unclean one keeps it; the control socket refuses a file another uid could connect through and
+  answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
+  tests.
+
 ## Not here
 
 The office service's side of a command's view (opening it, mounting it for the command, and the final
-boundary at the command's end: slice 4d); coding machines and test machines (each with its own mount). Each is a later
-step.
+boundary at the command's end: slice 4d); a coding machine's flush of its folder programs before a boundary and git on
+the mount (slice 5d); the executor's side of coding views (opening them, mounting them, asking boundaries: slice 5g);
+test machines (step 6). Each is a later slice.
