@@ -142,8 +142,11 @@ export class CompanyComputerCommandFolder {
 	#lost = false;
 	/** Why output is held back for good. */
 	#held?: string;
-	/** The final boundary's paths not saved, for the next release. */
-	#report?: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved">;
+	/** The paths the company folder did not take that no release showed yet: the first few, each cut short, their
+	 * bytes, and how many more. */
+	#notSaved: CompanyComputerCommandNotSaved[] = [];
+	#notSavedBytes = 0;
+	#moreNotSaved = 0;
 	/** Why the final boundary is being asked again. */
 	#retry?: string;
 	/** Settles when the final boundary has its answer. */
@@ -344,7 +347,7 @@ export class CompanyComputerCommandFolder {
 					until,
 					false,
 				);
-				if (!answer) return { released: false, heldBack: this.#retry ?? HELD_SAVING };
+				if (!answer) return { released: false, heldBack: this.#retry ?? HELD_SAVING, ...this.#takeReport() };
 				return this.release(signal, until);
 			}
 			case "running": {
@@ -356,7 +359,8 @@ export class CompanyComputerCommandFolder {
 				});
 				const answer = await within(work, signal, until, { released: false, heldBack: HELD_UNANSWERED } as const);
 				// The command ended while the boundary waited its turn: the final one answers.
-				return answer ?? this.release(signal, until);
+				if (!answer) return this.release(signal, until);
+				return { ...answer, ...this.#takeReport() };
 			}
 		}
 	}
@@ -369,6 +373,7 @@ export class CompanyComputerCommandFolder {
 			timeoutMs + 1000,
 			signal,
 		);
+		if (answer && "report" in answer && answer.report) this.#note(answer.report, false);
 		signal.throwIfAborted();
 		// Saved, or refused only for some paths (refused or conflicting saves): the reads were released.
 		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined))
@@ -393,8 +398,9 @@ export class CompanyComputerCommandFolder {
 	}
 
 	/** The final boundary: asked again on its own until it has a final answer, then the mount goes and its view
-	 * closes. A command held back for good gets none. */
+	 * closes. A command held back for good gets none, even one a boundary held back while the command ended. */
 	async #final(): Promise<void> {
+		if (this.#status !== "ending") return this.#gone(true);
 		for (let wait = FINAL_RETRY_MS; this.#status === "ending"; wait = Math.min(wait * 2, RETRY_CAP_MS)) {
 			const answer = await this.#helper({
 				op: "unmount",
@@ -402,13 +408,20 @@ export class CompanyComputerCommandFolder {
 				final: true,
 				timeoutMs: COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
 			});
+			// A refusal is final once the final closed the view, or the core refused it but for the run check or the
+			// pause. Without a reason the core did not answer, or a change still waits: the view stays open, and the
+			// final is asked again.
 			if (
 				!answer ||
 				answer.answer === "invalid" ||
 				answer.answer === "unanswered" ||
 				(answer.answer === "refused" &&
-					(answer.report.refused === "run_ended" || answer.report.refused === "stopped"))
+					!answer.report.closed &&
+					(answer.report.refused === undefined ||
+						answer.report.refused === "run_ended" ||
+						answer.report.refused === "stopped"))
 			) {
+				if (answer && "report" in answer && answer.report) this.#note(answer.report, false);
 				this.#retry = heldBack(answer);
 				this.#seams.log(`office-folder: command ${this.#name}: final boundary asked again (${word(answer)})`);
 				await later(wait);
@@ -418,10 +431,10 @@ export class CompanyComputerCommandFolder {
 				this.#hold(HELD_GONE);
 				break;
 			}
-			if (answer.answer === "saved" || (answer.answer === "refused" && answer.report.refused === undefined))
+			if (answer.answer === "saved" || (answer.answer === "refused" && answer.report.closed))
 				this.#status = "released";
 			else this.#hold(HELD_NOT_TAKEN);
-			if ("report" in answer) this.#report = notSaved(answer.report);
+			if ("report" in answer) this.#note(answer.report, true);
 			if (!answer.unmounted) {
 				await this.#gone(true);
 				return;
@@ -436,10 +449,38 @@ export class CompanyComputerCommandFolder {
 		this.#held = reason;
 	}
 
+	/** A boundary's paths not saved, for the next release: a final answer's every one, another's only those it settled
+	 * (what it kept goes with a later boundary, whose report says how). */
+	#note(report: CompanyComputerFolderReport, final: boolean): void {
+		for (const entry of report.paths) {
+			if (entry.outcome === "saved" || (entry.kept && !final)) continue;
+			const item = {
+				path: head(entry.path, 300),
+				outcome: head(entry.outcome, 64),
+				...(entry.reason ? { reason: head(entry.reason, 200) } : {}),
+			};
+			const bytes = Buffer.byteLength(JSON.stringify(item));
+			if (
+				this.#moreNotSaved === 0 &&
+				this.#notSaved.length < NOT_SAVED_SHOWN &&
+				this.#notSavedBytes + bytes <= NOT_SAVED_BYTES
+			) {
+				this.#notSaved.push(item);
+				this.#notSavedBytes += bytes;
+			} else this.#moreNotSaved++;
+		}
+	}
+
+	/** The paths not saved that no release showed yet, which come once. */
 	#takeReport(): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
-		const report = this.#report;
-		this.#report = undefined;
-		return report ?? {};
+		const report = {
+			...(this.#notSaved.length ? { notSaved: this.#notSaved } : {}),
+			...(this.#moreNotSaved ? { moreNotSaved: this.#moreNotSaved } : {}),
+		};
+		this.#notSaved = [];
+		this.#notSavedBytes = 0;
+		this.#moreNotSaved = 0;
+		return report;
 	}
 
 	/** The mount goes without a boundary, asked again until the helper takes it away; then the view closes. */
@@ -458,6 +499,8 @@ export class CompanyComputerCommandFolder {
 /** Why an output read is held back by a boundary that answered neither `saved` nor rule 4's way out. */
 function heldBack(answer: CompanyComputerFolderAnswer<"boundary" | "unmount"> | undefined): string {
 	if (answer?.answer !== "refused") return HELD_UNANSWERED;
+	// A final the core has not answered yet, or whose change still waits.
+	if (answer.report.refused === undefined) return HELD_SAVING;
 	if (answer.report.refused === "stopped") return HELD_PAUSED;
 	if (answer.report.refused === "run_ended") return HELD_RUN_ENDED;
 	return HELD_REFUSED;
@@ -468,30 +511,6 @@ function word(answer: CompanyComputerFolderAnswer<"unmount"> | undefined): strin
 	if (!answer) return "no answer";
 	const reason = answer.answer === "refused" ? answer.report.refused : undefined;
 	return reason && /^[a-z_]{1,32}$/.test(reason) ? `${answer.answer} ${reason}` : answer.answer;
-}
-
-/** The paths the final boundary did not save, as a tool result shows them: the first few, each cut short, and how
- * many more. */
-function notSaved(
-	report: CompanyComputerFolderReport,
-): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
-	const unsaved = report.paths.filter((entry) => entry.outcome !== "saved");
-	const shown: CompanyComputerCommandNotSaved[] = [];
-	let bytes = 0;
-	for (const entry of unsaved.slice(0, NOT_SAVED_SHOWN)) {
-		const item = {
-			path: head(entry.path, 300),
-			outcome: head(entry.outcome, 64),
-			...(entry.reason ? { reason: head(entry.reason, 200) } : {}),
-		};
-		bytes += Buffer.byteLength(JSON.stringify(item));
-		if (bytes > NOT_SAVED_BYTES) break;
-		shown.push(item);
-	}
-	return {
-		...(shown.length ? { notSaved: shown } : {}),
-		...(unsaved.length > shown.length ? { moreNotSaved: unsaved.length - shown.length } : {}),
-	};
 }
 
 /** At most `length` characters, never half of one. */
