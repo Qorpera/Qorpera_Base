@@ -2,11 +2,13 @@
 # Installs the folder service and its vsock bridge on a node host from a package made by
 # scripts/package-folder-service.mjs. Verifies every file against the package's manifest and the unit files
 # against the pins below, makes the two accounts, installs, and leaves every unit disabled. The coordinator then
-# writes /etc/qorpera-folder-service/{config.json,supabase-key} (root, 0400) and enables the socket and the bridge.
+# writes /etc/qorpera-folder-service/{config.json,supabase-key} (root, 0400) and enables the socket and the bridge,
+# and on a node with the coding executor the control socket (its account must exist first).
 set -euo pipefail
 
 EXPECTED_SOCKET_UNIT_SHA256="dbf2b45f55312a1bd94cf19b89d0ea6f33e367d4a996ade854f13fb5d453bbd9"
-EXPECTED_SERVICE_UNIT_SHA256="8d63db79f9606f5ab5d7db5319499d94749ee18d9a861adbf499ecdb67d3bdf3"
+EXPECTED_CONTROL_SOCKET_UNIT_SHA256="05b11217340859454cdd987d334c08d317e0e57264f497c13f4fdcb9716fc73b"
+EXPECTED_SERVICE_UNIT_SHA256="8931f93479bcf45bcba5052d846961d9a9e01441a3a163f2e608b79d382b9cba"
 EXPECTED_BRIDGE_UNIT_SHA256="829e7e53e5d91e6412babf16efd6c8167236bb6986c23e08fc28073fa2db77f8"
 PACKAGE=$(cd "$(dirname "$0")" && pwd)
 INSTALL_ROOT="/opt/qorpera-folder-service"
@@ -20,7 +22,7 @@ if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script as root." >&2
 	exit 1
 fi
-for unit in qorpera-folder-service.socket qorpera-folder-service.service qorpera-folder-bridge.service; do
+for unit in qorpera-folder-service.socket qorpera-folder-control.socket qorpera-folder-service.service qorpera-folder-bridge.service; do
 	if systemctl is-active --quiet "${unit}"; then
 		echo "${unit} is running; stop it before installing." >&2
 		exit 1
@@ -53,6 +55,7 @@ for artifact in manifest["artifacts"]:
 PY
 echo "package manifest sha256 $(sha "${PACKAGE}/manifest.json")"
 verify "${PACKAGE}/qorpera-folder-service.socket" "${EXPECTED_SOCKET_UNIT_SHA256}"
+verify "${PACKAGE}/qorpera-folder-control.socket" "${EXPECTED_CONTROL_SOCKET_UNIT_SHA256}"
 verify "${PACKAGE}/qorpera-folder-service.service" "${EXPECTED_SERVICE_UNIT_SHA256}"
 verify "${PACKAGE}/qorpera-folder-bridge.service" "${EXPECTED_BRIDGE_UNIT_SHA256}"
 node_version=$(/usr/bin/node --version)
@@ -71,9 +74,9 @@ install -o root -g root -m 0444 "${PACKAGE}/qorpera-folder-service.cjs" "${INSTA
 install -o root -g root -m 0555 "${PACKAGE}/qorpera-folder" "${INSTALL_ROOT}/qorpera-folder"
 install -o root -g root -m 0444 "${PACKAGE}/README.md" "${INSTALL_ROOT}/README.md"
 install -d -o root -g root -m 0700 "${CONFIG_ROOT}"
-for unit in qorpera-folder-service.socket qorpera-folder-service.service qorpera-folder-bridge.service; do
+for unit in qorpera-folder-service.socket qorpera-folder-control.socket qorpera-folder-service.service qorpera-folder-bridge.service; do
 	install -o root -g root -m 0644 "${PACKAGE}/${unit}" "/etc/systemd/system/${unit}"
 done
-systemd-analyze verify /etc/systemd/system/qorpera-folder-service.socket /etc/systemd/system/qorpera-folder-service.service /etc/systemd/system/qorpera-folder-bridge.service
+systemd-analyze verify /etc/systemd/system/qorpera-folder-service.socket /etc/systemd/system/qorpera-folder-control.socket /etc/systemd/system/qorpera-folder-service.service /etc/systemd/system/qorpera-folder-bridge.service
 systemctl daemon-reload
 echo "installed: folder service $(sha "${INSTALL_ROOT}/qorpera-folder-service.cjs"), folder program $(sha "${INSTALL_ROOT}/qorpera-folder"); units disabled"

@@ -689,7 +689,7 @@ function officeCodePackageMaximum(file: string, write: boolean): number {
 	if (file === "original-preparation.json") return COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
 	if (file === "trust.json") return 4096;
 	if (["base-manifest.json", "target-manifest.json", "base-installation.json"].includes(file)) return 1024 ** 2;
-	if (file === "base-mount-template") return 65536;
+	if (["base-mount-template", "base-folder-mount-template"].includes(file)) return 65536;
 	if (["bootstrap.cjs", "measure.cjs"].includes(file)) return 16 * 1024 ** 2;
 	if (COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.some((name) => file === `artifacts/${name}`)) return 32 * 1024 ** 2;
 	if (new RegExp(`^challenge-${CODE_PACKAGE_UUID}\\.json$`).test(file)) return 65536;

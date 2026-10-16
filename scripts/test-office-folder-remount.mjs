@@ -150,7 +150,7 @@ export const PUSHED = {
 	"office-folder-substrate.py": "scripts/fixtures/office-folder-substrate.py",
 	"office-folder-remount.py": "scripts/fixtures/office-folder-remount.py",
 	"office.service": "deploy/lxd-company-computer-guest/qorpera-company-computer.service",
-	"mount.service": "deploy/folder-service/qorpera-folder-mount@.service",
+	"mount.service": "deploy/lxd-company-computer-guest/qorpera-office-folder-mount@.service.in",
 };
 
 /** The runtime's own process gate, run unchanged in the guest's node: its types stripped, nothing else. */
@@ -175,7 +175,7 @@ export function main(args) {
 		writeFileSync(join(local, "shapes.json"), `${JSON.stringify(remountShapes(dir), null, 2)}\n`);
 		const sources = { ...Object.fromEntries(Object.entries(PUSHED).map(([name, path]) => [name, resolve(root, path)])), "company-computer-process.mjs": join(local, "company-computer-process.mjs"), "shapes.json": join(local, "shapes.json"), "qorpera-folder": realpathSync(options["folder-binary"]) };
 		const digests = Object.fromEntries(Object.entries(sources).map(([name, path]) => [name, sha256(readFileSync(path))]));
-		const evidence = { schema: "qorpera.office-folder-remount/v1", scope: "the folder mount's restart under the office's namespaces; synthetic folder node; master's mount unit on #1047's layout; copied office confinement", project: options.project, vm: options.vm, uuid: options.uuid, image: options.image, fuse: options.fuse, folderSha256: options["folder-sha256"], digests, runtimePins: RUNTIME_PINS.map(({ file, from, sha256 }) => ({ file, from, sha256 })), guestBoot: guest.boot, guestOfficeUnitSha256: guest.unitSha256, executed: false };
+		const evidence = { schema: "qorpera.office-folder-remount/v1", scope: "the folder mount's restart under the office's namespaces; synthetic folder node; master's office mount unit, rendered; copied office confinement", project: options.project, vm: options.vm, uuid: options.uuid, image: options.image, fuse: options.fuse, folderSha256: options["folder-sha256"], digests, runtimePins: RUNTIME_PINS.map(({ file, from, sha256 }) => ({ file, from, sha256 })), guestBoot: guest.boot, guestOfficeUnitSha256: guest.unitSha256, executed: false };
 		if (!options.execute) {
 			writeFileSync(options.record, `${JSON.stringify({ ...evidence, result: "plan", guestCommand: ["python3", `${dir}/office-folder-remount.py`, "proof", dir, options.fuse] }, null, 2)}\n`);
 			console.log("Preflight passed. No guest files or units created.");

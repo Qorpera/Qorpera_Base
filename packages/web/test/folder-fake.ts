@@ -31,7 +31,8 @@ import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
 
 interface Node {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
+	/** A file's text, or a link's target. */
 	readonly text: string | null;
 	readonly version: string;
 	readonly seq: number;
@@ -84,8 +85,7 @@ export function folderFake(
 	const failingBytes = new Set<string>();
 	const commits: FolderCommitCall[] = [];
 	/** The feed: each seq's changed paths, or a change to what the member may read. */
-	const feed: { seq: number; changes: { path: string; kind: "file" | "folder"; version: string }[] | "authority" }[] =
-		[];
+	const feed: { seq: number; changes: { path: string; kind: Node["kind"]; version: string }[] | "authority" }[] = [];
 	let resyncNext = false;
 	let seq = 0;
 	let versions = 0;
@@ -93,13 +93,13 @@ export function folderFake(
 	let hashes = 0;
 	const nextVersion = () => `f0000000-0000-4000-8000-${String(++versions).padStart(12, "0")}`;
 	/** Notes a change to `path` at `at` in the feed. */
-	function changed(path: string, kind: "file" | "folder", version: string, at: number): void {
+	function changed(path: string, kind: Node["kind"], version: string, at: number): void {
 		let event = feed.at(-1);
 		if (event?.seq !== at || event.changes === "authority") {
 			event = { seq: at, changes: [] };
 			feed.push(event);
 		}
-		(event.changes as { path: string; kind: "file" | "folder"; version: string }[]).push({ path, kind, version });
+		(event.changes as { path: string; kind: Node["kind"]; version: string }[]).push({ path, kind, version });
 	}
 
 	const key = companyPathKey;
@@ -132,11 +132,11 @@ export function folderFake(
 			seq: node.seq,
 			updatedAt: "2026-10-04T09:00:00Z",
 			file: node.kind === "file" ? reference(node.text ?? "", node.path) : null,
-			target: null,
+			target: node.kind === "symlink" ? node.text : null,
 		};
 	}
 
-	function set(path: string, kind: "file" | "folder", text: string | null, at: number): Node {
+	function set(path: string, kind: Node["kind"], text: string | null, at: number): Node {
 		const node = { path, kind, text, version: nextVersion(), seq: at };
 		nodes.set(key(path), node);
 		changed(path, kind, node.version, at);
@@ -222,11 +222,23 @@ export function folderFake(
 		if (unit.op === "move" ? closed(unit.from) || closed(unit.to) : closed(unit.path))
 			return { outcome: "denied", reason: "denied", problems: [], version: null };
 		switch (unit.op) {
-			case "write": {
+			case "write":
+			case "symlink": {
+				// A write or a link replaces the file or link at the version it names (a link's write makes it a file).
 				const node = nodes.get(key(unit.path));
 				if (unit.expectedVersion !== undefined) {
-					if (node?.kind !== "file" || node.version !== unit.expectedVersion) return conflict("version_changed");
+					if (node?.kind === "folder" || node?.version !== unit.expectedVersion)
+						return conflict("version_changed");
 				} else if (node) return conflict("exists");
+				if (unit.op === "symlink") {
+					if (parentMissing(unit.path)) return refused("parent_missing");
+					return {
+						outcome: "saved",
+						reason: null,
+						problems: [],
+						version: set(unit.path, "symlink", unit.target, at).version,
+					};
+				}
 				if (parentMissing(unit.path)) return refused("parent_missing");
 				const problems = problemsOf(unit.path, unit.text);
 				if (problems.length) return refused("invalid", problems);
@@ -479,7 +491,7 @@ export function folderFake(
 		has(path: string): boolean {
 			return nodes.has(key(path));
 		},
-		kind(path: string): "file" | "folder" | undefined {
+		kind(path: string): Node["kind"] | undefined {
 			return nodes.get(key(path))?.kind;
 		},
 		text(path: string): string | undefined {
