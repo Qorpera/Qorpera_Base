@@ -366,7 +366,8 @@ end $$;
 -- E. Side by side: two steps, commits flipping an agent between active and archived (it has routines, a pair
 -- conversation and connector grants), renames of the company, and effects that key-share the company row, the agent's
 -- staff row, routines and conversations, round after round. No connection errs and no converge fails with a multixact
--- error or a deadlock; at the end the agent's state is its last commit's, converged, and the name is the last rename's.
+-- error or a deadlock; round 1's archive is converged side by side and pauses the routines, and no later round resumes
+-- them; at the end the agent's state is its last commit's, converged, and the name is the last rename's.
 
 select pg_temp.expect(pg_temp.save(pg_temp.owner(), 'race-hire-quinn', jsonb_build_array(
 	pg_temp.hire('quinn', '87800000-0000-4000-8000-0000000000a4', 'Quinn'),
@@ -385,6 +386,17 @@ begin
 		raise exception 'Fixture: Quinn''s routines and connectors'; end if;
 end $$;
 create temp table side_by_side(round integer, part text, answer text);
+-- The effect: KEY SHARE on the company row and the agent's staff row, routines and conversations, held a moment.
+select set_config('qorpera_test.effect', format($q$do $e$ begin
+	perform 1 from public.qorpera_profiles where id = '70900000-0000-4000-8000-000000000010' for key share;
+	perform 1 from public.qorpera_profile_staff where profile_id = '70900000-0000-4000-8000-000000000010' and staff_agent_id = %L
+		for key share;
+	perform 1 from public.qorpera_cloud_routines where owner_staff_agent_id = %L order by id for key share;
+	perform 1 from public.qorpera_shared_sessions where profile_id = '70900000-0000-4000-8000-000000000010'
+		and (staff_agent_id = %L or execution_scope -> 'agentPair' ? %L) order by id for key share;
+	perform pg_sleep(0.01);
+end $e$$q$, '87800000-0000-4000-8000-0000000000a4', '87800000-0000-4000-8000-0000000000a4',
+	'87800000-0000-4000-8000-0000000000a4', '87800000-0000-4000-8000-0000000000a4'), false) \g /dev/null
 -- One round: the flip's commit, a rename, two steps and an effect sent at once, their answers kept.
 create function pg_temp.round(p_round integer) returns void language plpgsql as $fn$
 declare v_answer text; v_part text;
@@ -393,19 +405,36 @@ begin
 	perform dblink_send_query('rrace_name', current_setting('qorpera_test.rename') || '::text');
 	perform dblink_send_query('rrace_sched', current_setting('qorpera_test.step'));
 	perform dblink_send_query('rrace_step2', current_setting('qorpera_test.step'));
-	perform dblink_send_query('rrace_hold', format($q$do $e$ begin
-		perform 1 from public.qorpera_profiles where id = '70900000-0000-4000-8000-000000000010' for key share;
-		perform 1 from public.qorpera_profile_staff where profile_id = '70900000-0000-4000-8000-000000000010' and staff_agent_id = %L
-			for key share;
-		perform 1 from public.qorpera_cloud_routines where owner_staff_agent_id = %L order by id for key share;
-		perform 1 from public.qorpera_shared_sessions where profile_id = '70900000-0000-4000-8000-000000000010'
-			and (staff_agent_id = %L or execution_scope -> 'agentPair' ? %L) order by id for key share;
-		perform pg_sleep(0.01);
-	end $e$$q$, '87800000-0000-4000-8000-0000000000a4', '87800000-0000-4000-8000-0000000000a4',
-		'87800000-0000-4000-8000-0000000000a4', '87800000-0000-4000-8000-0000000000a4'));
+	perform dblink_send_query('rrace_hold', current_setting('qorpera_test.effect'));
 	foreach v_part in array array['rrace_save', 'rrace_name', 'rrace_sched', 'rrace_step2', 'rrace_hold'] loop
 		v_answer := pg_temp.result(v_part);
 		insert into side_by_side values (p_round, v_part, coalesce(v_answer, ''));
+	end loop;
+end $fn$;
+-- A converge reads only the agent's current state (never replayed): an archive the next round reactivates before a step
+-- holds the staff row pauses nothing. So round 1's archive is converged before the agent flips back: the two steps and
+-- the effect run again side by side, with no flip, until a step has paused the agent's routines (a converge that backed
+-- off is due again at once).
+create function pg_temp.archive_converged() returns void language plpgsql as $fn$
+declare v_tries integer := 0; v_answer text; v_part text;
+begin
+	while exists (select 1 from public.qorpera_cloud_routines where owner_staff_agent_id = '87800000-0000-4000-8000-0000000000a4'
+		and status = 'active') loop
+		v_tries := v_tries + 1;
+		if v_tries > 8 then raise exception 'Side by side, round 1''s archive is never converged: %', to_jsonb(pg_temp.work(
+			'87800000-0000-4000-8000-0000000000a4')); end if;
+		perform dblink_exec('rrace_hold', $q$update public.qorpera_folder_follow_ups set not_before = null
+			where environment_id = '70900000-0000-4000-8000-000000000020' and subject_kind = 'agent'
+				and subject_id = '87800000-0000-4000-8000-0000000000a4'$q$);
+		perform dblink_send_query('rrace_sched', current_setting('qorpera_test.step'));
+		perform dblink_send_query('rrace_step2', current_setting('qorpera_test.step'));
+		perform dblink_send_query('rrace_hold', current_setting('qorpera_test.effect'));
+		foreach v_part in array array['rrace_sched', 'rrace_step2', 'rrace_hold'] loop
+			v_answer := coalesce(pg_temp.result(v_part), '');
+			if v_answer like 'error%' or (v_part <> 'rrace_hold'
+				and coalesce(v_answer::jsonb -> 'converged' ->> 'problem', '') ~ '^(XX000|40P01)') then
+				raise exception 'Side by side, round 1''s archive: % %', v_part, v_answer; end if;
+		end loop;
 	end loop;
 end $fn$;
 -- Sixteen rounds, each its own statements: the flip and the rename staged and committed first, then sent.
@@ -414,7 +443,8 @@ select format($f$select set_config('qorpera_test.flip', pg_temp.sql_commit('7090
 		%L, 'Quinn'))::text), false) is not null$f$, i, case when i % 2 = 1 then 'archived' else 'active' end),
 	format($f$select set_config('qorpera_test.rename', pg_temp.sql_commit('70900000-0000-4000-8000-000000000020',
 		pg_temp.owner()::text, 'race-rename-round-%s', jsonb_build_array(pg_temp.vision('Nordlys Round %s'))::text), false) is not null$f$, i, i),
-	format('select pg_temp.round(%s)', i)
+	format('select pg_temp.round(%s)', i),
+	case when i = 1 then 'select pg_temp.archive_converged()' end
 from generate_series(1, 16) i \gexec
 do $$
 declare v_errors text;
@@ -426,8 +456,8 @@ begin
 	if v_errors is not null then raise exception 'Side by side: %', v_errors; end if;
 	if (select count(*) from side_by_side) <> 80 then raise exception 'Side by side ran % answers', (select count(*) from side_by_side); end if;
 end $$;
--- The rest converges (each step its own statement); the agent ends active, converged, with its grant; the name is the
--- last rename's.
+-- The rest converges (each step its own statement); the agent ends active, converged, with its grant and its connectors;
+-- its routines stay paused by the archive (no reactivation resumes them); the name is the last rename's.
 update public.qorpera_folder_follow_ups set not_before = null where environment_id = '70900000-0000-4000-8000-000000000020' and dirty;
 select format('select r from dblink(%L, %L) as t(r text)', 'rrace_sched', current_setting('qorpera_test.step'))
 from generate_series(1, 8) i \gexec
@@ -438,7 +468,8 @@ begin
 		or pg_temp.connectors(a4) = 0
 		or exists (select 1 from public.qorpera_folder_follow_up_marks where environment_id = '70900000-0000-4000-8000-000000000020')
 		or (select name from public.qorpera_profiles where id = '70900000-0000-4000-8000-000000000010') is distinct from 'Nordlys Round 16'
-		or exists (select 1 from public.qorpera_cloud_routines where owner_staff_agent_id = a4 and status = 'active') then
+		or (select count(*) from public.qorpera_cloud_routines where owner_staff_agent_id = a4 and status = 'paused'
+			and pause_reason = 'agent_archived') <> 2 then
 		raise exception 'Side by side, everything ends converged: % % % % % % %', (pg_temp.staff(a4)).employment_status,
 			to_jsonb(pg_temp.work(a4)), pg_temp.granted(a4), pg_temp.connectors(a4),
 			(select jsonb_agg(to_jsonb(m)) from public.qorpera_folder_follow_up_marks m

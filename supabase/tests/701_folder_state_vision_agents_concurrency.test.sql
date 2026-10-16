@@ -151,7 +151,7 @@ select set_config('qorpera_test.state_rename', pg_temp.sql_commit('70100000-0000
 		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Skov'),
 		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['srace_post','srace_save','srace_hold']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['srace_post','srace_save','srace_hold']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['srace_post','srace_save','srace_hold']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['srace_post','srace_save','srace_hold']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);

@@ -344,7 +344,10 @@ one more, a completed formation reopened, or other fields) is normally refused
 before it becomes a proposal, as `COMPANY_FORMATION_REFUSED` (nothing was written; the
 result names the current stage and revision and the one allowed next write).
 The projection still enforces the rule when the proposal is approved
-(2026-09-28).
+(2026-09-28). (Superseded by the 2026-09-27 amendment "the company folder
+layout": a company folder has no `organization/formation.json`, whose content
+belongs in `vision/vision.md`, and the runtime has had no
+`COMPANY_FORMATION_REFUSED` since legacy sweep step C, C-P6, 2026-10-14.)
 
 The Company File is worked on as one live folder. Every agent and member
 edits the same live objects in place through the live mount or Company File
@@ -5339,6 +5342,160 @@ own texts below carries a note "Amended 2026-10-06" in place.
         id and the block's key. P18 refuses that prefix on every other request. So a carrier that restarts finds its
         request, checks that it belongs to its row and block, and takes its copies. The warning is kept on the erase's
         row and shown to whoever asked.
+
+### 2026-10-14 amendment: machines work in the folder as on their own disk
+
+Founder decisions of 14 October 2026. The founder: "all machines can see and write to the folder, but more importantly
+they have bash/typescript commands to work over it, as if it was part of their own machine. this part is important".
+On the two points left open: "networked commands keep the folder, links work. otherwise how could we work natively
+with MCP's or live data from the web". On coding machines: "coding machines should be able too write in any language,
+not only python", with the capabilities Cursor's cloud coding machines offer.
+
+They complete the 2026-09-27 amendment "every machine works in the company folder", item 2 ("the same as a local
+disk"), and amend these texts. Where older text conflicts with this amendment, this amendment governs.
+- The [light threads amendment](#2026-10-02-amendment-light-threads), item 5 ("folder work runs offline"), and its
+  open point on machines where commands run as root.
+- The 2026-09-27 amendment "every machine works in the company folder", item 7 as light threads item 5 left it.
+- The [compute amendment](#2026-09-28-amendment-compute-for-agents), item 2's "published while it runs", which left
+  when to folder design, and item 3's "Coding machines are built without containers" and its one coding machine per
+  member when that machine is full.
+- In the designs, not the contract: `deploy/first-node/RUNTIME-COMPANY-FOLDER.md` §3 ("only files and folders") and
+  its git setting `core.symlinks=false`; `deploy/first-node/RUNTIME-FOLDER-WRITES.md`, "Errors at once", for links;
+  `deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md`, where a networked command "has no folder mount and no
+  view"; and `deploy/coding-worker/COMMAND-GUEST.md`, where the model has no root and no system packages, and private
+  registries need a broker of their own.
+
+1. **The bar: the folder is part of every machine.** On every machine that carries the company folder (company
+   machines, coding machines, agents' own machines and test machines), an agent's shell, and every program it starts,
+   works in `/company` as in a folder on the machine's own disk: the same commands, programs and file operations, in
+   bash, TypeScript, Python or any other language.
+   - Where a machine falls short of that, it is a gap to close, not a rule, unless this amendment names it (items 6
+     and 9).
+   - A chat turn still has no shell (light threads, item 1). It hands such work to a machine.
+2. **Networked commands keep the folder.** A command that uses the network has `/company` as an offline command does:
+   a mount of its own, owned by the run that started it. Its reads go to that run's read set (light threads, item 6),
+   and its saves pass the mutation gateway (27 September, item 4).
+   - It stays an outside effect. Starting it and typing into it pass the company's review rules (light threads, item
+     5). Its traffic leaves through the agent exit under the company's network rules
+     ([agent exit amendment](#2026-10-03-amendment-agent-traffic-leaves-through-the-agent-exit), items 1 and 8).
+   - Company data it reads can leave through that network. The founder accepted this for coding sessions (27
+     September, item 1) and for computers' shells (compute item 2), and accepts it here for every machine. Every read
+     is still recorded, and every save still passes the gateway.
+   - A command that does not ask for the network still runs offline, at once and without the review (light threads,
+     item 5).
+   - Where commands run as root (agents' own machines and test machines), a namespace does not hold a command. There,
+     every command has the network and the folder and passes the review rules as an outside effect, as compute item 4
+     already says for a machine with the folder. This settles light threads item 5's open point.
+   - Coding sessions keep their open network and stay unreviewed (27 September, item 9).
+3. **Programs that keep running.** An MCP server, a script that pulls live data from the web, a dev server or a
+   watcher runs on a machine like any other command, with `/company` and the network on item 2's terms.
+   - Its changes land while it runs: about two seconds after its last change, as a desktop's saves do, as well as each
+     time its output is read and when it ends.
+   - This settles compute item 2's "published while it runs".
+4. **Symbolic links work.** A symbolic link is an entry of the folder, of its own kind. It holds its target text and
+   has a version history. It is moved, copied, restored and deleted like a file.
+   - The target is kept exactly as written, relative or absolute. On a machine, the kernel follows it as on any disk.
+   - The folder never follows a link itself. The core, the folder service and the server-side tools (`company_list`,
+     `company_read`, `company_search`) show a link as a link, with its target. A search does not walk through links.
+   - A link never widens what anyone may read. A target inside `/company` resolves through the reader's own view, so a
+     path that view cannot read does not exist there. A target outside `/company` names the machine's own files.
+   - Making or changing a link is a save like any other. It passes the gateway with the same write authority, and a
+     link under a protected path produces a proposal.
+   - Git keeps symbolic links as links.
+5. **Hard links make a free copy.** `ln` without `-s` works. The new name gets the same content, stored once, so the
+   copy takes no space. The two names then keep their own versions: a later save to one does not change the other.
+   - Two names that stay one file would let a save under one path, with that path's readers and approvals, silently
+     change another path. So the folder does not join them.
+   - Tools that use hard links as cheap copies, such as git's local clone, package stores and backup tools, work
+     unchanged.
+6. **Devices, pipes and sockets stay on the machine.** A device file, a named pipe or a socket cannot be made in
+   `/company` (`EPERM`). Each means something only on one machine, so programs keep them in `/tmp` or elsewhere in the
+   machine's scratch.
+7. **One toolbox on every machine.** Every machine's shell has at least:
+   - bash and the usual Unix tools;
+   - git;
+   - Node.js 24 with npm and npx, which runs TypeScript files directly (`node file.ts`), plus the TypeScript compiler
+     `tsc` and `tsx`;
+   - Python 3 with pip and uv;
+   - a C and C++ build toolchain (gcc, make);
+   - mise, which installs any other language or version in the user's own space, without root;
+   - ripgrep, fd, jq, sqlite3, curl, zip and unzip;
+   - LibreOffice, for documents and conversions.
+
+   Company machines carry it in their image. Coding machines carry it and more (item 11). Agents' own machines and
+   test machines start from a base image that carries it.
+   - Adding a tool needs no founder decision. Dropping one of these does.
+   - With the network, an agent may install more where the machine lets it (compute item 4: root on its own
+     machines). What it installs is the machine's scratch, never company files.
+8. **Dependencies and builds stay on the machine.** On every machine, as on coding machines (27 September, item 9), a
+   project's installed dependencies and build output are the machine's own cache: for example `node_modules`, virtual
+   environments, build folders and, in a git repository, what its `.gitignore` leaves out.
+   - They are never published, and each machine installs or builds its own.
+   - This keeps installs as fast as on a local disk, since the NAS takes many small files slowly (12 to 67 a second
+     in the 28 September test), and it keeps the folder for the company's real work.
+9. **What stays different from a local disk.** These follow from one folder shared by many machines, and they stand:
+   - a change reaches other machines when it is saved, within seconds, not at once (27 September, item 4);
+   - two machines changing one file make a conflict copy instead of the last save winning (27 September, item 4);
+   - a crash loses the changes not yet published (28 September, item 3);
+   - each mount shows only what its authority may read (27 September, item 3).
+10. **When it applies.** No machine carries the folder yet. The folder service refuses every machine until the
+    company machine's new image (step 4); coding machines (step 5) and test machines (step 6) come after it.
+    - Each of those steps meets this amendment, and its acceptance shows it, including a networked command and a
+      program that keeps running.
+    - Until a machine carries the folder, today's rules hold for it.
+
+11. **Coding machines match a cloud coding machine.** Coding agents write in any language, with what the cloud
+    machines of other coding agents offer (the founder named Cursor's cloud agents as the reference, 14 October). A
+    member's coding machine (compute item 3) offers:
+    - **Any language.** Its base image carries the common runtimes and compilers with their package managers: Node.js
+      and TypeScript, Python, Go, Rust, Java, C and C++ (gcc, clang, make) and Ruby, plus version managers such as
+      mise. Any other language, version or system package installs in a session or in the repository's setup.
+    - **Root inside the machine.** A session's commands may use `sudo`: install system packages, change the machine's
+      setup and run services. The machine is its member's alone (one member's code never runs beside another
+      member's), so root reaches only that member's own sessions. Anything the platform must trust (the folder's
+      checks, receipts, logs and sign-ins) lives outside the machine, as the folder service already does (28
+      September, item 1).
+    - **Containers.** Docker and `docker compose` work inside the machine, so a project's databases and services run
+      beside its code and its tests.
+    - **A setup file in the repository.** It says how the repository's machine is set up: a base image or a
+      Dockerfile, an install step, a start step for each session, programs that keep running (dev servers,
+      watchers), and ports. A repository already set up for Cursor (`.cursor/environment.json`) or for dev containers
+      (`.devcontainer/devcontainer.json`) works without a second file.
+    - **Ready at start.** The result of the install step is kept as a snapshot, so a new session starts set up. It is
+      refreshed when the setup file or the default branch changes, and a refresh that fails never replaces a working
+      snapshot. A snapshot is scratch: it holds no company files (27 September, item 1) and can always be rebuilt from
+      the setup file.
+    - **Running apps.** Programs that keep running sit in terminals the member can watch. The member opens their
+      ports from the web app, and the agent from a browser on the machine, which it drives to test what it builds,
+      with screenshots.
+    - **Secrets for the work.** Keys a project needs, such as a test API key or a registry token, reach the session's
+      commands as environment variables from the vault, scoped to the member or the company. They are masked in
+      command output, logs and commits.
+    - **MCP.** MCP servers that run as programs run on the machine (item 3). A server that needs a sign-in reaches it
+      through the vault, so the sign-in stays off the machine.
+    - **No waiting.** When a member's machine is full, another machine of the same member starts with the same setup,
+      as company machines do (compute item 1, "no waiting for a seat").
+    - **What stays.** The network stays open through the agent exit under the company's network rules, sessions stay
+      unreviewed (27 September, item 9), each session mounts the company folder with its own authority, and branches
+      leave the company only as pull requests (5.1).
+
+**For the build** (not founder decisions; the designs carry them):
+- Command views open for networked commands too. 4b's SQL (#944, live in v178) refuses them today, so a follow-up
+  migration changes that, with test 981.
+- The folder service publishes a command's view after a quiet period while the command runs. 4b's service (#954)
+  publishes it only when asked.
+- 4d gives a networked command a mount namespace of its own with `/company`, inside the computer's network namespace.
+  4e's image carries the toolbox (item 7).
+- Links need a new entry kind in the core (versions, change-set units, the feed, history and restore), the write
+  protocol, the folder program (`symlink`, `readlink`, `link`), the folder service and the server-side tools. Git's
+  `core.symlinks` setting becomes true.
+- The folder program keeps item 8's caches on the machine.
+- Coding machines (item 11), with step 5: a base image with the runtimes; `sudo` and Docker in the guest, with the
+  platform's trusted helpers (storage, receipts, logs, git custody) moved out of the guest or made safe from root;
+  the setup file's reader, snapshots, shared terminals, port previews and a browser the agent drives; vault secrets as
+  masked environment variables; a second machine for a member whose machine is full. Root makes one member's
+  sessions on one machine no walls between each other: a save is credited to its session as well as root allows, as
+  on test machines.
 
 ## 20. Enforcement matrix
 

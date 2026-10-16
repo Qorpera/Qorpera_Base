@@ -15,7 +15,8 @@
 --    append-only: a finished line never changes, a pending one only to its finished form, and a narrow log takes only
 --    narrow lines.
 -- 6. Native host calls: qorpera_memory_step_hashes and qorpera_memory_step_narrow ('lease'), qorpera_memory_run_log_place
---    ('run') and qorpera_folder_memory_commit ('folder'; a run actor writes only its own run's log).
+--    ('run') and qorpera_folder_memory_commit ('folder'; a run actor writes only its own run's log and names no other
+--    run in its request, which the memory commit refuses before it takes any lock).
 -- Every new or patched body carries the marker 20260930231000 for the deploy guard.
 
 set local lock_timeout = '3s';
@@ -25,9 +26,9 @@ do $$ begin
 	if to_regclass('public.qorpera_memory_run_logs') is not null then
 		raise exception 'W1b (20260930231000) is already applied'; end if;
 	if to_regclass('public.qorpera_memory_trees') is null then
-		raise exception 'W1b (20260930231000) needs M1a (20260930111000)'; end if;
+		raise exception 'W1b (20260930231000) needs M1a (20260928509140, 20260928509150)'; end if;
 	if to_regclass('public.qorpera_runtime_worker_parents') is null then
-		raise exception 'W1b (20260930231000) needs W4a-1 (20260930171000)'; end if;
+		raise exception 'W1b (20260930231000) needs W4a-1 (20260928519130)'; end if;
 end $$;
 
 -- 1. The index ------------------------------------------------------------------------------------------------------
@@ -42,7 +43,7 @@ create table public.qorpera_memory_run_logs (
 	parent_run_id uuid,
 	parent_step integer check (parent_step >= 0),
 	continues_run_id uuid,
-	-- The whole log is narrow (§7.6), or it is from step narrow_from on.
+	-- The whole log is narrow (§4.5), or it is from step narrow_from on.
 	narrow boolean not null default false,
 	narrow_from integer check (narrow_from >= 0),
 	step_count integer not null default 0 check (step_count >= 0),
@@ -77,7 +78,8 @@ create table public.qorpera_memory_run_steps (
 	call_id text not null,
 	args_hash text check (args_hash ~ '^[0-9a-f]{64}$'),
 	releases uuid[] not null default '{}',
-	-- The folder keys a step names (its result, arguments and reads) with their ancestors: an erased path finds its steps.
+	-- The folder keys a step names (its paths, and those in its result, arguments, output and reads) with their
+	-- ancestors: an erased path finds its steps.
 	needles text[] not null default '{}',
 	narrow boolean not null,
 	erased boolean not null,
@@ -128,7 +130,7 @@ create table public.qorpera_memory_step_hash_keys (
 alter table public.qorpera_memory_step_hash_keys enable row level security;
 revoke all on public.qorpera_memory_step_hash_keys from public, anon, authenticated, service_role;
 comment on table public.qorpera_memory_step_hash_keys is
-	'Run logs (RUNTIME-AGENT-MEMORY-TREE.md §7.6): the key a company''s narrow steps hash their results with. Read only '
+	'Run logs (RUNTIME-AGENT-MEMORY-TREE.md §4.5): the key a company''s narrow steps hash their results with. Read only '
 	'by qorpera_memory_step_hashes.';
 
 -- 2. Helpers ----------------------------------------------------------------------------------------------------------
@@ -231,23 +233,28 @@ begin
 end $$;
 revoke all on function public.qorpera_memory_run_block_parse(text, text) from public, anon, authenticated, service_role;
 
--- One step line of a log block (§4.5), or null: at most 41,983 bytes, a JSON object with closed keys and no duplicate.
--- Three shapes, as the runtime writes them (cloud-run-log.ts):
+-- One step line of a log block (§4.5), or null: at most 50,175 bytes (49 KiB with its newline), a JSON object with
+-- closed keys and no duplicate. Three shapes, as the runtime writes them (cloud-run-log.ts):
 --   a step: j, tool, call, args, args_bytes, args_hash, result (null while pending), reads, reads_cut (only true, only
---     when finished), releases, text, at; args, text and result at most 8 KiB each as stored, reads 16 KiB;
---   a narrow step (§7.6): j, tool, call, args_hash, narrow, finished, result_hash (when finished), releases, at;
+--     when finished), releases, paths, text, at; args, text and result at most 8 KiB each as stored, reads 16 KiB;
+--     paths, the paths the step named in its args and its receipt, not its reads (the runtime gives
+--     qorpera_memory_step_narrow these and the read paths): at most 1,024 strings of at most 4,096 characters, 8 KiB
+--     as stored;
+--   a narrow step (§4.5): j, tool, call, args_hash, narrow, finished, result_hash (when finished), releases, at;
 --   an erased step (§8): j, tool, call, args_hash, erased, and narrow or args_bytes.
--- Returns its parts, the folder keys a step names (in its result, arguments and reads, as path, from, to or paths), the
--- line's sha256 and that of its fixed parts (j, tool, call, args_hash and at).
+-- Returns its parts, the folder keys a step names, the line's sha256 and that of its fixed parts (j, tool, call,
+-- args_hash and at). A step names each of its paths, and each path, from, to or paths in its result, its arguments,
+-- its reads and its output (result.content.text of kind json, when it parses), spelled as qorpera_memory_step_narrow
+-- spells them: a leading /company/ goes, and a string that is no company path names nothing.
 create function public.qorpera_memory_run_step_line(p_line text)
 returns jsonb language plpgsql stable set search_path = '' as $$
 -- 20260930231000 (W1b)
 declare
 	v_json json; v_line jsonb; v_keys text[]; v_want text[]; v_erased boolean; v_narrow boolean; v_finished boolean;
-	v_args jsonb; v_paths text[] := '{}';
+	v_args jsonb; v_output jsonb; v_paths text[] := '{}';
 begin
 	-- Sized before it is parsed.
-	if p_line is null or octet_length(p_line) > 41983 then return null; end if;
+	if p_line is null or octet_length(p_line) > 50175 then return null; end if;
 	begin
 		v_json := p_line::json;
 		v_line := p_line::jsonb;
@@ -280,7 +287,7 @@ begin
 			or (v_line ->> 'result_hash') !~ '^[0-9a-f]{64}$') then return null; end if;
 	else
 		v_finished := jsonb_typeof(v_line -> 'result') is distinct from 'null';
-		v_want := array['j','tool','call','args','args_bytes','args_hash','result','reads','releases','text','at']
+		v_want := array['j','tool','call','args','args_bytes','args_hash','result','reads','releases','paths','text','at']
 			|| case when v_line ? 'reads_cut' then array['reads_cut'] else '{}'::text[] end;
 	end if;
 	if v_keys is distinct from (select array_agg(k order by k collate "C") from unnest(v_want) k) then return null; end if;
@@ -299,6 +306,10 @@ begin
 		if octet_length((v_json -> 'args')::text) > 8192 or octet_length((v_json -> 'text')::text) > 8192
 			or octet_length((v_json -> 'result')::text) > 8192 or octet_length((v_json -> 'reads')::text) > 16384 then
 			return null; end if;
+		if jsonb_typeof(v_line -> 'paths') is distinct from 'array' or jsonb_array_length(v_line -> 'paths') > 1024
+			or octet_length((v_json -> 'paths')::text) > 8192 then return null; end if;
+		if exists (select 1 from jsonb_array_elements(v_line -> 'paths') p where jsonb_typeof(p.value) is distinct from 'string'
+			or char_length(p.value #>> '{}') > 4096) then return null; end if;
 		if exists (select 1 from jsonb_array_elements(v_line -> 'reads') r where jsonb_typeof(r.value) is distinct from 'object') then
 			return null; end if;
 		if exists (select 1 from jsonb_array_elements(v_line -> 'reads') r
@@ -311,18 +322,25 @@ begin
 		if v_line ? 'reads_cut' and (v_line -> 'reads_cut' is distinct from 'true'::jsonb or not v_finished) then return null; end if;
 		-- A pending step has read and released nothing yet.
 		if not v_finished and (v_line -> 'reads' <> '[]'::jsonb or v_line -> 'releases' <> '[]'::jsonb) then return null; end if;
+		-- Arguments cut to fit, or an output that is no JSON or was cut, add nothing: the step's paths hold what they name.
 		begin
 			v_args := (v_line ->> 'args')::jsonb;
-		exception when data_exception then v_args := null; end;
+		exception when data_exception or program_limit_exceeded then v_args := null; end;
+		if v_line #> '{result,content,kind}' = '"json"'::jsonb and jsonb_typeof(v_line #> '{result,content,text}') = 'string' then
+			begin
+				v_output := (v_line #>> '{result,content,text}')::jsonb;
+			exception when data_exception or program_limit_exceeded then v_output := null; end;
+		end if;
 		select coalesce(array_agg(distinct public.qorpera_folder_key(c.path)), '{}') into v_paths
-		from (select p.value #>> '{}' as raw
-			from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_line -> 'reads'),
+		from (select p.value #>> '{}' as raw from jsonb_array_elements(v_line -> 'paths') p
+			union all select p.value #>> '{}'
+			from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output, v_line -> 'reads'),
 				'lax $.**."path" ? (@.type() == "string")') p(value)
-			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args),
+			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output),
 				'lax $.**."from" ? (@.type() == "string")') p(value)
-			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args),
+			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output),
 				'lax $.**."to" ? (@.type() == "string")') p(value)
-			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args),
+			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output),
 				'lax $.**."paths"[*] ? (@.type() == "string")') p(value)) s
 		cross join lateral (select case when s.raw like '/company/%' then substr(s.raw, 10) else s.raw end as path) c
 		where public.qorpera_company_path_valid(c.path);
@@ -355,7 +373,7 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_folder_path_every_agent(uuid, text) from public, anon, authenticated, service_role;
 
--- Whether a run's machine made it narrow (§7.6). W6a fills this in for coding runs.
+-- Whether a run's machine made it narrow (§4.5). W6a fills this in for coding runs.
 create function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
 returns boolean language sql stable set search_path = '' as $$
 	-- 20260930231000 (W1b)
@@ -378,7 +396,7 @@ revoke all on function public.qorpera_run_log_narrow(uuid) from public, anon, au
 
 -- A run's place among runs (§4.5): its conversation, the step of its parent run that started it (a worker's dispatch,
 -- as W4a-1 keeps it), the run it continues (the worker's previous dispatch, or the run a completion, machine or office
--- wake follows) and whether it is narrow (§7.6: its parent step, its parent's log from that step, the run it continues,
+-- wake follows) and whether it is narrow (§4.5: its parent step, its parent's log from that step, the run it continues,
 -- or its machine). Null when the run is not in this company. Plain reads.
 create function public.qorpera_memory_run_origin(p_environment_id uuid, p_run_id uuid)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
@@ -494,7 +512,7 @@ end $$;
 revoke all on function public.qorpera_memory_run_log_place(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.qorpera_memory_run_log_place(uuid, uuid) to service_role;
 
--- A narrow step's result hashes (§7.6): keyed with the company's step hash key and the run, so a hash names nothing
+-- A narrow step's result hashes (§4.5): keyed with the company's step hash key and the run, so a hash names nothing
 -- outside its run. Only while the job holds its lease on the run; at most 128 sha256 digests, in their order.
 create function public.qorpera_memory_step_hashes(p_environment_id uuid, p_job_id uuid, p_run_id uuid, p_digests jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -523,7 +541,7 @@ end $$;
 revoke all on function public.qorpera_memory_step_hashes(uuid, uuid, uuid, jsonb) from public, anon, authenticated;
 grant execute on function public.qorpera_memory_step_hashes(uuid, uuid, uuid, jsonb) to service_role;
 
--- What makes a run's next step lines narrow (§7.6), as its log's file rules decide it: the log is narrow from its next
+-- What makes a run's next step lines narrow (§4.5), as its log's file rules decide it: the log is narrow from its next
 -- step on (the whole log, or a step it holds), the run's machine went narrow, and which of the paths a step names not
 -- every agent reads. A path is spelled as a step line has it (a leading /company/ goes); one that is no company path
 -- names nothing, as in qorpera_memory_run_step_line. Only while the job holds its lease on the run; at most 1,024 paths.
@@ -673,6 +691,33 @@ begin
 	return null;
 end $$;
 
+-- M1a's memory commit, now a call a run makes as itself: a run actor names only its own run in runLog and
+-- runGenerations, checked before the commit takes any lock (the run generation rows are locked before the receipts'
+-- rank 10). The platform names any run of the company, as before.
+create or replace function public.qorpera_folder_memory_commit(p_environment_id uuid, p_actor jsonb, p_operation_key text,
+	p_units jsonb, p_preconditions jsonb default '{}'::jsonb, p_review_id uuid default null, p_receipt_id uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+-- 20260930231000 (W1b)
+declare v_result jsonb; v_pre jsonb := coalesce(p_preconditions, '{}'::jsonb);
+begin
+	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	if coalesce(current_setting('qorpera.folder_memory', true), '') <> '' then raise exception 'A memory request is already set in this transaction' using errcode = '55000'; end if;
+	if p_environment_id is null or coalesce(p_operation_key, '') = ''
+		or not public.qorpera_folder_memory_preconditions_valid(p_environment_id, v_pre) then
+		raise exception 'Memory request is invalid' using errcode = '22023'; end if;
+	if p_actor ->> 'kind' = 'run' and (v_pre ? 'runLog' and v_pre #>> '{runLog,run}' is distinct from p_actor ->> 'runId'
+		or exists (select 1 from jsonb_array_elements(coalesce(v_pre -> 'runGenerations', '[]'::jsonb)) g
+			where g.value ->> 'runId' is distinct from p_actor ->> 'runId')) then
+		raise exception 'A run writes only its own run log' using errcode = '42501'; end if;
+	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', p_environment_id::text,
+		'operationKey', p_operation_key, 'preconditions', v_pre)::text, true);
+	v_result := public.qorpera_folder_commit(p_environment_id, p_actor, p_operation_key, p_units, p_review_id, p_receipt_id);
+	perform set_config('qorpera.folder_memory', '', true);
+	return v_result;
+end $$;
+revoke all on function public.qorpera_folder_memory_commit(uuid, jsonb, text, jsonb, jsonb, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_folder_memory_commit(uuid, jsonb, text, jsonb, jsonb, uuid, uuid) to service_role;
+
 -- 5. The refusals ------------------------------------------------------------------------------------------------------
 
 -- The structured-file hook's run log check, for every unit of a memory commit (§4.5), after M1a's tree check. Returns a
@@ -782,7 +827,8 @@ revoke all on function public.qorpera_memory_run_log_admits(uuid, text, jsonb, t
 
 -- A run log file's own rules, for each one a unit writes (§4.5). run.toml names the run's origin and never changes. A
 -- log block is 1 to 16 step lines from its number on, after the log's last step or a block of the same commit: a step
--- stays in its block, a finished or erased line never changes and a pending one only to its finished form; a new
+-- stays in its block, a finished or erased line never changes and a pending one only to its finished form, which
+-- names every path it named (or is narrow); a new
 -- erased line is the erase's (W5). A narrow log, a log from its first narrow step on and a run whose machine went narrow
 -- take only narrow lines; a line that is not narrow names only paths every agent reads. A run tree block parses. Returns
 -- a refusal or null.
@@ -857,7 +903,7 @@ begin
 		foreach v_line in array v_lines loop
 			v_no := v_no + 1;
 			-- Sized before it is parsed.
-			if octet_length(v_line) > 41983 then
+			if octet_length(v_line) > 50175 then
 				return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', jsonb_build_array(
 					public.qorpera_company_state_problem('value', v_no, null, 'this line is longer than a step line can be'))); end if;
 			v_parsed := public.qorpera_memory_run_step_line(v_line);
@@ -879,6 +925,11 @@ begin
 				v_problem := 'step ' || (v_start + v_no - 1) || ' changes only to its finished form';
 			elsif (v_old.run_id is null or v_old.line_sha256 <> v_parsed ->> 'line_sha256') and (v_parsed ->> 'erased')::boolean then
 				v_problem := 'only an erase writes an erased step';
+			-- A pending line's paths stay in its finished form, so an erase still finds what its arguments hold; only the
+			-- narrow form, which holds none of it, drops them.
+			elsif v_old.run_id is not null and not (v_old.erased or v_old.finished) and not (v_parsed ->> 'narrow')::boolean
+				and not (v_old.needles <@ public.qorpera_memory_run_step_needles(v_parsed -> 'paths')) then
+				v_problem := 'step ' || (v_start + v_no - 1) || ' keeps every path it named while pending';
 			elsif v_old.run_id is null and v_start + v_no - 1 < coalesce(v_row.step_count, 0) then
 				v_problem := 'step ' || (v_start + v_no - 1) || ' is missing from its block';
 			elsif (v_old.run_id is null or v_old.line_sha256 <> v_parsed ->> 'line_sha256')
@@ -1298,8 +1349,9 @@ drop function pg_temp.w1b_run_logs_replace(regprocedure, text, text, integer);
 -- 8. Native host calls ---------------------------------------------------------------------------------------------------
 
 -- A run hashes its narrow steps' results and learns what makes its steps narrow while it holds its lease, finds where
--- its log goes, and writes its log through the memory commit as itself (a run actor writes only its own run's log,
--- qorpera_memory_run_log_paths, and needs no grant there, qorpera_memory_run_log_admits).
+-- its log goes, and writes its log through the memory commit as itself (a run actor names only its own run in its
+-- request and writes only its own run's log, qorpera_memory_run_log_paths, and needs no grant there,
+-- qorpera_memory_run_log_admits).
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_memory_step_hashes', 'lease'),
 	('qorpera_memory_step_narrow', 'lease'), ('qorpera_memory_run_log_place', 'run'), ('qorpera_folder_memory_commit', 'folder');
 
@@ -1318,6 +1370,7 @@ begin
 		'public.qorpera_memory_run_log_place(uuid,uuid)', 'public.qorpera_memory_step_hashes(uuid,uuid,uuid,jsonb)',
 		'public.qorpera_memory_step_narrow(uuid,uuid,uuid,jsonb)', 'public.qorpera_memory_run_generations_lock(uuid,text)',
 		'public.qorpera_folder_memory_preconditions_valid(uuid,jsonb)', 'public.qorpera_memory_generation_decide(uuid,uuid)',
+		'public.qorpera_folder_memory_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)',
 		'public.qorpera_memory_run_log_paths(uuid,jsonb,text,text,jsonb,text)',
 		'public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)',
 		'public.qorpera_memory_run_log_file_rules(uuid,jsonb,text,text,jsonb,text)',

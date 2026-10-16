@@ -4,8 +4,9 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The folder program's build record (deploy/folder-service/folder-program-linux-x64.json): which source, built in
- * which pinned image, gave which bytes. The shared-execution installer pins those bytes; the scripts tests check the
- * record names today's source and the installer's pin; the run-on-node step `folder-program` builds the source again
+ * which pinned image, gave which bytes. The shared-execution installer and the company machine image
+ * (deploy/machine/build-machine-image.sh) pin those bytes; the scripts tests check the record names today's source and
+ * both pins; the run-on-node step `folder-program` builds the source again
  * and checks it gives the recorded bytes. A change to crates/qorpera-folder therefore needs a new record, made with
  * `node scripts/build-folder-program.mjs --out <dir>` on Linux (it prints the record). */
 

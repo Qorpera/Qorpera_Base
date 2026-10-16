@@ -1,3 +1,4 @@
+import type { InterfaceFile } from "@qorpera/cloud-client/interfaces";
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
@@ -6,6 +7,7 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { undoInterfaceChange } from "../cloud/interface-changes.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
@@ -218,6 +220,8 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
+	/** The pages each thread's review cards preview, which every reader of the folder reads too (Interfaces I10). */
+	const interfacePreviews = new Map<object, readonly InterfaceFile[]>();
 	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
@@ -944,6 +948,7 @@ export function mountApplication(
 			});
 			interfaceFolder = reader;
 			interfaceOffers = offers;
+			for (const [owner, pages] of interfacePreviews) reader.preview(owner, pages);
 			offers.open();
 			void reader.open();
 		}
@@ -1231,6 +1236,25 @@ export function mountApplication(
 								checkConversationAccess,
 								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 							),
+							// An agent's interface change is undone as the member's own change set, by a member who can write.
+							undoInterfaceChange: (change, signal) => {
+								const check = () => {
+									checkConversationAccess();
+									if (!controller.store.get().team?.capabilities.write)
+										throw new Error(t("Conversation access changed."));
+								};
+								return undoInterfaceChange(
+									memberFolder(check, t("Conversation access changed.")),
+									change,
+									AbortSignal.any([controller.signal, signal]),
+									check,
+								);
+							},
+							previewInterfaces: (owner, pages) => {
+								if (pages.length > 0) interfacePreviews.set(owner, pages);
+								else interfacePreviews.delete(owner);
+								interfaceFolder?.preview(owner, pages);
+							},
 							...agentActions,
 							...workspaceActions,
 							computer,

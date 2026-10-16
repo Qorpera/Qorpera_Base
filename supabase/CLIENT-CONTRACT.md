@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-175 functions, grouped for navigation. Signatures: see the migration that defines each.
+157 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -162,16 +162,11 @@ they answer 42501 "native host call is refused".
     anything else, alike whether or not the connection is a plan, and for a
     revoked one), and its answer is the consent call's:
     `{connection_id, version, allow_autonomous, changed, ...}`, with the version
-    to bind, plus `resumed_routines` (20260928369985). Turning the plan on also
-    starts the agents' routines that wait only for it: paused with
-    `needs_model_account`, running for the caller (`runs_for_user_id`) and paid
-    by this same plan, whose agent is active, with no listener, not a routine
-    file, not past its end, and not in a company being deleted or on the folder
-    core (folder-v2). Each moves to the plan's unattended
-    binding and resumes; its content, schedule and agent stay as they were.
-    `resumed_routines` lists their ids (`[]` when none, and always when turning
-    off). A routine that another call holds at that moment stays waiting, so
-    re-read the routine list instead of assuming the card's routine started.
+    to bind, plus `resumed_routines` (20260928369985), always `[]`: turning the
+    plan on resumes no routine (the snapshot-v1 resume went in the legacy
+    sweep's F3a, 20260930294000; on the folder core the agents write routine
+    files). Re-read the routine list instead of assuming the card's routine
+    started.
     The call waits at most 2 s for any one lock (an agent's call in flight, a
     deletion, the GC) and then answers 55P03 "Busy right now. Try again in a
     moment." with nothing changed; a rare deadlock PostgreSQL breaks on the
@@ -196,8 +191,7 @@ they answer 42501 "native host call is refused".
     login lapsed works);
   - only the member whose plan pays retries a failed run on it
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
-    acknowledging stays open) or a change's review on it
-    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+    acknowledging stays open).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
   p_connection_id)` (20260930059000, the payer never changes without the
@@ -266,37 +260,19 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, proposals, workspaces (21)
+### Company File, snapshots, workspaces (5)
 
-- `qorpera_accept_company_proposal`
-- `qorpera_append_company_proposal_comment`
-- `qorpera_capture_company_substrate_version`
-- `qorpera_capture_company_substrate_version_v2`
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
-- `qorpera_get_company_proposal`
 - `qorpera_get_company_snapshot`
-- `qorpera_get_company_substrate_version`
-- `qorpera_list_company_proposal_comments`
-- `qorpera_list_company_proposals`
 - `qorpera_list_company_snapshots`
-- `qorpera_list_company_substrate_operations`
 - `qorpera_list_company_workspaces`
-- `qorpera_prepare_company_file_proposal`
-- `qorpera_prepare_company_file_revision`
-- `qorpera_publish_company_file_revision`
-- `qorpera_rebase_company_proposal`
-- `qorpera_reject_company_proposal`
-- `qorpera_retry_company_proposal_review`
-- `qorpera_submit_company_proposal`
 
 
-### Organization and staff (6)
+### Organization and staff (4)
 
-- `qorpera_company_organization_bootstrap`
 - `qorpera_company_organization_json`
 - `qorpera_configure_staff_execution_authority`
-- `qorpera_delete_profile_staff`
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
@@ -472,7 +448,7 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_upsert_scoped_compute_identity`
 
 
-### Accounts, profiles, membership (22)
+### Accounts, profiles, membership (19)
 
 - `qorpera_accept_profile_invitation`
 - `qorpera_accept_profile_invitations`
@@ -480,8 +456,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_can_read_profile`
 - `qorpera_can_write_profile`
 - `qorpera_cancel_profile_invitation`
-- `qorpera_create_cloud_company`
-- `qorpera_create_hosted_profile`
 - `qorpera_decline_profile_invitation`
 - `qorpera_delete_hosted_profile`
 - `qorpera_get_account_entitlement`
@@ -491,7 +465,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_list_profile_invitations`
 - `qorpera_member_role`
 - `qorpera_profile_team_info`
-- `qorpera_promote_local_profile`
 - `qorpera_remove_profile_member`
 - `qorpera_retry_profile_invitation_delivery`
 - `qorpera_session_profile_id`
@@ -715,9 +688,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   (names beginning `mail-` belong to mailboxes, from 20260928299650),
   purpose, proof or limit. From 20260930280000 (E4b) a `folder-v2` company
   then refuses a `stripe`, `github` or `hmac-sha256` proof with 0A000 ("A
-  Stripe hook comes later: its secret is taken from Stripe's screen", or "A
-  signed hook is opened through the vault") and makes nothing: its signed
-  hooks are opened by agents through the vault (E3b, E3c).
+  signed hook is opened through the vault"; until 20260930344000, E3c-1, a
+  `stripe` one got "A Stripe hook comes later: its secret is taken from
+  Stripe's screen") and makes nothing: its signed hooks are opened by agents
+  through the vault (E3b, E3c).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -732,7 +706,13 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
   descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
   also Svix's headers) hook carries `signingSecret` (`connectorId`
-  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). On a
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). From
+  20260930344000 (E3c-1) a `stripe` hook's `signingSecret` also carries, once
+  the vault has its secret, `version` (the current one), `capturedAt` (when
+  that version was stored) and, if a delivery was refused under that
+  version, `lastRefusal` `{receivedAt, reason}` (the newest one). A `github`
+  or `hmac-sha256` hook's keeps exactly `connectorId`, `secretName` and
+  `ready`, and so does a `stripe` hook's before its first capture. On a
   snapshot-v1 company an owner or admin saves the sender's signing secret with
   `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
   'event_hook', secretName, purpose)` and then
@@ -783,12 +763,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
-- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents save a received email's
-  attachment into the company folder with the runtime tool `save_attachment`, and attach company files to
-  `send_mail`; there is no client surface. A saved attachment is an ordinary company file, written through the path
-  gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
-  Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
-  allowance.
+- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
+  `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
+  served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
+  Legacy sweep D7 (20260930336000) dropped the fetch lane behind it: the fetch table, the worker's functions and the
+  `mail-attachments` Edge Function.
 - Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
   (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
@@ -824,7 +803,8 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   routine that waits for a payer) and `runs_for_user_id` (the member its current version runs for: that
   version's creator). When its current version is a resume (20260928369985), `resume_reason` is
   `plan_turned_on`, `resumed_by_user_id` the member who turned on work while away and `resumed_at` when; all
-  three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
+  three are null for any other version, so a later save clears them. No new version is a resume since the legacy
+  sweep's F3a (20260930294000). Show it as "Resumed when <member> turned on
   work while away".
 
 - `qorpera_get_routine_payer(p_routine_id)` and `qorpera_set_routine_login(p_routine_id, p_connection_id)`
@@ -870,13 +850,15 @@ a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
-  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`.
+  `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
 - `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
-  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields (a
+  link's `target`, except on a delete); a
   `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
   `before`.
 - `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
@@ -885,7 +867,8 @@ a write under `human-tasks/` waits for P31.
   whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
   `before`.
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
-  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  core §6), each change set with `by` and `at`; a link's change has its `target`. Follow it from `next` (`afterSeq`,
+  `cursor`); on `resync`, read
   again from the top.
 - `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
@@ -920,17 +903,18 @@ Folder-v2 companies only (Interfaces I9c; `deploy/first-node/RUNTIME-INTERFACES.
 accepts by saving themselves into that cell with the member commit route, which the claim rule allows while the offer
 is open and the cell is as the offer read it. Each call answers 42501 for a caller who is not a member of a folder-v2
 company with that environment, and 55000 while the company is being deleted. An offer is
-`{id, table, folder, key, column, from, was, to, state, at, closedAt}`: `table` is the table's id, `folder` its folder
-now, `key` the row's typed key (a JSON array, as the client's table parse gives it), `from`, `was` and `to` user ids
-(`was` null for an empty cell), `state` `open`, `accepted`, `declined`, `withdrawn` or `lapsed`. A closed offer has
-`key` and `column` null.
+`{id, table, folder, key, column, from, was, to, state, agent, at, closedAt}`: `table` is the table's id, `folder` its
+folder now, `key` the row's typed key (a JSON array, as the client's table parse gives it), `from`, `was` and `to` user
+ids (`was` null for an empty cell), `state` `open`, `accepted`, `declined`, `withdrawn` or `lapsed`. `agent` is null
+for a cell's offer; an agent's id is an agent offered to an area's supervisor ("Supervision consent" below), with
+`column` `agents` and `was` null. A closed offer has `key` and `column` null.
 
 - `qorpera_offer_interface_cell(environment, {table, key, column, was, to})`: `was` is the cell as the caller read
   it. Answers `{schema: "qorpera.interface-offer/v1", ok: true, created, offer}`; `created` is false when the same
   cell is already offered to `to`, with that open offer. A refusal is `{schema, ok: false, reason, message}`, show the
   message:
   - `gone`: "This table is gone." or "This row is gone.";
-  - `column`: "Only a member column that needs a yes can be offered." (also an area's `supervisor`);
+  - `column`: "Only a member column that needs a yes can be offered.";
   - `changed`: "That changed while you were looking." (the cell is not `was`);
   - `not_yours`: "Only the member it names can offer it.";
   - `member`: "Offer it to another member of the company.";
@@ -944,6 +928,149 @@ now, `key` the row's typed key (a JSON array, as the client's table parse gives 
   truncated}`, the open offers on live tables the caller may read, between members of the company, newest first, at
   most 500. Every member who reads the table sees its offers. Read it again after a folder change to the table and on
   focus; an offer settles with the save that changes its cell.
+
+### Supervision consent (20260930371000_interface_supervision)
+
+Folder-v2 companies only (Interfaces I9b; `deploy/first-node/RUNTIME-INTERFACES.md` §5.1 "Supervision"). A member
+supervises the agents of an area (a row of `tables/areas`) by consent: their own save of the areas' rows that puts them
+in a row's `supervisor` cell (a take, or an offer of the cell they accept) consents. While the consent is live, the
+agents the row's `agents` cell holds take and release claimed cells as that member. A `supervisor` cell with no live
+consent decides nothing: its agents act for no one. A consent ends `released` (a save leaves the cell naming someone
+else or no one), `gone` (the row deleted, or its key changed), `withdrawn` (its member's call below) or `left` (its
+member left the company); a save that keeps a cell its member had withdrawn consents to nothing, the consent call is the
+way back. A consent is `{id, table, folder, key, user, state, at, endedAt}`: `table` is the areas table's id, `folder`
+its folder, `key` the row's typed key (a JSON array, as the client's table parse gives it; null once ended), `user` the
+supervising member. Each call answers 42501 for a caller who is not a member of a folder-v2 company with that
+environment.
+
+- `qorpera_consent_interface_supervision(environment, {key})`: the member the row's `supervisor` cell names consents
+  again. Answers `{schema: "qorpera.interface-supervision/v1", ok: true, created, supervision}`; `created` is false
+  while a consent to that row is live, with that consent (a consent being withdrawn meanwhile is waited for, and a new
+  one made). A refusal is `{schema, ok: false, reason, message}`, show the
+  message: `gone` "This area is gone." (no such row, or the areas unreadable to the caller), `not_yours` "Only the
+  member it names as supervisor can consent.". A request of another shape is 22023 (`key` a non-empty array, at most
+  4,096 bytes), a paused or deleting company 55000.
+- `qorpera_withdraw_interface_supervision(environment, supervision)` (its member only): `{schema, ok: true, changed,
+  supervision}`; `changed` is false when the consent had already ended, with the consent as it is. The file is
+  unchanged. Anyone else gets 42501 "This supervision is not yours to withdraw", an unknown consent 22023. It works in
+  a paused company.
+- `qorpera_member_interface_supervisions(environment)`: `{schema: "qorpera.member-interface-supervisions/v1",
+  supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
+  first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
+  names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
+- Agents join a supervised area by its supervisor (20260930372000_interface_supervision_agents). While an area's
+  consent is live, only its member's save adds an agent to the row's `agents` cell; anyone else's save that adds one
+  is refused (`areas`: "only the area's supervisor adds its agents; offer the agent to them"). Removing an agent stays
+  free, and so does adding one to an area nobody supervises.
+- `qorpera_offer_interface_agent(environment, {key, agent})`: the caller offers a hired agent to the area's
+  supervisor. Answers `{schema: "qorpera.interface-offer/v1", ok: true, created, offer}`, an offer with `agent` set
+  and `to` the supervisor (see "Offers of a claimed cell"); `created` is false when the agent is already offered to
+  that area, with that open offer (whoever made it). A refusal is `{schema, ok: false, reason, message}`, show the
+  message:
+  - `gone`: "This area is gone." (no such row, or the areas unreadable to the caller);
+  - `agent`: "Offer an agent the company has hired.";
+  - `changed`: "The agent is in this area already.";
+  - `supervisor`: "Nobody supervises this area: add the agent yourself." or "You supervise this area: add the agent
+    yourself.";
+  - `write`: "You or they may not change this table's rows.".
+  A request of another shape is 22023 (`key` a non-empty array, at most 4,096 bytes; `agent` an agent id), a paused
+  company 55000. The supervisor accepts by saving the agent into the row's `agents` cell; they decline, and its maker
+  withdraws, with the offers' calls above. The offer lapses when the consent ends.
+- Member notification `interface_supervision_ended` (subject
+  `qorpera.member-notification.interface-supervision-ended/v1`: `supervisionId, tableId, key (null when longer than
+  1,024 bytes), supervisorUserId, reason ('released'|'gone'|'withdrawn'|'left'), byUserId (null when no member ended
+  it), at`): a consent ended, told once to the company's owners and admins, the supervisor and the member the area's
+  `owner` named before the end (before the save, when a save ended it), each while a member who may read the areas,
+  never the member who ended it. A key the supervisor
+  changed in their own save that consents to the renamed row tells nobody.
+
+### Chat images (20260930260000_chat_images)
+
+Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
+the conversation's summary-tree root: `<root>/images/<clientInputId>/<sha256>.<png|jpg|gif|webp>`, the root being
+`agents/<handle>/memory/thread` for a thread and `agents/groups/<handle>/memory` for a group chat. The input lists each
+image as before, `{objectSha256, bytes, mediaType}`, the hash being the file's. An input holds at most 5 images and
+8 MiB, each PNG, JPEG, GIF or WebP (the web's limits). Only the platform writes these paths (a summary tree is the
+platform's; a member's commit is refused `platform_only`), and an agent reads them as folder files. A conversation with
+no root (its agent has no folder) takes no images.
+
+The steps, through the object gateway's `/v1/member-session-attachments` routes (§4):
+
+1. The client picks the input's `clientInputId` first: every image of the input and the post use it.
+2. `PUT …/upload/<sessionId>/<clientInputId>/<sha256>`: the gateway calls `qorpera_room_image_begin(session,
+   clientInputId, sha256, bytes, mediaType)` with the member's token, which answers `{schema:
+   "qorpera.room-image-begin/v1", environmentId, sessionId, clientInputId, sha256, bytes, mediaType, path}`; it stages
+   the bytes as the platform and calls `qorpera_room_image_commit(userId, session, clientInputId, file)` as the service
+   role, `file` being the seal's `{manifestSha256, fileSha256, bytes, mediaType, executable}`. That makes the folders
+   still missing and writes the file in one memory commit naming the conversation's generation, and answers `{schema:
+   "qorpera.room-image/v1", sha256, bytes, mediaType, path}`. The same image again answers the same and commits nothing.
+3. The post (`qorpera_post_company_room_message`) lists the images. Each must be a live file at its path that this
+   member uploaded for this `clientInputId` (42501 "Attachment bytes must be uploaded for this exact member input"); a
+   replay of the post is not checked again. The input trigger holds any writer to the same rule, and a submitted
+   input's images and author never change (42501 "Submitted input attachments cannot change").
+4. `GET …/input/<sessionId>/<inputId>/<sha256>`: the gateway calls `qorpera_room_image_download(session, inputId,
+   sha256)` with the member's token, which answers `{schema: "qorpera.room-image-download/v1", environmentId, sessionId,
+   inputId, sha256, bytes, mediaType, manifestSha256, fileSha256, path}`, and serves that file. Any member who may read
+   the conversation may download (a viewer too).
+
+The begin's refusals: 42501 "Member attachment authority is required" (not a member's token), 22023 "Member attachment
+is invalid" (no input id, or an image outside the limits above), 42501 "Member attachment session is unavailable"
+(not a member of the open conversation's room, or the company was deleted meanwhile), 42501 "Submitted input
+attachments cannot change" (the input is posted), 55000 "Attachment folder is unavailable" (no root), 55000 "Member
+attachment could not be saved" (the sweep removed the input's uploads meanwhile; begin again), 23505 "Attachment input
+id is bound to another member" and 54000 "Member attachment capacity is reached" (a sixth image, or more than 8 MiB;
+the same image again does not count). The
+commit's refusals: 42501 "Member attachment authority is required" (not the service role), 22023 "Member attachment is
+invalid" (`file` other than exactly those five keys with `executable` false, or an image outside the limits), 42501
+"Member attachment session is unavailable" (no such conversation, an input id nobody began, another member's input, or
+the member no longer in the room), 42501 "Submitted input attachments cannot change" (the input was posted, before or
+during the save), 55000 "Attachment folder is unavailable" (no root), 54000 "Member attachment capacity is reached" and
+55000 "Member attachment could not be saved" (the folder refused the write). The download's refusals: 42501
+"Chat attachment access is unavailable", "Canonical chat input is unavailable" (no such member prompt in the
+transcript, or its message erased) and "Attachment does not belong to this canonical input", and 55000 "Attachment
+object is unavailable" (the file is gone).
+
+Images no input lists are deleted a day after the input's last upload, by a sweep every minute
+(`qorpera_room_image_orphan_sweep`, pg_cron job `qorpera-room-image-sweep`, at most one folder commit per call): the
+whole folder of an input never posted, and the images a posted input does not list. Erasing a message (memory step
+M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
+now; an image's path comes to the zoom with the runtime that opens it.
+
+### Coding environment secrets (20260930438000_coding_environment_secrets)
+
+The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
+like any other (`qorpera_begin_cloud_secret_capture`, the broker's screen, completion) with the connector id
+`environment`, owned by the company (owners and administrators capture those) or by the member. Its secret name is the
+variable's name in lower case: `npm_token` for `NPM_TOKEN`. A name is `[a-z][a-z0-9_]{0,63}`, never one the coding
+machine sets itself (`home`, `path`, `tmpdir`, `user`, `shell`, `lang`, `tz`, the proxy and certificate variables, and
+any name that starts `lc_`, `git_`, `ld_`, `dyld_`, `ssh_`, `xdg_`, `docker_` or `qorpera_`), and never one that names
+a harness's login or provider (`anthropic_`, `claude_`, `codex_`, `openai_`), so no secret changes who pays for a
+session. The begin refuses any other name with 22023 "That name is not available for an environment variable". A
+value never comes back to a client.
+
+A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
+its repository; a company secret with no grant reaches no session. When the member's and a granted company secret have
+the same name, the company's wins.
+
+- `qorpera_list_coding_environment(profile, environment)`: `[{schema: "qorpera.coding-environment-secret/v1",
+  secretId, name, ownerKind, purpose, version, grants, createdAt, updatedAt}]`, the company's environment secrets and
+  the caller's own, by name. `name` is the variable's (upper case); `grants` lists a company secret's live grants,
+  `[{grantId, repository, issuedByUserId, createdAt}]` by repository (always `[]` for a member's). Every member may
+  read it, a viewer too; anyone else gets `[]`.
+- `qorpera_grant_coding_environment_secret(profile, secret, repository)`: an owner or administrator gives a company
+  environment secret to the coding sessions of one GitHub repository, `owner/name` in any case (kept in lower case, as
+  GitHub compares names). Answers `{schema: "qorpera.coding-environment-grant/v1", grantId, secretId, repository,
+  issuedByUserId, status, createdAt}`; granting it again answers the live grant. Refusals: 42501 "coding environment
+  grants need an owner or administrator", 22023 "A repository is named owner/name", 42501 "company environment secret
+  is unavailable" (a member's secret, another connector's, a disconnected one, or a name no longer allowed).
+- `qorpera_revoke_coding_environment_grant(profile, grant)`: an owner or administrator withdraws a grant. The same
+  answer with `status: "revoked"`, also for one already withdrawn; 42501 "coding environment grant is unavailable" for
+  a grant the company does not have.
+
+A grant also ends when its secret is disconnected (`qorpera_revoke_cloud_secret`), and for good when the member who
+gave it stops being an owner or administrator or leaves: promoting them again revives none, so another owner or
+administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
+leave, as their other secrets do.
 
 ## 3. Realtime
 
@@ -1012,15 +1139,21 @@ Member requests authenticate with the user token; the gateway checks
 Supabase authority, hashes uploads server-side, and confirms the catalog
 only after durable storage.
 
-- `GET/PUT /v1/member-company-objects/…` — content-addressed objects
 - `GET /v1/member-folder-objects/<environmentId>/<sha256>` — a folder-v2 company's bytes for a member (folder core
   C4, P27b), one manifest or chunk of a file the member may read, now or in a version they may read
   (`qorpera_member_folder_object`, checked before and after the read). Behind the member company gateway like the
   other member routes. `CloudMemberFolderClient.readFile` fetches the manifest, then its chunks, and checks each
   against its hash and the whole against the file's.
-- `/v1/member-session-attachments/…` — attachments on canonical sessions
-- `POST /v1/read-leases/revoke` — revoke a read lease
+- `PUT /v1/member-session-attachments/upload/<sessionId>/<clientInputId>/<sha256>` and
+  `GET /v1/member-session-attachments/input/<sessionId>/<inputId>/<sha256>` — a member's chat images (§2 "Chat images").
+  On folder-v2 the routes move onto `qorpera_room_image_begin`, `qorpera_room_image_commit` and
+  `qorpera_room_image_download` with the gateway change that follows 20260930260000; until it deploys they serve
+  snapshot-v1 sessions only.
 - `/healthz`, `/livez`, `/readyz`
+
+`/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
+gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
+leases and no member file exports.
 
 Uploads and downloads are always explicit, typed member interactions
 (contract 12.2); a client never grants an agent access to the member's
@@ -1182,7 +1315,7 @@ does locally that the contract forbids.
 | `chat:open` | qorpera_ensure_staff_session / qorpera_ensure_member_private_staff_session |
 | `companies:list` | qorpera_list_hosted_profiles |
 | `company:close` | client state |
-| `company:new` | qorpera_create_cloud_company + qorpera_company_organization_bootstrap |
+| `company:new` | the founding lobby (qorpera_open_company_founding, qorpera_start_company_founding); the old create RPCs and the bootstrap went with legacy sweep D1 (20260930330000) |
 | `company:open` | select cloud profile (no folder; desktop-only local projection is transitional) |
 | `company:pending-creation` | client state over the same RPCs |
 | `company:product-add` | Order 9 (coding workers / repositories) — not yet |
@@ -1213,7 +1346,7 @@ does locally that the contract forbids.
 | `profile:leave-cloud` | qorpera_leave_hosted_profile |
 | `profile:list-invitations` | qorpera_list_profile_invitations |
 | `profile:materialize-cloud` | desktop-only transitional (local checkout) — no web equivalent by design |
-| `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
+| `profile:migrate-local` | desktop-only transitional — no web equivalent by design (qorpera_promote_local_profile went with legacy sweep D1, 20260930330000) |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
 | `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
@@ -1227,11 +1360,11 @@ does locally that the contract forbids.
 | `settings:overlay` | client-local preference |
 | `settings:sidebar-translucency` | client-local preference |
 | `staff:archive` | review (staff lifecycle RPC, Order 0 organization kernel) |
-| `staff:bootstrap` | qorpera_company_organization_bootstrap |
+| `staff:bootstrap` | none: the company's creation seeds the Co-Founder (qorpera_company_organization_bootstrap went with legacy sweep D1, 20260930330000) |
 | `staff:catalog` | qorpera_company_organization_json / qorpera_list_profile_staff |
 | `staff:copy-conversation-id` | client |
 | `staff:create` | organization kernel RPC (in rework: responsibilities) — review |
-| `staff:delete` | qorpera_delete_profile_staff |
+| `staff:delete` | review (an agent's files in the company folder; qorpera_delete_profile_staff went with legacy sweep D1, 20260930330000) |
 | `staff:intro-ready` | review |
 | `staff:open` | qorpera_ensure_staff_session |
 | `staff:restore` | review |
@@ -1372,6 +1505,9 @@ above.
     Until this lands the web client derives the placeholder character from the
     profile id (stable across renames) and says so in its own code; it offers
     no logo picker, because there is nowhere to put the answer.
+
+    *`qorpera_create_hosted_profile` went with legacy sweep D1
+    (20260930330000); a company is created through the founding lobby.*
 11. **A member cannot set an agent's appearance once a company is bootstrapped.**
     `qorpera_put_profile_staff` is listed in §2 and granted to `authenticated`,
     but on a company whose bootstrap job has completed every member write to
@@ -1400,6 +1536,10 @@ above.
     member-callable only before bootstrap completes; a client reading §2 today
     would build exactly the screen that this trigger refuses, which is what
     happened here.
+
+    *Legacy sweep D1 (20260930330000) dropped `qorpera_put_profile_staff`,
+    `qorpera_delete_profile_staff` and the trigger. A `folder-v2` agent
+    changes through its files in the company folder.*
 
 ### 2026-09-19 — from the web client session (`packages/web`, PR #118)
 

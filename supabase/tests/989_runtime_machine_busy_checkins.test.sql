@@ -8,7 +8,7 @@
 --    crawl's handle; the question waits while that run runs.
 -- 3. At three hours Ada is asked again from the same start, and the hour-one question no longer stands.
 -- 4. What restarts the count (a new command, a new boot) and who is not asked (a machine not found busy lately,
---    always-on, stopped, an archived agent, a company not on folder-v2).
+--    always-on, stopped, an archived agent).
 -- 5. Who is asked: a worker's command in the conversation that dispatched it; each conversation about its own commands;
 --    each agent counted from its own last command there; with no command running, the agent that started the machine.
 -- 6. Delivery by the folder drain's step, once the parent ended; a question no longer standing is suppressed, a gone
@@ -236,13 +236,6 @@ rollback;
 begin;
 update public.qorpera_profile_staff set employment_status = 'archived' where staff_agent_id = '64800000-0000-4000-8000-0000000000a1';
 select pg_temp.check(not pg_temp.asked_again(), 'an archived agent is not asked');
-rollback;
-begin;
-set local session_replication_role = replica;
-delete from public.qorpera_company_files where environment_id = '64800000-0000-4000-8000-000000000020';
-set local session_replication_role = origin;
-select pg_temp.check(not pg_temp.asked_again() and pg_temp.due() -> 'items' = '[]'::jsonb,
-	'a company not on the folder-v2 core is not asked about, nor due');
 rollback;
 
 -- 5. Who is asked.

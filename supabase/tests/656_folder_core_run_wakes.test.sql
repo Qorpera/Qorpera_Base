@@ -2,8 +2,8 @@
 -- Company folder core, C1c-2c part 1 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6): wake admission and
 -- coworker messages on the folder fence. A folder-v2 wake needs the folder admission mark and its pin trigger locks
 -- nothing; the routine lifecycle keeps its rules; a run's coworker message and its recipient's wake read have folder
--- bodies; the legacy multi-company loops skip folder-v2. Runs are 647's hand-built runs with their native rows. Races
--- are in 657.
+-- bodies; a folder-v2 routine's next run comes from the folder tick. Runs are 647's hand-built runs with their native
+-- rows. Races are in 657.
 
 create function pg_temp.cw(p_binding jsonb, p_to uuid, p_key text, p_text text, p_priority boolean default true) returns jsonb
 language sql as $$
@@ -121,8 +121,8 @@ begin
 		'Company folder is unavailable');
 end $$;
 
--- 3. A routine wake on folder-v2: its public session is chosen as today's is, without locks; the lifecycle keeps its
--- rules (here the occurrence limit).
+-- 3. A routine wake on folder-v2: its public session is the agent's company thread, chosen without locks; the lifecycle
+-- keeps its rules (here the occurrence limit).
 do $$
 declare
 	c_profile constant uuid := '63400000-0000-4000-8000-000000000010'; c_env constant uuid := '63400000-0000-4000-8000-000000000020';
@@ -130,9 +130,9 @@ declare
 	v_routine uuid := pg_temp.routine('member', 1); v_id uuid; v_wake public.qorpera_wake_occurrences%rowtype;
 begin
 	if public.qorpera_folder_wake_public_session(c_profile, c_env, c_a, '63400000-0000-4000-8000-000000000002')
-		is distinct from public.qorpera_wake_public_session(c_profile, c_env, c_a, '63400000-0000-4000-8000-000000000002')
+		is distinct from pg_temp.thread(c_a)
 		or public.qorpera_folder_wake_public_session(c_profile, c_env, c_a, null) is distinct from pg_temp.thread(c_a) then
-		raise exception 'The folder public session is today''s choice'; end if;
+		raise exception 'The folder public session is the agent''s thread'; end if;
 	perform pg_temp.raises_like(format('select pg_temp.routine_wake(%L, %L)', v_routine, 'once:1:1'), '55000',
 		'Folder wake admission is required');
 	perform public.qorpera_folder_admit_wakes(c_profile);
@@ -259,9 +259,10 @@ begin
 	if r ->> 'status' <> 'queued' or (select status from public.qorpera_shared_sessions where id = pg_temp.thread(c_b)) <> 'open'
 		or (select session_id from public.qorpera_wake_occurrences where id = (r ->> 'occurrenceId')::uuid) <> pg_temp.thread(c_b) then
 		raise exception 'A message to a closed thread reopens it: %', r; end if;
-	-- The snapshot-v1 message is not refused as folder-v2.
-	perform pg_temp.not_refused(format('select pg_temp.cw(%L, %L, %L, %L)', current_setting('qorpera_test.snapshot_binding'), c_b,
-		'control-1', 'Hi'));
+	-- Folder-v2 only since legacy sweep F1e (20260930248000): a snapshot-v1 message goes to the folder core, which finds no
+	-- folder-v2 Company File for its run and refuses it.
+	perform pg_temp.raises_like(format('select pg_temp.cw(%L, %L, %L, %L)', current_setting('qorpera_test.snapshot_binding'), c_b,
+		'control-1', 'Hi'), '42501', 'native tool run is unavailable');
 end $$;
 
 -- 5. The audience: the recipient reads everything the run has read (C1B-2 §4), and the run's own reads still hold (the
@@ -350,93 +351,18 @@ begin
 		raise exception 'A parent with no reads passes nothing on: %', e; end if;
 end $$;
 
--- 7. The legacy multi-company loops skip folder-v2 rows in their scans: nothing of a folder-v2 company is scanned,
--- stamped or locked. (Their snapshot-v1 behaviour is the legacy tests'; the text is pinned in section 1.)
+-- 7. A folder-v2 routine's next run comes from the folder tick (C1c-3e, 20260930009500), and the legacy ensure refuses
+-- it. (The legacy multi-company loops, which skipped folder-v2 rows in their scans, went in the legacy sweep's F3b,
+-- 20260930295000.)
 do $$
-declare
-	c_profile constant uuid := '63400000-0000-4000-8000-000000000010'; c_env constant uuid := '63400000-0000-4000-8000-000000000020';
-	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; c_member constant uuid := '63400000-0000-4000-8000-000000000002';
-	h jsonb := pg_temp.human(); r jsonb; v_worker uuid := extensions.gen_random_uuid(); v_event uuid := extensions.gen_random_uuid();
-	v_waiter uuid := extensions.gen_random_uuid(); v_routine uuid; v_dynamic uuid; v_session uuid := pg_temp.thread(c_a);
-	v_input uuid := extensions.gen_random_uuid(); v_request uuid := extensions.gen_random_uuid(); v_epoch timestamptz := '2026-01-01T00:00:00Z';
-	v_pending uuid := extensions.gen_random_uuid();
+declare c_profile constant uuid := '63400000-0000-4000-8000-000000000010'; v_dynamic uuid := pg_temp.routine('agent');
 begin
-	r := pg_temp.cw(h -> 'binding', '63400000-0000-4000-8000-0000000000a2', 'loops-1', 'For the loops');
-	update public.qorpera_wake_occurrences set admission_scan_at = v_epoch where id = (r ->> 'occurrenceId')::uuid;
-	v_routine := pg_temp.routine('member');
-	v_dynamic := pg_temp.routine('agent');
-	set local session_replication_role = replica;
-	insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title, access,
-		revival, dispatch, requested_by_user_id, steering_run_id, state, scanned_at)
-	values (v_worker, c_profile, c_env, c_a, extensions.gen_random_uuid(), 'w-loops', 'in-house', 'Work', 'read', 'each', '{}', c_member,
-		(h -> 'actor' ->> 'runId')::uuid, 'active', v_epoch);
-	insert into public.qorpera_company_machine_events(id, machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind,
-		delivery, scanned_at)
-	values (v_event, extensions.gen_random_uuid(), c_profile, c_env, c_a, (h -> 'actor' ->> 'runId')::uuid, 'stopped',
-		'waiting', v_epoch);
-	insert into public.qorpera_runtime_office_start_waiters(id, intent_id, parent_run_id, receipt_id, staff_version, grant_id, grant_version,
-		state, scanned_at)
-	values (v_waiter, extensions.gen_random_uuid(), (h -> 'actor' ->> 'runId')::uuid, extensions.gen_random_uuid(), 1,
-		extensions.gen_random_uuid(), 1, 'waiting', v_epoch);
-	insert into public.qorpera_event_listener_cursors(routine_id, routine_version, trigger_id, hook_id, profile_id, environment_id,
-		last_scanned_at)
-	values (v_routine, 1, 't1', extensions.gen_random_uuid(), c_profile, c_env, v_epoch);
-	insert into public.qorpera_company_file_wake_cursors(routine_id, routine_version, trigger_id, environment_id, activation_head,
-		processed_head, active, last_scanned_at)
-	values (v_routine, 1, 't1', c_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), true, v_epoch);
-	insert into public.qorpera_session_execution_bindings(session_id, profile_id, staff_agent_id, sponsor_binding_id, sponsor_version,
-		configured_by_user_id, admission_scan_at)
-	values (v_session, c_profile, c_a, '63400000-0000-4000-8000-0000000000b1', 1, c_member, v_epoch)
-	on conflict (session_id) do update set admission_scan_at = v_epoch;
-	insert into public.qorpera_session_inputs(id, session_id, client_input_id, author_user_id, actor_kind, kind, runtime_bundle_id,
-		runtime_bundle_sha256)
-	values (v_input, v_session, extensions.gen_random_uuid(), c_member, 'human', 'user_message', '63400000-0000-4000-8000-0000000000b2',
-		repeat('b', 64));
-	-- The turn materializer's scan requires a head snapshot, which a folder-v2 company never has.
-	insert into public.qorpera_session_turn_requests(id, profile_id, session_id, client_request_id, input_id, requested_by_user_id,
-		sponsor_mode, worker_class, status, sponsor_binding_id, sponsor_version, sponsored_at, admission_scan_at)
-	values (v_request, c_profile, v_session, extensions.gen_random_uuid(), v_input, c_member, 'company_connection', 'managed_sandbox',
-		'queued', '63400000-0000-4000-8000-0000000000b1', 1, clock_timestamp(), v_epoch);
-	-- And the session materializer this input, which has no request yet.
-	insert into public.qorpera_session_inputs(id, session_id, client_input_id, author_user_id, actor_kind, kind, runtime_bundle_id,
-		runtime_bundle_sha256)
-	values (v_pending, v_session, extensions.gen_random_uuid(), c_member, 'human', 'user_message', '63400000-0000-4000-8000-0000000000b2',
-		repeat('b', 64));
-	set local session_replication_role = origin;
 	perform pg_temp.path_claims('service_role');
-	-- The dynamic routine's tick would insert its run if it scanned the routine: the admission mark lets such an insert
-	-- through, so only the skip keeps it out.
 	perform public.qorpera_folder_admit_wakes(c_profile);
-	perform public.qorpera_materialize_wake_execution_runs(64);
-	perform public.qorpera_materialize_session_execution_runs(64);
-	perform public.qorpera_materialize_session_turn_requests(64);
-	if (select admission_scan_at from public.qorpera_wake_occurrences where id = (r ->> 'occurrenceId')::uuid) <> v_epoch
-		or (select status from public.qorpera_wake_occurrences where id = (r ->> 'occurrenceId')::uuid) <> 'queued' then
-		raise exception 'The wake materializer scanned a folder-v2 wake'; end if;
-	if (select scanned_at from public.qorpera_runtime_workers where id = v_worker) <> v_epoch then
-		raise exception 'The worker drain scanned a folder-v2 worker'; end if;
-	if (select scanned_at from public.qorpera_company_machine_events where id = v_event) <> v_epoch then
-		raise exception 'The machine drain scanned a folder-v2 event'; end if;
-	if (select scanned_at from public.qorpera_runtime_office_start_waiters where id = v_waiter) <> v_epoch then
-		raise exception 'The office drain scanned a folder-v2 waiter'; end if;
-	if (select last_scanned_at from public.qorpera_company_file_wake_cursors where routine_id = v_routine) <> v_epoch then
-		raise exception 'The Company File drain scanned a folder-v2 cursor'; end if;
-	if (select last_scanned_at from public.qorpera_event_listener_cursors where routine_id = v_routine) <> v_epoch then
-		raise exception 'The event drain scanned a folder-v2 cursor'; end if;
-	if exists (select 1 from public.qorpera_wake_occurrences where routine_id = v_dynamic) then
-		raise exception 'The dynamic-routine tick started a folder-v2 routine''s run'; end if;
-	if (select admission_scan_at from public.qorpera_session_execution_bindings where session_id = v_session) <> v_epoch then
-		raise exception 'The session materializer scanned a folder-v2 conversation'; end if;
-	if (select admission_scan_at from public.qorpera_session_turn_requests where id = v_request) <> v_epoch
-		or not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_company_files'::regclass
-			and conname = 'qorpera_company_files_core_head') then
-		raise exception 'The turn materializer scanned a folder-v2 request'; end if;
-	-- Without the skip the tick would have started it: the folder tick does (C1c-3e, 20260930009500), and the legacy
-	-- path refuses it.
 	perform pg_temp.raises_like(format('select public.qorpera_ensure_dynamic_routine_run(%L)', v_dynamic), '0A000',
 		'A folder-v2 routine''s next run comes from the folder tick');
 	if public.qorpera_folder_restore_dynamic_routine_run(v_dynamic, 1) ->> 'status' <> 'inserted' then
-		raise exception 'The dynamic routine is due (the control for the tick''s skip)'; end if;
+		raise exception 'The folder tick starts the dynamic routine''s run'; end if;
 end $$;
 
 -- 8. Privileges: the new functions are postgres-only; the runtime reaches them through the dispatching functions.

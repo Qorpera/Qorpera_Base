@@ -7,6 +7,10 @@
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 
+### Removed
+
+- `ExecutionIntentBudget`, `ExecutionIntentCapability`, `COMPANY_OPERATION_KINDS` and `CompanyOperationKind` are gone (legacy removal, step C, HP-E2). Nothing used them. `JsonValue` and `ExecutionIdentity` stay; the hosted primary's session events still use `ExecutionIdentity`.
+
 ### Added
 
 - `POSTGRES_UUID_PATTERN` validates the canonical lower-case text accepted by PostgreSQL UUID storage, including nil and reserved version/variant bits, for file formats that explicitly use that grammar. Runtime identity admission still uses the stricter `UUID_PATTERN` and `isUuid`; their rules are unchanged.

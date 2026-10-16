@@ -6,6 +6,8 @@ begin;
 -- node reserved a login machine for it, which is when the gateway creates its
 -- volume. Login machines below are reserved through the real
 -- qorpera_reserve_runtime_login_machine and qorpera_reserve_runtime_node_machine.
+-- The company is on the folder core: since the legacy sweep's F2c (20260930292000)
+-- every machine takes the folder fence, so a company without a folder gets none.
 create function pg_temp.claims(p_role text,p_user uuid default null) returns void language sql as $$
 	select set_config('request.jwt.claims',jsonb_build_object('role',p_role,'sub',p_user)::text,true)::text::void $$;
 create function pg_temp.ok(p_value boolean,p_message text) returns void language plpgsql as $$
@@ -31,6 +33,10 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 	('40600000-0000-4000-8000-000000000010','40600000-0000-4000-8000-000000000002','ehi-member@example.test','Member','contributor'),
 	('40600000-0000-4000-8000-000000000010','40600000-0000-4000-8000-000000000003','ehi-other@example.test','Other','contributor'),
 	('40600000-0000-4000-8000-000000000010','40600000-0000-4000-8000-000000000004','ehi-away@example.test','Away','contributor');
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+values ('40600000-0000-4000-8000-000000000020','40600000-0000-4000-8000-000000000010','Environment',1,'40600000-0000-4000-8000-000000000001');
+select set_config('request.jwt.claims','{"role":"service_role"}',true) \g /dev/null
+select public.qorpera_folder_enable('40600000-0000-4000-8000-000000000020') \g /dev/null
 -- Identities: a1 logs in on the exec host's node, a2 never logs in anywhere, a3 logs in on another node.
 insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,owner_user_id,client_identity_id,display_name) values
 	('40600000-0000-4000-8000-0000000000a1','40600000-0000-4000-8000-000000000010','member','40600000-0000-4000-8000-000000000002','40600000-0000-4000-8000-0000000000a1','Member identity'),
