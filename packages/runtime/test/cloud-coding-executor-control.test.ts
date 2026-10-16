@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CodingExecutorHttpControl } from "../../../deploy/coding-worker/control.ts";
 import { CodingControlBusy, CodingControlRefused } from "../../runner-orchestrator/src/coding-executor.ts";
+import { CODING_SNAPSHOT_LOG_BYTES, CodingSnapshotRecords } from "../../runner-orchestrator/src/coding-snapshots.ts";
 
 describe("dedicated coding executor control", () => {
 	it("uses a closed RPC set and fixed HTTPS origin without retries", async () => {
@@ -35,6 +36,12 @@ describe("dedicated coding executor control", () => {
 		await control.call("qorpera_native_binding_proven", {}, new AbortController().signal);
 		expect(fetcher).toHaveBeenLastCalledWith(
 			"https://project.supabase.co/rest/v1/rpc/qorpera_native_binding_proven",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
+		// 5h-2: the node's snapshot records.
+		await control.call("qorpera_list_coding_snapshots", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_list_coding_snapshots",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
 		// The per-session VM authority is gone.
@@ -119,6 +126,54 @@ describe("dedicated coding executor control", () => {
 			}
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}
+	});
+	it("carries a snapshot build's longest log both ways (5h-2)", async () => {
+		const build = {
+			buildId: "52500000-0000-4000-8000-0000000000b1",
+			leaseToken: "52500000-0000-4000-8000-0000000000b2",
+			leaseUntil: "2026-10-15T01:02:03.123456+00:00",
+		};
+		const sent: string[] = [];
+		let answer: unknown = { schema: "qorpera.coding-snapshot-build/v1", buildId: build.buildId, state: "failed" };
+		const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+			sent.push(String(init?.body));
+			return new Response(JSON.stringify(answer), { status: 200, headers: { "content-type": "application/json" } });
+		});
+		const records = new CodingSnapshotRecords({
+			control: new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: fetcher,
+			}),
+			owner: "exec-a",
+			machineIdSha256: "a".repeat(64),
+		});
+		// An escape character takes six bytes as JSON: 30000 of them are 180000, cut to what SQL keeps.
+		const log = String.fromCharCode(0x1b).repeat(30000);
+		expect(
+			await records.finish(build, { kind: "failed", code: "SETUP_FAILED", log }, new AbortController().signal),
+		).toBe("failed");
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(Buffer.byteLength(sent[0] ?? "")).toBeLessThanOrEqual(128 * 1024);
+		const kept = (JSON.parse(sent[0] ?? "") as { p_log: string }).p_log;
+		expect(Buffer.byteLength(JSON.stringify(kept)) - 2).toBeLessThanOrEqual(CODING_SNAPSHOT_LOG_BYTES);
+		// The failed answer at the next attach brings that log back.
+		const failure = { buildId: build.buildId, code: "SETUP_FAILED", log: kept, finishedAt: build.leaseUntil };
+		answer = {
+			schema: "qorpera.coding-snapshot-plan/v1",
+			state: "failed",
+			snapshot: null,
+			build: null,
+			waitingUntil: null,
+			failure,
+		};
+		expect(
+			await records.begin(
+				{ workerId: "52500000-0000-4000-8000-0000000000c1", leaseToken: "52500000-0000-4000-8000-0000000000e1" },
+				{ setupDigest: "d".repeat(64), commitSha: "c".repeat(40) },
+				new AbortController().signal,
+			),
+		).toEqual({ state: "failed", snapshot: null, failure });
 	});
 	it("does not wait on an error body that stalls", async () => {
 		const fetcher = vi.fn<typeof fetch>(
