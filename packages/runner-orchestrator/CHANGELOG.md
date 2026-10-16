@@ -159,6 +159,8 @@
 
 ### Fixed
 
+- The code host's jobs (5e-1) key a base branch and a path in the folder with `@qorpera/contracts`' `folderKey`, exactly as `qorpera_folder_key` does, instead of an inlined copy with JavaScript's full case mapping: 'Straße' and 'STRASSE' are two names there, as in the folder.
+
 - The node observer's health probe now runs the observer's own file (`process.argv[1]`), not the first installation's fixed `/opt/qorpera/node-observer/qorpera-node-observer.cjs` (`deploy/first-node/RUNTIME-NODE-HEALTH.md`). The cuts' observers (`deploy/agent-exit/ROLLOUT.md` step 4) run from a file of their own, so both nodes' health was `COLLECTION_UNCONFIRMED` on every sample (seen 16 Oct 2026, about 700 an hour): node 2 has no first installation, and node 1's receipt names another account and an older policy. A cut's observer has no receipt and names its software by the SHA-256 of its own root-owned file; the first installation still needs its receipt. Run by hand, a failed probe also prints the closed code that stopped it. Rolled with the next observer cut; step 4 now runs the probe as the observer's account before the switch and reads the health row after it.
 
 - Failed or forgotten office service-stop attempts without a completion retry the same retained command after 30 seconds, doubling to ten minutes. Each retry has its own observed dispatch journal; a persisted schedule survives provider restarts and retains only the original and latest attempt directories. Pending operations are not repeated, and stop acknowledgement still requires protected completion plus fresh inspection.

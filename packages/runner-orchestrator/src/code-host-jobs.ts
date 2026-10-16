@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { type CloudCodingRepository, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, folderKey, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
 
 /** The code host's jobs (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"): every git command that must not run as
  * a member's root. Each job runs in the company's code host VM, through its `code_host` view of `/company` (code/
@@ -123,12 +123,6 @@ const SETTINGS: readonly (readonly [string, string])[] = [
 	["worktree.useRelativePaths", "false"],
 	["advice.detachedHead", "false"],
 ];
-
-/** The core's `qorpera_folder_key`: what makes two names in one folder the same name. Inlined, since this package
- * does not import the object gateway. */
-function folderKey(name: string): string {
-	return name.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
-}
 
 function checkPath(value: unknown): string {
 	if (
