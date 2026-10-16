@@ -7,7 +7,7 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "../../pa
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
-import { type CodeHostPolicy, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
+import { type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
@@ -374,7 +374,24 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "housekeep", code: errorCode(error) }));
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines, hosting]);
+		// Beside it, at start and every minute after a pass, the code hosts of
+		// companies being deleted go with their projects; one still in a job, or
+		// whose removal failed or ran out of time, goes on a later pass.
+		const deletions = (async () => {
+			if (!codeHosts) return;
+			const deleting = controlCodeHostDeletions({
+				control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+			});
+			while (!stop.signal.aborted) {
+				try {
+					await codeHosts.removeDeleting(deleting, stop.signal);
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "deletions", code: errorCode(error) }));
+				}
+				await setTimeout(60_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions]);
 	} finally {
 		stop.abort();
 		await executor?.drain();
