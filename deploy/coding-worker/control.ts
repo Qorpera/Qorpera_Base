@@ -8,7 +8,7 @@ const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, .
 	"qorpera_native_binding_proven"]);
 
 /** Calls whose refusal (SQLSTATE 42501) the caller acts on: a test machine's folder view open, which the executor
- * answers with a boot without /company (F3 6d). */
+ * answers with a boot without /company, or with a move to a new disk when the open refused its disk (F3 6d). */
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
