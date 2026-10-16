@@ -365,6 +365,39 @@ test("side by side: a step's node --test and Go programs fan out within its core
 	}
 });
 
+test("side by side: a step with workers runs its vitests with that many, unless the run set its own; one at a time as before", () => {
+	// A stand-in node prints the vitest workers it was given.
+	const bin = mkdtempSync(join(tmpdir(), "plan-node-"));
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	try {
+		writeFileSync(join(bin, "node"), '#!/bin/sh\necho "node $* workers=${VITEST_MAX_WORKERS-unset}"\n', { mode: 0o755 });
+		const steps = [
+			{ name: "busy", commands: ["node a.mjs", "(cd / && node b.mjs)"], cores: 3, workers: 4 },
+			{ name: "plain", commands: ["node c.mjs"], cores: 1 },
+		];
+		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, VITEST_MAX_WORKERS: "2" };
+		const side = spawnSync("bash", ["-c", planScript(steps, { cores: 4 })], { cwd, encoding: "utf8", env });
+		assert.equal(side.status, 0, side.stdout);
+		assert.match(side.stdout, /== changed: busy\nnode a\.mjs workers=4\nnode b\.mjs workers=4\n== changed: busy passed/);
+		assert.match(side.stdout, /== changed: plain\nnode c\.mjs workers=2\n== changed: plain passed/);
+		// A VITEST_MAX_WORKERS the run was given (run-on-node --env) wins.
+		const given = spawnSync("bash", ["-c", planScript(steps, { cores: 4, stepWorkers: false })], { cwd, encoding: "utf8", env: { ...env, VITEST_MAX_WORKERS: "3" } });
+		assert.equal(given.status, 0, given.stdout);
+		assert.match(given.stdout, /== changed: busy\nnode a\.mjs workers=3\nnode b\.mjs workers=3\n== changed: busy passed/);
+		const one = spawnSync("bash", ["-c", planScript(steps)], { cwd, encoding: "utf8", env });
+		assert.equal(one.status, 0, one.stdout);
+		assert.match(one.stdout, /== changed: busy\nnode a\.mjs workers=2\nnode b\.mjs workers=2\n/);
+		assert.doesNotMatch(one.stdout, /workers=4/);
+	} finally {
+		rmSync(bin, { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+	// runner-orchestrator's rest, side by side: 4 workers in 3 cores (16 Oct measurement).
+	const ro = planChanged(["packages/runner-orchestrator/src/cli.ts"]).steps.find((step) => step.name === "runner-orchestrator");
+	assert.deepEqual([ro.cores, ro.workers], [3, 4]);
+	assert.equal(planChanged(["packages/web/src/x.ts"]).steps.find((step) => step.name === "web").workers, null);
+});
+
 test("deploy-shell fails when any script, not only the last, has a syntax error", () => {
 	const root = mkdtempSync(join(tmpdir(), "deploy-shell-"));
 	try {
