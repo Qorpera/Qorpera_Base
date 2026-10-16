@@ -12,13 +12,16 @@ export const POSTGRES_IMAGE =
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Without `--only`, the SQL tests run in these databases at the same time, each a fresh copy of the migrated
- * database. A database runs the tests from its first name on, in their usual order, up to the next database's.
- * Every test that keeps rows (all below 700; 040's are read by 050–110 and 200) stays in the first, so a test
- * still sees only rows its usual predecessors left. A test connecting to its database again uses
- * `current_database()`, not a name. */
+ * database. A database runs the tests from its first name on, in their usual order, up to the next database's;
+ * the four take about the same time (100–110 s each on a test machine, 16 Oct). Every test that keeps rows for a
+ * later one (000, 040 and its readers up to 200, then 120, 260, 595 and 625) stays in the first, so a test still
+ * sees only rows its usual predecessors left. A test connecting to its database again uses `current_database()`,
+ * not a name. */
 export const SQL_TEST_DATABASES = [
 	["qorpera_test", ""],
-	["qorpera_test_2", "820"],
+	["qorpera_test_2", "658"],
+	["qorpera_test_3", "826"],
+	["qorpera_test_4", "893"],
 ];
 
 export function sortMigrationNames(names) {
@@ -57,7 +60,7 @@ export function buildContainerName(pid, suffix) {
 }
 
 /** The PostgreSQL scripts the hosted-db step runs with the SQL tests (`--scripts`), each against its own
- * database: in this run's PostgreSQL, one at a time beside the SQL tests, or in one of its own
+ * database: in this run's PostgreSQL, in turn in two lanes beside the SQL tests, or in one of its own
  * (OWN_SERVER_SCRIPTS). */
 export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-bundle-activation.mjs",
@@ -117,13 +120,22 @@ function startInBackground(script, environment = {}) {
 	});
 }
 
-/** Starts `scripts` one at a time, each as the one before it ends (failed or not), so together they use about
- * one script's CPU; returns each script with the promise of its exit, in order. */
-export function startInTurn(scripts, environment) {
-	let previous = Promise.resolve();
+/** The shared-server scripts that run in a second lane: the longest (about 61 s on a busy test machine) and the
+ * one after it (28 s), together about as long as all the others in the first (79 s). */
+const SECOND_LANE = new Set([
+	"scripts/test-folder-core-acceptance.mjs",
+	"scripts/test-object-gateway-company-creation.mjs",
+]);
+
+/** Starts `scripts` in lanes that run at the same time (`lane(script)` names a script's lane). A lane starts its
+ * scripts one at a time, each as the one before it ends (failed or not), so each lane uses about one script's CPU.
+ * Returns each script with the promise of its exit, in the scripts' order. */
+export function startInTurn(scripts, environment, lane = () => 0) {
+	const previous = new Map();
 	return scripts.map((script) => {
-		previous = previous.then(() => startInBackground(script, environment));
-		return [script, previous];
+		const exited = (previous.get(lane(script)) ?? Promise.resolve()).then(() => startInBackground(script, environment));
+		previous.set(lane(script), exited);
+		return [script, exited];
 	});
 }
 
@@ -228,8 +240,13 @@ async function main() {
 		const testing = performance.now();
 		const databases = splitTests(tests, only);
 		for (const [database] of databases) cluster.create(database);
-		// The scripts that share this PostgreSQL run in turn beside the SQL tests, each in a database of its own.
-		if (withScripts) shared = startInTurn(HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name)), cluster.environment());
+		// The scripts that share this PostgreSQL run in turn in two lanes beside the SQL tests, each in a database of its own.
+		if (withScripts)
+			shared = startInTurn(
+				HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name)),
+				cluster.environment(),
+				(name) => (SECOND_LANE.has(name) ? 1 : 0),
+			);
 		// A database stops at its first failure; the others run to their end.
 		const results = await Promise.allSettled(
 			databases.map(async ([database, part]) => {
