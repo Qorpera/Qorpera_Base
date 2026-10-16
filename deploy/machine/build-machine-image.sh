@@ -43,7 +43,7 @@ TYPESCRIPT_VERSION=7.0.2
 TSX_VERSION=4.23.15
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
-EXPECTED_FOLDER_PROGRAM_SHA256="1efc58809119d4594cb2ffc159932c211355b1df34943a310db7d48f1443f732"
+EXPECTED_FOLDER_PROGRAM_SHA256="16df263fa3a1de0059fbad2263ce94b398a1b9d6cc47ad8c972187920aa5349f"
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
