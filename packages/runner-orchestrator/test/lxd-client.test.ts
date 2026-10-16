@@ -831,11 +831,14 @@ describe("LXD Unix client", () => {
 		const client = new LxdUnixClient(socket, 30);
 		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, 600);
 		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"]);
-		expect(waits).toEqual(["/1.0/operations/operation-0/wait?timeout=600", "/1.0/operations/operation-1/wait?timeout=30"]);
+		expect(waits).toEqual([
+			"/1.0/operations/operation-0/wait?timeout=600",
+			"/1.0/operations/operation-1/wait?timeout=30",
+		]);
 		for (const wait of [0, 601, 1.5])
-			await expect(client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, wait)).rejects.toThrow(
-				/^LXD instance command is invalid$/,
-			);
+			await expect(
+				client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, wait),
+			).rejects.toThrow(/^LXD instance command is invalid$/);
 		expect(waits).toHaveLength(2);
 	});
 });

@@ -122,7 +122,9 @@ describe("trusted GitHub seed bundle broker", () => {
 		for (const call of f.calls) if (!call.args.includes("fetch")) expect(call.env.GIT_CONFIG_VALUE_0).toBeUndefined();
 		// Only the whole-history steps get the longer limits.
 		expect(
-			f.calls.filter((call) => call.long).map((call) => call.args.find((arg) => ["fetch", "fsck", "bundle"].includes(arg))),
+			f.calls
+				.filter((call) => call.long)
+				.map((call) => call.args.find((arg) => ["fetch", "fsck", "bundle"].includes(arg))),
 		).toEqual(["fetch", "fsck", "bundle"]);
 		expect((await readdir(f.root)).some((name) => name.startsWith(".git-seed-"))).toBe(false);
 	});

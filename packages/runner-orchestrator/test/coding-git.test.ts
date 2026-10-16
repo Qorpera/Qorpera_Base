@@ -279,9 +279,9 @@ describe("credential-isolated coding Git publication", () => {
 		const next = await f.git("commit-tree", tree, "-p", local, "-m", "on local");
 		await f.git("update-ref", ref, next);
 		await f.git("bundle", "create", path, ref, `^${local}`);
-		await expect(pushCloudCodingBundle({ ...f.input, headSha: next }, await readFile(path), f.options)).rejects.toThrow(
-			/^CODING_GIT_OPERATION_UNCONFIRMED$/,
-		);
+		await expect(
+			pushCloudCodingBundle({ ...f.input, headSha: next }, await readFile(path), f.options),
+		).rejects.toThrow(/^CODING_GIT_OPERATION_UNCONFIRMED$/);
 		expect(f.calls.some((call) => call.args.includes("fetch"))).toBe(true);
 		expect(f.calls.some((call) => call.args.includes("unbundle"))).toBe(false);
 		expect(f.calls.some((call) => call.args.includes("push"))).toBe(false);
