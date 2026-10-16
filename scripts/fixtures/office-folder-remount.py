@@ -2,7 +2,7 @@
 """Disposable nested-VM proof for Q3: do running office namespaces follow a company folder mount systemd restarts?
 
 The real qorpera-folder program runs under master's office mount unit, rendered as the image installer renders it, with
-only its program and a synthetic protocol-3 node on a Unix socket put in. Office namespaces are started by the runtime's
+only its program and a synthetic protocol-4 node on a Unix socket put in. Office namespaces are started by the runtime's
 own process gate with the runtime's bubblewrap arguments, from a relay that carries every confinement line of master's
 office unit. This is not the office helper or the office application: no plumber, credentials, vsock identity, SQL or
 model is claimed.
@@ -693,7 +693,7 @@ LOSS = {
     "closed": ("loss-closed.txt", "closed"),
 }
 LIMITATIONS = [
-    "A synthetic protocol-3 node on a Unix socket: no database, vsock identity, switchable views or plumber",
+    "A synthetic protocol-4 node on a Unix socket: no database, vsock identity, switchable views or plumber",
     "Office namespaces come from the runtime's process gate and mirrored bubblewrap arguments in a relay with the office unit's confinement, not from the office application",
     "Stand-in private surfaces in the proof directory, not the office state directory",
     "Every namespace's program reads requests on a stdin pipe; the command shape is used without display or capture",
@@ -1137,7 +1137,7 @@ def selftest(office_path, mount_path):
                 conn = socket.socket(socket.AF_UNIX)
                 conn.settimeout(3)
                 conn.connect(str(Path(tmp) / "node.sock"))
-                base.send(conn, "H", {"protocol": 3, "environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass", "role": role, **({"abandon": True} if abandon else {})})
+                base.send(conn, "H", {"protocol": 4, "environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass", "role": role, **({"abandon": True} if abandon else {})})
                 kind, body = base.receive(conn)
                 return conn, kind, json.loads(body)
 
@@ -1151,7 +1151,7 @@ def selftest(office_path, mount_path):
                 return struct.pack(">I", len(header)) + header + data
 
             feed, kind, ok = hello("w", "feed")
-            assert kind == "h" and ok == {"protocol": 3, "viewId": "w", "asOfSeq": 0, "readOnly": False}
+            assert kind == "h" and ok == {"protocol": 4, "viewId": "w", "asOfSeq": 0, "readOnly": False}
             # A heartbeat is a change with no paths.
             kind, body = base.receive(feed)
             assert kind == "c" and json.loads(body) == {"seq": 0, "resync": False, "paths": []}
