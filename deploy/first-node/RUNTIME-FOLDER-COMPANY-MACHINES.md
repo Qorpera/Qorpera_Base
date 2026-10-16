@@ -556,10 +556,12 @@ has unsaved changes (4a).
   last commit it showed, and reads the ones since when it builds a report. Its registry
   (`cloud-company-computer-registry-http.ts`) names the function.
 - **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service keeps,
-  per view, what came of each boundary no machine asked for (a quiet period's, the last connection's leaving, one a
-  change needed first, or one with no answer asked again before a change): its commit, or its refusal with the
-  reason and the paths it refused (at most 20, sorted, and how many), the last 32 numbered in a series of the view's
-  own. A boundary a machine asked for is not kept: its answer reaches the office service already. The office service
+  per view, what came of each change set a boundary no machine asked for asked (a quiet period's, the last
+  connection's leaving, one a change needed first, or one with no answer asked again before a change): its commit,
+  or its refusal with the reason and the paths it refused (at most 20, sorted, and how many), the last 32 numbered in
+  a series of the view's own. A boundary that first asks again a change set that had no answer keeps that one's
+  notice, from its own outcomes, then its own change set's. A boundary a machine asked for is not kept: its answer
+  reaches the office service already. The office service
   has no vsock, so the helper asks for them: it runs the folder program's `relay` on a socket only root reaches, and
   speaks the folder protocol's `notices` role through it with the view file's id and pass (protocol 4,
   RUNTIME-FOLDER-SERVICE.md), so the folder service checks it as it does the machine that holds the mount. It never

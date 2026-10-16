@@ -92,10 +92,11 @@ ENOTEMPTY, `NOT_PERMITTED` EPERM, `TOO_LARGE` EFBIG, `READ_ONLY` EROFS, `NOT_HER
 The office's folder helper, not the folder program, says `role: "notices"` in a protocol-4 hello with a view's id and
 pass (no `previous`, no `abandon`), through the program's `relay`, so the service checks it as it would the machine
 that holds the mount. `h` answers `{protocol, viewId}`. The connection then only asks `Q` `{after, nonce}` and is
-answered `q` `{nonce, notices, last, more}`: what came of the view's boundaries no machine asked for (a quiet period's,
-the last connection's leaving, one a change needed first, or one with no answer asked again before a change), each
-`{n, at, commitId, seq}` for a change set committed or `{n, at, refused, paths, pathCount}` for one refused whole (at
-most 20 paths, sorted). A view keeps its last 32, and they go with it when the service lets it go. A `nonce` other
+answered `q` `{nonce, notices, last, more}`: what came of each change set the view's boundaries no machine asked for
+asked (a quiet period's, the last connection's leaving, one a change needed first, or one with no answer asked again
+before a change, whose notice comes before the boundary's own), each `{n, at, commitId, seq}` for a change set
+committed or `{n, at, refused, paths, pathCount}` for one refused whole (at most 20 of its own paths, sorted). A view
+keeps its last 32, and they go with it when the service lets it go. A `nonce` other
 than the view's starts from its first; `last` is the next ask's `after`; `more` says the answer was cut at about
 1 MiB. Such a connection never opens or holds a view: one the service does not hold, or whose pass the core has not
 checked yet, answers `{nonce: null, notices: [], last: 0, more: false}`, and a pass, company folder or machine that

@@ -2083,24 +2083,24 @@ export class FolderService {
 	 * one a quiet period asked, which publishes nothing on a command's view no machine holds by its turn: the last
 	 * connection left while it waited, and what is pending waits for the boundary the command's machine asks. `unasked`:
 	 * one no machine asked for (a quiet period's, the last connection's leaving, one a change needs first, or one with
-	 * no answer asked again before a change), whose report no machine hears: what came of it goes to the view's notices
-	 * (F3 4f-2b-2). */
+	 * no answer asked again before a change), whose report no machine hears: what came of each change set it asked goes
+	 * to the view's notices (F3 4f-2b-2). */
 	#publish(view: View, final = false, quiet = false, unasked = false): Promise<Report> {
 		return this.#inTurn(view, async () => {
 			if (quiet && view.access?.command && view.connections === 0) return { commitId: null, seq: null, paths: [] };
-			const report = await this.#boundary(view, final, final, unasked);
-			if (unasked) this.#notice(view, report);
-			return report;
+			return await this.#boundary(view, final, final, unasked);
 		});
 	}
 
-	/** Keeps what came of a boundary no machine asked for as the view's next notice, if it committed or was refused. */
-	#notice(view: View, report: Report): void {
-		const notice = noticeOf(report, view.noticed + 1, this.#now());
-		if (!notice) return;
+	/** Keeps what came of one change set of a boundary no machine asked for (`unasked`), from its own outcomes only, as
+	 * the view's next notice, if it committed or was refused; returns the report. One a machine asked for keeps none. */
+	#notice(view: View, unasked: boolean, report: Report): Report {
+		const notice = unasked ? noticeOf(report, view.noticed + 1, this.#now()) : undefined;
+		if (!notice) return report;
 		view.noticed = notice.n;
 		view.notices.push(notice);
 		if (view.notices.length > NOTICES_KEPT) view.notices.splice(0, view.notices.length - NOTICES_KEPT);
+		return report;
 	}
 
 	/** `last`: a coding view's final boundary, which the executor asks before it closes the view (F3 5c): a refusal
@@ -2144,7 +2144,8 @@ export class FolderService {
 	 * set, empty when nothing is pending, whose answer closes the view. A path still waiting holds it back (the machine
 	 * asks again). Each boundary first releases the reads the view's machine logged (F3 4c), and is refused if they
 	 * are refused; a coding view's, every read its machine was served under any of its views (F3 5c, the plan's rule
-	 * 1). `view.heard` keeps what it heard. `unasked`: as #publish's. */
+	 * 1). `view.heard` keeps what it heard. `unasked`: as #publish's; a boundary no machine asked for keeps a notice of
+	 * each change set it asked (F3 4f-2b-2), each from its own outcomes: the one asked again, then its own. */
 	async #boundaryOf(
 		view: View,
 		pending: PendingView,
@@ -2152,7 +2153,6 @@ export class FolderService {
 		last: boolean,
 		unasked: boolean,
 	): Promise<Report> {
-		const entries: ReportEntry[] = [];
 		// An answered boundary the feed has not brought back yet settles first; nothing else is decided until it has.
 		if (view.unsettled) {
 			await this.#trySettle(view);
@@ -2161,8 +2161,9 @@ export class FolderService {
 		}
 		// A view whose machine cannot show its read log complete publishes nothing more, not even a boundary with no
 		// answer asked again: what it carries may have been made from a read the core never had (the log's rule 4).
-		if (view.unproven) return this.#unprovenReport(view, pending);
+		if (view.unproven) return this.#notice(view, unasked, this.#unprovenReport(view, pending));
 		// A boundary whose answer never came goes first, unchanged (a final one final).
+		let settled: ReportEntry[] = [];
 		if (view.unanswered) {
 			const earlier = view.unanswered;
 			const answer = await this.#commit(view, earlier.actor, earlier.key, earlier.units, earlier.final);
@@ -2175,30 +2176,41 @@ export class FolderService {
 			// A final refused once a renewal had closed the view meanwhile did not close it.
 			if (earlier.final && view.closed) throw this.#closedOtherwise(view);
 			// A change set refused whole that holds is not settled: what it carried stays pending, and this boundary plans
-			// it again.
+			// it again. Its refusal is its own notice first, with the paths it refused (no commit shows it).
 			if (
 				answer.said === VIEW_ENDED &&
 				earlier.actor.kind === "view" &&
 				earlier.actor.viewId === view.lease?.viewId
 			) {
 				this.#close(view, VIEW_ENDED);
-				return {
+				return this.#notice(view, unasked, {
 					...committed(answer),
 					paths: held(earlier.plan, () => ({ outcome: "refused", reason: "denied" })),
-				};
+				});
 			}
-			if (!holds(view, answer, last)) {
-				const settled = await this.#settle(view, earlier.plan, earlier.made, answer);
-				entries.push(...settled);
+			if (holds(view, answer, last))
+				this.#notice(view, unasked, {
+					...committed(answer),
+					paths: held(earlier.plan, (i) => ({ outcome: "refused", reason: answer.units[i]?.reason })),
+				});
+			else {
+				settled = await this.#settle(view, earlier.plan, earlier.made, answer);
 				if (view.unsettled) {
 					view.heard = heardOf(answer);
-					return { ...committed(answer), paths: entries };
+					return this.#notice(view, unasked, { ...committed(answer), paths: settled });
 				}
-				// This boundary's report says what the rest did: a boundary no machine asked for keeps what came of the earlier
-				// one as a notice of its own (F3 4f-2b-2), its change set or its refusal (which no commit shows).
-				if (unasked) this.#notice(view, { ...committed(answer), paths: settled });
+				// This boundary's report says what the rest did too; the earlier one's notice is its change set or its
+				// refusal alone.
+				this.#notice(view, unasked, { ...committed(answer), paths: settled });
 			}
 		}
+		const report = this.#notice(view, unasked, await this.#planned(view, pending, final, last));
+		return settled.length === 0 ? report : { ...report, paths: [...settled, ...report.paths] };
+	}
+
+	/** A boundary's own change set, planned from what is pending now, after any asked again (#boundaryOf). */
+	async #planned(view: View, pending: PendingView, final: boolean, last: boolean): Promise<Report> {
+		const entries: ReportEntry[] = [];
 		await this.#stageAll(view);
 		const plan = planBoundary(pending, (node) =>
 			node.staged?.version === node.version ? node.staged.file : undefined,

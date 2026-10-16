@@ -43,10 +43,10 @@ const FIRST = { after: 0, nonce: null };
 
 /** A company folder with a desktop the core opened for the company machine, the node's service, and the office's
  * folder helper asking for the desktop's notices. */
-async function company() {
+async function company(seed = [folder("docs")]) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-notices-"));
 	const core = new FakeCore();
-	core.seed([folder("docs")]);
+	core.seed(seed);
 	core.openView(VIEW, PASS, { kind: "computer_desktop", machineId: ALLOCATION });
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 	const service = new FolderService({
@@ -218,6 +218,61 @@ describe("a view's notices", () => {
 			{ n: 1, at: expect.any(Number), refused: "denied", paths: ["papers"], pathCount: 1 },
 		]);
 		expect((await view.list("", undefined)).entries.map((e) => e.name)).toEqual(["docs"]);
+	});
+
+	it("keeps the refusal of a change set asked again, whatever comes of the boundary's own after it", async () => {
+		const { core, open, notices } = await company();
+		const view = await open();
+		const asks = notices();
+		// The quiet period's change set gets no answer (asked three times): it is asked again before the next change.
+		core.commitFailures = { mode: "down", count: 3 };
+		await write(view, "docs/a.md", "a");
+		await until(() => core.commits.length === 3);
+		// Asked again, the pause refuses it, which holds it: the boundary plans it again as its own change set, which gets
+		// no answer, and the change waits (BUSY). The refusal heard is kept all the same.
+		core.commitRefusal = "stopped";
+		core.commitHook = (asked) => {
+			if (asked === 4) {
+				core.commitRefusal = undefined;
+				core.commitFailures = { mode: "down", count: 3 };
+			}
+			return undefined;
+		};
+		await expect(write(view, "docs/b.md", "b")).rejects.toMatchObject({ code: "BUSY" });
+		const first = core.commits[0]!.key;
+		expect(core.commits.map((c) => c.key === first)).toEqual([true, true, true, true, false, false, false]);
+		expect(asks.page(FIRST).notices).toEqual([
+			{ n: 1, at: expect.any(Number), refused: "stopped", paths: ["docs/a.md"], pathCount: 1 },
+		]);
+		// Asked again once more, it is saved before the change lands.
+		await write(view, "docs/b.md", "b");
+		expect(asks.page(FIRST).notices.at(-1)).toEqual({
+			n: 2,
+			at: expect.any(Number),
+			commitId: expect.stringMatching(UUID),
+			seq: expect.any(Number),
+		});
+		expect(core.entries.has("docs/a.md")).toBe(true);
+	});
+
+	it("makes each change set's notice from its own outcomes: the one asked again, then the boundary's own", async () => {
+		const { core, open, notices } = await company([folder("docs"), folder("old")]);
+		const view = await open();
+		const asks = notices();
+		// The quiet period's change set, a move and a new file, gets no answer (asked three times).
+		core.commitFailures = { mode: "down", count: 3 };
+		await view.rename({ from: "old", to: "archive", noReplace: false });
+		await write(view, "docs/a.md", "a");
+		await until(() => core.commits.length === 3);
+		// Asked again before the next change, it is refused whole: the move is let go and the file's bytes stay pending.
+		// The boundary's own change set, the file alone, is refused too: its notice names the file alone.
+		core.commitRefusal = "denied";
+		await write(view, "docs/b.md", "b");
+		expect(core.commits.map((c) => c.units.length)).toEqual([2, 2, 2, 2, 1]);
+		expect(asks.page(FIRST).notices.slice(0, 2)).toEqual([
+			{ n: 1, at: expect.any(Number), refused: "denied", paths: ["archive", "docs/a.md"], pathCount: 2 },
+			{ n: 2, at: expect.any(Number), refused: "denied", paths: ["docs/a.md"], pathCount: 1 },
+		]);
 	});
 
 	it(`keeps a view's last ${NOTICES_KEPT}, each naming at most ${NOTICE_PATHS} paths`, async () => {
