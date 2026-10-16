@@ -75,8 +75,11 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 	readonly units = new Map<string, CompanyComputerFolderUnitState>();
 	readonly entries: string[] = [];
 	readonly publishes: Array<{ args: readonly string[]; timeoutMs: number }> = [];
-	/** What a started program does: mounts once the node takes its view, exits 3, or never mounts. */
-	program: "mounts" | "closes" | "hangs" = "mounts";
+	/**
+	 * What a started program does: mounts once the node takes its view (itself, as its unit runs it, or through
+	 * fusermount3), exits 3, or never mounts. `foreign`: another FUSE file system mounts there, and the view proves.
+	 */
+	program: "mounts" | "fusermount" | "foreign" | "closes" | "hangs" = "mounts";
 	/** A running program records each newer view it says hello with (its state folder's view.json). */
 	follows = true;
 	/** The unit's ExecStopPost takes away a mount its program left. */
@@ -123,7 +126,9 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		if (this.program === "closes") return void this.units.set(unit, CLOSED);
 		this.units.set(unit, ACTIVE);
 		if (this.program === "hangs") return;
-		this.#mount(this.#paths(unit).mountpoint, "", "fuse.qorpera", "qorpera-company");
+		// The program's own mount is plain `fuse`. Only fusermount3 adds its `qorpera` subtype.
+		const fstype = this.program === "fusermount" ? "fuse.qorpera" : "fuse";
+		this.#mount(this.#paths(unit).mountpoint, "", fstype, this.program === "foreign" ? "sshfs" : "qorpera-company");
 		await this.#prove(unit);
 	}
 	async stop(unit: string) {
@@ -132,7 +137,7 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		const mountpoint = this.#paths(unit).mountpoint;
 		if (
 			this.stopPost &&
-			this.entries.some((line) => line.includes(" fuse.qorpera ") && line.split(" ")[4] === mountpoint)
+			this.entries.some((line) => line.split(" - ")[1]?.startsWith("fuse") && line.split(" ")[4] === mountpoint)
 		)
 			this.#unmount(mountpoint);
 	}
@@ -258,6 +263,13 @@ describe("the folder helper's mounts", () => {
 		system.program = "hangs";
 		expect(await helper.answer({ op: "mount", name: COMMAND, view: VIEW })).toEqual({ answer: "unanswered" });
 		expect(system.calls.slice(-3)).toEqual([`start ${unit}`, `stop ${unit}`, `detach ${at.parent}`]);
+		await clean();
+		system.program = "foreign";
+		expect(await helper.answer({ op: "mount", name: COMMAND, view: VIEW })).toEqual({ answer: "unanswered" });
+		await clean();
+		system.program = "fusermount";
+		expect(await helper.answer({ op: "mount", name: COMMAND, view: VIEW })).toEqual({ answer: "mounted" });
+		expect(await helper.answer({ op: "drop", name: COMMAND })).toEqual({ answer: "dropped" });
 		await clean();
 		system.program = "mounts";
 		system.shares = false;
@@ -577,6 +589,20 @@ describe("the folder helper's machine", () => {
 				mountpoint: "/run/a b/company",
 				optional: ["master:1", "shared:7"],
 				fstype: "fuse.qorpera",
+				source: "qorpera-company",
+			},
+		]);
+		// The pinned program's own mount, as the remount proof recorded it
+		// (deploy/test-machine/acceptance/2026-10-14-office-folder-remount/REMOUNT-EVIDENCE.json).
+		expect(
+			parseCompanyComputerMountinfo(
+				"251 552 0:57 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other\n",
+			),
+		).toEqual([
+			{
+				mountpoint: "/run/qorpera-company/company",
+				optional: ["master:320"],
+				fstype: "fuse",
 				source: "qorpera-company",
 			},
 		]);

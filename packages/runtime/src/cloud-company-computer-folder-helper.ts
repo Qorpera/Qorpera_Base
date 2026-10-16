@@ -157,10 +157,14 @@ export function parseCompanyComputerMountinfo(text: string): CompanyComputerMoun
 		});
 }
 
-/** The top mount at the mountpoint is the folder program's. */
+/**
+ * The top mount at the mountpoint is the folder program's. The program names it `qorpera-company`. Its unit runs it
+ * with CAP_SYS_ADMIN, so it mounts itself and the type is plain `fuse`: only fusermount3, its fallback, adds the
+ * `qorpera` subtype.
+ */
 function served(entries: readonly CompanyComputerMountEntry[], mountpoint: string): boolean {
 	const top = entries.filter((entry) => entry.mountpoint === mountpoint).at(-1);
-	return top?.fstype === "fuse.qorpera" && top.source === "qorpera-company";
+	return (top?.fstype === "fuse" || top?.fstype === "fuse.qorpera") && top.source === "qorpera-company";
 }
 
 function shared(entries: readonly CompanyComputerMountEntry[], parent: string): boolean {
