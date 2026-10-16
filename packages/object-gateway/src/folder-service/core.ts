@@ -2,6 +2,7 @@ import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { ObjectDependency, ObjectDependencyError } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
 import { nodeRequest, type Transport } from "./https-request.ts";
+import { validTarget } from "./protocol.ts";
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
  * the core's view actor, whose pass the folder service holds. */
@@ -27,9 +28,11 @@ export interface CoreReceipt {
 /** An entry as `qorpera_folder_entry_json` gives it (20260928120000). */
 export interface CoreEntry {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	/** The core's version id of the path (a uuid). */
 	readonly version: string;
+	/** A link's target (20260930380000), as written; only a link has one. */
+	readonly target?: string;
 	readonly manifestSha256?: string;
 	readonly fileSha256?: string;
 	readonly bytes?: number;
@@ -138,13 +141,16 @@ export interface FolderCore {
 	): Promise<ReleaseAnswer>;
 }
 
-/** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
-export interface ConflictCopy {
+/** One file or link a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it.
+ * A link's copy holds its target and no manifest. */
+export type ConflictCopy = {
 	readonly unit: number;
 	readonly file: number;
 	readonly path: string;
-	readonly manifestSha256: string;
-}
+} & (
+	| { readonly kind: "file"; readonly manifestSha256: string }
+	| { readonly kind: "symlink"; readonly target: string }
+);
 
 export interface UploadOpen {
 	readonly intentId: string;
@@ -259,12 +265,12 @@ export function parseConflictCopies(value: unknown): ConflictCopy[] {
 			return n;
 		};
 		if (typeof c.path !== "string") invalidAnswer("conflict copy");
-		return {
-			unit: count(c.unit),
-			file: count(c.file),
-			path: c.path,
-			manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest"),
-		};
+		const at = { unit: count(c.unit), file: count(c.file), path: c.path };
+		if (c.kind === undefined)
+			return { ...at, kind: "file", manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest") };
+		if (c.kind !== "symlink" || c.manifestSha256 !== undefined || !validTarget(c.target))
+			invalidAnswer("conflict copy");
+		return { ...at, kind: "symlink", target: c.target };
 	});
 }
 
@@ -435,15 +441,21 @@ function receiptOf(value: unknown): CoreReceipt {
 }
 
 /** An entry or a feed change, checked field by field; unknown fields (seq, priorVersion) are dropped. A removal on the
- * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). */
+ * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). A
+ * link holds its target and nothing of a file's; the feed gives every other change a null target. */
 function entryOf(value: unknown, removal = false): CoreEntry {
 	const e = answerRecord(value, "entry");
-	if (typeof e.path !== "string" || e.path === "" || (e.kind !== "file" && e.kind !== "folder"))
+	if (
+		typeof e.path !== "string" ||
+		e.path === "" ||
+		(e.kind !== "file" && e.kind !== "folder" && e.kind !== "symlink")
+	)
 		invalidAnswer("entry");
 	const out: {
 		path: string;
-		kind: "file" | "folder";
+		kind: "file" | "folder" | "symlink";
 		version: string;
+		target?: string;
 		manifestSha256?: string;
 		fileSha256?: string;
 		bytes?: number;
@@ -476,6 +488,20 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 	}
 	if (!removal && out.kind === "file" && (out.manifestSha256 === undefined || out.bytes === undefined))
 		invalidAnswer("file entry");
+	if (e.target !== undefined && e.target !== null) {
+		if (out.kind !== "symlink" || removal || !validTarget(e.target)) invalidAnswer("link target");
+		out.target = e.target;
+	}
+	if (
+		!removal &&
+		out.kind === "symlink" &&
+		(out.target === undefined ||
+			out.manifestSha256 !== undefined ||
+			out.fileSha256 !== undefined ||
+			out.bytes !== undefined ||
+			out.executable === true)
+	)
+		invalidAnswer("link entry");
 	return out;
 }
 
@@ -550,6 +576,10 @@ function actorJson(actor: FolderActor): Record<string, string> {
 	}
 }
 
+/** Entries per list page and changes per feed page. An entry can hold a 4,096-byte path (twice that escaped) and a
+ * link's 4,095-byte target (control characters escaped, six times): about 33 KB, so 200 fit an answer's 8 MiB. */
+export const CORE_PAGE = 200;
+
 interface SupabaseFolderCoreOptions {
 	readonly projectUrl: string;
 	readonly secretKey: string;
@@ -586,7 +616,7 @@ export class SupabaseFolderCore implements FolderCore {
 					p_actor: actorJson(actor),
 					p_parent: "",
 					p_after: after,
-					p_limit: 1000,
+					p_limit: CORE_PAGE,
 					p_recursive: true,
 				},
 				signal,
@@ -608,7 +638,7 @@ export class SupabaseFolderCore implements FolderCore {
 					p_environment_id: environmentId,
 					p_actor: actorJson(actor),
 					p_after_seq: afterSeq,
-					p_limit: 1000,
+					p_limit: CORE_PAGE,
 					p_cursor: cursor,
 				},
 				signal,
