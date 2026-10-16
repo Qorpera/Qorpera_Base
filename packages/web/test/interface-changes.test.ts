@@ -320,6 +320,7 @@ function historyFolder() {
 							seq: kept.seq,
 							updatedAt: timestamp,
 							file: kept.kind === "file" ? reference(kept.text ?? "") : null,
+							target: null,
 						}
 					: null,
 			};
@@ -345,6 +346,7 @@ function historyFolder() {
 					from: null,
 					to: null,
 					file: kept.kind === "file" && kept.op !== "delete" ? reference(kept.text ?? "") : null,
+					target: null,
 				}));
 				return { asOfSeq: seq, items, next: null };
 			},
