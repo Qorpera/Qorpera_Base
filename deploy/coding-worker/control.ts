@@ -17,16 +17,27 @@ const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, .
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
+/** The core's refusals of a coding session's folder view, in its own words (F3 5g-4): SQL raised one of these, with
+ * 42501 or 22023. The executor fails the session's attach with them. Any other text, and every other method's, is
+ * never kept. */
+const VIEW_REFUSALS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["qorpera_folder_view_open", new Set(["Folder core authority is required", "Company folder is unavailable",
+		"Folder view is invalid", "Folder view opener is invalid", "Folder view anchor is invalid",
+		"Folder view attachment is not current", "Folder view principals are unavailable"])],
+	["qorpera_folder_view_close", new Set(["Folder core authority is required", "Folder view is unavailable"])],
+]);
+
 /** PostgREST's error body, exactly: its transaction rolled back whole. It answers SQLSTATE 55P03 (lock_not_available)
- * with HTTP 500, and 42501 (insufficient_privilege) with 403 (401 without a role). */
-function postgrestError(body: Uint8Array): { code: string; details: string | null } | undefined {
+ * with HTTP 500, 42501 (insufficient_privilege) with 403 (401 without a role), and 22023 (invalid_parameter_value)
+ * with 400. */
+function postgrestError(body: Uint8Array): { code: string; message: string; details: string | null } | undefined {
 	try {
 		const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(body)) as unknown;
 		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 		const error = value as Record<string, unknown>;
 		return Object.keys(error).sort().join() === "code,details,hint,message" && typeof error.code === "string" &&
 			typeof error.message === "string" && [error.details, error.hint].every((v) => v === null || typeof v === "string")
-			? { code: error.code, details: error.details as string | null } : undefined;
+			? { code: error.code, message: error.message, details: error.details as string | null } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -54,6 +65,7 @@ export class CodingExecutorHttpControl {
 		const body = JSON.stringify(args);
 		if (Buffer.byteLength(body) > 128 * 1024) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
+		const refusals = VIEW_REFUSALS.get(method);
 		let failure: Error = new Error("CODING_CONTROL_UNCONFIRMED");
 		try {
 			const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
@@ -62,12 +74,14 @@ export class CodingExecutorHttpControl {
 			});
 			if (response.status !== 200) {
 				const refusable = REFUSABLE.has(method) && (response.status === 401 || response.status === 403);
+				const kept = refusals !== undefined && [400, 401, 403].includes(response.status);
 				// An error body that stalls is not worth waiting for: it stays unconfirmed.
-				if (response.status === 500 || refusable) {
+				if (response.status === 500 || refusable || kept) {
 					const error = postgrestError(await readBoundedCloudResponse(response, 4096, AbortSignal.any([checked, AbortSignal.timeout(1000)])));
+					const reason = kept && error && ["42501", "22023"].includes(error.code) && refusals?.has(error.message) ? error.message : null;
 					if (response.status === 500 && error?.code === "55P03") failure = new CodingControlBusy();
-					else if (refusable && error?.code === "42501")
-						failure = new CodingControlRefused(error.details !== null && DETAIL.test(error.details) ? error.details : null);
+					else if (error && ((refusable && error.code === "42501") || reason !== null))
+						failure = new CodingControlRefused(error.details !== null && DETAIL.test(error.details) ? error.details : null, reason);
 				} else await response.body?.cancel().catch(() => undefined);
 				throw new Error("unconfirmed");
 			}

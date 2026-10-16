@@ -275,6 +275,7 @@ function sessionAt(m: Machine, workerId: string) {
 		user: join(m.stateRoot, "sessions", w, "user.json"),
 		view: join(m.folderRoot, "views", `${w}.json`),
 		folderState: join(m.folderRoot, "state", w),
+		folderLocal: join(m.stateRoot, "sessions", w, "folder-local"),
 		mountpoint: join(m.folderRoot, "mounts", w),
 		folderUnit: `qorpera-folder-${w}.service`,
 		slice: `qorpera-coding-${w}.slice`,
@@ -572,6 +573,8 @@ describe("mounting a session", () => {
 			s.mountpoint,
 			"--state-dir",
 			s.folderState,
+			"--local-dir",
+			s.folderLocal,
 			"--allow-other",
 			"yes",
 			"--owner-uid",
@@ -621,6 +624,9 @@ describe("mounting a session", () => {
 		const workerId = await mounted(m);
 		const s = sessionAt(m, workerId);
 		await writeFile(join(s.folderState, "cache"), "old");
+		// The local folder is on the machine's disk and the program's: a new view keeps it.
+		await mkdir(join(s.folderLocal, "cache"), { recursive: true });
+		await writeFile(join(s.folderLocal, "cache", "built"), "kept");
 		const answer = await call(m, "mount", mountRequest(workerId, { ...VIEW, viewId: "view-2" }));
 		expect(answer.line).toMatchObject({ viewId: "view-2", mount: "mounted" });
 		expect(brief(m.calls)).toEqual([
@@ -635,6 +641,7 @@ describe("mounting a session", () => {
 			["loginctl", "enable-linger", "qorpera-200001"],
 		]);
 		await gone(join(s.folderState, "cache"));
+		expect(await readFile(join(s.folderLocal, "cache", "built"), "utf8")).toBe("kept");
 		expect(await readJsonFile(s.view)).toEqual({ ...VIEW, viewId: "view-2" });
 	});
 	it("starts a failed program again and restarts the user manager", async () => {

@@ -283,6 +283,9 @@ function places(at: Agent, workerId: string) {
 		lock: join(at.runtimeRoot, "locks", worker),
 		view: join(at.folderRoot, "views", `${worker}.json`),
 		folderState: join(at.folderRoot, "state", worker),
+		/** The program's local folder, on the machine's disk: the session's own git files and its cache folders. It
+		 * outlives a new view (the program keeps what is still the session's) and goes with the session. */
+		folderLocal: join(session, "folder-local"),
 		mountpoint: join(at.folderRoot, "mounts", worker),
 		folderUnit: `qorpera-folder-${worker}.service`,
 		slice: `qorpera-coding-${worker}.slice`,
@@ -621,6 +624,8 @@ function folderArgs(session: Places, uid: number, gid: number): string[] {
 		session.mountpoint,
 		"--state-dir",
 		session.folderState,
+		"--local-dir",
+		session.folderLocal,
 		"--allow-other",
 		"yes",
 		"--owner-uid",

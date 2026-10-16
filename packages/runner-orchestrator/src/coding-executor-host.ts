@@ -67,6 +67,9 @@ export const CODING_HOST_RPCS = [
 	"qorpera_release_coding_machine",
 	"qorpera_record_coding_machine_error",
 	"qorpera_list_coding_machines",
+	// A session's coding view on the folder model (coding-folder-views.ts).
+	"qorpera_folder_view_open",
+	"qorpera_folder_view_close",
 ] as const;
 
 /** The leased session a repository token is asked for (bundle v88): the
