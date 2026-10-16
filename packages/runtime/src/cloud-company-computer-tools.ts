@@ -11,12 +11,6 @@ import {
 	type CompanyComputerTool,
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import {
-	type CompanyComputerFileExportAction,
-	type CompanyComputerFileImportAction,
-	parseCompanyComputerFileExport,
-	parseCompanyComputerFileImport,
-} from "@qorpera/cloud-client/cloud-file-transfer";
 import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
 import {
 	CompanyComputerScreenAdmissionRefusedError,
@@ -27,8 +21,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 export type CompanyComputerBrowserRole = "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox" | "tab";
 export type CompanyComputerAction =
-	| CompanyComputerFileExportAction
-	| CompanyComputerFileImportAction
 	| { kind: "screen"; action: "open" | "release" }
 	| { kind: "browser"; action: "navigate"; url: string }
 	| { kind: "browser"; action: "snapshot" }
@@ -203,8 +195,6 @@ function text(value: unknown, maximum: number, allowEmpty = false): string {
 
 export function parseCompanyComputerAction(value: unknown): CompanyComputerAction {
 	const input = record(value);
-	if (input.kind === "transfer")
-		return input.action === "import" ? parseCompanyComputerFileImport(input) : parseCompanyComputerFileExport(input);
 	if (input.kind === "screen") {
 		keys(input, ["kind", "action"]);
 		if (input.action !== "open" && input.action !== "release") throw new Error("INVALID_COMPUTER_ARGUMENTS");
@@ -454,68 +444,6 @@ const coordinates = {
 	y: { type: "integer", minimum: 0, maximum: 1199 },
 };
 const actionSchemas = {
-	transfer: [
-		actionSchema("transfer", "import", {
-			source: {
-				type: "object",
-				additionalProperties: false,
-				required: ["realm", "path", "version"],
-				properties: {
-					realm: { const: "company_file" },
-					path: { type: "string", minLength: 1, maxLength: 4096 },
-					version: { type: "string", pattern: COMPANY_COMPUTER_UUID.source },
-				},
-			},
-			destination: {
-				type: "object",
-				additionalProperties: false,
-				required: ["realm", "path"],
-				properties: {
-					realm: { const: "company_computer" },
-					path: { type: "string", minLength: 1, maxLength: 1024 },
-				},
-			},
-		}),
-		actionSchema("transfer", "import", {
-			source: {
-				type: "object",
-				additionalProperties: false,
-				required: ["realm", "assetId", "sha256"],
-				properties: {
-					realm: { const: "object_storage" },
-					assetId: { type: "string", pattern: COMPANY_COMPUTER_UUID.source },
-					sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-				},
-			},
-			destination: {
-				type: "object",
-				additionalProperties: false,
-				required: ["realm", "path"],
-				properties: {
-					realm: { const: "company_computer" },
-					path: { type: "string", minLength: 1, maxLength: 1024 },
-				},
-			},
-		}),
-		actionSchema("transfer", "export", {
-			source: {
-				type: "object",
-				additionalProperties: false,
-				required: ["realm", "path"],
-				properties: {
-					realm: { const: "company_computer" },
-					path: { type: "string", minLength: 1, maxLength: 1024 },
-				},
-			},
-			destination: {
-				type: "object",
-				additionalProperties: false,
-				required: ["realm"],
-				properties: { realm: { const: "object_storage" } },
-			},
-			mediaType: { type: "string", minLength: 3, maxLength: 256 },
-		}),
-	],
 	screen: [actionSchema("screen", "open"), actionSchema("screen", "release")],
 	browser: [
 		actionSchema("browser", "list_tabs"),
@@ -604,13 +532,13 @@ export function createCompanyComputerTools(options: {
 	let opening: Promise<CompanyComputerScreenLeaseHandle> | undefined;
 	let admissionRefused = false;
 	let closed = false;
-	const tools: CompanyComputerTool[] = (["screen", "browser", "desktop", "shell", "screenshot", "transfer"] as const)
+	const tools: CompanyComputerTool[] = (["screen", "browser", "desktop", "shell", "screenshot"] as const)
 		.filter(
 			(kind) =>
 				kind === "screen" ||
 				(kind === "screenshot"
 					? capabilities.has("browser") || capabilities.has("desktop")
-					: capabilities.has(kind === "transfer" ? "shell" : kind)),
+					: capabilities.has(kind)),
 		)
 		.map((kind): CompanyComputerTool => {
 			const name = `computer_${kind}` satisfies CloudRuntimeToolOperation;
@@ -647,8 +575,6 @@ export function createCompanyComputerTools(options: {
 					"Use browser list_tabs then select_tab for multiple or closed tabs. Tab IDs belong to this admitted screen session; " +
 					"list_tabs returns bounded title/URL previews and nextAfterTabId for pagination. Restart listing if its cursor closes. " +
 					"Browser snapshots report semantic roles and text, not pixels. In replies and saved reports, preserve the observed roles: a link is not a footer link and a button is not a primary action unless evidence explicitly establishes that placement or hierarchy. Describe a text-only finding as reported by the snapshot, not visually verified; actual appearance requires screenshot evidence. " +
-					"Transfer export reads one relative workbench file into an immutable cloud asset, retaining source and receipt. It never reads a member device or Company File path; transfers require the shell/workbench grant. " +
-					"Transfer import accepts a completed shared object asset or a Company File path and exact version obtained from company_list/company_read. It checks current path authority, verifies immutable bytes, and never overwrites the workbench destination. " +
 					"Company File changes use governed file tools. Model-provider subscription credentials never belong on the Company Computer. " +
 					"Shell: start runs a command in this agent's own shell, with the company folder at /company, replying after waitMs (default 10000, max 15000) or at its end; it runs on as needed. " +
 					"read gets later output, write sends input (default wait 1000; endInput closes it), stop ends one (all without sessionId), list lists them. " +
