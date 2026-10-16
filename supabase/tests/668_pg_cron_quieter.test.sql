@@ -174,16 +174,16 @@ do $$
 declare v_start timestamptz; v_ms jsonb := '{}'; v_total double precision; c_rounds constant integer := 10;
 	v_job record;
 begin
-	for v_job in select * from (values ('empty', 'select 1'),
-		('follow-ups', 'select public.qorpera_folder_follow_up_step()'),
-		('erasure', 'select public.qorpera_folder_erasure_step()'),
-		('retention', 'select public.qorpera_run_runtime_node_receipt_retention()')) j(name, command) loop
+	for v_job in select * from (values ('empty', '1'),
+		('follow-ups', 'public.qorpera_folder_follow_up_step()'),
+		('erasure', 'public.qorpera_folder_erasure_step()'),
+		('retention', 'public.qorpera_run_runtime_node_receipt_retention()')) j(name, call) loop
 		v_total := 0;
 		for i in 1 .. c_rounds loop
 			v_start := clock_timestamp();
 			perform dblink_connect('fq_cron', 'dbname=' || current_database());
 			perform dblink_exec('fq_cron', 'begin');
-			perform dblink_exec('fq_cron', v_job.command);
+			perform * from dblink('fq_cron', format('select (%s)::text', v_job.call)) as t(v text);
 			perform dblink_exec('fq_cron', 'rollback');
 			perform dblink_disconnect('fq_cron');
 			v_total := v_total + extract(epoch from clock_timestamp() - v_start);
