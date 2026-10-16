@@ -14,6 +14,7 @@ import {
 	parseCloudActionVerdict,
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
 import { CloudFolderRoutineDecision } from "@qorpera/runtime/cloud-folder-routine-decision";
@@ -29,6 +30,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -1274,12 +1276,16 @@ function gate(options: {
 	begin?: Record<string, unknown>;
 	verdict?: unknown;
 	record?: Record<string, unknown>;
-	waits?: Array<Record<string, unknown>>;
+	/** The kernel's answers to the hold's waits, in order; an error is thrown. */
+	waits?: Array<Record<string, unknown> | Error>;
+	/** Its answers to a leaving hold's park, in order (by default, parked); an error is thrown. */
+	leaving?: Array<Record<string, unknown> | Error>;
 	holdMs?: number;
 	reviewerFails?: boolean;
 }) {
 	const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
 	const waits = [...(options.waits ?? [])];
+	const leaving = [...(options.leaving ?? [])];
 	const control: CloudActionReviewControl = {
 		call: async (method, args) => {
 			calls.push({ method, args });
@@ -1295,8 +1301,14 @@ function gate(options: {
 				);
 			if (method === "qorpera_record_action_review")
 				return { reviewId: "review-1", decision: "allow", card: false, reason: "Fine.", ...options.record };
+			if (args.p_leaving) {
+				const left = leaving.shift();
+				if (left instanceof Error) throw left;
+				return left ?? { state: "parked" };
+			}
 			// As the kernel does: a wait that asks to park is never answered "still pending".
 			const next = waits.shift();
+			if (next instanceof Error) throw next;
 			return args.p_park && (!next || next.state === "pending")
 				? { state: "parked" }
 				: (next ?? { state: "pending" });
@@ -1661,6 +1673,81 @@ describe("the review step", () => {
 			method: "qorpera_await_action_review",
 			args: { p_review_id: "review-8", p_park: true, p_leaving: true },
 		});
+	});
+
+	// Production pass 2 (16 Oct 2026): one poll in about 150 waited past the lock timeout behind a same-run step,
+	// the hold ended, and the held call was told its review was unavailable.
+	const late = () => new CloudRuntimeDiagnosticError("timeout", "Company File control request timed out");
+	const lost = () => new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
+
+	it("keeps holding through lost or late answers, and runs the call once approved", async () => {
+		const { check, calls } = gate({
+			holdMs: 60_000,
+			record: { decision: "ask", card: true, reviewId: "review-10", approverName: "Jonas" },
+			waits: [{ state: "pending" }, late(), lost(), { state: "pending" }, late(), { state: "approved" }],
+		});
+		await expect(check()).resolves.toEqual({ run: true });
+		const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+		expect(waits).toHaveLength(6);
+		// Every wait held (none parked, none left): the hold never ended.
+		expect(waits.every((call) => call.args.p_review_id === "review-10" && call.args.p_park === false)).toBe(true);
+		expect(waits.some((call) => "p_leaving" in call.args)).toBe(false);
+	});
+
+	it("asks a park again through lost or late answers until the card parks", async () => {
+		const { check, calls } = gate({
+			holdMs: 0,
+			record: { decision: "ask", card: true, reviewId: "review-11", approverName: "Jonas" },
+			waits: [late(), lost()],
+		});
+		await expect(check()).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^APPROVAL_PENDING: .*from Jonas/),
+		});
+		const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+		expect(waits).toHaveLength(3);
+		expect(waits.every((call) => call.args.p_park === true && !("p_leaving" in call.args))).toBe(true);
+	});
+
+	it("ends the hold at a refusal or a malformed failure, and parks the card on its way out", async () => {
+		for (const failure of [
+			new CloudControlRpcRefused("42501", "native tool run is unavailable"),
+			new CloudControlRpcRefused("55000", "Company execution is paused"),
+			new Error("PRIVATE_UNKNOWN_FAILURE"),
+		]) {
+			const { check, calls } = gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: "review-12" },
+				waits: [{ state: "pending" }, failure],
+			});
+			await expect(check()).rejects.toBe(failure);
+			const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+			expect(waits).toHaveLength(3);
+			expect(waits.at(-1)).toMatchObject({ args: { p_review_id: "review-12", p_park: true, p_leaving: true } });
+		}
+	});
+
+	it("parks the card of a stopped hold through lost or late answers, and stops at a refusal", async () => {
+		const stopped = async (leaving: Array<Record<string, unknown> | Error>) => {
+			const { check, calls, abort } = gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: "review-13" },
+				waits: [{ state: "pending" }],
+				leaving,
+			});
+			const result = check();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			abort.abort();
+			await expect(result).rejects.toBeDefined();
+			return calls.filter((call) => call.args.p_leaving);
+		};
+		// Two lost answers, then the park lands: the card is parked, so its answer wakes the agent.
+		const parked = await stopped([late(), lost()]);
+		expect(parked).toHaveLength(3);
+		expect(parked.every((call) => call.args.p_review_id === "review-13" && call.args.p_park === true)).toBe(true);
+		// A refusal (the run is gone) is not asked again.
+		const refused = await stopped([new CloudControlRpcRefused("42501", "native tool run is unavailable"), late()]);
+		expect(refused).toHaveLength(1);
 	});
 
 	it("passes on the approval's id on each approving path, and none from a malformed answer", async () => {

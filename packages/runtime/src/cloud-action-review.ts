@@ -1,5 +1,6 @@
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudConnectorOperation } from "./cloud-connector-catalog.ts";
+import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import type { CloudCompanyContextSource, CloudNativeCompanyContext } from "./cloud-native-company-context.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
@@ -40,8 +41,9 @@ const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
 /** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
 const CONTENT_BYTES = 1200;
-/** A best-effort park when a hold ends early (the run stops): the kernel's heartbeat covers a crash. */
-const PARK_ON_EXIT_MS = 5_000;
+/** A hold that ends early (the run stops, or the kernel refuses the wait) parks its card, asking again through lost
+ * or late answers for up to this long. Best effort: the kernel's heartbeat covers a crash. */
+const PARK_ON_EXIT_MS = 30_000;
 
 /** Plain titles for connector writes, by tool name; others show their tool name. */
 const CONNECTOR_TITLES: Readonly<Record<string, string>> = {
@@ -1194,31 +1196,62 @@ export class CloudActionReviewGate {
 		try {
 			return await this.#poll(reviewId, approver, signal);
 		} catch (error) {
-			// The hold ended early (the run stopped, or the kernel could not be read): park the
-			// card so its answer wakes the agent. Best effort; the kernel's heartbeat covers the rest.
-			await this.#control
-				.call(
+			// The hold ended early (the run stopped, or the kernel refused the wait): park the
+			// card so its answer wakes the agent.
+			await this.#leave(reviewId);
+			throw error;
+		}
+	}
+
+	/** Parks the card of a hold that ended early. Never throws. */
+	async #leave(reviewId: string): Promise<void> {
+		const deadline = AbortSignal.timeout(PARK_ON_EXIT_MS);
+		for (let attempt = 0; ; attempt += 1) {
+			try {
+				await this.#control.call(
 					"qorpera_await_action_review",
 					// Leaving: park an unanswered card, but never use an approval this call will not run.
 					{ p_binding: this.#binding, p_review_id: reviewId, p_park: true, p_leaving: true },
-					AbortSignal.timeout(PARK_ON_EXIT_MS),
-				)
-				.catch(() => undefined);
-			throw error;
+					deadline,
+				);
+				return;
+			} catch (error) {
+				// A refusal stands; a lost or late answer is asked again (the park is idempotent) while time is left.
+				if (deadline.aborted || !cloudControlRetryable(error)) return;
+			}
+			try {
+				await cloudControlPause(cloudControlBackoffMs(attempt), deadline);
+			} catch {
+				return;
+			}
 		}
 	}
 
 	async #poll(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
-		for (;;) {
+		for (let parkFailures = 0; ; ) {
 			const park = Date.now() >= until;
-			const state = object(
-				await this.#control.call(
+			let answer: unknown;
+			try {
+				answer = await this.#control.call(
 					"qorpera_await_action_review",
 					{ p_binding: this.#binding, p_review_id: reviewId, p_park: park },
 					signal,
-				),
-			);
+				);
+			} catch (error) {
+				// A lost or late answer does not end the hold (production pass 2, 16 Oct 2026: one poll in about 150
+				// waited past the lock timeout behind a same-run step, and the held call was told its review was
+				// unavailable). A wait is idempotent (asked again, it finds the approval it used or the park it made),
+				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. A
+				// refusal or a stopped run ends the hold.
+				if (signal.aborted || !cloudControlRetryable(error)) throw error;
+				await cloudControlPause(
+					park ? cloudControlBackoffMs(parkFailures++) : Math.max(0, Math.min(this.#pollMs, until - Date.now())),
+					signal,
+				);
+				continue;
+			}
+			const state = object(answer);
 			if (state.state === "approved") return approved(reviewId);
 			if (state.state === "declined")
 				return denied(
@@ -1237,21 +1270,7 @@ export class CloudActionReviewGate {
 				};
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");
-			await new Promise<void>((resolve, reject) => {
-				signal.throwIfAborted();
-				const abort = () => {
-					clearTimeout(timer);
-					reject(signal.reason);
-				};
-				const timer = setTimeout(
-					() => {
-						signal.removeEventListener("abort", abort);
-						resolve();
-					},
-					Math.max(0, Math.min(this.#pollMs, until - Date.now())),
-				);
-				signal.addEventListener("abort", abort, { once: true });
-			});
+			await cloudControlPause(Math.max(0, Math.min(this.#pollMs, until - Date.now())), signal);
 		}
 	}
 }
