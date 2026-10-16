@@ -1,15 +1,22 @@
-import type { CpuInfo } from "node:os";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { type CpuInfo, tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+	collectRuntimeNodeHealthProcess,
 	parseRuntimeNodeHealth,
 	type RuntimeNodeHealth,
 	RuntimeNodeHealthPublisher,
 	runtimeNodeCpuUsage,
 	runtimeNodeMemory,
 	runtimeNodeNetwork,
+	runtimeNodeObserverSoftware,
 } from "../src/runtime-node-health.ts";
 import type { RuntimeNodeObserverRegistry } from "../src/runtime-node-observer.ts";
 
+const linux = process.platform === "linux" && !!process.geteuid?.();
 const nodeId = "36000000-0000-4000-8000-000000000010",
 	machine = "c".repeat(64);
 const policy = "d".repeat(64);
@@ -154,5 +161,32 @@ describe("bounded node health evidence", () => {
 		finish(sample());
 		await expect(pending).rejects.toThrow();
 		expect(call).not.toHaveBeenCalled();
+	});
+	it("runs the probe from the running observer's own file, not the first installation's path", async () => {
+		// A cut's observer is a file of its own (16 Oct 2026: both nodes' observers spawned the first installation's
+		// path, which node 2 does not have, so every sample since was COLLECTION_UNCONFIRMED).
+		const observer = join(await mkdtemp(join(tmpdir(), "qorpera-node-health-")), "observer-node02-v180.cjs");
+		await writeFile(
+			observer,
+			[
+				"const env = Object.keys(process.env).join();",
+				'if (process.argv.length !== 3 || process.argv[2] !== "--health-probe" || env !== "PATH") process.exit(1);',
+				`process.stdout.write(${JSON.stringify(`${JSON.stringify(sample())}\n`)});`,
+			].join("\n"),
+		);
+		await expect(collectRuntimeNodeHealthProcess(new AbortController().signal, observer)).resolves.toEqual(sample());
+		await writeFile(observer, "process.exit(1);\n");
+		await expect(collectRuntimeNodeHealthProcess(new AbortController().signal, observer)).rejects.toThrow(
+			"NODE_HEALTH_COLLECTION_UNCONFIRMED",
+		);
+	});
+	it.runIf(linux)("names a cut's observer by its own bytes, only from a file its account cannot change", async () => {
+		const observer = join(await mkdtemp(join(tmpdir(), "qorpera-node-health-")), "observer-node02-v180.cjs");
+		await writeFile(observer, "observer", { mode: 0o444 });
+		await expect(runtimeNodeObserverSoftware(observer, policy)).rejects.toThrow("OFFICE_HOST_PATH_UNPROTECTED");
+		// Any root-owned file in root-owned directories stands in for the installed observer.
+		expect(await runtimeNodeObserverSoftware("/etc/passwd", policy)).toBe(
+			createHash("sha256").update(readFileSync("/etc/passwd")).digest("hex"),
+		);
 	});
 });

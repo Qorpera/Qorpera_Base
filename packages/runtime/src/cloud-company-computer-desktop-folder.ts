@@ -72,7 +72,7 @@ export function openCompanyComputerDesktopFolderView(
 	signal: AbortSignal,
 	until: number,
 ): Promise<CompanyComputerFolderView | CompanyComputerFolderRefusal> {
-	const anchor =
+	const anchor: Readonly<Record<string, string>> =
 		request.holder.kind === "run"
 			? { screenId: request.screenId, holderRunId: request.holder.runId }
 			: { screenId: request.screenId, holderUserId: request.holder.userId };

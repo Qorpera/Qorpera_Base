@@ -63,7 +63,8 @@ export const RUNTIME_PINS = [
 	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "95f8f458866f3d1cb6ffb4ac5ee3db16cb3674519c7f10cfcbe14d6a40618396" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-commands.ts", from: "const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);", to: 'stdin: "pipe",', sha256: "48ddc6b2a1d2a0b553f91535dbfb4ad7ca8917b694951794775845ee811c498f" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;", to: 'const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/libreoffice"];', sha256: "3a40c2ca43e9bde7c283eb2b55ab32461328a9dde1c5b7b14c893b9b7ddb51c3" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: "pipeCount: 2,", sha256: "532e140b088a2c3d8f09ffe3585bdebad9b2f9794c1ba88e1cdd4a41bd49c849" },
+	// The shell's shape without the company folder; with it (4d-4b), each command's mount is the folder helper's.
+	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: "pipeCount: 2,", sha256: "c1de8812c904af118ec6d908872bc977f89e92bbd7a0ae9aad7b3fc795640ada" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-network.ts", from: 'export const COMPANY_COMPUTER_AGENT_EXIT_DNS = "10.210.0.1";', to: 'export const COMPANY_COMPUTER_HOSTS = "127.0.0.1\\tlocalhost\\n::1\\tlocalhost ip6-localhost ip6-loopback\\n";', sha256: "d59958ee52f793e2efdb12eac71e1344a7451bc6e3bf8842955a4228c2a9c5d3" },
 	// The workbench every namespace binds and starts in.
 	{ file: "deploy/lxd-company-computer-guest/qorpera-office-private.mount.in", from: "Where=/run/qorpera-office/private", to: "Where=/run/qorpera-office/private", sha256: "7f06bb7728270fef99dc5abd5fb0b9a5e25784cc6c3301685993f2cc85bbf6fd" },
@@ -150,7 +151,7 @@ export const PUSHED = {
 	"office-folder-substrate.py": "scripts/fixtures/office-folder-substrate.py",
 	"office-folder-remount.py": "scripts/fixtures/office-folder-remount.py",
 	"office.service": "deploy/lxd-company-computer-guest/qorpera-company-computer.service",
-	"mount.service": "deploy/folder-service/qorpera-folder-mount@.service",
+	"mount.service": "deploy/lxd-company-computer-guest/qorpera-office-folder-mount@.service.in",
 };
 
 /** The runtime's own process gate, run unchanged in the guest's node: its types stripped, nothing else. */
@@ -175,7 +176,7 @@ export function main(args) {
 		writeFileSync(join(local, "shapes.json"), `${JSON.stringify(remountShapes(dir), null, 2)}\n`);
 		const sources = { ...Object.fromEntries(Object.entries(PUSHED).map(([name, path]) => [name, resolve(root, path)])), "company-computer-process.mjs": join(local, "company-computer-process.mjs"), "shapes.json": join(local, "shapes.json"), "qorpera-folder": realpathSync(options["folder-binary"]) };
 		const digests = Object.fromEntries(Object.entries(sources).map(([name, path]) => [name, sha256(readFileSync(path))]));
-		const evidence = { schema: "qorpera.office-folder-remount/v1", scope: "the folder mount's restart under the office's namespaces; synthetic folder node; master's mount unit on #1047's layout; copied office confinement", project: options.project, vm: options.vm, uuid: options.uuid, image: options.image, fuse: options.fuse, folderSha256: options["folder-sha256"], digests, runtimePins: RUNTIME_PINS.map(({ file, from, sha256 }) => ({ file, from, sha256 })), guestBoot: guest.boot, guestOfficeUnitSha256: guest.unitSha256, executed: false };
+		const evidence = { schema: "qorpera.office-folder-remount/v1", scope: "the folder mount's restart under the office's namespaces; synthetic folder node; master's office mount unit, rendered; copied office confinement", project: options.project, vm: options.vm, uuid: options.uuid, image: options.image, fuse: options.fuse, folderSha256: options["folder-sha256"], digests, runtimePins: RUNTIME_PINS.map(({ file, from, sha256 }) => ({ file, from, sha256 })), guestBoot: guest.boot, guestOfficeUnitSha256: guest.unitSha256, executed: false };
 		if (!options.execute) {
 			writeFileSync(options.record, `${JSON.stringify({ ...evidence, result: "plan", guestCommand: ["python3", `${dir}/office-folder-remount.py`, "proof", dir, options.fuse] }, null, 2)}\n`);
 			console.log("Preflight passed. No guest files or units created.");

@@ -282,7 +282,7 @@ end
 $$;
 
 -- pg_cron is not part of the test database. A stand-in with pg_cron's schedule-by-name contract shows the
--- helper schedules one job, idempotently, every five minutes from minute 2, whose command runs as its owner.
+-- helper schedules one job, idempotently, once an hour at minute 2 (20260930483000), whose command runs as its owner.
 do $$
 declare v_first jsonb; v_second jsonb; v_command text;
 begin
@@ -304,8 +304,8 @@ begin
 	v_second := public.qorpera_schedule_runtime_node_receipt_retention();
 	if v_first ->> 'scheduled' <> 'true' or v_second -> 'jobId' <> v_first -> 'jobId'
 		or (select count(*) from cron.job where jobname = 'qorpera-runtime-node-receipts-retention') <> 1
-		or (select schedule from cron.job where jobname = 'qorpera-runtime-node-receipts-retention') <> '2-59/5 * * * *' then
-		raise exception 'Node receipt retention is not scheduled exactly once every five minutes, at minutes 2, 7, ...'; end if;
+		or (select schedule from cron.job where jobname = 'qorpera-runtime-node-receipts-retention') <> '2 * * * *' then
+		raise exception 'Node receipt retention is not scheduled exactly once, hourly at minute 2'; end if;
 	select command into v_command from cron.job where jobname = 'qorpera-runtime-node-receipts-retention';
 	if v_command <> 'select public.qorpera_run_runtime_node_receipt_retention()' then
 		raise exception 'Scheduled retention runs another command: %', v_command; end if;
