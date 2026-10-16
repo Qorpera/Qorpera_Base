@@ -1709,7 +1709,7 @@ describe("the review step", () => {
 		expect(waits.every((call) => call.args.p_park === true && !("p_leaving" in call.args))).toBe(true);
 	});
 
-	it("ends the hold at a refusal or a malformed failure, and parks the card on its way out", async () => {
+	it("ends the hold at a refusal or an unknown failure, and parks the card on its way out", async () => {
 		for (const failure of [
 			new CloudControlRpcRefused("42501", "native tool run is unavailable"),
 			new CloudControlRpcRefused("55000", "Company execution is paused"),
