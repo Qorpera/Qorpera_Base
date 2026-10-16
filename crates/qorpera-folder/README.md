@@ -68,6 +68,14 @@ drains admitted old work before moving pending state, keeps a closed desktop for
 under the successor's upload scope, and replays any unanswered commit with its original actor and operation key.
 The office helper and live activation remain separate slices of `RUNTIME-FOLDER-COMPANY-MACHINES.md`.
 
+The mount speaks protocol 4 (folder links LK4, `deploy/first-node/RUNTIME-FOLDER-LINKS.md`), so the company folder
+holds links. `readlink` reads the target with `R` at the link's version and logs it as a read, as an open is; the
+kernel caches no target (`FUSE_CACHE_SYMLINKS` stays off), so every readlink is logged. `symlink` keeps the target
+exactly as written and refuses one that is not UTF-8 (`EINVAL`). `link` (a hard link) logs a read of the source at the
+version shown and sends `J` with it; the new name is an inode of its own with one link, so the names are never joined.
+A link shows as `l` with mode `0777`; `chmod` and `touch -h` on one change nothing. `mknod`, `mkfifo` and a socket's
+bind stay `EPERM`.
+
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
 `node scripts/build-folder-program.mjs --out <file>`. Build output never goes in this folder (`CARGO_TARGET_DIR`).

@@ -44,8 +44,8 @@ const WEB_RELEASE_CONFIG = JSON.stringify({
 export const RUST_IMAGE =
 	"rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082";
 /** Node for the folder program's run against the folder service: the same Debian release as RUST_IMAGE, so the
- * program built there runs here. */
-export const NODE_IMAGE = "node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6";
+ * program built there runs here. The full image, not slim: its git and python3 use the mounted folder's links. */
+export const NODE_IMAGE = "node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
