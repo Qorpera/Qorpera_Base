@@ -16,8 +16,9 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * 20260930093000 (proposals, P40b), 20260930106000 (manage_hook), 20260930202000 (zoom, M1b-3), 20260930203000 (the
  * release of tree blocks, M1b-3), 20260930204000 (the primary view and its record, M1b-4a), 20260930220000 (branches,
  * M4), 20260930231000 (run logs, W1b) and 20260930340000 (resumed attempts, W5b-2) list them, without the two
- * identity calls, which the host makes between jobs (G2-3). The long budget is the lease validator's and, since
- * 20260930109500, the model request's fence's. */
+ * identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
+ * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and,
+ * since 20260930109500, the model request's fence's. */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],
@@ -37,9 +38,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_company_machines_available", "standard"],
 	["qorpera_company_presence_scope", "standard"],
 	["qorpera_complete_native_tool_operation", "standard"],
-	["qorpera_confirm_agent_todo_publication", "standard"],
 	["qorpera_confirm_company_path_read", "standard"],
-	["qorpera_decide_agent_routine", "standard"],
 	["qorpera_describe_agent_open_work", "standard"],
 	["qorpera_describe_company_run_context", "standard"],
 	["qorpera_describe_native_tool_authority", "standard"],
@@ -72,10 +71,6 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_list_company_paths", "standard"],
 	["qorpera_list_company_paths_v2", "standard"],
 	["qorpera_list_native_connector_tools", "standard"],
-	["qorpera_manage_agent_routine", "standard"],
-	["qorpera_manage_agent_sidebar", "standard"],
-	["qorpera_manage_agent_todo", "standard"],
-	["qorpera_manage_agent_worker", "standard"],
 	["qorpera_memory_branches", "standard"],
 	["qorpera_memory_release", "standard"],
 	["qorpera_memory_run_log_place", "standard"],
@@ -114,7 +109,6 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_record_native_context_view", "standard"],
 	["qorpera_record_provider_usage_signal", "standard"],
 	["qorpera_record_runtime_observation_batch", "standard"],
-	["qorpera_report_worker_result", "standard"],
 	["qorpera_self_approve_organization_proposal", "standard"],
 	["qorpera_send_agent_mail", "standard"],
 	["qorpera_send_coworker_message", "standard"],
