@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-134 functions, grouped for navigation. Signatures: see the migration that defines each.
+125 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -229,7 +229,7 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (10)
+### Objects, artifacts, retention (9)
 
 A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
 answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
@@ -244,7 +244,6 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_get_object_reachability_graph`
 - `qorpera_issue_profile_object_read_lease`
 - `qorpera_profile_object_writes_allowed`
-- `qorpera_stage_operation_receipt_objects`
 
 
 ### Company File, snapshots, workspaces (5)
@@ -361,7 +360,7 @@ with legacy sweep E1 (20260930400000).
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
-### Conversations, turns, wakes (18)
+### Conversations, turns, wakes (13)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
   the agent raised in the thread. See "Thread interactions" under §6.
@@ -369,15 +368,10 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
 - `qorpera_close_shared_session`
 - `qorpera_configure_session_execution`
-- `qorpera_create_shared_session`
-- `qorpera_create_shared_session_v2`
-- `qorpera_create_shared_session_v4`
 - `qorpera_ensure_member_private_staff_session`
 - `qorpera_ensure_staff_session`
-- `qorpera_get_shared_session_by_client`
 - `qorpera_list_session_inputs`
 - `qorpera_list_session_turn_requests`
-- `qorpera_list_shared_sessions`
 - `qorpera_list_shared_sessions_page`
 - `qorpera_list_wake_occurrences`
 - `qorpera_read_session_events`
@@ -393,12 +387,10 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
-### Execution, sponsors, runners, computers (31)
+### Execution, sponsors, runners, computers (28)
 
-- `qorpera_begin_operation_receipt`
 - `qorpera_cancel_runner_job`
 - `qorpera_cancel_worker_run(p_run_id)` — a member's Stop of an in-house worker's own run (no conversation), by run id: the job's creator (the member whose work dispatched the worker) or an owner or admin, through `qorpera_cancel_runner_job`; returns the control below (20260930002800)
-- `qorpera_complete_operation_receipt`
 - `qorpera_configure_runner_model_policy`
 - `qorpera_create_execution_sponsor_binding`
 - `qorpera_create_member_execution_sponsor`
@@ -418,7 +410,6 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_list_staff_execution_activity`
 - `qorpera_reissue_runner_activation`
 - `qorpera_resolve_failed_execution_run`
-- `qorpera_resolve_operation_receipt`
 - `qorpera_resolve_run_operation_receipt`
 - `qorpera_revoke_runner`
 - `qorpera_set_execution_sponsor_status`
@@ -1332,7 +1323,7 @@ does locally that the contract forbids.
 | `profile:materialize-cloud` | desktop-only transitional (local checkout) — no web equivalent by design |
 | `profile:migrate-local` | desktop-only transitional — no web equivalent by design (qorpera_promote_local_profile went with legacy sweep D1, 20260930330000) |
 | `room:archive` | qorpera_close_shared_session |
-| `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
+| `room:create` | rooms: Order 3 fan-out (the plain shared session creators went with legacy sweep D15, 20260930414000) |
 | `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |
