@@ -807,15 +807,21 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   Empty ones are left out, so a Stripe hook before its first capture, and every GitHub or HMAC hook, keeps exactly
   `connectorId`, `secretName` and `ready`. The five broker functions are granted to `qorpera_secret_broker` only.
 
-**Next: E3c-2, E3c-3 and E3c-4, in one release.**
-- **E3c-2, the broker and the runtime:** `manage_hook`'s Stripe create (its E3b-2 refusal goes, and its description says
+**E3c-2, E3c-3 and E3c-4 ship in one release.**
+- **E3c-2, the broker and the runtime (built):** `manage_hook`'s Stripe create (its E3b-2 refusal goes, and its description says
   one hook per Stripe endpoint, test and live mode apart); the folder client's new refusal words and its signed-create
   check (a Stripe create answers `ready: false`, and `version` and `capturedAt` appear only after a capture); the
   keyring's capture key, and the Stripe opening and `rekey` on `/v1/event-hooks`; `/v1/event-hook-captures`, the native
   host's relay and the review card; Settings' Stripe state; and the redaction of secret-shaped text in every text tool
-  result that reaches the model.
-- **E3c-3, the office image:** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
-  registry method and the perform answer's box.
+  result that reaches the model. The native host asks the broker for the `rekey` before it sends the office its
+  `vault_capture`, never after, so the office's perform is never repeated; and the redaction cuts `whsec_` secrets
+  from every answer the tool boundary returns, its digest and run log included (a coding child's own shell is not
+  that boundary's).
+- **E3c-3, the office image (built):** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
+  registry method and the perform answer's box. The office reads where the box goes from the database
+  (`qorpera_native_office_hook_capture`), never from the native host. Every way a read ends masks the page again with a
+  reload under the cover; a page that still shows the value has its tab closed. The box is held for the call's answer
+  only once the page shows no check, so a stop answer carries none, and the gateway refuses a done read without one.
 - **E3c-4, the hold** (migration `20260930345000`, SQL test 420): the verifier's finish, intake's readiness and
   `lastRefusal`'s hold.
 

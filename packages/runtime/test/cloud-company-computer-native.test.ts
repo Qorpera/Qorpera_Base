@@ -100,6 +100,8 @@ async function fixture(
 		screenshots?: Map<string, Uint8Array>;
 		/** The capture the database reads back for the run. */
 		capture?: () => unknown;
+		/** The boxes the guest's vault_captures sealed (E3c-3), by receipt. */
+		hookBoxes?: Map<string, Readonly<Record<string, string>>>;
 	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
@@ -248,6 +250,15 @@ async function fixture(
 								const bytes = options.screenshots?.get(receiptId);
 								options.screenshots?.delete(receiptId);
 								return bytes;
+							},
+						}
+					: {}),
+				...(options.hookBoxes
+					? {
+							capture: (receiptId: string) => {
+								const box = options.hookBoxes?.get(receiptId);
+								options.hookBoxes?.delete(receiptId);
+								return box;
 							},
 						}
 					: {}),
@@ -781,6 +792,8 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 				schema: "qorpera.event-hook-fill-answer/v1",
 				box,
 			})),
+			eventHook: vi.fn<CompanyComputerHookFills["eventHook"]>(),
+			eventHookCapture: vi.fn<CompanyComputerHookFills["eventHookCapture"]>(),
 		};
 		const f = await fixture({ capabilities: ["browser"], accountFills, hookFills });
 		const operation: CompanyComputerOperation = {
@@ -851,6 +864,255 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		});
 		expect(bare.perform).not.toHaveBeenCalled();
 		expect(accountFills.companyAccountFill).toHaveBeenCalledOnce();
+		expect(hookFills.eventHook).not.toHaveBeenCalled();
+		expect(hookFills.eventHookCapture).not.toHaveBeenCalled();
+	});
+
+	it("makes a Stripe hook's capture key current, then carries the office's box to the vault (E3c-2)", async () => {
+		const f = await fixture({ capabilities: ["browser"] });
+		const hook = randomUUID();
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_capture",
+				role: "button",
+				name: "Reveal",
+				hook,
+				field: "signing_secret",
+			},
+		};
+		const box = {
+			schema: "qorpera.event-hook-capture-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const read = { kind: "json", value: { action: "vault_capture", tabId: randomUUID(), completed: true } };
+		const answer = (rest: Record<string, unknown> = { content: read, box }) => ({
+			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			...rest,
+		});
+		const vault = () => ({
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(),
+			eventHook: vi.fn<CompanyComputerHookFills["eventHook"]>(async () => ({
+				schema: "qorpera.event-hook-rekey-answer/v1",
+				hook,
+				replaced: false,
+			})),
+			eventHookCapture: vi.fn<CompanyComputerHookFills["eventHookCapture"]>(async () => ({
+				schema: "qorpera.event-hook-capture-answer/v1",
+				hook,
+				version: 2,
+				unchanged: false,
+			})),
+		});
+		const endpoint = (body: unknown, hookFills?: CompanyComputerHookFills) => {
+			const fetch = vi.fn(async () => Response.json(body));
+			return {
+				fetch,
+				endpoint: new HttpCompanyComputerNativeEndpoint({
+					run: f.run,
+					descriptor: f.descriptor,
+					url: f.url,
+					token: f.token,
+					holder: () => f.holder,
+					registry: f.registry,
+					fetch,
+					...(hookFills ? { hookFills } : {}),
+				}),
+			};
+		};
+		const v = vault();
+		const ok = endpoint(answer(), v);
+		const result = await ok.endpoint.perform(operation, f.lease, f.context);
+		expect(result).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: true,
+				captured: { hook, field: "signing_secret", version: 2, unchanged: false },
+			},
+		});
+		expect(JSON.stringify(result)).not.toContain("ciphertext");
+		expect(v.eventHook).toHaveBeenCalledWith(
+			{ binding: f.source.binding, request: { action: "rekey", hook } },
+			expect.any(AbortSignal),
+		);
+		expect(v.eventHookCapture).toHaveBeenCalledWith(
+			{
+				binding: f.source.binding,
+				receiptId: f.context.receiptId,
+				idempotencyKey: f.context.idempotencyKey,
+				envelope: cloudNativeToolOperationEnvelope(f.run.identity, operation),
+				box,
+			},
+			expect.any(AbortSignal),
+		);
+		// The key is current before the office reads it, and the box reaches the vault after.
+		expect(v.eventHook.mock.invocationCallOrder[0]).toBeLessThan(ok.fetch.mock.invocationCallOrder[0]!);
+		expect(ok.fetch.mock.invocationCallOrder[0]).toBeLessThan(v.eventHookCapture.mock.invocationCallOrder[0]!);
+		expect(v.eventHookFill).not.toHaveBeenCalled();
+		// The rekey's refusal is the call's answer and the office is never asked; nor is it on a host without the route.
+		const refusing = vault();
+		refusing.eventHook.mockResolvedValueOnce({
+			schema: "qorpera.event-hook-refusal/v1",
+			code: "55000",
+			message: "This hook was removed",
+		});
+		const refused = endpoint(answer(), refusing);
+		expect(await refused.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: false,
+				refused: { code: "55000", message: "This hook was removed" },
+			},
+		});
+		const bare = endpoint(answer());
+		expect(await bare.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: false,
+				refused: { code: "0A000", message: "Signed hooks are not set up for this company's computers" },
+			},
+		});
+		expect(refused.fetch).not.toHaveBeenCalled();
+		expect(bare.fetch).not.toHaveBeenCalled();
+		expect(refusing.eventHookCapture).not.toHaveBeenCalled();
+		// The store's refusal is the call's answer too.
+		const store = vault();
+		store.eventHookCapture.mockResolvedValueOnce({
+			schema: "qorpera.event-hook-refusal/v1",
+			code: "22023",
+			message: "A Stripe hook's secret is taken from dashboard.stripe.com",
+		});
+		expect(await endpoint(answer(), store).endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: false,
+				refused: { code: "22023", message: "A Stripe hook's secret is taken from dashboard.stripe.com" },
+			},
+		});
+		// The vault answering for another hook is no answer.
+		const otherRekey = vault();
+		otherRekey.eventHook.mockResolvedValueOnce({
+			schema: "qorpera.event-hook-rekey-answer/v1",
+			hook: randomUUID(),
+			replaced: true,
+		});
+		const otherStore = vault();
+		otherStore.eventHookCapture.mockResolvedValueOnce({
+			schema: "qorpera.event-hook-capture-answer/v1",
+			hook: randomUUID(),
+			version: 1,
+			unchanged: true,
+		});
+		for (const other of [otherRekey, otherStore])
+			await expect(endpoint(answer(), other).endpoint.perform(operation, f.lease, f.context)).rejects.toThrow(
+				"OFFICE_NATIVE_UNCONFIRMED",
+			);
+		// Only a vault_capture's answer carries a box, exactly a box, beside the office's own completed read.
+		await expect(endpoint(answer(), vault()).endpoint.perform(f.operation, f.lease, f.context)).rejects.toThrow(
+			"INVALID_OFFICE_NATIVE_MESSAGE",
+		);
+		for (const [content, sealed, error] of [
+			[read, { ...box, extra: "x" }, "INVALID_OFFICE_NATIVE_MESSAGE"],
+			[read, { ...box, iv: 7 }, "INVALID_OFFICE_NATIVE_RESULT"],
+			[{ kind: "json", value: { ...read.value, completed: false } }, box, "INVALID_OFFICE_NATIVE_RESULT"],
+			[{ kind: "json", value: { ...read.value, action: "click" } }, box, "INVALID_OFFICE_NATIVE_RESULT"],
+			[{ kind: "text", value: "read" }, box, "INVALID_OFFICE_NATIVE_RESULT"],
+		] as const) {
+			const x = vault();
+			await expect(
+				endpoint(answer({ content, box: sealed }), x).endpoint.perform(operation, f.lease, f.context),
+			).rejects.toThrow(error);
+			expect(x.eventHookCapture).not.toHaveBeenCalled();
+		}
+		// An answer without a box (the page stopped the agent) is the call's as the office gave it; nothing is stored.
+		const stop = {
+			kind: "json",
+			value: { action: "vault_capture", tabId: randomUUID(), completed: true, stop: "captcha", message: "Stop" },
+		};
+		const s = vault();
+		expect(await endpoint(answer({ content: stop }), s).endpoint.perform(operation, f.lease, f.context)).toEqual(
+			stop,
+		);
+		expect(s.eventHookCapture).not.toHaveBeenCalled();
+	});
+
+	it("carries the box a guest's vault_capture sealed in that call's answer only, and never a done read without one (E3c-3)", async () => {
+		const hook = randomUUID();
+		const box = {
+			schema: "qorpera.event-hook-capture-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const hookFills = {
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(),
+			eventHook: vi.fn<CompanyComputerHookFills["eventHook"]>(async () => ({
+				schema: "qorpera.event-hook-rekey-answer/v1",
+				hook,
+				replaced: false,
+			})),
+			eventHookCapture: vi.fn<CompanyComputerHookFills["eventHookCapture"]>(async () => ({
+				schema: "qorpera.event-hook-capture-answer/v1",
+				hook,
+				version: 2,
+				unchanged: false,
+			})),
+		};
+		const hookBoxes = new Map<string, Readonly<Record<string, string>>>();
+		const f = await fixture({ capabilities: ["browser"], hookFills, hookBoxes });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_capture",
+				role: "button",
+				name: "Reveal",
+				hook,
+				field: "signing_secret",
+			},
+		};
+		const read = (extra: Record<string, unknown> = {}) => ({
+			kind: "json" as const,
+			value: { action: "vault_capture", tabId: randomUUID(), completed: true, ...extra },
+		});
+		f.perform.mockImplementationOnce(async (_action, _lease, context) => {
+			hookBoxes.set(context.receiptId, box);
+			return read();
+		});
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: true,
+				captured: { hook, field: "signing_secret", version: 2, unchanged: false },
+			},
+		});
+		expect(hookFills.eventHookCapture).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookCapture.mock.calls[0]![0]).toMatchObject({ receiptId: f.context.receiptId, box });
+		expect(hookBoxes.size).toBe(0);
+		// The receipt keeps the read, never the box.
+		expect(JSON.stringify(f.sql.mock.calls)).not.toContain("ciphertext");
+		// The page stopped the agent after the click: the stop is the answer, with no box, and nothing is stored.
+		const stop = read({ stop: "SITE_STOP_HUMAN_CHECK", message: "Stop" });
+		f.perform.mockResolvedValueOnce(stop);
+		expect(await f.endpoint.perform(operation, f.lease, { ...f.context, receiptId: randomUUID() })).toEqual(stop);
+		// A done read whose box is gone (the session ended under it) is no answer.
+		f.perform.mockResolvedValueOnce(read());
+		await expect(f.endpoint.perform(operation, f.lease, { ...f.context, receiptId: randomUUID() })).rejects.toThrow();
+		expect(hookFills.eventHookCapture).toHaveBeenCalledOnce();
 	});
 
 	it("re-derives the native principal, consumes the original receipt and physically closes before releasing occupancy", async () => {

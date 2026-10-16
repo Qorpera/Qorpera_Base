@@ -171,6 +171,7 @@ function offersFake() {
 			folder: "tables/cards",
 			column: "holder",
 			state: "open",
+			agent: null,
 			at: timestamp,
 			...fields,
 		};
