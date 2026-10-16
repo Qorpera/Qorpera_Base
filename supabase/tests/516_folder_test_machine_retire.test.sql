@@ -263,8 +263,8 @@ begin
 			where id = %L', v_placement.id));
 		perform pg_temp.base_assert(pg_temp.retire_at(v_placement, v_placement.boot_id, 'new-disk') ->> 'reason' = 'unchecked',
 			'A marked disk is retired');
-		perform pg_temp.fx(format('update public.qorpera_company_machine_placements set removed_at = clock_timestamp() where id = %L',
-			v_placement.id));
+		perform pg_temp.fx(format('update public.qorpera_company_machine_placements set removing_at = clock_timestamp(),
+			removed_at = clock_timestamp() where id = %L', v_placement.id));
 		perform pg_temp.base_assert(pg_temp.retire_at(v_placement, v_placement.boot_id, 'new-disk') = '{"state":"stale"}'::jsonb,
 			'Once removed, it is stale');
 		raise exception 'Undo' using errcode = 'QTF80';
