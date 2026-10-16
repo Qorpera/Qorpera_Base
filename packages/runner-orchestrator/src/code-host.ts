@@ -160,7 +160,37 @@ export function codeHostProjectMatches(project: LxdProjectRecord): boolean {
 
 export type CodeHostEvent =
 	| { event: "code-host"; step: "project-made" | "replaced" | "outdated" | "stopped" | "removed"; project: string }
-	| { event: "code-host-error"; step: "refused" | "stop" | "housekeep"; project: string; error?: unknown };
+	| { event: "code-host-error"; step: "refused" | "stop" | "housekeep" | "remove"; project: string; error?: unknown };
+
+/** The coding executor's control-plane calls for its code hosts (control: CODE_HOST_RPCS). */
+export const CODE_HOST_RPCS = ["qorpera_code_hosts_deleting"] as const;
+
+/** Which of these companies are being deleted. */
+export type CodeHostDeletions = (companyIds: readonly string[], signal: AbortSignal) => Promise<readonly string[]>;
+
+/** Asks the control plane, as this node's coding executor, which of these companies have a deletion request
+ * (purged or not), a few hundred at a time. */
+export function controlCodeHostDeletions(options: {
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
+	owner: string;
+	machineIdSha256: string;
+}): CodeHostDeletions {
+	return async (companyIds, signal) => {
+		const deleting: string[] = [];
+		for (let start = 0; start < companyIds.length; start += 500) {
+			const asked = companyIds.slice(start, start + 500);
+			const value = await options.control.call(
+				CODE_HOST_RPCS[0],
+				{ p_owner: options.owner, p_machine_id_sha256: options.machineIdSha256, p_company_ids: asked },
+				AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+			);
+			if (!Array.isArray(value) || !value.every((id) => typeof id === "string" && asked.includes(id)))
+				throw new Error("CODE_HOST_DELETIONS_UNCONFIRMED");
+			deleting.push(...value);
+		}
+		return deleting;
+	};
+}
 
 export interface LxdCodeHostsOptions {
 	client: LxdCodeHostClient;
@@ -278,6 +308,27 @@ export class LxdCodeHosts {
 			}
 		}
 		return stopped;
+	}
+
+	/** A pass of company deletion: each code host project on the node whose company `deleting` names goes with its
+	 * code host (`remove`), each within `agentWaitMs`. One still in a job (CODE_HOST_BUSY), refused or failed is logged
+	 * and goes on a later pass, as does one a job made again after its removal. Returns how many went. */
+	async removeDeleting(deleting: CodeHostDeletions, signal: AbortSignal): Promise<number> {
+		const companies = (await this.#client.listProjectNames(signal)).flatMap((name) => codeHostCompany(name) ?? []);
+		if (companies.length === 0) return 0;
+		const deleted = new Set(await deleting(companies, signal));
+		let removed = 0;
+		for (const companyId of companies) {
+			if (!deleted.has(companyId)) continue;
+			try {
+				if (await this.remove(companyId, AbortSignal.any([signal, AbortSignal.timeout(this.#agentWaitMs)])))
+					removed += 1;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				this.#log({ event: "code-host-error", step: "remove", project: codeHostProject(companyId), error });
+			}
+		}
+		return removed;
 	}
 
 	/** The company's deletion, after its runs ended: its code host and project go. False when it had none. */

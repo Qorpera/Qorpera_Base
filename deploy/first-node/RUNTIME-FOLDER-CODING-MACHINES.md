@@ -502,6 +502,13 @@ went wrong reaches only its own company. It does what no member's root may:
 
 It retires `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap and git custody on the NAS.
 
+A company's code hosts go with its deletion (coordinator decision D3; migration `20260930398000`). A code host is no
+allocation and its code area is erased with the company folder, so the deletion does not wait for it. Each node's
+coding executor asks at its start and every minute after which of the companies with a code host project on the node
+are being deleted (`qorpera_code_hosts_deleting`, read-only, under its custody check), and removes each of their code
+hosts with its project. One still in a job (`CODE_HOST_BUSY`), refused or failed is logged and goes on a later pass, as
+does one a job made again after its removal.
+
 ## The report
 
 A turn's report gives what step 4's gives (the views' reasons, what was held back and why), plus: the setup file used
