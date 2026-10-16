@@ -97,6 +97,9 @@ interface Progress {
 	readonly schema: "qorpera.coding-host-command-progress/v1";
 	/** The guest's byte offset the next pull starts at: every byte before it is kept, masked, or counted lost. */
 	readonly raw: number;
+	/** The mask's state at `raw` (`CodingCommandSecretMask.masked`): the bytes from there that the kept `***` already
+	 * covers, or `null` when the kept output doesn't end in one. */
+	readonly masked: number | null;
 	/** The bytes of output.log, all kept. */
 	readonly logBytes: number;
 	/** The guest's bytes lost before the host kept them. */
@@ -109,10 +112,21 @@ interface Progress {
 	/** The guest's end when last seen. */
 	readonly end: number;
 }
-const PROGRESS_KEYS = ["schema", "raw", "logBytes", "gapBytes", "limitReached", "acknowledged", "cancelled", "end"];
+const PROGRESS_KEYS = [
+	"schema",
+	"raw",
+	"masked",
+	"logBytes",
+	"gapBytes",
+	"limitReached",
+	"acknowledged",
+	"cancelled",
+	"end",
+];
 const NO_PROGRESS: Progress = Object.freeze({
 	schema: "qorpera.coding-host-command-progress/v1",
 	raw: 0,
+	masked: null,
 	logBytes: 0,
 	gapBytes: 0,
 	limitReached: false,
@@ -181,6 +195,7 @@ const progressOf = (bytes: Buffer, limitBytes: number) =>
 		(value) =>
 			value.schema === "qorpera.coding-host-command-progress/v1" &&
 			count(value.raw) &&
+			(value.masked === null || count(value.masked)) &&
 			count(value.logBytes) &&
 			(value.logBytes as number) <= limitBytes &&
 			count(value.gapBytes) &&
@@ -844,10 +859,13 @@ export class LxdCodingFolderCommandTransport {
 		const secrets = await this.#secrets.resolve(this.#secretRequest(commandId), budget);
 		let mask = secrets.mask(),
 			gapBytes = progress.gapBytes;
+		// The pull starts with the bytes the last one's mask held back, so this mask takes over from that one there.
+		mask.resume(progress.masked);
 		const kept: Uint8Array[] = [];
-		for (const [index, page] of pages.entries()) {
-			if (page.gap && index) {
-				// The tail the mask held back may start a secret whose rest was lost: it is lost with the gap.
+		for (const page of pages) {
+			if (page.gap) {
+				// The tail the mask held back may start a secret whose rest was lost: it is lost with the gap, and the
+				// mask starts again after it.
 				gapBytes += mask.pending();
 				mask = secrets.mask();
 			}
@@ -855,10 +873,12 @@ export class LxdCodingFolderCommandTransport {
 			kept.push(mask.push(page.bytes));
 		}
 		const caughtUp = at >= end;
-		let pending = mask.pending();
+		let pending = mask.pending(),
+			masked = mask.masked();
 		if (final && caughtUp) {
 			kept.push(mask.end());
 			pending = 0;
+			masked = null;
 		}
 		// Bytes the mask still holds are pulled again next time, with what follows them.
 		const bytes = Buffer.concat(kept),
@@ -868,6 +888,7 @@ export class LxdCodingFolderCommandTransport {
 		const next = await this.#save(folder, {
 			...progress,
 			raw: full ? at : at - pending,
+			masked: full ? null : masked,
 			logBytes: progress.logBytes + Math.min(room, bytes.length),
 			gapBytes,
 			limitReached: progress.limitReached || full,
