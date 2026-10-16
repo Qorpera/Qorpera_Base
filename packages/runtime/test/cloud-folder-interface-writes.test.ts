@@ -160,7 +160,7 @@ const BLOCKED = {
 	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
 	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
 	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file, not a folder: choose another name.",
+		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
 	folder_missing:
 		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
 	owners_only:
@@ -386,6 +386,15 @@ it("saves nothing when a file is not as the call expects, and says why with what
 		{
 			name: "a file where the interface's folder would be",
 			seed: { files: { "interfaces/odd": "odd" } },
+			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
+			reason: "not_a_folder",
+			path: "interfaces/odd/interface.toml",
+			reads: ["interfaces/odd"],
+		},
+		{
+			// The core keeps links out of interfaces/ (LK1); one is blocked as any other thing that is not a folder.
+			name: "a link where the interface's folder would be",
+			seed: { links: { "interfaces/odd": "../docs" } },
 			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
 			reason: "not_a_folder",
 			path: "interfaces/odd/interface.toml",

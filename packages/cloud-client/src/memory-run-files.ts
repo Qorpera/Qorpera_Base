@@ -1,4 +1,4 @@
-/** Browser-safe run-log files (W1b, 20260930231000_memory_run_logs.sql). The database
+/** Browser-safe run-log files (W1b, 20260928549100_memory_run_logs.sql). The database
  * checks ownership, append-only history, narrowing and generations. These parsers check
  * the bytes and placement alone. Stored structured parses are deliberately only {kind}. */
 import { SHA256_HEX_PATTERN as HASH, POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";

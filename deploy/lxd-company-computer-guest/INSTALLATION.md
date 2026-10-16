@@ -2,6 +2,20 @@
 
 `scripts/package-company-computer.mjs` now includes a standalone root installer, `qorpera-office-image-install.cjs`. It installs the complete headless package into an unconfigured Linux guest with a running systemd manager. It requires already prepared OS/browser dependencies; it never downloads packages, changes dependency pins, installs credentials, adopts company state, enables services, creates an LXD image or activates an office.
 
+## The image's dependencies
+
+[`office-image-dependencies.json`](office-image-dependencies.json) is the recipe for those dependencies: the Ubuntu base
+by fingerprint, the apt packages, the pinned downloads (Node.js 24, Chrome for Testing at the Playwright build, uv and
+mise, each by sha256), the npm tools (`typescript`, `tsx`) and the toolbox. The toolbox is what every computer's shell
+runs (the 2026-10-14 amendment's item 7); each entry is a command and the flag that prints its version.
+[`install-office-image-dependencies.sh`](install-office-image-dependencies.sh) installs the recipe offline, as root in
+the guest being built and before this installer: it checks each download, installs the pushed apt closure, puts one
+Node.js at `/usr/bin/node` (apt's `nodejs` is refused), masks the self-update units, turns swap off for good and runs
+every toolbox check. `scripts/build-office-image-candidate.sh` fetches the inputs and runs both installers in a nested
+VM on node01's test machine, then runs the same toolbox checks from a computer's shell under the office unit's
+confinement ([`OFFICE-IMAGE-CANDIDATE.md`](../test-machine/OFFICE-IMAGE-CANDIDATE.md)). Changing the recipe needs a new
+image generation.
+
 ## Reviewed inputs
 
 The root-owned specification uses schema `qorpera.office-image-installation/v1` and exactly these fields:
