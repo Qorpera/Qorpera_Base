@@ -1129,6 +1129,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				"running",
 				async (_intent, checked) => this.#run(claim, machine, storage, checked),
 				signal,
+				// Stopped from outside: its views end while their attachments are still the live ones, so their final
+				// boundary saves what they had pending, and then SQL ends every attachment on it, all before it starts
+				// again. A view that ended unsaved or not confirmed closed is reported once the stop is recorded.
+				async (startOperationId, checked) => {
+					const ends = await folder.views.endMachine(machine.machineId, checked);
+					await this.#recordMachineStopped(machine, startOperationId, checked);
+					if (ends.some((end) => !end.saved)) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
+					if (ends.some((end) => !end.closed)) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
+				},
 			);
 			const receipt = await this.#run(claim, machine, storage, signal);
 			// Each session runs as its own user, which SQL assigns in the guest agent's range.
