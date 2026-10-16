@@ -280,6 +280,45 @@ test("side by side: a worker killed, or one that cannot write its result, fails 
 	}
 });
 
+test("side by side: a step's node --test and Go programs fan out within its cores, rounded up; one at a time as before", () => {
+	// A stand-in node prints how it was called.
+	const bin = mkdtempSync(join(tmpdir(), "plan-node-"));
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	try {
+		writeFileSync(join(bin, "node"), '#!/bin/sh\necho "node $* GOMAXPROCS=${GOMAXPROCS-unset}"\n', { mode: 0o755 });
+		const steps = [
+			{
+				name: "wide",
+				commands: [
+					"node --test a.test.mjs b.test.mjs",
+					"(cd / && node --test c.test.mjs)",
+					"node tool.mjs --test",
+					"sh -c 'node --test d.test.mjs'",
+				],
+				cores: 2.6,
+			},
+			{ name: "thin", commands: ["node --test e.test.mjs"], cores: 0.25 },
+		];
+		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+		delete env.GOMAXPROCS;
+		const side = spawnSync("bash", ["-c", planScript(steps, { cores: 4 })], { cwd, encoding: "utf8", env });
+		assert.equal(side.status, 0, side.stdout);
+		// A node --test the step's shell runs, in a subshell too; not another node command, nor one a script starts.
+		assert.match(
+			side.stdout,
+			/== changed: wide\nnode --test --test-concurrency=3 a\.test\.mjs b\.test\.mjs GOMAXPROCS=3\nnode --test --test-concurrency=3 c\.test\.mjs GOMAXPROCS=3\nnode tool\.mjs --test GOMAXPROCS=3\nnode --test d\.test\.mjs GOMAXPROCS=3\n== changed: wide passed/,
+		);
+		assert.match(side.stdout, /== changed: thin\nnode --test --test-concurrency=1 e\.test\.mjs GOMAXPROCS=1\n== changed: thin passed/);
+		const one = spawnSync("bash", ["-c", planScript(steps)], { cwd, encoding: "utf8", env });
+		assert.equal(one.status, 0, one.stdout);
+		assert.match(one.stdout, /== changed: wide\nnode --test a\.test\.mjs b\.test\.mjs GOMAXPROCS=unset\n/);
+		assert.doesNotMatch(one.stdout, /--test-concurrency|GOMAXPROCS=[0-9]/);
+	} finally {
+		rmSync(bin, { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("deploy-shell fails when any script, not only the last, has a syntax error", () => {
 	const root = mkdtempSync(join(tmpdir(), "deploy-shell-"));
 	try {
