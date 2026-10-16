@@ -108,7 +108,7 @@ C1 inventories every caller and records one decision for each:
   directly, so it gets its own `folder-v2` branch.
 - **Refuses:** it writes company state as rows with no file behind them.
   Examples:
-  - `qorpera_manage_agent_routine` (20260922151000:201);
+  - `qorpera_manage_agent_routine` (20260922151000:201; dropped in legacy sweep D6, 20260930335000);
   - the review-rule RPCs (20260926130000:190,227) for `scope = 'company'`
     only. Personal rules and an agent's Ask first rule
     (`qorpera_add_agent_review_rule`, :806) stay rows, as contract 5.6 says;
