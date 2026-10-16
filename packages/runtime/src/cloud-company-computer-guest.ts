@@ -371,10 +371,6 @@ export interface CompanyComputerGuestShell {
 }
 
 export interface CompanyComputerGuestCommands {
-	/** Broker-only selected workbench read; no member or canonical paths. */
-	readFile?(input: { path: string; signal: AbortSignal }): Promise<Uint8Array>;
-	/** Broker-only atomic no-overwrite import of already authorized bytes. */
-	writeFile?(input: { path: string; bytes: Uint8Array; sha256: string; signal: AbortSignal }): Promise<void>;
 	/** Existing Step 2 contained command runner. No inherited provider/service env; kill/reap descendants on abort. */
 	run(input: {
 		program: string;
@@ -778,11 +774,6 @@ export class CompanyComputerGuestAutomation {
 		await companyComputerActionCheck(this.#browser?.assertActive(signal) ?? Promise.resolve());
 		signal.throwIfAborted();
 		if (action.kind === "screen") throw new Error("SCREEN_LIFECYCLE_REQUIRES_CLOUD_REGISTRY");
-		if (action.kind === "transfer") {
-			// Company objects carried these bytes and are gone (legacy removal, step C): no import or export.
-			if (action.action === "import") throw new Error("OFFICE_FILE_IMPORT_UNAVAILABLE");
-			throw new Error("OFFICE_FILE_EXPORT_UNAVAILABLE");
-		}
 		const display = companyComputerScreenDisplay(this.#binding.screenOrdinal);
 		if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
 			if (!this.#browser) throw new Error("BROWSER_GRANT_REQUIRED");

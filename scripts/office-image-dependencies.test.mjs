@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -119,6 +119,23 @@ test("the candidate carries the pinned folder program and leaves the folder's un
 	for (const unit of ["helper.service", "helper.socket", "mount@.service"])
 		assert.match(source, new RegExp(`qorpera-office-folder-${unit.replace(".", "\\.")} static`));
 	assert.match(source, /sha256sum \/opt\/qorpera-folder\/qorpera-folder/);
+});
+
+test("the candidate builder takes the office account's id, production's by default", () => {
+	const candidate = builders[0];
+	const run = (args) => spawnSync("bash", [candidate, ...args], { encoding: "utf8", stdio: "pipe", timeout: 30000 });
+	for (const args of [["--office-id"], ["--office-id", "0"], ["--office-id", "020048"], ["--office-id", "2147483648"],
+		["--office-id", "20048x"], ["--office-id", "-1"], ["--stage", "x"], ["--stage=1"]]) {
+		const result = run(args);
+		assert.equal(result.status, 1, args.join(" "));
+		assert.match(result.stderr, /^FAIL: usage: build-office-image-candidate\.sh \[--stage\] \[--office-id <N>\]$/m);
+	}
+	// Good arguments get past the parse to the root check.
+	if (process.getuid() !== 0)
+		for (const args of [[], ["--stage"], ["--office-id", "2147483647", "--stage"]])
+			assert.match(run(args).stderr, /^FAIL: run through run-on-node\.mjs --sudo$/m, args.join(" "));
+	// qofleet01's policy.json: workbench uid and gid 20048. A node prepares an office only as that account.
+	assert.match(readFileSync(candidate, "utf-8"), /^office_id=20048$/m);
 });
 
 test("the candidate builder's apt runs none of this machine's apt hooks", () => {

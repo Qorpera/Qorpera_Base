@@ -10,7 +10,7 @@ From a clean, pushed checkout:
 
 ```sh
 node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
-  bash scripts/build-office-image-candidate.sh [--stage] </dev/null
+  bash scripts/build-office-image-candidate.sh [--stage] [--office-id <N>] </dev/null
 ```
 
 It needs the default `--install` (esbuild and the packaged Playwright come from `npm ci`) and Docker for the folder
@@ -18,6 +18,10 @@ program. It refuses any machine but `qorpera-testvm-node01`, a remote LXD, a bas
 named by [`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json), and less
 than 32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module. Before it creates
 the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM never pushes a test run out of memory.
+
+`--office-id` is the office account's uid and gid, 20048 by default. A node prepares an office only as its policy's
+workbench account, and `qofleet01`'s policy names 20048; the production build reads it there
+([`OFFICE-IMAGE-PRODUCTION.md`](../first-node/OFFICE-IMAGE-PRODUCTION.md)). This test machine has no policy.
 
 ## What it does
 
@@ -36,7 +40,7 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
 4. The test machine builds the company folder's program in its pinned Rust image, and the package carries it with the
    helper and their units (`--folder-program`; the packager takes only the pinned build). The office package installer
    runs from that package ([`INSTALLATION.md`](../lxd-company-computer-guest/INSTALLATION.md)):
-   `--measure-dependencies`, a spec for uid and gid 20045 (the A1 office account), `--check`, then `--apply`. It
+   `--measure-dependencies`, a spec for the office account's uid and gid (`--office-id`), `--check`, then `--apply`. It
    leaves the office service disabled.
 5. The toolbox probe (`packages/runtime/test/fixtures/company-computer-linux-toolbox-probe.ts`) runs as the office
    account in a `systemd-run` unit carrying the installed office unit's 31 confinement and limit settings. It starts a

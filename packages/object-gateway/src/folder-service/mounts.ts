@@ -42,8 +42,12 @@ export interface CoreAccess {
 	 * unsaved (no seat waits on a command). */
 	readonly command?: true;
 	/** A coding session's view (F3 5c): the coding machine it is served to. Every read served under it is recorded
-	 * before its answer leaves and released before each boundary of that machine, with every other view's of it. */
+	 * before its answer leaves and released before each boundary of that machine, with every other view's of it. A test
+	 * machine's view (F3 6b): its placement, which names its instance, served the same way. */
 	readonly machine?: string;
+	/** A test machine's view (F3 6b): its changes are credited to the command windows open when they were made, and its
+	 * last boundary is final (the core closes the view with it). */
+	readonly testMachine?: true;
 	/** Whether the calling machine may present the view. */
 	admits(bridge: BridgeInfo): boolean;
 }
@@ -64,6 +68,9 @@ const CORE_PASS = /^[A-Za-z0-9_-]{43}$/;
 const OFFICE = /^qorpera-office-[0-9a-f]{32}$/;
 /** A coding machine, named after its id (RUNTIME-FOLDER-CODING-MACHINES.md "The design"). */
 const CODING_MACHINE = /^qorpera-coding-machine-[0-9a-f]{32}$/;
+/** An agents' test machine, named after its placement (`lxdCompanyMachineName`, runner-orchestrator
+ * company-machine.ts). An image builder (`qorpera-machine-build-…`) is not one. */
+const TEST_MACHINE = /^qorpera-machine-[0-9a-f]{32}$/;
 /** A company's code host lives in its own project, named after the company (the plan's "The code host"). */
 const CODE_HOST_PROJECT = /^qorpera-codehost-[0-9a-f]{32}$/;
 
@@ -121,21 +128,29 @@ export class MountGrants {
 	readonly #runBoxHosts: readonly MachineRef[];
 	readonly #companyMachineProjects: readonly string[];
 	readonly #codingMachineProjects: readonly string[];
+	readonly #testMachineProjects: readonly string[];
 
 	/** `runBoxHosts`: the machines on this node that may present the core's run box views (the execution host).
 	 * `companyMachineProjects`: the LXD projects of this node's company machines, each of which may present its own
 	 * desktop views. `codingMachineProjects`: those of its coding machines, each of which may present its own coding
-	 * sessions' views (F3 5c). */
+	 * sessions' views (F3 5c). `testMachineProjects`: those of its agents' test machines, each of which may present its
+	 * own view (F3 6b). A test machine project is no office or coding project too: each kind is served to its machines
+	 * by name alone, so one project holding two kinds would leave a name the only fence between them. */
 	constructor(
 		mounts: readonly OperatorMount[],
 		runBoxHosts: readonly MachineRef[] = [],
 		companyMachineProjects: readonly string[] = [],
 		codingMachineProjects: readonly string[] = [],
+		testMachineProjects: readonly string[] = [],
 	) {
+		for (const project of testMachineProjects)
+			if (companyMachineProjects.includes(project) || codingMachineProjects.includes(project))
+				throw new Error(`The test machine project ${project} is listed as an office or coding project too`);
 		this.#mounts = new Map(mounts.map((m) => [m.id, m]));
 		this.#runBoxHosts = runBoxHosts;
 		this.#companyMachineProjects = companyMachineProjects;
 		this.#codingMachineProjects = codingMachineProjects;
+		this.#testMachineProjects = testMachineProjects;
 	}
 
 	/** How a core view the core says is `kind`, on machine allocation `machineId`, is served; none for a kind this node
@@ -144,7 +159,9 @@ export class MountGrants {
 	 * write, publishing after a quiet period; a command's only while its machine holds it, and also when asked, its last
 	 * publish final. A coding session's is served to its own coding machine alone (named after it, in a coding machine
 	 * project), and a code host's to its company's code host alone (any machine in the company's code host project):
-	 * both write, publishing after a quiet period and at each boundary the executor asks for. */
+	 * both write, publishing after a quiet period and at each boundary the executor asks for. A test machine's is served
+	 * to its own instance alone (named after the view's machine, which is the machine's placement, in a test machine
+	 * project), and writes as a coding session's does, its last boundary final. */
 	coreAccess(identity: ViewIdentity): CoreAccess | undefined {
 		if (identity.kind === "run_box")
 			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };
@@ -173,6 +190,18 @@ export class MountGrants {
 				this.#codingMachineProjects.includes(bridge.machine.project) &&
 				bridge.machine.name === name;
 			return { write: true, quietMs: DESKTOP_QUIET_MS, machine: coding, admits };
+		}
+		// The view's machine is the placement's id (6a), and the node names the instance after the placement
+		// (`lxdCompanyMachineName`), so a later placement of the same machine is another instance, and gets its own view.
+		const placement = identity.machineId;
+		if (identity.kind === "test_machine" && placement !== null && isUuid(placement)) {
+			const name = `qorpera-machine-${placement.replaceAll("-", "")}`;
+			const admits = (bridge: BridgeInfo): boolean =>
+				bridge.lookup === "found" &&
+				bridge.machine !== undefined &&
+				this.#testMachineProjects.includes(bridge.machine.project) &&
+				bridge.machine.name === name;
+			return { write: true, quietMs: DESKTOP_QUIET_MS, machine: placement, testMachine: true, admits };
 		}
 		if (identity.kind === "code_host" && isUuid(identity.companyId)) {
 			const project = `qorpera-codehost-${identity.companyId.replaceAll("-", "")}`;
@@ -207,10 +236,12 @@ export class MountGrants {
 	}
 
 	/** A view the core opened (step 2: a run's box, opened by the execution host's service; step 4: a computer desktop
-	 * or a shell command, by its company machine; step 5: a coding session, by the coding executor, or a code host's).
+	 * or a shell command, by its company machine; step 5: a coding session, by the coding executor, or a code host's;
+	 * step 6: a test machine's, by the executor that runs it).
 	 * The core checks the pass when the view is first listed and at every renewal (40 s); between them the service
 	 * serves from memory, never past the lease the core confirmed. Here only the pass's shape, and that the calling
-	 * machine may present a core view at all (a run box host, a company machine, a coding machine or a code host).
+	 * machine may present a core view at all (a run box host, a company machine, a coding machine, a test machine or a
+	 * code host).
 	 * The view's kind and machine are the core's: the first renewal says them, and the service then admits only the
 	 * machines `coreAccess` names (P7 adds the node). */
 	#coreView(hello: Hello, bridge: BridgeInfo): Grant {
@@ -225,8 +256,18 @@ export class MountGrants {
 			machine !== undefined &&
 			this.#codingMachineProjects.includes(machine.project) &&
 			CODING_MACHINE.test(machine.name);
+		const testMachine =
+			machine !== undefined &&
+			this.#testMachineProjects.includes(machine.project) &&
+			TEST_MACHINE.test(machine.name);
 		const codeHost = machine !== undefined && CODE_HOST_PROJECT.test(machine.project);
-		if (!companyMachine && !codingMachine && !codeHost && !this.#runBoxHosts.some((host) => isMachine(bridge, host)))
+		if (
+			!companyMachine &&
+			!codingMachine &&
+			!testMachine &&
+			!codeHost &&
+			!this.#runBoxHosts.some((host) => isMachine(bridge, host))
+		)
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		return {
 			key: `view:${hello.viewId}`,

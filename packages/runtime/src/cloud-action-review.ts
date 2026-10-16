@@ -221,7 +221,6 @@ export function cloudActionEffect(
 		case "send_coworker_message":
 		case "computer_start":
 		case "computer_screen":
-		case "computer_transfer":
 		case "coding_run_command":
 		case "coding_read_command":
 		case "coding_cancel_command":

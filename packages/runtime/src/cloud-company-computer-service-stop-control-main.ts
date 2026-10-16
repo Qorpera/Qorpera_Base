@@ -1,7 +1,10 @@
 import { parseCompanyComputerPreparationCommand } from "@qorpera/contracts";
 import { runCompanyComputerControlEntry } from "./cloud-company-computer-control-entry.ts";
 import { lockedCompanyComputerControlChild } from "./cloud-company-computer-preparation-control-main.ts";
-import { controlCompanyComputerServiceStop } from "./cloud-company-computer-service-stop-control.ts";
+import {
+	COMPANY_COMPUTER_SERVICE_STOP_CONTROL_MS,
+	controlCompanyComputerServiceStop,
+} from "./cloud-company-computer-service-stop-control.ts";
 import { createCompanyComputerServiceStopSystemdManager } from "./cloud-company-computer-service-stop-systemd.ts";
 
 export async function runCompanyComputerServiceStopControlMain(args: readonly string[]): Promise<void> {
@@ -23,7 +26,7 @@ export async function runCompanyComputerServiceStopControlMain(args: readonly st
 		shutdown = () => stop.abort();
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
-	const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(100000)]);
+	const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(COMPANY_COMPUTER_SERVICE_STOP_CONTROL_MS)]);
 	try {
 		if (locked)
 			await controlCompanyComputerServiceStop(

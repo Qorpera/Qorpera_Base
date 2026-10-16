@@ -1,5 +1,5 @@
 [Unit]
-Description=Qorpera folder service control socket (only the coding executor may connect)
+Description=Qorpera folder service control socket (only the executor of the coding and test machines may connect)
 Documentation=file:///opt/qorpera-folder-service/README.md
 
 [Socket]
