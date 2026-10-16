@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import {
 	assertCompanyComputerScope,
 	assertCompanyComputerScreenBinding,
@@ -7,6 +8,9 @@ import {
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
+
+/** A drain's stop, its folder boundary included (F3 4d, "Drains and stops"); it fits a reconciliation's 30 s. */
+export const COMPANY_COMPUTER_DRAIN_STOP_MS = 20_000;
 
 export interface CompanyComputerDrainChallenge {
 	state: "draining";
@@ -31,7 +35,11 @@ export class CompanyComputerDrainSupervisor {
 	readonly #scope: CompanyComputerScope;
 	readonly #gate: CompanyComputerScreenActionGate;
 	readonly #control: CompanyComputerDrainRegistry;
-	readonly #stopResources: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
+	readonly #stopResources: (
+		binding: CompanyComputerScreenBinding,
+		signal: AbortSignal,
+		until: number,
+	) => Promise<void>;
 	readonly #attempts = new Map<string, { challenge: string; result: Promise<void> }>();
 
 	constructor(options: {
@@ -39,8 +47,9 @@ export class CompanyComputerDrainSupervisor {
 		gate: CompanyComputerScreenActionGate;
 		control: CompanyComputerDrainRegistry;
 		/** Must await all shell/service process trees, browser channels and held
-		 * input release, including idle channels. A timeout is never success. */
-		stopResources: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
+		 * input release, including idle channels, then the screen's folder boundary,
+		 * whose answer is final by `until` (performance.now()). A timeout is never success. */
+		stopResources: (binding: CompanyComputerScreenBinding, signal: AbortSignal, until: number) => Promise<void>;
 	}) {
 		assertCompanyComputerScope(options.scope, options.scope);
 		this.#scope = Object.freeze({ ...options.scope });
@@ -76,7 +85,12 @@ export class CompanyComputerDrainSupervisor {
 		}
 		const result = (async () => {
 			await this.#gate.fence(challenge.binding, challenge.epoch, signal);
-			await companyComputerRequest((requestSignal) => this.#stopResources(challenge.binding, requestSignal), signal);
+			const until = performance.now() + COMPANY_COMPUTER_DRAIN_STOP_MS - 1000;
+			await companyComputerRequest(
+				(requestSignal) => this.#stopResources(challenge.binding, requestSignal, until),
+				signal,
+				COMPANY_COMPUTER_DRAIN_STOP_MS,
+			);
 			signal.throwIfAborted();
 			const response = await companyComputerRequest(
 				(requestSignal) =>

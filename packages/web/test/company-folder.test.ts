@@ -44,10 +44,15 @@ function entry(path: string, text?: string, seq = 1): CloudMemberFolderEntry {
 		seq,
 		updatedAt: at,
 		file: text === undefined ? null : file(text),
+		target: null,
 	};
 }
+/** A link to `target`: no bytes, and nothing below it. */
+function link(path: string, target: string, seq = 1): CloudMemberFolderEntry {
+	return { path, kind: "symlink", version: id(100 + seq), seq, updatedAt: at, file: null, target };
+}
 
-/** A folder in memory: folders and files by path, and what the feed and history answer. */
+/** A folder in memory: folders, files and links by path, and what the feed and history answer. */
 function folderFake() {
 	const contents = new Map<string, string>([
 		["notes/plan.md", "# Plan\n\nShip it."],
@@ -56,22 +61,27 @@ function folderFake() {
 		["logo.png", "png"],
 	]);
 	const folders = new Set(["notes", "big"]);
+	/** Each link's target, by path. */
+	const links = new Map<string, string>();
 	let asOfSeq = 4;
 	const changes: CloudMemberFolderChangesPage[] = [];
 	const listed = (dir: string) => {
-		const kids = [...folders].filter(
-			(path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dir,
-		);
-		const files = [...contents.keys()].filter(
-			(path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dir,
-		);
-		return [...kids.map((path) => entry(path)), ...files.map((path) => entry(path, contents.get(path)))];
+		const under = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dir;
+		return [
+			...[...folders].filter(under).map((path) => entry(path)),
+			...[...contents.keys()].filter(under).map((path) => entry(path, contents.get(path))),
+			...[...links].filter(([path]) => under(path)).map(([path, target]) => link(path, target)),
+		];
+	};
+	const linked = (path: string) => {
+		const target = links.get(path);
+		return target === undefined ? null : link(path, target);
 	};
 	const client = {
 		list: vi.fn(async (parent: string | null) => ({ asOfSeq, entries: listed(parent ?? ""), next: null })),
 		read: vi.fn(async (path: string) => ({
 			asOfSeq,
-			entry: contents.has(path) ? entry(path, contents.get(path)) : folders.has(path) ? entry(path) : null,
+			entry: contents.has(path) ? entry(path, contents.get(path)) : folders.has(path) ? entry(path) : linked(path),
 		})),
 		readFile: vi.fn(async (reference: CloudMemberFolderFile) =>
 			new TextEncoder().encode(texts.get(reference.fileSha256) ?? ""),
@@ -91,6 +101,7 @@ function folderFake() {
 						from: null,
 						to: null,
 						file: file("old text, longer"),
+						target: null,
 					},
 					{
 						version: id(200),
@@ -103,6 +114,20 @@ function folderFake() {
 						from: "drafts/plan.md",
 						to: null,
 						file: file("older"),
+						target: null,
+					},
+					{
+						version: id(199),
+						seq: 1,
+						op: "write",
+						kind: "symlink",
+						path,
+						at,
+						by: { kind: "agent", staffAgentId: agent },
+						from: null,
+						to: null,
+						file: null,
+						target: "notes/plan.md",
 					},
 				],
 				next: null,
@@ -116,7 +141,10 @@ function folderFake() {
 						seq: 4,
 						at,
 						by: { kind: "member", userId: other },
-						paths: [{ path: "notes/log.txt", op: "write", kind: "file", version: id(104) }],
+						paths: [
+							{ path: "notes/log.txt", op: "write", kind: "file", version: id(104) },
+							{ path: "notes/latest", op: "write", kind: "symlink", version: id(105) },
+						],
 						more: true,
 					},
 					{
@@ -145,6 +173,7 @@ function folderFake() {
 		client,
 		contents,
 		folders,
+		links,
 		changes,
 		bump(seq: number) {
 			asOfSeq = seq;
@@ -218,6 +247,26 @@ describe("a folder-v2 company's Company File", () => {
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 	});
 
+	it("shows a link among the files with the target it names, and follows it nowhere", async () => {
+		const { fake, host } = await opened();
+		fake.links.set("notes/latest", "../readme.txt");
+		await click(row(host, "notes"));
+		expect(rows(host)).toEqual(["latest", "log.txt", "plan.md"]);
+		// Entering the folder focuses its first row that opens something.
+		expect(document.activeElement).toBe(row(host, "log.txt"));
+		const link = row(host, "latest")!;
+		expect(link.tagName).toBe("DIV");
+		expect(link.closest(".files-row")?.classList.contains("is-link")).toBe(true);
+		const target = link.querySelector<HTMLElement>(".files-target")!;
+		expect(target.textContent).toBe("→ ../readme.txt");
+		expect(target.title).toBe("Link to ../readme.txt");
+		await click(link);
+		expect(fake.client.read).not.toHaveBeenCalled();
+		expect(fake.client.readFile).not.toHaveBeenCalled();
+		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(rows(host)).toEqual(["latest", "log.txt", "plan.md"]);
+	});
+
 	it("filters the open folder by name", async () => {
 		const { host } = await opened();
 		const search = host.querySelector<HTMLInputElement>(".files-search-input")!;
@@ -255,6 +304,9 @@ describe("a folder-v2 company's Company File", () => {
 		expect(lines[0]).toContain("Scout");
 		expect(lines[1]).toContain("Moved here from drafts/plan.md");
 		expect(lines[1]).toContain("You");
+		// A link's version holds its target and no bytes: nothing to view.
+		expect(lines[2]).toContain("Link to notes/plan.md");
+		expect(host.querySelectorAll(".folder-history-row")[2]?.querySelector("button")).toBeNull();
 		await click(host.querySelector(".folder-history-row button"));
 		expect(visibleText(host.querySelector(".files-note"))).toContain("An earlier version");
 		expect(host.querySelector(".files-text")?.textContent).toBe("old text, longer");
@@ -266,7 +318,7 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
 	});
 
-	it("shows the company's recent changes and opens a changed file from them", async () => {
+	it("shows the company's recent changes and opens a changed file from them, never a link", async () => {
 		const { fake, host } = await opened();
 		await click(host.querySelector('.files-tool[aria-label="Recent changes"]'));
 		expect(fake.client.history).toHaveBeenCalledWith(null, 20, expect.any(AbortSignal));
@@ -274,7 +326,8 @@ describe("a folder-v2 company's Company File", () => {
 		expect(sets[0]).toContain("Bo");
 		expect(sets[0]).toContain("and more");
 		expect(sets[1]).toContain("Qorpera");
-		expect(host.querySelector("span.folder-history-path.is-gone")?.textContent).toBe("old.txt");
+		const gone = [...host.querySelectorAll("span.folder-history-path.is-gone")].map((path) => path.textContent);
+		expect(gone).toEqual(["notes/latest", "old.txt"]);
 		await click(host.querySelector("button.folder-history-path"));
 		expect(rows(host)).toEqual(["log.txt", "plan.md"]);
 		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
@@ -307,6 +360,7 @@ describe("a folder-v2 company's Company File", () => {
 							priorVersion: null,
 							updatedAt: at,
 							file: file("Hello again."),
+							target: null,
 						},
 						{
 							unitNo: 2,
@@ -317,6 +371,7 @@ describe("a folder-v2 company's Company File", () => {
 							priorVersion: null,
 							updatedAt: at,
 							file: file("New."),
+							target: null,
 						},
 					],
 				},
@@ -330,14 +385,14 @@ describe("a folder-v2 company's Company File", () => {
 		await vi.advanceTimersByTimeAsync(1100);
 		await settle();
 		expect(fake.client.changes).toHaveBeenCalledTimes(1);
-		expect(fake.client.changes).toHaveBeenCalledWith({ afterSeq: 4, cursor: null }, 500, expect.any(AbortSignal));
+		expect(fake.client.changes).toHaveBeenCalledWith({ afterSeq: 4, cursor: null }, 200, expect.any(AbortSignal));
 		expect(fake.client.list.mock.calls.length).toBe(listsBefore + 1);
 		expect(rows(host)).toContain("new.txt");
 		expect(host.querySelector(".files-text")?.textContent).toBe("Hello again.");
 		// The next sync starts where this one ended.
 		src.hint(6);
 		await vi.advanceTimersByTimeAsync(1100);
-		expect(fake.client.changes).toHaveBeenLastCalledWith({ afterSeq: 5, cursor: null }, 500, expect.any(AbortSignal));
+		expect(fake.client.changes).toHaveBeenLastCalledWith({ afterSeq: 5, cursor: null }, 200, expect.any(AbortSignal));
 	});
 
 	it("reads the folder again after an authority change or a feed that can't be continued", async () => {
@@ -418,6 +473,7 @@ describe("a folder-v2 company's Company File", () => {
 							priorVersion: null,
 							updatedAt: null,
 							file: null,
+							target: null,
 						},
 					],
 				},

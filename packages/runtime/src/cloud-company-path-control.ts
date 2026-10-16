@@ -178,10 +178,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				const maximum =
 					response.ok && method === "qorpera_describe_company_run_context"
 						? 1024 * 1024
-						: // A listing page of 200 entries with 4096-byte paths (each character escaped at worst), and a
-							// change set's outcomes.
+						: // A listing page of 200 entries, each with a 4096-byte path (each character escaped at worst,
+							// twice the bytes) and a link's 4095-byte target (control characters escaped as `\u00XX`,
+							// six times).
 							response.ok && method === "qorpera_folder_list"
-							? 2 * 1024 * 1024
+							? 8 * 1024 * 1024
 							: response.ok &&
 									(method === "qorpera_folder_commit" ||
 										method === "qorpera_folder_memory_commit" ||
