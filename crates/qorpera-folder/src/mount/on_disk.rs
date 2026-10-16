@@ -217,31 +217,17 @@ impl Shared {
 			}
 		}
 		// A write kept for a move that is done or no longer to be made (its file left the disk, or is a cache again) is
-		// closed empty, and the empty file taken out of the folder: a handle of the view's left open keeps its
-		// boundaries from publishing. Until it is out, the cache list keeps it and `qorpera-folder publish` refuses.
+		// given up at the node. It is a draft (`write_in`), so it leaves nothing in the folder.
 		let moves = local.cache.lock().unwrap().moves(None);
 		let left: Vec<String> =
 			held.keys().filter(|path| !moves.iter().any(|(w, n)| in_cache(path, w, n))).cloned().collect();
 		for path in left {
 			let writer = held.remove(&path).expect("held");
-			match self.link.close_write(writer.handle, 0) {
-				Ok(version) => local.cache.lock().unwrap().emptied(&path, &version),
-				Err(f) if again(&f) => {
-					eprintln!("qorpera-folder: the kept write of {path} could not be given up yet (errno {})", f.errno());
-					held.insert(path, writer);
-				}
-				// The node has no such handle open any more.
-				Err(_) => {}
-			}
-		}
-		let empties = local.cache.lock().unwrap().empties();
-		for (path, version) in empties {
-			match self.link.unlink(&path, Some(version)) {
-				Err(f) if again(&f) => {
-					eprintln!("qorpera-folder: {path}, left empty, could not be taken out of the folder yet (errno {})", f.errno())
-				}
-				// Out, or no longer the empty file: gone, or another version in its place.
-				_ => local.cache.lock().unwrap().emptied_out(&path),
+			// Given up otherwise, or the node has no such handle open any more.
+			let Err(f) = self.link.discard_write(writer.handle) else { continue };
+			if again(&f) {
+				eprintln!("qorpera-folder: the kept write of {path} could not be given up yet (errno {})", f.errno());
+				held.insert(path, writer);
 			}
 		}
 	}
@@ -303,16 +289,17 @@ impl Shared {
 		Ok(())
 	}
 
-	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file. A write the node did not take
-	/// is kept in `held` with its handle, as the mount keeps a close it did not take (`again`), and the next move
-	/// writes the file again from the start through it: a handle left open would keep the file from every boundary.
+	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file. The write is a draft: the file
+	/// is in the folder only once its close lands it there, so no boundary publishes it half written, and a write given
+	/// up leaves nothing (`move_caches`). One the node did not take is kept in `held` with its handle, as the mount
+	/// keeps a close it did not take (`again`), and the next move writes the file again from the start through it.
 	fn write_in(&self, held: &mut HashMap<String, Writer>, path: &str, disk: &Path, executable: bool) -> Result<(), i32> {
 		let mut file = fs::File::open(disk).map_err(local::errno)?;
 		let mut writer = match held.remove(path) {
 			Some(writer) => writer,
 			None => {
 				let request =
-					OpenRequest { path: path.to_string(), base: None, create: true, exclusive: false, truncate: true };
+					OpenRequest { path: path.to_string(), base: None, create: true, exclusive: false, truncate: true, draft: true };
 				let opened = self.link.open_write(&request).map_err(|f| f.errno())?;
 				Writer::new(opened.handle, opened.size)
 			}

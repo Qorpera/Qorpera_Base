@@ -14,6 +14,7 @@ import {
 	Kind,
 	ProtocolError,
 	parseChunkPart,
+	parseClose,
 	parseGetChunk,
 	parseOpen,
 	parseRename,
@@ -383,6 +384,55 @@ describe("writes through the mount", () => {
 		expect(await read(third, "pooled.txt")).toBe("pooled");
 		expect((await third.publish()).paths).toEqual([{ path: "pooled.txt", outcome: "saved" }]);
 		expect(core.entries.get("pooled.txt")?.fileSha256).toBe(hashOf("pooled"));
+	});
+
+	it("keeps a draft out of the view until its close lands it; a discarded or abandoned one leaves nothing", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("docs")]);
+		const view = await open();
+		await write(view, "docs/live.md", "live");
+		await view.publish();
+		const draft = (path: string) => view.open({ path, create: true, exclusive: false, truncate: true, draft: true });
+		const data = Buffer.from("drafted");
+		const fill = (handle: number) =>
+			view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		// Written but not closed, neither a new file nor one over a live file is in the view, nor published.
+		const fresh = await draft("docs/new.md");
+		const over = await draft("docs/live.md");
+		await fill(fresh.handle);
+		await fill(over.handle);
+		expect((await view.list("docs", undefined)).entries.map((e) => e.name)).toEqual(["live.md"]);
+		expect(await read(view, "docs/live.md")).toBe("live");
+		expect((await view.publish()).paths).toEqual([]);
+		// The close lands it, as a save there would.
+		await view.close(fresh.handle, data.byteLength);
+		await view.close(over.handle, data.byteLength);
+		expect(await read(view, "docs/new.md")).toBe("drafted");
+		expect(await read(view, "docs/live.md")).toBe("drafted");
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "docs/live.md", outcome: "saved" },
+			{ path: "docs/new.md", outcome: "saved" },
+		]);
+		expect(core.entries.get("docs/live.md")?.fileSha256).toBe(hashOf("drafted"));
+		// One given up, and one whose view's last connection ends, leave nothing.
+		const given = await draft("docs/given.md");
+		await fill(given.handle);
+		await view.discard(given.handle);
+		await refused(view.close(given.handle, data.byteLength), "BAD_REQUEST");
+		const lost = await draft("docs/lost.md");
+		await fill(lost.handle);
+		view.release();
+		const again = await open();
+		await refused(again.close(lost.handle, data.byteLength), "BAD_REQUEST");
+		expect((await again.list("docs", undefined)).entries.map((e) => e.name)).toEqual(["live.md", "new.md"]);
+		expect((await again.publish()).paths).toEqual([]);
+		expect(core.entries.has("docs/given.md") || core.entries.has("docs/lost.md")).toBe(false);
+		// A draft never takes a git lock (that it starts empty is checked where its request is read).
+		const lock = "code/o/n/repo.git/packed-refs.lock";
+		await refused(
+			again.open({ path: lock, create: true, exclusive: true, truncate: true, draft: true }),
+			"BAD_REQUEST",
+		);
 	});
 
 	it("bases a save on the machine's own published save when it names the version that save made", async () => {
@@ -900,6 +950,27 @@ describe("protocol 2", () => {
 		expect(() =>
 			parseOpen(json({ path: "a", create: true, exclusive: false, truncate: true, base: "v1" })),
 		).toThrow();
+		expect(parseOpen(json({ path: "a", create: true, exclusive: false, truncate: true, draft: true }))).toEqual({
+			path: "a",
+			create: true,
+			exclusive: false,
+			truncate: true,
+			draft: true,
+		});
+		expect(parseOpen(json({ path: "a", create: true, exclusive: false, truncate: true, draft: false }))).toEqual({
+			path: "a",
+			create: true,
+			exclusive: false,
+			truncate: true,
+		});
+		expect(() =>
+			parseOpen(json({ path: "a", create: true, exclusive: false, truncate: false, draft: true })),
+		).toThrow();
+		expect(() => parseOpen(json({ path: "a", create: true, exclusive: false, truncate: true, draft: 1 }))).toThrow();
+		expect(parseClose(json({ handle: 1, size: 3 }))).toEqual({ handle: 1, size: 3 });
+		expect(parseClose(json({ handle: 1, size: 0, discard: true }))).toEqual({ handle: 1, size: 0, discard: true });
+		expect(() => parseClose(json({ handle: 1, size: 0, discard: "yes" }))).toThrow();
+		expect(() => parseClose(json({ handle: 1, size: 0, x: 1 }))).toThrow();
 		const sha = hashOf("abc");
 		expect(
 			parseChunkPart(part({ handle: 1, index: 0, sha256: sha, bytes: 3, offset: 0 }, Buffer.from("abc"))),

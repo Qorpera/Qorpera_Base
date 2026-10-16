@@ -362,7 +362,7 @@ impl Shared {
 				return Ok(open);
 			}
 			let base = self.versions.lock().unwrap().base(path);
-			let request = OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate };
+			let request = OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate, draft: false };
 			let opened = match self.link.open_write(&request) {
 				Ok(opened) => opened,
 				Err(f) => {
@@ -410,7 +410,7 @@ impl Shared {
 			let base = self.versions.lock().unwrap().base(&path);
 			let opened = self
 				.link
-				.open_write(&OpenRequest { path, base, create: false, exclusive: false, truncate: false })
+				.open_write(&OpenRequest { path, base, create: false, exclusive: false, truncate: false, draft: false })
 				.map_err(|f| f.errno())?;
 			open.writer = Some(match open.closed.take() {
 				Some((version, w)) if version == opened.version && w.size() == opened.size => w.reopened(opened.handle),
@@ -731,6 +731,7 @@ impl Filesystem for FolderFs {
 			create: true,
 			exclusive: flags & libc::O_EXCL != 0,
 			truncate: flags & libc::O_TRUNC != 0,
+			draft: false,
 		};
 		let opened = match self.s.link.open_write(&request) {
 			Ok(o) => o,

@@ -462,6 +462,8 @@ export interface ViewHandle {
 	chunk(part: ChunkPart): Promise<void>;
 	getChunk(handle: number, index: number): Promise<Buffer>;
 	close(handle: number, size: number): Promise<{ version: string }>;
+	/** Gives a handle up, as its connection's end does: what it wrote is dropped (a draft leaves nothing). */
+	discard(handle: number): Promise<void>;
 	mkdir(path: string): Promise<void>;
 	unlink(path: string, base: string | undefined): Promise<void>;
 	rmdir(path: string, base: string | undefined): Promise<void>;
@@ -698,10 +700,13 @@ export class FolderService {
 							exclusive: request.exclusive,
 							truncate: request.truncate,
 							...(base ? { base } : {}),
+							...(request.draft ? { draft: true } : {}),
 						});
 					});
 				// Creating a git lock file takes the lock (git.ts); a shared git file changes only under its lock.
 				const target = gitLockTarget(request.path);
+				if (target !== null && request.draft)
+					throw new ProtocolError(ErrorCode.badRequest, "A git lock file is taken by creating it, not by a draft");
 				// Another create of the lock while one takes it fails as on a disk, and git tries again.
 				if (target !== null && request.create && view.gitTaking.has(target))
 					throw new ProtocolError(ErrorCode.exists, "Another git command is taking this lock");
@@ -731,6 +736,11 @@ export class FolderService {
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
 				if (path !== undefined) await this.#stage(view, node, path).catch(() => undefined);
 				return { version: node.version };
+			},
+			discard: async (handle) => {
+				if (!view.handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
+				this.#abandon(view, handle);
+				view.handles.delete(handle);
 			},
 			mkdir: async (path) => this.#change(view, (pending) => pending.mkdir(path)),
 			unlink: async (path, base) => {
@@ -802,6 +812,7 @@ export class FolderService {
 			chunk: (...args) => serve(() => handle.chunk(...args)),
 			getChunk: (...args) => serve(() => handle.getChunk(...args)),
 			close: (...args) => serve(() => handle.close(...args)),
+			discard: (...args) => serve(() => handle.discard(...args)),
 			mkdir: (...args) => serve(() => handle.mkdir(...args)),
 			unlink: (...args) => serve(() => handle.unlink(...args)),
 			rmdir: (...args) => serve(() => handle.rmdir(...args)),
@@ -2661,7 +2672,7 @@ export class FolderService {
 			}
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
-		if (pending.empty) view.intents.clear();
+		if (pending.empty && pending.drafts().length === 0) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.
 		if (!pending.unsaved) view.unsavedSince = undefined;
@@ -2714,12 +2725,12 @@ export class FolderService {
 	}
 
 	/** The chunks and staged files (by manifest) the view's pending bytes still need: each pending file's as it is and as
-	 * an abandoned handle would restore it, chunks on their way to the gateway, and the files of a boundary that has not
-	 * settled (asked again, or waiting for the feed). */
+	 * an abandoned handle would restore it, an open draft's, chunks on their way to the gateway, and the files of a
+	 * boundary that has not settled (asked again, or waiting for the feed). */
 	#neededBytes(view: View, pending: PendingView): { chunks: Set<string>; files: Set<string> } {
 		const chunks = new Set<string>();
 		const files = new Set<string>();
-		for (const node of pending.nodes().values()) {
+		for (const node of [...pending.nodes().values(), ...pending.drafts()]) {
 			if (node.kind !== "file") continue;
 			for (const state of [node, pending.fixedState(node)]) {
 				for (const c of state?.content?.chunks ?? []) chunks.add(c.sha256);

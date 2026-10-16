@@ -203,10 +203,10 @@ removal, the version the name showed):
 
 | Type | Request | Reply |
 | --- | --- | --- |
-| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `{handle, size, version}` |
+| `O` | open for writing `{path, base?, create, exclusive, truncate, draft?}` | `{handle, size, version}` |
 | `K` | one part of a chunk: a header `{handle, index, sha256, bytes, offset}` and up to 1 MiB of its bytes | `{}`; after the last part, once the gateway has the chunk |
 | `G` | part of a chunk the open file has `{handle, index, offset, length}` (at most 1 MiB) | its bytes |
-| `C` | close `{handle, size}` | `{version}` once staged |
+| `C` | close `{handle, size, discard?}` | `{version}` once staged; `{}` for a discard |
 | `M`, `U`, `D` | mkdir, unlink, rmdir `{path, base?}` | `{}` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `{}` |
 | `X` | the executable bit `{path, base?, executable}` | `{version}` |

@@ -546,8 +546,14 @@ impl Link {
 
 	/// Closes the open file at `size`; the answer is the version the save made.
 	pub fn close_write(&self, handle: u32, size: u64) -> Result<String, Fail> {
-		let saved: Saved = self.change(kind::CLOSE, &json(&CloseRequest { handle, size }), kind::DONE).and_then(|b| parse(&b))?;
+		let request = CloseRequest { handle, size, discard: false };
+		let saved: Saved = self.change(kind::CLOSE, &json(&request), kind::DONE).and_then(|b| parse(&b))?;
 		Ok(saved.version)
+	}
+
+	/// Gives the open file up: what this handle wrote is dropped, and a draft leaves nothing in the view.
+	pub fn discard_write(&self, handle: u32) -> Result<(), Fail> {
+		self.change(kind::CLOSE, &json(&CloseRequest { handle, size: 0, discard: true }), kind::DONE).map(drop)
 	}
 
 	pub fn mkdir(&self, path: &str) -> Result<(), Fail> {
@@ -1290,7 +1296,8 @@ mod tests {
 		let dir = tempdir();
 		let (addr, stored) = fake_writer_node(&dir);
 		let link = Link::new(addr, view("right"), 3);
-		let open = OpenRequest { path: "a".into(), base: Some("v1".into()), create: true, exclusive: false, truncate: true };
+		let open =
+			OpenRequest { path: "a".into(), base: Some("v1".into()), create: true, exclusive: false, truncate: true, draft: false };
 		assert_eq!(link.open_write(&open).unwrap(), Opened { handle: 7, size: 0, version: "p0".into() });
 		// A chunk of more than two parts.
 		let data: Vec<u8> = (0..2 * PART + 10).map(|i| (i % 251) as u8).collect();

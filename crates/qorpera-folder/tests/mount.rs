@@ -415,7 +415,7 @@ fn a_cache_move_the_node_does_not_take_at_once_goes_on_through_the_same_handle()
 }
 
 #[test]
-fn a_file_a_given_up_cache_move_left_empty_stays_marked_until_the_node_takes_it_out() {
+fn a_cache_move_given_up_leaves_nothing_in_the_folder() {
 	if !wanted() {
 		return;
 	}
@@ -432,18 +432,16 @@ fn a_file_a_given_up_cache_move_left_empty_stays_marked_until_the_node_takes_it_
 	node.busy(1_000_000, 0);
 	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
 	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
-	// x.js leaves the machine's disk before the node takes a chunk: the move gives it up, closing it empty, and the
-	// node answers the unlinks of the empty file BUSY.
-	node.busy_unlinks(1_000_000);
-	std::fs::remove_file(node.dir.join("state/local/cache/code/o/n/worktrees/w/node_modules/x.js")).unwrap();
+	// The write is a draft: until the node takes its close, x.js is not in the folder.
 	let (x, marker) = ("code/o/n/worktrees/w/node_modules/x.js", node.dir.join("state/caches.moving"));
-	let tried = || node.busy_unlinks_left() < 1_000_000 && node.open_handles() == 0;
-	assert!(eventually(Duration::from_secs(20), tried), "handles open at the node: {}", node.open_handles());
-	// Until the node takes the unlink, the empty file is in the folder and `qorpera-folder publish` refuses.
-	assert!(node.content(x).is_some_and(|c| c.is_empty()) && marker.exists());
-	node.busy_unlinks(0);
-	let out = eventually(Duration::from_secs(20), || !node.exists(x) && !marker.exists());
-	assert!(out, "x.js in the folder: {}, handles open: {}, marker: {}", node.exists(x), node.open_handles(), marker.exists());
+	assert!(!node.exists(x) && marker.exists());
+	// x.js leaves the machine's disk before the node takes a chunk: the move gives its write up, and the node answers
+	// the first two discards BUSY. The handle is given up all the same, and nothing is left in the folder.
+	node.busy_discards(2);
+	std::fs::remove_file(node.dir.join("state/local/cache/code/o/n/worktrees/w/node_modules/x.js")).unwrap();
+	let out = eventually(Duration::from_secs(30), || node.open_handles() == 0 && !marker.exists());
+	assert!(out, "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
+	assert!(!node.exists(x) && node.busy_discards_left() == 0);
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

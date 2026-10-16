@@ -76,6 +76,12 @@ interface Gone {
 
 type Node = PendingFile | PendingFolder | Gone;
 
+/** Where a draft's close lands it, and the live version its open saw there. */
+interface Draft {
+	readonly path: string;
+	readonly base?: string;
+}
+
 /** What a path shows in this view: a pending node, or a live entry (inside a moved folder, through its origin). */
 export type Resolved =
 	| {
@@ -195,8 +201,8 @@ export class PendingView {
 	readonly #children = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
-	/** Open handles, and the file each writes. */
-	readonly #handles = new Map<number, { readonly node: PendingFile }>();
+	/** Open handles, and the file each writes; a draft's is in the view only once its close lands it (`openWrite`). */
+	readonly #handles = new Map<number, { readonly node: PendingFile; readonly draft?: Draft }>();
 	/** Files with chunks written, through any handle, since their state was last fixed. */
 	readonly #unfixed = new WeakSet<PendingFile>();
 	/** Each file open for writing as its last close (or its open, a truncate included) fixed it: what an abandoned
@@ -228,6 +234,11 @@ export class PendingView {
 			const fixed = this.#fixed.get(node);
 			if (fixed) this.#fixed.set(node, { ...fixed, staged: undefined });
 		}
+	}
+
+	/** The files open drafts write, which are at no path until their close lands them. */
+	drafts(): PendingFile[] {
+		return [...this.#handles.values()].flatMap((open) => (open.draft ? [open.node] : []));
 	}
 
 	/** No pending change at all. */
@@ -424,32 +435,15 @@ export class PendingView {
 			readonly exclusive: boolean;
 			readonly truncate: boolean;
 			readonly base?: string;
+			readonly draft?: boolean;
 		},
 	): { handle: number; size: number; version: string } {
-		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
-		const r = this.resolve(path);
-		let node: PendingFile;
-		if (!r) {
-			if (!options.create) fail(ErrorCode.notFound, "No such file");
-			this.#newName(path);
-			node = this.#newFile();
-			this.#set(path, node);
-		} else {
-			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
-			if (r.kind === "live") {
-				if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
-				node = this.#fromLive(r.entry, r.source, options.base);
-				this.#set(path, node);
-			} else {
-				if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
-				if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
-				node = r.node;
-			}
-			if (options.truncate && (node.content === undefined || node.content.size > 0)) {
-				node.content = { chunks: [], size: 0 };
-				this.#changed(node);
-				this.#fix(node);
-			}
+		if (options.draft) return this.#openDraft(path, options);
+		const node = this.#writable(path, options);
+		if (options.truncate && (node.content === undefined || node.content.size > 0)) {
+			node.content = { chunks: [], size: 0 };
+			this.#changed(node);
+			this.#fix(node);
 		}
 		if (node.open === 0) this.#fix(node);
 		node.open++;
@@ -463,6 +457,56 @@ export class PendingView {
 	}
 
 	/** The file a handle writes. */
+	/** The file a write at `path` goes to: a new one, the live one's change at the writer's base, or the pending one. */
+	#writable(
+		path: string,
+		options: { readonly create: boolean; readonly exclusive: boolean; readonly base?: string },
+	): PendingFile {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
+		const r = this.resolve(path);
+		if (!r) {
+			if (!options.create) fail(ErrorCode.notFound, "No such file");
+			this.#newName(path);
+			const node = this.#newFile();
+			this.#set(path, node);
+			return node;
+		}
+		if (options.exclusive) fail(ErrorCode.exists, "The file exists");
+		if (r.kind === "live") {
+			if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+			const node = this.#fromLive(r.entry, r.source, options.base);
+			this.#set(path, node);
+			return node;
+		}
+		if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+		if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
+		return r.node;
+	}
+
+	/** A write that is in the view only once it closes (a cache folder's file moving in: `crates/qorpera-folder`,
+	 * `mount/on_disk.rs`). It is checked as an open of the path is, and its close lands its bytes there as a save's
+	 * would, at the live version the open saw; given up (`discard`) or abandoned, it leaves nothing. */
+	#openDraft(
+		path: string,
+		options: { readonly create: boolean; readonly exclusive: boolean; readonly base?: string },
+	): { handle: number; size: number; version: string } {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
+		const r = this.resolve(path);
+		if (!r) {
+			if (!options.create) fail(ErrorCode.notFound, "No such file");
+			this.#newName(path);
+		} else {
+			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
+			if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") fail(ErrorCode.notAFile, "Not a file");
+		}
+		const node = this.#newFile();
+		node.open++;
+		const handle = this.#nextHandle++;
+		const seen = options.base ?? (r?.kind === "live" ? r.entry.version : undefined);
+		this.#handles.set(handle, { node, draft: { path, ...(seen ? { base: seen } : {}) } });
+		return { handle, size: 0, version: node.version };
+	}
+
 	file(handle: number): PendingFile {
 		const open = this.#handles.get(handle);
 		if (!open) fail(ErrorCode.badRequest, "No such handle");
@@ -522,6 +566,7 @@ export class PendingView {
 			if (this.#unfixed.has(node) || before.size !== size || before.chunks.length !== chunks.length)
 				this.#changed(node);
 		}
+		if (open.draft) return this.#land(handle, open.draft, node);
 		this.#handles.delete(handle);
 		node.open--;
 		this.#fix(node);
@@ -529,9 +574,27 @@ export class PendingView {
 		return node;
 	}
 
+	/** A draft's close: its bytes become the file at its path, as a save there would make them. Refused (the path is a
+	 * folder now, say), the handle stays open. */
+	#land(handle: number, draft: Draft, written: PendingFile): PendingFile {
+		const node = this.#writable(draft.path, {
+			create: true,
+			exclusive: false,
+			...(draft.base ? { base: draft.base } : {}),
+		});
+		node.content = written.content;
+		this.#changed(node);
+		this.#handles.delete(handle);
+		this.#unfixed.delete(written);
+		// Writes share the file: a handle still open on it goes back to these bytes if it is abandoned.
+		this.#fix(node);
+		if (node.open === 0) this.#fixed.delete(node);
+		return node;
+	}
+
 	/** A still-open handle is abandoned: what was written and no close fixed is lost (founder
 	 * decision 3). Writes share the file, as in a page cache: while another handle is still open, its close will fix
-	 * them; when this was the last, the file goes back to how the last close (or open) left it. */
+	 * them; when this was the last, the file goes back to how the last close (or open) left it. A draft leaves nothing. */
 	abandon(handle: number): void {
 		const open = this.#handles.get(handle);
 		if (!open) return;

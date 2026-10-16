@@ -78,8 +78,9 @@ Cache folders in a worker's worktree (`node_modules`, `target`, `dist`, `build` 
 live there too, kept out of the company folder. The program reads the worktree's index (`src/index.rs`) each time git
 renames a new one into place; a name the index holds as a folder leaves that worktree's list for good
 (`src/cache.rs`, kept in `local/cache-left.jsonl`), and its files move into the mount as pending files (links stay on
-the disk until the folder has its own). A move that fails is tried again every few seconds and at the worktree's next
-index, after a restart too; until none is left, `<state-dir>/caches.moving` is there and `publish` refuses. Under
+the disk until the folder has its own), each written as a draft: in the folder only once its close lands it. A move
+that fails is tried again every few seconds and at the worktree's next index, after a restart too; until none is left,
+`<state-dir>/caches.moving` is there and `publish` refuses. Under
 `repo.git`, objects aside, every lookup asks the node (no kernel cache), and an exclusive create of a ref's,
 `packed-refs`' or `shallow`'s lock drops what the kernel holds of that file, its log and `packed-refs`, so git reads
 the versions the node's lease answered with (`src/mount/on_disk.rs`). `objects/info/alternates` and changing an
