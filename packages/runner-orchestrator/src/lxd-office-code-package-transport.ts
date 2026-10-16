@@ -62,6 +62,9 @@ export async function stageLxdOfficeCodePackage(
 		["target-manifest.json", material.manifests.target],
 		["base-installation.json", material.manifests.baseInstallationReceipt],
 		["base-mount-template", material.manifests.baseMountTemplate],
+		...(material.manifests.baseFolderMountTemplate
+			? [["base-folder-mount-template", material.manifests.baseFolderMountTemplate] as [string, Buffer]]
+			: []),
 		["bootstrap.cjs", material.tools.bootstrap],
 		["measure.cjs", material.tools.measure],
 		...[...material.artifacts].map(([file, content]): [string, Buffer] => [`artifacts/${file}`, content]),

@@ -47,6 +47,7 @@ test("packages the folder service, the folder program, the units and the install
 				"qorpera-folder-service.cjs",
 				"qorpera-folder",
 				"qorpera-folder-service.socket",
+				"qorpera-folder-control.socket",
 				"qorpera-folder-service.service",
 				"qorpera-folder-bridge.service",
 				"install-folder-service.sh",
@@ -73,6 +74,7 @@ test("packages the folder service, the folder program, the units and the install
 		const pins = {
 			"install-folder-service.sh": {
 				EXPECTED_SOCKET_UNIT_SHA256: "qorpera-folder-service.socket",
+				EXPECTED_CONTROL_SOCKET_UNIT_SHA256: "qorpera-folder-control.socket",
 				EXPECTED_SERVICE_UNIT_SHA256: "qorpera-folder-service.service",
 				EXPECTED_BRIDGE_UNIT_SHA256: "qorpera-folder-bridge.service",
 			},
@@ -102,6 +104,15 @@ test("packages the folder service, the folder program, the units and the install
 		const socket = await readFile(join(destination, "qorpera-folder-service.socket"), "utf8");
 		assert.match(socket, /^SocketMode=0660$/m);
 		assert.match(socket, /^SocketGroup=qorpera-folder-bridge$/m);
+		// The control socket: the coding executor's alone (control.ts checks the same), told apart by its name.
+		const control = await readFile(join(destination, "qorpera-folder-control.socket"), "utf8");
+		assert.match(control, /^ListenStream=\/run\/qorpera-folder-control\/control\.sock$/m);
+		assert.match(control, /^SocketUser=qorpera-coding-executor$/m);
+		assert.match(control, /^SocketMode=0600$/m);
+		assert.match(control, /^DirectoryMode=0755$/m);
+		assert.match(control, /^FileDescriptorName=control$/m);
+		assert.match(control, /^Service=qorpera-folder-service\.service$/m);
+		assert.match(service, /^TimeoutStopSec=60s$/m);
 		// The mount unit ships in the shared-execution package; it must land in PID 1's mount namespace.
 		const mount = await readFile(join(repositoryRoot, "deploy/folder-service/qorpera-folder-mount@.service"), "utf8");
 		for (const option of ["ProtectSystem", "PrivateTmp", "PrivateDevices", "ProtectHome", "ReadWritePaths", "InaccessiblePaths"])

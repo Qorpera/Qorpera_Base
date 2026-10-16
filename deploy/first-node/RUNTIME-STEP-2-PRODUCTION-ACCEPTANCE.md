@@ -223,7 +223,10 @@ four proof hashes with
 authority digest. Only then apply `14000` through the frozen `18100` broker-role
 migration. An unresolved legacy row makes `14000` roll
 back; a label without the matching `13500` attestation does not pass. None of
-these production calls is authorized yet.
+these production calls is authorized yet. Legacy sweep D16 (20260930415000)
+dropped `qorpera_register_legacy_company_computer_teardown`,
+`qorpera_register_governed_company_computer` and their tables; production's
+companies were wiped on 3 October, so this order is history.
 
 ## Existing shared Company Computer and teardown boundary
 

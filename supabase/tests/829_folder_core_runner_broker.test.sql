@@ -1,8 +1,8 @@
 -- @fixture 658_folder_core_run_completion.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C3 (P23 part 2, migration 20260930002210): the runner broker's model of a folder-v2 run. The broker
 -- describes it in the path lane's shape with no substrate anywhere, and the run then completes through the folder lane
--- (the round trip); a proposal review's description refuses. Snapshot-v1 keeps its describe. Runs are 647's hand-built
--- runs, prepared as 658 prepares them.
+-- (the round trip); a proposal review's description refuses, and since legacy sweep D8 so does a job whose company is
+-- not folder-v2. Runs are 647's hand-built runs, prepared as 658 prepares them.
 
 create function pg_temp.describe(b jsonb) returns jsonb language sql as $$
 	select public.qorpera_runner_broker_describe((b ->> 'runnerId')::uuid, repeat('f', 64), (b ->> 'jobId')::uuid, repeat('a', 64))
@@ -43,39 +43,33 @@ begin
 		raise exception '1: the described run completes unchanged: %', r; end if;
 end $$;
 
--- 2. A proposal review's description refuses on folder-v2.
+-- 2. What the description refuses. Since legacy sweep D8 (20260930410000) the broker has no snapshot-v1 describe: a
+-- job whose company has no folder-v2 Company File (here the run's own, its core set back for the call) refuses in the
+-- folder describe. A proposal review's description refuses on folder-v2.
 do $$
 declare h jsonb := pg_temp.human(); b jsonb := h -> 'binding';
 begin
 	set local session_replication_role = replica;
+	update public.qorpera_company_files as file set core = 'snapshot-v1', state = 'provisioning'
+	from public.qorpera_runner_jobs as job where job.id = (b ->> 'jobId')::uuid and file.environment_id = job.environment_id;
+	set local session_replication_role = origin;
+	perform pg_temp.refuses(format('select pg_temp.describe(%L)', b), '55000', 'runner job authority is inconsistent');
+	set local session_replication_role = replica;
+	update public.qorpera_company_files as file set core = 'folder-v2', state = 'ready' from public.qorpera_runner_jobs as job
+	where job.id = (b ->> 'jobId')::uuid and file.environment_id = job.environment_id;
 	update public.qorpera_execution_runs set source_kind = 'proposal_review', input_ids = '{}' where id = (b ->> 'runId')::uuid;
 	set local session_replication_role = origin;
 	perform pg_temp.refuses(format('select pg_temp.describe(%L)', b), '0A000', 'This Company File path does not serve folder-v2 companies');
 end $$;
 
--- 3. Snapshot-v1 keeps its describe: the same call for a snapshot-v1 job takes the legacy body (it fails there for its own
--- reasons: 647's snapshot-v1 job has no substrate rows), never the folder description.
-do $$
-declare s jsonb := current_setting('qorpera_test.snapshot_binding')::jsonb;
-begin
-	begin
-		perform pg_temp.describe(s);
-		raise exception '3: a snapshot-v1 job without its substrate cannot be described' using errcode = 'QTF01';
-	exception when others then
-		if sqlstate = 'QTF01' or sqlerrm = 'This Company File path does not serve folder-v2 companies'
-			or sqlerrm = 'runner job assignment is unavailable' then
-			raise exception '3: the snapshot-v1 describe took the folder lane: % %', sqlstate, sqlerrm; end if;
-	end;
-end $$;
-
--- 4. The folder describe is postgres-only.
+-- 3. The folder describe is postgres-only.
 do $$
 begin
 	if has_function_privilege('public', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute') then
-		raise exception '4: qorpera_folder_runner_broker_describe must be postgres-only'; end if;
+		raise exception '3: qorpera_folder_runner_broker_describe must be postgres-only'; end if;
 end $$;
 
 rollback;
