@@ -21,6 +21,7 @@ import {
 import {
 	type CloudNativeActionReview,
 	type CloudNativeFencedResult,
+	type CloudNativeFolderReports,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
@@ -35,6 +36,8 @@ import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
 	captures?: CloudNativeCaptureImages;
+	/** The run's desktop folder reports (F3 4f-2b): its tool results show them. */
+	folderReports?: CloudNativeFolderReports;
 	/** Revalidate the context's path/audience read set, not only run admission. `timeoutMs` is the caller's
 	 * budget for the read, all the way to the transport. */
 	assertContext: (signal: AbortSignal, timeoutMs?: number) => Promise<void>;
@@ -192,6 +195,7 @@ export async function runCloudNativeRunToolSession(options: {
 			identity: run.identity,
 			tools: adapters.tools,
 			captures: adapters.captures,
+			...(adapters.folderReports ? { folderReports: adapters.folderReports } : {}),
 			assertActive,
 			signal: run.signal,
 			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),

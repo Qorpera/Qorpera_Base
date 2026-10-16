@@ -191,6 +191,8 @@ export interface CompanyComputerLinuxGuestOptions {
 const SHELL_REPORT_ATTEMPTS = 10;
 /** The most commands of each kind (open, ended) one report names for a screen. */
 const SHELL_REPORT_ITEMS = 64;
+/** How long a run's folder report waits for its read of the core: a tool result waits for its report. */
+const FOLDER_REPORT_WAIT_MS = 800;
 
 /** One screen's shell in a report: whole when its lists name every command it has, open and ended. */
 export interface CompanyComputerShellReportScreen {
@@ -895,6 +897,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		// So are the boxes its hook captures sealed (E3c-3), each kept for its perform answer only.
 		const captures = new CompanyComputerHookCaptureBoxes();
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
+		// The run's folder report (F3 4f-2b) is kept while the run lives, not the session: a drain ends the session
+		// before its own report can be read, and the next session of the same run reads it.
+		const folders = this.#options.folders;
+		folders?.follow(input.run.identity.runId, input.run.signal);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
 			signal.throwIfAborted();
@@ -1158,6 +1164,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			ended: () => ended,
 			screenshot: (receiptId) => screenshots.takeInline?.(receiptId),
 			capture: (receiptId) => captures.take(receiptId),
+			...(folders
+				? {
+						folderReport: (shown: string, asked: AbortSignal) =>
+							folders.report(input.run.identity.runId, shown, asked, performance.now() + FOLDER_REPORT_WAIT_MS),
+					}
+				: {}),
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,

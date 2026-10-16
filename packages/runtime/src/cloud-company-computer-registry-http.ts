@@ -40,6 +40,8 @@ const methods = [
 	// F3 4d: a desktop's folder view (migration 20260928259230), opened for whoever holds its screen.
 	"qorpera_folder_view_open",
 	"qorpera_folder_view_close",
+	// F3 4f-2b: a desktop view's commits for its report (migration 20260930495000).
+	"qorpera_folder_view_commits",
 	// E3c-3: where a vault_capture's box goes, read by the office itself (migration 20260930344000); it writes nothing.
 	"qorpera_native_office_hook_capture",
 	// F3 4d-4e: a run's take-in of a command's view reads, before its output reaches that run (migration 20260930491000).
@@ -127,6 +129,11 @@ export function companyComputerRegistryRefusal(error: unknown): { readonly reaso
  * connection, rollback, resources, operator intervention, lock wait, and a
  * read-only transaction (seen during a database failover). */
 const transientSqlState = /^(08|40|53|57)|^(55P03|25006)$/;
+
+/** The largest answer the registry transport reads, in bytes. A page of a view's commits lists every unit of each
+ * commit in it, and one commit holds up to 1000. */
+const answerBytes = (method: CompanyComputerRegistryMethod): number =>
+	method === "qorpera_folder_view_commits" ? 8 * 1024 * 1024 : 64 * 1024;
 
 /** How long a desktop, or its browser, outlasts a registry that does not answer. */
 export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
@@ -228,7 +235,7 @@ export class HttpCloudCompanyComputerRegistry {
 						}
 						throw Object.assign(new Error("denied"), { status: response.status, sqlState, reason });
 					}
-					const bytes = await readBoundedCloudResponse(response, 64 * 1024, requestSignal);
+					const bytes = await readBoundedCloudResponse(response, answerBytes(method), requestSignal);
 					requestSignal.throwIfAborted();
 					// A complete body that is not an object is still the registry's answer.
 					let value: unknown;

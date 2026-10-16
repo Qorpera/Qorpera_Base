@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, open, realpath } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import type { CompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { isUuid } from "@qorpera/contracts";
+import type { CompanyComputerCommandNotSaved } from "./cloud-company-computer-command-folder.ts";
 import { isCompanyComputerFolderMount, parseCompanyComputerMountinfo } from "./cloud-company-computer-folder-helper.ts";
 import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
 	COMPANY_COMPUTER_FOLDER_ROOT,
+	type CompanyComputerFolderAnswer,
 	type CompanyComputerFolderRequest,
 	type CompanyComputerFolderView,
 	companyComputerFolderAnswerLogged,
@@ -29,6 +32,21 @@ import {
 export type CompanyComputerScreenHolder =
 	| { readonly kind: "run"; readonly runId: string }
 	| { readonly kind: "member"; readonly userId: string };
+
+/**
+ * What the company folder did with a run's desktop changes since the report the run was last shown
+ * (RUNTIME-FOLDER-COMPANY-MACHINES.md, "How 4f-2 carries the report"). An erased path is "".
+ */
+export interface CompanyComputerDesktopFolderReport {
+	/** How many paths it saved. */
+	readonly saved: number;
+	/** The paths it did not take, and why. */
+	readonly notSaved?: readonly CompanyComputerCommandNotSaved[];
+	/** Why it did not take a desktop's last changes at all. */
+	readonly refused?: string;
+	/** The rest comes in a later report. */
+	readonly more?: true;
+}
 
 /** A desktop's mount, as its desktop binds it (`CompanyComputerLinuxDesktopLauncher`). */
 export interface CompanyComputerDesktopCompany {
@@ -55,6 +73,23 @@ const RELEASE_LATER_MS = 60000;
 const BOUNDARY_RETRY_MS = 1000;
 /** The least time a drain's boundary is still asked with: the helper takes at least a second. */
 const DRAIN_LAST_ASK_MS = 2000;
+/** A run's report ("How 4f-2 carries the report") reads the core at most once a second, a page of this many units a
+ * view, and only while fewer than `REPORT_KEPT` of its items wait to be shown. */
+const REPORT_READ_MS = 1000;
+const REPORT_READ_UNITS = 64;
+const REPORT_KEPT = 64;
+/** What one report shows of the paths not saved, in bytes as a tool result's JSON writes them. */
+const REPORT_NOT_SAVED = 20;
+const REPORT_NOT_SAVED_BYTES = 2048;
+
+/** Why a drain's boundary did not take the desktop's last changes, for the report of the run that held it. */
+const REPORT_PAUSED = "the company is paused, so the company folder did not take this desktop's last changes";
+const REPORT_UNREADABLE =
+	"the company folder refused this desktop's last changes: they used a read that is no longer readable";
+const REPORT_UNPROVEN =
+	"the company folder refused this desktop's last changes: the desktop's reads could not be shown complete";
+const REPORT_CLOSED = "the company folder had closed this desktop's view, so it did not take its last changes";
+const REPORT_REFUSED = "the company folder refused this desktop's last changes";
 
 /** Why a capture is held back (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Before output reaches a model"). */
 const CAPTURE_UNANSWERED = "the company folder did not answer before the screenshot's deadline; take it again";
@@ -229,6 +264,29 @@ interface Folder {
 	later?: ReturnType<typeof setTimeout>;
 }
 
+/** One thing a run's report says, numbered in the order it was kept. */
+type ReportItem = { readonly n: number } & (
+	| { readonly saved: number }
+	| { readonly notSaved: CompanyComputerCommandNotSaved }
+	| { readonly refused: string }
+);
+
+/** A run's report until the run is shown it, kept while one of the run's sessions lives. */
+interface RunReport {
+	/** Names the record in its marks: a mark of the run's earlier record drops nothing. */
+	readonly id: string;
+	/** The desktop views opened for the run. Each is read after its last commit read (`after`), until it is closed and
+	 * read to its end. */
+	views: { readonly view: CompanyComputerFolderView; after?: string; more: boolean; done: boolean }[];
+	items: ReportItem[];
+	next: number;
+	readonly signals: Set<AbortSignal>;
+	reading?: Promise<void>;
+	readAt: number;
+	/** Ends the record's reads when its last session ends. */
+	readonly stop: AbortController;
+}
+
 /**
  * Each desktop's mount of the company folder (F3 4d, "A desktop's mount"): made through the folder helper before the
  * desktop starts, moved to the newer view at each change of holder (`switch`), and unmounted when the desktop ends.
@@ -240,6 +298,7 @@ export class CompanyComputerDesktopFolders {
 	readonly #socket?: string;
 	readonly #log: (line: string) => void;
 	readonly #folders = new Map<string, Folder>();
+	readonly #runs = new Map<string, RunReport>();
 
 	constructor(options: {
 		registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
@@ -329,8 +388,10 @@ export class CompanyComputerDesktopFolders {
 			if (
 				listed?.answer !== "list" ||
 				(mount?.viewId === folder.view.viewId && (mount.program === "running" || mount.program === "restarting"))
-			)
+			) {
+				this.#opened(holder, folder.view);
 				return { name: folder.name, epoch: folder.epoch };
+			}
 			if (!(await this.#unmount(folder))) return UNAVAILABLE;
 		}
 		const view = await openCompanyComputerDesktopFolderView(
@@ -350,6 +411,7 @@ export class CompanyComputerDesktopFolders {
 					// A mount this record did not know of (`held` below) is new to every desktop.
 					if (!folder.mounted) folder.epoch++;
 					Object.assign(folder, { mounted: true, view, holder });
+					this.#opened(holder, view);
 					return { name: folder.name, epoch: folder.epoch };
 				}
 				if (answer === "closed" && !(await this.#unmount(folder))) break;
@@ -362,6 +424,7 @@ export class CompanyComputerDesktopFolders {
 			if (answer === "mounted") {
 				folder.epoch++;
 				Object.assign(folder, { mounted: true, view, holder });
+				this.#opened(holder, view);
 				return { name: folder.name, epoch: folder.epoch };
 			}
 			if (answer !== "held") break;
@@ -456,6 +519,7 @@ export class CompanyComputerDesktopFolders {
 	async #drain(folder: Folder, signal: AbortSignal, until: number): Promise<void> {
 		// No desktop runs on the mount now: a mount rule 4's way out began on may go at the screen's next hold.
 		if (folder.refused) folder.refused.stopped = true;
+		const holder = folder.holder;
 		let answered = false;
 		while (folder.mounted) {
 			signal.throwIfAborted();
@@ -492,6 +556,7 @@ export class CompanyComputerDesktopFolders {
 				this.#log(
 					`office-folder: drain ${folder.name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
 				);
+				this.#drained(holder, answer);
 				if (answer.answer === "unknown" || answer.unmounted) {
 					folder.mounted = false;
 					break;
@@ -608,6 +673,247 @@ export class CompanyComputerDesktopFolders {
 		}
 		return all;
 	}
+
+	/**
+	 * Keep the run's report ("How 4f-2 carries the report") while `signal`, one of the run's sessions, lives: the commits
+	 * of the views opened for the run, and its drains' refusals. The report goes when the last of its sessions ends.
+	 */
+	follow(runId: string, signal: AbortSignal): void {
+		if (signal.aborted) return;
+		let record = this.#runs.get(runId);
+		if (!record) {
+			record = {
+				id: randomUUID(),
+				views: [],
+				items: [],
+				next: 0,
+				signals: new Set(),
+				readAt: Number.NEGATIVE_INFINITY,
+				stop: new AbortController(),
+			};
+			this.#runs.set(runId, record);
+		}
+		if (record.signals.has(signal)) return;
+		const current = record;
+		current.signals.add(signal);
+		signal.addEventListener(
+			"abort",
+			() => {
+				current.signals.delete(signal);
+				if (current.signals.size > 0) return;
+				current.stop.abort();
+				if (this.#runs.get(runId) === current) this.#runs.delete(runId);
+			},
+			{ once: true },
+		);
+	}
+
+	/**
+	 * The run's report since the one it was last shown, or nothing when nothing is new. `shown` is that report's mark,
+	 * or "": only what it names is dropped, so a report whose tool result was never built comes again. The views'
+	 * commits since the last read are read from the core first, at most once a second; the caller waits for that read
+	 * until `until` (performance.now()), and it goes on after that for the next ask. A report shows at most
+	 * `REPORT_NOT_SAVED` paths not saved, in `REPORT_NOT_SAVED_BYTES` (one at least), and one refusal; `more` says the
+	 * rest follows.
+	 */
+	async report(
+		runId: string,
+		shown: string,
+		signal: AbortSignal,
+		until: number,
+	): Promise<{ mark: string; report: CompanyComputerDesktopFolderReport } | undefined> {
+		const record = this.#runs.get(runId);
+		if (!record) return undefined;
+		const mark = /^([0-9a-f-]{36}):([0-9]{1,15})$/.exec(shown);
+		if (mark?.[1] === record.id) {
+			const last = Number(mark[2]);
+			record.items = record.items.filter((item) => item.n > last);
+		}
+		if (
+			!record.reading &&
+			record.views.some((entry) => !entry.done) &&
+			record.items.length < REPORT_KEPT &&
+			performance.now() - record.readAt >= REPORT_READ_MS
+		)
+			record.reading = this.#read(record)
+				.catch(() => undefined)
+				.finally(() => {
+					record.reading = undefined;
+					record.readAt = performance.now();
+				});
+		if (record.reading) await within(record.reading, signal, until, undefined);
+		return reportOf(record);
+	}
+
+	/** A page of each view's commits since the last one read, into the run's report. A refusal, or an answer that is
+	 * not a page, ends a view's reads; a call with no answer is made again at the next read. */
+	async #read(record: RunReport): Promise<void> {
+		for (const entry of record.views) {
+			if (entry.done || record.stop.signal.aborted) continue;
+			let answer: unknown;
+			try {
+				answer = await this.#registry.call(
+					"qorpera_folder_view_commits",
+					{
+						p_view_id: entry.view.viewId,
+						p_pass: entry.view.pass,
+						p_after_commit_id: entry.after ?? null,
+						p_limit: REPORT_READ_UNITS,
+					},
+					AbortSignal.any([record.stop.signal, AbortSignal.timeout(LIST_WAIT_MS)]),
+				);
+			} catch (error) {
+				if (companyComputerRegistryRefusal(error)) Object.assign(entry, { more: false, done: true });
+				continue;
+			}
+			const page = viewCommits(answer, entry.view.viewId);
+			if (!page) {
+				Object.assign(entry, { more: false, done: true });
+				continue;
+			}
+			for (const commit of page.commits) {
+				const saved = commit.units.filter((unit) => unit.outcome === "saved").length;
+				if (saved > 0) record.items.push({ n: ++record.next, saved });
+				for (const unit of commit.units)
+					if (unit.outcome !== "saved") record.items.push({ n: ++record.next, notSaved: reportNotSaved(unit) });
+				entry.after = commit.commitId;
+			}
+			entry.more = page.more;
+			if (page.closed && !page.more) entry.done = true;
+		}
+	}
+
+	/** A view the run now holds: its commits go into the run's report. A view it held before keeps its place, read or
+	 * done, so no commit is reported twice. */
+	#opened(holder: CompanyComputerScreenHolder, view: CompanyComputerFolderView): void {
+		const record = holder.kind === "run" ? this.#runs.get(holder.runId) : undefined;
+		if (record && !record.views.some((entry) => entry.view.viewId === view.viewId))
+			record.views.push({ view, more: false, done: false });
+	}
+
+	/** A drain's final answer, for the report of the run that held the desktop: why its last changes were not taken,
+	 * and the paths of a change set that made no commit (a commit's paths come with its units). */
+	#drained(holder: CompanyComputerScreenHolder | undefined, answer: CompanyComputerFolderAnswer<"unmount">): void {
+		const record = holder?.kind === "run" ? this.#runs.get(holder.runId) : undefined;
+		if (!record) return;
+		if (answer.answer === "closed") record.items.push({ n: ++record.next, refused: REPORT_CLOSED });
+		if (answer.answer !== "refused") return;
+		const { report } = answer;
+		if (report.refused !== undefined) record.items.push({ n: ++record.next, refused: reportRefusal(report.refused) });
+		if (report.commitId === null)
+			for (const entry of report.paths)
+				if (entry.outcome !== "saved") record.items.push({ n: ++record.next, notSaved: reportNotSaved(entry) });
+	}
+}
+
+/** The report from a run's items not yet shown, with the mark of the last item it holds. */
+function reportOf(record: RunReport): { mark: string; report: CompanyComputerDesktopFolderReport } | undefined {
+	let saved = 0;
+	const shown: CompanyComputerCommandNotSaved[] = [];
+	let bytes = 0;
+	let refused: string | undefined;
+	let last: number | undefined;
+	let index = 0;
+	for (; index < record.items.length; index++) {
+		const item = record.items[index];
+		if ("refused" in item) {
+			if (refused !== undefined) break;
+			refused = item.refused;
+		} else if ("notSaved" in item) {
+			const size = resultBytes(JSON.stringify(item.notSaved)) + 1;
+			if (shown.length === REPORT_NOT_SAVED || (shown.length > 0 && bytes + size > REPORT_NOT_SAVED_BYTES)) break;
+			shown.push(item.notSaved);
+			bytes += size;
+		} else saved += item.saved;
+		last = item.n;
+	}
+	if (last === undefined) return undefined;
+	const more = index < record.items.length || record.views.some((entry) => entry.more);
+	return {
+		mark: `${record.id}:${last}`,
+		report: {
+			saved,
+			...(shown.length > 0 ? { notSaved: shown } : {}),
+			...(refused !== undefined ? { refused } : {}),
+			...(more ? { more: true as const } : {}),
+		},
+	};
+}
+
+/** A page of a view's commits, with each unit's path and outcome, or nothing for an answer that is not one. */
+function viewCommits(
+	answer: unknown,
+	viewId: string,
+):
+	| {
+			commits: { commitId: string; units: { path: string; outcome: string; reason?: string }[] }[];
+			closed: boolean;
+			more: boolean;
+	  }
+	| undefined {
+	if (typeof answer !== "object" || answer === null || Array.isArray(answer)) return undefined;
+	const page = answer as Record<string, unknown>;
+	if (
+		page.schema !== "qorpera.folder-view-commits/v1" ||
+		page.viewId !== viewId ||
+		(page.state !== "open" && page.state !== "closed") ||
+		typeof page.more !== "boolean" ||
+		!Array.isArray(page.commits)
+	)
+		return undefined;
+	const commits: { commitId: string; units: { path: string; outcome: string; reason?: string }[] }[] = [];
+	for (const commit of page.commits as unknown[]) {
+		if (typeof commit !== "object" || commit === null) return undefined;
+		const { commitId, units } = commit as Record<string, unknown>;
+		if (!isUuid(commitId) || !Array.isArray(units)) return undefined;
+		const read: { path: string; outcome: string; reason?: string }[] = [];
+		for (const unit of units as unknown[]) {
+			if (typeof unit !== "object" || unit === null) return undefined;
+			const { path = "", outcome, reason } = unit as Record<string, unknown>;
+			if (
+				typeof path !== "string" ||
+				typeof outcome !== "string" ||
+				(reason !== undefined && typeof reason !== "string")
+			)
+				return undefined;
+			read.push({ path, outcome, ...(reason ? { reason } : {}) });
+		}
+		commits.push({ commitId, units: read });
+	}
+	return { commits, closed: page.state === "closed", more: page.more };
+}
+
+/** A path the company folder did not take, as a report shows it (a command's tool result shows its own so). */
+function reportNotSaved(entry: {
+	readonly path: string;
+	readonly outcome: string;
+	readonly reason?: string;
+}): CompanyComputerCommandNotSaved {
+	return {
+		path: head(entry.path, 300),
+		outcome: head(entry.outcome, 64),
+		...(entry.reason ? { reason: head(entry.reason, 200) } : {}),
+	};
+}
+
+/** Why a drain's boundary refused the desktop's last changes whole, in the report's words. */
+function reportRefusal(reason: string): string {
+	if (reason === "stopped") return REPORT_PAUSED;
+	if (reason === "unreadable") return REPORT_UNREADABLE;
+	if (reason === "unproven") return REPORT_UNPROVEN;
+	return REPORT_REFUSED;
+}
+
+/** A text's bytes in a tool result, whose JSON writes `<`, `>`, `&`, U+2028 and U+2029 as escapes (counted at six
+ * bytes, at most what they take). */
+function resultBytes(text: string): number {
+	return Buffer.byteLength(text) + 5 * (text.match(/[<>&\u2028\u2029]/g)?.length ?? 0);
+}
+
+/** At most `length` characters, never half of one. */
+function head(text: string, length: number): string {
+	const characters = Array.from(text);
+	return characters.length > length ? `${characters.slice(0, length).join("")}…` : text;
 }
 
 function sameHolder(a: CompanyComputerScreenHolder | undefined, b: CompanyComputerScreenHolder): boolean {

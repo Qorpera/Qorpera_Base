@@ -39,6 +39,8 @@ export type CloudCompanyComputerSessionFactory = (
 ) => Promise<
 	| (ReturnType<typeof createCloudCompanyComputerSession> & {
 			captures?: import("./cloud-native-capture-images.ts").CloudNativeCaptureImages;
+			/** The run's desktop folder reports (F3 4f-2b), for its tool results. */
+			folderReports?: import("./cloud-native-tool-boundary.ts").CloudNativeFolderReports;
 	  })
 	| undefined
 >;

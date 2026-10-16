@@ -801,6 +801,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						const work = cloudWorkerToolFilter(wake);
 						return {
 							captures: computer?.captures,
+							folderReports: computer?.folderReports,
 							tools: [
 								...(computer?.tools ?? []),
 								// A run's file tools act through the folder core with its own authority (P19), and so do the
