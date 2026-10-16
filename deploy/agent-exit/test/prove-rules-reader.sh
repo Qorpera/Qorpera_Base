@@ -212,7 +212,9 @@ pass "status.json (0644): not read, problem $problem, the client map read (1 ent
 
 # --- The login in no log -------------------------------------------------------------------------------------------
 journalctl --sync 2>/dev/null || true
-! journalctl --no-pager -o cat 2>/dev/null | grep -qF -- "$password" || fail "the login is in the journal"
+# The journal is read whole first: piped into grep -q, journalctl dies of SIGPIPE after a match, and `!` would pass.
+journal=$(journalctl --no-pager -o cat 2>/dev/null || true)
+[[ $journal != *"$password"* ]] || fail "the login is in the journal"
 ! grep -rqF -- "$password" /var/log /run/qorpera-agent-exit-rules /var/lib/private 2>/dev/null ||
 	fail "the login is in a file it does not belong in"
 lines=$(journalctl -u "$UNIT" --no-pager -o cat | grep -c '^Agent exit rules' || true)

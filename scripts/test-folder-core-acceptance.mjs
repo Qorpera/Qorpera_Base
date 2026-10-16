@@ -816,7 +816,6 @@ async function serviceWrites(report, context) {
 		store,
 		authority,
 		controlToken: token(),
-		verifierToken: token(),
 		replication,
 		folderServiceObjects: { token: serviceToken, authority },
 	});

@@ -490,14 +490,16 @@ export function describeCloudAction(
 						? action.hook
 							? "Type a hook's signing secret into a web page"
 							: "Type a company account's sign-in into a web page"
-						: verb === "press"
-							? "Press a key in the browser"
-							: "Click in the browser";
+						: verb === "vault_capture"
+							? "Read a hook's signing secret off a web page into the vault"
+							: verb === "press"
+								? "Press a key in the browser"
+								: "Click in the browser";
 		target = text(action.url) || (action.name ? `${text(action.role)} "${text(action.name, 200)}"` : null);
 		quote("text", action.text);
 		add("key", action.key);
-		// The vault types the value; the card names the account (or the signed hook) and which of its values, never
-		// the value.
+		// The vault types the value (or reads a Stripe hook's into itself); the card names the account (or the signed
+		// hook) and which of its values, never the value.
 		add("account", action.account);
 		add("hook", action.hook);
 		add("field", action.field);
@@ -543,11 +545,16 @@ export function describeCloudAction(
 						: "Remove a hook";
 		target = text(args.name) || text(args.localPart) || text(args.hook) || null;
 		add("purpose", args.purpose);
-		// A signed hook (E3b): who signs, and the one site its secret may be typed into.
+		// A signed hook (E3b): who signs, and the one site its secret may be typed into. A Stripe hook's secret is Stripe's
+		// own, read off Stripe's dashboard into the vault (E3c), whatever site the call names.
 		const signed = args.action === "create" && (args.proof === "github" || args.proof === "hmac-sha256");
+		const stripe = args.action === "create" && args.proof === "stripe";
 		if (signed) {
 			add("signed by", args.proof === "github" ? "GitHub" : "The sender, with HMAC-SHA256");
 			add("site", args.site);
+		} else if (stripe) {
+			add("signed by", "Stripe");
+			add("site", "dashboard.stripe.com");
 		}
 		if (args.action === "create")
 			add(
@@ -556,7 +563,9 @@ export function describeCloudAction(
 					? "Anyone may send email to this address; what arrives can wake the company's routines"
 					: signed
 						? "The vault makes the hook's secret, which no one sees, to be typed only on the site; events signed with it can wake the company's routines"
-						: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
+						: stripe
+							? "Stripe makes the hook's secret; the vault reads it off dashboard.stripe.com, and no one sees it. Only events Stripe signs with it can wake the company's routines"
+							: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
 			);
 		if (args.action === "remove")
 			add("effect", "Ends it for good; a mailbox's address is free for any company to take");

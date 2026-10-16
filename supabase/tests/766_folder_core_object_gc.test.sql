@@ -392,11 +392,7 @@ begin
 	-- Each other writer of a company's bytes refuses folder-v2 before it writes.
 	perform pg_temp.raises($q$select public.qorpera_confirm_profile_object_upload('63400000-0000-4000-8000-000000000010', repeat('a', 64), 1,
 		'nas-object-gateway')$q$, '0A000');
-	-- The session-attachment route (a member's chat image) too.
-	perform pg_temp.fx($f$insert into public.qorpera_member_session_attachment_uploads(id, profile_id, session_id, user_id, client_input_id,
-		sha256, bytes, media_type) values ('63400000-0000-4000-8000-0000000007a1', '63400000-0000-4000-8000-000000000010',
-		extensions.gen_random_uuid(), '63400000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), repeat('b', 64), 1, 'image/png')$f$);
-	perform pg_temp.raises($q$select public.qorpera_stage_member_session_attachment('63400000-0000-4000-8000-0000000007a1', false)$q$, '0A000');
+	-- The session-attachment route (a member's chat image) went with legacy sweep D17 (20260930416000).
 end $$;
 
 -- 7. The lock text and the grants ---------------------------------------------------------------------------------------

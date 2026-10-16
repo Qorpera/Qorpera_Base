@@ -113,8 +113,9 @@ A boundary publishes the view's pending changes as one change set.
 **When.** In step 3: when the machine asks (`qorpera-folder publish --view-file <file>`), for a mount configured with a quiet
 period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
 pending published first (below). Steps 4–6 add theirs: command end and output reads, and per-desktop quiet periods.
-A shell command's view (step 4b) publishes only when asked, or before a change that needs what is pending published
-first, and its last boundary is final: one change set with everything pending, or an empty one, which closes the view
+A shell command's view (step 4b) publishes when asked, or before a change that needs what is pending published first,
+and, while its command runs, about two seconds after its last change, as a desktop's (slice 4b-2, amended 14 October
+2026). Its last boundary is final: one change set with everything pending, or an empty one, which closes the view
 (RUNTIME-FOLDER-SERVICE.md "Step 4b").
 
 **What is left out** (§2 "Never published"):

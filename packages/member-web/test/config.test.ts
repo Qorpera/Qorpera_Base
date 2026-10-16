@@ -6,7 +6,6 @@ const config = {
 	schema: "qorpera.member-web-config/v1",
 	supabaseUrl: "https://control.test",
 	publishableKey: "sb_publishable_fixture1",
-	objectGatewayUrl: "https://objects.test",
 	officeViewerOrigin: "wss://views.test",
 };
 const jwt = (role: string, sub?: string) =>
@@ -32,15 +31,15 @@ describe("public web configuration", () => {
 	])("rejects noncanonical service origin %s", (supabaseUrl) => {
 		expect(() => parseMemberWebConfig({ ...config, supabaseUrl })).toThrow();
 	});
-	it("rejects extra credentials and plaintext remote viewing", () => {
+	it("rejects extra credentials, a file gateway and plaintext remote viewing", () => {
 		expect(() => parseMemberWebConfig({ ...config, serviceToken: "secret" })).toThrow();
+		expect(() => parseMemberWebConfig({ ...config, objectGatewayUrl: "https://objects.test" })).toThrow();
 		expect(() => parseMemberWebConfig({ ...config, officeViewerOrigin: "ws://127.0.0.1" })).toThrow();
 	});
 	it("restricts CSP to configured origins with no inline code or framing", () => {
 		const csp = memberWebCsp(parseMemberWebConfig(config));
 		expect(csp).toContain("frame-ancestors 'none'");
-		expect(csp).toContain("wss://control.test");
-		expect(csp).toContain("wss://views.test");
+		expect(csp).toContain("connect-src 'self' https://control.test wss://views.test;");
 		expect(csp).not.toMatch(/unsafe|\*/);
 	});
 	it("loads bounded configuration only from the app origin without following redirects", async () => {

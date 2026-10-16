@@ -1,0 +1,12 @@
+# The office account's door to the folder helper, which mounts the company folder for each desktop and command. The
+# stop control, root, uses it too. The socket is not mounted into any shell, desktop or browser namespace.
+[Unit]
+Description=Qorpera company folder helper (office account only)
+
+[Socket]
+ListenStream=/run/qorpera-folder-helper/helper.sock
+SocketUser=qorpera-office
+SocketGroup=qorpera-office
+SocketMode=0600
+DirectoryMode=0755
+Accept=no

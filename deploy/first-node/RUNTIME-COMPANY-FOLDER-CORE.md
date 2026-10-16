@@ -108,7 +108,7 @@ C1 inventories every caller and records one decision for each:
   directly, so it gets its own `folder-v2` branch.
 - **Refuses:** it writes company state as rows with no file behind them.
   Examples:
-  - `qorpera_manage_agent_routine` (20260922151000:201);
+  - `qorpera_manage_agent_routine` (20260922151000:201; dropped in legacy sweep D6, 20260930335000);
   - the review-rule RPCs (20260926130000:190,227) for `scope = 'company'`
     only. Personal rules and an agent's Ask first rule
     (`qorpera_add_agent_review_rule`, :806) stay rows, as contract 5.6 says;
@@ -139,9 +139,11 @@ All tables are keyed by company environment.
     its own "C"-collation index, which gives ancestors-first order and
     subtree ranges; `key_sha256`, the primary key (as today's key: the sha256
     of the casefolded path, 20260828005000:68,74); the parent's key; `kind`
-    (file or folder); an opaque `version`; the id of the commit that wrote
-    it; and, for files, the file manifest hash, the file hash, the size, the
-    media type and the executable bit.
+    (file, folder or symlink); an opaque `version`; the id of the commit that
+    wrote it; for files, the file manifest hash, the file hash, the size, the
+    media type and the executable bit; and, for links, the `target`: 1 to
+    4,095 bytes of text kept exactly and never resolved (migration
+    20260930380000, RUNTIME-FOLDER-LINKS.md). Nothing is below a link.
   - **The folder key** is `qorpera_folder_key(path)`: NFKC, then case folding
     by Unicode simple case mapping pinned to the built-in `pg_c_utf8`
     collation, then NFKC again. The pin matters: a SQL function's case
@@ -175,8 +177,8 @@ All tables are keyed by company environment.
 - **Path versions** (`qorpera_folder_path_versions`) are immutable history,
   one row per version of a path.
   - Each row has: the operation (write, mkdir, delete, move out, move in,
-    copy), the prior version, the file columns, the commit id and the unit
-    number.
+    copy), the kind, the prior version, the file columns, a link's target
+    (not on a delete), the commit id and the unit number.
   - They are kept for good: every change can be restored (the 2026-09-27
     amendment "every machine works in the company folder", item 6).
   - The one exception is git's objects: the old versions of paths under
@@ -244,12 +246,13 @@ whole or not at all.
 
 | Unit | Checks |
 | --- | --- |
-| write | the path is absent, or at its expected version |
+| write | the path is absent, or at its expected version (a file or a link, which the write makes a file) |
 | mkdir | the path is absent |
-| new folder with contents | the folder is absent; its contents are written with it |
+| symlink | the path is absent, or a file or link at its expected version; the target is 1 to 4,095 bytes, kept exactly. Authority is write; the review class is plain. It never stands where the company keeps or reads a structured file or folder (`qorpera_folder_link_problems`) |
+| new folder with contents | the folder is absent; its contents (files, folders and links) are written with it |
 | delete | the path is at its expected version. A folder takes its subtree, and no entry in it may be newer than the unit's `asOfSeq` |
-| move | the source is at its expected version and the target is absent. A folder takes its subtree, under the same `asOfSeq` rule |
-| copy | the target is absent. Copying an `agent.md` or `group.md` whose `id` already exists is refused |
+| move | the source is at its expected version and the target is absent. A folder takes its subtree, under the same `asOfSeq` rule. A link moves with its target |
+| copy | the target is absent. Copying an `agent.md` or `group.md` whose `id` already exists is refused. A link copies with its target |
 
 - **Unseen changes.** A subtree unit carries the `asOfSeq` at which its writer
   saw the subtree. A change it did not see makes the unit a conflict and
@@ -914,7 +917,9 @@ With G1–G4 in place, GC for `folder-v2` takes no company fence and needs no
 company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 20260821009000:335-352) stays for `snapshot-v1`. From C1, today's GC
 (`qorpera_claim_company_object_gc`, 20260913000100:68-130) never claims a
-`folder-v2` company's objects.
+`folder-v2` company's objects. (Legacy sweep E1, 20260930400000, dropped that
+GC and the artifact GC plans; the gate now sees only outstanding deletion
+authorizations.)
 
 ### Erasure
 
@@ -1053,8 +1058,10 @@ the old code until the reset, so it is removed in C6:
 - **Snapshot columns** on sessions, runs, turns, wake claims, receipts and
   proposals. They are replaced by commit or sequence references.
 - **The legacy snapshot lane:**
-  - `qorpera_prepare/publish_company_file_revision`, `commit_company_snapshot`;
-  - `submit/rebase/accept_company_proposal`, the runner revision lane;
+  - `qorpera_prepare/publish_company_file_revision` (legacy sweep D2,
+    20260930331000, dropped them), `commit_company_snapshot`;
+  - `submit/rebase/accept_company_proposal` (dropped by D2 too), the runner
+    revision lane;
   - `promote_company_file_graph_to_supabase`;
   - the `company-file-verifier` edge function;
   - the desktop callers in `cloud-client/src/hosted-primary.ts`.
@@ -1252,9 +1259,9 @@ For `folder-v2` companies:
     (`parseRunnerWork` and `validateCloudRunnerWork` in `orchestrator.ts`; done in #709);
   - the object gateway serves `folder-v2` without tree manifests
     (`member-company-file.ts:794`, `company-bootstrap.ts:252`);
-  - the edge functions handle `folder-v2` (runner-broker's verifier call
-    `index.ts:348`, runner-control's `outputSnapshotId` `runner-control.ts:155`,
-    member-company-gateway's snapshot route);
+  - the edge functions handle `folder-v2` (runner-control's `outputSnapshotId`
+    `runner-control.ts:155`, member-company-gateway's snapshot route;
+    runner-broker's verifier call went with its snapshot-v1 lane in step D5);
   - the object gateway's connection-file writer, switched on by its flag
     (amended 3 October 2026, P22: the secret broker gets no folder access).
 

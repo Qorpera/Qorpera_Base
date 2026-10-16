@@ -612,15 +612,15 @@ export class FolderService {
 			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
 			// that comes back lists it again and renews at once. What it has pending, and the reads its machine logged, are
 			// published first, under the lease it still has (a desktop that ended inside its quiet period); a machine that
-			// comes back meanwhile joins it. A command's never publishes unasked. Either way the view is kept or let go
-			// once its last boundary has ended (#inTurn).
+			// comes back meanwhile joins it. A command's publishes only on its quiet period while held, or when asked.
+			// Either way the view is kept or let go once its last boundary has ended (#inTurn).
 			if (!view.lease || this.#views.get(view.key) !== view) return;
+			if (view.quiet) clearTimeout(view.quiet);
+			view.quiet = undefined;
 			if (view.access?.command || ((!view.pending || view.pending.empty) && !view.unreleased)) {
 				void this.#inTurn(view, async () => ({ commitId: null, seq: null, paths: [] }));
 				return;
 			}
-			if (view.quiet) clearTimeout(view.quiet);
-			view.quiet = undefined;
 			void this.#publishLogged(view);
 		};
 		try {
@@ -740,6 +740,12 @@ export class FolderService {
 			publish: async (final = false) => {
 				if (final && !view.access?.command)
 					throw new ProtocolError(ErrorCode.badRequest, "Only a command view publishes a final change set");
+				// A command that ended inside its quiet period publishes once, final (4b-2): the final takes what the quiet
+				// period would have published.
+				if (final && view.quiet) {
+					clearTimeout(view.quiet);
+					view.quiet = undefined;
+				}
 				return this.#publish(view, final);
 			},
 			reads: async (request) => this.#takeReads(view, request),
@@ -1455,17 +1461,22 @@ export class FolderService {
 		if (view.closed || view.moving || view.connections === 0 || view.quietMs === undefined || !view.pending?.unsaved)
 			return;
 		if (view.quiet) clearTimeout(view.quiet);
+		view.quiet = undefined;
+		// A command's quiet period runs only while its machine holds the view: a change that waited behind a boundary and
+		// landed after the last connection left waits, with what else is pending, for the boundary its machine asks.
+		if (view.access?.command && view.connections === 0) return;
 		view.quiet = setTimeout(() => {
 			view.quiet = undefined;
-			void this.#publishLogged(view);
+			void this.#publishLogged(view, true);
 		}, view.quietMs);
 		view.quiet.unref?.();
 	}
 
-	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop. */
-	async #publishLogged(view: View): Promise<void> {
+	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop.
+	 * `quiet`: one a quiet period asked. */
+	async #publishLogged(view: View, quiet = false): Promise<void> {
 		try {
-			const report = await this.#publish(view);
+			const report = await this.#publish(view, false, quiet);
 			for (const entry of report.paths)
 				if (entry.outcome !== "saved")
 					this.#log(
@@ -1665,9 +1676,14 @@ export class FolderService {
 		return undefined;
 	}
 
-	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. */
-	#publish(view: View, final = false): Promise<Report> {
-		return this.#inTurn(view, () => this.#boundary(view, final));
+	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. `quiet`:
+	 * one a quiet period asked, which publishes nothing on a command's view no machine holds by its turn: the last
+	 * connection left while it waited, and what is pending waits for the boundary the command's machine asks. */
+	#publish(view: View, final = false, quiet = false): Promise<Report> {
+		return this.#inTurn(view, async () => {
+			if (quiet && view.access?.command && view.connections === 0) return { commitId: null, seq: null, paths: [] };
+			return await this.#boundary(view, final);
+		});
 	}
 
 	async #boundary(view: View, final: boolean): Promise<Report> {

@@ -125,8 +125,6 @@ it("uses the existing receipt contract without exposing runner or session tokens
 		p_receipt_id: receiptId,
 		p_input_sha256: inputSha256,
 		p_result: { ok: true },
-		p_output_snapshot_id: null,
-		p_proposal_id: null,
 	});
 	expect(String(request.mock.calls.map((entry) => entry[1]?.body))).not.toMatch(/lease_token|session_token/);
 });

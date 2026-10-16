@@ -54,7 +54,7 @@ The separately packaged service binds only to loopback. A TLS reverse proxy publ
 - `qorpera-cloud-secret-runtime`; and
 - `qorpera-cloud-secret-keyring`.
 
-Two credentials are optional: `qorpera-cloud-secret-connectors` (Step 7 connectors and their OAuth routes) and, since bundle v88, `qorpera-cloud-secret-coding-executor`, the coding executor's own bearer for `/v1/repository-credentials` (distinct from the runtime token; without it that route answers 404). See `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`.
+Two credentials are optional: `qorpera-cloud-secret-connectors` (Step 7 connectors and their OAuth routes) and, since bundle v88, `qorpera-cloud-secret-coding-executor`, the coding executor's own bearer for `/v1/repository-credentials` and, since 5j-3, `/v1/coding-environment`, which returns a leased coding session's environment variables (`{schema, environment}`, opened from its `environment` secrets and never cached). Only that bearer opens the two routes: it is distinct from the runtime token, which opens neither, and without it both answer 404. See `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`.
 
 The broker service does not receive a Supabase `service_role` key. The isolated canary driver retains a separately encrypted service credential only for synthetic run setup and recovery; it is not loaded by the broker unit or exposed to a model guest.
 

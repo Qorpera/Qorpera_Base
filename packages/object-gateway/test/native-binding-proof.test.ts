@@ -78,7 +78,6 @@ async function fixture() {
 			authority,
 			replication,
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 			nativeObjects: { token: nativeToken, folder: authority },
 		}),
 	);

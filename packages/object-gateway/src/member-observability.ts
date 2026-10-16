@@ -5,16 +5,7 @@ import { ObjectDependencyError } from "./dependency.ts";
 export const MEMBER_OBSERVATIONS_PATH = "/v1/member-company-observations";
 export const MEMBER_OBSERVATION_CAPACITY = 512;
 export const MEMBER_OBSERVATION_RETENTION_MS = 15 * 60_000;
-export const MEMBER_OBSERVATION_OPERATIONS = [
-	"object_read",
-	"file_request",
-	"command_submit",
-	"command_status",
-	"command_content",
-	"command_review",
-	"proposal_content",
-	"proposal_review",
-] as const;
+export const MEMBER_OBSERVATION_OPERATIONS = ["object_read", "command_submit"] as const;
 export const MEMBER_EFFECT_OUTCOMES = ["none", "proposed", "applied", "replayed", "rejected", "unconfirmed"] as const;
 export type MemberObservationOperation = (typeof MEMBER_OBSERVATION_OPERATIONS)[number];
 export type MemberEffectOutcome = (typeof MEMBER_EFFECT_OUTCOMES)[number];

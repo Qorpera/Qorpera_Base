@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SupabaseObjectAuthority } from "../src/supabase-authority.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+const environmentId = "5c1d0b8e-6d4f-4a43-9e8b-2f7a1c3d9e10";
 const sha256 = "a".repeat(64);
 type FetchInput = Parameters<typeof fetch>[0];
 
@@ -18,11 +19,11 @@ describe("Supabase object authority", () => {
 			secretKey: "sb_secret_private",
 			fetch: async (request, init) => {
 				calls.push({ request, init });
-				return new Response(null, { status: 204 });
+				return Response.json({ schema: "qorpera.folder-object-download/v1", profileId, bytes: 12 });
 			},
 		});
 
-		await authority.authorizeUpload("member-jwt", profileId, sha256, 12);
+		await authority.authorizeMemberFolderObject("member-jwt", environmentId, sha256);
 
 		expect(calls).toHaveLength(1);
 		expect(header(calls[0]!.request, calls[0]!.init, "apikey")).toBe("sb_publishable_public");
@@ -43,27 +44,6 @@ describe("Supabase object authority", () => {
 
 		await authority.confirmUpload(profileId, sha256, 12);
 
-		expect(calls).toHaveLength(1);
-		expect(header(calls[0]!.request, calls[0]!.init, "apikey")).toBe("sb_secret_private");
-		expect(header(calls[0]!.request, calls[0]!.init, "authorization")).toBeNull();
-	});
-
-	it("authorizes verifier reads with the service key and no member bearer", async () => {
-		const calls: Array<{ request: FetchInput; init: RequestInit | undefined }> = [];
-		const authority = new SupabaseObjectAuthority({
-			projectUrl: "https://project.supabase.co",
-			publishableKey: "sb_publishable_public",
-			secretKey: "sb_secret_private",
-			fetch: async (request, init) => {
-				calls.push({ request, init });
-				return Response.json({ backend: "nas-object-gateway", bytes: 12 });
-			},
-		});
-
-		await expect(authority.authorizeServiceDownload(profileId, sha256)).resolves.toEqual({
-			backend: "nas-object-gateway",
-			bytes: 12,
-		});
 		expect(calls).toHaveLength(1);
 		expect(header(calls[0]!.request, calls[0]!.init, "apikey")).toBe("sb_secret_private");
 		expect(header(calls[0]!.request, calls[0]!.init, "authorization")).toBeNull();
