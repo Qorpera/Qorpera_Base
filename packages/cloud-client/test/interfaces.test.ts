@@ -129,6 +129,10 @@ k = {}
 		['a = "\\q"', 1, "escape"],
 		["k = { x = 1 }\n[k]", 2, "already defined"],
 		["[[t]]\nx=1\n[t]", 3, "already defined"],
+		// A text that spans lines is refused with how to write it instead.
+		["a = 1\nb = '''x\ny'''", 2, 'Multi-line strings are not used in these files: write it on one line in "double'],
+		['a = "x\ny"', 1, 'close on its line: write it on one line in "double quotes", with \\n for each line break.'],
+		["a = 'x\ny'", 1, 'close on its line: write it on one line in "double quotes", with \\n for each line break.'],
 	])("refuses %j on line %i", (text, line, message) => {
 		try {
 			parseTomlSubset(text);
@@ -226,6 +230,27 @@ describe("interface files", () => {
 		expect(
 			codes(parseInterfaceFile(MINIMAL.replace('format = "qorpera.interface/v0"', 'format = "v1"')).problems),
 		).toEqual(["format"]);
+	});
+
+	it("says what a new interface's or table's id looks like when a made-up one is refused", () => {
+		const madeUp = "11111111-2222-3333-4444-555555555555";
+		const rule =
+			"must be a new random lowercase uuid (version 4): 8-4-4-4-12 hex digits, the third group starting with 4";
+		expect(parseInterfaceFile(MINIMAL.replace("5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21", madeUp)).problems).toEqual([
+			expect.objectContaining({
+				code: "bad_value",
+				key: "interface.id",
+				line: 4,
+				message: expect.stringContaining(rule),
+			}),
+		]);
+		expect(parseTableFile(NUMBERS_TABLE.replace(/^id = ".*"$/m, `id = "${madeUp}"`)).problems).toEqual([
+			expect.objectContaining({
+				code: "bad_value",
+				key: "table.id",
+				message: `table.id ${rule} and the fourth with 8, 9, a or b.`,
+			}),
+		]);
 	});
 
 	it("checks sources, columns of fixed sources, buttons and targets", () => {

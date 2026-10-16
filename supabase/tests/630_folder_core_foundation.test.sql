@@ -222,7 +222,8 @@ begin
 		jsonb_build_object('op','mkdir','path','code/repo/node_modules'), jsonb_build_object('op','mkdir','path','code/repo/.git')));
 	perform pg_temp.expect(r, 1, 'refused', 'reserved'); perform pg_temp.expect(r, 2, 'refused', 'reserved');
 	perform pg_temp.expect(r, 3, 'saved'); perform pg_temp.expect(r, 4, 'saved');
-	perform pg_temp.expect(r, 5, 'saved'); perform pg_temp.expect(r, 6, 'saved');
+	-- '.git' only below code/<owner>/<name>/ (20260930446100; 488 covers the depths).
+	perform pg_temp.expect(r, 5, 'saved'); perform pg_temp.expect(r, 6, 'refused', 'reserved');
 	-- A member's private folder is theirs alone: another member neither writes nor sees it.
 	insert into public.qorpera_company_path_resources(environment_id,path,path_match,scope,owner_user_id,policy,created_by_user_id)
 	values ('63000000-0000-4000-8000-000000000020','members/63000000-0000-4000-8000-000000000002/private','subtree','member_private',

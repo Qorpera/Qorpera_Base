@@ -91,7 +91,7 @@ test("each shape places the folder once, after its other mounts and before the s
 		const marks = shape.args.flatMap((arg, index) => (arg?.folder ? [index] : []));
 		assert.equal(marks.length, 1, name);
 		// Only the environment, then the start, after it: no mount over the folder or after it.
-		assert.deepEqual(withoutEnvironment(shape.args.slice(marks[0] + 1)), ["--chdir", "/run/qorpera-office/private", "--remount-ro", "/"], name);
+		assert.deepEqual(withoutEnvironment(shape.args.slice(marks[0] + 1)), ["--chdir", "/home/qorpera", "--remount-ro", "/"], name);
 		// The relay's arithmetic: inherited descriptors start at 3, after the gate's pipes.
 		assert.equal(3 + (shape.pipeCount ?? 0) + shape.files.length, folderFd, name);
 		const bound = shape.args.flatMap((arg, index) => (arg === "--bind-fd" || arg === "--ro-bind-fd" ? [Number(shape.args[index + 1])] : []));
@@ -110,7 +110,8 @@ test("each shape places the folder once, after its other mounts and before the s
 	assert.deepEqual(shapes.shapes.desktop.args.slice(shapes.shapes.desktop.args.indexOf("--ro-bind-fd"), shapes.shapes.desktop.args.indexOf("--ro-bind-fd") + 3), ["--ro-bind-fd", "8", "/etc/machine-id"]);
 	assert.equal(shapes.shapes.shell.args[shapes.shapes.shell.args.indexOf("--tmpfs") - 1], String(512 * 1024 * 1024));
 	assert.equal(shapes.shapes.desktop.args.filter((arg) => arg?.requiredRoBind).length, 8);
-	assert.equal(shapes.shapes.shell.args.filter((arg) => arg?.optionalRoBind).length, 9);
+	assert.equal(shapes.shapes.desktop.args.filter((arg) => arg?.optionalRoBind).length, 1);
+	assert.equal(shapes.shapes.shell.args.filter((arg) => arg?.optionalRoBind).length, 10);
 });
 
 test("the runtime's process gate runs with its types stripped and nothing else changed", async () => {

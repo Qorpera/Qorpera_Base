@@ -32,7 +32,7 @@ const blob = (text: string, type = "image/webp") => new Blob([text], { type });
 const picture = (element: Element) => element.querySelector<HTMLImageElement>(":scope > img.person-picture");
 const photo = () => new File(["photo"], "photo.png", { type: "image/png" });
 
-/** Hashing and reading a blob finish outside the microtask queue. */
+/** Lets the reads, writes and hashes on their way finish (the hash is computed at once: see beforeEach). */
 async function settle(): Promise<void> {
 	for (let turn = 0; turn < 6; turn++) {
 		await settleMicrotasks();
@@ -48,6 +48,16 @@ beforeEach(() => {
 	// jsdom's Blob cannot hand back its bytes; the browser's can.
 	vi.stubGlobal("Blob", NodeBlob);
 	vi.stubGlobal("File", NodeFile);
+	// A picture's hash comes from crypto.subtle, which answers from a real thread: on a busy machine,
+	// after settle() has ended. The same hash, computed at once, ends every choice and read within settle().
+	vi.spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+		const name = typeof algorithm === "string" ? algorithm : algorithm.name;
+		const bytes = ArrayBuffer.isView(data)
+			? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+			: new Uint8Array(data);
+		const hash = createHash(name.replace("-", "")).update(bytes).digest();
+		return hash.buffer.slice(hash.byteOffset, hash.byteOffset + hash.byteLength) as ArrayBuffer;
+	});
 	urls = 0;
 	revoked = [];
 	URL.createObjectURL = vi.fn(() => `blob:picture-${++urls}`);
@@ -541,7 +551,8 @@ describe("the account card's picture control", () => {
 		fitted.crop = { x: 100, y: 20, side: 640 };
 		await pick();
 		expect(prepare).toHaveBeenCalledWith(expect.any(File), { x: 100, y: 20, side: 640 });
-		expect(current.get(me)).toBe(nameOf(me, "fitted"));
+		// Hashing the picture takes a while on a busy machine.
+		await vi.waitFor(() => expect(current.get(me)).toBe(nameOf(me, "fitted")), { timeout: 4_000 });
 	});
 
 	it("opens one photo at a time, and ends the fitting when the account changes", async () => {
@@ -684,9 +695,12 @@ describe("the account card's picture control", () => {
 		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
 		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
 		input.dispatchEvent(new Event("change"));
-		await settle();
+		// Hashing the picture takes a while on a busy machine: wait for the choice to fail, then count its uploads.
+		await vi.waitFor(
+			() => expect(error.textContent).toBe("Your picture could not be saved. Try again in a moment."),
+			{ timeout: 4_000 },
+		);
 		expect(upload).toHaveBeenCalledTimes(2);
-		expect(error.textContent).toBe("Your picture could not be saved. Try again in a moment.");
 	});
 
 	it("moves from the menu itself to its first or last item", async () => {

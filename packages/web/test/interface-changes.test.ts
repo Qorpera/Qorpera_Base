@@ -320,6 +320,7 @@ function historyFolder() {
 							seq: kept.seq,
 							updatedAt: timestamp,
 							file: kept.kind === "file" ? reference(kept.text ?? "") : null,
+							target: null,
 						}
 					: null,
 			};
@@ -345,6 +346,7 @@ function historyFolder() {
 					from: null,
 					to: null,
 					file: kept.kind === "file" && kept.op !== "delete" ? reference(kept.text ?? "") : null,
+					target: null,
 				}));
 				return { asOfSeq: seq, items, next: null };
 			},
@@ -383,8 +385,10 @@ function historyFolder() {
 					if ([...closed].some((root) => under(unit.path, root))) return outcome("denied");
 					const current = live(unit.path);
 					if (current?.version !== unit.expectedVersion) return outcome("conflict");
-					if (unit.op === "write")
+					if (unit.op === "write") {
+						if (!("text" in unit)) throw new Error("Undo sends no write of a file reference");
 						return outcome("saved", save(unit.path, "file", "write", unit.text, at).version);
+					}
 					const asOfSeq = unit.asOfSeq;
 					if (asOfSeq !== undefined && livePaths(unit.path).some((pathValue) => live(pathValue)!.seq > asOfSeq))
 						return outcome("conflict");

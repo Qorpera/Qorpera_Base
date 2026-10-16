@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Disposable nested-VM substrate proof, not the office helper implementation.
 
-Real qorpera-folder/FUSE and copied office confinement; a synthetic protocol-3
+Real qorpera-folder/FUSE and copied office confinement; a synthetic protocol-4
 node. This does not start the office application. Pathname recovery is tested separately from old descriptors. No SQL,
 model, vsock provenance, read-release or helper request-auth proof is claimed.
 """
@@ -32,7 +32,7 @@ CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 CLONE_NEWNET = 0x40000000
 # The folder protocol of crates/qorpera-folder/src/proto.rs; the program refuses a hello answered with another.
-PROTOCOL = 3
+PROTOCOL = 4
 
 
 def checked(call, *args):
@@ -590,11 +590,11 @@ def selftest():
                 client.settimeout(2)
                 client.connect(str(Path(tmp) / "node.sock"))
                 # Byte-at-a-time framing catches reads that incorrectly assume recv returns a whole frame.
-                hello = b'H{"protocol":3,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
+                hello = b'H{"protocol":4,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
                 for byte in struct.pack(">I", len(hello)) + hello:
                     client.sendall(bytes([byte]))
                 kind, body = receive(client)
-                assert kind == "h" and json.loads(body) == {"protocol": 3, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
+                assert kind == "h" and json.loads(body) == {"protocol": 4, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
                 send(client, "L", {"path": ""})
                 kind, body = receive(client)
                 assert kind == "l" and json.loads(body)["entries"][0]["name"] == "before.txt"

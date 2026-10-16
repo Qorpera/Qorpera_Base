@@ -16,6 +16,7 @@ import {
 import type { BeginCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import {
 	CloudRuntimeDiagnosticError,
+	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservationSpan,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
@@ -239,6 +240,10 @@ export class CloudNativeToolOperations {
 				signal: AbortSignal;
 			},
 		) => Promise<CloudNativeToolOperationOutput>;
+		/** Why a confirmed answer changed nothing, when the effect gateway refuses with an answer rather than a throw (a
+		 * folder-v2 change that was not saved): the call is observed as denied with this category, a replay too, never
+		 * as succeeded. Read from the answer, which is all a replay has. */
+		refused?: (content: CloudToolContent) => CloudRuntimeErrorCategory | undefined;
 		signal: AbortSignal;
 		observation?: CloudRuntimeObservationSpan;
 	}): Promise<CloudToolContent> {
@@ -473,13 +478,23 @@ export class CloudNativeToolOperations {
 		}
 		try {
 			const confirmed = await result;
-			options.observation?.finish(previous && confirmed.outcome === "succeeded" ? "replayed" : confirmed.outcome, {
-				receiptId: confirmed.receiptId,
-				outputBytes: Buffer.byteLength(
-					confirmed.content.kind === "text" ? confirmed.content.value : cloudToolJsonText(confirmed.content.value),
-				),
-				...(confirmed.parked ? { errorCategory: "protected_path" as const } : {}),
-			});
+			const refused = options.refused?.(confirmed.content);
+			options.observation?.finish(
+				refused ? "denied" : previous && confirmed.outcome === "succeeded" ? "replayed" : confirmed.outcome,
+				{
+					receiptId: confirmed.receiptId,
+					outputBytes: Buffer.byteLength(
+						confirmed.content.kind === "text"
+							? confirmed.content.value
+							: cloudToolJsonText(confirmed.content.value),
+					),
+					...(refused
+						? { errorCategory: refused }
+						: confirmed.parked
+							? { errorCategory: "protected_path" as const }
+							: {}),
+				},
+			);
 			// A denied release cannot undo a confirmed effect or turn a replay into another successful effect.
 			await observedCloudToolAuthority(
 				options.observation,

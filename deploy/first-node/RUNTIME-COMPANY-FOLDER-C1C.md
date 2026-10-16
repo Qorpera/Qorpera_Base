@@ -206,6 +206,20 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
+The mutex orders a run's tool steps. Since 20260930487000 the host's describe refresh
+(`qorpera_describe_native_tool_authority` as the entry point, through the native host or PostgREST) reads without it,
+through `qorpera_folder_native_run_plain`, which takes neither the mutex nor the locked check's other row locks. One
+lock stays, as in the locked check: for a wake run, the sponsor test takes the provider connection FOR SHARE (an
+authorization lock, kept). Describe reads only rows that admission, completion, renewal, resume and handoff write, and
+none of those ever took the mutex, so it never ordered describe against them.
+Every write still takes it, and so do the context fence and any function that calls describe as its run check (test 674).
+Since 20260930488000 the connector tool list (`qorpera_list_native_connector_tools`) reads the same way as the entry
+point: it reads only the agent's grants, their secrets, the connector operations, the agent's staff row and the
+company's members, which a run's own steps never write. It takes its grants FOR SHARE by id and then their secrets
+(rank 8's inner order, §6.7) and keeps each grant `qorpera_native_connector_locked_grant` would take; every connector
+use still runs that locked check under the mutex. `qorpera_describe_company_run_context` (it reads the run's own sends
+and read set) and `qorpera_read_native_wake` (a writer) keep the mutex (test 675).
+
 ### 5.3 New functions
 
 All are postgres-only, like NTLR (the runtime reaches them through the dispatching legacy functions). Names stay
@@ -690,7 +704,9 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   proposal snapshot, artifact index or Company File output limits, and null substrate and snapshot ids on the job and
   the run. `qorpera_folder_runner_broker_describe` keeps the legacy body's checks that still apply: the run is the
   job's, the sponsor and the connection are active and the company's, the assignment is accepted. A proposal review
-  needs a proposal snapshot and refuses (0A000).
+  needs a proposal snapshot and refuses (0A000). Legacy sweep D8 (20260930410000) dropped the legacy body: the
+  broker's describe hands every job to the folder describe, which refuses one whose company has no `folder-v2` Company
+  File (55000).
 - **No fall-through to the whole-tree lane.** The runtime's parsers accept the absence only as the path lane's, with
   version, snapshot and output limits absent together and no substrate named on the job or the run. Every reader of a
   substrate refuses ("This run has no Company File substrate"): resolve, operations, the output and Company File
@@ -799,7 +815,8 @@ Decisions:
   client `hosted-primary.ts`) and the seven `create_shared_session` functions open `folder-v2` conversations, and
   `ensure_staff_session` adds a kickoff input that nothing delivers (part 1's session materializer skips `folder-v2`).
   Nothing is lost, since every later input refuses. C3 and C4 refuse or deliver them. 3b's answers keep the gc fence
-  on `folder-v2` until 3b.
+  on `folder-v2` until 3b. Legacy sweep D15 (20260930414000) later dropped the seven `create_shared_session`
+  functions.
 - Who creates a `folder-v2` office, and who owns the machine-event and worker drains on `folder-v2`, are decided with
   3f and 3j. 3f decided the drains: they go with 3i (§6.5).
 
@@ -1122,6 +1139,11 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
 
 `share_company_connection` is left as it is: the seal is its only caller and then already holds the grants it writes.
 
+The connector tool list (`list_native_connector_tools`) called `native_connector_locked_grant` grant by grant in
+`tool_name` order, so it held one grant and its secret while it waited for the next: against a Disconnect, a share or a
+seal taking those grants by id, a cycle where the two orders differ. Since 20260930488000 it takes all its grants by
+id, then their secrets by id (test 675).
+
 - **Test 850** builds each deadlock deterministically on 648's committed fixture: a holder keeps one row (a grant, the
   agent's staff row, a ticket, a secret) so the others queue behind it in the order that deadlocked before. The
   change must wait where the order puts it and leave the secret free (a `NOWAIT` probe), and once the holder commits
@@ -1183,6 +1205,10 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 - **Legacy sweep F2c (20260930292000)** left the office reservation only its `folder-v2` path:
   `reserve_runtime_machine` takes the machine fence on every company, and its office branch accepts only a ready
   `folder-v2` Company File (`path_gateway_version = 1` is gone).
+- **Legacy sweep D16 (20260930415000)** dropped the governed Company Computer and the legacy computer teardown
+  (20260828017000, 20260828013500) with their tables. The interlock and `register_runtime_office` admit another
+  company computer only through the office's own binding, and company computer work (a turn, run, runner or
+  assignment of worker class `company_computer`) is refused outright, with the governed guards' errors (42501).
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38

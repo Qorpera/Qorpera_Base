@@ -47,7 +47,11 @@ import {
 	CompanyComputerSiteStops,
 	readCompanyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
-import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
+import {
+	type CompanyComputerAction,
+	companyComputerCaptureHeldBack,
+	parseCompanyComputerAction,
+} from "./cloud-company-computer-tools.ts";
 import { sealEventHookCapture } from "./cloud-event-hook-capture-box.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
@@ -298,6 +302,14 @@ export interface CompanyComputerShellCommandResult {
 	skippedBytes?: number;
 	/** Why the machine stopped it, when neither the command nor the agent did. */
 	note?: string;
+	/**
+	 * A company folder command's output this reply holds back: what the command wrote after its folder last
+	 * settled, or a command another run started (F3 4d).
+	 */
+	heldBack?: { code: "COMPANY_FOLDER_HELD_BACK"; message: string };
+	/** Paths of the command's that the company folder did not take, reported once. */
+	notSaved?: readonly { path: string; outcome: string; reason?: string }[];
+	moreNotSaved?: number;
 }
 
 export interface CompanyComputerShellListResult {
@@ -330,6 +342,8 @@ export interface CompanyComputerGuestShell {
 		command: string;
 		/** The run that started it, which is told when it stops and asked about it. */
 		runId: string;
+		/** `false`: the command runs offline, with a network of its own (company folder commands only). */
+		network?: boolean;
 		signal: AbortSignal;
 	}): Promise<{ sessionId: string }>;
 	write(input: {
@@ -346,16 +360,20 @@ export interface CompanyComputerGuestShell {
 	result(input: {
 		sessionId: string;
 		waitMs: number;
+		/** The run asking: a company folder command shows its output to the run that started it, and to another run once
+		 * that one took in the command's reads. */
+		runId?: string;
+		/** The effect receipt of the action that reads: another run takes in a company folder command's reads by it. */
+		receiptId?: string;
+		/** When the reply is due (performance.now()); a company folder command settles its folder before then. */
+		until?: number;
 		signal: AbortSignal;
 	}): Promise<CompanyComputerShellCommandResult>;
-	list(): CompanyComputerShellListResult;
+	/** `runId`: the run asking, as for `result`. */
+	list(runId?: string): CompanyComputerShellListResult;
 }
 
 export interface CompanyComputerGuestCommands {
-	/** Broker-only selected workbench read; no member or canonical paths. */
-	readFile?(input: { path: string; signal: AbortSignal }): Promise<Uint8Array>;
-	/** Broker-only atomic no-overwrite import of already authorized bytes. */
-	writeFile?(input: { path: string; bytes: Uint8Array; sha256: string; signal: AbortSignal }): Promise<void>;
 	/** Existing Step 2 contained command runner. No inherited provider/service env; kill/reap descendants on abort. */
 	run(input: {
 		program: string;
@@ -444,6 +462,7 @@ export class CompanyComputerGuestAutomation {
 	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
 	readonly #filled: CompanyComputerFilledValues;
 	readonly #siteStops: CompanyComputerSiteStops;
+	readonly #capture?: (signal: AbortSignal, until: number) => Promise<string | undefined>;
 	/** Where a vault_capture's box goes (E3c-3), as this office reads it from the database for that one call. */
 	readonly #captureTarget?: (
 		input: CompanyComputerGuestEffectInput,
@@ -468,6 +487,8 @@ export class CompanyComputerGuestAutomation {
 		filled?: CompanyComputerFilledValues;
 		/** The sites this computer stopped on (A1-4c), shared by its screens. */
 		siteStops?: CompanyComputerSiteStops;
+		/** The company folder's boundary before a capture is published (F3 4d): why it is held back, or nothing. */
+		capture?: (signal: AbortSignal, until: number) => Promise<string | undefined>;
 		captureTarget?: (
 			input: CompanyComputerGuestEffectInput,
 			signal: AbortSignal,
@@ -488,6 +509,7 @@ export class CompanyComputerGuestAutomation {
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
 		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
+		this.#capture = options.capture;
 		this.#captureTarget = options.captureTarget;
 		this.#captures = options.captures;
 	}
@@ -736,6 +758,8 @@ export class CompanyComputerGuestAutomation {
 		lease: CompanyComputerScreenLease,
 		effect: CompanyComputerEffectContext,
 		operation: CompanyComputerOperation,
+		/** `performance.now()` by which the reply must be on its way back to the run. */
+		replyBy?: number,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		assertCompanyComputerScreenBinding(lease.binding, this.#binding);
@@ -753,11 +777,6 @@ export class CompanyComputerGuestAutomation {
 		await companyComputerActionCheck(this.#browser?.assertActive(signal) ?? Promise.resolve());
 		signal.throwIfAborted();
 		if (action.kind === "screen") throw new Error("SCREEN_LIFECYCLE_REQUIRES_CLOUD_REGISTRY");
-		if (action.kind === "transfer") {
-			// Company objects carried these bytes and are gone (legacy removal, step C): no import or export.
-			if (action.action === "import") throw new Error("OFFICE_FILE_IMPORT_UNAVAILABLE");
-			throw new Error("OFFICE_FILE_EXPORT_UNAVAILABLE");
-		}
 		const display = companyComputerScreenDisplay(this.#binding.screenOrdinal);
 		if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
 			if (!this.#browser) throw new Error("BROWSER_GRANT_REQUIRED");
@@ -842,7 +861,7 @@ export class CompanyComputerGuestAutomation {
 					}),
 				);
 				await this.#assertFilledNotShown(page);
-				return this.#publish(png, lease, effect, "browser", operation);
+				return this.#publish(png, lease, effect, "browser", operation, replyBy);
 			}
 			// A site this computer stopped on is never acted on again (A1-4c): a person continues there. A page that
 			// shows such a check now stops it before anything is clicked or typed, whatever its address; going to
@@ -1092,6 +1111,7 @@ export class CompanyComputerGuestAutomation {
 						"OFFICE_SHELL_INPUT_ENDED",
 						"OFFICE_SHELL_RESTARTING",
 						"OFFICE_SHELL_STARTING",
+						"COMPANY_COMPUTER_OFFLINE_UNAVAILABLE",
 					].includes(error.message)
 				)
 					throw new CompanyComputerActionFailedError(error);
@@ -1100,7 +1120,13 @@ export class CompanyComputerGuestAutomation {
 			let value: JsonValue;
 			if (action.action === "start")
 				value = await shell
-					.start({ key: effect.receiptId, command: action.command, runId: effect.identity.runId, signal })
+					.start({
+						key: effect.receiptId,
+						command: action.command,
+						runId: effect.identity.runId,
+						...(action.network === undefined ? {} : { network: action.network }),
+						signal,
+					})
 					.catch(refusal);
 			else if (action.action === "read") {
 				if (!shell.known(action.sessionId)) refusal(new Error("OFFICE_SHELL_SESSION_UNKNOWN"));
@@ -1113,7 +1139,7 @@ export class CompanyComputerGuestAutomation {
 				value = await shell
 					.stop({ ...(action.sessionId === undefined ? {} : { sessionId: action.sessionId }), signal })
 					.catch(refusal);
-			else value = shell.list() as unknown as JsonValue;
+			else value = shell.list(effect.identity.runId) as unknown as JsonValue;
 			signal.throwIfAborted();
 			return { kind: "json", value };
 		}
@@ -1124,7 +1150,7 @@ export class CompanyComputerGuestAutomation {
 			await this.#assertNoPrivateValueShown(signal);
 			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
 			await this.#assertNoPrivateValueShown(signal);
-			return this.#publish(png, lease, effect, "desktop", operation);
+			return this.#publish(png, lease, effect, "desktop", operation, replyBy);
 		}
 		// Desktop input reaches the same browser window: none while a shown tab is on a site the computer stopped on, or
 		// shows such a check now (A1-4c). Moving the pointer only looks.
@@ -1178,7 +1204,7 @@ export class CompanyComputerGuestAutomation {
 					PATH: "/usr/local/bin:/usr/bin:/bin",
 					LANG: "C.UTF-8",
 				},
-				workingDirectory: this.#layout.workbenchRoot,
+				workingDirectory: "/home/qorpera",
 				timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
 				maxOutputBytes: 16_384,
 				signal,
@@ -1216,6 +1242,10 @@ export class CompanyComputerGuestAutomation {
 		signal: AbortSignal,
 		/** `performance.now()` by which the reply must be on its way back to the run. */
 		replyBy: number,
+		/** The run asking, which sees a company folder command's output if it started it, or once it took in its reads. */
+		runId?: string,
+		/** The action's effect receipt, by which another run takes in a company folder command's reads. */
+		receiptId?: string,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		if (action.kind !== "shell" || action.action === undefined || action.action === "list" || !this.#shell)
@@ -1230,6 +1260,9 @@ export class CompanyComputerGuestAutomation {
 				0,
 				Math.min(action.action === "stop" ? 4000 : action.waitMs, Math.floor(replyBy - performance.now())),
 			),
+			...(runId === undefined ? {} : { runId }),
+			...(receiptId === undefined ? {} : { receiptId }),
+			until: replyBy,
 			signal,
 		});
 		return { kind: "json", value: result as unknown as JsonValue };
@@ -1241,6 +1274,7 @@ export class CompanyComputerGuestAutomation {
 		effect: CompanyComputerEffectContext,
 		surface: "browser" | "desktop",
 		operation: CompanyComputerOperation,
+		replyBy?: number,
 	): Promise<CompanyComputerToolContent> {
 		if (
 			bytes.length < 33 ||
@@ -1267,6 +1301,11 @@ export class CompanyComputerGuestAutomation {
 		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, effect.signal));
 		await companyComputerActionCheck(this.#browser?.assertActive(effect.signal) ?? Promise.resolve());
 		effect.signal.throwIfAborted();
+		// The desktop's reads are released and its changes published before the picture reaches the run (F3 4d); the
+		// last four seconds stay for the publish.
+		const held = await this.#capture?.(effect.signal, (replyBy ?? performance.now() + 10_000) - 4000);
+		effect.signal.throwIfAborted();
+		if (held) return companyComputerCaptureHeldBack(this.#binding.screenId, surface, held);
 		const digest = createHash("sha256").update(bytes).digest("hex");
 		const asset = await this.#screenshots.publish(Uint8Array.from(bytes), lease, effect, operation);
 		if (

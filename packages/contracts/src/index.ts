@@ -19,6 +19,7 @@ export interface ExecutionIdentity {
 
 export * from "./cloud-coding.ts";
 export * from "./cloud-coding-command.ts";
+export * from "./cloud-coding-guest.ts";
 export * from "./cloud-coding-session.ts";
 export * from "./cloud-coding-storage.ts";
 export * from "./cloud-machine.ts";
@@ -39,5 +40,6 @@ export * from "./company-computer-service-stop.ts";
 export * from "./company-computer-service-successor.ts";
 export * from "./company-computer-stop-acknowledgement.ts";
 export * from "./company-computer-stop-history.ts";
+export * from "./folder-key.ts";
 export * from "./idle-rule.ts";
 export * from "./wire-values.ts";
