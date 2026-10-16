@@ -273,13 +273,15 @@ folder and its commands are not reviewed." Before 6d every machine tool was "int
   own, so the reviewer would read "No member request in this run" (the v180 checks' finding 881f1f21). A worker gets
   no approval card, so a review that asks would stop its command for good. The review-origin fix for 881f1f21 gives
   such a run the request of the chain's first run, so 6d-3a merges after it.
-- **A boot without `/company`.** Read with item 10, the design left such a machine's commands unreviewed. This plan
-  reviews every `machine_run` instead (Q2), for three reasons. `cloudActionEffect` is a pure function of the tool and
-  its arguments, and whether a machine has `/company` is decided per boot, so it can change between the review and the
-  start. Commands of an earlier boot that had `/company` may have copied company files to the disk (the platform keeps
-  none there, "Nothing on a node", but root can copy); "Access" keeps such a disk to callers who read the root, and
-  the review still sees what a command sends out. And a folderless machine is still a networked command run on the
-  company's behalf. The coordinator chose this (Q2, answered).
+- **A boot without `/company`.** The contract ("compute for agents", item 4: "its commands are not reviewed (founder,
+  28 September)"), read with item 10, and the design left such a machine's commands unreviewed. This plan reviews
+  every `machine_run` instead (Q2), and notes it in the contract under both items, for three reasons.
+  `cloudActionEffect` is a pure function of the tool and its arguments, and whether a machine has `/company` is
+  decided per boot, so it can change between the review and the start. Commands of an earlier boot that had
+  `/company` may have copied company files to the disk (the platform keeps none there, "Nothing on a node", but root
+  can copy); "Access" keeps such a disk to callers who read the root, and the review still sees what a command sends
+  out. And a folderless machine is still a networked command run on the company's behalf. The coordinator chose this
+  (Q2, answered: its GO of 15 Oct).
 
 ## Reads
 
@@ -483,6 +485,9 @@ only if a rule is wrong.
   change" holds: only the executor's order changes.
 - C1b-3 §6, `qorpera_folder_run_inherit_view_reads`: "A run inherits only its own agent's and member's views" is
   widened for `test_machine` views to a run whose agent and member read the root ("Reads", SQL).
+- The contract, "compute for agents", item 4: "its commands are not reviewed (founder, 28 September)", and item 10
+  of the 14 Oct amendment, "Until a machine carries the folder, today's rules hold for it", each get a note in place:
+  every command on a company machine is reviewed, also on a boot without the folder (Q2, "Review"; done in 6d-3a).
 - RUNTIME-COMPANY-FOLDER.md, the test machine's review: "Until then a machine has no company folder and its commands
   are not reviewed" is replaced: a boot without `/company` is reviewed too (Q2, "Review"; done in 6d-3a). The review
   is the one thing in which such a machine departs from item 10's "Until a machine carries the folder, today's rules
@@ -500,9 +505,10 @@ only if a rule is wrong.
 - **Q1 (coordinator).** When to build. 6b reuses 4c and 5c, and 6a's crashed-service refusal needs 5a's `served_by`;
   none of these is on master yet. Recommended: build 6a and 6c now (6a's crashed-service test lands once 5a has
   merged), and 6b against a stand-in core, merging after 4c and 5c; 6d after all three.
-- **Q2 (coordinator, answered).** Review on a boot without `/company`. The design and item 10 left such a machine's
-  commands unreviewed. Answer (the coordinator, 16 Oct 20:2xZ, when it accepted 6d-3a "Q2: every `machine_run`,
-  folderless boots too"): review every `machine_run` from 6d, for the reasons in "Review".
+- **Q2 (coordinator, answered).** Review on a boot without `/company`. The contract's item 4, item 10 and the design
+  left such a machine's commands unreviewed. Answer (the coordinator's GO for step 6, 15 Oct: "Q2 yes (review
+  folderless boots too)"; it took 6d-3a, "machine_run reviewed as external", on 16 Oct 20:25Z): review every
+  `machine_run` from 6d, for the reasons in "Review".
 
 The contract and the design decide the rest, and this plan follows them: who opens the view and whose authority it
 shows, the guard (the CID check and exactly one view per machine), when to publish (item 3's quiet publish applies
