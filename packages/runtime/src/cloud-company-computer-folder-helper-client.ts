@@ -58,6 +58,15 @@ export type CompanyComputerFolderRequest =
 	| { readonly op: "drop"; readonly name: string }
 	| { readonly op: "ended"; readonly name: string }
 	| { readonly op: "list" }
+	/** The notices of a view after `after`, in the series `nonce` names (null: none asked yet), from the node's folder
+	 * service ("Refusals come from the folder service"). The office service has no `AF_VSOCK`, so the helper asks for
+	 * it, through the folder program's relay. */
+	| {
+			readonly op: "notices";
+			readonly view: CompanyComputerFolderView;
+			readonly after: number;
+			readonly nonce: string | null;
+	  }
 	/** Runs `command` with Bash, as the shell host does, in the namespaces of the office shell whose pid namespace's
 	 * init is `shellPid` (initial pid namespace), with the command mount's tree at `/company`. Its connection stays
 	 * open for the command's life (`startCompanyComputerFolderRun`). */
@@ -96,6 +105,29 @@ export interface CompanyComputerFolderReport {
 	}>;
 	readonly refused?: string;
 	readonly closed?: boolean;
+}
+
+/** What the folder service kept of a boundary no machine asked for: the change set it committed, or its refusal
+ * whole, with the paths it refused for that reason (at most 20, sorted) and how many there were. `n` counts the
+ * view's notices from 1; `at` is when (ms). */
+export type CompanyComputerFolderNotice =
+	| { readonly n: number; readonly at: number; readonly commitId: string; readonly seq: number | null }
+	| {
+			readonly n: number;
+			readonly at: number;
+			readonly refused: string;
+			readonly paths: readonly string[];
+			readonly pathCount: number;
+	  };
+
+/** One page of a view's notices, as the folder service answers it. `nonce` is null when the service holds no view the
+ * pass was checked for; another nonce than the one asked about starts from the view's first notice. `last` is the next
+ * ask's `after`, and `more` says more follow. */
+export interface CompanyComputerFolderNotices {
+	readonly nonce: string | null;
+	readonly notices: readonly CompanyComputerFolderNotice[];
+	readonly last: number;
+	readonly more: boolean;
 }
 
 /**
@@ -143,6 +175,11 @@ export interface CompanyComputerFolderAnswers {
 	 * started again still answers. `unknown`: no mount of that name, or its command never started, which then ran
 	 * nothing: the helper lets a command run only once its namespace is in the state folder. */
 	readonly ended: { readonly answer: "ended" | "running" | "unknown" | "failed" };
+	/** The page the folder service answered, or `unanswered`: none came in time (a service without the `notices` role
+	 * answers no notices). */
+	readonly notices:
+		| ({ readonly answer: "notices" } & CompanyComputerFolderNotices)
+		| { readonly answer: "unanswered" };
 	readonly list:
 		| { readonly answer: "list"; readonly mounts: readonly CompanyComputerFolderMount[] }
 		| {
@@ -226,6 +263,19 @@ export function parseCompanyComputerFolderRequest(line: string): CompanyComputer
 						op: value.op,
 						name: value.name,
 						view: { environmentId: value.view.environmentId, viewId: value.view.viewId, pass: value.view.pass },
+					}
+				: undefined;
+		case "notices":
+			return exactKeys(value, ["op", "view", "after", "nonce"]) &&
+				isCompanyComputerFolderView(value.view) &&
+				Number.isSafeInteger(value.after) &&
+				(value.after as number) >= 0 &&
+				(value.nonce === null || isUuid(value.nonce))
+				? {
+						op: "notices",
+						view: { environmentId: value.view.environmentId, viewId: value.view.viewId, pass: value.view.pass },
+						after: value.after as number,
+						nonce: value.nonce,
 					}
 				: undefined;
 		case "boundary":
@@ -485,6 +535,7 @@ const PLAIN: Record<CompanyComputerFolderRequest["op"], readonly string[]> = {
 	drop: ["dropped", "unknown", "failed", "invalid"],
 	run: ["started", "unknown", "refused", "closed", "failed", "invalid"],
 	ended: ["ended", "running", "unknown", "failed", "invalid"],
+	notices: ["unanswered", "invalid"],
 	list: ["failed", "invalid"],
 };
 
@@ -518,7 +569,39 @@ export function parseCompanyComputerFolderAnswer<Op extends CompanyComputerFolde
 			)
 			? (value as never)
 			: undefined;
+	if (op === "notices") {
+		const { answer, ...page } = value;
+		return answer === "notices" && isCompanyComputerFolderNotices(page) ? (value as never) : undefined;
+	}
 	return undefined;
+}
+
+/** A page of notices exactly as the folder service answers one (its `notices` role, protocol 4): the helper passes
+ * only such a page on, and the office service takes only such an answer. */
+export function isCompanyComputerFolderNotices(value: unknown): value is CompanyComputerFolderNotices {
+	if (!isRecord(value) || !exactKeys(value, ["nonce", "notices", "last", "more"])) return false;
+	if (!(value.nonce === null || isUuid(value.nonce)) || typeof value.more !== "boolean") return false;
+	if (!Number.isSafeInteger(value.last) || (value.last as number) < 0 || !Array.isArray(value.notices)) return false;
+	return value.notices.every((notice: unknown) => {
+		if (!isRecord(notice) || !Number.isSafeInteger(notice.n) || (notice.n as number) < 1) return false;
+		if (typeof notice.at !== "number" || !Number.isFinite(notice.at) || notice.at < 0) return false;
+		if (Object.hasOwn(notice, "commitId"))
+			return (
+				exactKeys(notice, ["n", "at", "commitId", "seq"]) &&
+				isUuid(notice.commitId) &&
+				(notice.seq === null || (Number.isSafeInteger(notice.seq) && (notice.seq as number) >= 0))
+			);
+		return (
+			exactKeys(notice, ["n", "at", "refused", "paths", "pathCount"]) &&
+			typeof notice.refused === "string" &&
+			/^[a-z_]{1,32}$/.test(notice.refused) &&
+			Array.isArray(notice.paths) &&
+			notice.paths.length <= 20 &&
+			notice.paths.every((path: unknown) => typeof path === "string") &&
+			Number.isSafeInteger(notice.pathCount) &&
+			(notice.pathCount as number) >= notice.paths.length
+		);
+	});
 }
 
 function boundary(value: Record<string, unknown>, extra: string[]): boolean {

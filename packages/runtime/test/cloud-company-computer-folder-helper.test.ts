@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { createConnection, type Server, type Socket } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -53,6 +53,17 @@ const COMMAND = companyComputerFolderName("command", "66666666-7777-4888-9999-aa
 const VIEW = { environmentId: "env-1", viewId: "view-1", pass: "pass-secret-1" };
 const NEWER = { environmentId: "env-1", viewId: "view-2", pass: "pass-secret-2" };
 const PROOF = "qorpera.folder-view-proof/v1";
+const NONCE = "7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+/** A page of a view's notices as the folder service answers one: a change set refused whole, then a commit. */
+const NOTICES = {
+	nonce: NONCE,
+	notices: [
+		{ n: 1, at: 1760000000000, refused: "denied", paths: ["docs/a.md", "docs/b.md"], pathCount: 3 },
+		{ n: 2, at: 1760000001000, commitId: "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e", seq: 7 },
+	],
+	last: 2,
+	more: false,
+};
 
 const ACTIVE: CompanyComputerFolderUnitState = {
 	active: "active",
@@ -83,6 +94,15 @@ function report(paths: Array<Record<string, unknown>> = [{ path: "notes.md", out
 	return { commitId: "c1", seq: 4, paths, ...extra };
 }
 const printed = (value: unknown) => Buffer.from(`${JSON.stringify(value)}\n`);
+/** A frame of the folder service's protocol: a u32 big-endian length of the kind byte and the payload, the kind, then
+ * the payload's JSON. */
+function frame(kind: number, value: unknown): Buffer {
+	const payload = Buffer.from(JSON.stringify(value));
+	const head = Buffer.alloc(5);
+	head.writeUInt32BE(payload.length + 1, 0);
+	head[4] = kind;
+	return Buffer.concat([head, payload]);
+}
 
 /** systemd, the mount table and the folder program as the helper sees them. */
 class FakeSystem implements CompanyComputerFolderHelperSystem {
@@ -102,6 +122,14 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 	/** The stand-in for `qorpera-folder command` (LAUNCHER), and the arguments of each launch. */
 	launcher = "";
 	readonly launches: string[][] = [];
+	/** The node's folder service behind the relay: one with the `notices` role answers each `Q` with `notices`, an older
+	 * one answers the hello "Bad role". A relay that `exits` ends at once, listening on nothing. */
+	service: "notices" | "older" = "notices";
+	notices: unknown = NOTICES;
+	relayExits = false;
+	/** Each frame the service was sent, and each relay started (one runs until it is closed). */
+	readonly frames: Array<{ kind: number; value: Record<string, unknown> }> = [];
+	readonly relays: Server[] = [];
 	#id = 100;
 	readonly root: string;
 
@@ -180,6 +208,34 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		return spawn(process.execPath, [this.launcher, ...args], {
 			cwd: "/",
 			stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+		});
+	}
+	relay(socket: string) {
+		this.calls.push("relay");
+		if (this.relayExits) return Promise.resolve();
+		const server = createServer((connection) => {
+			let buffer = Buffer.alloc(0);
+			connection.on("error", () => undefined);
+			connection.on("data", (chunk: Buffer) => {
+				buffer = Buffer.concat([buffer, chunk]);
+				while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32BE(0)) {
+					const size = buffer.readUInt32BE(0);
+					const kind = buffer[4];
+					const value = JSON.parse(buffer.subarray(5, 4 + size).toString("utf8"));
+					buffer = buffer.subarray(4 + size);
+					this.frames.push({ kind, value });
+					if (kind === 0x48 && this.service === "older")
+						connection.end(frame(0x65, { code: "BAD_REQUEST", message: "Bad role" }));
+					else if (kind === 0x48) connection.write(frame(0x68, { protocol: 4, viewId: value.viewId }));
+					else connection.write(frame(0x71, this.notices));
+				}
+			});
+		});
+		this.relays.push(server);
+		return new Promise<void>((resolve) => {
+			server.once("close", () => resolve());
+			server.once("error", () => resolve());
+			server.listen(socket);
 		});
 	}
 	/** The stand-in reports the command's process group as its mount namespace. */
@@ -272,6 +328,7 @@ async function setup(options: CompanyComputerFolderHelperOptions = {}) {
 	cleanups.push(() => rm(base, { recursive: true, force: true }));
 	const root = join(base, "folder");
 	const system = new FakeSystem(root);
+	cleanups.push(() => Promise.all(system.relays.map((server) => new Promise((resolve) => server.close(resolve)))));
 	const logs: string[] = [];
 	const helper = new CompanyComputerFolderHelper(system, {
 		root,
@@ -313,6 +370,7 @@ describe("the folder helper's mounts", () => {
 		expect(await mode(join(root, "views"))).toBe(0o700);
 		expect(await mode(join(root, "state"))).toBe(0o700);
 		expect(await mode(join(root, "mounts"))).toBe(0o755);
+		expect(await mode(join(root, "relay"))).toBe(0o700);
 		// A view a stopped helper wrote but never gave a name goes.
 		await writeFile(join(root, "views", `.${DESKTOP}.next`), "{}");
 		await new CompanyComputerFolderHelper(new FakeSystem(root), { root }).prepare();
@@ -620,6 +678,71 @@ describe("moving a desktop's mount to a newer view", () => {
 	});
 });
 
+describe("a view's notices from the folder service", () => {
+	const ask = (after = 0, nonce: string | null = null) => ({ op: "notices", view: VIEW, after, nonce }) as const;
+	const starts = (system: FakeSystem) => system.calls.filter((call) => call === "relay").length;
+
+	it("asks the service's notices role through the relay with the view, and gives back only the page", async () => {
+		const { helper, system, root } = await setup();
+		// A socket a relay left behind is taken away first.
+		await writeFile(join(root, "relay", "relay.sock"), "");
+		const answer = await helper.answer(ask());
+		expect(answer).toEqual({ answer: "notices", ...NOTICES });
+		expect(JSON.stringify(answer)).not.toContain(VIEW.pass);
+		expect(system.frames).toEqual([
+			{
+				kind: 0x48,
+				value: { protocol: 4, environmentId: "env-1", viewId: "view-1", pass: "pass-secret-1", role: "notices" },
+			},
+			{ kind: 0x51, value: { after: 0, nonce: null } },
+		]);
+		// The relay keeps running for the next ask.
+		system.notices = { nonce: NONCE, notices: [], last: 2, more: false };
+		expect(await helper.answer(ask(2, NONCE))).toEqual({
+			answer: "notices",
+			nonce: NONCE,
+			notices: [],
+			last: 2,
+			more: false,
+		});
+		expect(system.frames.at(-1)).toEqual({ kind: 0x51, value: { after: 2, nonce: NONCE } });
+		expect(starts(system)).toBe(1);
+	});
+
+	it("is unanswered from a service without the role, or for a page that is not one", async () => {
+		const { helper, system } = await setup();
+		system.service = "older";
+		expect(await helper.answer(ask())).toEqual({ answer: "unanswered" });
+		expect(system.frames.map((sent) => sent.kind)).toEqual([0x48]);
+		system.service = "notices";
+		for (const notices of [
+			{ ...NOTICES, pass: VIEW.pass },
+			{ ...NOTICES, nonce: "not-a-nonce" },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[0], pathCount: 1 }] },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[0], paths: Array.from({ length: 21 }, (_, n) => `${n}`) }] },
+		]) {
+			system.notices = notices;
+			expect(await helper.answer(ask())).toEqual({ answer: "unanswered" });
+		}
+	});
+
+	it("starts the relay again once it exited, at most once a second, and is unanswered while none listens", async () => {
+		const { helper, system } = await setup({ noticesMs: 300 });
+		system.relayExits = true;
+		expect(await helper.answer(ask())).toEqual({ answer: "unanswered" });
+		expect(starts(system)).toBe(1);
+		system.relayExits = false;
+		await delay(1000);
+		expect(await helper.answer(ask())).toEqual({ answer: "notices", ...NOTICES });
+		expect(starts(system)).toBe(2);
+		// A relay that stops is started again by the next ask a second after its start.
+		await new Promise((resolve) => system.relays[0]!.close(resolve));
+		await delay(1000);
+		expect(await helper.answer(ask())).toEqual({ answer: "notices", ...NOTICES });
+		expect(starts(system)).toBe(3);
+	});
+});
+
 describe("the folder helper's socket", () => {
 	async function serve() {
 		const context = await setup();
@@ -718,6 +841,37 @@ describe("the folder helper's socket", () => {
 			undefined,
 		);
 		expect(parseCompanyComputerFolderRequest(JSON.stringify(unmount(COMMAND, true)))).toEqual(unmount(COMMAND, true));
+		const notices = { op: "notices", view: VIEW, after: 2, nonce: NONCE };
+		expect(parseCompanyComputerFolderRequest(JSON.stringify(notices))).toEqual(notices);
+		expect(parseCompanyComputerFolderRequest(JSON.stringify({ ...notices, nonce: null }))).toEqual({
+			...notices,
+			nonce: null,
+		});
+		for (const bad of [
+			{ ...notices, after: -1 },
+			{ ...notices, after: 1.5 },
+			{ ...notices, nonce: "nonce" },
+			{ ...notices, view: { ...VIEW, pass: "has space" } },
+			{ ...notices, extra: 1 },
+		])
+			expect(parseCompanyComputerFolderRequest(JSON.stringify(bad))).toBe(undefined);
+		expect(parseCompanyComputerFolderAnswer("notices", JSON.stringify({ answer: "notices", ...NOTICES }))).toEqual({
+			answer: "notices",
+			...NOTICES,
+		});
+		expect(parseCompanyComputerFolderAnswer("notices", '{"answer":"unanswered"}')).toEqual({ answer: "unanswered" });
+		for (const page of [
+			{ ...NOTICES, pass: VIEW.pass },
+			{ ...NOTICES, last: -1 },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[0], n: 0 }] },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[0], refused: "Not A Word" }] },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[1], seq: -1 }] },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[1], commitId: "c1" }] },
+			{ ...NOTICES, notices: [{ ...NOTICES.notices[1], paths: [] }] },
+		])
+			expect(parseCompanyComputerFolderAnswer("notices", JSON.stringify({ answer: "notices", ...page }))).toBe(
+				undefined,
+			);
 	});
 });
 

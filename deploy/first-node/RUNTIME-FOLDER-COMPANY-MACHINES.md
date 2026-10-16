@@ -562,13 +562,20 @@ has unsaved changes (4a).
   a series of the view's own. A boundary that first asks again a change set that had no answer keeps that one's
   notice, from its own outcomes, then its own change set's. A boundary a machine asked for is not kept: its answer
   reaches the office service already. The office service
-  has no vsock, so the helper asks for them: it runs the folder program's `relay` on a socket only root reaches, and
-  speaks the folder protocol's `notices` role through it with the view file's id and pass (protocol 4,
-  RUNTIME-FOLDER-SERVICE.md), so the folder service checks it as it does the machine that holds the mount. It never
-  opens, holds or keeps a view, and never carries a pass back to the office service. The office service asks the
-  helper (a new `notices` operation, after the last one it has) for each view it opened for a run, at most once a
-  second, and once more before a drain or a `switch` moves the mount. It keeps a view's refusals since its last
-  report; a refusal asked again with the same reason and paths is kept once, with how many times.
+  has no vsock, so the helper asks for them: it runs the folder program's `relay` on a socket only root reaches
+  (`relay/relay.sock` under its root, started on the first ask and again, at most once a second, after it exited), and
+  speaks the folder protocol's `notices` role through it with the view the office service gives (its id and pass;
+  protocol 4, RUNTIME-FOLDER-SERVICE.md), so the folder service checks it as it does the machine that holds the
+  mount. It never opens, holds or keeps a view, and never carries a pass back to the office service: the answer is
+  the service's page only, or `unanswered` (no relay, no answer in 10 s, an error frame, a page that is not one). The
+  office service asks the helper (a new `notices` operation, after the last one it has, one ask of a view at a time)
+  for each view it opened for a run when it reads the run's report, at most once a second, and once more when a
+  `switch` moved the mount on or the view closed (a drain, a release). Once a view's commits are read to their end
+  it asks until the service no longer keeps the view (`nonce: null`), a minute and a half at most. It takes only the
+  refusals (a commit's paths come with the view's commits): one is the report's refusal ("the company folder refused
+  3 changes on this desktop") with its paths not saved; one asked again with the same reason and paths before a report
+  gave the run the first is kept once, in its place, with how many times. One after that comes as new, with its
+  paths: the run may have been shown the first already (a read can go on past the report's wait).
   - **Rollout.** The service's role (4f-2b-2a) goes out with a folder service deploy on the nodes; the helper's
     relay and operation (4f-2b-2b) with a new office image generation, as the helper is the image's. Either may go
     first: a service before the role answers the helper's hello "Bad role", which the helper reads as no notices,
