@@ -367,7 +367,8 @@ function sample(files) {
  * With `cores`, side by side: first every step's `alone` commands, one step at a time with nothing else running; then
  * the rest of every step, the longest (`seconds`) first, each starting once the running steps' `cores` leave room for
  * it within `cores` (one always runs). A step runs its rest even when its `alone` part failed, and passes only if both
- * passed. Its output is printed whole when it ends, with its own time. */
+ * passed. Its output is printed whole when it ends, with its own time. A step whose rest ends without a result (its
+ * worker killed, or the result not written) fails. */
 export function planScript(steps, { cores = null } = {}) {
 	const fail = [
 		// The failed step names reach the run record (and the GitHub status) through the status file.
@@ -413,7 +414,10 @@ export function planScript(steps, { cores = null } = {}) {
 					`started=$(date +%s); alone_${i} >"$out/${i}.log" 2>&1; code[${i}]=$?; seconds[${i}]=$(( $(date +%s) - started ))${step.commands.length ? "" : `; report ${i}`}`,
 			),
 		// The rest's end (exit code, seconds) appears in one rename, so the loop never reads half of it.
-		'start() { ( s=$(date +%s); "rest_$1" >>"$out/$1.log" 2>&1; c=$?; echo "$c $(( $(date +%s) - s ))" >"$out/$1.end.tmp"; mv "$out/$1.end.tmp" "$out/$1.end" ) & }',
+		'start() { ( s=$(date +%s); "rest_$1" >>"$out/$1.log" 2>&1; c=$?; echo "$c $(( $(date +%s) - s ))" >"$out/$1.end.tmp" && mv "$out/$1.end.tmp" "$out/$1.end" ) & pid[$1]=$!; began[$1]=$(date +%s); }',
+		// A worker is alive while /proc shows it running (not a zombie) as this shell's child, so its pid handed out
+		// again to another process does not count.
+		'alive() { local _pid _comm state parent; { read -r _pid _comm state parent _ <"/proc/$1/stat"; } 2>/dev/null && [ "$state" != Z ] && [ "$parent" = "$BASHPID" ]; }',
 		// The runner user's tasks count against its 512-task limit (run-on-node.mjs RUNNERS): the run reports its peak.
 		`pending="${rest.join(" ")}"; running=""; used=0; tick=0; tasks=0; least=""`,
 		'while [ -n "${pending// }${running// }" ]; do',
@@ -428,7 +432,13 @@ export function planScript(steps, { cores = null } = {}) {
 		"\tfi",
 		'\tstill=""',
 		"\tfor i in $running; do",
-		'\t\tif [ -e "$out/$i.end" ]; then read -r c s <"$out/$i.end"; seconds[i]=$(( seconds[i] + s )); [ "${code[i]}" = 0 ] && code[i]=$c; report "$i"; used=$(( used - need[i] ));',
+		// A worker with a result ends right after its rename, so wait returns at once; reaped, it has written all it ever
+		// will. One killed, or one that could not write its result, fails its step with its exit code and frees its cores.
+		'\t\tif [ -e "$out/$i.end" ] || ! alive "${pid[i]}"; then',
+		'\t\t\twait "${pid[i]}"; w=$?; c=""; s=""; [ -e "$out/$i.end" ] && read -r c s <"$out/$i.end"',
+		'\t\t\tif [[ $c =~ ^[0-9]+$ && $s =~ ^[0-9]+$ ]]; then seconds[i]=$(( seconds[i] + s )); [ "${code[i]}" = 0 ] && code[i]=$c;',
+		'\t\t\telse echo "== changed: ${names[i]}: its worker ended (exit $w) without a result" >>"$out/$i.log"; seconds[i]=$(( seconds[i] + $(date +%s) - began[i] )); code[i]=1; fi',
+		'\t\t\treport "$i"; used=$(( used - need[i] ))',
 		'\t\telse still="$still $i"; fi',
 		"\tdone",
 		"\trunning=$still",

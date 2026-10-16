@@ -254,6 +254,29 @@ test("side by side: alone parts first and alone, then the rest longest first wit
 	}
 });
 
+test("side by side: a worker killed, or one that cannot write its result, fails its step and the run still ends", () => {
+	const steps = [
+		{ name: "fine", commands: ["sleep 2", "echo fine-done"] },
+		// Its rest's subshell kills the worker above it (field 4 of /proc/<pid>/stat is the parent).
+		{ name: "killed", commands: ['read -r _ _ _ worker _ </proc/$BASHPID/stat', 'kill -9 "$worker"'] },
+		// Its result cannot be written: the scheduler's temporary name for it (step 2) is a directory.
+		{ name: "lost", commands: ['mkdir "$out/2.end.tmp"', "echo lost-ran"] },
+	];
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	try {
+		// Before workers were reaped, this run never ended.
+		const result = spawnSync("bash", ["-c", planScript(steps, { cores: 3 })], { cwd, encoding: "utf8", timeout: 30_000 });
+		assert.equal(result.signal, null, result.stdout);
+		assert.equal(result.status, 1, result.stdout);
+		assert.match(result.stdout, /== changed: fine\nfine-done\n== changed: fine passed in \d+ s\n/);
+		assert.match(result.stdout, /== changed: killed\n== changed: killed: its worker ended \(exit 137\) without a result\n== changed: killed FAILED after \d+ s\n/);
+		assert.match(result.stdout, /== changed: lost\nlost-ran\n== changed: lost: its worker ended \(exit 1\) without a result\n== changed: lost FAILED after \d+ s\n/);
+		assert.deepEqual(readFileSync(join(cwd, ".run-on-node-status"), "utf8").trim().split("=")[1].split(",").sort(), ["killed", "lost"]);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("deploy-shell fails when any script, not only the last, has a syntax error", () => {
 	const root = mkdtempSync(join(tmpdir(), "deploy-shell-"));
 	try {
