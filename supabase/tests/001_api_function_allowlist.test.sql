@@ -109,7 +109,6 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_decline_profile_invitation(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_delegate_coding_session(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_delete_hosted_profile(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
-	('public.qorpera_describe_governed_company_computer(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_describe_member_company_path_proposal(uuid,uuid)', false, true, 'internal: always raises'),
 	('public.qorpera_desired_node_update(uuid,bigint,text)', true, true, 'internal: self-scoped or pure helper'),
 	('public.qorpera_drain_node_update(uuid,bigint,text,text,bigint,text)', true, true, 'internal: node capability secret (sha256 match)'),

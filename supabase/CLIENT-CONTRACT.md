@@ -395,7 +395,6 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_create_execution_sponsor_binding`
 - `qorpera_create_member_execution_sponsor`
 - `qorpera_create_runner_registration`
-- `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
 - `qorpera_get_worker_run_control(p_run_id)` — `{run_id, status, can_cancel}` of an in-house worker's own run, for any member who can read the company; `can_cancel` is the Stop's rule (20260930002800). A `run_no_progress` member notice names such a run with `worker: true`
