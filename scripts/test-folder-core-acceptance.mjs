@@ -175,6 +175,9 @@ function sqlFolderCore(db, code) {
 		renewView: async () => {
 			throw new Error("An operator mount has no core view to renew");
 		},
+		serviceStopped: async () => {
+			throw new Error("An operator mount serves no view");
+		},
 	};
 }
 
