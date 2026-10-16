@@ -205,7 +205,7 @@ test("shared configuration and unknown paths run every step", () => {
 	assert.match(describePlan(unknown, "origin/master")[0], /every step/);
 });
 
-test("in parts, every step runs in exactly one part, the heaviest work first to the lightest part, in plan order", () => {
+test("in parts, every step runs in exactly one part, the heaviest work first to the lightest part, in plan order, the most work first", () => {
 	const groupNames = (groups) => groups.map((group) => group.steps.map((step) => step.name));
 	// The full plan in two parts: runner-orchestrator (588 s × 3 cores) outweighs every other step together, so it runs
 	// alone, without the build; the other part has all the rest, the build and the alone checks.
@@ -236,6 +236,8 @@ test("in parts, every step runs in exactly one part, the heaviest work first to 
 	assert.deepEqual(splitPlan(steps, 2).map((group) => group.build), [false, true]);
 	assert.deepEqual(groupNames(splitPlan(steps.slice(2), 2)), [["c", "e"], ["d"]]);
 	assert.deepEqual(groupNames(splitPlan(steps.slice(0, 2), 5)), [["a"], ["b"]]);
+	// The part with the most work comes first, though its steps went to it later.
+	assert.deepEqual(groupNames(splitPlan([{ name: "a", seconds: 100 }, { name: "b", seconds: 60 }, { name: "c", seconds: 60 }], 2)), [["b", "c"], ["a"]]);
 });
 
 test("every step runs, a failing command fails its step, and the exit code says so", () => {

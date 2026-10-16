@@ -24,6 +24,7 @@ import {
 	CPU_SLOTS,
 	candidateMachines,
 	customTarget,
+	DROPPED,
 	describeProbes,
 	FRONT,
 	firstTaking,
@@ -35,9 +36,11 @@ import {
 	MACHINES,
 	parseArgs,
 	parseStatus,
+	pickSlot,
 	probeAll,
 	probeScript,
 	pruneScript,
+	QUEUED,
 	QUICK_SLOTS,
 	RUNNERS,
 	rankMachines,
@@ -45,6 +48,8 @@ import {
 	runOrder,
 	runScript,
 	SET_UP,
+	SLOT,
+	SPREAD_MS,
 	secretLooking,
 	shellQuote,
 	suiteCommand,
@@ -1009,6 +1014,139 @@ test(
 		}
 	},
 );
+
+test("a part's session on each machine says when it is queued and when it holds a slot, and starts only when told", () => {
+	const base = { run: "R", runDir: "/home/tester/runs/R", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	const claim = runScript({ ...base, claim: true });
+	const plain = runScript(base);
+	assert.ok(claim.indexOf(`echo "${QUEUED}"`) > claim.indexOf("rm -f /home/tester/arriving/R"));
+	assert.ok(claim.indexOf(`echo "${QUEUED}"`) < claim.indexOf('while [ -z "$slot" ]'));
+	assert.match(claim, /\t\tread -r -t 2 _; \[ \$\? -gt 128 \] \|\| \{ rm -rf \/home\/tester\/runs\/R; exit 95; \}\n/);
+	assert.match(
+		claim,
+		/rm -f "\$ticket"; exec 7>&-\necho "== run-on-node: holding slot \$slot"\nread -r answer; \[ "\$answer" = go \] \|\| \{ exec 9>&-; rm -rf \/home\/tester\/runs\/R; exit 95; \}\nqueued_s=/,
+	);
+	assert.equal(DROPPED, 95);
+	// Any other run waits as before and says neither.
+	assert.match(plain, /\t\tsleep 2\n/);
+	assert.ok(!plain.includes(QUEUED) && !plain.includes(SLOT) && !plain.includes("read -r"));
+	assert.equal(plain, claim.replace(`echo "${QUEUED}"\n`, "").replace(/\t\tread -r -t 2 .*\n/, "\t\tsleep 2\n").replace(/echo "== run-on-node: holding slot.*\nread -r answer.*\n/, ""));
+});
+
+test(
+	"a part's session takes a slot only to offer it: it starts on go, and leaves the queue or frees the slot when its input ends",
+	{ skip: flockNoFork ? false : "no util-linux flock(1) here; the test machines have it" },
+	async () => {
+		const dir = mkdtempSync(join(tmpdir(), "run-on-node-claim-"));
+		const queue = join(dir, "qorpera-test-machine-queue");
+		const slot = (n) => join(dir, `qorpera-test-machine-slot${n}.lock`);
+		const runDir = join(dir, "run");
+		const holders = new Map();
+		const sessions = [];
+		const hold = (file) =>
+			new Promise((resolvePromise, reject) => {
+				const child = spawn("flock", ["--nonblock", "--no-fork", file, "sh", "-c", "echo held; exec sleep 60"], { stdio: ["ignore", "pipe", "inherit"] });
+				holders.set(file, child);
+				child.stdout.once("data", () => resolvePromise());
+				child.once("exit", (code) => reject(new Error(`lock holder for ${file} exited ${code}`)));
+			});
+		const release = async (file) => {
+			const child = holders.get(file);
+			holders.delete(file);
+			const exited = new Promise((resolvePromise) => child.once("exit", resolvePromise));
+			child.kill("SIGKILL");
+			await exited;
+		};
+		const free = (file) => spawnSync("flock", ["--nonblock", file, "true"]).status === 0;
+		const tickets = () => (existsSync(queue) ? readdirSync(queue) : []);
+		const until = async (what, check) => {
+			for (const end = Date.now() + 15_000; !check(); await sleep(100)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+		};
+		// The session's lines from its queue to its answer, on this directory's locks; once started, it holds its slot.
+		const script = runScript({ run: "R", runDir, treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", claim: true });
+		const lines = script
+			.slice(script.indexOf("mkdir -p /run/lock/"), script.indexOf("queued_s="))
+			.replaceAll("/run/lock/", `${dir}/`)
+			.replaceAll("/home/tester/arriving/", `${dir}/arriving-`);
+		const session = () => {
+			mkdirSync(runDir, { recursive: true });
+			writeFileSync(join(dir, "arriving-R"), "");
+			const child = spawn("bash", ["-c", `set -uo pipefail\n${lines}echo "started in $slot"\nexec sleep 60`], { stdio: ["pipe", "pipe", "inherit"] });
+			sessions.push(child);
+			const state = { out: "", child };
+			child.stdout.on("data", (data) => {
+				state.out += data;
+			});
+			state.ended = new Promise((resolvePromise) => child.once("exit", (code) => resolvePromise(code)));
+			return state;
+		};
+		try {
+			// A free slot: queued (the copy no longer counts as arriving), then the slot, then nothing until go.
+			const first = session();
+			await until("its slot", () => first.out.includes(`${SLOT} 1\n`));
+			assert.equal(first.out, `${QUEUED}\n${SLOT} 1\n`);
+			assert.deepEqual([existsSync(join(dir, "arriving-R")), tickets(), free(slot(1))], [false, [], false]);
+			await sleep(500);
+			assert.doesNotMatch(first.out, /started/);
+			first.child.stdin.end("go\n");
+			await until("the start", () => first.out.includes("started in 1\n"));
+			assert.equal(free(slot(1)), false);
+			first.child.kill("SIGKILL");
+			await first.ended;
+			// Its input ends while it holds the slot: it frees the slot, removes its run directory and leaves.
+			const second = session();
+			await until("its slot", () => second.out.includes(`${SLOT} 1\n`));
+			second.child.stdin.end();
+			assert.equal(await second.ended, DROPPED);
+			assert.deepEqual([free(slot(1)), existsSync(runDir), tickets(), second.out.includes("started")], [true, false, [], false]);
+			// Every slot it may take busy: it waits, and offers the first that frees.
+			for (const n of [1, 2, 3, 4]) await hold(slot(n));
+			const third = session();
+			await until("its wait", () => third.out.includes("== run-on-node: waiting for a slot in the CPU lane"));
+			assert.ok(third.out.startsWith(`${QUEUED}\n`));
+			assert.equal(tickets().length, 1);
+			await release(slot(2));
+			await until("slot 2", () => third.out.includes(`${SLOT} 2\n`));
+			third.child.stdin.end("no\n");
+			assert.equal(await third.ended, DROPPED);
+			assert.deepEqual([free(slot(2)), existsSync(runDir), tickets()], [true, false, []]);
+			// Its input ends while it waits: it leaves the queue within one wait, with its run directory.
+			await hold(slot(2));
+			const fourth = session();
+			await until("its wait", () => fourth.out.includes("== run-on-node: waiting for a slot in the CPU lane"));
+			const left = Date.now();
+			fourth.child.stdin.end();
+			assert.equal(await fourth.ended, DROPPED);
+			assert.ok(Date.now() - left < 3_000, `left after ${Date.now() - left} ms`);
+			assert.deepEqual([tickets(), existsSync(runDir), fourth.out.includes(SLOT)], [[], false, false]);
+		} finally {
+			for (const child of [...holders.values(), ...sessions]) child.kill("SIGKILL");
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+test("a part starts in the first slot offered on a machine none of its run's other parts uses; elsewhere it waits a little", () => {
+	const copy = (machine, state, heldAt) => ({ machine, state, ...(heldAt === undefined ? {} : { heldAt }) });
+	// No slot offered yet.
+	assert.deepEqual(pickSlot([copy("node02", "waiting"), copy("node01", "queued")], [], 0), {});
+	// A slot on a machine no other part runs on is taken at once, whatever else may come.
+	const spread = copy("node01", "slot", 100);
+	assert.equal(pickSlot([copy("node02", "starting"), spread], ["node02"], 100).take, spread);
+	assert.equal(pickSlot([copy("node02", "slot", 50), spread], ["node02"], 100).take, spread);
+	// On a machine another part uses, while its session elsewhere may still offer one: it waits SPREAD_MS at most.
+	const busy = copy("node02", "slot", 1_000);
+	for (const state of ["gated", "starting", "queued"])
+		assert.deepEqual(pickSlot([busy, copy("node01", state)], ["node02"], 4_000), { wait: SPREAD_MS - 3_000 }, state);
+	assert.equal(pickSlot([busy, copy("node01", "queued")], ["node02"], 1_000 + SPREAD_MS).take, busy);
+	// Taken at once when no session elsewhere may offer one soon: it waits for a slot there, ended, or left.
+	for (const state of ["waiting", "ended", "dropped", "skipped"]) assert.equal(pickSlot([busy, copy("node01", state)], ["node02"], 1_000).take, busy, state);
+	assert.equal(pickSlot([busy], ["node02"], 1_000).take, busy);
+	// Two slots on busy machines: the one offered first.
+	const earlier = copy("node01", "slot", 500);
+	assert.equal(pickSlot([busy, earlier], ["node01", "node02"], 1_000).take, earlier);
+	assert.equal(SPREAD_MS, 15_000);
+});
 
 test("the status file reads back runner, install and times", () => {
 	assert.deepEqual(parseStatus("runner=ci03\ninstalled=1 prepare_ms=1200\nsuite_ms=900\n"), {
