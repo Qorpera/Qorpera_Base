@@ -77,9 +77,11 @@ program before it is gone (a restarted mount, or a publisher), or when the view 
 A draft's file joins the view only when its close lands it there (step 5d): until then the view keeps what it had at
 the path, so no boundary publishes the draft half written. It lands as the view's newest change at the path: over what
 this view itself did there since the open (a save, a removal or a move, published or not), and against what another
-machine did there since, which is a conflict when it is published, not overwritten. A removal or move of the view's
-that never happens (refused, or let go as a conflict) leaves the draft landing against the file it would have taken
-away. The draft takes the executable bit of what it lands over (none as a new file). Over the view's own unsaved file,
+machine did there since, which is a conflict when it is published, not overwritten. Where the view's move of the
+path's file away is still pending at the close, the draft lands as a new file there, as a create would; if the boundary
+then lets that move go, the new file meets the file the move left and is a conflict (both are kept). A removal or move
+the boundary lets go before the close leaves the draft landing against the file it would have taken away, as one opened
+over that file. The draft takes the executable bit of what it lands over (none as a new file). Over the view's own unsaved file,
 the draft holds that file unpublished, as an open handle does, and its close is the file's next save. A discard gives a
 handle up as the end of its connection does; a draft's leaves nothing, and the quiet period then publishes a file it held.
 A close that cannot land the draft (a folder is at its path now, say) gives it up the same way.

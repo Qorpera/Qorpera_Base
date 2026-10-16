@@ -81,8 +81,9 @@ type Node = PendingFile | PendingFolder | Gone;
 interface Draft {
 	readonly path: string;
 	readonly held?: PendingFile;
-	/** The live file this view took away there since (removed or moved it). If that never happens (refused, or let go
-	 * as a conflict) and the path shows that file again, the draft lands against it. */
+	/** The live file this view took away there (removed or moved it), before the draft's open or since, until a
+	 * boundary publishes that. If the boundary lets it go (the move fails, the removal is refused), so the path shows
+	 * that file again, the draft lands against it (`settle`). */
 	took?: LiveRef;
 }
 
@@ -516,12 +517,27 @@ export class PendingView {
 			held.open++;
 		}
 		const handle = this.#nextHandle++;
-		const took = r ? undefined : this.#removed.get(path);
-		this.#handles.set(handle, {
-			node,
-			draft: { path, ...(held ? { held } : {}), ...(took?.kind === "file" ? { took } : {}) },
-		});
+		// Over nothing or the view's own file there, the live file the view took away from the path, if it did.
+		const took = r?.kind === "live" ? undefined : this.#tookAway(path);
+		this.#handles.set(handle, { node, draft: { path, ...(held ? { held } : {}), ...(took ? { took } : {}) } });
 		return { handle, size: 0, version: node.version };
+	}
+
+	/** Whether a move of this view's still takes the live entry at `path` away (moves it or a folder above it). */
+	#movesAway(path: string): boolean {
+		for (const [at, node] of this.#nodes)
+			if (node.kind !== "gone" && node.origin && node.origin.path !== at && within(path, node.origin.path))
+				return true;
+		return false;
+	}
+
+	/** The live file at `path` this view removed or moved away, if it did. */
+	#tookAway(path: string): LiveRef | undefined {
+		const removed = this.#removed.get(path);
+		if (removed) return removed.kind === "file" ? removed : undefined;
+		for (const [at, node] of this.#nodes)
+			if (at !== path && node.kind === "file" && node.origin?.path === path) return node.origin;
+		return undefined;
 	}
 
 	/** Whether the handle is still open (a draft whose close could not land it is given up). */
@@ -606,8 +622,9 @@ export class PendingView {
 	/** A draft's close: on the view's own file at its path (the one its open held, or one written since), its bytes
 	 * are that file's next save. Otherwise its file lands there as the change its open would have made: a file another
 	 * machine created or changed there since is a conflict when it is published, not overwritten; a path this view
-	 * removed since takes it as a new file, as a create there would, unless that removal never happened. It takes the
-	 * executable bit of what it lands over (none for a new file), whether or not a boundary came between. */
+	 * removed or moved the file away from takes it as a new file, as a create there would (if that move then fails,
+	 * the new file meets the file it left: a conflict, both kept). It takes the executable bit of what it lands over
+	 * (none for a new file), whether or not a boundary came between. */
 	#land(handle: number, draft: Draft, written: PendingFile): PendingFile {
 		const path = draft.path;
 		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
@@ -622,8 +639,6 @@ export class PendingView {
 		} else {
 			if (r?.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
 			if (!r) this.#newName(path);
-			else if (!written.origin && r.entry.version === draft.took?.version)
-				written.origin = { path: r.source, kind: "file", version: r.entry.version, entry: r.entry };
 			written.executable = r?.entry.executable ?? false;
 			node = written;
 			node.open--;
@@ -986,6 +1001,16 @@ export class PendingView {
 	settle(keep: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
 		this.#removed.clear();
+		// Where a removal or move of the view's failed, the path shows the file it would have taken away: a draft open
+		// there lands against that file, as one opened over it does (a change another machine makes after is a conflict).
+		// A move the boundary kept (one waiting on another) still takes it away.
+		for (const { node, draft } of this.#handles.values()) {
+			if (!draft?.took || this.#movesAway(draft.took.path)) continue;
+			const live = this.#live().get(draft.took.path);
+			if (!node.origin && live?.kind === "file" && live.version === draft.took.version)
+				node.origin = { path: draft.took.path, kind: "file", version: live.version, entry: live };
+			draft.took = undefined;
+		}
 	}
 
 	/** After a git publish (git.ts): the view shows the live files again where `made` names the version it published,

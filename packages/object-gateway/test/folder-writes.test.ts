@@ -562,29 +562,61 @@ describe("writes through the mount", () => {
 	});
 
 	it("lands a draft against the file this view's move would have taken away when that move is let go", async () => {
-		const { root, core, service, open } = await fixture();
-		core.seed([folder("docs"), await storeFile(root, "docs/p.md", "v1", 1, BIG)]);
-		const view = await open();
-		const data = Buffer.from("drafted");
-		const { handle } = await view.open({
-			path: "docs/p.md",
-			create: true,
-			exclusive: false,
-			truncate: true,
-			draft: true,
-		});
-		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
-		// This view moves the file away; another machine makes a file where it goes, so the move is a conflict.
-		await view.rename({ from: "docs/p.md", to: "docs/r.md", noReplace: false });
-		core.write(await storeFile(root, "docs/r.md", "theirs", 2, BIG));
-		await service.poll();
-		await service.settled();
-		await view.publish();
-		expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("v1"));
-		expect(await read(view, "docs/p.md")).toBe("v1");
-		await view.close(handle, data.byteLength);
-		expect((await view.publish()).paths).toEqual([{ path: "docs/p.md", outcome: "saved" }]);
-		expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("drafted"));
+		for (const openFirst of [true, false])
+			for (const after of ["nothing", "theirsGone", "noBoundary"] as const) {
+				const { root, core, service, open } = await fixture();
+				core.seed([folder("docs"), await storeFile(root, "docs/p.md", "v1", 1, BIG)]);
+				const view = await open();
+				const data = Buffer.from("drafted");
+				const draft = async () => {
+					const { handle } = await view.open({
+						path: "docs/p.md",
+						create: true,
+						exclusive: false,
+						truncate: true,
+						draft: true,
+					});
+					await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+					return handle;
+				};
+				// The draft opens before or after this view moves the file away; another machine makes a file where it goes, so
+				// the move is a conflict.
+				const first = openFirst ? await draft() : undefined;
+				await view.rename({ from: "docs/p.md", to: "docs/r.md", noReplace: false });
+				const handle = first ?? (await draft());
+				core.write(await storeFile(root, "docs/r.md", "theirs", 2, BIG));
+				await service.poll();
+				await service.settled();
+				if (after === "noBoundary") {
+					// Closed while the move is pending, the draft is a new file, as a create would be: where the move then fails,
+					// that meets the file the move left, a conflict.
+					await view.close(handle, data.byteLength);
+					const { paths } = await view.publish();
+					expect(paths.find((p) => p.path === "docs/p.md")?.outcome).toBe("conflict");
+					expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("v1"));
+					expect(await read(view, "docs/p.md")).toBe("v1");
+					expect((await view.publish()).paths).toEqual([]);
+					continue;
+				}
+				await view.publish();
+				expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("v1"));
+				expect(await read(view, "docs/p.md")).toBe("v1");
+				if (after === "theirsGone") {
+					// The draft lands against that file, as one opened over it does: another machine's delete after is a conflict.
+					core.remove("docs/p.md");
+					await service.poll();
+					await service.settled();
+				}
+				await view.close(handle, data.byteLength);
+				const { paths } = await view.publish();
+				if (after === "theirsGone") {
+					expect(paths.find((p) => p.path === "docs/p.md")?.outcome).toBe("conflict");
+					expect(core.entries.has("docs/p.md")).toBe(false);
+				} else {
+					expect(paths).toEqual([{ path: "docs/p.md", outcome: "saved" }]);
+					expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("drafted"));
+				}
+			}
 	});
 
 	it("lands a draft with the executable bit of what it lands over, with or without a boundary between", async () => {
@@ -632,6 +664,77 @@ describe("writes through the mount", () => {
 		expect(core.entries.get("m/f.md")?.fileSha256).toBe(hashOf("mine"));
 		expect(core.entries.has("n/f.md")).toBe(false);
 		expect((await view.publish()).paths).toEqual([]);
+	});
+
+	it("lands a draft opened over the view's own file against the file the view took away there when that is let go", async () => {
+		for (const took of ["move", "unlink"] as const)
+			for (const gone of ["unlink", "rename"] as const) {
+				const { root, core, service, open } = await fixture();
+				core.seed([folder("docs"), await storeFile(root, "docs/p.md", "v1", 1, BIG)]);
+				const view = await open();
+				// The view takes the live file away, writes its own there, opens a draft over that and takes its own away too.
+				if (took === "move") await view.rename({ from: "docs/p.md", to: "docs/r.md", noReplace: false });
+				else await view.unlink("docs/p.md", undefined);
+				await write(view, "docs/p.md", "mine");
+				const data = Buffer.from("drafted");
+				const { handle } = await view.open({
+					path: "docs/p.md",
+					create: true,
+					exclusive: false,
+					truncate: true,
+					draft: true,
+				});
+				await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+				if (gone === "unlink") await view.unlink("docs/p.md", undefined);
+				else await view.rename({ from: "docs/p.md", to: "docs/s.md", noReplace: false });
+				// The boundary lets the view's taking away go: another machine took the move's destination, or the core
+				// refuses the removal.
+				if (took === "move") {
+					core.write(await storeFile(root, "docs/r.md", "theirs", 2, BIG));
+					await service.poll();
+					await service.settled();
+				} else core.refuse = (path) => path === "docs/p.md";
+				await view.publish();
+				core.refuse = () => false;
+				expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("v1"));
+				expect(await read(view, "docs/p.md")).toBe("v1");
+				await view.close(handle, data.byteLength);
+				// The view's own file, moved on, is published once the draft no longer holds it.
+				const { paths } = await view.publish();
+				expect(paths.map((p) => [p.path, p.outcome]).sort()).toEqual(
+					[["docs/p.md", "saved"], ...(gone === "rename" ? [["docs/s.md", "saved"]] : [])].sort(),
+				);
+				expect(core.entries.get("docs/p.md")?.fileSha256).toBe(hashOf("drafted"));
+				if (gone === "rename") expect(core.entries.get("docs/s.md")?.fileSha256).toBe(hashOf("mine"));
+				else expect(core.entries.has("docs/s.md")).toBe(false);
+			}
+	});
+
+	it("gives a draft up when another machine makes its path a folder", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([folder("docs"), await storeFile(root, "docs/p.md", "v1", 1, BIG)]);
+		const view = await open();
+		const data = Buffer.from("drafted");
+		const { handle } = await view.open({
+			path: "docs/p.md",
+			create: true,
+			exclusive: false,
+			truncate: true,
+			draft: true,
+		});
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		const old = core.entries.get("docs/p.md");
+		if (!old) throw new Error("no file");
+		core.commitChanges([
+			{ ...old, op: "delete" },
+			{ ...folder("docs/p.md", 5), op: "mkdir" },
+		]);
+		await service.poll();
+		await service.settled();
+		await refused(view.close(handle, data.byteLength), "NOT_A_FILE");
+		await refused(view.close(handle, data.byteLength), "BAD_REQUEST");
+		expect((await view.publish()).paths).toEqual([]);
+		expect(core.entries.get("docs/p.md")?.kind).toBe("folder");
 	});
 
 	it("publishes the file a discarded draft held once the quiet period passes, with no change after", async () => {
@@ -1324,14 +1427,37 @@ describe("the gateway's upload", () => {
 describe("a draft against every pair of events", () => {
 	const P = "docs/p.md";
 	const Q = "docs/q.md";
-	const STARTS = ["absent", "live", "held", "unlinked"] as const;
-	const FIRST = ["save", "unlink", "moveAway", "moveIn", "redraft", "fill", "theirs", "theirsGone"] as const;
+	const STARTS = ["absent", "live", "held", "unlinked", "movedAway", "movedHeld"] as const;
+	const FIRST = [
+		"save",
+		"unlink",
+		"moveAway",
+		"moveIn",
+		"redraft",
+		"fill",
+		"theirs",
+		"theirsGone",
+		"theirsMoved",
+		"theirsAway",
+		"theirsQ",
+	] as const;
 	const SECOND = [...FIRST, "close", "discard"] as const;
 	type Event = (typeof SECOND)[number];
 	/** The view's own change at P not yet published: whether it shows a file there, the live version it is based on,
-	 * whether it took away what was there (removed it, or made or moved a file in over that), and whether the draft holds
-	 * it (it was opened over that file). */
-	type Own = { present: boolean; base: string | undefined; replaced: boolean; held: boolean };
+	 * whether it took away what was there (removed it, or made or moved a file in over that), whether the draft holds
+	 * it (it was opened over that file), the view's move of the live file there away (to where, and what it moved; that
+	 * hides the path until it publishes, whatever another machine does there), and whether that move fails at its
+	 * boundary because another machine took its destination; where it failed under the file the draft holds, the
+	 * version of the file it left there (`under`). */
+	type Own = {
+		present: boolean;
+		base: string | undefined;
+		replaced: boolean;
+		held: boolean;
+		away?: { readonly to: string; readonly text: string | undefined };
+		doomed?: boolean;
+		under?: string;
+	};
 	const DRAFTED = Buffer.from("drafted");
 	const SECOND_DRAFT = Buffer.from("second");
 	const names = new Map(
@@ -1347,7 +1473,7 @@ describe("a draft against every pair of events", () => {
 	): Promise<string | undefined> {
 		const { root, core, service, open } = await fixture();
 		core.seed([folder("docs"), await storeFile(root, Q, "q1", 3, BIG)]);
-		if (start === "live" || start === "unlinked") core.seed([await storeFile(root, P, "p1", 2, BIG)]);
+		if (start !== "absent" && start !== "held") core.seed([await storeFile(root, P, "p1", 2, BIG)]);
 		const view = await open();
 		const version = () => core.entries.get(P)?.version;
 		const shown = (path: string) => read(view, path).catch(() => undefined);
@@ -1355,9 +1481,16 @@ describe("a draft against every pair of events", () => {
 		if (start === "held") {
 			await write(view, P, "mine");
 			own = { present: true, base: undefined, replaced: false, held: true };
-		} else if (start === "unlinked") {
-			await view.unlink(P, undefined);
+		} else if (start === "unlinked" || start === "movedAway") {
+			if (start === "unlinked") await view.unlink(P, undefined);
+			else await view.rename({ from: P, to: "docs/gone.md", noReplace: false });
 			own = { present: false, base: version(), replaced: true, held: false };
+			if (start === "movedAway") own.away = { to: "docs/gone.md", text: "p1" };
+		} else if (start === "movedHeld") {
+			// The view moved the live file away and wrote its own file there: the draft holds that one.
+			await view.rename({ from: P, to: "docs/gone.md", noReplace: false });
+			own = { present: true, base: version(), replaced: true, held: true, away: { to: "docs/gone.md", text: "p1" } };
+			await write(view, P, "mine");
 		}
 		const before = await shown(P);
 		const { handle } = await view.open({ path: P, create: true, exclusive: false, truncate: true, draft: true });
@@ -1371,38 +1504,69 @@ describe("a draft against every pair of events", () => {
 		/** A boundary published the view's own change at P: saved where it was based on what the core had, a conflict
 		 * otherwise. Either way the view has no change of its own there after it (unless the draft holds the file). */
 		const published = (prior: string | undefined) => {
-			if (!own || own.held) return;
-			if (own.base === prior) origin = version();
+			if (!own) return;
+			// The file the draft holds stays the view's, a new file there once the view's move away is published (through,
+			// or let go: then it meets the file the move left).
+			if (own.held) {
+				const now = version();
+				if (own.away)
+					own = {
+						present: own.present,
+						base: undefined,
+						replaced: false,
+						held: true,
+						...(now === own.base ? { under: now } : {}),
+					};
+				return;
+			}
+			// A move of the view's away goes (through, or let go) before what it made at P: with P gone, P is free.
+			if (own.base === prior || (own.away && prior === undefined)) origin = version();
 			own = undefined;
 		};
-		/** A change; where it had to publish first (the core moved), that boundary came before it. */
+		/** A change; where it had to publish first (the core moved, or the view's move away no longer shows at its
+		 * destination: it was let go), that boundary came before it. */
 		const change = async (act: () => Promise<unknown>) => {
 			const [prior, seq] = [version(), core.seq];
 			await act();
-			if (core.seq !== seq) published(prior);
+			if (core.seq !== seq || (own?.away && (await shown(own.away.to)) !== own.away.text)) published(prior);
 		};
 		/** The view's own change at P, a file there after it or none. */
-		const mine = (present: boolean, moved: boolean) => {
+		const mine = (present: boolean, moved: boolean, away?: Own["away"]) => {
 			const now = version();
-			if (!own) own = { present, base: now, replaced: !present || (moved && now !== undefined), held: false };
-			else if (present)
+			if (!own) {
+				own = { present, base: now, replaced: !present || (moved && now !== undefined), held: false };
+				if (away) own.away = away;
+			} else if (present) {
+				// A move in over the view's own file replaces the file a failed move left under it too: that move in fails
+				// against it (the view never saw it), and the draft then lands against it.
+				const base = moved && own.under !== undefined ? own.under : own.base;
 				own = {
 					...own,
 					present,
-					replaced: own.replaced || (moved && own.base !== undefined),
+					base,
+					replaced: own.replaced || (moved && base !== undefined),
 					held: own.held && !moved,
 				};
-			else if (own.base === undefined) own = undefined;
-			else own = { ...own, present, replaced: true };
+			} else if (own.base === undefined) own = undefined;
+			else own = { ...own, present, replaced: true, held: false };
 			if (!present || moved) origin = undefined;
 		};
-		const theirs = async (gone: boolean, n: number) => {
-			if (gone) core.remove(P);
-			else core.write(await storeFile(root, P, `theirs ${n}`, 100 + n, BIG));
+		const theirs = async (how: "write" | "delete" | "move", n: number) => {
+			if (how === "write") core.write(await storeFile(root, P, `theirs ${n}`, 100 + n, BIG));
+			else if (how === "delete") core.remove(P);
+			else {
+				const old = core.entries.get(P);
+				if (!old) throw new Error("nothing to move");
+				core.commitChanges([
+					{ ...old, op: "move_out" },
+					{ ...old, path: "docs/r.md", version: v(110 + n), op: "move_in", priorVersion: old.version },
+				]);
+			}
 			await service.poll();
 			await service.settled();
-			// What the view took away there is moot once another machine changed or removed it: that removal goes.
-			if (own?.replaced) own = own.present ? { ...own, base: undefined, replaced: false } : undefined;
+			// What the view took away there is moot once another machine changed or removed it: that removal goes. The
+			// view's move away keeps hiding the path until its boundary (where it fails, its source changed).
+			if (own?.replaced && !own.away) own = own.present ? { ...own, base: undefined, replaced: false } : undefined;
 		};
 		const act = async (event: Event, n: number): Promise<string | undefined> => {
 			const showsP = own ? own.present : version() !== undefined;
@@ -1416,11 +1580,13 @@ describe("a draft against every pair of events", () => {
 					await change(() => view.unlink(P, undefined));
 					mine(false, false);
 					return;
-				case "moveAway":
+				case "moveAway": {
 					if (!showsP) return "skip";
+					const text = await shown(P);
 					await change(() => view.rename({ from: P, to: "docs/away.md", noReplace: false }));
-					mine(false, false);
+					mine(false, false, { to: "docs/away.md", text });
 					return;
+				}
 				case "moveIn":
 					if (!qShown) return "skip";
 					qShown = false;
@@ -1461,11 +1627,29 @@ describe("a draft against every pair of events", () => {
 					});
 					return;
 				case "theirs":
-					await theirs(false, n);
+					await theirs("write", n);
 					return;
 				case "theirsGone":
 					if (version() === undefined) return "skip";
-					await theirs(true, n);
+					await theirs("delete", n);
+					return;
+				case "theirsMoved":
+					if (version() === undefined) return "skip";
+					await theirs("move", n);
+					return;
+				case "theirsAway":
+					// Another machine makes files where the view's moves away go: those moves fail at their boundary.
+					for (const [i, path] of ["docs/away.md", "docs/gone.md"].entries())
+						core.write(await storeFile(root, path, `theirs ${n}`, 120 + 2 * n + i, BIG));
+					await service.poll();
+					await service.settled();
+					if (own?.away) own = { ...own, doomed: true };
+					return;
+				case "theirsQ":
+					// Another machine changes the file the view's move in takes: that move fails at its boundary.
+					core.write(await storeFile(root, Q, `theirs ${n}`, 130 + n, BIG));
+					await service.poll();
+					await service.settled();
 					return;
 				case "close":
 					ended = "close";
@@ -1479,7 +1663,12 @@ describe("a draft against every pair of events", () => {
 			}
 		};
 		for (const [n, event] of [first, second].entries()) {
-			if (n === 1 && boundary) await change(() => view.publish());
+			if (n === 1 && boundary) {
+				// After a boundary the view has no change of its own at P left (saved, a conflict, or a move let go).
+				const prior = version();
+				await view.publish();
+				published(prior);
+			}
 			const skipped = await act(event, n + 1).catch(
 				(e: unknown) => `${event} failed: ${(e as { code?: string }).code ?? String(e)}`,
 			);
@@ -1496,7 +1685,12 @@ describe("a draft against every pair of events", () => {
 		const sha = core.entries.get(P)?.fileSha256;
 		const drafted = hashOf(filled ? DRAFTED : "");
 		if (ended === "close") {
-			const want = priorVersion === landing ? drafted : priorSha;
+			// Over the view's move of the file at P away, the draft lands as a new file there (as a create would): saved
+			// where that move goes through or P is gone by then, a conflict with the file the move left where it fails.
+			const lands = own?.away
+				? (!own.doomed && priorVersion === own.base) || priorVersion === undefined
+				: priorVersion === landing;
+			const want = lands ? drafted : priorSha;
 			if (sha !== want) return `the core holds ${name(sha)}, ${name(want)} expected`;
 		} else if (sha === drafted) return "a discarded draft landed";
 		const after = await shown(P);
@@ -1523,5 +1717,5 @@ describe("a draft against every pair of events", () => {
 					}
 			expect(failures).toEqual([]);
 			expect(ran).toBeGreaterThan(80);
-		}, 120_000);
+		}, 300_000);
 });
