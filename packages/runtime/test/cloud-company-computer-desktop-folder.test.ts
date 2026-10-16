@@ -1263,7 +1263,8 @@ describe("a run's report of its desktop changes", () => {
 		const late = computerDeferred<unknown>();
 		f.answer("notices", () => late.promise);
 		await expect(report(f, "", performance.now() + 50)).resolves.toEqual(first);
-		late.resolve(noticed(5, [denied]));
+		// The service has more pages of this view's notices than it gave.
+		late.resolve(noticed(5, [denied], { more: true }));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(asks(f)[1]).toEqual({ op: "notices", view: f.view(1), after: 4, nonce: NONCE });
 		const second = await report(f, first!.mark);
@@ -1273,10 +1274,12 @@ describe("a run's report of its desktop changes", () => {
 			refused: "the company is paused, so the company folder did not take a change on this desktop",
 			more: true,
 		});
+		// Every item is given, and the service's further pages still say more comes.
 		expect((await report(f, second!.mark))?.report).toEqual({
 			saved: 0,
 			notSaved,
 			refused: "the company folder refused 3 changes on this desktop",
+			more: true,
 		});
 	});
 
