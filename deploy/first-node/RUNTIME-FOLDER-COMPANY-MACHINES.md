@@ -568,8 +568,10 @@ has unsaved changes (4a).
   connector's call) alike. So a quiet save the folder service publishes after the desktop action returned reaches the
   run's next result, whatever the run calls next. The office service builds a run's report from the views it opened
   for that run: their commits since the last one shown and the refusals since.
-  - Each ask names the last report the boundary put into a result. The office service drops only what was shown, so
-    a report whose result was never built is given again.
+  - Each ask names the last report the model got: one in a result that was the call's answer and passed the release
+    checks (the run's authority and its captures). The office service drops only what was shown, so a report whose
+    result was never built, was not the answer or was held back by those checks is given again. The next call's ask
+    waits for that verdict within its second.
   - Nothing is added when nothing is new. An ask with no answer within a second adds nothing, and the report waits
     for the next result. The office service waits 800 ms for its read of the core, which goes on for the next ask,
     and reads the core at most once a second.

@@ -7,6 +7,7 @@ import {
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
 } from "@qorpera/runtime/cloud-agent-mouth";
+import type { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import {
 	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
@@ -30,6 +31,7 @@ function fixture(
 	assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined),
 	additionalTools: readonly CloudNativeTool[] = [],
 	folderReports?: CloudNativeFolderReports,
+	captures?: CloudNativeCaptureImages,
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Company data" }));
 	const abort = new AbortController();
@@ -65,6 +67,7 @@ function fixture(
 		assertActive,
 		signal: abort.signal,
 		...(folderReports ? { folderReports } : {}),
+		...(captures ? { captures } : {}),
 	});
 	const call = async (callId = "call_1", argumentsValue: unknown = { path: "projects/roadmap.md" }) => {
 		const response = await boundary.invoke(callId, "qorpera", tool.name, argumentsValue);
@@ -514,6 +517,50 @@ describe("cloud-owned native tool boundary", () => {
 		});
 		await call("call_2");
 		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", "", `${runId}:2`]);
+	});
+
+	it("counts a folder report as shown only once the release check let the model have its answer", async () => {
+		const next = vi
+			.fn<CloudNativeFolderReports["next"]>()
+			.mockResolvedValueOnce({ mark: `${runId}:1`, report: { saved: 1 } })
+			.mockResolvedValueOnce({ mark: `${runId}:2`, report: { saved: 2 } })
+			.mockResolvedValueOnce({ mark: `${runId}:3`, report: { saved: 3 } })
+			.mockResolvedValue(undefined);
+		let release!: () => void;
+		// The run's captures are checked before each answer is let out: call_1's check is slow, call_3's fails once (the
+		// run goes on).
+		const assertReadable = vi
+			.fn<CloudNativeCaptureImages["assertReadable"]>()
+			.mockImplementationOnce(
+				() =>
+					new Promise<void>((resolve) => {
+						release = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("Capture authority unavailable"))
+			.mockResolvedValue(undefined);
+		const { call } = fixture({}, undefined, [], { next }, {
+			assertReadable,
+		} as unknown as CloudNativeCaptureImages);
+		const first = call("call_1");
+		// call_2 runs while call_1's answer waits for its check: it asks nothing for that second, and answers without
+		// a report.
+		const started = Date.now();
+		const second = await call("call_2");
+		expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+		expect(second.result.companyFolder).toBeUndefined();
+		expect(next).toHaveBeenCalledTimes(1);
+		release();
+		expect((await first).result.companyFolder).toEqual({ saved: 1 });
+		// call_3's answer is held back: its report comes again in call_4's.
+		const third = await call("call_3");
+		expect(third.result).toMatchObject({ status: "denied", content: { text: "AUTHORITY_UNAVAILABLE" } });
+		expect(third.result.companyFolder).toBeUndefined();
+		expect((await call("call_4")).result.companyFolder).toEqual({ saved: 3 });
+		await call("call_5");
+		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", `${runId}:1`, `${runId}:1`, `${runId}:3`]);
+		expect(assertReadable).toHaveBeenCalledTimes(5);
 	});
 
 	it("passes only exact host-issued results through the native fence and revalidates every replay", async () => {

@@ -437,6 +437,13 @@ export class CloudNativeToolBoundary {
 	#folderShown = "";
 	/** The response the call running now showed a folder report in, with that report's mark. */
 	#folderIssued?: { readonly response: CloudDynamicToolResponse; readonly mark: string };
+	/** The last call's answer that showed a folder report, until its release check says whether the model got it. */
+	#folderAwaiting?: {
+		readonly response: CloudDynamicToolResponse;
+		readonly mark: string;
+		readonly checked: Promise<void>;
+		readonly settle: () => void;
+	};
 
 	constructor(options: {
 		companyId: string;
@@ -802,8 +809,10 @@ export class CloudNativeToolBoundary {
 				await untilStopped(() => this.#captures!.assertReadable(this.#signal), this.#signal);
 			}
 			release?.finish("succeeded");
+			this.#folderChecked(reply, true);
 			return reply;
 		} catch {
+			this.#folderChecked(reply, false);
 			release?.finish("denied", { errorCategory: "authority_unavailable" });
 			// The model gets only the denial: its step keeps no reads or releases of the result held back.
 			logged?.releases.splice(0);
@@ -832,11 +841,29 @@ export class CloudNativeToolBoundary {
 				);
 			return response;
 		} finally {
-			// Calls run one after another: the next one's folder report starts after the one this call's answer showed.
-			// A report shown in a result the call did not answer with (its screenshot could not be issued) comes again.
-			if (response && this.#folderIssued?.response === response) this.#folderShown = this.#folderIssued.mark;
+			// Calls run one after another: the next one's folder report starts after the one this call's answer showed,
+			// once the release check let the model have that answer (#folderChecked). A report shown in a result the call
+			// did not answer with (its screenshot could not be issued) comes again.
+			const issued = this.#folderIssued;
 			this.#folderIssued = undefined;
+			if (response && issued?.response === response) {
+				let settle!: () => void;
+				const checked = new Promise<void>((resolve) => {
+					settle = resolve;
+				});
+				this.#folderAwaiting = { ...issued, checked, settle };
+			}
 		}
+	}
+
+	/** The release check's verdict on a call's answer: a folder report it showed counts as shown only if the model got
+	 * it, and one held back (`AUTHORITY_UNAVAILABLE` in its place) comes again. */
+	#folderChecked(reply: CloudDynamicToolResponse, released: boolean): void {
+		const awaiting = this.#folderAwaiting;
+		if (awaiting?.response !== reply) return;
+		this.#folderAwaiting = undefined;
+		if (released) this.#folderShown = awaiting.mark;
+		awaiting.settle();
 	}
 
 	/** The run's desktop folder report since the last one shown (F3 4f-2b), when there is one: asked for a second at
@@ -844,9 +871,14 @@ export class CloudNativeToolBoundary {
 	async #folderReport(): Promise<{ mark: string; report: CloudCompanyFolderReport } | undefined> {
 		const reports = this.#folderReports;
 		if (!reports || this.#signal.aborted) return undefined;
-		const shown = this.#folderShown;
 		// The wait ends at the second even when the reports do not heed their signal.
 		const wait = AbortSignal.any([this.#signal, AbortSignal.timeout(FOLDER_REPORT_WAIT_MS)]);
+		// The last report counts as shown once the release check let the model have the answer it was in: until then,
+		// within the same second, nothing is asked, and a check still going then leaves the report for a later result.
+		const awaiting = this.#folderAwaiting;
+		if (awaiting) await untilStopped(() => awaiting.checked, wait).catch(() => undefined);
+		if (this.#folderAwaiting) return undefined;
+		const shown = this.#folderShown;
 		const answer = await untilStopped(() => reports.next(shown, wait), wait).catch(() => undefined);
 		if (!answer || typeof answer.mark !== "string" || !FOLDER_REPORT_MARK.test(answer.mark)) return undefined;
 		const report = cloudCompanyFolderReport(answer.report);
