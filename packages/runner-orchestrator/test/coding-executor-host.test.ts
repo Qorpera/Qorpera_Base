@@ -2696,6 +2696,33 @@ describe("a coding session on the folder model", () => {
 		expect(performance.now() - started).toBeLessThan(5000);
 		expect(g.calls("qorpera_attach_coding_session")).toEqual([]);
 	});
+	it("reads the machine's boot id again when the read went unconfirmed just after its agent answered, up to the limit", async () => {
+		// Live 2026-10-16 (P3 phase B run 1): `/usr/bin/true` ran on an lxd-agent just up, and the boot id read right
+		// after it failed while LXD was still advertising its vsock address to that agent.
+		const f = await folderFixture();
+		const read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+		let failures = 1;
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (path === "/proc/sys/kernel/random/boot_id" && failures-- > 0)
+				throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+			return read(project, name, path, limit, signal);
+		});
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.execs()).toEqual([["/usr/bin/true"], ["/usr/bin/true"], SETTLED]);
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(1);
+		// One that keeps going unconfirmed is given up at the limit.
+		const g = await folderFixture();
+		const readG = vi.mocked(g.client.readInstanceFile).getMockImplementation()!;
+		vi.mocked(g.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (path === "/proc/sys/kernel/random/boot_id") throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+			return readG(project, name, path, limit, signal);
+		});
+		const impatient = new LxdCodingExecutorHost({ ...g.options, folder: g.folder, guestReadyTimeoutMs: 50 });
+		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
+			/^CODING_HOST_GUEST_NOT_READY$/,
+		);
+		expect(g.calls("qorpera_attach_coding_session")).toEqual([]);
+	});
 	it("attaches a session under its view's attachment after the executor restarted, while the machine's boot is the same", async () => {
 		const f = await folderFixture();
 		const real = await realViews();

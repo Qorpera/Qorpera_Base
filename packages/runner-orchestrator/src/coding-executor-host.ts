@@ -66,6 +66,7 @@ import type {
 	LxdInspectableClient,
 	LxdInstanceDeviceClient,
 	LxdInstanceExecStreamClient,
+	LxdInstanceFile,
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
@@ -1183,6 +1184,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 			AbortSignal.timeout(this.#options.guestReadyTimeoutMs ?? CODING_FOLDER_GUEST_READY_MS),
 		]);
+		let boot: LxdInstanceFile;
 		for (;;) {
 			try {
 				// Every try re-reads the machine: one deleted or stopped elsewhere fails now.
@@ -1191,18 +1193,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					throw new Error("CODING_HOST_VM_NOT_RUNNING");
 				assertLxdCodingMachineInstance(machine, this.#placement, instance);
 				await client.execInstance(machine.project, name, ["/usr/bin/true"], ready);
+				// The boot id comes through the same agent, which can still fail a read in its first seconds.
+				boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, ready);
 				break;
 			} catch (error) {
 				signal.throwIfAborted();
 				if (ready.aborted) throw new Error("CODING_HOST_GUEST_NOT_READY", { cause: error });
-				if (!folderGuestStarting(error)) throw error;
+				// Reading the boot id changes nothing in the guest, so a read that went unconfirmed is tried again.
+				const unread = error instanceof Error && error.message === "LXD_INSTANCE_FILE_UNCONFIRMED";
+				if (!folderGuestStarting(error) && !unread) throw error;
 				await setTimeout(1000, undefined, { signal: ready }).catch(() => undefined);
 				// The caller's own abort wins over the readiness deadline.
 				signal.throwIfAborted();
 				if (ready.aborted) throw new Error("CODING_HOST_GUEST_NOT_READY", { cause: error });
 			}
 		}
-		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
 		const bootId = boot.content.toString("utf8").trim();
 		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !isUuid(bootId))
 			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
