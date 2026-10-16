@@ -154,9 +154,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				resources: this.#resources,
 			}) ||
 			(action.kind !== "screen" &&
-				!this.capabilities.includes(
-					action.kind === "screenshot" ? action.surface : action.kind === "transfer" ? "shell" : action.kind,
-				))
+				!this.capabilities.includes(action.kind === "screenshot" ? action.surface : action.kind))
 		) {
 			throw new Error("COMPUTER_OPERATION_MISMATCH");
 		}

@@ -444,7 +444,7 @@ function loggedStep(line: Line): CloudRunLogStep {
 	return Object.freeze({
 		...step,
 		args: line.stored?.args ?? "",
-		result: result && typeof result === "object" && !Array.isArray(result) ? JSON.stringify(result) : null,
+		result: result !== null && result !== undefined ? JSON.stringify(result) : null,
 		text: line.stored?.text ?? "",
 		at: typeof record.at === "string" ? record.at : "",
 	});

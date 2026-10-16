@@ -276,15 +276,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		try {
 			// Both reads need only the binding: ask for them together and check them in
 			// the original order, so a failure still names its stage. Both lock the run's
-			// job row, so each gets the pair's budget (the database serialises them).
+			// job row, so each gets the pair's budget (the database serialises them), down to the transport.
 			const contextRequest = cloudToolRequest(
 				(requestSignal) =>
-					this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
+					this.#paths.call(
+						"qorpera_describe_company_run_context",
+						{ p_binding: binding },
+						requestSignal,
+						CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+					),
 				signal,
 				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
 			const wakeRequest = cloudToolRequest(
-				(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
+				(requestSignal) =>
+					this.#paths.call(
+						"qorpera_read_native_wake",
+						{ p_binding: binding },
+						requestSignal,
+						CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+					),
 				signal,
 				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
@@ -984,7 +995,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								// Listed only for a run that may raise their cards (composeContext).
 								...(proposals ? proposals.tools(operations) : []),
 							],
-							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
+							assertContext: (requestSignal, timeoutMs) =>
+								gateway.assertReadableContext(requestSignal, timeoutMs),
 							recordContextView: (frame, outputs, requestSignal) =>
 								gateway.recordContextView(frame, outputs, requestSignal),
 							fenceContextView: (frame, outputs, requestSignal) =>
@@ -1038,10 +1050,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const kind = nativeProviderUsageSignal(error);
 		if (!kind) return;
 		try {
+			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(
 				"qorpera_record_provider_usage_signal",
 				{ p_binding: binding, p_signal_kind: kind },
 				AbortSignal.timeout(10_000),
+				10_000,
 			);
 		} catch {
 			console.error(`Provider usage signal was not recorded (${kind})`);

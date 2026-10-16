@@ -66,7 +66,7 @@ operator provenance, not an automatic attestation of every installed file.
 ## What the JSON establishes
 
 - A real pinned `qorpera-folder` binary mounts FUSE as root, with `allow_other`.
-  Its peer is a tiny synthetic protocol-3 Unix-socket folder service. It takes
+  Its peer is a tiny synthetic protocol-4 Unix-socket folder service. It takes
   each read hand-over (`I`) as a consecutive prefix and releases it at once, like
   the crate's test node. It does not exercise the database, vsock identity, read
   release or production grants.

@@ -27,7 +27,7 @@ of the shell's user namespace instead, like the shell's own commands, so no rule
 
 State only, no attack code (coordinator, 14 Oct), and no live attempt to change the filter or to join a namespace
 from the command (15 Oct): the setns refusal is shown on the installed program, and live with setns(-1, 0), which
-names no namespace (the filter answers EPERM; without it the kernel answers EBADF). A synthetic protocol-3 node backs a
+names no namespace (the filter answers EPERM; without it the kernel answers EBADF). A synthetic protocol-4 node backs a
 real qorpera-folder mount. The shell and the starter run under keys copied from the real office and helper unit
 files, and a networked command's namespace gets the real plumb's veth, address, route and filter. No SQL, model,
 vsock provenance or production request authorization is claimed.
@@ -107,7 +107,7 @@ X32_SYSCALL_BIT = 0x40000000
 AF_UNIX, AF_INET, AF_INET6, AF_PACKET, AF_NETLINK, AF_VSOCK = 1, 2, 10, 17, 16, 40  # Linux numbers
 OFFICE_FAMILIES = (AF_UNIX, AF_INET, AF_INET6, AF_NETLINK)
 # The folder protocol of crates/qorpera-folder/src/proto.rs; the program refuses a hello answered with another.
-PROTOCOL = 3
+PROTOCOL = 4
 # The paths inside the shell's root: the company mount's parent (as a desktop binds it), the share the shell and the
 # command write their records to, and the fixture itself.
 COMPANY_PARENT = "/run/qorpera-company"
@@ -1519,11 +1519,11 @@ def selftest():
             with socket.socket(socket.AF_UNIX) as client:
                 client.settimeout(2)
                 client.connect(str(folder / "node.sock"))
-                hello = b'H{"protocol":3,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
+                hello = b'H{"protocol":4,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
                 for byte in struct.pack(">I", len(hello)) + hello:
                     client.sendall(bytes([byte]))
                 kind, body = receive(client)
-                assert kind == "h" and json.loads(body) == {"protocol": 3, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
+                assert kind == "h" and json.loads(body) == {"protocol": 4, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
                 send(client, "L", {"path": ""})
                 kind, body = receive(client)
                 assert kind == "l" and json.loads(body)["entries"][0]["name"] == "before.txt"
