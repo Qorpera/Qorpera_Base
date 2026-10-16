@@ -1808,10 +1808,10 @@ describe("the review step", () => {
 		]);
 	});
 
-	// A wait uses an answered approval, and a held call's use is marked (20260930489000): the agent its answer woke is
-	// told it was used, however long after the wake the wait got through. So a failed wait is asked again until the hold
-	// runs out, then until the card parks, long after the answer could have woken the agent (a heartbeat, a wait that
-	// holds, lasts 10 s; a card found waiting, or a park, may wake it at once). Each hold below uses the approval.
+	// A wait uses an answered approval, and the run its answer woke is told it was used, however long after the wake
+	// the wait got through (20260930489000). So a failed wait is asked again until the hold runs out, then until the
+	// card parks, long after the answer could have woken the agent (a heartbeat, a wait that holds, lasts 10 s; a card
+	// found waiting, or a park, may wake it at once). Each hold below uses the approval.
 	it("asks a failed wait again until the hold runs out, long after its answer could wake the agent", async () => {
 		vi.useFakeTimers({ now: Date.parse("2026-10-16T16:00:00Z"), toFake: ["Date"] });
 		try {

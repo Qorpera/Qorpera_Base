@@ -1242,10 +1242,9 @@ export class CloudActionReviewGate {
 				// A lost or late answer does not end the hold (production pass 2, 16 Oct 2026: one poll in about 150
 				// waited past the lock timeout behind a same-run step, and the held call was told its review was
 				// unavailable). A wait is idempotent (asked again, it finds the approval it used or the park it made),
-				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. However
-				// long after a wake a wait gets through, the approval it uses is marked as a held call's, and the repeat
-				// of the agent the answer woke is told it was used (if it begins within an hour of the wake;
-				// 20260930489000). A refusal or a stopped run ends the hold.
+				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. If a
+				// wait uses the approval after its answer woke the agent, however long after, the woken run is told
+				// it was used (20260930489000). A refusal or a stopped run ends the hold.
 				if (signal.aborted || !cloudControlRetryable(error)) throw error;
 				await cloudControlPause(
 					park ? cloudControlBackoffMs(parkFailures++) : Math.max(0, Math.min(this.#pollMs, until - Date.now())),
