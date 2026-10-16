@@ -478,13 +478,15 @@ test("fail-fast side by side: a failure ends the running steps' whole process tr
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 
 test("fail-fast side by side on docker: the containers of the stopped steps end with them, and no other", { skip: dockerUsable ? false : "needs Linux with Docker" }, () => {
-	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
-	const other = mkdtempSync(join(tmpdir(), "plan-other-"));
+	// In the repository, which is the run's directory when a run's step runs this test: the containers bind paths in
+	// it, so a run that stops that step removes them too.
+	const cwd = mkdtempSync(join(repositoryRoot, ".plan-script-"));
+	const other = mkdtempSync(join(repositoryRoot, ".plan-other-"));
 	const label = `qorpera.plan-test=${process.pid}-${Date.now()}`;
 	const listed = () => spawnSync("docker", ["ps", "-aq", "--filter", `label=${label}`], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
 	const container = (args, command) => `docker run --rm --label ${label} --network none ${args} --entrypoint sh ${POSTGRES_IMAGE} -c '${command}'`;
 	try {
-		// Another run's: it binds its own directory, and outlives this run.
+		// Another run's: it binds a directory beside this run's, and outlives this run.
 		const kept = spawnSync("bash", ["-c", container(`--detach -v ${other}:/w:ro`, "sleep 600")], { encoding: "utf8" });
 		assert.equal(kept.status, 0, kept.stderr);
 		const steps = [
