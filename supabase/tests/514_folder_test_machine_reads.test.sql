@@ -1,5 +1,5 @@
 -- @fixture 510_folder_test_machine_views.test.sql until "-- The migration's marker is in every function it patches"
--- A test machine's reads (20260930422000; F3 step 6, slice 6a-3: deploy/first-node/RUNTIME-FOLDER-TEST-MACHINES.md
+-- A test machine's reads (20260930480000; F3 step 6, slice 6a-3: deploy/first-node/RUNTIME-FOLDER-TEST-MACHINES.md
 -- "Reads", RUNTIME-COMPANY-FOLDER-C1B.md "C1b-3: views" §6 and §8). A release through the machine's view lands in the
 -- view's read set and in every run with a command running on the machine's disk whose job is leased, each checked for
 -- its own authority. A run takes in the view's reads when its agent and member read the root. Each read set is
@@ -58,14 +58,17 @@ create function pg_temp.inherit(p_run jsonb, p_view jsonb, p_id uuid) returns js
 	select public.qorpera_folder_run_inherit_view_reads('63200000-0000-4000-8000-000000000020', p_run, (p_view ->> 'viewId')::uuid, p_id)
 $$;
 
--- The migration's marker is in the release and the take-in.
+-- The migration's marker is in the release and the take-in; the release keeps 5a's marker (20260930445000).
 do $$
 declare f regprocedure;
 begin
 	foreach f in array array['public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)',
 		'public.qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)']::regprocedure[] loop
-		if strpos(pg_get_functiondef(f), '20260930422000') = 0 then raise exception '% has no marker 20260930422000', f; end if;
+		if strpos(pg_get_functiondef(f), '20260930480000') = 0 then raise exception '% has no marker 20260930480000', f; end if;
 	end loop;
+	if strpos(pg_get_functiondef('public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure),
+		'20260930445000') = 0 then
+		raise exception 'The release lost 5a''s marker 20260930445000'; end if;
 end $$;
 
 -- Setup: tmr/ with two files, which the machines read.

@@ -23,15 +23,22 @@
 --    today's rule. A take-in that finds a read no longer readable still raises.
 -- The crashed service refusal (part 4, on 5a's served_by) comes later.
 --
+-- On top of 20260930445000 (step 5a, the coding machine's read set), which patches the same release: a coding view's
+-- reads go to its machine's set and reach every turn leased on the machine, those turns' jobs KEY SHARE in id order.
+-- Both fan-outs stay: 5a's for a coding view, this one for a test machine's, so a release holds the jobs of one of
+-- them at most. One loop writes the view's run, a coding machine's turns and a test machine's runs, each once, in run
+-- id order. The view's run and the turns get the view's pairs, as in 5a; a test machine's other runs get them checked
+-- for their own authority.
+--
 -- Exact-text patches: each fails unless the function has the text given exactly once; each function is replaced once,
--- after the last. Body marker "20260930422000".
+-- after the last. Body marker "20260930480000".
 
 set local lock_timeout = '3s';
 
 do $$ begin
 	if strpos(pg_get_functiondef(
-		'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure), '20260930422000') > 0 then
-		raise exception 'Test machine reads (20260930422000) are already applied'; end if;
+		'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure), '20260930480000') > 0 then
+		raise exception 'Test machine reads (20260930480000) are already applied'; end if;
 end $$;
 
 -- The patches edit the definition's text in order; each function is replaced once, after the last one (the release's
@@ -67,90 +74,101 @@ begin
 end
 $apply$;
 
--- 1. The release: its own variables.
+-- 1. The release: its own variables, after 5a's.
 select pg_temp.folder_test_machine_reads_patch(
 	'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure,
-	$old$	v_early jsonb; v_run_actor jsonb; v_late_run jsonb; v_pairs jsonb; v_result jsonb;
+	$old$	v_machine uuid; v_machine_jobs uuid[]; v_turns uuid[]; v_unlocked boolean; v_turn uuid;
 $old$,
-	$new$	v_early jsonb; v_run_actor jsonb; v_late_run jsonb; v_pairs jsonb; v_result jsonb;
-	-- 20260930422000: a test machine's machine and placement; the jobs held for the fan-out (null for other kinds); the
-	-- runs fanned out to; the run being written and its pairs; the runs written.
-	v_machine_id uuid; v_placement_id uuid; v_fan_jobs uuid[]; v_fan_runs uuid[] := '{}'; v_run uuid; v_run_pairs jsonb;
+	$new$	v_machine uuid; v_machine_jobs uuid[]; v_turns uuid[]; v_unlocked boolean; v_turn uuid;
+	-- 20260930480000: a test machine's machine and placement; the jobs held for its fan-out (null for other kinds); the
+	-- runs it fans out to; the pairs of the run being written; the runs written.
+	v_test_machine uuid; v_test_placement uuid; v_fan_jobs uuid[]; v_fan_runs uuid[] := '{}'; v_run_pairs jsonb;
 	v_written uuid[] := '{}';
 $new$);
 
--- 1. The jobs, KEY SHARE in id order, with the live run's, before the view row.
+-- 1. The jobs, KEY SHARE in id order, with the live run's, before the view row; after 5a's coding turns' jobs.
 select pg_temp.folder_test_machine_reads_patch(
 	'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure,
-	$old$		v_run_actor := nullif(coalesce(v_early -> 'view' -> 'runActor', v_early -> 'view' -> 'turnRunActor'), 'null'::jsonb);
+	$old$		if v_machine is not null then
+			select coalesce(array_agg(locked.id order by locked.id), '{}') into v_machine_jobs
+			from (select j.id from public.qorpera_runner_jobs j
+				where j.id in (select t.job_id from public.qorpera_coding_machine_turns(v_machine) t) order by j.id for key share) locked;
+		end if;
 $old$,
-	$new$		v_run_actor := nullif(coalesce(v_early -> 'view' -> 'runActor', v_early -> 'view' -> 'turnRunActor'), 'null'::jsonb);
-		-- 20260930422000: a test machine's release reaches every run with a command running on the view's machine and
+	$new$		if v_machine is not null then
+			select coalesce(array_agg(locked.id order by locked.id), '{}') into v_machine_jobs
+			from (select j.id from public.qorpera_runner_jobs j
+				where j.id in (select t.job_id from public.qorpera_coding_machine_turns(v_machine) t) order by j.id for key share) locked;
+		end if;
+		-- 20260930480000: a test machine's release reaches every run with a command running on the view's machine and
 		-- placement whose job is leased. Those jobs and the live run's are taken KEY SHARE in one statement, in id order;
-		-- the live run's own statement below finds its job held already.
+		-- the live run's own statement below finds its job held already. A coding view holds none of these (above).
 		if v_early -> 'view' ->> 'kind' = 'test_machine' then
-			select v.company_machine_id, v.placement_id into v_machine_id, v_placement_id
+			select v.company_machine_id, v.placement_id into v_test_machine, v_test_placement
 			from public.qorpera_folder_views v where v.id = v_view_id;
 			select coalesce(array_agg(x.id order by x.id), '{}') into v_fan_jobs
 			from (select j.id from public.qorpera_runner_jobs j
 				where j.id in (select r.job_id from public.qorpera_company_machine_commands c
 						join public.qorpera_execution_runs r on r.id = c.run_id
-						where c.machine_id = v_machine_id and c.placement_id = v_placement_id and c.ended_at is null
+						where c.machine_id = v_test_machine and c.placement_id = v_test_placement and c.ended_at is null
 						union all select (v_run_actor ->> 'jobId')::uuid)
 					and (j.id = (v_run_actor ->> 'jobId')::uuid or (j.status = 'leased' and j.lease_expires_at > clock_timestamp()))
 				order by j.id for key share of j) x;
 		end if;
 $new$);
 
--- 1. The runs: the live run and the fan-out, each once, in run id order.
+-- 1. The runs: 5a's loop over the view's run and the coding machine's turns takes in the test machine's runs too, each
+-- run once, in run id order.
 select pg_temp.folder_test_machine_reads_patch(
 	'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure,
-	$old$	if v_run_actor is not null then
+	$old$	-- The view's run, and (20260930445000) every turn leased on its machine, in id order.
+	for v_turn in select distinct turn.id from unnest(coalesce(v_turns, '{}') || (v_run_actor ->> 'runId')::uuid) turn(id)
+		where turn.id is not null order by turn.id loop
 		-- The run's records are keyed by release id too: an id the run already used is refused, never half-filed.
-		if exists (select 1 from public.qorpera_folder_run_releases where run_id = (v_run_actor ->> 'runId')::uuid and release_id = p_release_id)
-			or exists (select 1 from public.qorpera_folder_run_read_records
-				where run_id = (v_run_actor ->> 'runId')::uuid and release_id = p_release_id) then
+		if exists (select 1 from public.qorpera_folder_run_releases where run_id = v_turn and release_id = p_release_id)
+			or exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn and release_id = p_release_id) then
 			raise exception 'Release id was used for other reads' using errcode = '22023'; end if;
-		perform public.qorpera_folder_write_read_set(p_environment_id, (v_run_actor ->> 'runId')::uuid, v_pairs -> 'upserts', null, null);
+		perform public.qorpera_folder_write_read_set(p_environment_id, v_turn, v_pairs -> 'upserts', null, null);
 		insert into public.qorpera_folder_run_read_records(run_id, release_id, environment_id, resource_id, reads, output_sha256)
-		select (v_run_actor ->> 'runId')::uuid, p_release_id, p_environment_id, (f -> 'authority' ->> 'resourceId')::uuid,
+		select v_turn, p_release_id, p_environment_id, (f -> 'authority' ->> 'resourceId')::uuid,
 			jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), p_output_sha256
 		from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
-	end if;
+	end loop;
 	v_result := jsonb_build_object('schema','qorpera.folder-release/v1','releaseId',p_release_id,
 		'reads',jsonb_array_length(p_reads),'replay',false,'runId',v_run_actor ->> 'runId');$old$,
-	$new$	-- 20260930422000: the runs the release reaches. On a test machine, every run with a command running on the view's
-	-- placement whose job is leased and held above (this statement sees a command that ended or a job that let go while
-	-- the release waited). Each run once, in run id order, so two releases write the same runs' read sets in one order.
-	-- The live run gets the view's pairs; any other run gets them checked for its own authority, as a take-in does.
+	$new$	-- 20260930480000: on a test machine, the runs with a command running on the view's placement whose job is leased
+	-- and held above (this statement sees a command that ended or a job that let go while the release waited).
 	if v_fan_jobs is not null then
 		select coalesce(array_agg(distinct c.run_id order by c.run_id), '{}') into v_fan_runs
 		from public.qorpera_company_machine_commands c
 		join public.qorpera_execution_runs r on r.id = c.run_id
 		join public.qorpera_runner_jobs j on j.id = r.job_id
-		where c.machine_id = v_machine_id and c.placement_id = v_placement_id and c.ended_at is null
+		where c.machine_id = v_test_machine and c.placement_id = v_test_placement and c.ended_at is null
 			and j.id = any (v_fan_jobs) and j.status = 'leased' and j.lease_expires_at > clock_timestamp();
 	end if;
-	for v_run in
-		select x.id from unnest(array_append(v_fan_runs, (v_run_actor ->> 'runId')::uuid)) x(id) where x.id is not null
-		group by x.id order by x.id
-	loop
-		if v_run = (v_run_actor ->> 'runId')::uuid then
-			v_run_pairs := v_pairs;
-		else
+	-- The view's run, every turn leased on its machine (20260930445000) and every run a test machine's release reaches
+	-- (20260930480000): each once, in run id order, so two releases write the same runs' read sets in one order. The
+	-- view's run and a coding machine's turns get the view's pairs; a test machine's other runs get them checked for
+	-- each run's own authority, as a take-in does.
+	for v_turn in select distinct turn.id
+		from unnest(coalesce(v_turns, '{}') || v_fan_runs || (v_run_actor ->> 'runId')::uuid) turn(id)
+		where turn.id is not null order by turn.id loop
+		if v_turn = any (v_fan_runs) and v_turn is distinct from (v_run_actor ->> 'runId')::uuid then
 			v_run_pairs := public.qorpera_folder_release_pairs(p_environment_id, p_profile_id,
-				public.qorpera_folder_run_reader(p_profile_id, v_run), v_pairs -> 'filed');
+				public.qorpera_folder_run_reader(p_profile_id, v_turn), v_pairs -> 'filed');
+		else
+			v_run_pairs := v_pairs;
 		end if;
 		-- The run's records are keyed by release id too: an id the run already used is refused, never half-filed.
-		if exists (select 1 from public.qorpera_folder_run_releases where run_id = v_run and release_id = p_release_id)
-			or exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_run and release_id = p_release_id) then
+		if exists (select 1 from public.qorpera_folder_run_releases where run_id = v_turn and release_id = p_release_id)
+			or exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn and release_id = p_release_id) then
 			raise exception 'Release id was used for other reads' using errcode = '22023'; end if;
-		perform public.qorpera_folder_write_read_set(p_environment_id, v_run, v_run_pairs -> 'upserts', null, null);
+		perform public.qorpera_folder_write_read_set(p_environment_id, v_turn, v_run_pairs -> 'upserts', null, null);
 		insert into public.qorpera_folder_run_read_records(run_id, release_id, environment_id, resource_id, reads, output_sha256)
-		select v_run, p_release_id, p_environment_id, (f -> 'authority' ->> 'resourceId')::uuid,
+		select v_turn, p_release_id, p_environment_id, (f -> 'authority' ->> 'resourceId')::uuid,
 			jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), p_output_sha256
 		from jsonb_array_elements(v_run_pairs -> 'filed') f group by 4;
-		v_written := v_written || v_run;
+		v_written := v_written || v_turn;
 	end loop;
 	v_result := jsonb_build_object('schema','qorpera.folder-release/v1','releaseId',p_release_id,
 		'reads',jsonb_array_length(p_reads),'replay',false,'runId',v_run_actor ->> 'runId')
@@ -168,7 +186,7 @@ select pg_temp.folder_test_machine_reads_patch(
 		or v_view.member_user_id <> (v_resolved ->> 'requesterUserId')::uuid) is not true then
 		null; -- Its own agent's and member's view, of any kind.
 	elsif v_view.kind = 'test_machine' then
-		-- 20260930422000: a test machine's output can show what any command on it read, so any run that sees it takes in
+		-- 20260930480000: a test machine's output can show what any command on it read, so any run that sees it takes in
 		-- the machine's reads: a company-audience run whose agent and member read the root now.
 		if v_resolved -> 'audience' ->> 'kind' is distinct from 'company'
 			or not public.qorpera_folder_reads_root(p_environment_id, v_file.profile_id, (v_resolved ->> 'staffAgentId')::uuid,
