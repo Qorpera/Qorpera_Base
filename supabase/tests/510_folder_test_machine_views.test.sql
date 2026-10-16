@@ -192,7 +192,8 @@ begin
 		or w.machine_id is distinct from w.placement_id or w.run_id is not null or w.screen_id is not null or w.worker_id is not null
 		or w.worker_access is distinct from (public.qorpera_run_worker((v ->> 'runId')::uuid)).access then
 		raise exception 'The test machine view: %', to_jsonb(w); end if;
-	r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass');
+	-- The folder service renews it under its id (20260930496000; 517 tests the rest).
+	r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass', null, '51000000-0000-4000-8000-0000000005e1');
 	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'test_machine' or r ->> 'machineId' is distinct from a ->> 'placementId' then
 		raise exception 'Renew: %', r; end if;
 	-- The machine columns are whole on a test machine's view and absent from every other kind's.
@@ -291,7 +292,7 @@ begin
 			perform pg_temp.fx(f);
 			perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'tm-ended', '[{"op":"mkdir","path":"refused"}]'),
 				'42501', 'Folder view has ended');
-			r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass');
+			r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass', null, '51000000-0000-4000-8000-0000000005e1');
 			if r ->> 'state' is distinct from 'closed' or r ->> 'reason' is distinct from 'ended' then
 				raise exception 'Renew after %: %', f, r; end if;
 			raise exception 'Undo' using errcode = 'QTF80';
@@ -300,7 +301,7 @@ begin
 	end loop;
 	perform pg_temp.fx(format('update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = %L',
 		a ->> 'placementId'));
-	r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass');
+	r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass', null, '51000000-0000-4000-8000-0000000005e1');
 	if r ->> 'state' is distinct from 'open' then raise exception 'A retired disk''s view renews: %', r; end if;
 	r := pg_temp.final(s, 'tm-final', '[{"op":"mkdir","path":"by-tm-final"}]');
 	perform pg_temp.expect(r, 1, 'saved');
