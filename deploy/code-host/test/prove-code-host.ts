@@ -160,9 +160,14 @@ async function main(args: string[]): Promise<void> {
 			"A's code host runs, exactly as the policy makes it: no NIC, no profile, only its root disk",
 			instance,
 		);
-		const script = join(HERE, "prove-in-code-host.sh");
-		const push = lxc(PA, "file", "push", "--uid", "0", "--gid", "0", "--mode", "0500", script, "code-host/root/");
-		if (push.status !== 0) throw new Error(`file push: ${push.stderr}`);
+		// The script goes in over exec stdin, as the executor sends everything: LXD's file API in a VM (SFTP over the
+		// agent) once ended in EOF under load (run 20261016T000219-58109-0dcd5b4e).
+		const put = spawnSync(
+			"lxc",
+			["--project", PA, "exec", CODE_HOST_INSTANCE, "--", "sh", "-c", "umask 077 && cat > /root/prove-in-code-host.sh"],
+			{ input: readFileSync(join(HERE, "prove-in-code-host.sh")), encoding: "utf8" },
+		);
+		if (put.status !== 0) throw new Error(`the script into A's code host: ${put.stderr || put.error}`);
 		const proof = lxc(PA, "exec", CODE_HOST_INSTANCE, "--", "env", `QORPERA_PROOF_GIT=${git}`,
 			`QORPERA_PROOF_FOLDER_SHA256=${folder}`, `QORPERA_PROOF_CPUS=${policy.cpus}`,
 			`QORPERA_PROOF_DISK_BYTES=${policy.rootDiskBytes}`, "bash", "/root/prove-in-code-host.sh");
