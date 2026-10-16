@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import {
 	CompanyComputerDesktopFolders,
 	checkCompanyComputerFolderParent,
-	closeCompanyComputerDesktopFolderView,
+	closeCompanyComputerFolderView,
 	openCompanyComputerDesktopFolderView,
 	openCompanyComputerFolderParent,
 } from "@qorpera/runtime/cloud-company-computer-desktop-folder";
@@ -225,7 +225,7 @@ describe("a desktop's folder view", () => {
 	it("closes a view with its pass and never fails the caller", async () => {
 		const f = http(refused("Folder view is invalid"));
 		await expect(
-			closeCompanyComputerDesktopFolderView(f.registry, {
+			closeCompanyComputerFolderView(f.registry, {
 				environmentId: binding.environmentId,
 				viewId: computerId(30),
 				pass: "a-pass",

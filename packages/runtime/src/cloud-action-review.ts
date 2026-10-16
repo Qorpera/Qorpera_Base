@@ -170,11 +170,15 @@ function record(value: JsonValue): Record<string, JsonValue> {
 	return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-/** Classifies one parsed call. A tool this table does not know is reviewed. */
+/**
+ * Classifies one parsed call. A tool this table does not know is reviewed. `offlineShells`: the session ids of the
+ * run's own offline commands (F3 4d), whose input stays inside as their start does.
+ */
 export function cloudActionEffect(
 	tool: Pick<CloudNativeTool, "name" | "source">,
 	parsed: JsonValue,
 	connectorEffects: ReadonlyMap<string, "read" | "write"> = new Map(),
+	offlineShells: ReadonlySet<string> = new Set(),
 ): CloudActionEffect {
 	const args = record(parsed);
 	const action = record(args.action ?? null);
@@ -233,12 +237,18 @@ export function cloudActionEffect(
 			return "internal";
 		case "company_delete":
 			return "destructive";
-		// A command can reach the internet, and so can what is typed into one.
+		// A networked command can reach the internet, and so can what is typed into one. An offline command (F3 4d:
+		// `network: false`, the run's own tool's default) reaches only the computer and the company folder, as does
+		// input to one the run started so. A start that does not say is an older runtime's, run with the network.
 		// Reading output and listing change nothing; stopping only ends work.
 		case "computer_shell":
 			return ["read", "list"].includes(action.action as string)
 				? "read"
-				: action.action === "stop"
+				: action.action === "stop" ||
+						(action.action === "start" && action.network === false) ||
+						(action.action === "write" &&
+							typeof action.sessionId === "string" &&
+							offlineShells.has(action.sessionId))
 					? "internal"
 					: "external";
 		// An email from a company mailbox leaves the company (M2b).
@@ -516,7 +526,11 @@ export function describeCloudAction(
 		add("key", action.key);
 	} else if (tool.name === "computer_shell") {
 		title =
-			action.action === "write" ? "Type into a running command on the computer" : "Run a command on the computer";
+			action.action === "write"
+				? "Type into a running command on the computer"
+				: action.network === true
+					? "Run a command with internet access on the computer"
+					: "Run a command on the computer";
 		quote("command", action.command, 2000);
 		quote("text", action.text, 2000);
 	} else if (tool.name === "send_mail") {
@@ -1021,6 +1035,7 @@ export class CloudActionReviewGate {
 	readonly #pollMs: number;
 	readonly #request: string;
 	readonly #connectorEffects: ReadonlyMap<string, "read" | "write">;
+	readonly #offlineShells: ReadonlySet<string>;
 	readonly #facts: CloudActionFacts;
 	readonly #observability?: CloudRuntimeObservability;
 
@@ -1031,6 +1046,8 @@ export class CloudActionReviewGate {
 		request: string;
 		holdMs: number;
 		connectorEffects?: ReadonlyMap<string, "read" | "write">;
+		/** The run's own offline commands (F3 4d), as the computer tools add them: read at each call. */
+		offlineShells?: ReadonlySet<string>;
 		/** Coworkers' names and the wake's time zone (a routine run's own, else UTC), for the card's facts. */
 		facts?: Omit<CloudActionFacts, "requester">;
 		observability?: CloudRuntimeObservability;
@@ -1044,6 +1061,7 @@ export class CloudActionReviewGate {
 		this.#holdMs = options.holdMs;
 		this.#pollMs = options.pollMs ?? POLL_MS;
 		this.#connectorEffects = options.connectorEffects ?? new Map();
+		this.#offlineShells = options.offlineShells ?? new Set();
 		this.#facts = options.facts ?? {};
 		this.#observability = options.observability;
 	}
@@ -1060,7 +1078,7 @@ export class CloudActionReviewGate {
 	}
 
 	async #check(call: CloudActionCall, signal: AbortSignal): Promise<CloudActionGateResult> {
-		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects);
+		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects, this.#offlineShells);
 		if (effect === "read" || effect === "internal") return { run: true };
 		const begin = object(
 			await this.#control.call(
