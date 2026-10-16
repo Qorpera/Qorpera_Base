@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-144 functions, grouped for navigation. Signatures: see the migration that defines each.
+134 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -361,39 +361,29 @@ with legacy sweep E1 (20260930400000).
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
-### Conversations, turns, wakes (28)
+### Conversations, turns, wakes (18)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
   the agent raised in the thread. See "Thread interactions" under §6.
 - `qorpera_append_session_input`
 - `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
-- `qorpera_claim_wake_v2`
 - `qorpera_close_shared_session`
-- `qorpera_complete_session_turn_v2`
-- `qorpera_complete_wake`
 - `qorpera_configure_session_execution`
 - `qorpera_create_shared_session`
 - `qorpera_create_shared_session_v2`
 - `qorpera_create_shared_session_v4`
 - `qorpera_ensure_member_private_staff_session`
 - `qorpera_ensure_staff_session`
-- `qorpera_get_session_turn_status`
 - `qorpera_get_shared_session_by_client`
-- `qorpera_list_session_execution_run_recoveries`
 - `qorpera_list_session_inputs`
-- `qorpera_list_session_recoveries`
 - `qorpera_list_session_turn_requests`
 - `qorpera_list_shared_sessions`
 - `qorpera_list_shared_sessions_page`
 - `qorpera_list_wake_occurrences`
-- `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
 - `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
 - Not an RPC: a conversation's erasure generation, read from its row (`select memory_generation from qorpera_shared_sessions where id = …`, under the table's `authenticated` read grant and its policy `qorpera_can_read_session`; migration `20260928509140`). An erase (`20260930441000`) rewrites an event's body to exactly `{"erased": true}` in place, under its sequence, and raises the generation without touching `updated_at` (so no `sessions` hint): a client that holds events reads them again when the generation differs from the one they reflect, and never lets a copy read before the erase replace the erased one. The web reads it with each full read of a thread.
-- `qorpera_renew_session_turn_v2`
-- `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
-- `qorpera_resolve_session_recovery`
 
 
 ### Coding sessions (4) — Order 9, part 1 (PR #211)
@@ -573,8 +563,6 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Every refusal is 22023, after the membership and write checks and before any lock. An unknown, foreign or
   account-mail `ref` reads the same way, whether or not it exists.
 - The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
-- A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
-  quoted message waits: only a cloud run fences one.
 - A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
   (`mentionFold`) folds each quote to its placeholder first.
 - Quotes are refused (22023) in a company whose runs can't fence them: an environment that is neither folder-v2 nor
