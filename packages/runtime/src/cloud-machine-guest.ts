@@ -1013,9 +1013,15 @@ async function showFolderView(
 	const file = join(root, "view.json"),
 		state = join(root, "state");
 	const run = ports.system ?? system;
+	// The program mounts directly as root, so the kernel lists it as `fuse qorpera-company` (#1007's mountinfo, Q3's
+	// run); `fuse.qorpera` is a mount made through fusermount. The source names the program either way.
 	const programMounted = async () => {
 		const top = mountOf(await mountinfo(), mountpoint);
-		return top?.mountpoint === mountpoint && top.fstype === "fuse.qorpera" && top.source === "qorpera-company";
+		return (
+			top?.mountpoint === mountpoint &&
+			(top.fstype === "fuse" || top.fstype === "fuse.qorpera") &&
+			top.source === "qorpera-company"
+		);
 	};
 	const unitState = async (): Promise<Record<string, string>> =>
 		Object.fromEntries(

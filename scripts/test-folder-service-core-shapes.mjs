@@ -164,6 +164,9 @@ async function main() {
 		// The open answer says what the view is (F3 4a): a run box, on no machine.
 		assert.equal(renewal.kind, "run_box");
 		assert.equal(renewal.machineId, null);
+		// And whose it is (F3 5a): its company, and no coding machine.
+		assert.match(renewal.companyId, /^[0-9a-f-]{36}$/);
+		assert.equal(renewal.codingMachineId, null);
 		assert.deepEqual(boxed.get("box-close"), { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" });
 		assert.equal(parseViewRenewal(boxed.get("box-renew-closed")).state, "closed");
 		assert.equal(boxed.get("box-after-close"), "refused");

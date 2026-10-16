@@ -142,20 +142,15 @@ begin
 		'An unmoved row is not rewritten');
 end $$;
 
--- 3. Only members call the member RPCs and only the runner calls the agent RPC.
+-- 3. Only members call the member RPCs (an agent saves agents/sections.md, section 2).
 do $$
 begin
 	perform pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_read_company_sidebar(uuid)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_manage_company_sidebar(uuid,jsonb)', 'execute')
-		and not has_function_privilege('authenticated', 'public.qorpera_manage_agent_sidebar(jsonb,jsonb)', 'execute')
-		and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_manage_agent_sidebar(jsonb,jsonb)', 'execute')
-		and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_manage_company_sidebar(uuid,jsonb)', 'execute')
-		and has_function_privilege('service_role', 'public.qorpera_manage_agent_sidebar(jsonb,jsonb)', 'execute'),
+		and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_manage_company_sidebar(uuid,jsonb)', 'execute'),
 		'Sidebar RPC grants');
 end $$;
--- The agent RPC is the runner's; a member cannot call it, and an agent cannot call the member RPC.
-select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
-select pg_temp.base_error($q$select public.qorpera_manage_agent_sidebar(current_setting('qorpera_test.base_binding')::jsonb,'{"action":"list"}')$q$, '42501');
+-- An agent cannot call the member RPC.
 select pg_temp.base_claims('service_role');
 select pg_temp.base_error($q$select public.qorpera_manage_company_sidebar('92400000-0000-4000-8000-000000000010','{"action":"set_pins","order":[]}')$q$, '42501');
 

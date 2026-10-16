@@ -974,7 +974,9 @@ export class CodingSessionElement {
 								? t("{agent} no longer has the repository", { agent: names.agent })
 								: body.reason === "EXECUTOR_DISABLED"
 									? t("Coding is turned off here")
-									: undefined;
+									: body.reason === "MACHINE_STOPPED"
+										? t("The machine stopped")
+										: undefined;
 		const stopped = count
 			? count === 1
 				? t("1 command stopped")

@@ -139,7 +139,8 @@ interface SkillFile {
 	readonly path: string;
 	readonly folder: string | null;
 	/** absent keeps the version a deletion left (null if it never existed): creating the file names
-	 * it. unreadable is not skill text (too large, not UTF-8); no_access is refused to this run. */
+	 * it. unreadable is not skill text (too large, not UTF-8, or a link, never followed); no_access is refused to this
+	 * run. */
 	readonly state: "file" | "absent" | "unreadable" | "no_access";
 	readonly version: string | null;
 	readonly text: string;
@@ -507,7 +508,7 @@ export function cloudSkillTools(
 					state: "unreadable",
 					scope: file.scope,
 					path: file.path,
-					hint: "This skill file is not plain text (over 32 KiB or not UTF-8), so it cannot be read. Ask a member to fix it.",
+					hint: "This skill file is not plain text (over 32 KiB, not UTF-8, or a link), so it cannot be read. Ask a member to fix it.",
 				});
 			if (request.version !== undefined && request.version !== file.version)
 				return reply({
@@ -872,7 +873,7 @@ export function cloudSkillTools(
 							state: "unreadable",
 							saved: false,
 							path: file.path,
-							hint: "This skill file is not plain text (over 32 KiB or not UTF-8), so nothing was written. Ask a member to fix it.",
+							hint: "This skill file is not plain text (over 32 KiB, not UTF-8, or a link), so nothing was written. Ask a member to fix it.",
 						});
 					if (request.description === undefined && !file.document.description)
 						return reply({

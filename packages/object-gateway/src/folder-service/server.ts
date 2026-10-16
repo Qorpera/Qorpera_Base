@@ -17,6 +17,7 @@ import {
 	parseExecutable,
 	parseGetChunk,
 	parseHello,
+	parseLink,
 	parseList,
 	parseMkdir,
 	parseOpen,
@@ -26,6 +27,7 @@ import {
 	parseRemove,
 	parseRename,
 	parseSearch,
+	parseSymlink,
 	REQUEST_MAX_PAYLOAD,
 } from "./protocol.ts";
 import type { ChangeMessage, FolderService, ViewHandle } from "./service.ts";
@@ -196,7 +198,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				send(encodeJson(Kind.found, await handle.search(parseSearch(frame.payload))));
 				return;
 		}
-		// Writes (protocol 2) and reads to release (protocol 3), on a writing connection only.
+		// Writes (protocol 2), reads to release (protocol 3) and links (protocol 4), on a writing connection only.
 		const write = [
 			Kind.open,
 			Kind.chunk,
@@ -209,6 +211,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			Kind.executable,
 			Kind.publish,
 			...(protocol >= 3 ? [Kind.reads] : []),
+			...(protocol >= 4 ? [Kind.symlink, Kind.link] : []),
 		] as number[];
 		if (!write.includes(frame.kind)) throw new ProtocolError(ErrorCode.badRequest, "Unknown request", true);
 		if (!writes) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
@@ -256,6 +259,14 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			case Kind.reads:
 				send(encodeJson(Kind.readsOk, await handle.reads(parseReads(frame.payload))));
+				return;
+			case Kind.symlink: {
+				const request = parseSymlink(frame.payload);
+				send(encodeJson(Kind.done, await handle.symlink(request.path, request.target)));
+				return;
+			}
+			case Kind.link:
+				send(encodeJson(Kind.done, await handle.link(parseLink(frame.payload))));
 				return;
 		}
 		send(encodeJson(Kind.done, {}));

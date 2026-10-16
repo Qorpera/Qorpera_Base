@@ -1,7 +1,8 @@
-import type {
-	CloudMemberFolderClient,
-	CloudMemberFolderEntry,
-	CloudMemberFolderFeedPosition,
+import {
+	CLOUD_MEMBER_FOLDER_PAGE,
+	type CloudMemberFolderClient,
+	type CloudMemberFolderEntry,
+	type CloudMemberFolderFeedPosition,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { COMPANY_STATE_FILE_MAX_BYTES, companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import {
@@ -101,7 +102,7 @@ const tablePath = (name: string) => `tables/${name}/table.toml`;
 const rowsPath = (name: string) => `tables/${name}/rows.csv`;
 /** A `file:` source reads at most this much (RUNTIME-INTERFACES.md §4). */
 const FILE_MAX_BYTES = 256 * 1024;
-const LIST_PAGE = 1000;
+const LIST_PAGE = CLOUD_MEMBER_FOLDER_PAGE;
 const MAX_LISTED = 10_000;
 /** Files read at once. */
 const READS_AT_ONCE = 6;
@@ -109,7 +110,7 @@ const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 /** Feed pages one sync follows: past that, reading everything again is cheaper (as views/company-folder.ts). */
 const FEED_PAGES = 5;
-const FEED_LIMIT = 500;
+const FEED_LIMIT = CLOUD_MEMBER_FOLDER_PAGE;
 
 /** A file as last read: its text at a version, or null when it isn't there, is too large or isn't text. */
 type Read = { readonly version: string; readonly text: string } | null;

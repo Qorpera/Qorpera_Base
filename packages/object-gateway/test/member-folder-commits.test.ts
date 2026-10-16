@@ -255,10 +255,38 @@ describe("a member's change set to a folder-v2 company", () => {
 		]);
 	});
 
+	it("passes a link's `symlink` unit through with its target exactly as sent, staging nothing", async () => {
+		const g = await gateway();
+		// 4,095 bytes, the most a target holds: relative with `..` and two-byte characters, kept as written.
+		const longest = `../${"é".repeat(2046)}`;
+		const units = [
+			{ op: "symlink", path: "drafts/latest", target: "../notes/a file.md", expectedVersion: version },
+			{ op: "symlink", path: "drafts/far", target: longest },
+			{ op: "symlink", path: "drafts/system", target: "/etc/hosts" },
+		];
+		expect((await g.send(request(units))).status).toBe(200);
+		expect(g.staged()).toEqual([]);
+		expect(g.commits()[0]?.args.p_units).toEqual(units);
+		// A target over 4,095 bytes, empty, with a NUL or a lone surrogate, or not text, is refused before the core.
+		for (const unit of [
+			{ op: "symlink", path: "drafts/a", target: `${longest}x` },
+			{ op: "symlink", path: "drafts/a", target: "" },
+			{ op: "symlink", path: "drafts/a", target: "a\0b" },
+			{ op: "symlink", path: "drafts/a", target: "broken \ud800" },
+			{ op: "symlink", path: "drafts/a", target: 7 },
+			{ op: "symlink", path: "drafts/a" },
+			{ op: "symlink", path: "drafts/a", target: "b", text: "x" },
+			{ op: "symlink", path: "drafts/a", target: "b", expectedVersion: "v1" },
+		])
+			expect((await g.send(request([unit]))).status, JSON.stringify(unit)).toBe(400);
+		expect(g.commits()).toHaveLength(1);
+	});
+
 	it("refuses anything at or under human-tasks/ until P31, whatever its case, before staging", async () => {
 		for (const unit of [
 			{ op: "write", path: "human-tasks/sign-lease.md", text: "x" },
 			{ op: "mkdir", path: "human-tasks/sign-lease" },
+			{ op: "symlink", path: "human-tasks/latest", target: "sign-lease.md" },
 			{ op: "new_folder", path: "Human-Tasks/sign-lease", contents: [] },
 			{ op: "delete", path: "human-tasks", expectedVersion: version },
 			{ op: "move", from: "agents/nora/proof.pdf", to: "HUMAN-TASKS/sign-lease/proof.pdf" },
