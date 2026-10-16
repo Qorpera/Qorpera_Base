@@ -42,13 +42,15 @@ const methods = [
 	"qorpera_folder_view_close",
 	// E3c-3: where a vault_capture's box goes, read by the office itself (migration 20260930344000); it writes nothing.
 	"qorpera_native_office_hook_capture",
+	// F3 4d-4e: a run's take-in of a command's view reads, before its output reaches that run (migration 20260930491000).
+	"qorpera_folder_office_inherit_command_reads",
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
 /**
  * Why the core refused a desktop's or a shell command's folder view, in its own words, when they are one of these: the
  * office passes them on to the run or member it gives the screen back to, or to the run whose command did not start
- * (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A desktop's mount"). Any other text, and every other method's, is never kept.
+ * (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A desktop's mount").
  */
 const FOLDER_VIEW_REFUSALS = new Set([
 	"Folder core authority is required",
@@ -63,6 +65,31 @@ const FOLDER_VIEW_REFUSALS = new Set([
 	"Folder view opener is invalid",
 	"Folder view anchor is invalid",
 ]);
+
+/**
+ * Why the core refused a run's take-in of a command's view reads, in its own words, when they are one of these: the
+ * office tells that run why the command's output is held back from it (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A command
+ * that outlived its run").
+ */
+const FOLDER_INHERIT_REFUSALS = new Set([
+	"Folder core authority is required",
+	"Company folder is unavailable",
+	"Folder releases run at read committed",
+	"Folder inheritance is invalid",
+	"Folder inheritance read is not current",
+	"Folder actor is invalid",
+	"Run is unavailable",
+	"Company execution is paused",
+	"Inherit id was used for another view",
+	"A run inherits only its own agent's and member's views",
+	"A released read is no longer readable",
+]);
+
+/** The methods whose refusals keep their reason, and the reasons kept. Any other text, and every other method's, is never kept. */
+const KEPT_REFUSALS: Partial<Record<CompanyComputerRegistryMethod, ReadonlySet<string>>> = {
+	qorpera_folder_view_open: FOLDER_VIEW_REFUSALS,
+	qorpera_folder_office_inherit_command_reads: FOLDER_INHERIT_REFUSALS,
+};
 
 /**
  * The registry gave no answer: the network, a timeout, a server that could not
@@ -81,7 +108,7 @@ export class CompanyComputerRegistryUnansweredError extends Error {
 
 /** The registry answered and refused: SQL raised, or any other 4xx. */
 class CompanyComputerRegistryRefusedError extends Error {
-	/** The core's reason for refusing a folder view, from FOLDER_VIEW_REFUSALS. */
+	/** The core's reason for refusing a folder view or a take-in, from KEPT_REFUSALS. */
 	readonly reason: string | undefined;
 	constructor(cause: unknown, reason?: string) {
 		super("OFFICE_REGISTRY_UNCONFIRMED", { cause });
@@ -180,7 +207,7 @@ export class HttpCloudCompanyComputerRegistry {
 					});
 					if (!response.ok) {
 						// Only the SQLSTATE is kept from the body, never its details, and its message only when it is
-						// one of a folder view's known refusals.
+						// one of its method's known refusals.
 						let sqlState: string | undefined;
 						let reason: string | undefined;
 						try {
@@ -194,12 +221,7 @@ export class HttpCloudCompanyComputerRegistry {
 							if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) sqlState = code;
 							const message =
 								failure && typeof failure === "object" && "message" in failure ? failure.message : undefined;
-							if (
-								sqlState &&
-								method === "qorpera_folder_view_open" &&
-								typeof message === "string" &&
-								FOLDER_VIEW_REFUSALS.has(message)
-							)
+							if (sqlState && typeof message === "string" && KEPT_REFUSALS[method]?.has(message))
 								reason = message;
 						} catch {
 							void response.body?.cancel().catch(() => undefined);

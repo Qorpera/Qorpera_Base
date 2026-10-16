@@ -174,6 +174,8 @@ const FOLDER_LOST = "The company folder stopped answering for this command, so i
 /** A boundary's answer can take this long; an output read leaves it this much of the reply's time. */
 const FOLDER_READ_RESERVE_MS = 8000;
 const FOLDER_REPLY_RESERVE_MS = 2000;
+/** A read for another run also leaves its take-in this much: the registry's call takes at most 3 s. */
+const FOLDER_INHERIT_RESERVE_MS = 3000;
 
 /** The physical namespace behind one shell. Test seams replace it with an in-process host. */
 export interface CompanyComputerShellEnvironment {
@@ -602,33 +604,48 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		};
 	}
 
-	/** A folder command's output up to a mark reaches the run that started it once its boundary answers. */
+	/**
+	 * A folder command's output up to a mark reaches the run that started it once its boundary answers. Another run's
+	 * read, by an action of its own (`receiptId`), takes in the command's reads after that ("A command that outlived its
+	 * run"), and sees what was released before its take-in; the paths not saved come with it then. The shell has one
+	 * read cursor, as for a command outside the folder: output one run read does not come again to another.
+	 */
 	async #folderResult(
 		session: Session,
 		folder: CompanyComputerCommandFolder,
 		input: Parameters<CompanyComputerGuestShell["result"]>[0],
 	): Promise<CompanyComputerShellCommandResult> {
-		if (input.runId === undefined || input.runId !== session.runId)
-			return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
-		const until = input.until ?? performance.now() + input.waitMs + FOLDER_READ_RESERVE_MS;
+		if (input.runId === undefined) return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
+		const other = input.runId !== session.runId;
+		if (other && input.receiptId === undefined) return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
+		const inheritReserve = other ? FOLDER_INHERIT_RESERVE_MS : 0;
+		const until = input.until ?? performance.now() + input.waitMs + FOLDER_READ_RESERVE_MS + inheritReserve;
 		await this.#wait(
 			session,
-			Math.min(input.waitMs, Math.floor(until - performance.now()) - FOLDER_READ_RESERVE_MS),
+			Math.min(input.waitMs, Math.floor(until - performance.now()) - FOLDER_READ_RESERVE_MS - inheritReserve),
 			input.signal,
 		);
 		const before = mark(session);
+		let report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {};
 		// Nothing new since the last boundary: nothing more reaches the run, so none is asked.
-		if (folder.status === "running" && session.released && sameMark(before, session.released))
-			return this.#result(session, session.released);
-		const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS);
-		const report = {
-			...(release.notSaved ? { notSaved: release.notSaved } : {}),
-			...(release.moreNotSaved ? { moreNotSaved: release.moreNotSaved } : {}),
-		};
-		if (!release.released) return this.#held(session, release.heldBack, report);
-		// Once the mount is gone, everything the command wrote is out.
-		session.released = release.final ? mark(session) : before;
-		return { ...this.#result(session, session.released), ...report };
+		if (!(folder.status === "running" && session.released && sameMark(before, session.released))) {
+			const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS - inheritReserve, !other);
+			report = {
+				...(release.notSaved ? { notSaved: release.notSaved } : {}),
+				...(release.moreNotSaved ? { moreNotSaved: release.moreNotSaved } : {}),
+			};
+			if (!release.released) return this.#held(session, release.heldBack, report);
+			// Once the mount is gone, everything the command wrote is out.
+			session.released = release.final ? mark(session) : before;
+		} else if (!other) report = folder.takeReport(); // What another run's refused take-in left.
+		// What was released before the take-in is asked: a boundary meanwhile may release more.
+		const shown = session.released ?? before;
+		if (other && input.receiptId !== undefined) {
+			const inherited = await folder.inherit(input.receiptId, input.signal, until - FOLDER_REPLY_RESERVE_MS);
+			if (!inherited.inherited) return this.#held(session, inherited.heldBack);
+			report = folder.takeReport();
+		}
+		return { ...this.#result(session, shown), ...report };
 	}
 
 	/** The ready namespace a live command runs in; never a fresh one. */

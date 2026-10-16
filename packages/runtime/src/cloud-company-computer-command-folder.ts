@@ -17,7 +17,10 @@ import {
 	companyComputerFolderName,
 	startCompanyComputerFolderRun,
 } from "./cloud-company-computer-folder-helper-client.ts";
-import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import {
+	companyComputerRegistryRefusal,
+	type HttpCloudCompanyComputerRegistry,
+} from "./cloud-company-computer-registry-http.ts";
 
 /** How long a command's view is asked for while the core does not answer. */
 const OPEN_WAIT_MS = 30000;
@@ -36,6 +39,8 @@ const DRAIN_LAST_ASK_MS = 2000;
 /** What a tool result lists of the paths the company folder did not take. */
 const NOT_SAVED_SHOWN = 20;
 const NOT_SAVED_BYTES = 8 * 1024;
+/** How many actions' take-ins a command remembers: an older one's retry is held back. */
+const INHERITS_KEPT = 256;
 
 /** Why a command does not run in the company folder; the command ends with it. */
 const START_UNMOUNTED = "The company folder could not be mounted for this command; start it again.";
@@ -51,7 +56,12 @@ const HELD_STOPPED =
 const HELD_GONE = "the company folder no longer serves this command, so its output is held back; start it again";
 const HELD_SAVING = "the command's last changes are still being saved; read again";
 const HELD_NOT_TAKEN = "the company folder did not take this command's last changes";
-/** Also the shell's answer to a run that did not start the command. */
+/** Why a command's output is held back from a run that did not start it ("A command that outlived its run"). */
+const HELD_OTHER_AGENT = "this command's output reaches only runs of the agent and member it was started for";
+const HELD_UNREADABLE = "this run can no longer read what this command read";
+const HELD_REREAD = "this command's output changed since this action first read it; read again";
+const HELD_NOT_INHERITED = "the company folder refused this run's take-in of what this command read";
+/** Also the shell's answer to a read that names no run or action. */
 export const COMPANY_COMPUTER_COMMAND_OTHER_RUN = "this command's output reaches only the run that started it";
 
 /** What a command's folder tells its session: the run's output and exit, and `lost` when the helper went before the
@@ -79,6 +89,11 @@ export type CompanyComputerCommandRelease = (
 	readonly notSaved?: readonly CompanyComputerCommandNotSaved[];
 	readonly moreNotSaved?: number;
 };
+
+/** Whether the command's released output may reach a run that did not start it: that run took in the command's reads. */
+export type CompanyComputerCommandInherit =
+	| { readonly inherited: true }
+	| { readonly inherited: false; readonly heldBack: string };
 
 /**
  * `idle`: the command's view and mount are being made, and nothing runs yet. `none`: nothing ran in the folder.
@@ -152,13 +167,19 @@ export class CompanyComputerCommandFolders {
 	}
 }
 
-/** One command's view, mount and run. Every helper request but the run and the end check runs after the one before. */
+/** One command's view, mount and run, and the take-ins of the runs it did not start that read its output. Every
+ * helper request but the run and the end check runs after the one before. */
 export class CompanyComputerCommandFolder {
 	readonly #seams: Seams;
 	readonly #receipt: string;
 	readonly #name: string;
 	#status: CompanyComputerCommandFolderStatus = "idle";
+	#environmentId?: string;
 	#view?: CompanyComputerFolderView;
+	/** How many boundaries released the command's reads: a take-in covers those before it. */
+	#releases = 0;
+	/** By the effect receipt of an action that read the output for another run: `#releases` at its first take-in. */
+	readonly #inherits = new Map<string, number>();
 	#run?: CompanyComputerFolderRun;
 	#event: (event: CompanyComputerCommandFolderEvent) => void = () => undefined;
 	/** The helper answered `started`. */
@@ -243,6 +264,7 @@ export class CompanyComputerCommandFolder {
 		signal: AbortSignal,
 	): Promise<{ ran: true } | { note: string }> {
 		if (this.#status !== "idle") return { note: START_FAILED };
+		this.#environmentId = input.environmentId;
 		this.#event = event;
 		this.#screen(this, this.#left);
 		let made = false;
@@ -424,9 +446,10 @@ export class CompanyComputerCommandFolder {
 	 * The boundary before the command's output reaches the run that started it ("Before output reaches a model"): the
 	 * command's reads are released, and its changes published, first. Output up to the session's mark, taken before
 	 * this is asked, may reach the run when it answers `released`. The caller waits until `until` (performance.now());
-	 * the work goes on after that.
+	 * the work goes on after that. `report: false` keeps the paths not saved for a later release (a read for another run,
+	 * before its take-in).
 	 */
-	async release(signal: AbortSignal, until: number): Promise<CompanyComputerCommandRelease> {
+	async release(signal: AbortSignal, until: number, report = true): Promise<CompanyComputerCommandRelease> {
 		signal.throwIfAborted();
 		switch (this.#status) {
 			case "idle":
@@ -434,9 +457,9 @@ export class CompanyComputerCommandFolder {
 			case "none":
 				return { released: true, final: true };
 			case "released":
-				return { released: true, final: true, ...this.#takeReport() };
+				return { released: true, final: true, ...this.#report(report) };
 			case "held":
-				return { released: false, heldBack: this.#held ?? HELD_GONE, ...this.#takeReport() };
+				return { released: false, heldBack: this.#held ?? HELD_GONE, ...this.#report(report) };
 			case "ending": {
 				const done = this.#done ?? Promise.resolve();
 				const answer = await within(
@@ -445,8 +468,8 @@ export class CompanyComputerCommandFolder {
 					until,
 					false,
 				);
-				if (!answer) return { released: false, heldBack: this.#retry ?? HELD_SAVING, ...this.#takeReport() };
-				return this.release(signal, until);
+				if (!answer) return { released: false, heldBack: this.#retry ?? HELD_SAVING, ...this.#report(report) };
+				return this.release(signal, until, report);
 			}
 			case "running": {
 				const work = this.#queue(() =>
@@ -457,10 +480,65 @@ export class CompanyComputerCommandFolder {
 				});
 				const answer = await within(work, signal, until, { released: false, heldBack: HELD_UNANSWERED } as const);
 				// The command ended while the boundary waited its turn: the final one answers.
-				if (!answer) return this.release(signal, until);
-				return { ...answer, ...this.#takeReport() };
+				if (!answer) return this.release(signal, until, report);
+				return { ...answer, ...this.#report(report) };
 			}
 		}
+	}
+
+	/** The paths not saved that no release showed yet, which come once. */
+	takeReport(): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
+		return this.#takeReport();
+	}
+
+	#report(take: boolean): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
+		return take ? this.#takeReport() : {};
+	}
+
+	/**
+	 * Before the command's released output reaches a run that did not start it ("A command that outlived its run"):
+	 * that run takes in the command's view reads, by the action that reads (`receiptId`, its effect receipt). The core
+	 * finds the run from the action, and refuses a run of another agent or member. Output released before this is asked
+	 * may reach the run when it answers `inherited`. A retry of the action replays its first take-in, so it is held back
+	 * once a boundary released more after that one. The caller waits until `until` (performance.now()); the call goes
+	 * on after that.
+	 */
+	async inherit(receiptId: string, signal: AbortSignal, until: number): Promise<CompanyComputerCommandInherit> {
+		signal.throwIfAborted();
+		// Nothing ran in the company folder: there is nothing to take in.
+		if (this.#status === "idle" || this.#status === "none" || this.#environmentId === undefined)
+			return { inherited: true };
+		const releases = this.#releases;
+		const first = this.#inherits.get(receiptId);
+		if (first !== undefined && first !== releases) return { inherited: false, heldBack: HELD_REREAD };
+		if (first === undefined) {
+			this.#inherits.set(receiptId, releases);
+			if (this.#inherits.size > INHERITS_KEPT) this.#inherits.delete(this.#inherits.keys().next().value as string);
+		}
+		const remaining = Math.floor(until - performance.now());
+		if (remaining < 1) return { inherited: false, heldBack: HELD_UNANSWERED };
+		const work = this.#seams.registry
+			.call(
+				"qorpera_folder_office_inherit_command_reads",
+				{ p_environment_id: this.#environmentId, p_shell_command_id: this.#receipt, p_receipt_id: receiptId },
+				AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
+			)
+			.then(
+				(answer): CompanyComputerCommandInherit => {
+					const { schema, inheritId, replay } = (answer ?? {}) as Record<string, unknown>;
+					if (schema !== "qorpera.folder-inherit/v1" || inheritId !== receiptId || typeof replay !== "boolean")
+						return { inherited: false, heldBack: HELD_NOT_INHERITED };
+					// A take-in this command does not remember: what it covered is unknown.
+					if (replay && first === undefined) return { inherited: false, heldBack: HELD_REREAD };
+					return { inherited: true };
+				},
+				(error: unknown): CompanyComputerCommandInherit => {
+					signal.throwIfAborted();
+					const refusal = companyComputerRegistryRefusal(error);
+					return { inherited: false, heldBack: refusal ? notInherited(refusal.reason) : HELD_UNANSWERED };
+				},
+			);
+		return within(work, signal, until, { inherited: false, heldBack: HELD_UNANSWERED } as const);
 	}
 
 	async #boundary(signal: AbortSignal, until: number): Promise<CompanyComputerCommandRelease> {
@@ -479,8 +557,10 @@ export class CompanyComputerCommandFolder {
 		if (answer && "report" in answer && answer.report) this.#note(answer.report, out);
 		signal.throwIfAborted();
 		// Saved, or refused only for some paths (refused or conflicting saves): the reads were released.
-		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined))
+		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined)) {
+			this.#releases++;
 			return { released: true };
+		}
 		if (answer?.answer === "unknown") {
 			this.#hold(HELD_GONE);
 			this.#run?.stop();
@@ -542,9 +622,10 @@ export class CompanyComputerCommandFolder {
 				this.#hold(HELD_GONE);
 				break;
 			}
-			if (answer.answer === "saved" || (answer.answer === "refused" && answer.report.closed))
+			if (answer.answer === "saved" || (answer.answer === "refused" && answer.report.closed)) {
 				this.#status = "released";
-			else this.#hold(HELD_NOT_TAKEN);
+				this.#releases++;
+			} else this.#hold(HELD_NOT_TAKEN);
 			if ("report" in answer) this.#note(answer.report, true);
 			if (!answer.unmounted) {
 				await this.#gone(true);
@@ -622,6 +703,15 @@ function heldBack(answer: CompanyComputerFolderAnswer<"boundary" | "unmount"> | 
 	if (answer.report.refused === "stopped") return HELD_PAUSED;
 	if (answer.report.refused === "run_ended") return HELD_RUN_ENDED;
 	return HELD_REFUSED;
+}
+
+/** Why the core refused a run's take-in of the command's reads, as the run hears it. */
+function notInherited(reason: string | undefined): string {
+	if (reason === "Company execution is paused") return HELD_PAUSED;
+	if (reason === "Run is unavailable") return HELD_RUN_ENDED;
+	if (reason === "A run inherits only its own agent's and member's views") return HELD_OTHER_AGENT;
+	if (reason === "A released read is no longer readable") return HELD_UNREADABLE;
+	return HELD_NOT_INHERITED;
 }
 
 /** The answer as the office logs it: a plain name, never the company's paths or reasons. */

@@ -1140,9 +1140,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
 				},
-				settle: (action, content, requestSignal, replyBy, runId) =>
+				settle: (action, content, requestSignal, replyBy, runId, receiptId) =>
 					automation
-						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy, runId)
+						? automation.settle(
+								action,
+								content,
+								AbortSignal.any([signal, requestSignal]),
+								replyBy,
+								runId,
+								receiptId,
+							)
 						: Promise.resolve(content),
 			},
 		});

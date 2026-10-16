@@ -67,10 +67,14 @@ describe("host-only office registry transport", () => {
 		);
 		expect(f.fetcher).toHaveBeenCalledOnce();
 	});
-	it("keeps a folder view's refusal reason only when the core said one of its known refusals", async () => {
+	it("keeps a folder view's or a take-in's refusal reason only when the core said one of its method's known refusals", async () => {
 		const f = fixture();
 		const refused = async (
-			method: "qorpera_folder_view_open" | "qorpera_folder_view_close" | "qorpera_native_office_operation",
+			method:
+				| "qorpera_folder_view_open"
+				| "qorpera_folder_view_close"
+				| "qorpera_native_office_operation"
+				| "qorpera_folder_office_inherit_command_reads",
 			message: string,
 			code = "42501",
 		) => {
@@ -103,10 +107,31 @@ describe("host-only office registry transport", () => {
 				await refused("qorpera_native_office_operation", "Folder view holder is not current"),
 			),
 		).toEqual({});
+		// A run's take-in of a command's reads keeps its own refusals, and not a view's.
+		for (const [message, code] of [
+			["Company execution is paused", "55000"],
+			["Run is unavailable", "42501"],
+			["A run inherits only its own agent's and member's views", "42501"],
+			["A released read is no longer readable", "42501"],
+			["Folder inheritance read is not current", "42501"],
+			["Inherit id was used for another view", "22023"],
+		])
+			expect(
+				companyComputerRegistryRefusal(await refused("qorpera_folder_office_inherit_command_reads", message, code)),
+			).toEqual({ reason: message });
+		for (const message of ["Folder view holder is not current", "secret profile contents"])
+			expect(
+				companyComputerRegistryRefusal(await refused("qorpera_folder_office_inherit_command_reads", message)),
+			).toEqual({});
+		expect(companyComputerRegistryRefusal(await refused("qorpera_folder_view_open", "Run is unavailable"))).toEqual(
+			{},
+		);
 		// A database that says "try again" did not answer: no refusal, no reason.
 		const busy = await refused("qorpera_folder_view_open", "Folder view holder is not current", "55P03");
 		expect(companyComputerRegistryRefusal(busy)).toBeUndefined();
 		expect(companyComputerAuthorityUnanswered(busy)).toBe(true);
+		const conflict = await refused("qorpera_folder_office_inherit_command_reads", "Run is unavailable", "40001");
+		expect(companyComputerRegistryRefusal(conflict)).toBeUndefined();
 	});
 	it("rejects extra origin components, unknown methods and overlarge requests before network access", async () => {
 		for (const supabaseUrl of [

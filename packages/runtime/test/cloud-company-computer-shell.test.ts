@@ -5,6 +5,7 @@ import {
 	type CompanyComputerCommandFolderEvent,
 	type CompanyComputerCommandFolderStatus,
 	type CompanyComputerCommandFolders,
+	type CompanyComputerCommandInherit,
 	type CompanyComputerCommandRelease,
 } from "@qorpera/runtime/cloud-company-computer-command-folder";
 import { CompanyComputerActionFailedError } from "@qorpera/runtime/cloud-company-computer-leases";
@@ -731,9 +732,22 @@ class StandInFolder {
 	readonly stop = vi.fn(() => this.status === "running");
 	readonly write = vi.fn((_data: Uint8Array, _end: boolean) => this.status === "running");
 	readonly release = vi.fn(
-		async (_signal: AbortSignal, _until: number): Promise<CompanyComputerCommandRelease> =>
+		async (_signal: AbortSignal, _until: number, _report?: boolean): Promise<CompanyComputerCommandRelease> =>
 			this.answers.shift() ?? { released: true },
 	);
+	/** What each take-in answers in turn; then `inherited`. */
+	inherits: CompanyComputerCommandInherit[] = [];
+	readonly inherit = vi.fn(
+		async (_receiptId: string, _signal: AbortSignal, _until: number): Promise<CompanyComputerCommandInherit> =>
+			this.inherits.shift() ?? { inherited: true },
+	);
+	/** What a release kept for later, which the next take-in shows. */
+	kept: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {};
+	readonly takeReport = vi.fn(() => {
+		const report = this.kept;
+		this.kept = {};
+		return report;
+	});
 	out(text: string): void {
 		this.event({ t: "out", data: Buffer.from(text).toString("base64") });
 	}
@@ -778,12 +792,13 @@ function folderFixture(options: { init?: number | null } = {}) {
 		await vi.waitFor(() => expect(folders[keys - 1]?.start).toHaveBeenCalled());
 		return { sessionId, folder: folders[keys - 1] };
 	};
-	/** `null`: a read with no run. */
-	const read = (sessionId: string, runId: string | null = SHELL_RUN, waitMs = 0) =>
+	/** `null`: a read with no run. `receiptId`: the reading action's. */
+	const read = (sessionId: string, runId: string | null = SHELL_RUN, waitMs = 0, receiptId?: string) =>
 		shell.result({
 			sessionId,
 			waitMs,
 			...(runId === null ? {} : { runId }),
+			...(receiptId === undefined ? {} : { receiptId }),
 			until: performance.now() + 30000,
 			signal,
 		});
@@ -813,8 +828,9 @@ describe("a shell command in the company folder", () => {
 			state: "running",
 			output: "hello\n",
 		});
-		// The boundary has until two seconds before the reply is due.
-		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 2000);
+		// The boundary has until two seconds before the reply is due; its paths not saved come with it.
+		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 2000, true);
+		expect(folder.inherit).not.toHaveBeenCalled();
 		// Nothing new since: no boundary is asked.
 		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "" });
 		expect(folder.release).toHaveBeenCalledTimes(1);
@@ -878,6 +894,62 @@ describe("a shell command in the company folder", () => {
 		// Another run never sees the exit before the folder released it.
 		expect(f.shell.list(OTHER_RUN).commands[0]).not.toHaveProperty("exitCode");
 		expect(await f.read(sessionId)).toMatchObject({ state: "exited", exitCode: 2, output: "three\n" });
+	});
+
+	it("shows another run the released output once it took in the command's reads by its own action", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("npm run build");
+		folder.answer({ ran: true });
+		folder.out("one\n");
+		const until = performance.now() + 30000;
+		const read = (receiptId: string) =>
+			f.shell.result({ sessionId, waitMs: 0, runId: OTHER_RUN, receiptId, until, signal: f.signal });
+		folder.kept = { notSaved: [{ path: "a.txt", outcome: "conflict" }] };
+		expect(await read("receipt-2")).toEqual({
+			sessionId,
+			state: "running",
+			output: "one\n",
+			notSaved: [{ path: "a.txt", outcome: "conflict" }],
+		});
+		// The boundary leaves the take-in its time, and keeps its paths not saved until the take-in answers.
+		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 5000, false);
+		expect(folder.inherit).toHaveBeenCalledWith("receipt-2", f.signal, until - 2000);
+		expect(folder.release.mock.invocationCallOrder[0]).toBeLessThan(folder.inherit.mock.invocationCallOrder[0]);
+		// Nothing new since the boundary: none is asked, but the new action takes in the reads all the same.
+		expect(await read("receipt-3")).toEqual({ sessionId, state: "running", output: "" });
+		expect(folder.release).toHaveBeenCalledTimes(1);
+		expect(folder.inherit).toHaveBeenLastCalledWith("receipt-3", f.signal, until - 2000);
+		// The shell has one read cursor: output another run read does not come again to the run that started it.
+		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "" });
+		// A take-in the core refused shows nothing, and the paths not saved stay for a run that may read them.
+		folder.out("two\n");
+		const message = "this command's output reaches only runs of the agent and member it was started for";
+		folder.inherits.push({ inherited: false, heldBack: message });
+		folder.kept = { notSaved: [{ path: "b.txt", outcome: "refused" }] };
+		expect(await read("receipt-4")).toEqual({
+			sessionId,
+			state: "running",
+			output: "",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message },
+		});
+		expect(folder.kept).toEqual({ notSaved: [{ path: "b.txt", outcome: "refused" }] });
+		expect(await f.read(sessionId)).toEqual({
+			sessionId,
+			state: "running",
+			output: "two\n",
+			notSaved: [{ path: "b.txt", outcome: "refused" }],
+		});
+		// A release held back for the other run holds back its output, and asks for no take-in.
+		folder.out("three\n");
+		const unanswered = "the company folder did not answer before the reply's deadline; read again";
+		folder.answers.push({ released: false, heldBack: unanswered });
+		expect(await read("receipt-5")).toEqual({
+			sessionId,
+			state: "running",
+			output: "",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message: unanswered },
+		});
+		expect(folder.inherit).toHaveBeenCalledTimes(3);
 	});
 
 	it("ends a command that never ran in the folder with why", async () => {
