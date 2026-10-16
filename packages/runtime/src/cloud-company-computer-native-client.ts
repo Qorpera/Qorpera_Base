@@ -434,6 +434,27 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		await this.#run.assertActive(signal);
 		return structuredClone(content) as unknown as CompanyComputerToolContent;
 	}
+	/**
+	 * What the company folder did with the run's desktop changes since the report marked `shown` (F3 4f-2b), from the
+	 * office under the run's last lease there, and its mark. Nothing when the run holds no lease there, or nothing is
+	 * new. An answer that is not one throws.
+	 */
+	async folderReport(shown: string, signal: AbortSignal): Promise<{ mark: string; report: unknown } | undefined> {
+		const lease = [...this.#leases.values()].at(-1);
+		if (!lease || this.#closed) return undefined;
+		const answer = await this.#call(
+			{ action: "folder_report", lease, shown },
+			AbortSignal.any([signal, this.#run.signal]),
+		);
+		const response = officeNativeRecord(
+			answer,
+			answer && typeof answer === "object" && "mark" in answer ? "mark,report,schema" : "schema",
+		);
+		if (response.schema !== COMPANY_COMPUTER_NATIVE_SCHEMA) throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+		if (!("mark" in response)) return undefined;
+		if (typeof response.mark !== "string") throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+		return { mark: response.mark, report: response.report };
+	}
 	async close(): Promise<void> {
 		this.#closed = true;
 		for (const [id, lease] of this.#leases) {
@@ -521,6 +542,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		return {
 			tools: session.tools,
 			captures: new CloudNativeCaptureImages(screenshots),
+			folderReports: { next: (shown, signal) => remote.folderReport(shown, signal) },
 			close: async () => {
 				try {
 					await remote.close();

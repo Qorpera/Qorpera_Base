@@ -568,12 +568,16 @@ has unsaved changes (4a).
   connector's call) alike. So a quiet save the folder service publishes after the desktop action returned reaches the
   run's next result, whatever the run calls next. The office service builds a run's report from the views it opened
   for that run: their commits since the last one shown and the refusals since.
-  - Each ask names the last report the boundary put into a result. The office service drops only what was shown, so
-    a report whose result was never built is given again.
+  - Each ask names the last report the model got: one in a result that was the call's answer and passed the release
+    checks (the run's authority and its captures). The office service drops only what was shown, so a report whose
+    result was never built, was not the answer or was held back by those checks is given again. The next call's ask
+    waits for that verdict within its second.
   - Nothing is added when nothing is new. An ask with no answer within a second adds nothing, and the report waits
-    for the next result.
-  - A report that does not fit into the result's room (`MAX_CLOUD_TOOL_RESULT_BYTES`) says so, and the rest goes into
-    the next result.
+    for the next result. The office service waits 800 ms for its read of the core, which goes on for the next ask,
+    and reads the core at most once a second.
+  - The office service packs a report into 2 KiB: how many paths were saved, at most 20 paths it did not take (with
+    why) and one refusal; `more` says the rest comes in a later result. The boundary puts a report of at most 4 KiB
+    into the result before the content, and cuts the content to the room left (`MAX_CLOUD_TOOL_RESULT_BYTES`).
 - **A drain's report.** At a takeover the office service keeps, under the id of the run that held the desktop, the old
   view's commits since the last one shown and the drain boundary's answer, refusals included. The same ask puts them
   into that run's next tool result, whatever its tool (while the member holds the screen the run's desktop actions are
@@ -582,13 +586,18 @@ has unsaved changes (4a).
   desktop's session (its `DBUS_SESSION_BUS_ADDRESS`), shown by xfce4-notifyd. It says how many paths were saved,
   refused or conflicted, and why a publish was refused. A drain's report is a notification on the desktop of the
   member who took over, and a member-held desktop's saves are notifications on it alone (no run gets them). The image
-  needs `libnotify-bin` and `xfce4-notifyd` (draft PR #1225).
-- **Slices.** 4f-2a: the SQL and its test (`434_folder_view_commits.test.sql`), and this design. 4f-2b: the folder
-  service's notifications, the helper passing them on, the office service's reports, `folder_report` and
-  notifications, the native tool boundary's ask, and their tests. Those include a report in a tool result that is not
-  a desktop action's (a quiet save refused after the desktop action returned, reported in the run's next
-  `company_read`), and a drain's report in the next result of the run that held the desktop, whatever its tool. Its
-  proof on the test machine needs an image with #1225's packages.
+  needs `libnotify-bin` and `xfce4-notifyd`, which #1225 added to its office group.
+- **Slices.** 4f-2a: the SQL and its test (`434_folder_view_commits.test.sql`), and this design.
+  - 4f-2b-1: the office service's reports from the core's commits and from its own drain answers (a drain boundary
+    refused: paused, closed, unreadable or unproven), `folder_report`, the native client's ask, the native tool
+    boundary's report in the result of every call that runs, and their tests. Those include a report in a tool result
+    that is not a desktop action's, and a drain's report in the next result of the run that held the desktop, whatever
+    its tool.
+  - 4f-2b-2: the folder service's notifications of quiet boundaries (a change set refused whole), the helper passing
+    them on, and the office service keeping them per view, with their tests (a quiet save refused after the desktop
+    action returned, reported in the run's next `company_read`).
+  - 4f-2b-3: the desktop notifications (`notify-send`). Its proof on the test machine needs an image with #1225's
+    packages.
 
 ## Slices
 
