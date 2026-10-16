@@ -20,6 +20,7 @@ import {
 	parseLink,
 	parseList,
 	parseMkdir,
+	parseNotices,
 	parseOpen,
 	parsePublish,
 	parseRead,
@@ -29,8 +30,9 @@ import {
 	parseSearch,
 	parseSymlink,
 	REQUEST_MAX_PAYLOAD,
+	type Role,
 } from "./protocol.ts";
-import type { ChangeMessage, FolderService, ViewHandle } from "./service.ts";
+import type { ChangeMessage, FolderService, NoticesHandle, ViewHandle } from "./service.ts";
 
 /** The bridge's frame must arrive this soon after it connects, and the machine's hello this soon after that. */
 const BRIDGE_MS = 5_000;
@@ -43,7 +45,10 @@ const FEED_BACKLOG = 4 * 1024 * 1024;
  *
  * Memory per connection stays bounded: frames from a machine are at most 4 KiB until the hello is accepted and 64 KiB
  * after, one request is handled at a time (the socket is paused meanwhile), and the next waits until the machine has
- * read the last answer. */
+ * read the last answer.
+ *
+ * A `notices` connection (F3 4f-2b-2) holds no view: after its hello it only asks for the view's notices (Q), and any
+ * other frame, or any error, ends it. */
 export function createFolderServer(service: FolderService, log: (line: string) => void): Server {
 	return createServer((socket) => serve(service, socket, log));
 }
@@ -52,7 +57,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	const reader = new FrameReader(HELLO_MAX_PAYLOAD);
 	let bridge: BridgeInfo | undefined;
 	let handle: ViewHandle | undefined;
-	let role: "io" | "feed" | undefined;
+	let notices: NoticesHandle | undefined;
+	let role: Role | undefined;
 	/** The machine speaks protocol 2 (3 for a core view: it logs its reads) and its view takes writes. */
 	let writes = false;
 	let protocol = 0;
@@ -122,15 +128,29 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			bridge = parseBridge(frame.payload);
 			clearTimeout(deadline);
 			deadline = setTimeout(() => {
-				if (!handle && !opening) end();
+				if (!handle && !notices && !opening) end();
 			}, HELLO_MS);
 			return;
 		}
 		if (frame.kind === Kind.bridge)
 			throw new ProtocolError(ErrorCode.badRequest, "Only the bridge names a machine", true);
+		if (notices) {
+			if (frame.kind !== Kind.notices)
+				throw new ProtocolError(ErrorCode.badRequest, "A notices connection only asks for notices", true);
+			send(encodeJson(Kind.noticed, notices.page(parseNotices(frame.payload))));
+			return;
+		}
 		if (!handle) {
 			if (frame.kind !== Kind.hello) throw new ProtocolError(ErrorCode.badRequest, "Expected a hello");
 			const hello = parseHello(frame.payload);
+			if (hello.role === "notices") {
+				notices = service.notices(hello, bridge);
+				role = hello.role;
+				clearTimeout(deadline);
+				reader.limit = REQUEST_MAX_PAYLOAD;
+				send(encodeJson(Kind.helloOk, { protocol: hello.protocol, viewId: hello.viewId }));
+				return;
+			}
 			opening = true;
 			clearTimeout(deadline);
 			try {

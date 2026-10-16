@@ -38,6 +38,14 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_native_binding_proven",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		// F3 5g-4: a session's folder view.
+		for (const method of ["qorpera_folder_view_open", "qorpera_folder_view_close"]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
 		// 5h-2: the node's snapshot records.
 		await control.call("qorpera_list_coding_snapshots", {}, new AbortController().signal);
 		expect(fetcher).toHaveBeenLastCalledWith(
@@ -87,7 +95,61 @@ describe("dedicated coding executor control", () => {
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}
 	});
-	it("tells a folder view open's 42501 refusal apart, with its detail, and nothing else's (F3 6d)", async () => {
+	it("keeps a folder view's refusal, in the core's words, and no other", async () => {
+		const refusal = (code: string, message: string) => JSON.stringify({ code, details: null, hint: null, message });
+		const notCurrent = refusal("42501", "Folder view attachment is not current");
+		const cases: [method: string, status: number, body: string, reason: string | null | undefined][] = [
+			["qorpera_folder_view_open", 403, notCurrent, "Folder view attachment is not current"],
+			// PostgREST's answer to 42501 without a role.
+			["qorpera_folder_view_open", 401, notCurrent, "Folder view attachment is not current"],
+			[
+				"qorpera_folder_view_open",
+				403,
+				refusal("42501", "Company folder is unavailable"),
+				"Company folder is unavailable",
+			],
+			[
+				"qorpera_folder_view_open",
+				400,
+				refusal("22023", "Folder view anchor is invalid"),
+				"Folder view anchor is invalid",
+			],
+			[
+				"qorpera_folder_view_close",
+				403,
+				refusal("42501", "Folder view is unavailable"),
+				"Folder view is unavailable",
+			],
+			// The open's other 42501 refusals are refusals without a reason (F3 6d).
+			["qorpera_folder_view_open", 403, refusal("42501", "permission denied for function"), null],
+			// Another method, message, SQLSTATE, status or body shape stays unconfirmed.
+			["qorpera_attach_coding_session", 403, notCurrent, undefined],
+			["qorpera_folder_view_close", 403, notCurrent, undefined],
+			["qorpera_folder_view_open", 403, refusal("P0001", "Folder view attachment is not current"), undefined],
+			["qorpera_folder_view_open", 500, notCurrent, undefined],
+			["qorpera_folder_view_open", 403, JSON.stringify({ ...JSON.parse(notCurrent), extra: 1 }), undefined],
+			["qorpera_folder_view_open", 403, "Folder view attachment is not current", undefined],
+		];
+		for (const [method, status, body, reason] of cases) {
+			const fetcher = vi.fn<typeof fetch>(async () => new Response(body, { status }));
+			const control = new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: fetcher,
+			});
+			const failure = await control.call(method, {}, new AbortController().signal).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			if (reason === undefined) expect(failure).toEqual(new Error("CODING_CONTROL_UNCONFIRMED"));
+			else {
+				expect(failure).toBeInstanceOf(CodingControlRefused);
+				expect(failure).toMatchObject({ detail: null, reason });
+			}
+			expect(fetcher).toHaveBeenCalledTimes(1);
+		}
+	});
+	it("tells a view open's and a take-in's 42501 refusal apart, with its detail, and no other's (F3 6d)", async () => {
 		const refusal = {
 			code: "42501",
 			details: "qorpera.test-machine/new-disk",
@@ -98,6 +160,8 @@ describe("dedicated coding executor control", () => {
 			new Response(body, { status, headers: { "content-type": "application/json" } });
 		const body = (change: Record<string, unknown> = {}) => JSON.stringify({ ...refusal, ...change });
 		const open = "qorpera_folder_view_open";
+		const inherit = "qorpera_folder_test_machine_inherit_reads";
+		const unreadable = body({ details: "qorpera.test-machine/unreadable", message: "A read is no longer readable" });
 		const refused = "CODING_CONTROL_REFUSED";
 		const unconfirmed = "CODING_CONTROL_UNCONFIRMED";
 		const cases: [method: string, status: number, body: string, expected: string, detail?: string | null][] = [
@@ -113,6 +177,11 @@ describe("dedicated coding executor control", () => {
 			[open, 403, "42501", unconfirmed],
 			// Still busy, as every call.
 			[open, 500, body({ code: "55P03" }), "CODING_CONTROL_BUSY"],
+			// A test machine's take-in of reads, refused as no longer readable (6d-3b), and only its 42501.
+			[inherit, 403, unreadable, refused, "qorpera.test-machine/unreadable"],
+			[inherit, 403, body({ details: null, message: "Run is unavailable" }), refused, null],
+			[inherit, 400, body({ code: "22023" }), unconfirmed],
+			[inherit, 500, unreadable, unconfirmed],
 			// Every other call's refusal stays unconfirmed.
 			["qorpera_folder_view_close", 403, body(), unconfirmed],
 			["qorpera_mark_company_machine_running", 403, body(), unconfirmed],

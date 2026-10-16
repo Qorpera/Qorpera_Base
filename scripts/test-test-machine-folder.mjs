@@ -997,8 +997,8 @@ async function prove(options, evidence, cleanups, secrets) {
 	steps.credit.commits = commits();
 	say(`credit: held read ${JSON.stringify(steps.credit.heldRead)}; released ${JSON.stringify(steps.credit.released)}`);
 
-	// 4. Reads (before any of Bob's commands): the view's reads, released to Alice's run while her command ran, and taken
-	// in by Bob's run (6a-3) through SQL; the runtime's output path that would ask for it (6d-3) is not built.
+	// 4. Reads (before any of Bob's commands): the view's reads, released to Alice's run while her command ran and taken
+	// in by it at each read that let her output out (the host, 6d-3b), and taken in by Bob's run (6a-3) through SQL.
 	steps.reads = { viewId: bootView.id };
 	steps.reads.viewReads = readPaths("qorpera_folder_view_read_records", "view_id", bootView.id);
 	steps.reads.aliceRunReads = readPaths("qorpera_folder_run_read_records", "run_id", runs.alice.binding.runId);

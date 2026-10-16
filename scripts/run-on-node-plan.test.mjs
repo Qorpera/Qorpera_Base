@@ -26,6 +26,8 @@ const names = (files) => planChanged(files).steps.map((step) => step.name).sort(
 const set = (list) => [...list].sort();
 const ALWAYS = ["lint", "typecheck", "checks"];
 const BASELINE = [...ALWAYS, "cloud-client", "runtime", "scripts"];
+/** runner-orchestrator's tests run in two halves, a step each. */
+const RUNNER_ORCHESTRATOR = ["runner-orchestrator-1", "runner-orchestrator-2"];
 /** These tests run inside run-on-node's own side-by-side runs, which set QORPERA_RUN_CORES_FILE: a script under test
  * gets only the file its test gives it. */
 const env = (coresFile) => {
@@ -74,11 +76,11 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.
 	assert.deepEqual(names(["packages/runner-orchestrator/src/lxd-provider.ts"]), set([
 		...BASELINE,
-		"runner-orchestrator",
+		...RUNNER_ORCHESTRATOR,
 		"deploy-node",
 	]));
 	assert.deepEqual(names(["packages/runtime/test/cloud-coding-executor.test.ts"]), set(BASELINE));
-	assert.deepEqual(names(["packages/cloud-client/src/node/cloud-object-store.ts"]), set([...BASELINE, "web", "runner-orchestrator"]));
+	assert.deepEqual(names(["packages/cloud-client/src/node/cloud-object-store.ts"]), set([...BASELINE, "web", ...RUNNER_ORCHESTRATOR]));
 	const scripts = STEPS.find((step) => step.name === "scripts").commands.join(" ");
 	assert.match(scripts, /node --test scripts\/\*\.test\.mjs/);
 });
@@ -86,10 +88,10 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 test("deploy, function and SQL-input paths reach the tests that read them", () => {
 	assert.deepEqual(names(["deploy/lxd-company-computer-guest/office-self-update-mask.ts"]), set([
 		...BASELINE,
-		"runner-orchestrator",
+		...RUNNER_ORCHESTRATOR,
 		"deploy-node",
 	]));
-	assert.deepEqual(names(["deploy/node-agent/qorpera-node-launch.py"]), set([...BASELINE, "runner-orchestrator", "deploy-node"]));
+	assert.deepEqual(names(["deploy/node-agent/qorpera-node-launch.py"]), set([...BASELINE, ...RUNNER_ORCHESTRATOR, "deploy-node"]));
 	// Files runner-orchestrator tests read outside its package (review round 2).
 	for (const file of [
 		"deploy/coding-worker/qorpera-coding-executor.service",
@@ -98,8 +100,8 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		"packages/runtime/src/cloud-identity-recovery-filesystems.ts",
 		"packages/cloud-client/src/node/native-account-refresh.ts",
 	])
-		assert.ok(names([file]).includes("runner-orchestrator"), file);
-	assert.deepEqual(names(["deploy/first-node/install.sh"]), set([...BASELINE, "runner-orchestrator", "deploy-node", "deploy-shell"]));
+		for (const half of RUNNER_ORCHESTRATOR) assert.ok(names([file]).includes(half), `${file} ${half}`);
+	assert.deepEqual(names(["deploy/first-node/install.sh"]), set([...BASELINE, ...RUNNER_ORCHESTRATOR, "deploy-node", "deploy-shell"]));
 	assert.deepEqual(names(["supabase/functions/company-file-verifier/object-loader.ts"]), set([...BASELINE, "web", "functions"]));
 	const functions = STEPS.find((step) => step.name === "functions").commands.join(" ");
 	assert.match(functions, /company-file-verifier\.test\.ts/);
@@ -206,17 +208,23 @@ test("shared configuration and unknown paths run every step", () => {
 	assert.match(describePlan(unknown, "origin/master")[0], /every step/);
 });
 
-test("in parts, every step runs in exactly one part, the heaviest work first to the lightest part, in plan order", () => {
+test("in parts, every step runs in exactly one part, the heaviest work first to the lightest part, in plan order, the most work first", () => {
 	const groupNames = (groups) => groups.map((group) => group.steps.map((step) => step.name));
-	// The full plan in two parts: runner-orchestrator (588 s × 3 cores) outweighs every other step together, so it runs
-	// alone, without the build; the other part has all the rest, the build and the alone checks.
+	// runner-orchestrator's halves (294 s × 3 cores each) are the heaviest steps, so they go one to each part. A runtime
+	// source change: runtime goes beside one half, without the build; the alone checks and scripts beside the other.
+	const runtime = splitPlan(planChanged(["packages/runtime/src/cloud-identity-recovery-filesystems.ts"]).steps, 2);
+	assert.deepEqual(groupNames(runtime), [
+		["runtime", "runner-orchestrator-1"],
+		["lint", "typecheck", "checks", "cloud-client", "scripts", "runner-orchestrator-2"],
+	]);
+	assert.deepEqual(runtime.map((group) => group.build), [false, true]);
+	// The full plan in two parts: a half each, and the other steps fill the parts to about the same work, the most first.
 	const full = planChanged(["package-lock.json"]).steps;
 	const two = splitPlan(full, 2);
-	assert.deepEqual(groupNames(two), [
-		["runner-orchestrator"],
-		full.map((step) => step.name).filter((name) => name !== "runner-orchestrator"),
-	]);
-	assert.deepEqual(two.map((group) => group.build), [false, true]);
+	const work = (group) => group.steps.reduce((sum, step) => sum + step.seconds * step.cores, 0);
+	assert.deepEqual(two.map((group) => group.steps.filter((step) => RUNNER_ORCHESTRATOR.includes(step.name)).length), [1, 1]);
+	assert.ok(work(two[0]) >= work(two[1]) && work(two[0]) - work(two[1]) < (work(two[0]) + work(two[1])) / 20, String(two.map(work)));
+	assert.deepEqual(two.map((group) => group.build), two.map((group) => group.steps.some((step) => step.build)));
 	assert.deepEqual(groupNames(splitPlan(full, 1)), [full.map((step) => step.name)]);
 	assert.equal(splitPlan(full, 1)[0].build, true);
 	for (const parts of [2, 3, 5]) {
@@ -237,6 +245,8 @@ test("in parts, every step runs in exactly one part, the heaviest work first to 
 	assert.deepEqual(splitPlan(steps, 2).map((group) => group.build), [false, true]);
 	assert.deepEqual(groupNames(splitPlan(steps.slice(2), 2)), [["c", "e"], ["d"]]);
 	assert.deepEqual(groupNames(splitPlan(steps.slice(0, 2), 5)), [["a"], ["b"]]);
+	// The part with the most work comes first, though its steps went to it later.
+	assert.deepEqual(groupNames(splitPlan([{ name: "a", seconds: 100 }, { name: "b", seconds: 60 }, { name: "c", seconds: 60 }], 2)), [["b", "c"], ["a"]]);
 });
 
 test("every step runs, a failing command fails its step, and the exit code says so", () => {
@@ -269,6 +279,7 @@ test("one step at a time, a step runs its alone commands after its others", () =
 		assert.ok(Array.isArray(step.commands) && Array.isArray(step.alone), step.name);
 		assert.ok(step.commands.length + step.alone.length > 0, step.name);
 		assert.ok(step.cores > 0 && step.seconds >= 0, step.name);
+		assert.equal(step.width, STEPS.find((known) => known.name === step.name).width ?? null, step.name);
 	}
 	// The tree-wide checks run alone, so nothing else writes while they read every file.
 	for (const name of ["lint", "typecheck", "checks"])
@@ -563,7 +574,7 @@ test("fail-fast side by side: an alone part that fails stops the rest at once, a
 	}
 });
 
-test("side by side: a step's node --test and Go programs fan out within its cores, rounded up; one at a time as before", () => {
+test("side by side: a step's node --test and Go programs fan out within its width, or its cores rounded up; one at a time as before", () => {
 	// A stand-in node prints how it was called.
 	const bin = mkdtempSync(join(tmpdir(), "plan-node-"));
 	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
@@ -581,6 +592,7 @@ test("side by side: a step's node --test and Go programs fan out within its core
 				cores: 2.6,
 			},
 			{ name: "thin", commands: ["node --test e.test.mjs"], cores: 0.25 },
+			{ name: "waits", commands: ["node --test f.test.mjs"], cores: 1.5, width: 4 },
 		];
 		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 		delete env.GOMAXPROCS;
@@ -592,6 +604,8 @@ test("side by side: a step's node --test and Go programs fan out within its core
 			/== changed: wide\nnode --test --test-concurrency=3 a\.test\.mjs b\.test\.mjs GOMAXPROCS=3\nnode --test --test-concurrency=3 c\.test\.mjs GOMAXPROCS=3\nnode tool\.mjs --test GOMAXPROCS=3\nnode --test d\.test\.mjs GOMAXPROCS=3\n== changed: wide passed/,
 		);
 		assert.match(side.stdout, /== changed: thin\nnode --test --test-concurrency=1 e\.test\.mjs GOMAXPROCS=1\n== changed: thin passed/);
+		// A step that mostly waits runs more files at once than its cores.
+		assert.match(side.stdout, /== changed: waits\nnode --test --test-concurrency=4 f\.test\.mjs GOMAXPROCS=4\n== changed: waits passed/);
 		const one = spawnSync("bash", ["-c", planScript(steps)], { cwd, encoding: "utf8", env });
 		assert.equal(one.status, 0, one.stdout);
 		assert.match(one.stdout, /== changed: wide\nnode --test a\.test\.mjs b\.test\.mjs GOMAXPROCS=unset\n/);
@@ -629,9 +643,9 @@ test("side by side: a step with workers runs its vitests with that many, unless 
 		rmSync(bin, { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
 	}
-	// runner-orchestrator's rest, side by side: 4 workers in 3 cores (16 Oct measurement).
-	const ro = planChanged(["packages/runner-orchestrator/src/cli.ts"]).steps.find((step) => step.name === "runner-orchestrator");
-	assert.deepEqual([ro.cores, ro.workers], [3, 4]);
+	// runner-orchestrator's rest, side by side: 4 workers in 3 cores (16 Oct measurement), in each half.
+	const ro = planChanged(["packages/runner-orchestrator/src/cli.ts"]).steps.filter((step) => RUNNER_ORCHESTRATOR.includes(step.name));
+	assert.deepEqual(ro.map((step) => [step.name, step.cores, step.workers]), RUNNER_ORCHESTRATOR.map((name) => [name, 3, 4]));
 	assert.equal(planChanged(["packages/web/src/x.ts"]).steps.find((step) => step.name === "web").workers, null);
 });
 
@@ -659,11 +673,11 @@ function filesUnder(root, directory = root) {
 	});
 }
 
-// Each step that runs the files that mostly wait beside the rest of its package (the step is named after the
-// package), with the files that then run on their own, each in a vitest of its own.
-for (const [name, waiting, alone] of [
-	["runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING, []],
-	["runtime", RUNTIME_WAITING, ["test/cloud-coding-command-guest.test.ts"]],
+// Each package whose files that mostly wait run beside the rest of it, by the steps that run them (runner-orchestrator's
+// in two halves), with the files that then run on their own, each in a vitest of its own.
+for (const [name, stepNames, waiting, alone] of [
+	["runner-orchestrator", RUNNER_ORCHESTRATOR, RUNNER_ORCHESTRATOR_WAITING, []],
+	["runtime", ["runtime"], RUNTIME_WAITING, ["test/cloud-coding-command-guest.test.ts"]],
 ]) {
 	test(`${name}'s vitest runs together run every test file of the package exactly once`, () => {
 		const root = join(repositoryRoot, "packages", name);
@@ -675,8 +689,23 @@ for (const [name, waiting, alone] of [
 		// vitest's default include, which the package's configuration keeps.
 		const files = filesUnder(root).filter((file) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
 		assert.ok(files.length > waiting.length + alone.length);
-		const step = STEPS.find((candidate) => candidate.name === name);
-		const runs = [...step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)].map(([, args]) => args.trim());
+		// These steps, and no other, run the package's vitest.
+		const vitests = (step) => [...step.commands, ...step.alone].join("\n").includes(`cd packages/${name} && node ../../node_modules/vitest/`);
+		assert.deepEqual(STEPS.filter((step) => vitests({ alone: [], ...step })).map((step) => step.name), stepNames);
+		// Halves: the k-th of n steps runs every one of its vitests as --shard=k/n, each with the same arguments as the
+		// other halves' (vitest shards the files those select, by a hash of each path: shards 1/n to n/n run each once).
+		const shares = stepNames.map((stepName, k) => {
+			const step = STEPS.find((candidate) => candidate.name === stepName);
+			const shard = stepNames.length > 1 ? ` --shard=${k + 1}/${stepNames.length}` : "";
+			return [...step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)].map(([, args]) => {
+				assert.ok(args.endsWith(shard), `${stepName}: ${args}`);
+				const unsharded = args.slice(0, args.length - shard.length);
+				assert.doesNotMatch(unsharded, /--shard/);
+				return unsharded.trim();
+			});
+		});
+		for (const share of shares) assert.deepEqual(share, shares[0]);
+		const runs = shares[0];
 		// The rest, the files that mostly wait, and each file that runs alone.
 		assert.equal(runs.length, 2 + alone.length);
 		const rest = runs.find((args) => args.startsWith("--exclude "));
@@ -694,18 +723,20 @@ for (const [name, waiting, alone] of [
 	});
 
 	test(`${name} fails before running anything when a file it runs beside the rest is missing`, () => {
-		const step = STEPS.find((candidate) => candidate.name === name);
-		assert.equal(spawnSync("bash", ["-c", step.commands[0]], { cwd: repositoryRoot }).status, 0);
-		const root = mkdtempSync(join(tmpdir(), `${name}-waiting-`));
-		try {
-			mkdirSync(join(root, `packages/${name}/test`), { recursive: true });
-			for (const file of waiting.slice(1)) writeFileSync(join(root, `packages/${name}`, file), "");
-			const result = spawnSync("bash", ["-c", planScript([step])], { cwd: root, encoding: "utf8" });
-			assert.equal(result.status, 1, result.stdout);
-			assert.ok(result.stdout.includes(`== ${name}: ${waiting[0]} is missing`), result.stdout);
-			assert.ok(result.stdout.includes(`== changed: ${name} FAILED`), result.stdout);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
+		for (const stepName of stepNames) {
+			const step = STEPS.find((candidate) => candidate.name === stepName);
+			assert.equal(spawnSync("bash", ["-c", step.commands[0]], { cwd: repositoryRoot }).status, 0);
+			const root = mkdtempSync(join(tmpdir(), `${stepName}-waiting-`));
+			try {
+				mkdirSync(join(root, `packages/${name}/test`), { recursive: true });
+				for (const file of waiting.slice(1)) writeFileSync(join(root, `packages/${name}`, file), "");
+				const result = spawnSync("bash", ["-c", planScript([step])], { cwd: root, encoding: "utf8" });
+				assert.equal(result.status, 1, result.stdout);
+				assert.ok(result.stdout.includes(`== ${name}: ${waiting[0]} is missing`), result.stdout);
+				assert.ok(result.stdout.includes(`== changed: ${stepName} FAILED`), result.stdout);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
 		}
 	});
 }
@@ -740,7 +771,7 @@ test("beside runs two commands at once, prints the second's output after the fir
 	}
 });
 
-test("deploy-node runs every Node test file under deploy/ once, then Python's tests", () => {
+test("deploy-node runs every Node test file under deploy/ once, then Python's tests; side by side, two files at once in under a core", () => {
 	const [node, python, ...rest] = STEPS.find((candidate) => candidate.name === "deploy-node").commands;
 	assert.deepEqual(rest, []);
 	assert.match(node, /^node --test [^;&|]+$/);
@@ -751,4 +782,8 @@ test("deploy-node runs every Node test file under deploy/ once, then Python's te
 	assert.equal(new Set(named).size, named.length, named.join(" "));
 	assert.deepEqual(set(named), set(files));
 	assert.equal(python, "python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'");
+	// Side by side it is packed by the little CPU it uses, but still runs two files at once: the proof beside the rest.
+	const step = planChanged(["deploy/node-agent/qorpera-node-launch.py"]).steps.find((candidate) => candidate.name === "deploy-node");
+	assert.ok(step.cores < 1, String(step.cores));
+	assert.match(planScript([step], { cores: 6 }), /\nrest_0\(\) \( export GOMAXPROCS=2; node\(\) .* command node --test --test-concurrency=2 "\$@"/);
 });

@@ -88,7 +88,8 @@ const WORKTREE_LOCK = "qorpera: a coding session's worktree";
 /** Every command's settings, command scope, so they beat the repository's. §6's table for the shared directory, and
  * for gc: worker branches never packed (packed-refs is shared and the folder can't read its lines; gc packs refs
  * itself), no reflog expiry (it would lock workers' refs and worktrees' HEADs, which the gc block does not hold),
- * locked worktrees never pruned, and packs under the folder's 256 MiB. */
+ * locked worktrees never pruned, and packs under the folder's 256 MiB. No grafts advice: with GIT_GRAFT_FILE at
+ * /dev/null, git gives it for every process that reads a commit, and it would crowd git's error out of a report. */
 const SETTINGS: readonly (readonly [string, string])[] = [
 	["core.hooksPath", "/dev/null"],
 	["core.fsmonitor", "false"],
@@ -122,6 +123,7 @@ const SETTINGS: readonly (readonly [string, string])[] = [
 	["repack.writeBitmaps", "false"],
 	["worktree.useRelativePaths", "false"],
 	["advice.detachedHead", "false"],
+	["advice.graftFileDeprecated", "false"],
 ];
 
 function checkPath(value: unknown): string {
@@ -347,6 +349,7 @@ class Run {
 			...(worktree && admin ? [worktree, admin] : []),
 		];
 		const files = [
+			`${this.repo}/HEAD`,
 			`${this.repo}/config`,
 			`${this.repo}/worktrees/main/commondir`,
 			`${this.repo}/worktrees/main/gitdir`,
@@ -366,8 +369,11 @@ class Run {
 				"CODE_HOST_UNEXPECTED_FILE",
 				wrong.map((path) => this.relative(path)),
 			);
-		const seeded = type.get(this.repo) === "directory";
-		if (seeded) {
+		// Without HEAD, repo.git is no repository to git. A seed that stopped after its base ref was published (with the
+		// ref's lease) and before its HEAD was (at the job's end) leaves one so: the next seed makes it again.
+		const made = type.get(this.repo) === "directory",
+			seeded = made && type.get(`${this.repo}/HEAD`) === "file";
+		if (made) {
 			await this.keep(`${this.repo}/config`, CODE_AREA_CONFIG);
 			// A commondir makes repo.git another repository's worktree; alternates borrow objects from elsewhere.
 			const stray = [
@@ -395,6 +401,7 @@ class Run {
 				await this.keep(`${this.repo}/worktrees/main/locked`, MAIN_LOCK);
 		}
 		return {
+			made,
 			seeded,
 			main:
 				mainAdmin && mainTree
@@ -613,6 +620,8 @@ export async function seedCodeArea(job: CodeHostJob, value: CodeAreaSeed): Promi
 				"CODE_HOST_SEED_FAILED",
 			);
 			await run.write(`${run.repo}/config`, CODE_AREA_CONFIG);
+			// git takes a repo.git without HEAD for a new one: it writes HEAD and leaves the refs and objects there.
+			if (area.made) run.restored.push(run.relative(`${run.repo}/HEAD`));
 		}
 		// git's own temporary-then-rename for each pack; the folder publishes them with the ref below.
 		for (const pack of packs) {
@@ -626,7 +635,7 @@ export async function seedCodeArea(job: CodeHostJob, value: CodeAreaSeed): Promi
 			]);
 			if (indexed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_SEED_FAILED", tail(indexed.stderr));
 		}
-		const old = area.seeded ? await run.ref(base) : null;
+		const old = area.made ? await run.ref(base) : null;
 		await moveBase(run, area.main, base, baseSha, old ?? ZERO);
 		return { state: !old ? "seeded" : old === baseSha ? "unchanged" : "updated", baseSha, restored: run.restored };
 	});

@@ -192,7 +192,10 @@ clean stop). It is how a crash is noticed (rule 4 in "Reads").
 
 The guest agent starts one folder program per session (P1 proposes it stays that way), as root, at
 `/run/qorpera-folder/mounts/<worker32>`, with `--owner-uid` set to the session's uid and `allow_other`, so the session's
-units, its Docker daemon and its root all see the same tree. Each unit of the session gets `/company` bound to that
+units, its Docker daemon and its root all see the same tree. Each session's program gets its own
+`--local-dir /var/lib/qorpera-folder/local/<worker>` (5d's local layer), and all of them share the machine's one
+`--cache-dir /var/lib/qorpera-folder/cache/machine`, with a lock per top cache folder (item 8's MC3,
+RUNTIME-FOLDER-MACHINE-CACHES.md). Each unit of the session gets `/company` bound to that
 path (`BindPaths`), as step 4's commands do. The program reaches the node's folder service on vsock, as on every
 machine (step 1); the CID check is the boundary, so §6's "command units get RestrictAddressFamilies without AF_VSOCK"
 no longer holds (root can open vsock anyway). A folder program that restarts (a crash, or root killing it) follows
@@ -307,8 +310,10 @@ The core enforces the rules (5b, §7 item 9 as amended here):
 - no session deletes a published path under `repo.git/objects` (EPERM), and `objects/pack/*.keep` is never published;
 - the session-local files above and the alternates files platform-only in the folder;
 - §6's names under `code/` (`%`, `:` and device names allowed; NFC and no case-only siblings kept);
-- old versions of `repo.git/objects/**` kept 7 days, not forever, and the history view folding git's own changes into
-  one line per publish;
+- old versions of `repo.git/objects/**` kept 7 days, not forever: a version goes 7 days after a write over it, a delete
+  or a move ended it (pg_cron, each minute), and its bytes then wait for the folder's GC, which takes them only once
+  nothing roots them. The current objects, the refs and the worktrees keep every version. The history view shows a
+  change set's paths under `repo.git` (by key) as one line, the folder;
 - the gc job blocking new leases in `repo.git` while it runs (5e).
 
 **The cache list** (§6 "The per-session cache") moves from the session's NAS cache folder to the machine's disk: a

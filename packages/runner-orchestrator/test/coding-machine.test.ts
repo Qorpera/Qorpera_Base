@@ -9,6 +9,7 @@ import {
 	type CodingMachineAdmissionReceipt,
 	type CodingMachineIntent,
 	type CodingMachineJournalPlan,
+	codingMachineStartOperation,
 	type LxdCodingMachineBinding,
 	lxdCodingMachineJournalPlan,
 	lxdCodingMachinePlan,
@@ -515,6 +516,51 @@ describe("a coding machine's journaled lifecycle", () => {
 		expect((await f.reconcile("stopped")).state).toBe("stopped");
 		// The stop is written down once, after the start that ended the old segment.
 		expect(await outsideStops(f)).toEqual([expect.objectContaining({ segment: 0, sequence: 380, count: 1 })]);
+	});
+	it("reads the start a member's machine runs under, also once it stopped by itself and was started again", async () => {
+		const f = await fixture();
+		// The fake LXD numbers each operation by its submission.
+		const submitted = () => id(10 + f.client.submitInstanceOperation.mock.calls.length);
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		const first = submitted();
+		expect(await codingMachineStartOperation(f.journalRoot, f.journal)).toBe(first);
+		const instance = f.instance();
+		if (!instance) throw new Error("missing fixture VM");
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		// Started again: two starts in a row, read as its reconcile reads them.
+		for (const expected of ["pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"start",
+		]);
+		const second = submitted();
+		expect(second).not.toBe(first);
+		expect(await codingMachineStartOperation(f.journalRoot, f.journal)).toBe(second);
+		// A machine that never stops by itself has no such journal.
+		await expect(codingMachineStartOperation(f.journalRoot, { ...f.journal, selfStops: undefined })).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+		// Stopped, it runs under no start.
+		for (const expected of ["pending", "stopped"]) expect((await f.reconcile("stopped")).state).toBe(expected);
+		await expect(codingMachineStartOperation(f.journalRoot, f.journal)).rejects.toThrow(
+			"CODING_MACHINE_START_UNCONFIRMED",
+		);
+	});
+	it("reads the start a member's machine runs under across a rollover that carried a start whose VM stopped by itself", async () => {
+		const f = await fixture();
+		await retainedHistory(f, 381, "succeeded", "start");
+		// The full segment ends with the start the machine ran under before it stopped.
+		expect(await codingMachineStartOperation(f.journalRoot, f.journal)).toBe(id(1126));
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		// The new segment's start, after the carried one.
+		expect(f.client.submitInstanceOperation.mock.calls.at(-1)?.[1]).toMatchObject({ action: "start" });
+		const started = id(10 + f.client.submitInstanceOperation.mock.calls.length);
+		expect(await codingMachineStartOperation(f.journalRoot, f.journal)).toBe(started);
+		await expect(codingMachineStartOperation(f.journalRoot, { ...f.journal, selfStops: undefined })).rejects.toThrow(
+			"CODING_MACHINE_CHECKPOINT_INVALID",
+		);
 	});
 	it("never takes a member's VM that LXD shows in any other state for stopped", async () => {
 		const f = await fixture();

@@ -1,11 +1,13 @@
 /** Folder protocol v1: what a machine's folder program and its node's folder service say to each other. The
- * machine side is `crates/qorpera-folder/src/proto.rs` and `frame.rs`; keep the two in step.
+ * machine side is `crates/qorpera-folder/src/proto.rs` and `frame.rs`; keep the two in step. The `notices` role (F3
+ * 4f-2b-2, below) is the one part the folder program never speaks: the office's folder helper asks it, through the
+ * program's relay, so `proto.rs` carries neither Q nor q.
  *
  * A frame is a u32 big-endian length (of the type byte plus the payload), one type byte, then the payload. Control
  * messages carry JSON; a read reply carries the bytes as they are. */
 
 import { isUuid } from "@qorpera/contracts";
-import type { CoreReceipt } from "./core.ts";
+import type { CoreReceipt, CoreRefusal } from "./core.ts";
 
 /** Version 2 adds writes (F3 step 3, deploy/first-node/RUNTIME-FOLDER-WRITES.md, "Protocol v2"); a machine on version
  * 1 reads only. Version 3 adds the read log (F3 4c, RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"): a core view takes
@@ -58,6 +60,9 @@ export const Kind = {
 	// Links (protocol 4), answered with k.
 	symlink: 0x59, // Y: a symbolic link
 	link: 0x4a, // J: a hard link
+	// Notices (protocol 4, the `notices` role only).
+	notices: 0x51, // Q: a view's notices after one
+	noticed: 0x71, // q
 } as const;
 
 export const ErrorCode = {
@@ -142,7 +147,9 @@ export class FrameReader {
 	}
 }
 
-export type Role = "io" | "feed";
+/** `notices` (protocol 4): the office's folder helper asks for the notices of a view the service holds, and nothing
+ * else (F3 4f-2b-2, "Notices" below). */
+export type Role = "io" | "feed" | "notices";
 
 export interface Hello {
 	readonly protocol: number;
@@ -261,7 +268,11 @@ export function parseHello(payload: Buffer): Hello {
 		typeof v === "string" && v.length > 0 && v.length <= 256 && /^[\x21-\x7e]+$/.test(v);
 	if (!printable(value.viewId) || !printable(value.pass))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad view id or pass");
-	if (value.role !== "io" && value.role !== "feed") throw new ProtocolError(ErrorCode.badRequest, "Bad role");
+	if (value.role !== "io" && value.role !== "feed" && value.role !== "notices")
+		throw new ProtocolError(ErrorCode.badRequest, "Bad role");
+	// Notices join no mount: no previous view and no abandoned program.
+	if (value.role === "notices" && (protocol < 4 || value.previous !== undefined || value.abandon !== undefined))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad notices request");
 	let previous: Hello["previous"];
 	if (value.previous !== undefined) {
 		const old = value.previous as Record<string, unknown>;
@@ -662,4 +673,44 @@ export function parseLink(payload: Buffer): LinkRequest {
 	exactKeys(value, ["from", "to"], ["fromBase"]);
 	const fromBase = base(value.fromBase);
 	return { from: path(value.from), ...(fromBase ? { fromBase } : {}), to: path(value.to) };
+}
+
+// ---- Notices (protocol 4, F3 4f-2b-2; RUNTIME-FOLDER-COMPANY-MACHINES.md, "How 4f-2 carries the report") -------------
+
+/** A boundary of a view no machine asked for (a quiet period's, the last connection's leaving, one a change needed
+ * first, or one with no answer asked again before a change), as the view keeps it: the change set it committed, or its refusal whole, with why and the paths it carried
+ * (at most 20, sorted; `pathCount` says how many). `n` counts the view's notices from 1; `at` is when (ms). */
+export type Notice =
+	| { readonly n: number; readonly at: number; readonly commitId: string; readonly seq: number | null }
+	| {
+			readonly n: number;
+			readonly at: number;
+			readonly refused: CoreRefusal["reason"] | "unproven";
+			readonly paths: readonly string[];
+			readonly pathCount: number;
+	  };
+
+/** The notices after `after`, in the series `nonce` names (null: none yet). */
+export interface NoticesRequest {
+	readonly after: number;
+	readonly nonce: string | null;
+}
+
+export interface NoticesAnswer {
+	/** The view's series: null when the service holds no view the pass has been checked for. Another series than the
+	 * one asked about starts from its first notice. */
+	readonly nonce: string | null;
+	readonly notices: readonly Notice[];
+	/** The next ask's `after`: the last notice's `n`, or the `after` this answer started from. */
+	readonly last: number;
+	/** More notices follow; ask after `last`. */
+	readonly more: boolean;
+}
+
+export function parseNotices(payload: Buffer): NoticesRequest {
+	const value = object(payload);
+	exactKeys(value, ["after", "nonce"]);
+	if (value.nonce !== null && (typeof value.nonce !== "string" || !isUuid(value.nonce)))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad nonce");
+	return { after: count(value.after, Number.MAX_SAFE_INTEGER), nonce: value.nonce };
 }

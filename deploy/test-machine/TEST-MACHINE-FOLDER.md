@@ -86,16 +86,17 @@ machine when it takes the reads in.
    output, so the record keeps it (`committedWhileHeld`) without judging it.
 3. **`reads`.** The view's read set (`qorpera_folder_view_read_records`) and
    Alice's run's read rows (`qorpera_folder_run_read_records`), fanned out
-   while her commands ran. 6d-3's output path is not built, so the take-in a
-   run's read of a command's output would make is called in SQL:
-   `qorpera_folder_run_inherit_view_reads` for Alice's run (her machine's view),
-   then for Bob's run, whose agent's view it is not. 6a-3 lets a run with the
-   company audience whose agent and member read the root take it in, and refuses
-   any other with 42501 ("only with the company-wide view"). The fixture gives
-   Bob's run both, so it must take the reads in: the record keeps what SQL says
-   of Bob's run before the take-in (`bobAuthority`: its audience, its agent, and
-   whether its agent and member read the root, `qorpera_folder_reads_root`) and
-   Bob's read rows before and after.
+   while her commands ran and taken in by the host at each read that let her
+   output out (6d-3b). The proof then calls the take-in itself in SQL
+   (`qorpera_folder_run_inherit_view_reads`): for Bob's run, whose agent's view
+   it is not, and once more for Alice's run (her machine's view), which checks
+   the whole set again and copies only what she had not taken in. 6a-3 lets a
+   run with the company audience whose agent and member read the root take it
+   in, and refuses any other with 42501 ("only with the company-wide view"). The
+   fixture gives Bob's run both, so it must take the reads in: the record keeps
+   what SQL says of Bob's run before the take-in (`bobAuthority`: its audience,
+   its agent, and whether its agent and member read the root,
+   `qorpera_folder_reads_root`) and Bob's read rows before and after.
 4. **`overlap`.** Bob's run starts B, which writes `bob-only.txt`, then after 6 s
    appends to `shared.txt`. Carol's run starts C 3 s after B, which appends to
    `shared.txt` within a second and writes `carol-after.txt` 24 s later, after B
@@ -215,8 +216,10 @@ machine when it takes the reads in.
 - **K's end.** K is ended with SQL's own end for stopped commands
   (`qorpera_end_company_machine_commands(..., 'stopped', [K])`), the one the stop
   path uses, while the guest still runs it.
-- **The take-in.** 6d-3's output read is not built; the proof calls
-  `qorpera_folder_run_inherit_view_reads` itself (step 3).
+- **The take-in.** The host takes in a run's reads at each read of its output
+  (6d-3b): Alice's from step 1, Bob's and Carol's in step 4. Bob's run has read
+  no output by step 3, so the proof calls `qorpera_folder_run_inherit_view_reads`
+  itself for his run there, and once more for Alice's.
 - **The second machine.** It is made with the `lxc` CLI in the claimed project,
   not by the host, and prepared through the guest helper.
 - **The seed.** `p4/seed.md` is staged with the platform writer, so its bytes
@@ -236,4 +239,6 @@ of them, and the record is written with them redacted if one slipped in.
 - The folder service runs in the harness's process, not under its systemd
   units and sockets.
 - No model: the runs' calls are made by the harness, as the runtime would.
-- The take-in is a SQL call; the output path that makes it (6d-3) is not built.
+- Bob's step 3 take-in is a SQL call; his run reads output only in step 4,
+  where the host takes his reads in, as it does Carol's. The notify
+  continuation's take-in (6d-3c) is not built.

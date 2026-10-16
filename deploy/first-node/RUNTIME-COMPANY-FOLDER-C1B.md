@@ -1279,7 +1279,9 @@ by a machine.
   - it re-resolves the view's recorded paths where a check fails, and
     refuses if one is no longer readable;
   - it copies the view's read records into the run's, so the run's recheck
-    finds the paths;
+    finds the paths. Since `20260930498000` it copies only the records this
+    run has not taken in from that view (each one is marked per run and
+    view), after checking the view's whole set as above;
   - it writes at rank 10 and is idempotent per `inherit_id`.
 
   The runtime calls it when a run takes in a view's output (C3 wires it).

@@ -307,6 +307,63 @@ describe("code host seed", () => {
 		expect(await readCodeAreaBase(c.job, f.repository)).toBe(third);
 	});
 
+	it("makes repo.git again when it has no HEAD, keeping its base ref and objects for the compare-and-swap", async () => {
+		const { f, c } = await seeded();
+		// A seed that stopped after the folder published its base ref (with the ref's lease) and before its HEAD (at the
+		// job's end): git takes repo.git for no repository, and so does every job but a seed.
+		await rm(join(c.repo, "HEAD"));
+		expect(await readCodeAreaBase(c.job, f.repository)).toBeNull();
+		expect(await inspectCodeArea(c.job, { repository: f.repository, commit: f.baseSha })).toEqual({
+			base: null,
+			ready: false,
+			holds: false,
+			restored: [],
+		});
+		await expect(
+			addCodeWorktree(c.job, { repository: f.repository, workerId: randomUUID(), baseSha: f.baseSha }),
+		).rejects.toMatchObject({ code: "CODE_HOST_NOT_SEEDED" });
+		const second = await f.commit({ "README.md": "two\n" }, "two");
+		expect(
+			await seedCodeArea(c.job, {
+				repository: f.repository,
+				baseSha: second,
+				bundle: await f.bundle("refs/heads/main"),
+			}),
+		).toEqual({ state: "updated", baseSha: second, restored: ["code/qorpera/example/repo.git/HEAD"] });
+		expect(await readFile(join(c.repo, "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+		expect(await readFile(join(c.repo, "config"), "utf8")).toBe(CODE_AREA_CONFIG);
+		expect(await readFile(join(c.code, "main/README.md"), "utf8")).toBe("two\n");
+		expect(await readCodeAreaBase(c.job, f.repository)).toBe(second);
+
+		// HEAD is a file the platform writes, never a link.
+		await rm(join(c.repo, "HEAD"));
+		await symlink("refs/heads/main", join(c.repo, "HEAD"));
+		await expect(readCodeAreaBase(c.job, f.repository)).rejects.toMatchObject({
+			code: "CODE_HOST_LINK",
+			paths: ["code/qorpera/example/repo.git/HEAD"],
+		});
+	});
+
+	it("reports git's own error when main/ fails, without git's advice, and leaves the base where it was", async () => {
+		const { f, c } = await seeded();
+		const second = await f.commit({ "README.md": "two\n" }, "two"),
+			failing = join(f.root, "failing-git");
+		// main/'s checkout reads the new base (with GIT_GRAFT_FILE at /dev/null, git's grafts advice is given for the first
+		// commit a process reads), then fails.
+		await writeFile(
+			failing,
+			`#!/bin/sh\nfor a do [ "$a" = checkout ] && { ${GIT} "$@"; echo "checkout refused" >&2; exit 1; }; done\nexec ${GIT} "$@"\n`,
+		);
+		await chmod(failing, 0o755);
+		await expect(
+			seedCodeArea(
+				{ ...c.job, layout: { ...c.job.layout, git: failing } },
+				{ repository: f.repository, baseSha: second, bundle: await f.bundle("main", `^${f.baseSha}`) },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_MAIN_FAILED", detail: "checkout refused\n" });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(f.baseSha);
+	});
+
 	it("refuses a link on the way to the code area", async () => {
 		const f = await fixture(),
 			c = await f.company();

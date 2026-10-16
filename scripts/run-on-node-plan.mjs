@@ -56,15 +56,20 @@ export const beside = (first, second, label) =>
 
 /** The commands that run `waiting`, test files of packages/`workspace` that mostly wait, as a second vitest beside
  * the rest of the package. The rest excludes them by these same names (and `exclude` too), so every test file runs
- * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. */
-const besideTheRest = (workspace, waiting, exclude = []) => [
-	`(cd packages/${workspace} && for file in ${waiting.join(" ")}; do [ -f "$file" ] || { echo "== ${workspace}: $file is missing"; exit 1; }; done)`,
-	beside(
-		vitest(workspace, [...exclude, ...waiting].map((file) => ` --exclude ${file}`).join("")),
-		vitest(workspace, waiting.map((file) => ` ${file}`).join("")),
-		`${workspace}: the files that mostly wait`,
-	),
-];
+ * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. With `shard`
+ * ("k/n"), both vitests run only their k-th of n shares of those files (vitest --shard: by a hash of each file's path,
+ * so the same share on every machine), and the commands for 1/n to n/n together run every file once. */
+const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
+	const share = shard ? ` --shard=${shard}` : "";
+	return [
+		`(cd packages/${workspace} && for file in ${waiting.join(" ")}; do [ -f "$file" ] || { echo "== ${workspace}: $file is missing"; exit 1; }; done)`,
+		beside(
+			vitest(workspace, `${[...exclude, ...waiting].map((file) => ` --exclude ${file}`).join("")}${share}`),
+			vitest(workspace, `${waiting.map((file) => ` ${file}`).join("")}${share}`),
+			`${workspace}: the files that mostly wait${shard ? `, shard ${shard}` : ""}`,
+		),
+	];
+};
 
 /** Runner-orchestrator test files that spend nearly all their time waiting on real deadlines and timeouts, not on
  * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
@@ -121,7 +126,8 @@ const NOT_WEB_ONLY = Symbol("not web-only");
  * that need the tree to themselves, run after `commands` one step at a time, but first in a side-by-side run
  * (planScript). `cores`: the step's mean busy cores at 2 vitest workers, its PostgreSQL containers included (node01,
  * 16 Oct), which a side-by-side run packs by (default 1). `seconds`: its median in pr-loop's full runs (15 Oct), so a side-by-side run starts the longest
- * first. `workers`: a side-by-side run's vitest workers for the step (default: the slot's, 2 on a test machine). */
+ * first. `workers`: a side-by-side run's vitest workers for the step (default: the slot's, 2 on a test machine).
+ * `width`: a side-by-side run's `node --test` files at once for the step (narrow; default: its cores, rounded up). */
 export const STEPS = [
 	{
 		name: "lint",
@@ -218,6 +224,10 @@ export const STEPS = [
 		seconds: 31,
 		paths: NOT_WEB_ONLY,
 		build: true,
+		// Mostly waits on the programs its tests start. One file at a time (cores 1) it took 128 s for 56 CPU seconds;
+		// four at a time, 36-42 s for 53-63 CPU seconds, about 1.5 cores (node02, 16 Oct, 5 of 5 slots busy).
+		cores: 1.5,
+		width: 4,
 		commands: ["node --test scripts/*.test.mjs"],
 	},
 	{
@@ -228,10 +238,15 @@ export const STEPS = [
 		cores: 0.4,
 		commands: [vitest("object-gateway")],
 	},
-	{
-		name: "runner-orchestrator",
-		why: "packages/runner-orchestrator and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest",
-		seconds: 588,
+	// runner-orchestrator's tests in two halves, a step each, so a run in parts puts one half on each machine. As one
+	// step it was the long part in most of pr-loop's batches in parts (152-335 s, 16 Oct): its rest is CPU-bound, about
+	// 700 CPU s, so it took as long as one machine's spare CPU allowed. The halves are besideTheRest's vitest shards:
+	// 277 and 275 s of the rest's 552 s of test time, and 175 and 123 s of the waiting files' 298 s (batch qmvbe0ra4).
+	// `seconds`: half the whole step's.
+	...[1, 2].map((half) => ({
+		name: `runner-orchestrator-${half}`,
+		why: `packages/runner-orchestrator (half ${half} of its test files) and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest`,
+		seconds: 294,
 		paths: [
 			/^packages\/runner-orchestrator\//,
 			/^deploy\//,
@@ -242,11 +257,11 @@ export const STEPS = [
 		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s as one vitest. Since the files that mostly wait
 		// run beside the rest, the same CPU (689 s) takes about 400 s (402 s in pr-loop's one run so far): about 1.7.
 		// Side by side, the rest is the whole run's critical path, CPU-bound at 2 workers (634 s of a 651 s run, 16 Oct):
-		// 4 workers, packed as 3 cores so hosted-db still starts beside it.
+		// 4 workers, packed as 3 cores so hosted-db still starts beside it. Each half keeps that.
 		cores: 3,
 		workers: 4,
-		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING),
-	},
+		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING, [], `${half}/2`),
+	})),
 	{
 		name: "folder-program",
 		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image and, beside them, the release build, its check against the build record and the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
@@ -274,10 +289,11 @@ export const STEPS = [
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
 		seconds: 121,
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
-		// node --test runs its files side by side, the agent exit's root proof in a file of its own. The step mostly waits
-		// (14 CPU seconds over 139 s), but `cores` is 2 so that a side-by-side run that fans out within a step's cores
-		// still runs the proof beside the rest.
-		cores: 2,
+		// node --test runs its files side by side, the agent exit's root proof in a file of its own. The step mostly waits:
+		// two files at once, 55-56 CPU seconds over 136-147 s, 42-43 of them the proof's container (node01 and node02, 16 Oct).
+		// So it is packed as 0.4 cores and still runs two files at once, the proof beside the rest.
+		cores: 0.4,
+		width: 2,
 		commands: [
 			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
@@ -394,6 +410,7 @@ function planned(step) {
 		cores: step.cores ?? 1,
 		seconds: step.seconds ?? 0,
 		workers: step.workers ?? null,
+		width: step.width ?? null,
 		build: step.build ?? false,
 	};
 }
@@ -401,7 +418,8 @@ function planned(step) {
 /** A plan's steps in at most `parts` groups, for runs on different machines at once (run-on-node.mjs --parts): by CPU
  * work (`seconds` × `cores`), the most first, each step to the group with the least work so far, then the fewest steps,
  * so no group is empty while there are steps for it. Every step is in exactly one group. A group keeps the plan's
- * order, and needs the build if one of its steps does. */
+ * order, and needs the build if one of its steps does. The groups come the most work first (on a tie, in the order
+ * they were filled): run-on-node.mjs queues them in that order. */
 export function splitPlan(steps, parts) {
 	const work = (step) => (step.seconds ?? 0) * (step.cores ?? 1);
 	const groups = Array.from({ length: Math.min(parts, steps.length) }, () => ({ indexes: [], work: 0 }));
@@ -413,10 +431,12 @@ export function splitPlan(steps, parts) {
 		lightest.indexes.push(i);
 		lightest.work += work(steps[i]);
 	}
-	return groups.map(({ indexes }) => {
-		const chosen = indexes.sort((a, b) => a - b).map((i) => steps[i]);
-		return { steps: chosen, build: chosen.some((step) => step.build) };
-	});
+	return groups
+		.sort((a, b) => b.work - a.work)
+		.map(({ indexes }) => {
+			const chosen = indexes.sort((a, b) => a - b).map((i) => steps[i]);
+			return { steps: chosen, build: chosen.some((step) => step.build) };
+		});
 }
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */
@@ -430,14 +450,14 @@ function sample(files) {
 	return files.length > 3 ? `${files.slice(0, 3).join(", ")} and ${files.length - 3} more` : files.join(", ");
 }
 
-/** Keeps a side-by-side step's fan-out within its cores, rounded up: its `node --test` runs that many test files at
- * once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code on that many
- * threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs RUNNERS), and the
- * steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that npm or a script
- * starts keeps node's default. A step with `workers` runs its vitests with that many workers, not the slot's, unless
- * the run set its own (`stepWorkers` false). */
+/** Keeps a side-by-side step's fan-out within its `width`, or else its cores rounded up: its `node --test` runs that
+ * many test files at once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code
+ * on that many threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs
+ * RUNNERS), and the steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that
+ * npm or a script starts keeps node's default. A step with `workers` runs its vitests with that many workers, not the
+ * slot's, unless the run set its own (`stepWorkers` false). */
 function narrow(step, stepWorkers) {
-	const width = Math.max(1, Math.ceil(step.cores ?? 1));
+	const width = step.width ?? Math.max(1, Math.ceil(step.cores ?? 1));
 	return `export GOMAXPROCS=${width}; ${step.workers && stepWorkers ? `export VITEST_MAX_WORKERS=${step.workers}; ` : ""}node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
 }
 

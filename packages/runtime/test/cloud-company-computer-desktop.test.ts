@@ -496,6 +496,60 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		},
 	);
 
+	it("shows each notice the office service left once in the desktop's notification area, and removes it", async () => {
+		const fixture = await xfceFixture();
+		const notices = join(fixture.root, "run");
+		await mkdir(notices);
+		const script = (await readFile(xfceHelper, "utf8")).replace(
+			"notices=/run/qorpera",
+			`notices=${JSON.stringify(notices)}`,
+		);
+		expect(script).toContain(notices);
+		const helper = join(fixture.root, "qorpera-screen-xfce");
+		await writeFile(helper, script, { mode: 0o755 });
+		const bin = join(fixture.root, "bin");
+		const shown = join(fixture.root, "shown");
+		await writeFile(shown, "");
+		await writeFile(
+			join(bin, "notify-send"),
+			'#!/bin/bash\nfor arg do printf "[%s]" "$arg"; done >> "$TEST_SHOWN"\necho >> "$TEST_SHOWN"\n',
+			{
+				mode: 0o700,
+			},
+		);
+		// The session lives while the watcher looks.
+		await writeFile(join(bin, "xfce4-session"), '#!/bin/sh\nprintf "SESSION\\n" >> "$TEST_LOG"\nsleep 2\n', {
+			mode: 0o700,
+		});
+		await writeFile(
+			join(notices, "folder-notice.000000000001.a"),
+			"2 changes saved to the company folder.\n1 change not saved.\n",
+		);
+		await writeFile(
+			join(notices, "folder-notice.000000000002.b"),
+			"The company folder refused a change on this desktop.",
+		);
+		// A link the desktop put there, a notice still being written, and an empty one are not shown.
+		const outside = join(fixture.root, "outside");
+		await writeFile(outside, "service-owned bytes");
+		await symlink(outside, join(notices, "folder-notice.000000000003.c"));
+		await writeFile(join(notices, ".folder-notice.d"), "half");
+		await writeFile(join(notices, "folder-notice.000000000004.e"), "");
+		await execute("/bin/bash", [helper, fixture.wallpaper], {
+			env: { ...fixture.env, TEST_SHOWN: shown },
+			timeout: 6000,
+		});
+		expect(await readFile(shown, "utf8")).toBe(
+			[
+				"[--app-name=Company folder][--][Company folder][2 changes saved to the company folder.\n1 change not saved.]",
+				"[--app-name=Company folder][--][Company folder][The company folder refused a change on this desktop.]",
+				"",
+			].join("\n"),
+		);
+		expect((await readdir(notices)).sort()).toEqual([".folder-notice.d", "folder-notice.000000000003.c"]);
+		expect(await readFile(outside, "utf8")).toBe("service-owned bytes");
+	});
+
 	it("refuses a wallpaper from a different screen state directory", async () => {
 		const fixture = await xfceFixture();
 		const other = join(fixture.root, "other.png");

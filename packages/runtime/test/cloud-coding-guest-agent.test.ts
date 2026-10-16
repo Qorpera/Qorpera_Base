@@ -275,6 +275,7 @@ function sessionAt(m: Machine, workerId: string) {
 		user: join(m.stateRoot, "sessions", w, "user.json"),
 		view: join(m.folderRoot, "views", `${w}.json`),
 		folderState: join(m.folderRoot, "state", w),
+		folderLocal: join(m.stateRoot, "sessions", w, "folder-local"),
 		mountpoint: join(m.folderRoot, "mounts", w),
 		folderUnit: `qorpera-folder-${w}.service`,
 		slice: `qorpera-coding-${w}.slice`,
@@ -572,6 +573,8 @@ describe("mounting a session", () => {
 			s.mountpoint,
 			"--state-dir",
 			s.folderState,
+			"--local-dir",
+			s.folderLocal,
 			"--allow-other",
 			"yes",
 			"--owner-uid",
@@ -621,6 +624,9 @@ describe("mounting a session", () => {
 		const workerId = await mounted(m);
 		const s = sessionAt(m, workerId);
 		await writeFile(join(s.folderState, "cache"), "old");
+		// The local folder is on the machine's disk and the program's: a new view keeps it.
+		await mkdir(join(s.folderLocal, "cache"), { recursive: true });
+		await writeFile(join(s.folderLocal, "cache", "built"), "kept");
 		const answer = await call(m, "mount", mountRequest(workerId, { ...VIEW, viewId: "view-2" }));
 		expect(answer.line).toMatchObject({ viewId: "view-2", mount: "mounted" });
 		expect(brief(m.calls)).toEqual([
@@ -635,6 +641,7 @@ describe("mounting a session", () => {
 			["loginctl", "enable-linger", "qorpera-200001"],
 		]);
 		await gone(join(s.folderState, "cache"));
+		expect(await readFile(join(s.folderLocal, "cache", "built"), "utf8")).toBe("kept");
 		expect(await readJsonFile(s.view)).toEqual({ ...VIEW, viewId: "view-2" });
 	});
 	it("starts a failed program again and restarts the user manager", async () => {
@@ -1457,6 +1464,112 @@ describe("a session's status", () => {
 		const listed = await seen(m, workerId);
 		expect(listed.size).toBe(256);
 		expect(listed.has(oldest.commandId)).toBe(false);
+	});
+	it("lists a command that still runs however old, first, then the newest of the rest", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		const running = await plant(m, workerId, { unit: ACTIVE });
+		await utimes(running.intent, 1000, 1000);
+		const ended: Awaited<ReturnType<typeof plant>>[] = [];
+		for (let i = 0; i < CODING_GUEST.maxStatusCommands; i++) {
+			const x = await plant(m, workerId, { boot: randomUUID() });
+			await utimes(x.intent, 2000 + i, 2000 + i);
+			ended.push(x);
+		}
+		// Half of them were seen before: their outcome is kept, and the rest get theirs now.
+		await seen(m, workerId);
+		for (const x of ended.slice(0, 128)) await rm(x.outcome);
+		const answer = await call(m, "status", sessionRequest(workerId));
+		expect(answer.line.commands).toHaveLength(CODING_GUEST.maxStatusCommands);
+		expect(answer.line.commands[0]).toEqual({ commandId: running.commandId, state: "running", exit: null, end: 0 });
+		expect(answer.line.commands.slice(1).map((x: { commandId: string }) => x.commandId)).toEqual(
+			ended
+				.slice(1)
+				.reverse()
+				.map((x) => x.commandId),
+		);
+		// The oldest of the rest is the one left out, and every one that ended keeps its outcome.
+		for (const x of ended) expect((await lstat(x.outcome)).isFile()).toBe(true);
+	});
+	it("refuses rather than leave out a command that still runs", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		for (let i = 0; i <= CODING_GUEST.maxStatusCommands; i++) await plant(m, workerId, { unit: ACTIVE });
+		expect((await call(m, "status", sessionRequest(workerId))).line).toEqual(refusal("CODING_GUEST_STATUS_OVERFLOW"));
+		// One fewer fits.
+		const one = [...m.units.keys()].find((unit) => unit.startsWith(`qorpera-coding-${compact(workerId)}-`));
+		expect(one).toBeDefined();
+		m.units.set(one as string, { ...INACTIVE });
+		const listed = await seen(m, workerId);
+		expect(listed.size).toBe(CODING_GUEST.maxStatusCommands);
+		expect([...listed.values()].every((x) => (x as { state: string }).state === "running")).toBe(true);
+	});
+});
+
+describe("quiescing a session", () => {
+	const quiesced = (workerId: string) => ({ schema: "qorpera.coding-guest-session-quiesced/v1", workerId });
+	it("ends everything it runs and its user manager, keeping its view mounted for the final boundary", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		m.state.command = "hold";
+		const x = commandAt(m, workerId, randomUUID());
+		await call(m, "run", runRequest(m, workerId, x.commandId, "sleep 60"));
+		m.units.set("user@200001.service", { ...ACTIVE });
+		m.calls.length = 0;
+		expect((await call(m, "quiesce", sessionRequest(workerId))).line).toEqual(quiesced(workerId));
+		expect(m.calls).toEqual([
+			["systemctl", "stop", s.slice],
+			["loginctl", "disable-linger", "qorpera-200001"],
+			["systemctl", "stop", "user@200001.service"],
+			show(s.slice),
+			show("user@200001.service"),
+		]);
+		expect(m.units.get(x.unit)?.ActiveState).toBe("inactive");
+		expect(m.units.get("user@200001.service")?.ActiveState).toBe("inactive");
+		// The view, its program and its mount stay; so do the session's user, network and user manager's drop-in.
+		expect(m.units.get(s.folderUnit)?.ActiveState).toBe("active");
+		expect(m.mounts.has(s.mountpoint)).toBe(true);
+		for (const path of [
+			s.user,
+			s.view,
+			join(m.systemdRoot, "user@200001.service.d", "qorpera-company.conf"),
+			join(m.runRoot, "networks", "0"),
+		])
+			expect((await lstat(path)).isFile()).toBe(true);
+		// Again: the same answer. A later mount brings the user manager back, and a stop still removes it all.
+		expect((await call(m, "quiesce", sessionRequest(workerId))).line).toEqual(quiesced(workerId));
+		m.calls.length = 0;
+		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
+		expect(m.calls).toContainEqual(["loginctl", "enable-linger", "qorpera-200001"]);
+		expect((await call(m, "stop-session", sessionRequest(workerId))).line).toEqual({
+			schema: "qorpera.coding-guest-session-stopped/v1",
+			workerId,
+		});
+		await gone(s.session);
+	});
+	it("quiesces a session never mounted", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		const s = sessionAt(m, workerId);
+		expect((await call(m, "quiesce", sessionRequest(workerId))).line).toEqual(quiesced(workerId));
+		expect(m.calls).toEqual([["systemctl", "stop", s.slice], show(s.slice)]);
+	});
+	it.each<[string, (s: ReturnType<typeof sessionAt>) => string]>([
+		["a command", (s) => s.slice],
+		["its user manager", () => "user@200001.service"],
+	])("refuses while %s still runs, keeping its view", async (_name, stuck) => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		m.units.set(stuck(s), ACTIVE);
+		m.state.stubborn.add(stuck(s));
+		expect((await call(m, "quiesce", sessionRequest(workerId))).line).toEqual(
+			refusal("CODING_GUEST_SESSION_STILL_RUNNING"),
+		);
+		expect(m.units.get(s.folderUnit)?.ActiveState).toBe("active");
+		expect(m.mounts.has(s.mountpoint)).toBe(true);
+		for (const path of [s.user, s.view]) expect((await lstat(path)).isFile()).toBe(true);
 	});
 });
 

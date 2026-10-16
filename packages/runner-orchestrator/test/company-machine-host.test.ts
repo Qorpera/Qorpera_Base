@@ -74,6 +74,8 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 	const order: string[] = [];
 	/** The views SQL opened, and the refusal its next open gives (a detail). */
 	const views = { opened: [] as { viewId: string; pass: string }[], refusal: undefined as string | null | undefined };
+	/** What SQL's take-ins of the machine's reads answer, in turn (then nothing to take in): an answer, or an error. */
+	const inherits: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
 	const service = {
 		reads: "released" as FolderReads,
@@ -139,6 +141,19 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 				return { schema: "qorpera.folder-view/v1", ...view, leaseUntil };
 			}
 			if (method === "qorpera_folder_view_close") return { state: "closed" };
+			if (method === "qorpera_folder_test_machine_inherit_reads") {
+				const next = inherits.shift();
+				if (next instanceof Error) throw next;
+				return (
+					next ?? {
+						schema: "qorpera.folder-inherit/v1",
+						inheritId: args.p_inherit_id,
+						viewId: null,
+						reads: 0,
+						replay: false,
+					}
+				);
+			}
 			if (method === "qorpera_retire_company_machine")
 				return (
 					retirements.shift() ?? {
@@ -367,6 +382,7 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 		refusals,
 		admissions,
 		retirements,
+		inherits,
 		busy,
 		client,
 		get host() {
@@ -987,10 +1003,10 @@ function start(f: Fixture, commandId = randomUUID(), who: Credit = credit()) {
 		f.signal,
 	);
 }
-/** A read of `commandId`'s log: its tail, or from `offset`. */
-function read(f: Fixture, commandId: string, offset?: number) {
+/** A read of `commandId`'s log: its tail, or from `offset`, by the run in `who`. */
+function read(f: Fixture, commandId: string, offset?: number, who: Credit = credit()) {
 	return f.host.command(
-		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...credit() },
+		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...who },
 		{
 			action: "read",
 			read: offset === undefined ? { commandId, tail: true, limit: 100 } : { commandId, offset, limit: 100 },
@@ -998,10 +1014,10 @@ function read(f: Fixture, commandId: string, offset?: number) {
 		f.signal,
 	);
 }
-/** A cancel of `commandId`. */
-function cancel(f: Fixture, commandId: string) {
+/** A cancel of `commandId`, by the run in `who`. */
+function cancel(f: Fixture, commandId: string, who: Credit = credit()) {
 	return f.host.command(
-		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...credit() },
+		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...who },
 		{ action: "cancel", commandId },
 		f.signal,
 	);
@@ -1261,6 +1277,82 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 			expect(await read(f, commandId)).toMatchObject({ state, exitCode: null, output: "" });
 		}
 		expect(f.service.requests.filter((request) => request.op === "boundary")).toHaveLength(8);
+	});
+
+	it("lets output out only once the run that gets it took in the machine's reads (6d-3b)", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const commandId = randomUUID();
+		f.result(finished);
+		const takeIns = () => f.calls.filter((call) => call.method === "qorpera_folder_test_machine_inherit_reads");
+		// A start's receipt is held, and takes nothing in.
+		await start(f, commandId);
+		expect(takeIns()).toEqual([]);
+		// A read: the boundary released the machine's reads, then the reading run took them in.
+		const reader = credit();
+		expect(await read(f, commandId, undefined, reader)).toMatchObject(finished);
+		expect(takeIns().map((call) => call.args)).toEqual([
+			{ p_placement_id: id(6), p_boot_id: f.boot, p_run_id: reader.runId, p_inherit_id: expect.any(String) },
+		]);
+		const takeIn = "sql:qorpera_folder_test_machine_inherit_reads";
+		expect(f.order.slice(-3)).toEqual(["exec:read", "folder:boundary", takeIn]);
+		// A cancel too, with a take-in of its own: each takes in what the machine read since.
+		const canceller = credit();
+		expect(await cancel(f, commandId, canceller)).toMatchObject(finished);
+		expect(takeIns()).toHaveLength(2);
+		expect(takeIns()[1].args).toMatchObject({ p_placement_id: id(6), p_boot_id: f.boot, p_run_id: canceller.runId });
+		expect(takeIns()[1].args.p_inherit_id).not.toBe(takeIns()[0].args.p_inherit_id);
+		// A take-in that fails, is refused for any cause but an unreadable read, is busy, or answers another take-in or
+		// nothing it knows, holds that output only.
+		const kept = { state: "running", exitCode: null, output: "", truncated: false };
+		const other = { schema: "qorpera.folder-inherit/v1", inheritId: randomUUID(), viewId: null, reads: 0 };
+		f.inherits.push(
+			new Error("CODING_CONTROL_UNCONFIRMED"),
+			new CodingControlRefused(null),
+			new CodingControlRefused("qorpera.test-machine/new-disk"),
+			new CodingControlBusy(),
+			other,
+			{ ...other, schema: "qorpera.folder-inherit/v2" },
+			[],
+		);
+		for (let left = 7; left > 0; left--) expect(await read(f, commandId)).toMatchObject(kept);
+		expect(takeIns()).toHaveLength(9);
+		expect(await read(f, commandId)).toMatchObject(finished);
+		// A run or a boot the take-in cannot name holds the output, and asks none.
+		for (const who of [{ runId: "run" }, { bootId: null }])
+			expect(await read(f, commandId, undefined, { ...credit(), ...who })).toMatchObject(kept);
+		// A boundary that does not release the machine's reads asks none either.
+		f.service.reads = "unproven";
+		expect(await read(f, commandId)).toMatchObject(kept);
+		expect(takeIns()).toHaveLength(10);
+		expect(f.methods()).not.toContain("qorpera_retire_company_machine");
+	});
+
+	it("has a boot without /company take in its disk's reads too, and hold its output until then (6d-3b)", async () => {
+		const f = await fixture({ folder: true });
+		f.views.refusal = null;
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:REFUSED" },
+		]);
+		f.running();
+		f.result(finished);
+		const takeIns = () => f.calls.filter((call) => call.method === "qorpera_folder_test_machine_inherit_reads");
+		// A start gets the output, its run's take-in first; no boundary (the boot has no view of its own).
+		const starter = credit();
+		expect(await start(f, randomUUID(), starter)).toMatchObject(finished);
+		expect(takeIns().map((call) => call.args)).toEqual([
+			{ p_placement_id: id(6), p_boot_id: f.boot, p_run_id: starter.runId, p_inherit_id: expect.any(String) },
+		]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["boundary"]);
+		// A take-in that fails holds the start's output for the next read.
+		const kept = { state: "running", exitCode: null, output: "", truncated: false };
+		const commandId = randomUUID();
+		f.inherits.push(new Error("CODING_CONTROL_UNCONFIRMED"));
+		expect(await start(f, commandId)).toMatchObject(kept);
+		expect(await read(f, commandId)).toMatchObject(finished);
+		expect(takeIns()).toHaveLength(3);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["boundary"]);
 	});
 
 	it("records an end only once its command's window closed with the machine's reads released", async () => {
@@ -1648,6 +1740,53 @@ describe("company machine host when a test machine's folder can never be proven 
 		}
 		expect(g.methods()).not.toContain("qorpera_retire_company_machine");
 		expect(await start(g)).toMatchObject({ state: "running" });
+	});
+
+	it("moves a machine to a new disk when the core refuses a run's take-in as unreadable (6d-3b)", async () => {
+		const kept = { state: "running", exitCode: null, output: "", truncated: false };
+		// On a boot with a view, and on one without /company: the disk keeps what earlier views were served.
+		for (const none of [false, true]) {
+			const f = await fixture({ folder: true });
+			if (none) f.views.refusal = null;
+			await f.host.pass(f.signal);
+			f.running();
+			f.result(finished);
+			const commandId = randomUUID();
+			await start(f, commandId);
+			const takeIns = () => f.calls.filter((call) => call.method === "qorpera_folder_test_machine_inherit_reads");
+			const asked = takeIns().length;
+			f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+			expect(await read(f, commandId)).toMatchObject(kept);
+			// Every later output of the boot is held, and asks no take-in; the retirement waits for the pass.
+			expect(await read(f, commandId)).toMatchObject(kept);
+			expect(await cancel(f, commandId)).toMatchObject(kept);
+			expect(takeIns()).toHaveLength(asked + 1);
+			expect(f.methods()).not.toContain("qorpera_retire_company_machine");
+			expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RETIRED:UNREADABLE" }]);
+			expect(f.calls.find((call) => call.method === "qorpera_retire_company_machine")?.args).toMatchObject({
+				p_placement_id: id(6),
+				p_boot_id: f.boot,
+				p_reason: "unreadable",
+			});
+			await expect(start(f)).rejects.toThrow("COMPANY_MACHINE_FOLDER_ENDED");
+			expect(await read(f, commandId)).toMatchObject(kept);
+			expect(takeIns()).toHaveLength(asked + 1);
+			expect(reboots(f)).toBe(0);
+		}
+		// A retirement that does not reach SQL is asked again next pass.
+		const g = await fixture({ folder: true });
+		await g.host.pass(g.signal);
+		g.running();
+		g.result(finished);
+		const commandId = randomUUID();
+		await start(g, commandId);
+		g.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		expect(await read(g, commandId)).toMatchObject(kept);
+		g.busy.add("qorpera_retire_company_machine");
+		expect(await g.host.pass(g.signal)).toEqual([{ ...quiet, folder: "CODING_CONTROL_BUSY" }]);
+		expect(await read(g, commandId)).toMatchObject(kept);
+		g.busy.delete("qorpera_retire_company_machine");
+		expect(await g.host.pass(g.signal)).toEqual([{ ...quiet, folder: "FOLDER_RETIRED:UNREADABLE" }]);
 	});
 
 	it("keeps a disk SQL says may still get a view, and refuses the starts of a boot SQL no longer runs", async () => {

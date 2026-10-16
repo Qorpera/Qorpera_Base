@@ -532,9 +532,9 @@ has unsaved changes (4a).
   the final boundary, its kept answer), and the office service adds it (4d).
 - A desktop save shows a desktop notification, and its report goes into the next tool result of the run holding the
   screen (§2 "The report"). The folder service has it (the quiet boundary is the service's), and the core has every
-  commit by its view. 4f builds it: a notification through the helper's connection, and the holder run's next tool
-  result reading the view's commits since the last one shown, and the publishes refused since, which the office
-  service has from the notifications (a refused publish makes no commit). Until then the service logs it (4a).
+  commit by its view. 4f builds it: the helper asking the folder service for the view's notices, and the holder run's
+  next tool result reading the view's commits since the last one shown, and the publishes refused since, which the
+  office service has from the notices (a refused publish makes no commit). The service also logs it (4a).
 - A drain's or a stop's boundaries answer with reports too, refusals included (rule 3). The folder helper logs every
   boundary's report as it answers (the refusal, the commit and how many paths had each outcome, never a path or a
   reason), and the office service logs a drain's with the drain too. The stop control writes nothing (its locked child
@@ -555,11 +555,31 @@ has unsaved changes (4a).
   (`cloud-company-computer-desktop-folder.ts`) holds the pass of every view it opens, keeps per view the id of the
   last commit it showed, and reads the ones since when it builds a report. Its registry
   (`cloud-company-computer-registry-http.ts`) names the function.
-- **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service sends each
-  quiet boundary's answer as a notification on the connection of the helper that holds the mount (the refusal, its
-  reason and the change set's paths, or the commit; never a pass), and the helper passes it to the office service on
-  its socket. The office service keeps a view's refusals since its last report; a refusal asked again with the same
-  reason and paths is kept once, with how many times.
+- **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service keeps,
+  per view, what came of each change set a boundary no machine asked for asked (a quiet period's, the last
+  connection's leaving, one a change needed first, or one with no answer asked again before a change): its commit,
+  or its refusal with the reason and the paths it refused (at most 20, sorted, and how many), the last 32 numbered in
+  a series of the view's own. A boundary that first asks again a change set that had no answer keeps that one's
+  notice, from its own outcomes, then its own change set's. A boundary a machine asked for is not kept: its answer
+  reaches the office service already. The office service
+  has no vsock, so the helper asks for them: it runs the folder program's `relay` on a socket only root reaches
+  (`relay/relay.sock` under its root, started on the first ask and again, at most once a second, after it exited), and
+  speaks the folder protocol's `notices` role through it with the view the office service gives (its id and pass;
+  protocol 4, RUNTIME-FOLDER-SERVICE.md), so the folder service checks it as it does the machine that holds the
+  mount. It never opens, holds or keeps a view, and never carries a pass back to the office service: the answer is
+  the service's page only, or `unanswered` (no relay, no answer in 10 s, an error frame, a page that is not one). The
+  office service asks the helper (a new `notices` operation, after the last one it has, one ask of a view at a time)
+  for each view it opened for a run when it reads the run's report, at most once a second, and once more when a
+  `switch` moved the mount on or the view closed (a drain, a release). Once a view's commits are read to their end
+  it asks until the service no longer keeps the view (`nonce: null`), a minute and a half at most. It takes only the
+  refusals (a commit's paths come with the view's commits): one is the report's refusal ("the company folder refused
+  3 changes on this desktop") with its paths not saved; one asked again with the same reason and paths before a report
+  gave the run the first is kept once, in its place, with how many times. One after that comes as new, with its
+  paths: the run may have been shown the first already (a read can go on past the report's wait).
+  - **Rollout.** The service's role (4f-2b-2a) goes out with a folder service deploy on the nodes; the helper's
+    relay and operation (4f-2b-2b) with a new office image generation, as the helper is the image's. Either may go
+    first: a service before the role answers the helper's hello "Bad role", which the helper reads as no notices,
+    and a service with it is asked by no helper before the image.
 - **The holder run's next tool result, whatever its tool.** Every tool result of a native run is built in one place,
   the native tool boundary (`cloud-native-tool-boundary.ts`, `#result`). For a run whose computer session has held a
   screen, it first asks the office service for the run's report, through the run's computer endpoint
@@ -582,22 +602,48 @@ has unsaved changes (4a).
   view's commits since the last one shown and the drain boundary's answer, refusals included. The same ask puts them
   into that run's next tool result, whatever its tool (while the member holds the screen the run's desktop actions are
   refused, and a refused one's result carries it too). The office service drops them when the run ends.
-- **Notifications.** Each report is also a desktop notification: `notify-send` run as the office account in the
-  desktop's session (its `DBUS_SESSION_BUS_ADDRESS`), shown by xfce4-notifyd. It says how many paths were saved,
-  refused or conflicted, and why a publish was refused. A drain's report is a notification on the desktop of the
-  member who took over, and a member-held desktop's saves are notifications on it alone (no run gets them). The image
-  needs `libnotify-bin` and `xfce4-notifyd`, which #1225 added to its office group.
+- **Notifications (4f-2b-3).** What the company folder did with a desktop's changes is also shown once on that
+  desktop, in its notification area ("Company folder"), whoever holds it.
+  - **What is told.** The office service's desktop folder tells each screen, as it reads them: each page of its views'
+    commits (how many changes were saved, wait for a member's approval, were not saved because the folder had a newer
+    version, or were not saved); each refusal in the folder service's notices, in the report's words (one told is
+    told again, the same reason and paths, only after a minute, whatever was told between); and a drain's refusal
+    (paused, closed, unreadable, unproven, or the paths not saved). A run's views are read when its report is, and at
+    least every 5 s besides. Once a report holds 64 items not shown (saves in a row are one), a view's reads only
+    tell its desktop, from where they told it last (the commit and the notice), and keep nothing; once the report has
+    room, it reads the same again from its own place, and the desktop is told only what comes after. That is no cap:
+    the read that takes a report past 64 keeps all it read, and so do a drain's answer and the notices asked once
+    more when a view moved on or closed. A member's view is read the same way, by a record of its own that no run is
+    shown, until it is read to its end, so a member-held desktop's saves are shown on it alone. A drain's goes to the
+    screen, so the member who took over sees it.
+  - **How it reaches the desktop.** The service never enters the desktop. The office guest keeps a screen's last 4
+    notices for 2 minutes and, at its next look for a browser request (every 500 ms) once the desktop is ready,
+    leaves each, oldest first, in the desktop's session directory (the service's `<runtime>/session`, bound at
+    `/run/qorpera`): written whole under a fresh hidden name, 0600, and renamed to `folder-notice.<n>.<uuid>`; only the
+    last 4 it left are kept there. A notice is plain text of at most 512 bytes: no control character but a newline,
+    and no `<`, `>` or `&`, which xfce4-notifyd would read as markup. The desktop can write that directory, so leaving
+    a notice reads nothing there and opens nothing through a link: a hostile desktop can only lose its own notices.
+  - **How it is shown.** `qorpera-screen-xfce` watches that directory from inside the desktop's D-Bus session while
+    the session lives: once a second it takes each `folder-notice.*` file (not a link, at most 512 bytes), removes it
+    and shows it with `notify-send`; xfce4-notifyd draws it. Nothing answers the service. A desktop process can run
+    `notify-send` itself, so a notification proves nothing: the run's report does. The image needs `libnotify-bin`
+    and `xfce4-notifyd`, which #1225 added to its office group; without `notify-send` nothing is shown and the
+    desktop starts as before.
 - **Slices.** 4f-2a: the SQL and its test (`434_folder_view_commits.test.sql`), and this design.
   - 4f-2b-1: the office service's reports from the core's commits and from its own drain answers (a drain boundary
     refused: paused, closed, unreadable or unproven), `folder_report`, the native client's ask, the native tool
     boundary's report in the result of every call that runs, and their tests. Those include a report in a tool result
     that is not a desktop action's, and a drain's report in the next result of the run that held the desktop, whatever
     its tool.
-  - 4f-2b-2: the folder service's notifications of quiet boundaries (a change set refused whole), the helper passing
-    them on, and the office service keeping them per view, with their tests (a quiet save refused after the desktop
-    action returned, reported in the run's next `company_read`).
-  - 4f-2b-3: the desktop notifications (`notify-send`). Its proof on the test machine needs an image with #1225's
-    packages.
+  - 4f-2b-2: the folder service's notices of the boundaries no machine asked for (a change set refused whole), the
+    helper asking for them, and the office service keeping them per view, with their tests (a quiet save refused
+    after the desktop action returned, reported in the run's next `company_read`). Two PRs: 4f-2b-2a the service's
+    `notices` role and its tests (`folder-notices.test.ts`); 4f-2b-2b the helper's relay and `notices` operation and
+    the office service's asks, in a new office image generation.
+  - 4f-2b-3: the desktop notifications: the desktop folder's telling (and a member's view read on its own), the
+    guest's queue, the launcher's notice files and `qorpera-screen-xfce`'s watcher, with their tests (the watcher
+    run with a `notify-send` stand-in). It goes out with a new office image generation, like 4f-2b-2b. Its proof on
+    the test machine needs an image with #1225's packages.
 
 ## Slices
 
