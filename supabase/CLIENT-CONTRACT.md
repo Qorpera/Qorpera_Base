@@ -1081,13 +1081,13 @@ like any other secret but started only with `qorpera_begin_coding_mcp_sign_in`, 
 server with the key in a header, so the key never reaches the coding machine. A value never comes back to a client.
 
 A server is named by its origin, `https://host[:port]`: lower case, no path, no `:443` (so an origin has one spelling),
-a DNS name of two labels or more whose last label is not a number and not one kept for private networks (`localhost`,
-`local`, `internal`, `lan`, `home`, `corp`, `test`, `example` and others). The broker also refuses a private address
-when it connects. There is one active sign-in per owner and origin. A member's own sign-in reaches only that member's
-coding sessions; the company's reaches every coding session in the company. For an origin both have, the company's
-wins. Disconnect (`qorpera_revoke_cloud_secret`) ends a sign-in; a member's own end when they leave, as their other
-secrets do. Rotate one with `qorpera_begin_cloud_secret_capture` and the existing secret (connector `mcp`, its
-`secretName`).
+a DNS name of two labels or more whose last label is not a number (decimal or `0x` hex, so no address in any spelling a
+URL parser reads as one) and not one kept for private networks (`localhost`, `local`, `internal`, `lan`, `home`, `corp`,
+`test`, `example` and others). The broker also refuses a private address when it connects. There is one active sign-in
+per owner and origin. A member's own sign-in reaches only that member's coding sessions; the company's reaches every
+coding session in the company. For an origin both have, the company's wins. Disconnect (`qorpera_revoke_cloud_secret`)
+ends a sign-in; a member's own end when they leave, as their other secrets do. Rotate one with
+`qorpera_begin_cloud_secret_capture` and the existing secret (connector `mcp`, its `secretName`).
 
 - `qorpera_begin_coding_mcp_sign_in(profile, environment, ownerKind, origin, headerName = 'authorization',
   headerPrefix = 'Bearer ')`: starts the capture of an API key for the server at `origin`, owned by the company

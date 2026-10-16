@@ -9,7 +9,7 @@
 -- 5. The broker's read: the company's for the origin, else the session member's own; never another member's; none
 --    for an origin without one. The lease, the phase and the refusals, each writing nothing. Disconnect and removal.
 -- 6. The broker's repository fetch while the session runs.
--- 7. The patched body names the migration; only the secret broker reads, only members begin and list.
+-- 7. The patched bodies name the migration; only the secret broker reads, only members begin and list.
 
 select pg_temp.base_claims('service_role');
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
@@ -190,6 +190,9 @@ begin
 		'https://localhost:8080', 'https://mcp.localhost', 'https://printer.local', 'https://db.internal', 'https://nas.lan',
 		'https://router.home', 'https://intranet.corp', 'https://1.0.0.127.in-addr.arpa', 'https://mcp.test',
 		'https://mcp.example', 'https://mcp.invalid', 'https://10.0.0.1', 'https://169.254.169.254', 'https://[::1]',
+		-- An address in the spellings a URL parser also reads as one (its last label a number, decimal or hex).
+		'https://127.0.0.0x1', 'https://a.0x7f', 'https://a.0x', 'https://a.0xff:8443', 'https://0x7f.0x0.0x0.0x1',
+		'https://2130706433.0177', 'https://example.0X1',
 		'https://-a.io', 'https://a..io', 'https://a.io.', 'https://' || repeat('a', 64) || '.io',
 		replace(v_long, ':65535', 'd'), '', ' https://a.io', 'https://a.io '] loop
 		perform pg_temp.base_assert(not public.qorpera_coding_mcp_origin_valid(v_origin), 'not an origin: ' || v_origin);
@@ -681,23 +684,27 @@ begin
 	perform pg_temp.base_assert(pg_temp.mcp_used('repository_fetch_used') = 1, 'a refusal writes no audit row');
 end $$;
 
--- 7. The patched body, and who may call -------------------------------------------------------------------------------
+-- 7. The patched bodies, and who may call -----------------------------------------------------------------------------
 do $$
 declare
 	v_role text;
 	v_function text;
 begin
-	perform pg_temp.base_assert(position('20260930440000' in pg_get_functiondef(
-		'public.qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)'::regprocedure)) > 0,
-		'the completion names 20260930440000');
+	foreach v_function in array array['public.qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
+		'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'] loop
+		perform pg_temp.base_assert(position('20260930440000' in pg_get_functiondef(v_function::regprocedure)) > 0,
+			v_function || ' names 20260930440000');
+	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		foreach v_function in array array['public.qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',
-			'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)'] loop
+			'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)',
+			'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'] loop
 			perform pg_temp.base_assert(not has_function_privilege(v_role, v_function, 'execute'), v_role || ' ' || v_function);
 		end loop;
 	end loop;
 	foreach v_function in array array['public.qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',
-		'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)'] loop
+		'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)',
+		'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'] loop
 		perform pg_temp.base_assert(has_function_privilege('qorpera_secret_broker', v_function, 'execute'),
 			'the broker: ' || v_function);
 	end loop;

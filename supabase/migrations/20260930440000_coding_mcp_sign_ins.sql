@@ -21,9 +21,11 @@
 --    running session's own repository, under the agent's live grant, so the broker fetches (upload-pack only) while
 --    the session runs; the repository credential stays for preparing and publishing. Audited as repository_fetch_used.
 -- 5. Members: qorpera_list_coding_mcp_sign_ins (origins, headers and owners; never a value).
--- Both broker reads share 5j-1's session checks and lock order (qorpera_coding_relay_session). The broker refuses a
--- private address when it connects (5j-6b); this database only refuses names that never resolve publicly. The
--- patched body names 20260930440000, for the deploy guard.
+-- Both broker reads share 5j-1's session checks and lock order (qorpera_coding_relay_session), with the session
+-- member's row taken at rank 1 (shared) so a demotion or a removal cannot commit while one serves; 5j-1's
+-- qorpera_authorize_coding_environment is patched to take it too. The broker refuses a private address when it connects
+-- (5j-6b); this database only refuses names that never resolve publicly. The patched bodies name 20260930440000, for
+-- the deploy guard.
 
 set local lock_timeout = '3s';
 
@@ -48,14 +50,14 @@ $patch$;
 -- 1. The origin, the header and the name -----------------------------------------------------------------------------
 
 -- An MCP server's origin, spelled one way: https, a lower-case DNS name of two labels or more whose last is not a
--- number (no address literal) nor a name kept for private networks, and a port only when it is not 443. No casts, so
--- a constant argument never fails at planning.
+-- number, decimal or hex (no address literal in any spelling a URL parser reads as one), nor a name kept for private
+-- networks, and a port only when it is not 443. No casts, so a constant argument never fails at planning.
 create function public.qorpera_coding_mcp_origin_valid(p_origin text)
 returns boolean language sql immutable set search_path = '' as $$
 	select coalesce(case when char_length(p_origin) <= 267
 		and p_origin ~ '^https://[a-z0-9.-]+(:[1-9][0-9]{0,4})?$' then
 		public.qorpera_company_account_host_valid(substring(p_origin from '^https://([a-z0-9.-]+)'))
-		and substring(p_origin from '\.([a-z0-9-]+)(:[0-9]+)?$') !~ '^[0-9]+$'
+		and substring(p_origin from '\.([a-z0-9-]+)(:[0-9]+)?$') !~ '^(0x[0-9a-f]*|[0-9]+)$'
 		and substring(p_origin from '\.([a-z0-9-]+)(:[0-9]+)?$') <> all (array[
 			'localhost', 'local', 'localdomain', 'internal', 'intranet', 'lan', 'home', 'corp', 'arpa', 'test', 'invalid',
 			'example'])
@@ -172,10 +174,38 @@ $new$);
 
 -- 3. The broker's reads ----------------------------------------------------------------------------------------------
 
+-- 5j-1's environment read checks the session member without a lock, after the session and before it waits for the
+-- secrets (rank 8), so a demotion or a removal (the member row FOR UPDATE at rank 1) could commit while it waits, and it
+-- would serve a member who may no longer write (review r1 of #1159). It now takes that row at rank 1 too, as the relay
+-- reads below do.
+select pg_temp.coding_mcp_patch(
+	'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'::regprocedure,
+	$old$	-- The company row first (rank 0): the audit rows' key needs it.
+	perform 1 from public.qorpera_profiles as profile where profile.id = (
+		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
+		where authority.id = p_broker_authority_id) for key share;
+$old$,
+	$new$	-- The company row first (rank 0): the audit rows' key needs it.
+	perform 1 from public.qorpera_profiles as profile where profile.id = (
+		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
+		where authority.id = p_broker_authority_id) for key share;
+	-- 20260930440000 (5j-6a): the session member's row at rank 1, shared, named by the worker (whose owner never
+	-- changes). A demotion or a removal takes it FOR UPDATE at rank 1, so one that committed first is read below, and none
+	-- commits while this serves.
+	perform 1 from public.qorpera_profile_members as member
+	join public.qorpera_runtime_workers as worker
+		on worker.profile_id = member.profile_id and worker.owner_user_id = member.user_id
+	where worker.id = p_worker_id and worker.profile_id = (
+		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
+		where authority.id = p_broker_authority_id)
+	for share of member;
+$new$);
+
 -- The coding session a relay read serves, checked and taken as qorpera_authorize_coding_environment takes it: the
--- company row's key share first (rank 0), the broker's authority, the session on a live lease of this executor in a
--- phase that runs commands, the worker and its executor, the agent's grant for the session's repository, and a member
--- who may still write. The callers check the broker's role and the request's shape first.
+-- company row's key share first (rank 0), the session member's row (rank 1), the broker's authority, the session on a
+-- live lease of this executor in a phase that runs commands, the worker and its executor, the agent's grant for the
+-- session's repository, and a member who may still write. The callers check the broker's role and the request's shape
+-- first.
 create function public.qorpera_coding_relay_session(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -193,6 +223,15 @@ begin
 	perform 1 from public.qorpera_profiles as profile where profile.id = (
 		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
 		where authority.id = p_broker_authority_id) for key share;
+	-- Rank 1: the session member's row, named by the worker (whose owner never changes), shared. A demotion or a removal
+	-- takes it FOR UPDATE at rank 1, so one that committed first is read below, and none commits while this serves.
+	perform 1 from public.qorpera_profile_members as member
+	join public.qorpera_runtime_workers as worker
+		on worker.profile_id = member.profile_id and worker.owner_user_id = member.user_id
+	where worker.id = p_worker_id and worker.profile_id = (
+		select authority.profile_id from public.qorpera_cloud_secret_broker_authorities as authority
+		where authority.id = p_broker_authority_id)
+	for share of member;
 	select authority.* into v_authority
 	from public.qorpera_cloud_secret_broker_authorities as authority
 	where authority.id = p_broker_authority_id for share;
