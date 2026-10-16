@@ -189,6 +189,16 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 	}
 });
 
+test("--cores runs changed's steps side by side and is only for changed", () => {
+	assert.equal(parseArgs(["changed"]).cores, null);
+	const options = parseArgs(["--front", "--cores", "6", "changed"]);
+	assert.deepEqual([options.cores, options.front, options.plain], [6, true, true]);
+	for (const value of ["0", "x", "1.5", "100", "-2"]) assert.throws(() => parseArgs(["--cores", value, "changed"]), /Invalid --cores/, value);
+	assert.throws(() => parseArgs(["--cores"]), /--cores needs a value/);
+	assert.throws(() => parseArgs(["--cores", "4", "test"]), /--cores is for changed/);
+	assert.throws(() => parseArgs(["--cores", "4", "--", "true"]), /--cores is for changed/);
+});
+
 test("a --front run waits ahead of every other run in the CPU lane, front runs among themselves by arrival", () => {
 	assert.equal(parseArgs(["changed"]).front, false);
 	assert.equal(parseArgs(["--front", "--tree", "pr-loop", "--no-status", "changed"]).front, true);

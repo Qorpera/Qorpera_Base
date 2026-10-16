@@ -82,13 +82,19 @@ function helper() {
 function fixture(options: { socket?: string } = {}) {
 	const c = core();
 	const h = helper();
-	const folders = new CompanyComputerDesktopFolders({ registry: { call: c.call }, ask: h.ask, ...options });
+	const logged: string[] = [];
+	const folders = new CompanyComputerDesktopFolders({
+		registry: { call: c.call },
+		ask: h.ask,
+		log: (line) => logged.push(line),
+		...options,
+	});
 	const hold = (
 		holder: typeof run | typeof member,
 		until = performance.now() + 5000,
 		signal = new AbortController().signal,
 	) => folders.hold(binding, holder, signal, until);
-	return { ...c, ...h, folders, hold };
+	return { ...c, ...h, folders, hold, logged };
 }
 
 function http(...responses: (Response | (() => Response))[]) {
@@ -503,5 +509,358 @@ describe("each desktop's mount of the company folder", () => {
 		await expect(f.folders.dropLeftovers(new AbortController().signal)).resolves.toBe(false);
 		f.answer("list", { answer: "failed" });
 		await expect(f.folders.dropLeftovers(new AbortController().signal)).resolves.toBe(false);
+	});
+});
+
+describe("a drain's and a capture's boundary", () => {
+	const report = { commitId: "commit-1", seq: 7, paths: [] };
+	const refusal = (refused: string) => ({
+		answer: "refused",
+		report: { commitId: null, seq: null, paths: [], refused },
+	});
+	const UNANSWERED = "the company folder did not answer before the screenshot's deadline; take it again";
+	const PAUSED = "the company is paused, so the company folder holds the screenshot back";
+	const RUN_ENDED = "this run can no longer act in the company folder";
+	const REFUSED = "the company folder refused the screen's view";
+	const RESTARTED = "the company folder was restarted on this screen; take the screenshot again";
+
+	async function mounted() {
+		const f = fixture();
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(run);
+		// Rule 4's way out stops the mount's desktop: what the helper had been asked by then.
+		const stopped: string[][] = [];
+		const stop = vi.fn(async () => {
+			stopped.push(f.ops());
+		});
+		return { ...f, stop, stopped };
+	}
+	const drain = (
+		f: ReturnType<typeof fixture>,
+		until = performance.now() + 19000,
+		signal = new AbortController().signal,
+	) => f.folders.drain(binding.screenId, signal, until);
+	const capture = (
+		f: Awaited<ReturnType<typeof mounted>>,
+		epoch: number | undefined = 1,
+		until = performance.now() + 15000,
+		signal = new AbortController().signal,
+		stop: () => Promise<void> = f.stop,
+	) => f.folders.capture(binding.screenId, epoch, signal, until, stop);
+	const failedStop = async (): Promise<void> => {
+		throw new Error("OFFICE_DESKTOP_STOP_FAILED");
+	};
+
+	it("publishes the mount's last changes at a drain, then the mount goes and its view closes", async () => {
+		const f = await mounted();
+		f.answer("unmount", {
+			answer: "saved",
+			report: {
+				...report,
+				paths: [
+					{ path: "docs/plan.md", outcome: "saved" },
+					{ path: "docs/old.md", outcome: "refused", reason: "a reason of the company's" },
+					{ path: "docs/new.md", outcome: "Not A Word" },
+				],
+			},
+			unmounted: true,
+		});
+		await drain(f);
+		expect(f.asked[1]).toMatchObject({ op: "unmount", name, final: false });
+		const { timeoutMs } = f.asked[1] as { timeoutMs: number };
+		expect(timeoutMs).toBeGreaterThan(17000);
+		expect(timeoutMs).toBeLessThanOrEqual(18000);
+		expect(f.options[1]).toEqual({ timeoutMs: expect.any(Number), signal: expect.any(AbortSignal) });
+		expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+		// The commit and how many paths had each outcome: no path, no reason.
+		expect(f.logged).toEqual([
+			`office-folder: drain ${name}: {"answer":"saved","unmounted":true,"refused":null,"commitId":"commit-1","seq":7,"outcomes":{"saved":1,"refused":1,"other":1}}`,
+		]);
+		f.answer("mount", { answer: "mounted" });
+		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
+	});
+
+	it("logs only the helper's words that are plain names", async () => {
+		const f = await mounted();
+		f.answer("unmount", {
+			answer: "refused",
+			report: {
+				commitId: "not a commit",
+				seq: 3,
+				paths: [{ path: "a", outcome: "refused", reason: "secret" }],
+				refused: "Something Else",
+			},
+			unmounted: true,
+		});
+		await drain(f);
+		expect(f.logged).toEqual([
+			`office-folder: drain ${name}: {"answer":"refused","unmounted":true,"refused":"other","commitId":"other","seq":3,"outcomes":{"refused":1}}`,
+		]);
+	});
+
+	it("asks again past no answer, an invalid one, one too late and the run check, until a final answer", async () => {
+		const f = await mounted();
+		f.answer(
+			"unmount",
+			undefined,
+			{ answer: "invalid" },
+			{ answer: "unanswered", unmounted: false },
+			{ ...refusal("run_ended"), unmounted: false },
+			{ answer: "closed", unmounted: true },
+		);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const drained = drain(f);
+		await vi.advanceTimersByTimeAsync(5000);
+		await drained;
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount", "unmount", "unmount"]);
+		expect(f.logged).toEqual([`office-folder: drain ${name}: {"answer":"closed","unmounted":true}`]);
+		expect(f.closed).toHaveLength(1);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+	});
+
+	it.each(["stopped", "denied", "unreadable", "unproven", "invalid"])(
+		"takes a boundary refused %s as final: the mount it left goes without another one",
+		async (refused) => {
+			const f = await mounted();
+			f.answer("unmount", { ...refusal(refused), unmounted: false });
+			f.answer("drop", { answer: "failed" }, { answer: "dropped" });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			const drained = drain(f);
+			await vi.advanceTimersByTimeAsync(1000);
+			await drained;
+			expect(f.ops()).toEqual(["mount", "unmount", "drop", "drop"]);
+			expect(f.asked[2]).toEqual({ op: "drop", name });
+			expect(f.logged).toEqual([
+				`office-folder: drain ${name}: {"answer":"refused","unmounted":false,"refused":"${refused}","commitId":null,"seq":null,"outcomes":{}}`,
+			]);
+			expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
+			expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+		},
+	);
+
+	it("takes a mount the helper no longer knows of as gone", async () => {
+		const f = await mounted();
+		f.answer("unmount", { answer: "unknown" });
+		await drain(f);
+		expect(f.ops()).toEqual(["mount", "unmount"]);
+		expect(f.logged).toEqual([`office-folder: drain ${name}: {"answer":"unknown"}`]);
+		expect(f.closed).toHaveLength(1);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+	});
+
+	it("fails the drain at its deadline, and the mount stays for the stop control", async () => {
+		const f = await mounted();
+		await expect(drain(f, performance.now() + 1500)).rejects.toThrow("OFFICE_FOLDER_DRAIN_UNANSWERED");
+		expect(f.ops()).toEqual(["mount"]);
+		expect(f.logged).toEqual([`office-folder: drain ${name}: no final answer by the drain's deadline`]);
+		// A final answer whose mount would not go: dropped again until the deadline, one real second here.
+		f.answer("unmount", { ...refusal("stopped"), unmounted: false });
+		f.answer("drop", { answer: "failed" });
+		await expect(drain(f, performance.now() + 2700)).rejects.toThrow("OFFICE_FOLDER_DRAIN_UNANSWERED");
+		expect(f.ops()).toEqual(["mount", "unmount", "drop"]);
+		expect(f.logged).toHaveLength(3);
+		expect(f.logged[2]).toBe(`office-folder: drain ${name}: the mount did not go by the drain's deadline`);
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
+		expect(f.closed).toEqual([]);
+	});
+
+	it("does nothing for a screen the office never mounted, an ended mount, or one a new desktop took meanwhile", async () => {
+		const f = await mounted();
+		await expect(
+			f.folders.drain(computerId(50), new AbortController().signal, performance.now() + 19000),
+		).resolves.toBeUndefined();
+		await expect(
+			f.folders.drain(binding.screenId, new AbortController().signal, performance.now() + 19000, () => false),
+		).resolves.toBeUndefined();
+		expect(f.ops()).toEqual(["mount"]);
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
+		f.answer("unmount", { answer: "saved", report, unmounted: true });
+		await f.folders.release(binding.screenId);
+		await drain(f);
+		expect(f.ops()).toEqual(["mount", "unmount"]);
+		expect(f.logged).toEqual([]);
+	});
+
+	it("stops a drain with its caller", async () => {
+		const f = await mounted();
+		f.answer("unmount", { answer: "unanswered", unmounted: false });
+		const stop = new AbortController();
+		const drained = drain(f, performance.now() + 19000, stop.signal);
+		await vi.waitFor(() => expect(f.ops()).toEqual(["mount", "unmount"]));
+		stop.abort(new Error("stopped"));
+		await expect(drained).rejects.toThrow("stopped");
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
+	});
+
+	it("asks nothing before a capture of a desktop without `/company`, and lets one go once its reads are released", async () => {
+		const f = await mounted();
+		// Not through `capture`: an explicit undefined would take its default epoch.
+		await expect(
+			f.folders.capture(
+				binding.screenId,
+				undefined,
+				new AbortController().signal,
+				performance.now() + 15000,
+				f.stop,
+			),
+		).resolves.toBeUndefined();
+		expect(f.ops()).toEqual(["mount"]);
+		f.answer(
+			"boundary",
+			{ answer: "saved", report },
+			// Refused only for some paths (a refused or conflicting save): the reads were released.
+			{ answer: "refused", report: { ...report, paths: [{ path: "a", outcome: "conflict" }] } },
+		);
+		await expect(capture(f)).resolves.toBeUndefined();
+		await expect(capture(f)).resolves.toBeUndefined();
+		expect(f.asked[1]).toMatchObject({ op: "boundary", name, final: false });
+		const { timeoutMs } = f.asked[1] as { timeoutMs: number };
+		expect(timeoutMs).toBeGreaterThan(13000);
+		expect(timeoutMs).toBeLessThanOrEqual(14000);
+		expect(f.options[1]).toEqual({ timeoutMs: timeoutMs + 1000, signal: expect.any(AbortSignal) });
+		expect(f.closed).toEqual([]);
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
+		expect(f.stop).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["the pause", refusal("stopped"), PAUSED],
+		["the run check", refusal("run_ended"), RUN_ENDED],
+		["a superseded view, or another denial", refusal("denied"), REFUSED],
+		["an invalid request", refusal("invalid"), REFUSED],
+		["no answer from the core (QRC01 included)", { answer: "unanswered" }, UNANSWERED],
+		["an invalid answer", { answer: "invalid" }, UNANSWERED],
+		["no helper", undefined, UNANSWERED],
+	])("holds a capture back after %s, and stops nothing", async (_case, answer, message) => {
+		const f = await mounted();
+		f.answer("boundary", answer);
+		await expect(capture(f)).resolves.toBe(message);
+		expect(f.ops()).toEqual(["mount", "boundary"]);
+		expect(f.stop).not.toHaveBeenCalled();
+		expect(f.closed).toEqual([]);
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
+	});
+
+	it.each([
+		["a closed view", { answer: "closed" }],
+		["a read no longer readable", refusal("unreadable")],
+		["a read log that cannot be shown complete", refusal("unproven")],
+	])("takes rule 4's way out after %s: the desktop stops, then the mount goes", async (_case, answer) => {
+		const f = await mounted();
+		f.answer("boundary", answer);
+		f.answer("drop", { answer: "dropped" });
+		await expect(capture(f)).resolves.toBe(RESTARTED);
+		// The mount's desktop stopped after the boundary and before the drop.
+		expect(f.stopped).toEqual([["mount", "boundary"]]);
+		expect(f.asked.slice(1)).toEqual([
+			{ op: "boundary", name, final: false, timeoutMs: expect.any(Number) },
+			{ op: "drop", name },
+		]);
+		expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+		// The old desktop's captures are held back until it starts again on the new mount.
+		await expect(capture(f)).resolves.toBe(RESTARTED);
+		f.answer("mount", { answer: "mounted" });
+		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
+		expect(f.asked.at(-1)).toEqual({ op: "mount", name, view: f.view(2) });
+		await expect(capture(f, 1)).resolves.toBe(RESTARTED);
+		f.answer("boundary", { answer: "saved", report });
+		await expect(capture(f, 2)).resolves.toBeUndefined();
+		expect(f.ops()).toEqual(["mount", "boundary", "drop", "mount", "boundary"]);
+		expect(f.stop).toHaveBeenCalledTimes(1);
+	});
+
+	it("holds the capture back when the way out's drop fails, and the screen's next hold drops the mount first", async () => {
+		const f = await mounted();
+		f.answer("boundary", refusal("unreadable"));
+		f.answer("drop", { answer: "failed" }, { answer: "failed" }, { answer: "unknown" });
+		await expect(capture(f)).resolves.toBe(REFUSED);
+		expect(f.stopped).toEqual([["mount", "boundary"]]);
+		// No desktop starts on it again, and the stopped desktop's captures are held back.
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+		await expect(capture(f)).resolves.toBe(RESTARTED);
+		expect(f.closed).toEqual([]);
+		// While the helper keeps it, nobody holds it.
+		await expect(f.hold(run)).resolves.toEqual(unavailable);
+		f.answer("mount", { answer: "mounted" });
+		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
+		expect(f.ops()).toEqual(["mount", "boundary", "drop", "drop", "drop", "mount"]);
+		expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
+		expect(f.asked.at(-1)).toEqual({ op: "mount", name, view: f.view(2) });
+		expect(f.stop).toHaveBeenCalledTimes(1);
+	});
+
+	it("holds the capture back when the way out's stop fails, and the mount goes once its desktop has stopped", async () => {
+		const f = await mounted();
+		f.answer("boundary", refusal("unproven"));
+		await expect(capture(f, 1, undefined, undefined, failedStop)).resolves.toBe(REFUSED);
+		// Nothing dropped while its desktop may still run, and nobody holds it.
+		expect(f.ops()).toEqual(["mount", "boundary"]);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+		await expect(capture(f)).resolves.toBe(RESTARTED);
+		await expect(f.hold(run)).resolves.toEqual(unavailable);
+		expect(f.ops()).toEqual(["mount", "boundary"]);
+		expect(f.closed).toEqual([]);
+		// The screen's drain stopped its desktop: the mount goes without a boundary.
+		f.answer("drop", { answer: "dropped" });
+		await f.folders.release(binding.screenId);
+		expect(f.ops()).toEqual(["mount", "boundary", "drop"]);
+		expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
+		f.answer("mount", { answer: "mounted" });
+		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 2 });
+	});
+
+	it("lets the screen's drain end a mount the way out began on", async () => {
+		const f = await mounted();
+		f.answer("boundary", refusal("unreadable"));
+		await expect(capture(f, 1, undefined, undefined, failedStop)).resolves.toBe(REFUSED);
+		f.answer("unmount", { ...refusal("unreadable"), unmounted: false });
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		expect(f.ops()).toEqual(["mount", "boundary", "unmount", "drop"]);
+		expect(f.closed).toHaveLength(1);
+		f.answer("mount", { answer: "mounted" });
+		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
+	});
+
+	it("takes a mount the helper no longer knows of as gone at a capture", async () => {
+		const f = await mounted();
+		f.answer("boundary", { answer: "unknown" });
+		await expect(capture(f)).resolves.toBe(RESTARTED);
+		expect(f.ops()).toEqual(["mount", "boundary"]);
+		expect(f.closed).toHaveLength(1);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+		// A screen the office has no record of: its desktop did not start on a mount this service made.
+		await expect(
+			f.folders.capture(computerId(50), 1, new AbortController().signal, performance.now() + 15000, f.stop),
+		).resolves.toBe(RESTARTED);
+		expect(f.stop).not.toHaveBeenCalled();
+	});
+
+	it("holds a capture back at its deadline, and the boundary goes on for the screen's next request", async () => {
+		const f = await mounted();
+		// Too little time left to ask.
+		await expect(capture(f, 1, performance.now() + 1500)).resolves.toBe(UNANSWERED);
+		expect(f.ops()).toEqual(["mount"]);
+		const boundary = computerDeferred<unknown>();
+		f.answer("boundary", () => boundary.promise, { answer: "saved", report });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const late = capture(f, 1, performance.now() + 2500);
+		await vi.advanceTimersByTimeAsync(2500);
+		await expect(late).resolves.toBe(UNANSWERED);
+		const next = capture(f);
+		boundary.resolve({ answer: "saved", report });
+		await expect(next).resolves.toBeUndefined();
+		expect(f.ops()).toEqual(["mount", "boundary", "boundary"]);
+	});
+
+	it("stops a capture with its caller", async () => {
+		const f = await mounted();
+		const stop = new AbortController();
+		stop.abort(new Error("stopped"));
+		await expect(capture(f, 1, performance.now() + 15000, stop.signal)).rejects.toThrow("stopped");
+		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
 	});
 });
