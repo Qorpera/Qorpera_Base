@@ -13,6 +13,7 @@ import {
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
+	codeAreaPath,
 	collectCodeGarbage,
 	exportCodeBranch,
 	inspectCodeArea,
@@ -363,6 +364,38 @@ describe("code host worktrees", () => {
 
 		await writeFile(join(tree, ".git"), "gitdir: /elsewhere\n");
 		await expect(addCodeWorktree(c.job, input)).rejects.toMatchObject({ code: "CODE_HOST_WORKTREE_CHANGED" });
+	});
+
+	it("gives every spelling of a repository the one lower-case code area", async () => {
+		const f = await fixture(),
+			c = await f.company(),
+			spelled = { ...f.repository, owner: "Qorpera", name: "Example.Web_1" },
+			lower = { ...f.repository, name: "example.web_1" };
+		expect(codeAreaPath(spelled)).toBe("code/qorpera/example.web_1");
+		expect(codeAreaPath(f.repository)).toBe("code/qorpera/example");
+		expect(() => codeAreaPath({ ...f.repository, owner: "-qorpera" })).toThrow();
+		const code = join(c.companyRoot, "code/qorpera/example.web_1"),
+			bundle = await f.bundle("refs/heads/main");
+		expect(await seedCodeArea(c.job, { repository: spelled, baseSha: f.baseSha, bundle })).toMatchObject({
+			state: "seeded",
+		});
+		expect(await readdir(join(c.companyRoot, "code"))).toEqual(["qorpera"]);
+		expect(await readdir(join(c.companyRoot, "code/qorpera"))).toEqual(["example.web_1"]);
+		expect(await inspectCodeArea(c.job, { repository: lower, commit: f.baseSha })).toMatchObject({
+			base: f.baseSha,
+			ready: true,
+			holds: true,
+		});
+		const workerId = randomUUID();
+		expect(await addCodeWorktree(c.job, { repository: lower, workerId, baseSha: f.baseSha })).toMatchObject({
+			state: "added",
+		});
+		expect(
+			await addCodeWorktree(c.job, { repository: { ...spelled, owner: "QORPERA" }, workerId, baseSha: f.baseSha }),
+		).toMatchObject({ state: "present" });
+		expect(await readFile(join(code, "worktrees", workerId, ".git"), "utf8")).toBe(
+			`gitdir: ${code}/repo.git/worktrees/${workerId}\n`,
+		);
 	});
 
 	it("refuses a worktree before the first seed", async () => {

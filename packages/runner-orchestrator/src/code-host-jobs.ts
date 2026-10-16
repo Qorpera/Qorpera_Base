@@ -180,6 +180,14 @@ function repositoryOf(value: unknown): CloudCodingRepository {
 		throw new CodeHostRefusal("CODE_HOST_BASE_IS_A_WORKER_BRANCH", [base]);
 	return repository;
 }
+/** The code area's folder path, `code/<owner>/<name>`, lower-case: GitHub ignores case in both, the folder keeps one
+ * entry per case-folded name and a guest's lookup is exact, so every spelling of a repository must reach the same
+ * path (as 5b's machine key, `lower(owner/name)`). Both are ASCII, where this is the folder's key. GitHub and the
+ * credential's claim keep the repository as claimed. */
+export function codeAreaPath(repository: CloudCodingRepository): string {
+	const { owner, name } = parseCloudCodingRepository(repository);
+	return `code/${owner.toLowerCase()}/${name.toLowerCase()}`;
+}
 function tail(text: string): string {
 	return text.length > 2000 ? text.slice(-2000) : text;
 }
@@ -204,7 +212,7 @@ class Run {
 		this.layout = layout;
 		this.repository = repository;
 		this.directory = directory;
-		this.area = `code/${repository.owner}/${repository.name}`;
+		this.area = codeAreaPath(repository);
 		this.code = `${layout.companyRoot}/${this.area}`;
 		this.repo = `${this.code}/repo.git`;
 		this.main = `${this.code}/main`;
@@ -333,7 +341,7 @@ class Run {
 			admin = workerId ? `${this.repo}/worktrees/${workerId}` : undefined;
 		const directories = [
 			`${this.layout.companyRoot}/code`,
-			`${this.layout.companyRoot}/code/${this.repository.owner}`,
+			posix.dirname(this.code),
 			this.code,
 			this.repo,
 			`${this.repo}/objects`,
@@ -848,7 +856,7 @@ export async function exportCodeBranch(
 /** The core's gc lease block for one code area, through the job's code_host view (5b):
  * `qorpera_folder_git_gc_begin`, polled until no lease is held, and `qorpera_folder_git_gc_end`. */
 export interface CodeHostGcBlock {
-	/** `repository` is the code area's folder path, `code/<owner>/<name>`. */
+	/** `repository` is the code area's folder path, `codeAreaPath`'s `code/<owner>/<name>`. */
 	begin(repository: string, signal: AbortSignal): Promise<{ state: "blocking"; held: number } | { state: "busy" }>;
 	end(repository: string, signal: AbortSignal): Promise<void>;
 }

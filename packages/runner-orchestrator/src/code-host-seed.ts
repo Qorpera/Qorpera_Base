@@ -10,6 +10,7 @@ import {
 	CodeHostRefusal,
 	type CodeWorktree,
 	type CodeWorktreeAdded,
+	codeAreaPath,
 	inspectCodeArea,
 	seedCodeArea,
 } from "./code-host-jobs.ts";
@@ -232,9 +233,7 @@ export async function attachCodeSession(
 				);
 	const added = await addCodeWorktree(job, { repository, workerId, baseSha });
 	if (!added.headSha)
-		throw new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", [
-			`code/${repository.owner}/${repository.name}/worktrees/${workerId}`,
-		]);
+		throw new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", [`${codeAreaPath(repository)}/worktrees/${workerId}`]);
 	return {
 		seeded: seeded?.state ?? null,
 		state: added.state,
