@@ -44,6 +44,8 @@ export interface TranscriptMessage {
 	staffSpeaker?: HostedStaffSpeaker;
 	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
 	held?: boolean;
+	/** A message, question, answer or authorization a member erased (20260930441000): its body gone, its place kept. */
+	erased?: true;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -319,6 +321,35 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 	return undefined;
 }
 
+/** An event a member erased (20260930441000): the cloud replaces its body with exactly `{"erased": true}`. */
+export function isErased(body: JsonValue): boolean {
+	const record = asRecord(body);
+	return record?.erased === true && Object.keys(record).length === 1;
+}
+
+/** An erased event keeps its place, its author and the run that wrote it. A member's input, answer or decision stands
+ * as theirs; anything else as the agent's. */
+function erasedMessage(event: HostedSessionEvent): TranscriptMessage {
+	const base = {
+		id: event.eventId,
+		sequence: event.sequence,
+		text: "",
+		attachmentCount: 0,
+		erased: true as const,
+		createdAt: event.createdAt,
+	};
+	const { eventType } = event;
+	if (event.sessionInputId || eventType === "interaction_answer" || eventType === "authorization_decision")
+		return { kind: "member", ...base, authorUserId: event.actorUserId };
+	const runId = event.execution?.kind === "run" ? event.execution.id : undefined;
+	return {
+		kind: "agent",
+		...base,
+		...(runId ? { runId } : {}),
+		...(runId && event.staffSpeaker?.runId === runId ? { staffSpeaker: event.staffSpeaker } : {}),
+	};
+}
+
 export function projectTranscript(
 	events: readonly HostedSessionEvent[],
 	pending: readonly PendingSessionInput[] = [],
@@ -335,6 +366,10 @@ export function projectTranscript(
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
 		if (event.sessionInputId) inputIds.add(event.sessionInputId);
+		if (isErased(event.body)) {
+			items.push(erasedMessage(event));
+			continue;
+		}
 		if (event.eventType === "authorization_request" || event.eventType === "authorization_decision") {
 			const card: TranscriptCard = {
 				kind: event.eventType,
