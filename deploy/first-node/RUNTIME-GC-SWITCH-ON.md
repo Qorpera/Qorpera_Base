@@ -34,8 +34,6 @@ the worker on"), RUNTIME-COMPANY-FOLDER-C1D.md §9 (folder GC).
 | D5a | open entries of `qorpera_company_storage_deletions`: purged companies' credential capsules and identity recovery prefixes | 100 entries | `qorpera-native-compute-capsules/<capsule>.capsule`; every `qorpera-identity-recovery/<company>/<sha256>` (in rounds). Any other name under a recorded prefix stops that prefix: the entry keeps failing until an operator looks |
 | Folder | folder-v2 objects unreferenced for 24 hours | 25 objects | nothing while the switch is off (part 2) |
 | Authorizations | deletions a crashed run had authorized | 100 | finishes them (Storage, or the gateway for NAS-backed objects) |
-| Artifact plans | owners' snapshot-v1 cleanup plans | 5 plans | none exist after the wipe |
-| Company GC | unreferenced objects of snapshot-v1 companies | 100 objects | none: it skips every folder-v2 company, and no snapshot-v1 company is left |
 | Deleted-profile | catalog rows whose company no longer exists | one company, 100 rows | the Storage replica through the Storage API, NAS bytes through the gateway (`DELETE /v1/profile-objects/<company>/<sha256>`), then the catalog row |
 
 **What it never removes:**
@@ -115,9 +113,9 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
    - `POST` with no key, or a wrong one, answers 401;
    - (a function deployed before its key secret answers every call 503 "not configured", which is safe too).
 6. **The first run, by hand:** one `POST` with the key in the `apikey` header, body `{}`. The answer has counts only:
-   `companyStorage` (D5a), `folderObjects` (`enabled: false` until part 2), the artifact counts (0),
-   `companyObjects` (0) and `deletedProfileObjects` (up to 100 for one purged company). Then run dry-run statements 1,
-   3 and 5: the `REMOVED` counts fall by what the answer says, and statement 5 has not gone down.
+   `companyStorage` (D5a), `folderObjects` (`enabled: false` until part 2) and `deletedProfileObjects` (up to 100 for
+   one purged company). Then run dry-run statements 1, 3 and 5: the `REMOVED` counts fall by what the answer says, and
+   statement 5 has not gone down.
 7. **Catch up:** call it by hand a few more times, a minute apart, or schedule it at once:
    - check the Vault names (names only): `select name from vault.secrets where name in ('qorpera_project_url',
      'qorpera_artifact_gc_worker_key');`. `qorpera_project_url` may exist already (other schedules use it); if not,

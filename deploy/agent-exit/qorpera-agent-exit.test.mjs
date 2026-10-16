@@ -367,36 +367,50 @@ describe("the connection logger", () => {
 		]);
 	});
 
-	test("the refused-flow sets become one key per element, with or without timeouts, any protocol as text", () => {
-		const set = JSON.stringify({
-			nftables: [
-				{ metainfo: { version: "1.1.6" } },
-				{
-					set: {
-						family: "inet",
-						name: "refused_flows",
-						table: "qorpera_agent_exit",
-						elem: [
-							{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", "tcp", 2049] }, timeout: 3600, expires: 3590 } },
-							{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 25] },
-							{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", 253] }, timeout: 3600, expires: 3500 } },
-						],
-					},
-				},
+	test("the refused-flow sets become one key per element, with the mark it was refused with, any protocol as text", () => {
+		const set = (name, elem) => ({ set: { family: "inet", name, table: "qorpera_agent_exit", elem } });
+		const flows = (elem) => JSON.stringify({ nftables: [{ metainfo: { version: "1.1.6" } }, set("refused_flows", elem)] });
+		const other = (elem) => JSON.stringify({ nftables: [{ metainfo: { version: "1.1.6" } }, set("refused_other", elem)] });
+		assert.deepEqual(
+			run(
+				"--parse-set",
+				flows([
+					{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", "tcp", 2049, 0] }, timeout: 3600, expires: 3590 } },
+					{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 443, 2147483652] },
+					{ concat: ["10.210.0.11", "1.1.1.1", "udp", 443, "0x80000003"] },
+					// A set from before E8c kept no mark.
+					{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 25] },
+				]),
+			),
+			[
+				[["10.210.0.10", "192.168.1.40", "tcp", 2049, 0], 3590],
+				[["10.210.0.11", "1.1.1.1", "tcp", 443, 0x80000004], null],
+				[["10.210.0.11", "1.1.1.1", "udp", 443, 0x80000003], null],
+				[["10.210.0.11", "1.1.1.1", "tcp", 25, 0], null],
 			],
-		});
-		assert.deepEqual(run("--parse-set", set), [
-			[["10.210.0.10", "192.168.1.40", "tcp", 2049], 3590],
-			[["10.210.0.11", "1.1.1.1", "tcp", 25], null],
-			[["10.210.0.10", "192.168.1.40", "253"], 3500],
-		]);
+		);
+		assert.deepEqual(
+			run(
+				"--parse-set",
+				other([
+					{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", 253, 0] }, timeout: 3600, expires: 3500 } },
+					{ concat: ["10.210.0.11", "1.1.1.1", "icmp", 2147483652] },
+					{ concat: ["10.210.0.11", "1.1.1.1", "icmp"] },
+				]),
+			),
+			[
+				[["10.210.0.10", "192.168.1.40", "253", null, 0], 3500],
+				[["10.210.0.11", "1.1.1.1", "icmp", null, 0x80000004], null],
+				[["10.210.0.11", "1.1.1.1", "icmp", null, 0], null],
+			],
+		);
 	});
 
 	test("a refused flow is logged when new or added again, with the rule that refused it", () => {
-		const nas = ["10.210.0.10", "192.168.1.40", "tcp", 2049];
-		const mail = ["10.210.0.10", "1.1.1.1", "tcp", 25];
-		const other = ["10.210.0.10", "192.168.1.40", "253"];
-		const busy = ["10.210.0.11", "8.8.4.4", "tcp", 443];
+		const nas = ["10.210.0.10", "192.168.1.40", "tcp", 2049, 0];
+		const mail = ["10.210.0.10", "1.1.1.1", "tcp", 25, 0];
+		const other = ["10.210.0.10", "192.168.1.40", "253", null, 0];
+		const busy = ["10.210.0.11", "8.8.4.4", "tcp", 443, 0];
 		const diff = run(
 			"--diff-sets",
 			JSON.stringify({
@@ -417,6 +431,41 @@ describe("the connection logger", () => {
 			[other, "our_networks"],
 			[busy, "open_limit"],
 		]);
+	});
+
+	// The logger reads no rules: a refusal is logged with the rule its mark says, also when the rules changed between the
+	// refusal and the logger's read (the machine's company known since, or the address listed since).
+	test("with E8c, a refusal says the rule it was refused by from its mark: rules not known, not listed", () => {
+		const unknown = 0x80000003;
+		const notListed = 0x80000004;
+		const keys = [
+			["10.210.1.1", "8.8.4.4", "tcp", 443, 0],
+			["10.210.1.9", "8.8.4.4", "tcp", 443, unknown],
+			["10.210.1.9", "8.8.4.4", "1", null, unknown],
+			["10.210.1.2", "203.0.113.6", "tcp", 443, notListed],
+			["10.210.1.2", "203.0.113.6", "tcp", 443, unknown],
+			["10.210.1.2", "203.0.113.5", "udp", 443, notListed],
+			["10.210.1.2", "203.0.113.5", "1", null, notListed],
+			["10.210.1.2", "203.0.113.5", "tcp", 25, 0],
+			["10.210.1.2", "192.168.1.40", "tcp", 443, 0],
+		];
+		const diff = run("--diff-sets", JSON.stringify({ previous: [], current: keys.map((key) => [key, 3600]) }));
+		const rules = new Map(diff.map(([key, rule]) => [JSON.stringify(key), rule]));
+		assert.deepEqual(
+			keys.map((key) => rules.get(JSON.stringify(key))),
+			// The same flow refused by two rules is two refusals.
+			[
+				"open_limit",
+				"rules_unknown",
+				"rules_unknown",
+				"not_listed",
+				"rules_unknown",
+				"not_listed",
+				"not_listed",
+				"mail",
+				"our_networks",
+			],
+		);
 	});
 });
 
@@ -1087,9 +1136,10 @@ for d in ("seen", "verified", "rules"):
     os.makedirs(os.path.join(state, d), exist_ok=True)
 os.makedirs(run, exist_ok=True)
 rules_path, status_path = os.path.join(state, "rules", "rules.json"), os.path.join(root, "rules-status.json")
-args = types.SimpleNamespace(state_dir=state, run_dir=run, rules=rules_path, rules_status=status_path, netns="qexit")
+args = types.SimpleNamespace(state_dir=state, run_dir=run, rules=rules_path, rules_status=status_path, netns="qexit",
+                             upstreams="9.9.9.9 1.1.1.1#5353")
 world = {"units": {}, "listening": set(), "map": {}, "set": set(), "table": 1, "calls": [], "flushed": [], "wrote": 0,
-         "fail": set()}
+         "fail": set(), "reach": {}, "only": set(), "cut": []}
 reader = {"ok": True, "problem": None, "lag": 0}
 
 def answer(code=0, stdout="", stderr=""):
@@ -1120,24 +1170,49 @@ def fake_run(command, input=None, capture_output=True, text=True):
         return answer(stdout="".join(f"{kind} {how} 0 0 10.210.0.1:{port} 0.0.0.0:*\n" for port in sorted(world["listening"])
                                      for kind, how in (("udp", "UNCONN"), ("tcp", "LISTEN"))))
     if command[:3] == ["nft", "-j", "list"]:
+        if "list" in world["fail"]:
+            return answer(1, stderr="Error: No such file or directory")
         if command[3] == "tables":
             return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"table": {
                 "family": "inet", "name": "qorpera_agent_exit", "handle": world["table"]}}]}))
+        if command[3] == "chains":
+            return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, *({"chain": {
+                "family": "inet", "table": "qorpera_agent_exit", "name": name}} for name in
+                ["agent_out", "open", *(f"only_{p}" for p in sorted(world["only"]))])]}))
+        if command[3] == "map" and command[6] == "reach":
+            return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"map": {"name": "reach", "elem": [
+                [a, {"goto": {"target": c}}] for a, c in world["reach"].items()]}}]}))
         if command[3] == "map":
             return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"map": {"name": "dns_port", "elem": [
                 [a, p] for a, p in world["map"].items()]}}]}))
         return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"set": {"name": "dns_allowed", "elem": [
             {"concat": [a, p]} for a, p in world["set"]]}}]}))
+    if command[:3] == ["nft", "flush", "set"]:
+        world["calls"].append(f"empty {command[5]}")
+        return answer()
     if command[:2] == ["nft", "-f"]:
-        world["wrote"] += 1
+        if "nft -f" in world["fail"]:
+            return answer(1, stderr="Error: Could not process rule: No such file or directory")
+        world["wrote"] += any(" reach" in line or " dns_" in line for line in input.splitlines())
         for line in input.splitlines():
-            if line.startswith("flush map"):
+            port = line.split(" only_")[1].split(" ")[0] if " only_" in line else None
+            if line.startswith("add chain"):
+                world["only"].add(int(port))
+            elif line.startswith("delete chain"):
+                world["only"].discard(int(port))
+            elif line.startswith(("add set", "flush chain", "add rule", "destroy set")):
+                continue
+            elif line.startswith("flush map") and line.endswith(" reach"):
+                world["reach"] = {}
+            elif line.startswith("flush map"):
                 world["map"] = {}
             elif line.startswith("flush set"):
                 world["set"] = set()
             else:
                 pairs = line.split("{ ")[1].removesuffix(" }").split(", ")
-                if " dns_port " in line:
+                if " reach " in line:
+                    world["reach"].update(pair.split(" : goto ") for pair in pairs)
+                elif " dns_port " in line:
                     world["map"].update({a: int(p) for a, p in (pair.split(" : ") for pair in pairs)})
                 else:
                     world["set"].update((a, int(p)) for a, p in (pair.split(" . ") for pair in pairs))
@@ -1145,7 +1220,9 @@ def fake_run(command, input=None, capture_output=True, text=True):
     if command[0] == "conntrack":
         if "conntrack" in world["fail"]:
             return answer(1, stderr="conntrack v1.4.8 (conntrack-tools): Operation failed: Device or resource busy")
-        if command[3] not in world["flushed"]:
+        if len(command) == 4:
+            world["cut"].append(command[3])
+        elif command[3] not in world["flushed"]:
             world["flushed"].append(command[3])
         return answer(1, stderr="conntrack v1.4.8 (conntrack-tools): 0 flow entries have been deleted.")
     raise AssertionError(command)
@@ -1171,9 +1248,10 @@ def ruled(mode="open", block=(), allow=()):
 def rules(**companies):
     plug.write_replace(rules_path, json.dumps({"schema": "qorpera.agent-exit-rules/v1", "companies": companies}), 0o600)
 
-def servers():
+def servers(kinds=(".servers", ".owed")):
     folder = os.path.join(run, "names")
-    return {name: open(os.path.join(folder, name)).read() for name in sorted(os.listdir(folder))} if os.path.isdir(folder) else {}
+    return {name: open(os.path.join(folder, name)).read() for name in sorted(os.listdir(folder))
+            if name.endswith(kinds)} if os.path.isdir(folder) else {}
 
 def ports():
     path = os.path.join(state, "names", "ports.json")
@@ -1191,13 +1269,15 @@ reconciler = [None]
 def step(label, advance=2):
     clock[0] += advance
     write_reader()
-    world["calls"], world["flushed"], world["wrote"] = [], [], 0
+    world["calls"], world["flushed"], world["wrote"], world["cut"] = [], [], 0, []
     reconciler[0] = reconciler[0] or names.Names(args)
     status = reconciler[0].pass_once()
     steps[label] = {"problems": status["problems"], "resolvers": status["resolvers"], "mapped": status["mapped"],
                     "map": dict(sorted(world["map"].items())), "allowed": sorted(map(list, world["set"])),
                     "calls": world["calls"], "flushed": world["flushed"], "wrote": world["wrote"], "servers": servers(),
-                    "ports": ports(), "written": json.load(open(os.path.join(run, "names.json")))["problems"]}
+                    "ports": ports(), "written": json.load(open(os.path.join(run, "names.json")))["problems"],
+                    "reach": dict(sorted(world["reach"].items())), "reached": status["reach"], "only": sorted(world["only"]),
+                    "cut": world["cut"], "modes": servers((".mode",))}
 `;
 	let dir;
 	before(() => {
@@ -1303,15 +1383,18 @@ step("unknown")
 step("long", 31)
 rules(c1=None, c9=None)
 step("known")
-for bad in ({"version": "v1", "mode": "open", "block": [], "allow": []},
+for n, bad in enumerate(({"version": "v1", "mode": "open", "block": [], "allow": []},
             dict(ruled(), mode="closed"), dict(ruled(), extra=1),
             ruled(block=["Upper.test"]), ruled(block=["10.0.0.1"]), ruled(block=["a..test"]), ruled(block=["*.*.test"]),
             ruled(block=["x" * 64 + ".test"]), ruled(block=["a.test", "a.test"]), ruled(block=["a.test"], allow=["a.test"]),
-            ruled(block=[f"n{i}.test" for i in range(1001)])):
+            ruled(block=[f"n{i}.test" for i in range(1001)]))):
     rules(c1=None, c9=bad)
     step("bad", 1)
-    assert steps["bad"]["problems"] == ["c9: its rules are not as the rules reader writes them; its machines get no DNS"], (bad, steps["bad"])
+    assert steps["bad"]["problems"] == ["c9: its rules are not as the rules reader writes them; its machines get no DNS and no way out"], (bad, steps["bad"])
     assert steps["bad"]["map"] == {"10.210.1.1": 53}, (bad, steps["bad"])
+    assert steps["bad"]["reach"] == {"10.210.1.1": "open"}, (bad, steps["bad"])
+    # Its element went the first time: the connections it made before are ended (the exit lets established ones go on).
+    assert steps["bad"]["cut"] == (["10.210.1.2"] if n == 0 else []), (bad, steps["bad"])
 rules(c1=None, c9=None)
 step("fixed")
 plug.write_replace(rules_path, "{", 0o600)
@@ -1321,10 +1404,13 @@ step("not_an_id")
 os.unlink(rules_path)
 step("removed")
 `);
-		assert.deepEqual([s.nofile.map, s.nofile.resolvers], [{}, {}]);
+		// The first table seen: every machine without a reach element has its connections ended (what a reconciler before
+		// this one owed is not known).
+		assert.deepEqual([s.nofile.map, s.nofile.resolvers, s.nofile.cut], [{}, {}, ["10.210.1.1", "10.210.1.2"]]);
+		assert.deepEqual([s.unknown.cut, s.known.cut], [[], []]);
 		assert.deepEqual(s.nofile.problems, ["no rules file yet: every machine's DNS is dropped until the rules reader writes it"]);
 		assert.deepEqual([s.unknown.map, s.unknown.problems], [{ "10.210.1.1": 53 }, []], "not listed yet: no DNS, and no problem at first");
-		assert.deepEqual(s.long.problems, ["c9: not in the rules file for 31s; its machines get no DNS"]);
+		assert.deepEqual(s.long.problems, ["c9: not in the rules file for 31s; its machines get no DNS and no way out"]);
 		assert.deepEqual([s.known.map, s.known.problems], [main, []]);
 		assert.deepEqual([s.bad.flushed, s.fixed.map], [[], main]);
 		// A file that cannot be used keeps the rules last read; a missing one drops every machine.
@@ -1333,6 +1419,7 @@ step("removed")
 		assert.deepEqual(s.garbled.map, main);
 		assert.deepEqual(s.not_an_id.problems, ["cannot use the rules file: a company that is not an id; the rules last read stay"]);
 		assert.deepEqual([s.removed.map, s.removed.allowed, s.removed.flushed], [{}, [], ["10.210.1.1", "10.210.1.2"]]);
+		assert.deepEqual([s.removed.reach, s.removed.cut], [{}, ["10.210.1.1", "10.210.1.2"]]);
 	});
 
 	test("the rules reader: silent for 30 s, or failing for 2 minutes, is a problem; its last rules stay meanwhile", () => {
@@ -1487,7 +1574,183 @@ step("again")
 		assert.deepEqual([s.again.wrote, s.again.flushed, s.again.problems], [0, ["10.210.1.1", "10.210.1.2"], []]);
 	});
 
-	test("elements: the map as the files say, for up; nothing without rules", () => {
+	test("only listed (E8c): a blocked name covers the names under it; the servers file answers every other name itself", () => {
+		const s = scenario(String.raw`
+steps["covers"] = [names.covers(b, n) for b, n in (("b.test", "b.test"), ("b.test", "x.b.test"), ("b.test", "*.b.test"),
+    ("*.b.test", "x.b.test"), ("*.b.test", "*.b.test"), ("*.b.test", "b.test"), ("b.test", "ab.test"), ("x.b.test", "b.test"))]
+up = ["9.9.9.9", "1.1.1.1#5353"]
+steps["open"] = names.servers_text({"mode": "open", "block": ["b.test"], "allow": ["a.test"]}, up)
+steps["only"] = names.servers_text({"mode": "only-listed", "block": ["b.test"],
+                                     "allow": ["a.test", "x.b.test", "*.b.test", "*.w.test"]}, up)
+steps["none"] = names.servers_text({"mode": "only-listed", "block": [], "allow": []}, up)
+both = "server=/#/\nserver=/a.test/9.9.9.9\nserver=/c.test/9.9.9.9\n"
+steps["narrower"] = [names.narrower(both, "server=/#/\nserver=/a.test/9.9.9.9\n"), names.narrower("server=/#/\nserver=/a.test/9.9.9.9\n", both),
+    names.narrower(both, both + "server=/x.a.test/\n"), names.narrower(both + "server=/x.a.test/\n", both)]
+`);
+		assert.deepEqual(s.covers, [true, true, true, true, true, false, false, false]);
+		assert.equal(s.open, "server=/b.test/\n", "open: the allow list does nothing");
+		// Every name "no such name" (server=/#/ with no address), each allowed name not blocked asked of each upstream,
+		// each blocked name answered here (a line for a name under it would win over it otherwise).
+		assert.equal(s.only, "server=/#/\nserver=/*.w.test/9.9.9.9\nserver=/*.w.test/1.1.1.1#5353\nserver=/a.test/9.9.9.9\n" +
+			"server=/a.test/1.1.1.1#5353\nserver=/b.test/\n");
+		assert.equal(s.none, "server=/#/\n");
+		assert.deepEqual(s.narrower, [true, false, true, false], "an allowed name gone or a name blocked: narrower");
+	});
+
+	test("only listed (E8c): the machines reach only the addresses their resolver gave out; a narrower list or a mode switch restarts it and ends their connections", () => {
+		const s = scenario(String.raw`
+machine("10.210.1.1", "c1")
+machine("10.210.1.2", "c2")
+rules(c1=ruled(block=["b.test"]), c2=None)
+world["listening"].add(10001)
+step("open")
+listed = dict(mode="only-listed", block=["b.test"])
+rules(c1=ruled(allow=["a.test", "c.test"], **listed), c2=None)
+step("switched")
+world["listening"].add(10001)
+step("answers")
+world["table"] += 1
+step("rebuilt")
+rules(c1=ruled(allow=["a.test", "c.test", "d.test"], **listed), c2=None)
+step("wider")
+rules(c1=ruled(allow=["a.test", "d.test"], **listed), c2=None)
+step("narrower")
+world["listening"].add(10001)
+world["fail"] = {"conntrack"}
+rules(c1=ruled(allow=["a.test"], **listed), c2=None)
+step("cut_fails")
+world["fail"] = set()
+reconciler[0] = None
+world["listening"].add(10001)
+step("cut_again")
+world["listening"].add(10001)
+world["fail"] = {"list"}
+rules(c1=ruled(allow=["a.test"], mode="only-listed", block=["b.test", "x.a.test"]), c2=None)
+step("unread")
+world["fail"] = set()
+world["listening"].add(10001)
+step("read_again")
+rules(c1=ruled(block=["b.test"]), c2=None)
+step("reopened")
+world["listening"].add(10001)
+rules(c1=ruled(block=["b.test"]), c2=ruled(mode="only-listed", allow=["a.test"]))
+step("new_only")
+unverify("10.210.1.2")
+step("unplugged")
+`);
+		const restart = (port) => [`stop ${port}`, `empty allow_${port}`, `reset-failed ${port}`, `start --no-block ${port}`];
+		assert.deepEqual([s.open.reach, s.open.only, s.open.modes], [{ "10.210.1.1": "open", "10.210.1.2": "open" }, [], { "10001.mode": "open\n" }]);
+		// The switch: the mode file says so (the resolver starts with --nftset), the resolver is stopped, its set emptied,
+		// started again; the machine goes to only_10001 and its connections are ended. It keeps its resolver meanwhile.
+		assert.deepEqual(s.switched.servers, {
+			"10001.servers": "server=/#/\nserver=/a.test/9.9.9.9\nserver=/a.test/1.1.1.1#5353\nserver=/c.test/9.9.9.9\nserver=/c.test/1.1.1.1#5353\nserver=/b.test/\n",
+		});
+		assert.deepEqual([s.switched.modes, s.switched.calls, s.switched.only], [{ "10001.mode": "only-listed\n" }, restart(10001), [10001]]);
+		assert.deepEqual([s.switched.reach, s.switched.reached, s.switched.cut], [
+			{ "10.210.1.1": "only_10001", "10.210.1.2": "open" },
+			{ "10.210.1.1": "only_10001", "10.210.1.2": "open" },
+			["10.210.1.1"],
+		]);
+		assert.deepEqual([s.switched.map, s.switched.wrote, s.switched.problems], [{ "10.210.1.1": 10001, "10.210.1.2": 53 }, 1, []]);
+		assert.deepEqual([s.answers.calls, s.answers.cut, s.answers.wrote], [[], [], 0]);
+		// A table up made again starts with its sets empty: the only-listed resolver is reloaded, so it asks again.
+		assert.deepEqual([s.rebuilt.calls, s.rebuilt.cut], [["reload 10001"], []]);
+		assert.deepEqual([s.wider.calls, s.wider.cut, s.wider.problems], [["reload 10001"], [], []], "a wider list only reloads");
+		assert.deepEqual([s.narrower.calls, s.narrower.cut, s.narrower.problems], [restart(10001), ["10.210.1.1"], []]);
+		// Stopped before the connections were ended: the marker stays, and the next reconciler does it all again.
+		assert.deepEqual([s.cut_fails.calls, s.cut_fails.cut], [restart(10001), []]);
+		assert.deepEqual(s.cut_fails.problems, ["the connections of the machines on port 10001 could not be ended yet"]);
+		assert.equal(s.cut_fails.servers["10001.owed"], "cut\n");
+		assert.deepEqual([s.cut_again.calls, s.cut_again.cut, s.cut_again.problems], [restart(10001), ["10.210.1.1"], []]);
+		assert.ok(!("10001.owed" in s.cut_again.servers));
+		// Narrower while the exit's table cannot be read: which sets there are is not known, so the restart stays owed (and
+		// the resolver goes on with its set) until it can be.
+		assert.deepEqual([s.unread.calls, s.unread.cut, s.unread.servers["10001.owed"]], [[], [], "cut\n"]);
+		assert.deepEqual(s.unread.problems, [
+			"cannot read the exit's chains: Error: No such file or directory",
+			"cannot read the exit's DNS map: Error: No such file or directory",
+		]);
+		assert.deepEqual([s.read_again.calls, s.read_again.cut, s.read_again.problems], [restart(10001), ["10.210.1.1"], []]);
+		// Back to open: restarted without --nftset, its set and chain removed once no element goes to it; nothing cut.
+		assert.deepEqual([s.reopened.calls, s.reopened.cut, s.reopened.only, s.reopened.modes], [restart(10001), [], [], { "10001.mode": "open\n" }]);
+		assert.deepEqual([s.reopened.reach, s.reopened.servers], [{ "10.210.1.1": "open", "10.210.1.2": "open" }, { "10001.servers": "server=/b.test/\n" }]);
+		// A company new to "only listed": its set made and emptied before its resolver first starts; its machine keeps
+		// the main dnsmasq until the resolver answers, but reaches only what that resolver gives out.
+		assert.deepEqual([s.new_only.calls, s.new_only.only, s.new_only.cut], [["empty allow_10002", "reset-failed 10002", "start --no-block 10002"], [10002], ["10.210.1.2"]]);
+		assert.deepEqual([s.new_only.reach, s.new_only.map], [{ "10.210.1.1": "open", "10.210.1.2": "only_10002" }, { "10.210.1.1": 10001, "10.210.1.2": 53 }]);
+		assert.deepEqual([s.unplugged.calls, s.unplugged.only, s.unplugged.reach], [["stop 10002", "reset-failed 10002"], [], { "10.210.1.1": "open" }]);
+		assert.deepEqual([Object.keys(s.unplugged.servers), s.unplugged.modes], [["10001.servers"], { "10001.mode": "open\n" }]);
+	});
+
+	test("only listed (E8c): a cut still owed never takes the marker of a newer restart; back to open, no cut is owed", () => {
+		const s = scenario(String.raw`
+machine("10.210.1.1", "c1")
+listed = dict(mode="only-listed", block=["b.test"])
+rules(c1=ruled(allow=["a.test", "c.test", "d.test"], **listed))
+step("listed")
+world["listening"].add(10001)
+world["fail"] = {"conntrack"}
+rules(c1=ruled(allow=["a.test", "c.test"], **listed))
+step("cut_fails")
+world["listening"].add(10001)
+world["fail"] = {"stop"}
+rules(c1=ruled(allow=["a.test"], **listed))
+step("stop_fails")
+world["fail"] = set()
+reconciler[0] = None
+world["listening"].add(10001)
+step("restarted")
+world["listening"].add(10001)
+world["fail"] = {"conntrack"}
+rules(c1=ruled(allow=["e.test"], **listed))
+step("cut_fails_again")
+world["fail"] = set()
+world["listening"].add(10001)
+rules(c1=ruled(block=["b.test"]))
+step("reopened")
+`);
+		const restart = (port) => [`stop ${port}`, `empty allow_${port}`, `reset-failed ${port}`, `start --no-block ${port}`];
+		assert.deepEqual([s.listed.cut, s.listed.servers["10001.owed"]], [["10.210.1.1"], undefined]);
+		assert.deepEqual([s.cut_fails.calls, s.cut_fails.cut, s.cut_fails.servers["10001.owed"]], [restart(10001), [], "cut\n"]);
+		// Narrower again, but the resolver cannot be stopped: the earlier cut waits for the newer restart (its set still
+		// holds the address the list took away), and the marker stays for the next reconciler.
+		assert.deepEqual([s.stop_fails.calls, s.stop_fails.cut, s.stop_fails.servers["10001.owed"]], [[], [], "cut\n"]);
+		assert.deepEqual(s.stop_fails.problems, ["cannot stop the resolver on port 10001: stop failed"]);
+		assert.deepEqual([s.restarted.calls, s.restarted.cut, s.restarted.problems], [restart(10001), ["10.210.1.1"], []]);
+		assert.ok(!("10001.owed" in s.restarted.servers));
+		assert.deepEqual([s.cut_fails_again.cut, s.cut_fails_again.servers["10001.owed"]], [[], "cut\n"]);
+		// Open now: the restart drops the cut still owed, as nothing is held back any more.
+		assert.deepEqual([s.reopened.calls, s.reopened.cut, s.reopened.problems], [restart(10001), [], []]);
+		assert.deepEqual([s.reopened.servers["10001.owed"], s.reopened.modes], [undefined, { "10001.mode": "open\n" }]);
+	});
+
+	test("only listed (E8c): a company not known yet, with rules not usable or with no chain yet is refused everything", () => {
+		const s = scenario(String.raw`
+machine("10.210.1.1", "c1")
+machine("10.210.1.2", "c2")
+machine("10.210.1.3", "c3")
+world["listening"].update({10001, 10002})
+rules(c1=ruled(mode="only-listed", allow=["a.test"]), c2=dict(ruled(), mode="closed"))
+step("mixed")
+world["fail"] = {"nft -f"}
+world["only"], world["reach"] = set(), {}
+world["table"] += 1
+step("no_chain")
+world["fail"] = set()
+step("chain_back")
+os.unlink(rules_path)
+step("no_rules")
+`);
+		assert.deepEqual(s.mixed.reach, { "10.210.1.1": "only_10001" }, "c2's rules are not usable, c3 is not known yet");
+		// A table up made again without its chain (say up failed half way), and the chain cannot be made: no element.
+		assert.ok(s.no_chain.problems.includes("cannot make the only-listed chains: Error: Could not process rule: No such file or directory"));
+		assert.deepEqual([s.no_chain.reach, s.no_chain.reached], [{}, {}]);
+		// Made at last: the element, and the resolver reloaded (its answers since the table was made filled no set).
+		assert.deepEqual([s.chain_back.reach, s.chain_back.only, s.chain_back.calls], [{ "10.210.1.1": "only_10001" }, [10001], ["reload 10001"]]);
+		assert.deepEqual([s.no_rules.reach, s.no_rules.map], [{}, {}]);
+	});
+
+	test("elements: the maps, sets and chains as the files say, for up; nothing without rules", () => {
 		const root = mkdtempSync(join(dir, "elements-"));
 		const setup = spawnSync(
 			"python3",
@@ -1498,8 +1761,9 @@ for address, company in (("10.210.1.2", "c2"), ("10.210.1.10", "c1"), ("10.210.1
     machine(address, company)
 machine("10.210.1.5", "c1", verified=False)
 os.makedirs(os.path.join(state, "names"))
-plug.write_replace(os.path.join(state, "names", "ports.json"), json.dumps({"c1": 10001}))
-rules(c1=ruled(block=["b.test"]), c2=None, c3=ruled())
+machine("10.210.1.6", "c4")
+plug.write_replace(os.path.join(state, "names", "ports.json"), json.dumps({"c1": 10001, "c4": 10004}))
+rules(c1=ruled(block=["b.test"]), c2=None, c3=ruled(), c4=ruled(mode="only-listed", allow=["a.test"]))
 `,
 				namesTool,
 				root,
@@ -1511,10 +1775,17 @@ rules(c1=ruled(block=["b.test"]), c2=None, c3=ruled())
 			spawnSync("python3", [namesTool, "elements", "--state-dir", join(root, "state")], { encoding: "utf8" });
 		const r = elements();
 		assert.equal(r.status, 0, r.stderr);
-		// c3 has no port yet and c9 is not known: neither has an element. In address order, not text order.
+		// c3 has no port yet and c9 is not known: neither has a DNS element; c3 is "open", so it reaches out, c9 does
+		// not. c4's set and chain come before the element that goes to it. In address order, not text order.
 		assert.deepEqual(r.stdout.trim().split("\n"), [
-			"add element inet qorpera_agent_exit dns_port { 10.210.1.2 : 53, 10.210.1.10 : 10001 }",
-			"add element inet qorpera_agent_exit dns_allowed { 10.210.1.2 . 53, 10.210.1.10 . 10001 }",
+			"add set inet qorpera_agent_exit allow_10004 { type ipv4_addr; size 65536; }",
+			"add chain inet qorpera_agent_exit only_10004",
+			"flush chain inet qorpera_agent_exit only_10004",
+			"add rule inet qorpera_agent_exit only_10004 tcp dport 443 ip daddr @allow_10004 goto open",
+			'add rule inet qorpera_agent_exit only_10004 meta mark set 0x80000004 counter name "refused_not_listed" goto refuse',
+			"add element inet qorpera_agent_exit dns_port { 10.210.1.2 : 53, 10.210.1.6 : 10004, 10.210.1.10 : 10001 }",
+			"add element inet qorpera_agent_exit dns_allowed { 10.210.1.2 . 53, 10.210.1.6 . 10004, 10.210.1.10 . 10001 }",
+			"add element inet qorpera_agent_exit reach { 10.210.1.2 : goto open, 10.210.1.3 : goto open, 10.210.1.6 : goto only_10004, 10.210.1.10 : goto open }",
 		]);
 		rmSync(join(root, "state", "rules", "rules.json"));
 		assert.deepEqual([elements().status, elements().stdout], [0, ""]);
