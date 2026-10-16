@@ -755,6 +755,7 @@ async function main() {
 	console.error(`== run-on-node: ${describeProbes(probes)}`);
 	const pending = (machine) => `running on ${machineLabel(machine.name)} (waits while ${CPU_SLOTS} runs are busy)`;
 	let copyStarted = Date.now();
+	let pruned = copyStarted;
 
 	try {
 		if (!ranked.length) throw new Error(`No open test machine: ${describeProbes(probes)}`);
@@ -770,6 +771,7 @@ async function main() {
 	function copyTree(t) {
 		copyStarted = Date.now();
 		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${run}\n${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
+		pruned = Date.now();
 		const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
 		const rules = join(rulesDir, "rules");
 		writeFileSync(rules, rulesText);
@@ -887,6 +889,10 @@ async function main() {
 		...(changedPlan ? { changed: changedPlan } : {}),
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - copyStarted) / 1000,
+		// The copy's two parts: the ssh call that marks the run arriving, prunes old runs and makes the run directory;
+		// then rsync.
+		pruneSeconds: (pruned - copyStarted) / 1000,
+		rsyncSeconds: (synced - pruned) / 1000,
 		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
 		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 		elapsedSeconds: (finished - started) / 1000,
