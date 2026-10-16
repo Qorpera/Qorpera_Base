@@ -1047,6 +1047,39 @@ gave it stops being an owner or administrator or leaves: promoting them again re
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
 
+### Coding MCP sign-ins (20260930440000_coding_mcp_sign_ins)
+
+The API key a coding session's MCP server needs (an HTTP MCP server that asks for a sign-in). Each is a vault secret
+with the connector id `mcp`, owned by the company (owners and administrators start those) or by the member, captured
+like any other secret but started only with `qorpera_begin_coding_mcp_sign_in`, which names the server: a plain
+`qorpera_begin_cloud_secret_capture` under `mcp` never completes. The broker forwards the session's requests to that
+server with the key in a header, so the key never reaches the coding machine. A value never comes back to a client.
+
+A server is named by its origin, `https://host[:port]`: lower case, no path, no `:443` (so an origin has one spelling),
+a DNS name of two labels or more whose last label is not a number (decimal or `0x` hex, so no address in any spelling a
+URL parser reads as one) and not one kept for private networks (`localhost`, `local`, `internal`, `lan`, `home`, `corp`,
+`test`, `example` and others). The broker also refuses a private address when it connects. There is one active sign-in
+per owner and origin. A member's own sign-in reaches only that member's coding sessions; the company's reaches every
+coding session in the company. For an origin both have, the company's wins. Disconnect (`qorpera_revoke_cloud_secret`)
+ends a sign-in; a member's own end when they leave, as their other secrets do. Rotate one with
+`qorpera_begin_cloud_secret_capture` and the existing secret (connector `mcp`, its `secretName`).
+
+- `qorpera_begin_coding_mcp_sign_in(profile, environment, ownerKind, origin, headerName = 'authorization',
+  headerPrefix = 'Bearer ')`: starts the capture of an API key for the server at `origin`, owned by the company
+  (`ownerKind: "company"`, owners and administrators) or by the caller (`"member"`, any member who may write). The key
+  travels in `headerName` (a lower-case header name, never one the relay or HTTP sets itself: `host`, `cookie`,
+  `content-type`, `origin`, the `proxy-`, `x-forwarded-`, `mcp-` and `sec-` families and others) after `headerPrefix`
+  (empty, or one word and a space). Answers the capture (`qorpera.cloud-secret-capture/v1`: `ticketId`,
+  `captureCapability`, `serviceOrigin`, `scope`, `expiresAt`; the broker's screen takes the key) and `signIn:
+  {schema: "qorpera.coding-mcp-sign-in/v1", secretId, origin, kind: "api_key", headerName, headerPrefix}`. Refusals:
+  22023 "An MCP server is named by its origin, https://host[:port]", 22023 "That header is not available for an MCP
+  sign-in", and the capture's own (42501 "secret capture requires company write access", 22023 "secret capture scope
+  is invalid" for a company sign-in a contributor starts, 23505 "an active secret already has this name" for an origin
+  that already has one of this owner's).
+- `qorpera_list_coding_mcp_sign_ins(profile, environment)`: `[{schema: "qorpera.coding-mcp-sign-in/v1", secretId,
+  secretName, origin, kind, headerName, headerPrefix, ownerKind, version, createdAt, updatedAt}]`, the company's
+  active sign-ins and the caller's own, by origin. Every member may read it, a viewer too; anyone else gets `[]`.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
