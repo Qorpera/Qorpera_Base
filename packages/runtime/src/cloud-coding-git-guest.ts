@@ -17,8 +17,15 @@ import { assertCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
 const exec = promisify(execFile);
 const ENTRY = "/opt/qorpera-coding/cloud-coding-git-guest.mjs";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA = /^[0-9a-f]{40}$/;
+/** The seeded base, which an export leaves out. */
+const BASE_REF = "refs/qorpera/base";
 export const CODING_GIT_CHUNK_BYTES = 32768;
 export const CODING_GIT_BUNDLE_BYTES = 64 * 1024 ** 2;
+/** A seed is the base's whole history. Its chunk's base64 is exactly LXD's
+ * largest file push (256 KiB); Git's 256 MiB file-size limit bounds it. */
+export const CODING_GIT_SEED_CHUNK_BYTES = 196608;
+export const CODING_GIT_SEED_BYTES = 256 * 1024 ** 2;
 
 export interface CodingGitGuestRequest {
 	schema: "qorpera.coding-git-transfer/v1";
@@ -82,14 +89,14 @@ export function parseCodingGitGuestRequest(value: unknown): CodingGitGuestReques
 		record.schema !== "qorpera.coding-git-transfer/v1" ||
 		![record.workerId, record.vmId, record.transferId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof record.headSha !== "string" ||
-		!/^[0-9a-f]{40}$/.test(record.headSha) ||
+		!SHA.test(record.headSha) ||
 		!["seed", "export"].includes(String(record.action)) ||
 		(record.action === "seed"
 			? typeof record.bundleSha256 !== "string" ||
 				!/^[0-9a-f]{64}$/.test(record.bundleSha256) ||
 				!Number.isSafeInteger(record.bundleBytes) ||
 				Number(record.bundleBytes) < 1 ||
-				Number(record.bundleBytes) > CODING_GIT_BUNDLE_BYTES
+				Number(record.bundleBytes) > CODING_GIT_SEED_BYTES
 			: record.bundleSha256 !== null || record.bundleBytes !== 0)
 	)
 		throw new Error("INVALID_CODING_GIT_GUEST_REQUEST");
@@ -130,14 +137,15 @@ async function protectedRead(
 		await file.close();
 	}
 }
-async function retain(path: string, bytes: Buffer): Promise<void> {
+async function retain(path: string, ...parts: Buffer[]): Promise<void> {
 	const file = await open(
 		path,
 		constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
 		0o444,
 	);
 	try {
-		await file.writeFile(bytes);
+		// Each part continues at the file's position.
+		for (const part of parts) await file.writeFile(part);
 		await file.sync();
 	} finally {
 		await file.close();
@@ -148,6 +156,23 @@ async function retain(path: string, bytes: Buffer): Promise<void> {
 	} finally {
 		await parent.close();
 	}
+}
+/** A ref of the workspace's own Git directory, read as text, never through Git. */
+async function workspaceRef(workspace: string, name: string): Promise<string | undefined> {
+	try {
+		return (await readFile(join(workspace, ".git", name), "utf8")).trim();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	let packed: string;
+	try {
+		packed = await readFile(join(workspace, ".git", "packed-refs"), "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		return undefined;
+	}
+	const refs = packed.split("\n").filter((line) => line.endsWith(` ${name}`));
+	return refs.length === 1 ? refs[0].split(" ")[0] : undefined;
 }
 async function machine(): Promise<string> {
 	if (process.platform !== "linux") throw new Error("CODING_GIT_GUEST_REQUIRES_VM");
@@ -253,25 +278,27 @@ export async function runCodingGitGuest(
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 	if (action === "seed") {
-		const parts: Buffer[] = [];
-		for (let index = 0; index < Math.ceil(request.bundleBytes / CODING_GIT_CHUNK_BYTES); index++) {
-			const encoded = (await read(`${String(index).padStart(6, "0")}.base64`, CODING_GIT_CHUNK_BYTES * 2)).toString(
-				"ascii",
-			);
+		// Hashed and written part by part, never joined into a second copy.
+		const parts: Buffer[] = [],
+			hash = createHash("sha256");
+		for (let index = 0; index < Math.ceil(request.bundleBytes / CODING_GIT_SEED_CHUNK_BYTES); index++) {
+			const encoded = (
+				await read(`${String(index).padStart(6, "0")}.base64`, (CODING_GIT_SEED_CHUNK_BYTES / 3) * 4)
+			).toString("ascii");
 			const part = Buffer.from(encoded, "base64");
 			if (
 				part.toString("base64") !== encoded ||
-				part.length !== Math.min(CODING_GIT_CHUNK_BYTES, request.bundleBytes - index * CODING_GIT_CHUNK_BYTES)
+				part.length !==
+					Math.min(CODING_GIT_SEED_CHUNK_BYTES, request.bundleBytes - index * CODING_GIT_SEED_CHUNK_BYTES)
 			)
 				throw new Error("CODING_GIT_SEED_CHUNK_INVALID");
+			hash.update(part);
 			parts.push(part);
 		}
-		const bytes = Buffer.concat(parts);
-		if (createHash("sha256").update(bytes).digest("hex") !== request.bundleSha256)
-			throw new Error("CODING_GIT_SEED_DIGEST_CHANGED");
+		if (hash.digest("hex") !== request.bundleSha256) throw new Error("CODING_GIT_SEED_DIGEST_CHANGED");
 		// Permanent global claim prevents a second transfer ID from reinitializing.
 		await retain(join(root, "git", "seed-claim.json"), Buffer.from(JSON.stringify(request)));
-		await retain(join(directory, "seed.bundle"), bytes);
+		await retain(join(directory, "seed.bundle"), ...parts);
 	}
 	// No automatic retry after an uncertain child, even under a new process.
 	await retain(join(directory, "dispatched.json"), Buffer.from(JSON.stringify({ transferId, bootId: guest.bootId })));
@@ -297,7 +324,7 @@ export async function runCodingGitGuest(
 		headSha: request.headSha,
 		bundleSha256: digest,
 		bundleBytes: bytes,
-		chunkCount: Math.ceil(bytes / CODING_GIT_CHUNK_BYTES),
+		chunkCount: Math.ceil(bytes / (action === "seed" ? CODING_GIT_SEED_CHUNK_BYTES : CODING_GIT_CHUNK_BYTES)),
 	};
 	await retain(join(directory, "receipt.json"), Buffer.from(JSON.stringify(receipt)));
 	return receipt;
@@ -342,7 +369,8 @@ async function child(request: CodingGitGuestRequest, guest: CodingGitGuestConfig
 				processChild.kill("SIGKILL");
 			}
 		};
-		const timer = setTimeout(kill, 120000);
+		// The host waits 600 s for a seed's whole command (coding-git-transfer.ts).
+		const timer = setTimeout(kill, request.action === "seed" ? 540000 : 120000);
 		processChild.stdout.on("data", (bytes: Buffer) => {
 			length += bytes.length;
 			if (length > CODING_GIT_BUNDLE_BYTES) kill();
@@ -410,6 +438,8 @@ export async function executeCodingGitGuestRepository(
 		"-c",
 		"gc.auto=0",
 	];
+	// A seed imports the base's whole history.
+	const [cpu, timeout] = request.action === "seed" ? [240, 300000] : [30, 60000];
 	const invoke =
 		gitProcess ??
 		(async (args, cwd, environment) =>
@@ -418,7 +448,7 @@ export async function executeCodingGitGuestRepository(
 					"/usr/bin/prlimit",
 					[
 						"--as=1073741824",
-						"--cpu=30",
+						`--cpu=${cpu}`,
 						"--fsize=268435456",
 						"--nofile=64",
 						"--nproc=512",
@@ -427,7 +457,7 @@ export async function executeCodingGitGuestRepository(
 						"/usr/bin/git",
 						...args,
 					],
-					{ cwd, env: environment, timeout: 60000, maxBuffer: CODING_GIT_BUNDLE_BYTES, encoding: "buffer" },
+					{ cwd, env: environment, timeout, maxBuffer: CODING_GIT_BUNDLE_BYTES, encoding: "buffer" },
 				)
 			).stdout);
 	const git = (args: string[], cwd = workspace): Promise<Buffer> => invoke([...prefix, ...args], cwd, { ...env });
@@ -444,6 +474,8 @@ export async function executeCodingGitGuestRepository(
 				throw new Error("CODING_GIT_SEED_COMMIT_CHANGED");
 			await git(["fsck", "--strict", "--no-reflogs", request.headSha]);
 			await git(["update-ref", ref, request.headSha]);
+			// The base an export leaves out (the seed's head is the session's base).
+			await git(["update-ref", BASE_REF, request.headSha]);
 			await git(["symbolic-ref", "HEAD", ref]);
 			await git(["read-tree", "--reset", "-u", request.headSha]);
 			await git([
@@ -456,21 +488,22 @@ export async function executeCodingGitGuestRepository(
 		}
 		if ((await readFile(join(workspace, ".git", "HEAD"), "utf8")) !== `ref: ${ref}\n`)
 			throw new Error("CODING_GIT_BRANCH_CHANGED");
-		let head: string | undefined;
-		try {
-			head = (await readFile(join(workspace, ".git", ref), "utf8")).trim();
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			const refs = (await readFile(join(workspace, ".git", "packed-refs"), "utf8"))
-				.split("\n")
-				.filter((line) => line.endsWith(` ${ref}`));
-			if (refs.length === 1) head = refs[0].split(" ")[0];
-		}
-		if (head !== request.headSha) throw new Error("CODING_GIT_HEAD_CHANGED");
+		if ((await workspaceRef(workspace, ref)) !== request.headSha) throw new Error("CODING_GIT_HEAD_CHANGED");
+		const base = await workspaceRef(workspace, BASE_REF);
 		await git(["init", "--bare", "--template=", staging], staging);
 		env.GIT_OBJECT_DIRECTORY = join(workspace, ".git", "objects");
 		await git(["update-ref", ref, request.headSha], staging);
-		return await git(["bundle", "create", "-", ref], staging);
+		// Only the commits since the seeded base: the broker fetches the base from
+		// the repository itself. An unchanged head leaves out its own parents; a
+		// workspace without the base sends its whole history.
+		let exclude = base !== undefined && SHA.test(base) ? [`^${base}`] : [];
+		if (exclude.length > 0 && (await git(["rev-list", "--max-count=1", ref, ...exclude], staging)).length === 0)
+			exclude = (await git(["rev-parse", `${ref}^@`], staging))
+				.toString()
+				.split("\n")
+				.filter((line) => SHA.test(line))
+				.map((sha) => `^${sha}`);
+		return await git(["bundle", "create", "-", ref, ...exclude], staging);
 	} finally {
 		await rm(staging, { recursive: true, force: true });
 	}

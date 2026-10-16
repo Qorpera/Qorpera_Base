@@ -5,6 +5,9 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera
 import { type CodingBrokerGitRunner, runCodingBrokerGit } from "./coding-git.ts";
 import { checkDirectory } from "./lxd-office-journal-files.ts";
 
+/** A seed is the base's whole history; Git's 256 MiB file-size limit bounds it. */
+export const CODING_GIT_SEED_BYTES = 256 * 1024 ** 2;
+
 export interface CodingGitSeed {
 	repository: CloudCodingRepository;
 	workerId: string;
@@ -197,7 +200,7 @@ export async function fetchCloudCodingSeed(
 				"fetch.fsckObjects=true",
 			].flatMap((config) => ["-c", config]),
 		];
-		const run = async (args: string[], network = false, directory = cwd): Promise<string> => {
+		const run = async (args: string[], network = false, directory = cwd, long = false): Promise<string> => {
 			const invoke = async (token?: string): Promise<string> => {
 				await authorize();
 				const environment = { ...env };
@@ -214,6 +217,7 @@ export async function fetchCloudCodingSeed(
 					args: [...prefix, ...args],
 					env: environment,
 					signal: options.signal,
+					...(long ? { long } : {}),
 				});
 				await authorize();
 				return result;
@@ -230,17 +234,19 @@ export async function fetchCloudCodingSeed(
 		await run(
 			["fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote, `${base}:${base}`],
 			true,
+			cwd,
+			true,
 		);
 		if (
 			(await run(["rev-parse", "--verify", base])).trim() !== input.baseSha ||
 			(await run(["cat-file", "-t", input.baseSha])) !== "commit\n"
 		)
 			throw new Error("CODING_GIT_SEED_BASE_CHANGED");
-		await run(["fsck", "--strict", "--no-reflogs", input.baseSha]);
+		await run(["fsck", "--strict", "--no-reflogs", input.baseSha], false, cwd, true);
 		await run(["update-ref", branch, input.baseSha]);
-		await run(["bundle", "create", output, branch]);
+		await run(["bundle", "create", output, branch], false, cwd, true);
 		const stat = await lstat(output);
-		if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > 64 * 1024 ** 2)
+		if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > CODING_GIT_SEED_BYTES)
 			throw new Error("CODING_GIT_SEED_TOO_LARGE");
 		const bundle = await readFile(output);
 		if (bundle.length !== stat.size) throw new Error("CODING_GIT_SEED_CHANGED");

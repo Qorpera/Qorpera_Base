@@ -150,7 +150,14 @@ export interface LxdClient {
 		mode: number,
 		signal?: AbortSignal,
 	): Promise<void>;
-	execInstance(project: string, name: string, command: readonly string[], signal?: AbortSignal): Promise<void>;
+	/** `waitSeconds` (1-600) replaces the client's operation wait for this one command. */
+	execInstance(
+		project: string,
+		name: string,
+		command: readonly string[],
+		signal?: AbortSignal,
+		waitSeconds?: number,
+	): Promise<void>;
 	/** Deletes a stopped guest and its root disk; custom volumes attached as devices stay. */
 	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
 }
@@ -3384,8 +3391,17 @@ export class LxdUnixClient
 		});
 	}
 
-	async execInstance(project: string, name: string, command: readonly string[], signal?: AbortSignal): Promise<void> {
+	async execInstance(
+		project: string,
+		name: string,
+		command: readonly string[],
+		signal?: AbortSignal,
+		waitSeconds = this.#operationTimeoutSeconds,
+	): Promise<void> {
 		if (
+			!Number.isSafeInteger(waitSeconds) ||
+			waitSeconds < 1 ||
+			waitSeconds > 600 ||
 			command.length < 1 ||
 			command.length > 64 ||
 			command.some((argument) => !argument || /[\0\r\n]/.test(argument) || Buffer.byteLength(argument) > 4096)
@@ -3405,7 +3421,7 @@ export class LxdUnixClient
 			},
 			signal,
 		);
-		const operation = await this.#waitForOperation(result, signal);
+		const operation = await this.#waitForOperation(result, signal, waitSeconds);
 		const metadata = record(operation.metadata, "LXD exec operation metadata");
 		if (metadata.return !== 0) throw new Error("LXD instance command failed");
 	}
@@ -3695,7 +3711,11 @@ export class LxdUnixClient
 		}
 	}
 
-	async #waitForOperation(result: HttpResult, signal?: AbortSignal): Promise<Record<string, unknown>> {
+	async #waitForOperation(
+		result: HttpResult,
+		signal?: AbortSignal,
+		waitSeconds = this.#operationTimeoutSeconds,
+	): Promise<Record<string, unknown>> {
 		const envelope = record(result.body, "LXD response");
 		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
 		if (envelope.type === "sync") return record(envelope.metadata, "LXD synchronous operation");
@@ -3706,7 +3726,7 @@ export class LxdUnixClient
 		) {
 			throw new Error("LXD operation response is invalid");
 		}
-		const waitPath = `${envelope.operation}/wait?timeout=${this.#operationTimeoutSeconds}`;
+		const waitPath = `${envelope.operation}/wait?timeout=${waitSeconds}`;
 		const wait = await this.#request("GET", waitPath, undefined, signal);
 		// LXD 5.21-6.x write the wait's 200 header before the operation ends, so a
 		// failed operation arrives as an error envelope under HTTP 200
