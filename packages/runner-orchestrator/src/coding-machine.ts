@@ -393,6 +393,10 @@ export interface CodingMachineReconcileOptions {
 	 * of the start it ended, the same each time that stop is seen and no other
 	 * stop's, since the next start comes only after this call succeeds. */
 	stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>;
+	/** A machine LXD shows stopped, about to be started (the first start after its create too): called each time,
+	 * before the start's fresh authority, so its time costs none of it. The executor says here that the machine
+	 * restarted (the folder service's `restarted`). A failure fails the reconcile, and nothing is dispatched. */
+	starting?: (signal: AbortSignal) => Promise<void>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -882,6 +886,11 @@ export async function reconcileCodingMachine(
 		)
 	)
 		throw new Error("AGENT_PLUG_MISSING");
+	// A start goes out only once the executor has said the machine restarted. Before the fresh authority too.
+	if (action === "start" && options.starting) {
+		await options.starting(options.signal);
+		options.signal.throwIfAborted();
+	}
 	// Fresh authority immediately before irreversible dispatch; journal CAS
 	// chooses one winner across processes. A crash after claiming is unknown.
 	signal = await authorize();

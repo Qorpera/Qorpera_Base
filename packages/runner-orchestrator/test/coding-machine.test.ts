@@ -502,6 +502,56 @@ describe("a coding machine's journaled lifecycle", () => {
 			"delete",
 		]);
 	});
+	it("tells the executor right before each start, ahead of the start's fresh authority, and dispatches nothing when that fails", async () => {
+		const f = await fixture();
+		// Each authority, each call and each dispatch, in order; the first call fails.
+		const order: string[] = [];
+		const authorize = async (intent: CodingMachineIntent) => {
+			order.push(`authorize:${intent}`);
+			return receipt(f.journal, intent);
+		};
+		let fail = true;
+		const starting = vi.fn(async (signal: AbortSignal) => {
+			expect(signal).toBe(f.controller.signal);
+			order.push("starting");
+			if (fail) {
+				fail = false;
+				throw new Error("CODING_FOLDER_CONTROL_UNAVAILABLE");
+			}
+		});
+		const submit = f.client.submitInstanceOperation.getMockImplementation()!;
+		f.client.submitInstanceOperation.mockImplementation(async (project, action, signal) => {
+			order.push(action.action);
+			return submit(project, action, signal);
+		});
+		const reconcile = (desiredState: "running" | "stopped" = "running") =>
+			reconcileCodingMachine({ ...f.options, desiredState, authorize, starting });
+		// The create is not told; its first start is, and a failure dispatches nothing.
+		expect((await reconcile()).state).toBe("pending");
+		await expect(reconcile()).rejects.toThrow("CODING_FOLDER_CONTROL_UNAVAILABLE");
+		for (const expected of ["pending", "running", "running"]) expect((await reconcile()).state).toBe(expected);
+		// A stop is not told; the start after it is, and so is the start after a stop from outside.
+		for (const expected of ["pending", "stopped"]) expect((await reconcile("stopped")).state).toBe(expected);
+		for (const expected of ["pending", "running"]) expect((await reconcile()).state).toBe(expected);
+		const instance = f.instance();
+		if (!instance) throw new Error("missing fixture VM");
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		for (const expected of ["pending", "running"]) expect((await reconcile()).state).toBe(expected);
+		const start = ["authorize:run", "starting", "authorize:run", "start"];
+		expect(order).toEqual([
+			...["authorize:run", "authorize:run", "create"],
+			...["authorize:run", "starting"],
+			...start,
+			...["authorize:run", "authorize:run"],
+			...["authorize:stop", "authorize:stop", "stop", "authorize:stop"],
+			...start,
+			"authorize:run",
+			...start,
+			"authorize:run",
+		]);
+		expect(starting).toHaveBeenCalledTimes(4);
+	});
 	it("rolls over a member's full journal that ends with a start whose VM stopped by itself", async () => {
 		const f = await fixture();
 		const root = await retainedHistory(f, 381, "succeeded", "start");
