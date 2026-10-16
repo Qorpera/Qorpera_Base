@@ -2,11 +2,13 @@
 -- 20260930499000 on 924's real native run of Alice's: the company-context describe (qorpera_describe_company_run_context
 -- as the entry point) reads its run without the run mutex, through qorpera_folder_native_run_plain, and its nested
 -- describe reads plain too; it keeps the context check's actor test and leaves out its reads check, a writer of the
--- run's read set. Its answer (apart from its clock) and its refusals are the locked path's. With the fixture committed
--- (the harness of 793), another connection holds the run's budget row: the context describe through the host, and
--- directly with request.path set to it by hand, answer at once, while a direct call with no request.path, describe
--- under the context's request.path, the context describe under describe's, the wake read and a function that calls the
--- context describe still wait for the row. The timing is printed, not checked.
+-- run's read set. Its answer (apart from its clock) is the locked path's, and so are its refusals but one: a read the
+-- run recorded and can no longer read refuses the locked path (42501) and not the plain one, and the wake read, which
+-- the runtime calls in the same stage, refuses it in the same state (section 5). With the fixture committed (the
+-- harness of 793), another connection holds the run's budget row: the context describe through the host, and directly
+-- with request.path set to it by hand, answer at once, while a direct call with no request.path, describe under the
+-- context's request.path, the context describe under describe's, the wake read and a function that calls the context
+-- describe still wait for the row. The timing is printed, not checked.
 reset role;
 select set_config('qorpera_test.c_token', 'c672-lease-token-0123456789abcdef', false);
 
@@ -76,6 +78,25 @@ begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	perform set_config('request.path', '', true);
 	return pg_temp.c_clockless(v);
+end $$;
+-- The wake read one way in this transaction, as c_way calls the context describe: through the host (the publishable
+-- key's role on the host's RPC path), or directly as the platform's service caller on its own RPC path (as sections 8
+-- and 9 call it).
+create function pg_temp.c_wake_way(p_binding jsonb, p_way text) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+	if p_way = 'host' then
+		perform set_config('request.jwt.claims', '{"role":"anon"}', true);
+		perform set_config('request.path', '/rpc/qorpera_native_host_call', true);
+		v := pg_temp.c_try(pg_temp.c_host_sql(p_binding, 'qorpera_read_native_wake'));
+	else
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		perform set_config('request.path', '/rpc/qorpera_read_native_wake', true);
+		v := pg_temp.c_try(pg_temp.c_wake_sql(p_binding));
+	end if;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	perform set_config('request.path', '', true);
+	return v;
 end $$;
 -- The three ways, with each one's calls of [plain read, locked run check, reads check].
 create function pg_temp.c_three(p_binding jsonb) returns jsonb language plpgsql as $$
@@ -219,7 +240,81 @@ end $$;
 rollback to savepoint c_reads;
 release savepoint c_reads;
 
--- 5. The timing, on this machine with nothing else running (printed only): the context describe through the host, as
+-- 5. The one refusal the plain path leaves out: a read the run recorded and can no longer read. The owner shares a
+--    folder with Alice for reading only, and her run reads its file and releases the read as the product does (through
+--    qorpera_folder_read and qorpera_folder_record_release, as 746 does), so its read set row and record are a
+--    release's. While the grant stands, the context describe answers all three ways and the wake read answers. Once the
+--    owner revokes the grant, the direct call (locked) refuses 42501 in its reads check; through the host and by
+--    request.path the context describe still answers. The wake read, which runs the same reads check under the run
+--    mutex in the same stage (the runtime fails the stage when it refuses), refuses 42501 the same way through the host
+--    and directly: the host passes the called function's error through unchanged. Undone after.
+savepoint c_revoked;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_actor jsonb; v_resource uuid; v_read jsonb;
+begin
+	v_actor := jsonb_build_object('kind', 'run', 'runId', v_binding ->> 'runId', 'jobId', v_binding ->> 'jobId',
+		'runnerId', v_binding ->> 'runnerId', 'assignmentId', v_binding ->> 'assignmentId');
+	v_resource := public.qorpera_folder_set_resource('92400000-0000-4000-8000-000000000020', pg_temp.base_owner(), 'c672-shared',
+		'subtree', 'company_shared', 'normal') ->> 'resourceId';
+	perform set_config('qorpera_test.c_resource', v_resource::text, true);
+	perform set_config('qorpera_test.c_grant', public.qorpera_folder_grant('92400000-0000-4000-8000-000000000020',
+		pg_temp.base_owner(), v_resource, 'staff_agent', '92400000-0000-4000-8000-000000000030', array['read']) ->> 'grantId', true);
+	perform pg_temp.base_commit('{"kind":"platform"}', 'c672-shared', jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', 'c672-shared'),
+		jsonb_build_object('op', 'write', 'path', 'c672-shared/s.txt', 'file', pg_temp.base_stage('c672 shared text'))));
+	v_read := public.qorpera_folder_read('92400000-0000-4000-8000-000000000020', v_actor, 'c672-shared/s.txt') -> 'entry';
+	perform public.qorpera_folder_record_release('92400000-0000-4000-8000-000000000020', v_actor, extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', v_read ->> 'path', 'version', v_read ->> 'version', 'authority', v_read -> 'authority')),
+		repeat('0', 64));
+	-- The release recorded the read: a read set row on Alice's grant at the current revisions, and the path in a record.
+	if not exists (select 1 from public.qorpera_folder_run_reads rr
+			join public.qorpera_company_path_resources r on r.id = rr.resource_id and r.authority_revision = rr.resource_revision
+			join public.qorpera_company_path_grants g on g.id = rr.grant_id and g.revision = rr.grant_revision
+			where rr.run_id = (v_binding ->> 'runId')::uuid and rr.resource_id = v_resource
+				and rr.grant_id = current_setting('qorpera_test.c_grant')::uuid)
+		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.run_id = (v_binding ->> 'runId')::uuid and rec.resource_id = v_resource and x ->> 'path' = 'c672-shared/s.txt') then
+		raise exception '672 revoked read: the release did not record the run''s read'; end if;
+end $$;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_way text; v_live jsonb := '{}'; v jsonb := '{}';
+	c_refusal constant jsonb := '{"state":"42501","error":"A read is no longer readable"}';
+begin
+	-- While the grant stands, every way answers.
+	foreach v_way in array array['host', 'plain', 'locked'] loop
+		v_live := v_live || jsonb_build_object(v_way, pg_temp.c_way(v_binding, v_way));
+	end loop;
+	v_live := v_live || jsonb_build_object('wakeHost', pg_temp.c_wake_way(v_binding, 'host'),
+		'wakeDirect', pg_temp.c_wake_way(v_binding, 'direct'));
+	if exists (select 1 from jsonb_each(v_live) e where e.value #>> '{result,schema}' is distinct from
+			case when e.key like 'wake%' then 'qorpera.wake-envelope/v1' else 'qorpera.native-company-context/v2' end) then
+		raise exception '672 revoked read: not every way answered while the grant stood: %', v_live; end if;
+	-- The owner revokes it.
+	perform public.qorpera_folder_revoke('92400000-0000-4000-8000-000000000020', pg_temp.base_owner(),
+		current_setting('qorpera_test.c_resource')::uuid, current_setting('qorpera_test.c_grant')::uuid);
+	foreach v_way in array array['host', 'plain', 'locked'] loop
+		v := v || jsonb_build_object(v_way, pg_temp.c_way(v_binding, v_way));
+	end loop;
+	v := v || jsonb_build_object('wakeHost', pg_temp.c_wake_way(v_binding, 'host'),
+		'wakeDirect', pg_temp.c_wake_way(v_binding, 'direct'));
+	if v -> 'locked' is distinct from c_refusal then
+		raise exception '672 revoked read: the direct context describe (locked) did not refuse 42501: %', v -> 'locked'; end if;
+	if v #>> '{host,result,schema}' is distinct from 'qorpera.native-company-context/v2' or v -> 'plain' is distinct from v -> 'host' then
+		raise exception '672 revoked read: the context describe through the host and by request.path did not answer: host %, plain %',
+			v -> 'host', v -> 'plain'; end if;
+	if v -> 'wakeHost' is distinct from c_refusal or v -> 'wakeDirect' is distinct from c_refusal then
+		raise exception '672 revoked read: the wake read did not refuse 42501 in the same state: host %, direct %',
+			v -> 'wakeHost', v -> 'wakeDirect'; end if;
+	perform set_config('qorpera_test.c_revoked', format('locked %s %s; through the host and by request.path the context answered; '
+		|| 'the wake read %s %s through the host and %s %s directly', v #>> '{locked,state}', v #>> '{locked,error}',
+		v #>> '{wakeHost,state}', v #>> '{wakeHost,error}', v #>> '{wakeDirect,state}', v #>> '{wakeDirect,error}'), true);
+end $$;
+select current_setting('qorpera_test.c_revoked') as c_out \gset
+\echo 672 revoked read: :c_out
+rollback to savepoint c_revoked;
+release savepoint c_revoked;
+
+-- 6. The timing, on this machine with nothing else running (printed only): the context describe through the host, as
 --    the entry point by request.path, and directly (locked, as through the host before this change), 20 times each.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_sql text := pg_temp.c_host_sql(v_binding);
@@ -363,7 +458,7 @@ begin
 	return v_outcome || jsonb_build_object('ms', round((extract(epoch from clock_timestamp() - v_start) * 1000)::numeric));
 end $$;
 
--- 6. Another transaction holds the run's budget row (the run mutex), as a slow tool step or wake read does. The context
+-- 7. Another transaction holds the run's budget row (the run mutex), as a slow tool step or wake read does. The context
 --    describe through the host (the publishable key's role on the host's RPC path) answers without waiting for it.
 select dblink_exec('c_holder', 'begin');
 select * from dblink('c_holder', format('select 1 from public.qorpera_execution_run_budgets where run_id = %L for update',
@@ -389,7 +484,7 @@ begin
 	perform set_config('qorpera_test.c_held_answer', pg_temp.c_clockless(v_outcome)::text, false);
 end $$;
 
--- 7. Still held: with request.path set to the context describe by hand (both PostgREST forms) a direct call answers
+-- 8. Still held: with request.path set to the context describe by hand (both PostgREST forms) a direct call answers
 --    the same. Everything else waits (55P03 under a 500 ms lock_timeout): a direct call with no request.path, describe
 --    called directly under the context's request.path, the context describe under describe's request.path, the wake
 --    read (which keeps the mutex and runs the reads check) and a function that calls the context describe.
@@ -418,7 +513,7 @@ begin
 			v_hand, v_rest, v_direct, v_describe, v_other, v_wake, v_nested; end if;
 end $$;
 
--- 8. Once the row is released, the direct call (locked) answers the same, and the wake read answers.
+-- 9. Once the row is released, the direct call (locked) answers the same, and the wake read answers.
 select dblink_exec('c_holder', 'rollback');
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_direct jsonb; v_wake jsonb;

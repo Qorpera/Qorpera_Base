@@ -50,6 +50,11 @@
 -- qorpera_assert_company_path_reads. Both functions are patched in place from pg_get_functiondef (the context describe
 -- with 20260930497000's origin, describe with 20260930487000's rule and the fast-mode check of 20260927161500); their
 -- grants and settings are as before. DB only: no caller changes (the runtime keeps the pair's shared budget).
+--
+-- Deploy order: after 20260930497000, whose body of the context describe this patches (the check at the end refuses
+-- without its origin). So it applies with or after 20260930497000, never before it: not in a roll's 10-migration step
+-- while 20260930497000 waits for every node's runtime to parse 'origin'. A reverse of 20260930497000's step 3 must start
+-- from this body and drop only the origin statement, or it drops this change too.
 set local lock_timeout = '3s';
 
 create temporary table c_before as

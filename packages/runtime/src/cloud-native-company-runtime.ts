@@ -275,8 +275,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let presence: CloudCompanyPathPresence | undefined;
 		try {
 			// Both reads need only the binding: ask for them together and check them in
-			// the original order, so a failure still names its stage. Both lock the run's
-			// job row, so each gets the pair's budget (the database serialises them), down to the transport.
+			// the original order, so a failure still names its stage. Since 20260930499000 only the
+			// wake read takes the run mutex, so the database no longer runs them one after the other;
+			// each keeps the pair's budget, down to the transport.
 			const contextRequest = cloudToolRequest(
 				(requestSignal) =>
 					this.#paths.call(
