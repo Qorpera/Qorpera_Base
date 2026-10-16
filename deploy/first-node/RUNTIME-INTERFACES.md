@@ -884,7 +884,7 @@ offers after its rows or definition change, and lapses them when its folder is d
 (erasure) removes its offers. Test 866 races an offer against a rows save both ways: an offer behind a save reads the
 cell the save left, and a save behind an offer settles it.
 
-**Built: I9b, the consent records** (`supabase/migrations/20260930371000_interface_supervision.sql`, tests 451–453
+**Built: I9b, the consent records** (`supabase/migrations/20260928549360_interface_supervision.sql`, tests 451–453
 and 458).
 Consents are kept in `qorpera_interface_supervisions` (§5.1), at most one live per area row. The save hook's apply
 settles them after each save of `tables/areas`' rows or definition: a member's own rows save that puts them in a
@@ -899,7 +899,7 @@ withdraw hold that row FOR SHARE too, and a consent called while its live one is
 Each end is told once (`interface_supervision_ended`), and the web client
 shows it in the notices. An area's `supervisor` is now offered like any other claimed cell.
 
-**Built: I9b, adding agents by offer** (`supabase/migrations/20260930372000_interface_supervision_agents.sql`, test
+**Built: I9b, adding agents by offer** (`supabase/migrations/20260928549370_interface_supervision_agents.sql`, test
 454). While a row's consent is live, rule 9 refuses a save that adds an agent to its `agents` unless the consent's
 member makes it; removing one stays free. Anyone else who may write the rows offers a hired agent to the supervisor
 with `qorpera_offer_interface_agent` (`supabase/CLIENT-CONTRACT.md`, "Supervision consent"). It is an offer like a
