@@ -5,9 +5,11 @@ import type { WireEntry } from "./protocol.ts";
  * paths it may read, is shown anyway (`implicit`), so those paths can be reached. */
 export interface TreeEntry {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	/** The core's version id (a uuid); "" for a folder shown only because it holds readable paths. */
 	readonly version: string;
+	/** A link's target; its `bytes` are the target's length. */
+	readonly target?: string;
 	readonly manifestSha256?: string;
 	readonly fileSha256?: string;
 	readonly bytes: number;
@@ -57,9 +59,10 @@ function entryOf(e: CoreEntry, previous: TreeEntry | undefined, folder: TreeEntr
 		path: e.path,
 		kind: e.kind,
 		version: e.version,
+		...(e.kind === "symlink" && e.target !== undefined ? { target: e.target } : {}),
 		...(e.manifestSha256 === undefined ? {} : { manifestSha256: e.manifestSha256 }),
 		...(e.fileSha256 === undefined ? {} : { fileSha256: e.fileSha256 }),
-		bytes: e.kind === "file" ? (e.bytes ?? 0) : 0,
+		bytes: e.kind === "file" ? (e.bytes ?? 0) : e.kind === "symlink" ? Buffer.byteLength(e.target ?? "") : 0,
 		...(e.mediaType === undefined ? {} : { mediaType: e.mediaType }),
 		executable: e.kind === "file" && e.executable === true,
 		mtimeMs: Number.isFinite(time) ? time : (previous?.mtimeMs ?? 0),
@@ -88,6 +91,7 @@ function same(a: TreeEntry, b: TreeEntry): boolean {
 		a.executable === b.executable &&
 		a.mtimeMs === b.mtimeMs &&
 		a.manifestSha256 === b.manifestSha256 &&
+		a.target === b.target &&
 		// A new receipt reaches the machines too (an access change lists the view again), so their logs stay current.
 		sameReceipt(a.authority, b.authority)
 	);
@@ -97,7 +101,7 @@ export function wireEntry(e: TreeEntry): WireEntry {
 	return {
 		name: nameOf(e.path),
 		kind: e.kind,
-		size: e.kind === "file" ? e.bytes : 0,
+		size: e.kind === "folder" ? 0 : e.bytes,
 		mtimeMs: e.mtimeMs,
 		executable: e.executable,
 		version: e.version,
@@ -124,7 +128,9 @@ export class ViewTree {
 		return this.#entries.keys();
 	}
 
-	children(path: string, after: string | undefined, limit: number): ChildrenResult {
+	/** One page of a folder's entries after `after`; without `links` (a machine below protocol 4) a link is left out
+	 * and the page filled past it. */
+	children(path: string, after: string | undefined, limit: number, links = true): ChildrenResult {
 		const folder = this.get(path);
 		if (!folder) return "not_found";
 		if (folder.kind !== "folder") return "not_a_folder";
@@ -141,12 +147,22 @@ export class ViewTree {
 			}
 			start = lo;
 		}
-		const page = names.slice(start, start + limit);
 		const prefix = path === "" ? "" : `${path}/`;
-		return {
-			entries: page.map((name) => wireEntry(this.#entries.get(prefix + name)!)),
-			next: start + limit < names.length ? page[page.length - 1]! : null,
-		};
+		if (links) {
+			const page = names.slice(start, start + limit);
+			return {
+				entries: page.map((name) => wireEntry(this.#entries.get(prefix + name)!)),
+				next: start + limit < names.length ? page[page.length - 1]! : null,
+			};
+		}
+		const entries: WireEntry[] = [];
+		let i = start;
+		for (; i < names.length && entries.length < limit; i++) {
+			const entry = this.#entries.get(prefix + names[i]!)!;
+			if (entry.kind !== "symlink") entries.push(wireEntry(entry));
+		}
+		while (i < names.length && this.#entries.get(prefix + names[i]!)!.kind === "symlink") i++;
+		return { entries, next: i < names.length ? entries[entries.length - 1]!.name : null };
 	}
 
 	/** `path` and everything under it, depth first in the order a machine lists them (each folder's names in byte
@@ -209,16 +225,16 @@ export class ViewTree {
 		return names;
 	}
 
-	/** Adds or replaces one entry (and any folders above it that are not known yet). `replaced` hears of every file entry
-	 * it removes or replaces with another version. */
+	/** Adds or replaces one entry (and any folders above it that are not known yet). `replaced` hears of every file or
+	 * link entry it removes or replaces with another version. */
 	put(e: CoreEntry, replaced?: (old: TreeEntry) => void): string[] {
 		const changed: string[] = [];
 		const ancestors: string[] = [];
 		for (let p = parentOf(e.path); p !== ""; p = parentOf(p)) ancestors.push(p);
 		for (const p of ancestors.reverse()) {
 			const existing = this.#entries.get(p);
-			if (existing?.kind === "file") {
-				// A file where a folder must be: the newer path wins, as it will in the core.
+			if (existing && existing.kind !== "folder") {
+				// A file or link where a folder must be: the newer path wins, as it will in the core.
 				changed.push(...this.remove(p, replaced));
 			}
 			if (!this.#entries.has(p)) {
@@ -227,9 +243,9 @@ export class ViewTree {
 			}
 		}
 		const previous = this.#entries.get(e.path);
-		if (previous?.kind === "folder" && e.kind === "file") changed.push(...this.#removeBelow(e.path, replaced));
+		if (previous?.kind === "folder" && e.kind !== "folder") changed.push(...this.#removeBelow(e.path, replaced));
 		const next = entryOf(e, previous, this.#withReceipt(parentOf(e.path)));
-		if (previous?.kind === "file" && (next.kind !== "file" || next.version !== previous.version))
+		if (previous && previous.kind !== "folder" && (next.kind !== previous.kind || next.version !== previous.version))
 			replaced?.(previous);
 		if (!previous || !same(previous, next) || previous.implicit) changed.push(e.path);
 		this.#link(next);
@@ -237,12 +253,12 @@ export class ViewTree {
 	}
 
 	/** Removes a path and everything under it; an implicit folder left empty goes too. `replaced` hears of every file
-	 * entry removed, the path's descendants included. */
+	 * or link entry removed, the path's descendants included. */
 	remove(path: string, replaced?: (old: TreeEntry) => void): string[] {
 		if (path === "" || !this.#entries.has(path)) return [];
 		const changed = this.#removeBelow(path, replaced);
 		const removed = this.#entries.get(path);
-		if (removed?.kind === "file") replaced?.(removed);
+		if (removed && removed.kind !== "folder") replaced?.(removed);
 		this.#unlink(path);
 		changed.push(path);
 		for (let p = parentOf(path); p !== ""; p = parentOf(p)) {
@@ -254,8 +270,8 @@ export class ViewTree {
 		return changed;
 	}
 
-	/** Applies one feed change. `replaced` hears of every file entry the change removes or replaces, the descendants of a
-	 * folder it removes included, so a reader of an old version can keep it. */
+	/** Applies one feed change. `replaced` hears of every file or link entry the change removes or replaces, the
+	 * descendants of a folder it removes included, so a reader of an old version can keep it. */
 	apply(change: FeedChange, replaced?: (old: TreeEntry) => void): string[] {
 		switch (change.op) {
 			case "delete":
@@ -319,7 +335,7 @@ export class ViewTree {
 			const child = `${path}/${name}`;
 			changed.push(...this.#removeBelow(child, replaced));
 			const removed = this.#entries.get(child);
-			if (removed?.kind === "file") replaced?.(removed);
+			if (removed && removed.kind !== "folder") replaced?.(removed);
 			this.#unlink(child);
 			changed.push(child);
 		}

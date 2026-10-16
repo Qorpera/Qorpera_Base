@@ -549,7 +549,15 @@ async function folderMachine() {
 		"22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
 		`25 22 0:24 / ${join(m.root, "run")} rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,size=1638400k,mode=755`,
 	];
-	const program = { answer: "mount" as "mount" | "close" | "silent", starts: 0, state: "ActiveState=inactive\n" };
+	const program = {
+		answer: "mount" as "mount" | "close" | "silent",
+		// How the kernel lists the program's mount: `fuse` for its direct mount as root (#1007's mountinfo, Q3's run),
+		// `fuse.qorpera` through fusermount.
+		type: "fuse" as "fuse" | "fuse.qorpera",
+		source: "qorpera-company",
+		starts: 0,
+		state: "ActiveState=inactive\n",
+	};
 	/** What the unit's view file and state folder held at each stop and start. */
 	const seen: { command: string; view: unknown; state: string[] }[] = [];
 	const delegate = m.system;
@@ -563,7 +571,7 @@ async function folderMachine() {
 			});
 		if (args[0] === "stop") {
 			// The program ends and ExecStopPost takes its mount away; a failed unit stays failed.
-			const at = mounts.findIndex((line) => line.includes(" fuse.qorpera "));
+			const at = mounts.findIndex((line) => line.includes(" qorpera-company "));
 			if (at >= 0) mounts.splice(at, 1);
 			if (!program.state.startsWith("ActiveState=failed")) program.state = "ActiveState=inactive\n";
 		} else if (args[0] === "reset-failed") {
@@ -574,7 +582,7 @@ async function folderMachine() {
 			program.starts += 1;
 			if (program.answer === "mount") {
 				mounts.push(
-					`90 22 0:61 / ${mountpoint} rw,nosuid,nodev shared:40 - fuse.qorpera qorpera-company rw,allow_other`,
+					`90 22 0:61 / ${mountpoint} rw,nosuid,nodev,noatime master:380 - ${program.type} ${program.source} rw,user_id=0,group_id=0,default_permissions,allow_other`,
 				);
 				program.state = "ActiveState=active\nResult=success\nExecMainCode=0\nExecMainStatus=0\n";
 			} else if (program.answer === "close")
@@ -593,7 +601,7 @@ async function folderMachine() {
 	await prepareMachineGuest(m.machineId, 1, m.ports);
 	/** The program exited: its mount is gone, and systemd has not started it again yet. */
 	const exited = () => {
-		mounts.splice(mounts.findIndex((line) => line.includes(" fuse.qorpera ")));
+		mounts.splice(mounts.findIndex((line) => line.includes(" qorpera-company ")));
 		program.state = "ActiveState=activating\nResult=exit-code\nExecMainCode=2\nExecMainStatus=9\n";
 	};
 	return { ...m, system, folderRoot, mountpoint, mounts, program, seen, exited };
@@ -830,7 +838,7 @@ describe("company folder on the machine", () => {
 		});
 		// A stop that left the old mount in place (its umount failed).
 		const stop = m.system.getMockImplementation()!;
-		const mount = m.mounts.find((line) => line.includes(" fuse.qorpera "))!;
+		const mount = m.mounts.find((line) => line.includes(" qorpera-company "))!;
 		m.system.mockImplementation(async (executable, args) => {
 			const out = await stop(executable, args);
 			if (args[0] === "stop" && !m.mounts.includes(mount)) m.mounts.push(mount);
@@ -932,7 +940,7 @@ describe("company folder on the machine", () => {
 			mount: "mounted",
 		});
 		// The unit is active but its mount is gone: the same view again starts nothing and is not mounted.
-		m.mounts.splice(m.mounts.findIndex((line) => line.includes(" fuse.qorpera ")));
+		m.mounts.splice(m.mounts.findIndex((line) => line.includes(" qorpera-company ")));
 		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports)).toMatchObject({
 			mount: "unanswered",
 		});
@@ -947,6 +955,20 @@ describe("company folder on the machine", () => {
 		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), left.ports)).toMatchObject({
 			mount: "closed",
 		});
+	});
+
+	it("takes the program's mount as root (`fuse`) and through fusermount (`fuse.qorpera`), and no other source", async () => {
+		for (const [type, source, mount] of [
+			["fuse", "qorpera-company", "mounted"],
+			["fuse.qorpera", "qorpera-company", "mounted"],
+			["fuse", "other-company", "unanswered"],
+			["fuse.qorpera", "other-company", "unanswered"],
+		] as const) {
+			const m = await folderMachine();
+			Object.assign(m.program, { type, source });
+			expect(await mountMachineFolder(Buffer.from(JSON.stringify(aView())), m.ports)).toMatchObject({ mount });
+			expect(m.mounts.at(-1)).toContain(` - ${type} ${source} `);
+		}
 	});
 
 	it("refuses a view it cannot keep in memory, a view not in its exact shape and a machine not prepared for this boot", async () => {

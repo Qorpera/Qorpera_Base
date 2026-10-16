@@ -38,6 +38,16 @@ export const COMPANY: Record<string, string> = {
 	"View the version from {when}": "Vis versionen fra {when}",
 	Files: "Filer",
 	"More files": "Flere filer",
+	// Restoring an earlier version from the history (RUNTIME-FOLDER-LINKS.md, LK6)
+	Restore: "Gendan",
+	"Restore the version from {when}": "Gendan versionen fra {when}",
+	"Restored {name}.": "{name} er gendannet.",
+	"{name} could not be restored just now.": "{name} kunne ikke gendannes lige nu.",
+	"{name} could not be restored.": "{name} kunne ikke gendannes.",
+	"{name} changed in the meantime, so it was not restored.": "{name} blev ændret imens, så den blev ikke gendannet.",
+	"{name} is a folder now, so this version can't be restored.":
+		"{name} er nu en mappe, så denne version kan ikke gendannes.",
+	"You may not change {name}.": "Du må ikke ændre {name}.",
 
 	// The live Company File (app/views/live-company-file.ts)
 	"Retry opening Company File": "Prøv at åbne Virksomhedsfilen igen",

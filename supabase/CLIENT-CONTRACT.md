@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-134 functions, grouped for navigation. Signatures: see the migration that defines each.
+119 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -139,7 +139,7 @@ they answer 42501 "native host call is refused".
   folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (15)
+### Credentials, provider connections, identity recovery (17)
 
 - `qorpera_begin_chatgpt_plan_sign_in` (20260928329830, switched off): begins a
   ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
@@ -229,31 +229,26 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (10)
+### Objects, artifacts, retention (6)
 
 A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
 answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
 with legacy sweep E1 (20260930400000).
+The raw object reads and uploads by hash and the read lease went with legacy sweep E3 (20260930450000).
 
 - `qorpera_append_object_reachability_entries`
-- `qorpera_authorize_profile_object_download`
-- `qorpera_authorize_profile_object_upload`
 - `qorpera_begin_object_reachability_graph`
 - `qorpera_complete_object_reachability_graph`
 - `qorpera_create_object_restore_proof`
 - `qorpera_get_object_reachability_graph`
-- `qorpera_issue_profile_object_read_lease`
 - `qorpera_profile_object_writes_allowed`
-- `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, workspaces (5)
+### Company File and snapshots (3)
 
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
 - `qorpera_get_company_snapshot`
-- `qorpera_list_company_snapshots`
-- `qorpera_list_company_workspaces`
 
 
 ### Organization and staff (4)
@@ -361,7 +356,7 @@ with legacy sweep E1 (20260930400000).
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
-### Conversations, turns, wakes (18)
+### Conversations, turns, wakes (13)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
   the agent raised in the thread. See "Thread interactions" under §6.
@@ -369,15 +364,9 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
 - `qorpera_close_shared_session`
 - `qorpera_configure_session_execution`
-- `qorpera_create_shared_session`
-- `qorpera_create_shared_session_v2`
-- `qorpera_create_shared_session_v4`
-- `qorpera_ensure_member_private_staff_session`
 - `qorpera_ensure_staff_session`
-- `qorpera_get_shared_session_by_client`
 - `qorpera_list_session_inputs`
 - `qorpera_list_session_turn_requests`
-- `qorpera_list_shared_sessions`
 - `qorpera_list_shared_sessions_page`
 - `qorpera_list_wake_occurrences`
 - `qorpera_read_session_events`
@@ -393,17 +382,14 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
-### Execution, sponsors, runners, computers (31)
+### Execution, sponsors, runners, computers (27)
 
-- `qorpera_begin_operation_receipt`
 - `qorpera_cancel_runner_job`
 - `qorpera_cancel_worker_run(p_run_id)` — a member's Stop of an in-house worker's own run (no conversation), by run id: the job's creator (the member whose work dispatched the worker) or an owner or admin, through `qorpera_cancel_runner_job`; returns the control below (20260930002800)
-- `qorpera_complete_operation_receipt`
 - `qorpera_configure_runner_model_policy`
 - `qorpera_create_execution_sponsor_binding`
 - `qorpera_create_member_execution_sponsor`
 - `qorpera_create_runner_registration`
-- `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
 - `qorpera_get_worker_run_control(p_run_id)` — `{run_id, status, can_cancel}` of an in-house worker's own run, for any member who can read the company; `can_cancel` is the Stop's rule (20260930002800). A `run_no_progress` member notice names such a run with `worker: true`
@@ -418,7 +404,6 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_list_staff_execution_activity`
 - `qorpera_reissue_runner_activation`
 - `qorpera_resolve_failed_execution_run`
-- `qorpera_resolve_operation_receipt`
 - `qorpera_resolve_run_operation_receipt`
 - `qorpera_revoke_runner`
 - `qorpera_set_execution_sponsor_status`
@@ -1056,6 +1041,39 @@ gave it stops being an owner or administrator or leaves: promoting them again re
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
 
+### Coding MCP sign-ins (20260930440000_coding_mcp_sign_ins)
+
+The API key a coding session's MCP server needs (an HTTP MCP server that asks for a sign-in). Each is a vault secret
+with the connector id `mcp`, owned by the company (owners and administrators start those) or by the member, captured
+like any other secret but started only with `qorpera_begin_coding_mcp_sign_in`, which names the server: a plain
+`qorpera_begin_cloud_secret_capture` under `mcp` never completes. The broker forwards the session's requests to that
+server with the key in a header, so the key never reaches the coding machine. A value never comes back to a client.
+
+A server is named by its origin, `https://host[:port]`: lower case, no path, no `:443` (so an origin has one spelling),
+a DNS name of two labels or more whose last label is not a number (decimal or `0x` hex, so no address in any spelling a
+URL parser reads as one) and not one kept for private networks (`localhost`, `local`, `internal`, `lan`, `home`, `corp`,
+`test`, `example` and others). The broker also refuses a private address when it connects. There is one active sign-in
+per owner and origin. A member's own sign-in reaches only that member's coding sessions; the company's reaches every
+coding session in the company. For an origin both have, the company's wins. Disconnect (`qorpera_revoke_cloud_secret`)
+ends a sign-in; a member's own end when they leave, as their other secrets do. Rotate one with
+`qorpera_begin_cloud_secret_capture` and the existing secret (connector `mcp`, its `secretName`).
+
+- `qorpera_begin_coding_mcp_sign_in(profile, environment, ownerKind, origin, headerName = 'authorization',
+  headerPrefix = 'Bearer ')`: starts the capture of an API key for the server at `origin`, owned by the company
+  (`ownerKind: "company"`, owners and administrators) or by the caller (`"member"`, any member who may write). The key
+  travels in `headerName` (a lower-case header name, never one the relay or HTTP sets itself: `host`, `cookie`,
+  `content-type`, `origin`, the `proxy-`, `x-forwarded-`, `mcp-` and `sec-` families and others) after `headerPrefix`
+  (empty, or one word and a space). Answers the capture (`qorpera.cloud-secret-capture/v1`: `ticketId`,
+  `captureCapability`, `serviceOrigin`, `scope`, `expiresAt`; the broker's screen takes the key) and `signIn:
+  {schema: "qorpera.coding-mcp-sign-in/v1", secretId, origin, kind: "api_key", headerName, headerPrefix}`. Refusals:
+  22023 "An MCP server is named by its origin, https://host[:port]", 22023 "That header is not available for an MCP
+  sign-in", and the capture's own (42501 "secret capture requires company write access", 22023 "secret capture scope
+  is invalid" for a company sign-in a contributor starts, 23505 "an active secret already has this name" for an origin
+  that already has one of this owner's).
+- `qorpera_list_coding_mcp_sign_ins(profile, environment)`: `[{schema: "qorpera.coding-mcp-sign-in/v1", secretId,
+  secretName, origin, kind, headerName, headerPrefix, ownerKind, version, createdAt, updatedAt}]`, the company's
+  active sign-ins and the caller's own, by origin. Every member may read it, a viewer too; anyone else gets `[]`.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
@@ -1332,7 +1350,7 @@ does locally that the contract forbids.
 | `profile:materialize-cloud` | desktop-only transitional (local checkout) — no web equivalent by design |
 | `profile:migrate-local` | desktop-only transitional — no web equivalent by design (qorpera_promote_local_profile went with legacy sweep D1, 20260930330000) |
 | `room:archive` | qorpera_close_shared_session |
-| `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
+| `room:create` | rooms: Order 3 fan-out (the plain shared session creators went with legacy sweep D15, 20260930414000) |
 | `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |

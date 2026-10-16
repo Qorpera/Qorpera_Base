@@ -1059,7 +1059,8 @@ the old code until the reset, so it is removed in C6:
   proposals. They are replaced by commit or sequence references.
 - **The legacy snapshot lane:**
   - `qorpera_prepare/publish_company_file_revision` (legacy sweep D2,
-    20260930331000, dropped them), `commit_company_snapshot`;
+    20260930331000, dropped them), `commit_company_snapshot` (dropped by D8,
+    20260930410000, with the workspace ensure and the lists);
   - `submit/rebase/accept_company_proposal` (dropped by D2 too), the runner
     revision lane;
   - `promote_company_file_graph_to_supabase`;
