@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ALL_STARTED, describePlan, planChanged, planScript, splitPlan } from "./run-on-node-plan.mjs";
+import { ALL_STARTED, describePlan, planChanged, planScript, STOP, splitPlan } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
 	machineLabel,
@@ -51,6 +51,9 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     its own machine, all at once (N at most the machines' count). One exit code, status
                                     and record: the run passes only if every part passed. With one machine open, or
                                     --machine, one part
+         --fail-fast                changed: stop at the first failed step: no step starts after it, the steps running
+                                    side by side end, and so do the other parts' (pr-loop's batch runs, which are
+                                    bisected when they fail). Without --cores, the shortest steps first
          --tree NAME               copy against the machine's shared base copy NAME, not this checkout's own,
                                     comparing file contents (for checkouts made fresh per run, such as
                                     pr-loop's merged trees)
@@ -152,6 +155,7 @@ export function parseArgs(argv) {
 		front: false,
 		cores: null,
 		parts: null,
+		failFast: false,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -166,6 +170,7 @@ export function parseArgs(argv) {
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
 		else if (flag === "--front") options.front = true;
+		else if (flag === "--fail-fast") options.failFast = true;
 		else if (["--env", "--record", "--base", "--machine", "--tree", "--cores", "--parts"].includes(flag)) {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
@@ -205,6 +210,7 @@ export function parseArgs(argv) {
 	let extra = [];
 	if (options.cores && rest[0] !== "changed") throw new Error("--cores is for changed");
 	if (options.parts && rest[0] !== "changed") throw new Error("--parts is for changed");
+	if (options.failFast && rest[0] !== "changed") throw new Error("--fail-fast is for changed");
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -792,15 +798,17 @@ const WORST_FIRST = ["setup-failed", "unknown", "install-failed", "failed"];
  * `machine` every part's machine (node02+node01). The run passes only if every part passed. Otherwise the part that
  * went worst (`WORST_FIRST`, the first such part on a tie) gives the run its result and its exit code (1 for an exit of
  * 0), whatever the order of the parts, so a failure one part ran never stands for a part that ran no steps, and a
- * machine that died posts the harness's error. A failed run's failed steps are every part's, in plan order (`order`);
- * none when a failed part names none, as a single run cut off mid-way shows. */
+ * machine that died posts the harness's error. A failed run's failed steps are every part's, in plan order (`order`),
+ * and so are the steps --fail-fast stopped; none when a failed part names neither, as a single run cut off mid-way shows. */
 export function joinRecords(records, { order, ...common }) {
 	const notPassed = records.filter((record) => record.result !== "passed");
 	const rank = (record) => WORST_FIRST.indexOf(record.result);
 	const worst = notPassed.reduce((found, record) => (found && rank(found) <= rank(record) ? found : record), null);
 	const result = worst ? worst.result : "passed";
-	const failedSteps = [...new Set(records.flatMap((record) => record.failedSteps ?? []))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-	const named = result === "failed" && notPassed.every((record) => record.failedSteps?.length);
+	const every = (key) => [...new Set(records.flatMap((record) => record[key] ?? []))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+	const failedSteps = every("failedSteps");
+	const stoppedSteps = every("stoppedSteps");
+	const named = result === "failed" && notPassed.every((record) => record.failedSteps?.length || record.stoppedSteps?.length);
 	return {
 		schema: "qorpera.run-on-node/v1",
 		machine: records.map((record) => record.machine).join("+"),
@@ -810,6 +818,7 @@ export function joinRecords(records, { order, ...common }) {
 		exitCode: worst ? worst.exitCode || 1 : 0,
 		result,
 		...(named ? { failedSteps } : {}),
+		...(named && stoppedSteps.length ? { stoppedSteps } : {}),
 		parts: records,
 	};
 }
@@ -878,7 +887,7 @@ async function main() {
 			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
-		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores, stepWorkers })];
+		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores, stepWorkers, failFast: options.failFast })];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
@@ -916,7 +925,7 @@ async function main() {
 			? split.map((group, k) => ({
 					run: `${run}-p${k + 1}`,
 					order: [...ranked.slice(k), ...ranked.slice(0, k)],
-					command: ["bash", "-c", planScript(group.steps, { cores: options.cores, stepWorkers })],
+					command: ["bash", "-c", planScript(group.steps, { cores: options.cores, stepWorkers, failFast: options.failFast })],
 					build: build ?? group.build,
 					changed: { ...changedPlan, steps: group.steps.map((step) => step.name) },
 				}))
@@ -1048,8 +1057,8 @@ async function main() {
 			github.abandon("the working tree changed while it was copied: this run is not the commit's");
 
 		if (parts.length === 1) return finish(await runPart(parts[0], started));
-		// Every part runs to its end whatever the others do. The run passes only when every part passed: a part whose
-		// machine died or that was cut off makes the whole run fail (joinRecords).
+		// Every part runs to its end whatever the others do, unless --fail-fast stops them (runPart). The run passes only
+		// when every part passed: a part whose machine died or that was cut off makes the whole run fail (joinRecords).
 		const outcomes = await Promise.allSettled(parts.map((part) => runPart(part, started)));
 		const rejected = outcomes.find((outcome) => outcome.status === "rejected");
 		if (rejected) throw rejected.reason;
@@ -1064,6 +1073,7 @@ async function main() {
 					lane: "cpu",
 					...(options.front ? { front: true } : {}),
 					...(options.cores ? { cores: options.cores } : {}),
+					...(options.failFast ? { failFast: true } : {}),
 					changed: changedPlan,
 					startedAt: new Date(started).toISOString(),
 					elapsedSeconds: (Date.now() - started) / 1000,
@@ -1109,6 +1119,19 @@ async function main() {
 			parts.length > 1,
 		);
 		const finished = Date.now();
+		part.ended = true;
+		// --fail-fast: a part that did not pass stops the others still running; their steps end and no more start (planScript).
+		if (options.failFast && code !== 0)
+			for (const [k, other] of parts.entries()) {
+				if (other.ended) continue;
+				console.error(`== run-on-node: part ${parts.indexOf(part) + 1} failed: stopping part ${k + 1} (--fail-fast)`);
+				try {
+					// A part whose directory is gone has ended.
+					sshCapture(other.t, `sudo -n touch ${other.runDir}/${STOP} 2>/dev/null || [ ! -d ${other.runDir} ]`);
+				} catch (error) {
+					console.error(`run-on-node: could not stop part ${k + 1}: ${error.message}`);
+				}
+			}
 		let status = {};
 		try {
 			status = parseStatus(sshCapture(t, `cat ${part.runDir}/.run-on-node-status 2>/dev/null || true`));
@@ -1148,6 +1171,7 @@ async function main() {
 			lane: options.quick ? "quick" : "cpu",
 			...(options.front ? { front: true } : {}),
 			...(options.cores ? { cores: options.cores } : {}),
+			...(options.failFast ? { failFast: true } : {}),
 			cpuSlot: status.slot ? Number(status.slot) : null,
 			queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
 			vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
@@ -1175,6 +1199,7 @@ async function main() {
 							? "unknown"
 							: "setup-failed",
 			...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
+			...(status.stopped_steps ? { stoppedSteps: status.stopped_steps.split(",").filter(Boolean) } : {}),
 		};
 	}
 }

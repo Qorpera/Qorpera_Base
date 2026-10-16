@@ -14,6 +14,7 @@ import {
 	RUNNER_ORCHESTRATOR_WAITING,
 	RUNTIME_WAITING,
 	STEPS,
+	STOP,
 	splitPlan,
 } from "./run-on-node-plan.mjs";
 
@@ -364,6 +365,140 @@ test("side by side: a worker killed, or one that cannot write its result, fails 
 		assert.match(result.stdout, /== changed: killed\n== changed: killed: its worker ended \(exit 137\) without a result\n== changed: killed FAILED after \d+ s\n/);
 		assert.match(result.stdout, /== changed: lost\nlost-ran\n== changed: lost: its worker ended \(exit 1\) without a result\n== changed: lost FAILED after \d+ s\n/);
 		assert.deepEqual(readFileSync(join(cwd, ".run-on-node-status"), "utf8").trim().split("=")[1].split(",").sort(), ["killed", "lost"]);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+/** Whether the process is gone: no longer in /proc, or a zombie nobody has reaped yet. */
+function gone(pid) {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z");
+	} catch {
+		return true;
+	}
+}
+
+test("fail-fast, one step at a time: the shortest first, and no step starts after a failure or once the stop file is there", () => {
+	const steps = [
+		{ name: "long", commands: ["echo long-ran"], seconds: 100 },
+		{ name: "bad", commands: ["echo bad-ran", "false"], seconds: 5 },
+		{ name: "short", commands: ["echo short-ran"], seconds: 1 },
+		{ name: "after", commands: ["echo after-ran"], seconds: 50 },
+	];
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	const status = join(cwd, ".run-on-node-status");
+	try {
+		const run = (list) => spawnSync("bash", ["-c", planScript(list, { failFast: true })], { cwd, encoding: "utf8" });
+		const failed = run(steps);
+		assert.equal(failed.status, 1, failed.stdout);
+		assert.match(
+			failed.stdout,
+			/^== changed: short\nshort-ran\n== changed: short passed in \d+ s\n== changed: bad\nbad-ran\n== changed: bad FAILED after \d+ s\n== changed: failed: bad\n== changed: stopped \(--fail-fast\): after long\n$/,
+		);
+		assert.equal(readFileSync(status, "utf8"), "failed_steps=bad\nstopped_steps=after,long\n");
+		// Another part failed: no step starts.
+		rmSync(status);
+		const fine = steps.filter((step) => step.name !== "bad");
+		writeFileSync(join(cwd, STOP), "");
+		const stopped = run(fine);
+		assert.equal(stopped.status, 1, stopped.stdout);
+		assert.equal(stopped.stdout, "== changed: stopped (--fail-fast): short after long\n");
+		assert.equal(readFileSync(status, "utf8"), "failed_steps=\nstopped_steps=short,after,long\n");
+		rmSync(status);
+		rmSync(join(cwd, STOP));
+		const passed = run(fine);
+		assert.equal(passed.status, 0, passed.stdout);
+		assert.match(passed.stdout, /short-ran\n[^]*after-ran\n[^]*long-ran\n[^]*== changed: all steps passed\n$/);
+		assert.equal(existsSync(status), false);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("fail-fast side by side: a failure ends the running steps' whole process trees and their hosted-db containers, and starts no more", () => {
+	const bin = mkdtempSync(join(tmpdir(), "plan-docker-"));
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	try {
+		// A stand-in docker lists a container named after the stopped step's grandchild and one named after another
+		// process, and logs what it is asked to remove.
+		writeFileSync(
+			join(bin, "docker"),
+			`#!/bin/sh\nif [ "$1" = ps ]; then echo "c1 qorpera-hosted-db-$(cat '${cwd}/grandchild.pid')-0123abcd"; echo "c2 qorpera-hosted-db-1-0123abcd"; else echo "$*" >>'${cwd}/docker.log'; fi\n`,
+			{ mode: 0o755 },
+		);
+		const steps = [
+			// A child that starts a grandchild, both waiting; the step waits for the child.
+			{ name: "slow", commands: ["sh -c 'sleep 60 & echo $! >grandchild.pid; wait' & echo $! >child.pid; wait"], seconds: 100 },
+			{ name: "bad", commands: ["until [ -e grandchild.pid ]; do sleep 0.1; done; echo bad-out; false"], seconds: 50 },
+			// No room for it beside the other two (2 cores).
+			{ name: "later", commands: ["echo later-ran"], seconds: 1 },
+		];
+		const started = Date.now();
+		const result = spawnSync("bash", ["-c", planScript(steps, { cores: 2, failFast: true })], {
+			cwd,
+			encoding: "utf8",
+			env: { ...env(), PATH: `${bin}:${process.env.PATH}` },
+			timeout: 30_000,
+		});
+		assert.equal(result.status, 1, result.stdout);
+		// Long before the 60 s sleep would end.
+		assert.ok(Date.now() - started < 20_000, String(Date.now() - started));
+		assert.match(result.stdout, /== changed: bad\nbad-out\n== changed: bad FAILED after \d+ s\n== changed: slow stopped after \d+ s \(--fail-fast\)\n/);
+		assert.doesNotMatch(result.stdout, /later-ran|== changed: (slow|later)\n/);
+		assert.match(result.stdout, /== changed: failed: bad\n== changed: stopped \(--fail-fast\): slow later\n$/);
+		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "failed_steps=bad\nstopped_steps=slow,later\n");
+		for (const file of ["child.pid", "grandchild.pid"]) assert.ok(gone(Number(readFileSync(join(cwd, file), "utf8"))), file);
+		assert.equal(readFileSync(join(cwd, "docker.log"), "utf8"), "rm -f -v c1\n");
+	} finally {
+		rmSync(bin, { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("fail-fast side by side: an alone part that fails stops the rest at once, and so does the stop file", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	const status = join(cwd, ".run-on-node-status");
+	try {
+		const run = (steps) => spawnSync("bash", ["-c", planScript(steps, { cores: 2, failFast: true })], { cwd, encoding: "utf8", env: env(), timeout: 30_000 });
+		const alone = [
+			{ name: "lint", commands: [], alone: ["echo lint-out", "false"] },
+			{ name: "typecheck", commands: [], alone: ["echo typecheck-ran"] },
+			{ name: "web", commands: ["echo web-rest"], alone: ["echo web-alone"] },
+		];
+		const lint = run(alone);
+		assert.equal(lint.status, 1, lint.stdout);
+		assert.match(lint.stdout, /^== changed: lint\nlint-out\n== changed: lint FAILED after \d+ s\n/);
+		assert.doesNotMatch(lint.stdout, /typecheck-ran|web-alone|web-rest/);
+		assert.match(lint.stdout, /== changed: failed: lint\n== changed: stopped \(--fail-fast\): typecheck web\n$/);
+		assert.equal(readFileSync(status, "utf8"), "failed_steps=lint\nstopped_steps=typecheck,web\n");
+		rmSync(status);
+		// A step with a rest whose alone part failed fails without running its rest.
+		const half = run([{ name: "half", commands: ["echo half-rest"], alone: ["false"] }, ...alone.slice(1)]);
+		assert.equal(half.status, 1, half.stdout);
+		assert.match(half.stdout, /^== changed: half\n== changed: half FAILED after \d+ s\n/);
+		assert.doesNotMatch(half.stdout, /half-rest|typecheck-ran|web-alone|web-rest/);
+		assert.equal(readFileSync(status, "utf8"), "failed_steps=half\nstopped_steps=typecheck,web\n");
+		rmSync(status);
+		// The stop file another part's failure leaves, here made by the running step itself: it stops, and the step
+		// waiting for room (2 cores) never starts.
+		const stopped = run([
+			{ name: "slow", commands: [`touch ${STOP}; sleep 60`], seconds: 100 },
+			{ name: "later", commands: ["echo later-ran"], seconds: 1, cores: 2 },
+		]);
+		assert.equal(stopped.status, 1, stopped.stdout);
+		assert.match(stopped.stdout, /^== changed: slow stopped after \d+ s \(--fail-fast\)\n/);
+		assert.doesNotMatch(stopped.stdout, /later-ran|failed:/);
+		assert.match(stopped.stdout, /== changed: stopped \(--fail-fast\): slow later\n$/);
+		assert.equal(readFileSync(status, "utf8"), "failed_steps=\nstopped_steps=slow,later\n");
+		rmSync(status);
+		// The stop file there from the start: not even an alone part runs.
+		const none = run(alone.slice(1));
+		assert.equal(none.status, 1, none.stdout);
+		assert.doesNotMatch(none.stdout, /typecheck-ran|web-alone|web-rest|failed:/);
+		assert.match(none.stdout, /== changed: stopped \(--fail-fast\): typecheck web\n$/);
+		assert.equal(readFileSync(status, "utf8"), "failed_steps=\nstopped_steps=typecheck,web\n");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
