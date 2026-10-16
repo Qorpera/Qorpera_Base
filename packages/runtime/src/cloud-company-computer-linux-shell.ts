@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { type FileHandle, lstat, mkdtemp, readdir, rm, statfs, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdtemp, readdir, readlink, rm, statfs, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { idleRuleBusy, idleRuleProcessIoBytes } from "@qorpera/contracts";
+import {
+	COMPANY_COMPUTER_COMMAND_OTHER_RUN,
+	type CompanyComputerCommandFolder,
+	type CompanyComputerCommandFolderEvent,
+	type CompanyComputerCommandFolders,
+	type CompanyComputerCommandRelease,
+} from "./cloud-company-computer-command-folder.ts";
 import type {
 	CompanyComputerGuestBoundary,
 	CompanyComputerGuestShell,
@@ -49,9 +57,12 @@ export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;
 /** Finished commands remembered for a later read or list. */
 const FINISHED_KEPT = 64;
 const LISTED = 40;
-/** Where every command starts. The company folder mount will replace this with `/company`. */
-export function companyComputerShellWorkingDirectory(layout: CompanyComputerGuestLayout): string {
-	return layout.workbenchRoot;
+/**
+ * Where the shell starts: its home. With the company folder, the folder launcher starts every command in `/company`
+ * (F3 4d); without it, a command starts here (F3 4f-1b: never the workbench).
+ */
+export function companyComputerShellWorkingDirectory(): string {
+	return "/home/qorpera";
 }
 /** Image configuration a shell may read. Nothing here holds a secret; missing entries are skipped. */
 const SHELL_IMAGE_FILES = [
@@ -123,7 +134,51 @@ interface Session {
 	total: number;
 	readTo: number;
 	waiters: Set<() => void>;
+	/** With the company folder: the command's own view, mount and run (F3 4d, "A command's mount"). */
+	folder?: CompanyComputerCommandFolder;
+	/** Ends its folder's start when the command ends before it ran. */
+	abort?: AbortController;
+	/** What its folder's last boundary let reach the run that started it. */
+	released?: Mark;
 }
+
+/** A session's output and end up to some moment: what one boundary covers. */
+interface Mark {
+	total: number;
+	state: Session["state"];
+	exitCode?: number;
+	signal?: string;
+	note?: string;
+}
+
+function mark(session: Session): Mark {
+	return {
+		total: session.total,
+		state: session.state,
+		...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
+		...(session.signal === undefined ? {} : { signal: session.signal }),
+		...(session.note === undefined ? {} : { note: session.note }),
+	};
+}
+
+function sameMark(a: Mark, b: Mark): boolean {
+	return (
+		a.total === b.total &&
+		a.state === b.state &&
+		a.exitCode === b.exitCode &&
+		a.signal === b.signal &&
+		a.note === b.note
+	);
+}
+
+/** Why a command ended without running in the company folder, and why it ended with the folder gone. */
+const FOLDER_NO_SHELL = "The command could not start in the company folder; start it again.";
+const FOLDER_LOST = "The company folder stopped answering for this command, so it was stopped; start it again.";
+/** A boundary's answer can take this long; an output read leaves it this much of the reply's time. */
+const FOLDER_READ_RESERVE_MS = 8000;
+const FOLDER_REPLY_RESERVE_MS = 2000;
+/** A read for another run also leaves its take-in this much: the registry's call takes at most 3 s. */
+const FOLDER_INHERIT_RESERVE_MS = 3000;
 
 /** The physical namespace behind one shell. Test seams replace it with an in-process host. */
 export interface CompanyComputerShellEnvironment {
@@ -133,6 +188,8 @@ export interface CompanyComputerShellEnvironment {
 	stop(): Promise<void>;
 	/** The namespace's outermost process, for memory and task accounting from outside it. */
 	readonly pid?: number;
+	/** Its pid namespace's init, as seen from outside: the shell a company folder command joins. */
+	readonly init?: number;
 }
 
 export type CompanyComputerShellEnvironmentLauncher = (
@@ -195,9 +252,23 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#releasing = 0;
 	#processes = 0;
 	#closing?: Promise<void>;
+	/** With the company folder, every command runs through the folder helper with a mount of its own, which the
+	 * drain of the shell's screen waits for. */
+	readonly #folders?: { commands: CompanyComputerCommandFolders; environmentId: string; screenId: string };
 
-	constructor(launch: CompanyComputerShellEnvironmentLauncher) {
+	constructor(
+		launch: CompanyComputerShellEnvironmentLauncher,
+		options: { folders?: CompanyComputerCommandFolders; environmentId?: string; screenId?: string } = {},
+	) {
 		this.#launch = launch;
+		if (options.folders) {
+			if (!options.environmentId || !options.screenId) throw new Error("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
+			this.#folders = {
+				commands: options.folders,
+				environmentId: options.environmentId,
+				screenId: options.screenId,
+			};
+		}
 	}
 
 	/** Anything still running in the shell keeps the computer from powering off. */
@@ -238,30 +309,65 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 				this.#end(session, "exited");
 			}
 		} else if (event.t === "out") {
-			const bytes = Buffer.from(event.data, "base64");
-			if (session.state === "exited" || session.state === "stopped" || !bytes.length) return;
-			session.chunks.push(bytes);
-			session.total += bytes.length;
-			// Keep the newest bytes; the oldest go first.
-			while (session.total - session.keptFrom > COMPANY_COMPUTER_SHELL_KEPT_OUTPUT && session.chunks.length) {
-				const excess = session.total - session.keptFrom - COMPANY_COMPUTER_SHELL_KEPT_OUTPUT;
-				const first = session.chunks[0];
-				if (first.length <= excess) {
-					session.chunks.shift();
-					session.keptFrom += first.length;
-				} else {
-					session.chunks[0] = first.subarray(excess);
-					session.keptFrom += excess;
-				}
-			}
+			this.#append(session, Buffer.from(event.data, "base64"));
 			return;
 		} else if (event.t === "exit") {
 			if (session.state === "exited" || session.state === "stopped") return;
-			session.state = session.stopRequested ? "stopped" : "exited";
-			this.#end(session, session.stopRequested ? "stopped" : "exited");
-			if (event.code !== null) session.exitCode = event.code;
-			if (event.signal !== null) session.signal = event.signal;
+			this.#exit(session, event);
 		}
+		this.#wake(session);
+		this.#forget();
+	}
+
+	#append(session: Session, bytes: Buffer): void {
+		if (session.state === "exited" || session.state === "stopped" || !bytes.length) return;
+		session.chunks.push(bytes);
+		session.total += bytes.length;
+		// Keep the newest bytes; the oldest go first.
+		while (session.total - session.keptFrom > COMPANY_COMPUTER_SHELL_KEPT_OUTPUT && session.chunks.length) {
+			const excess = session.total - session.keptFrom - COMPANY_COMPUTER_SHELL_KEPT_OUTPUT;
+			const first = session.chunks[0];
+			if (first.length <= excess) {
+				session.chunks.shift();
+				session.keptFrom += first.length;
+			} else {
+				session.chunks[0] = first.subarray(excess);
+				session.keptFrom += excess;
+			}
+		}
+	}
+
+	#exit(session: Session, event: { code: number | null; signal: string | null }): void {
+		session.state = session.stopRequested ? "stopped" : "exited";
+		this.#end(session, session.stopRequested ? "stopped" : "exited");
+		if (event.code !== null) session.exitCode = event.code;
+		if (event.signal !== null) session.signal = event.signal;
+	}
+
+	/** What a command's folder reports: its output and exit from the helper, or that the helper went. */
+	#folderEvent(session: Session, event: CompanyComputerCommandFolderEvent): void {
+		if (event.t === "out") {
+			this.#append(session, Buffer.from(event.data, "base64"));
+			return;
+		}
+		if (session.state === "exited" || session.state === "stopped") return;
+		if (event.t === "exit") this.#exit(session, event);
+		else {
+			session.state = "stopped";
+			session.note = FOLDER_LOST;
+			this.#end(session, "closed");
+		}
+		this.#wake(session);
+		this.#forget();
+	}
+
+	/** A command that never ran in the company folder ends with why. */
+	#notRun(session: Session, note: string): void {
+		if (session.state !== "starting") return;
+		session.state = "exited";
+		session.exitCode = 127;
+		session.note = note;
+		this.#end(session, "exited");
 		this.#wake(session);
 		this.#forget();
 	}
@@ -306,6 +412,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		this.#processes = 0;
 		for (const session of this.#sessions.values())
 			if (session.state === "starting" || session.state === "running") {
+				// A folder command still making its mount runs nothing; one that runs ended with the namespace.
+				session.abort?.abort();
 				session.state = "stopped";
 				if (end?.note) session.note = end.note;
 				this.#end(session, end?.reason ?? "closed");
@@ -428,13 +536,20 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		});
 	}
 
-	/** What this reply shows: everything unread, or its head and tail with the middle counted. */
-	#result(session: Session): CompanyComputerShellCommandResult {
-		const from = Math.max(session.readTo, session.keptFrom);
+	/**
+	 * What this reply shows: everything unread up to `upTo` (a folder command's released mark; the session as it is
+	 * otherwise), or its head and tail with the middle counted. The state and exit are the mark's.
+	 */
+	#result(session: Session, upTo: Mark = mark(session)): CompanyComputerShellCommandResult {
+		const end = Math.max(session.readTo, Math.min(upTo.total, session.total));
+		const from = Math.min(Math.max(session.readTo, session.keptFrom), end);
 		const dropped = from - session.readTo;
-		let bytes = Buffer.concat(session.chunks).subarray(from - session.keptFrom);
+		let bytes =
+			from < end
+				? Buffer.concat(session.chunks).subarray(from - session.keptFrom, end - session.keptFrom)
+				: Buffer.alloc(0);
 		// A character split between two chunks waits for its rest while the command runs.
-		if (session.state === "starting" || session.state === "running") bytes = bytes.subarray(0, completeEnd(bytes));
+		if (upTo.state === "starting" || upTo.state === "running") bytes = bytes.subarray(0, completeEnd(bytes));
 		session.readTo = from + bytes.length;
 		let output = "";
 		let cut = 0;
@@ -455,13 +570,97 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		if (dropped) output = `[${dropped} earlier bytes not kept]\n${output}`;
 		return {
 			sessionId: session.id,
-			state: session.state === "starting" ? "running" : session.state,
-			...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
-			...(session.signal === undefined ? {} : { signal: session.signal }),
+			state: upTo.state === "starting" ? "running" : upTo.state,
+			...(upTo.exitCode === undefined ? {} : { exitCode: upTo.exitCode }),
+			...(upTo.signal === undefined ? {} : { signal: upTo.signal }),
 			output,
 			...(dropped + cut ? { skippedBytes: dropped + cut } : {}),
-			...(session.note === undefined ? {} : { note: session.note }),
+			...(upTo.note === undefined ? {} : { note: upTo.note }),
 		};
+	}
+
+	/**
+	 * A folder command's state while its output is held back: stopped when the agent or the machine ended it, else as
+	 * its last boundary left it. No output and no exit reach the run.
+	 */
+	#heldState(session: Session): Pick<CompanyComputerShellCommandResult, "state" | "note"> {
+		if (session.endReason !== undefined && session.endReason !== "exited")
+			return { state: "stopped", ...(session.note === undefined ? {} : { note: session.note }) };
+		const state = session.released?.state ?? "running";
+		return {
+			state: state === "starting" ? "running" : state,
+			...(session.released?.note === undefined ? {} : { note: session.released.note }),
+		};
+	}
+
+	#held(
+		session: Session,
+		message: string,
+		report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {},
+	): CompanyComputerShellCommandResult {
+		return {
+			sessionId: session.id,
+			...this.#heldState(session),
+			output: "",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message },
+			...report,
+		};
+	}
+
+	/**
+	 * A folder command's output up to a mark reaches the run that started it once its boundary answers. Another run's
+	 * read, by an action of its own (`receiptId`), takes in the command's reads after that ("A command that outlived its
+	 * run"), and sees what was released before its take-in, with the paths not saved its boundary reported. Paths a later
+	 * boundary reports, or those of a take-in that did not answer `inherited`, wait for a later read. The shell has one
+	 * read cursor, as for a command outside the folder: output one run read does not come again to another.
+	 */
+	async #folderResult(
+		session: Session,
+		folder: CompanyComputerCommandFolder,
+		input: Parameters<CompanyComputerGuestShell["result"]>[0],
+	): Promise<CompanyComputerShellCommandResult> {
+		if (input.runId === undefined) return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
+		const other = input.runId !== session.runId;
+		if (other && input.receiptId === undefined) return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
+		const inheritReserve = other ? FOLDER_INHERIT_RESERVE_MS : 0;
+		const until = input.until ?? performance.now() + input.waitMs + FOLDER_READ_RESERVE_MS + inheritReserve;
+		await this.#wait(
+			session,
+			Math.min(input.waitMs, Math.floor(until - performance.now()) - FOLDER_READ_RESERVE_MS - inheritReserve),
+			input.signal,
+		);
+		const before = mark(session);
+		let report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {};
+		// Nothing new since the last boundary: nothing more reaches the run, so none is asked.
+		if (!(folder.status === "running" && session.released && sameMark(before, session.released))) {
+			const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS - inheritReserve);
+			report = {
+				...(release.notSaved ? { notSaved: release.notSaved } : {}),
+				...(release.moreNotSaved ? { moreNotSaved: release.moreNotSaved } : {}),
+			};
+			if (!release.released) {
+				if (!other) return this.#held(session, release.heldBack, report);
+				folder.restoreReport(report);
+				return this.#held(session, release.heldBack);
+			}
+			// Once the mount is gone, everything the command wrote is out.
+			session.released = release.final ? mark(session) : before;
+		} else report = folder.takeReport(); // What a take-in that did not answer `inherited` put back.
+		// What was released before the take-in is asked: a boundary meanwhile may release more, and report more paths.
+		const shown = session.released ?? before;
+		if (other && input.receiptId !== undefined) {
+			const inherited = await folder
+				.inherit(input.receiptId, input.signal, until - FOLDER_REPLY_RESERVE_MS)
+				.catch((error: unknown) => {
+					folder.restoreReport(report);
+					throw error;
+				});
+			if (!inherited.inherited) {
+				folder.restoreReport(report);
+				return this.#held(session, inherited.heldBack);
+			}
+		}
+		return { ...this.#result(session, shown), ...report };
 	}
 
 	/** The ready namespace a live command runs in; never a fresh one. */
@@ -477,6 +676,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		if (known && this.#sessions.has(known)) return { sessionId: known };
 		// A command must not land in a shell the machine is ending; the next start opens a fresh one.
 		if (this.#environment && this.#ending === this.#environment) throw new Error("OFFICE_SHELL_RESTARTING");
+		// Only the folder helper makes a command a network of its own.
+		if (input.network === false && !this.#folders) throw new Error("COMPANY_COMPUTER_OFFLINE_UNAVAILABLE");
 		input.signal.throwIfAborted();
 		const environment = this.#open();
 		const session: Session = {
@@ -494,18 +695,51 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			total: 0,
 			readTo: 0,
 			waiters: new Set(),
+			...(this.#folders
+				? {
+						folder: this.#folders.commands.command(input.key, this.#folders.screenId),
+						abort: new AbortController(),
+					}
+				: {}),
 		};
 		this.#sessions.set(session.id, session);
 		this.#keys.set(input.key, session.id);
 		// Sent once the shell is ready; a command stopped before that never runs.
 		void environment.then(
 			(opened) => {
-				if (this.#ready === opened && session.state === "starting" && !session.stopRequested)
-					opened.send({ t: "start", id: session.id, command: input.command });
+				const still = (): boolean =>
+					this.#ready === opened && session.state === "starting" && !session.stopRequested;
+				if (!still()) return;
+				if (session.folder) void this.#folderStart(session, opened, input, still);
+				else opened.send({ t: "start", id: session.id, command: input.command });
 			},
 			() => undefined,
 		);
 		return { sessionId: session.id };
+	}
+
+	/** A folder command: its view and mount first, then the helper runs it in this shell's namespaces. */
+	async #folderStart(
+		session: Session,
+		opened: CompanyComputerShellEnvironment,
+		input: Parameters<CompanyComputerGuestShell["start"]>[0],
+		still: () => boolean,
+	): Promise<void> {
+		if (!this.#folders || !session.folder || !session.abort) return;
+		if (opened.init === undefined) return this.#notRun(session, FOLDER_NO_SHELL);
+		const started = await session.folder.start(
+			{
+				environmentId: this.#folders.environmentId,
+				shellPid: opened.init,
+				network: input.network !== false,
+				command: input.command,
+				still,
+			},
+			(event) => this.#folderEvent(session, event),
+			session.abort.signal,
+		);
+		if ("note" in started) this.#notRun(session, started.note);
+		else if (session.state === "starting") session.state = "running";
 	}
 
 	known(sessionId: string): boolean {
@@ -514,6 +748,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 
 	async result(input: Parameters<CompanyComputerGuestShell["result"]>[0]): Promise<CompanyComputerShellCommandResult> {
 		const session = this.#session(input.sessionId);
+		if (session.folder) return this.#folderResult(session, session.folder, input);
 		await this.#wait(session, input.waitMs, input.signal);
 		return this.#result(session);
 	}
@@ -521,16 +756,23 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	async write(input: Parameters<CompanyComputerGuestShell["write"]>[0]): Promise<{ sessionId: string }> {
 		const session = this.#session(input.sessionId);
 		if (session.inputEnded) throw new Error("OFFICE_SHELL_INPUT_ENDED");
-		const environment = this.#current(session);
-		input.signal.throwIfAborted();
+		if (session.folder) {
+			this.#current(session);
+			input.signal.throwIfAborted();
+			// Its run request is not sent yet: there is nothing to type into.
+			if (!session.folder.write(Buffer.from(input.text), input.endInput)) throw new Error("OFFICE_SHELL_STARTING");
+		} else {
+			const environment = this.#current(session);
+			input.signal.throwIfAborted();
+			environment.send({
+				t: "write",
+				id: session.id,
+				data: Buffer.from(input.text).toString("base64"),
+				end: input.endInput,
+			});
+		}
 		session.inputEnded = input.endInput;
 		session.workedAt = new Date().toISOString();
-		environment.send({
-			t: "write",
-			id: session.id,
-			data: Buffer.from(input.text).toString("base64"),
-			end: input.endInput,
-		});
 		return { sessionId: session.id };
 	}
 
@@ -547,7 +789,16 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const session = this.#session(input.sessionId);
 		if (session.state === "starting" || session.state === "running") {
 			session.stopRequested = true;
-			if (this.#ready && this.#environment) {
+			if (session.folder) {
+				// The helper's stop is the shell host's. Before the run request goes, the start is called off.
+				if (!session.folder.stop()) {
+					session.abort?.abort();
+					session.state = "stopped";
+					this.#end(session, "stopped");
+					this.#wake(session);
+					this.#forget();
+				}
+			} else if (this.#ready && this.#environment) {
 				// The group gets SIGTERM, then SIGKILL two seconds later.
 				this.#ready.send({ t: "stop", id: session.id });
 			} else {
@@ -559,19 +810,32 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		return { sessionId: session.id };
 	}
 
-	list(): CompanyComputerShellListResult {
+	/** `runId`: the run asking. A folder command shows what its last boundary let out, and only to its own run. */
+	list(runId?: string): CompanyComputerShellListResult {
 		const commands: CompanyComputerShellListResult["commands"] = [];
 		let bytes = 0;
 		for (const session of [...this.#sessions.values()].reverse().slice(0, LISTED)) {
 			// A preview: one line, no control characters, so every entry stays small in JSON.
 			const preview = session.command.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+			const status = session.folder?.status;
+			// Nothing ran in the folder yet, or its mount is gone with every change saved: the command shows as it is.
+			const live =
+				!session.folder ||
+				status === "idle" ||
+				status === "none" ||
+				(status === "released" && runId === session.runId);
+			const shown = live ? mark(session) : runId === session.runId ? session.released : undefined;
 			const entry = {
 				sessionId: session.id,
 				command: preview.length > 120 ? `${preview.slice(0, 120)}…` : preview,
-				state: session.state === "starting" ? ("running" as const) : session.state,
-				...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
+				state: live
+					? session.state === "starting"
+						? ("running" as const)
+						: session.state
+					: this.#heldState(session).state,
+				...(shown?.exitCode === undefined ? {} : { exitCode: shown.exitCode }),
 				startedAt: session.startedAt,
-				unreadBytes: session.total - Math.max(session.readTo, session.keptFrom),
+				unreadBytes: shown ? Math.max(0, shown.total - Math.max(session.readTo, session.keptFrom)) : 0,
 			};
 			bytes += Buffer.byteLength(JSON.stringify(entry));
 			if (bytes > COMPANY_COMPUTER_SHELL_REPLY_OUTPUT) break;
@@ -683,6 +947,8 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 	timeZone?: string;
 	/** Test seam for the root plumber's socket. */
 	plumbSocket?: string;
+	/** The company folder's commands: each one's mount attaches under /run/qorpera-company, which /company points into. */
+	company?: boolean;
 }): CompanyComputerShellEnvironmentLauncher {
 	assertCompanyComputerScreenBinding(options.binding, options.binding);
 	assertCompanyComputerGuestLayout(options.layout);
@@ -710,6 +976,8 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 		// gate checks its authority again). The same holds once a started
 		// namespace is confirmed gone; one that is not stays an unknown outcome.
 		let launched: ReturnType<typeof spawnCompanyComputerLinuxProcess>;
+		/** The namespace's init (tini), once it exists: a folder command joins its namespaces. */
+		let init: number | undefined;
 		try {
 			if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.())
 				throw new Error("UNPRIVILEGED_LINUX_OFFICE_REQUIRED");
@@ -774,9 +1042,22 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				SHELL: "/usr/bin/bash",
 				TERM: "dumb",
 				...(options.timeZone ? { TZ: options.timeZone } : {}),
+				...(options.company ? { QORPERA_COMPANY_FOLDER: "/company" } : {}),
 			}))
 				args.push("--setenv", name, value);
-			args.push("--chdir", companyComputerShellWorkingDirectory(layout), "--remount-ro", "/");
+			// In the shell's own mount namespace /company is an empty folder: the helper attaches each command's mount
+			// parent at /run/qorpera-company in that command's namespace (F3 4d, "Who makes the namespaces").
+			if (options.company)
+				args.push(
+					"--dir",
+					"/run/qorpera-company",
+					"--dir",
+					"/run/qorpera-company/company",
+					"--symlink",
+					"/run/qorpera-company/company",
+					"/company",
+				);
+			args.push("--chdir", companyComputerShellWorkingDirectory(), "--remount-ro", "/");
 			lifetime.throwIfAborted();
 			launched = spawnCompanyComputerLinuxProcess({
 				args,
@@ -786,6 +1067,7 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				// The computer's own network, before anything in the namespace runs.
 				// Without the plumber it starts with loopback only.
 				beforeStart: async (pid) => {
+					init = pid;
 					await plumbCompanyComputerNetwork({
 						ordinal: binding.screenOrdinal,
 						role: "shell",
@@ -885,6 +1167,7 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 			exited,
 			stop,
 			...(child.pid === undefined ? {} : { pid: child.pid }),
+			...(init === undefined ? {} : { init }),
 		};
 	};
 }
@@ -932,7 +1215,7 @@ export function companyComputerShellBusy(
 
 /**
  * Each shell's usage, read from outside its namespace in one pass over /proc:
- * every process under its Bubblewrap monitor (anonymous resident memory,
+ * every process under its Bubblewrap monitor or in its pid namespace (anonymous resident memory,
  * threads and processor time, and the bytes all but the shell host read and
  * wrote), and the /tmp they see. The memory measure matches the pressure
  * below: memory the kernel cannot reclaim without swap. A process that exits
@@ -943,8 +1226,10 @@ export async function readCompanyComputerShellUsage(
 ): Promise<Map<number, CompanyComputerShellUsage>> {
 	const children = new Map<number, number[]>();
 	const ticks = new Map<number, number>();
+	const pids: number[] = [];
 	for (const name of await readdir("/proc")) {
 		if (!/^[0-9]+$/.test(name)) continue;
+		pids.push(Number(name));
 		const stat = await readCompanyComputerLinuxMetadata(`/proc/${name}/stat`, 4096).catch(() => "");
 		// The command name may hold spaces and parentheses; the fields after it
 		// start at the state (field 3): the parent is field 4, and the processor
@@ -955,29 +1240,53 @@ export async function readCompanyComputerShellUsage(
 		const time = fields.slice(11, 15).reduce((sum, field) => sum + Number(field), 0);
 		if (Number.isSafeInteger(time)) ticks.set(Number(name), time);
 	}
+	// Each process's pid namespace, read once and only when a shell needs it.
+	let namespaces: Map<number, string> | undefined;
+	const namespaceOf = (pid: number) => readlink(`/proc/${pid}/ns/pid`).catch(() => undefined);
 	const usages = new Map<number, CompanyComputerShellUsage>();
 	for (const rootPid of rootPids) {
 		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0, ioBytes: 0 };
 		// Each process, and whether it is below the shell host (whose own bytes are its commands' relayed output).
 		const pending: { pid: number; belowHost: boolean }[] = [{ pid: rootPid, belowHost: false }];
+		const seen = new Set<number>();
 		let inside: number | undefined;
-		while (pending.length) {
-			const { pid, belowHost } = pending.pop()!;
-			const host =
-				!belowHost &&
-				(await readCompanyComputerLinuxMetadata(`/proc/${pid}/cmdline`, 4096).catch(() => "")).includes(
-					"\0--shell-host",
-				);
-			pending.push(...(children.get(pid) ?? []).map((child) => ({ pid: child, belowHost: belowHost || host })));
-			if (pid !== rootPid) inside ??= pid;
-			const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
-			usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
-			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
-			usage.cpuTicks += ticks.get(pid) ?? 0;
-			if (!host)
-				usage.ioBytes += idleRuleProcessIoBytes(
-					await readCompanyComputerLinuxMetadata(`/proc/${pid}/io`, 4096).catch(() => ""),
-				);
+		const walk = async (): Promise<void> => {
+			while (pending.length) {
+				const { pid, belowHost } = pending.pop()!;
+				if (seen.has(pid)) continue;
+				seen.add(pid);
+				const host =
+					!belowHost &&
+					(await readCompanyComputerLinuxMetadata(`/proc/${pid}/cmdline`, 4096).catch(() => "")).includes(
+						"\0--shell-host",
+					);
+				pending.push(...(children.get(pid) ?? []).map((child) => ({ pid: child, belowHost: belowHost || host })));
+				if (pid !== rootPid) inside ??= pid;
+				const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
+				usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
+				usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
+				usage.cpuTicks += ticks.get(pid) ?? 0;
+				if (!host)
+					usage.ioBytes += idleRuleProcessIoBytes(
+						await readCompanyComputerLinuxMetadata(`/proc/${pid}/io`, 4096).catch(() => ""),
+					);
+			}
+		};
+		await walk();
+		// A company folder command runs under the folder helper, outside the monitor's tree, in the shell's pid
+		// namespace (F3 4d): it and what it starts count too.
+		const namespace = inside === undefined ? undefined : await namespaceOf(inside);
+		if (namespace) {
+			if (!namespaces) {
+				namespaces = new Map();
+				for (const pid of pids) {
+					const found = await namespaceOf(pid);
+					if (found) namespaces.set(pid, found);
+				}
+			}
+			for (const [pid, found] of namespaces)
+				if (found === namespace && !seen.has(pid)) pending.push({ pid, belowHost: true });
+			await walk();
 		}
 		if (inside !== undefined) {
 			const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);

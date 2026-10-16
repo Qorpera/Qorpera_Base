@@ -164,7 +164,8 @@ export function parseCloudCodingDispatch(value: unknown): CloudCodingDispatch {
 	if (new Set(sourceReadIds).size !== sourceReadIds.length) throw new Error("INVALID_CODING_SOURCE_READS");
 	const todoPath = text(input.todoPath, 4096);
 	if (todoPath.normalize("NFC") !== todoPath) throw new Error("INVALID_CODING_TODO_PATH");
-	// Matches the Company File path representation; SQL independently checks path authority.
+	// Matches the Company File path representation outside code/ (a todo is agents/<handle>/todos/<name>.md); SQL
+	// independently checks path authority.
 	for (const candidate of [todoPath, folderKey(todoPath)]) {
 		if (
 			/[\u0000-\u001f\u007f-\u009f\\%]/.test(candidate) ||

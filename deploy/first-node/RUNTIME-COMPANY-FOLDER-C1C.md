@@ -206,6 +206,20 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
+The mutex orders a run's tool steps. Since 20260930487000 the host's describe refresh
+(`qorpera_describe_native_tool_authority` as the entry point, through the native host or PostgREST) reads without it,
+through `qorpera_folder_native_run_plain`, which takes neither the mutex nor the locked check's other row locks. One
+lock stays, as in the locked check: for a wake run, the sponsor test takes the provider connection FOR SHARE (an
+authorization lock, kept). Describe reads only rows that admission, completion, renewal, resume and handoff write, and
+none of those ever took the mutex, so it never ordered describe against them.
+Every write still takes it, and so do the context fence and any function that calls describe as its run check (test 674).
+Since 20260930488000 the connector tool list (`qorpera_list_native_connector_tools`) reads the same way as the entry
+point: it reads only the agent's grants, their secrets, the connector operations, the agent's staff row and the
+company's members, which a run's own steps never write. It takes its grants FOR SHARE by id and then their secrets
+(rank 8's inner order, §6.7) and keeps each grant `qorpera_native_connector_locked_grant` would take; every connector
+use still runs that locked check under the mutex. `qorpera_describe_company_run_context` (it reads the run's own sends
+and read set) and `qorpera_read_native_wake` (a writer) keep the mutex (test 675).
+
 ### 5.3 New functions
 
 All are postgres-only, like NTLR (the runtime reaches them through the dispatching legacy functions). Names stay
@@ -1124,6 +1138,11 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
 | Rotation start (`begin_cloud_secret_capture`) | secret and stale tickets, then the insert trigger's member check | the caller's member row, then the stale tickets, then the secret; a ticket that expired while it waited is taken `NOWAIT` | E, K, L |
 
 `share_company_connection` is left as it is: the seal is its only caller and then already holds the grants it writes.
+
+The connector tool list (`list_native_connector_tools`) called `native_connector_locked_grant` grant by grant in
+`tool_name` order, so it held one grant and its secret while it waited for the next: against a Disconnect, a share or a
+seal taking those grants by id, a cycle where the two orders differ. Since 20260930488000 it takes all its grants by
+id, then their secrets by id (test 675).
 
 - **Test 850** builds each deadlock deterministically on 648's committed fixture: a holder keeps one row (a grant, the
   agent's staff row, a ticket, a secret) so the others queue behind it in the order that deadlocked before. The

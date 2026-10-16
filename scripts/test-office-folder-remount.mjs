@@ -60,12 +60,13 @@ print(json.dumps({'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_te
 // The runtime lines the shapes below mirror. A change to any of them stops the launcher until the shapes follow.
 export const RUNTIME_PINS = [
 	{ file: "packages/runtime/src/cloud-company-computer-linux-host.ts", from: "export function companyComputerLinuxSandboxArgs(tmpBytes = 67108864): string[] {", to: "}", sha256: "39208f0c978cdd1be87ddf399819e8519d58a3f3546ee93f19fb729a6b17bef4" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "95f8f458866f3d1cb6ffb4ac5ee3db16cb3674519c7f10cfcbe14d6a40618396" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-commands.ts", from: "const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);", to: 'stdin: "pipe",', sha256: "48ddc6b2a1d2a0b553f91535dbfb4ad7ca8917b694951794775845ee811c498f" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;", to: 'const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/libreoffice"];', sha256: "3a40c2ca43e9bde7c283eb2b55ab32461328a9dde1c5b7b14c893b9b7ddb51c3" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: "pipeCount: 2,", sha256: "532e140b088a2c3d8f09ffe3585bdebad9b2f9794c1ba88e1cdd4a41bd49c849" },
+	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "7c51bf1f70173d950d32759eb9e86b13eb6f1cde3f450d60f3df9c07c279bfe9" },
+	{ file: "packages/runtime/src/cloud-company-computer-linux-commands.ts", from: "const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);", to: 'stdin: "pipe",', sha256: "246ad454749902feb4154b4694d3dfbdace0983e7aac50b1e7a78a8091c29b97" },
+	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;", to: 'const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/libreoffice"];', sha256: "9df4d27c89e108f6f5bffb19112dd7e1b3d070969829b0cc0adf1da2d61e1c28" },
+	// The shell's shape without the company folder; with it (4d-4b), each command's mount is the folder helper's.
+	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: "pipeCount: 2,", sha256: "a389c0458e0bbcf877a12ffa88ea0b98ba1ce5fa2ce63f5c86c0e9aa77d6b85f" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-network.ts", from: 'export const COMPANY_COMPUTER_AGENT_EXIT_DNS = "10.210.0.1";', to: 'export const COMPANY_COMPUTER_HOSTS = "127.0.0.1\\tlocalhost\\n::1\\tlocalhost ip6-localhost ip6-loopback\\n";', sha256: "d59958ee52f793e2efdb12eac71e1344a7451bc6e3bf8842955a4228c2a9c5d3" },
-	// The workbench every namespace binds and starts in.
+	// The workbench every namespace binds (each starts in its home, F3 4f-1b).
 	{ file: "deploy/lxd-company-computer-guest/qorpera-office-private.mount.in", from: "Where=/run/qorpera-office/private", to: "Where=/run/qorpera-office/private", sha256: "7f06bb7728270fef99dc5abd5fb0b9a5e25784cc6c3301685993f2cc85bbf6fd" },
 ];
 
@@ -107,7 +108,7 @@ const setenv = (values) => Object.entries(values).flatMap(([name, value]) => ["-
 export function remountShapes(dir) {
 	const standin = (name, directory = true) => ({ path: `${dir}/standin/${name}`, directory });
 	const network = ["--ro-bind", `${dir}/standin/hosts`, "/etc/hosts", "--ro-bind", `${dir}/standin/resolv.conf`, "/etc/resolv.conf"];
-	const start = ["--chdir", WORKBENCH, "--remount-ro", "/"];
+	const start = ["--chdir", HOME, "--remount-ro", "/"];
 	const desktop = {
 		files: [standin("workbench"), standin("home"), standin("screen"), standin("x11"), standin("session"), standin("machine-id", false)],
 		args: [

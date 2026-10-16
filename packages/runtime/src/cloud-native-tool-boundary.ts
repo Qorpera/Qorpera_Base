@@ -19,6 +19,7 @@ import {
 	cloudRunLogReleases,
 } from "./cloud-run-log.ts";
 import {
+	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
 	cloudRuntimeErrorCategory,
@@ -129,6 +130,10 @@ export interface CloudNativeTool {
 	prepare?(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue>;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
+	/** Why an answer says the call changed nothing, when the tool answers a refusal rather than throwing one (a
+	 * folder-v2 change that was not saved): the call is observed as denied with this category, never as succeeded
+	 * (contract, Minimum operational observability). Read from the answer alone; the model's answer is unchanged. */
+	refused?(content: CloudToolContent): CloudRuntimeErrorCategory | undefined;
 	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
 	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
 	 * denial. It never runs the call; if it fails, the denial stands as it is. */
@@ -987,7 +992,13 @@ export class CloudNativeToolBoundary {
 				!Array.isArray(content.value) &&
 				content.value.schema === "qorpera.company-path-result/v1" &&
 				content.value.state === "proposed";
-			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
+			// A refusal the tool answered: nothing happened, as for a thrown one. A call that took a receipt was observed
+			// by its operation already, with the same reading of the answer; the first finish stands.
+			const refused = tool.refused?.(content);
+			observation?.finish(
+				refused ? "denied" : proposed ? "proposed" : "succeeded",
+				refused ? { errorCategory: refused } : proposed ? { errorCategory: "protected_path" } : {},
+			);
 			return response;
 		} catch (error) {
 			if (

@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { parseCloudCompanyInnerPath, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	type CompanyStateProblem,
@@ -915,9 +915,9 @@ function plan(unit: CloudCompanyFolderUnit): PlannedUnit {
 				op: "new_folder",
 				sql: { op: "new_folder", path },
 				contents: unit.contents.map((item) => {
-					const inner = parseCloudCompanyPath(item.path);
-					// SQL checks the joined path for the whole change set; a bad one is this unit's, not a defect.
-					const whole = parseCloudCompanyPath(`${path}/${inner}`);
+					// SQL checks only the joined path, for the whole change set; a bad one is this unit's, not a defect.
+					const inner = parseCloudCompanyInnerPath(path, item.path);
+					const whole = `${path}/${inner}`;
 					return item.kind === "folder" ? { path: inner } : { path: inner, file: planned(item.content, whole) };
 				}),
 			};
@@ -1934,6 +1934,27 @@ export class CloudCompanyFolderClient {
 		return this.#commitStaged(
 			"qorpera_folder_memory_commit",
 			{ p_preconditions: { runLog, ...(runGenerations === undefined ? {} : { runGenerations }) } },
+			operationKey,
+			changeSet,
+			{},
+			signal,
+		);
+	}
+
+	/** The platform's own conversation-tree batch (M1b-4b-2): with no runLog, a run writes only its own conversation's
+	 * tree, and every unit names exactly that conversation's generation. Otherwise as `memoryCommitStaged`. */
+	async memorySessionCommitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		session: { readonly sessionId: string; readonly generation: number },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		const { sessionId, generation } = session;
+		if (!UUID.test(sessionId) || !Number.isSafeInteger(generation) || generation < 0)
+			throw new Error("Invalid conversation tree generation");
+		return this.#commitStaged(
+			"qorpera_folder_memory_commit",
+			{ p_preconditions: { sessionGenerations: [{ sessionId, generation }] } },
 			operationKey,
 			changeSet,
 			{},

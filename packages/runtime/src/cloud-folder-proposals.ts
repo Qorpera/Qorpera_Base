@@ -9,6 +9,7 @@ import type {
 	CloudCompanyFolderProposalUnit,
 	CloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
+import { cloudFolderRefusal } from "./cloud-folder-file-tools.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
@@ -419,6 +420,7 @@ export class CloudFolderProposals {
 				inputSchema: proposalId,
 				parseArguments: (value) => this.card(this.#whole(this.#parse(value))),
 				reviewContents: (value) => this.contents(this.#proposal(value)),
+				refused: cloudFolderRefusal,
 				execute: (value, context) => this.#apply(this.#proposal(value), operations, context),
 				denied: (value, context) => this.#decline(this.#proposal(value), context),
 			},
@@ -469,6 +471,7 @@ export class CloudFolderProposals {
 			},
 			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
+			refused: cloudFolderRefusal,
 			perform: async (_operation, { receiptId, signal }) => {
 				const committed = await this.#folder.applyProposal(
 					`apply-proposal:${proposalId}`,

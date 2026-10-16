@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	CODING_GIT_CHUNK_BYTES,
+	CODING_GIT_SEED_CHUNK_BYTES,
 	type CodingGitGuestConfiguration,
 	type CodingGitGuestPorts,
 	type CodingGitGuestRequest,
@@ -20,7 +20,8 @@ const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-async function fixture() {
+/** `commits` in the seeded base's history; `bytes` of random data in the first. */
+async function fixture({ commits = 1, bytes = 0 } = {}) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "coding-git-guest-test-")));
 	roots.push(root);
 	await mkdir(join(root, "inbox"), { mode: 0o755 });
@@ -58,11 +59,18 @@ async function fixture() {
 	};
 	const source = join(root, "source");
 	await mkdir(source, { mode: 0o755 });
-	const git = async (...args: string[]) => (await exec("/usr/bin/git", args, { cwd: source, env })).stdout.trim();
+	const gitIn = async (cwd: string, ...args: string[]) =>
+		(await exec("/usr/bin/git", args, { cwd, env })).stdout.trim();
+	const git = (...args: string[]) => gitIn(source, ...args);
 	await git("init", "--template=", ".");
 	await writeFile(join(source, "README.md"), "hello\n");
-	await git("add", "README.md");
+	if (bytes > 0) await writeFile(join(source, "data.bin"), randomBytes(bytes));
+	await git("add", ".");
 	await git("commit", "-m", "seed");
+	for (let commit = 1; commit < commits; commit++) {
+		await writeFile(join(source, "README.md"), `hello ${commit}\n`);
+		await git("commit", "-am", `base ${commit}`);
+	}
 	const headSha = await git("rev-parse", "HEAD"),
 		ref = `refs/heads/qorpera/coding/${id(1)}`;
 	await git("update-ref", ref, headSha);
@@ -105,15 +113,37 @@ async function fixture() {
 	};
 	const seed = async () => {
 		await stage();
-		for (let index = 0; index < Math.ceil(bundle.length / CODING_GIT_CHUNK_BYTES); index++)
+		for (let index = 0; index < Math.ceil(bundle.length / CODING_GIT_SEED_CHUNK_BYTES); index++)
 			await writeFile(
 				join(root, "git", request.transferId, `${String(index).padStart(6, "0")}.base64`),
-				bundle.subarray(index * CODING_GIT_CHUNK_BYTES, (index + 1) * CODING_GIT_CHUNK_BYTES).toString("base64"),
+				bundle
+					.subarray(index * CODING_GIT_SEED_CHUNK_BYTES, (index + 1) * CODING_GIT_SEED_CHUNK_BYTES)
+					.toString("base64"),
 				{ mode: 0o444 },
 			);
 		return runCodingGitGuest("seed", id(1), request.transferId, ports);
 	};
-	return { root, guest, request, bundle, ports, stage, seed, config };
+	/** Export `headSha` as a new transfer; the bundle and its prerequisites. */
+	const exported = async (transferId: string, headSha = request.headSha) => {
+		const input = { ...request, action: "export" as const, transferId, headSha, bundleSha256: null, bundleBytes: 0 };
+		await stage(input);
+		const receipt = await runCodingGitGuest("export", id(1), transferId, ports);
+		const parts: Buffer[] = [];
+		for (let index = 0; index < (receipt?.chunkCount ?? 0); index++)
+			parts.push(await readFile(join(root, "git", transferId, `${String(index).padStart(6, "0")}.bundle`)));
+		const output = Buffer.concat(parts),
+			file = join(root, `${transferId}.bundle`);
+		await writeFile(file, output);
+		const header = output.subarray(0, output.indexOf("\n\n")).toString().split("\n");
+		return {
+			receipt,
+			file,
+			prerequisites: header.filter((line) => line.startsWith("-")).map((line) => line.slice(1, 41)),
+			heads: header.filter((line) => /^[0-9a-f]{40} /.test(line)),
+		};
+	};
+	const workspace = (...args: string[]) => gitIn(folders.workspacePath, ...args);
+	return { root, guest, request, bundle, ports, stage, seed, config, git, workspace, exported };
 }
 describe("protected credential-free guest Git transfer", () => {
 	it("seeds real files and the fixed worker branch, then exports a complete bundle through protected chunks", async () => {
@@ -265,6 +295,47 @@ describe("protected credential-free guest Git transfer", () => {
 			vmId: id(7),
 			headSha: request.headSha,
 		});
+	});
+	it("takes a seed in chunks as large as an LXD file push", async () => {
+		const f = await fixture({ bytes: 300000 });
+		expect(f.bundle.length).toBeGreaterThan(CODING_GIT_SEED_CHUNK_BYTES);
+		expect(await f.seed()).toMatchObject({ bundleBytes: f.bundle.length, chunkCount: 2 });
+		expect(await readFile(join(f.guest.workspacePath, "data.bin"))).toHaveLength(300000);
+	});
+	it("records the seeded base and exports only the commits since it", async () => {
+		const f = await fixture({ commits: 2 });
+		await f.seed();
+		expect(await readFile(join(f.guest.workspacePath, ".git", "refs", "qorpera", "base"), "utf8")).toBe(
+			`${f.request.headSha}\n`,
+		);
+		await writeFile(join(f.guest.workspacePath, "README.md"), "changed\n");
+		await f.workspace("commit", "-am", "work");
+		const head = await f.workspace("rev-parse", "HEAD");
+		const thin = await f.exported(id(5), head);
+		expect(thin.prerequisites).toEqual([f.request.headSha]);
+		expect(thin.heads).toEqual([`${head} refs/heads/qorpera/coding/${id(1)}`]);
+		// The repository has the base, so the bundle is whole there.
+		await f.git("bundle", "verify", thin.file);
+		// Refs the session's own Git packed read the same.
+		await f.workspace("pack-refs", "--all");
+		expect((await f.exported(id(6), head)).prerequisites).toEqual([f.request.headSha]);
+	});
+	it("exports an unchanged head without its parents", async () => {
+		const f = await fixture({ commits: 2 });
+		await f.seed();
+		const unchanged = await f.exported(id(5));
+		expect(unchanged.prerequisites).toEqual([await f.git("rev-parse", "HEAD^")]);
+		expect(unchanged.heads).toEqual([`${f.request.headSha} refs/heads/qorpera/coding/${id(1)}`]);
+		await f.git("bundle", "verify", unchanged.file);
+	});
+	it("exports the whole history when the base ref is gone or names no commit", async () => {
+		const f = await fixture({ commits: 2 });
+		await f.seed();
+		const base = join(f.guest.workspacePath, ".git", "refs", "qorpera", "base");
+		await rm(base);
+		expect((await f.exported(id(5))).prerequisites).toEqual([]);
+		await writeFile(base, "not a commit\n");
+		expect((await f.exported(id(6))).prerequisites).toEqual([]);
 	});
 	it("refuses a transfer for another session", async () => {
 		const f = await fixture();

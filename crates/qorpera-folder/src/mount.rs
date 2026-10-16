@@ -18,7 +18,9 @@
 //! program's tree in step; the kernel is never told from inside a request (it holds the folder's lock then).
 
 use crate::link::{Fail, Link};
-use crate::proto::{code, join, valid_name, valid_path, EntryKind, OpenRequest, RenameRequest, MAX_READ};
+use crate::proto::{
+	code, join, valid_name, valid_path, EntryKind, LinkRequest, OpenRequest, RenameRequest, MAX_READ, MAX_TARGET,
+};
 use crate::tree::{Attr, Child, Inval, Tree, ROOT};
 use crate::versions::VersionMap;
 use crate::reads::ReadLog;
@@ -181,7 +183,7 @@ impl Shared {
 			let (path, started) = {
 				let mut tree = self.tree.lock().unwrap();
 				let Some(path) = tree.path(dir).map(str::to_string) else { return Err(libc::ENOENT) };
-				if tree.attr(dir).is_some_and(|a| a.kind == EntryKind::File) {
+				if tree.attr(dir).is_some_and(|a| a.kind != EntryKind::Folder) {
 					return Err(libc::ENOTDIR);
 				}
 				if let Some(listing) = tree.listing(dir) {
@@ -286,6 +288,8 @@ impl Shared {
 			(EntryKind::File, false) => (FileType::RegularFile, if a.executable { 0o555 } else { 0o444 }, a.size),
 			(EntryKind::Folder, true) => (FileType::Directory, 0o755, 0),
 			(EntryKind::File, true) => (FileType::RegularFile, if a.executable { 0o755 } else { 0o644 }, a.size),
+			// A link's mode is the folder's, as on a disk; its size is its target's length.
+			(EntryKind::Symlink, _) => (FileType::Symlink, 0o777, a.size),
 		};
 		FileAttr {
 			ino: INodeNo(ino),
@@ -503,6 +507,20 @@ fn name_of(name: &OsStr) -> Result<&str, Errno> {
 	name.to_str().filter(|n| valid_name(n)).ok_or(Errno::EINVAL)
 }
 
+/// In a git object store: `objects` or below it, in a repository's `.git` or a bare one's `<name>.git` (a code area's
+/// `repo.git` too: the rule of 5d's `git::object`, for every repository). Git checks that a hard link there is the
+/// source's own inode, which a new name here never is (RUNTIME-FOLDER-LINKS.md "Git").
+fn git_objects(path: &str) -> bool {
+	let mut rest = path;
+	while let Some((name, below)) = rest.split_once('/') {
+		if name.ends_with(".git") && (below == "objects" || below.starts_with("objects/")) {
+			return true;
+		}
+		rest = below;
+	}
+	false
+}
+
 /// QORPERA_FOLDER_DEBUG=1 logs every listing fetched and every change applied.
 fn debug() -> bool {
 	static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -513,6 +531,7 @@ fn file_type(kind: EntryKind) -> FileType {
 	match kind {
 		EntryKind::Folder => FileType::Directory,
 		EntryKind::File => FileType::RegularFile,
+		EntryKind::Symlink => FileType::Symlink,
 	}
 }
 
@@ -650,8 +669,11 @@ impl Filesystem for FolderFs {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
-		if attr.kind == EntryKind::Folder {
-			return reply.error(Errno::EISDIR);
+		match attr.kind {
+			EntryKind::Folder => return reply.error(Errno::EISDIR),
+			// The kernel follows a link before it opens; one that reaches here is opened without following it.
+			EntryKind::Symlink => return reply.error(Errno::ELOOP),
+			EntryKind::File => {}
 		}
 		let path = match self.s.path_of(ino.0) {
 			Ok(p) => p,
@@ -920,6 +942,10 @@ impl Filesystem for FolderFs {
 			Ok((a, _)) => a,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		// A link's mode and times are the folder's (`chmod`, `touch -h`): nothing is kept, and it is not an error.
+		if attr.kind == EntryKind::Symlink {
+			return self.reply_attr(ino.0, reply);
+		}
 		if let Some(size) = size {
 			if attr.kind == EntryKind::Folder {
 				return reply.error(Errno::EISDIR);
@@ -1015,16 +1041,104 @@ impl Filesystem for FolderFs {
 	}
 
 	fn mknod(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _mode: u32, _umask: u32, _rdev: u32, reply: ReplyEntry) {
-		// The folder holds files and folders only.
+		// The folder holds files, folders and links only: no device, named pipe or socket.
 		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
 	}
 
-	fn symlink(&self, _req: &Request, _parent: INodeNo, _link_name: &OsStr, _target: &Path, reply: ReplyEntry) {
-		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
+	/// A link's target, read at the link's version and logged as a read of the link, as an open of a file is. The kernel
+	/// keeps no target (FUSE_CACHE_SYMLINKS stays off), so every readlink comes here and every reader is logged.
+	fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+		let (attr, _) = match self.s.attr(ino.0) {
+			Ok(r) => r,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		if attr.kind != EntryKind::Symlink {
+			return reply.error(Errno::EINVAL);
+		}
+		let path = match self.s.path_of(ino.0) {
+			Ok(p) => p,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		if let Err(e) = self.s.link.record_read(&path, Some(&attr.version), attr.authority.as_ref()) {
+			eprintln!("qorpera-folder: could not record a link read: {e}");
+			return reply.error(Errno::EIO);
+		}
+		match self.s.link.read(&path, &attr.version, 0, MAX_TARGET) {
+			Ok(target) => {
+				self.s.read_version(ino.0, &path, &attr.version);
+				reply.data(&target)
+			}
+			Err(f) => {
+				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
+					// Changed since it was listed: the next lookup lists its folder again.
+					self.s.tree.lock().unwrap().invalidate([path.as_str()]);
+				}
+				reply.error(errno(f))
+			}
+		}
 	}
 
-	fn link(&self, _req: &Request, _ino: INodeNo, _newparent: INodeNo, _newname: &OsStr, reply: ReplyEntry) {
-		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
+	/// A new link holding `target` as written (the kernel refuses an empty one and one over 4,095 bytes first). Its
+	/// version is this mount's save, as a close's is.
+	fn symlink(&self, _req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
+		let (path, name) = match self.place(parent, link_name) {
+			Ok(p) => p,
+			Err(e) => return reply.error(e),
+		};
+		// The folder keeps text: a target that is not UTF-8 has no form it could keep exactly.
+		let Some(target) = target.to_str() else { return reply.error(Errno::EINVAL) };
+		let version = match self.s.link.symlink(&path, target) {
+			Ok(v) => v,
+			Err(f) => return reply.error(errno(f)),
+		};
+		self.s.versions.lock().unwrap().saved(&path, &version);
+		let attr =
+			Attr { kind: EntryKind::Symlink, size: target.len() as u64, mtime_ms: now_ms(), executable: false, version, authority: None };
+		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
+	}
+
+	/// A hard link: a new name with the source's content as this mount shows it, stored once. The two names are never
+	/// joined (RUNTIME-FOLDER-LINKS.md): the new one is an inode of its own with one link, so a save to either never shows
+	/// through the other. Making it is a read of the source, logged before the node is asked. From or into a git object
+	/// store it is EXDEV, which git and other tools take as "copy instead".
+	fn link(&self, _req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
+		let (to, name) = match self.place(newparent, newname) {
+			Ok(p) => p,
+			Err(e) => return reply.error(e),
+		};
+		let (attr, _) = match self.s.attr(ino.0) {
+			Ok(r) => r,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		let from = match self.s.path_of(ino.0) {
+			Ok(p) => p,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		if git_objects(&from) || git_objects(&to) {
+			return reply.error(Errno::EXDEV);
+		}
+		if let Err(e) = self.s.link.record_read(&from, Some(&attr.version), attr.authority.as_ref()) {
+			eprintln!("qorpera-folder: could not record a hard link's read: {e}");
+			return reply.error(Errno::EIO);
+		}
+		let request = LinkRequest { from: from.clone(), from_base: Some(attr.version.clone()), to: to.clone() };
+		let version = match self.s.link.hard_link(&request) {
+			Ok(v) => v,
+			Err(f) => {
+				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
+					self.s.tree.lock().unwrap().invalidate([from.as_str()]);
+				}
+				return reply.error(errno(f));
+			}
+		};
+		self.s.read_version(ino.0, &from, &attr.version);
+		self.s.versions.lock().unwrap().saved(&to, &version);
+		// The source's kind, size and executable bit; the kernel takes a new node in the reply (proved on the test
+		// machine: a node of the same type with its own number).
+		let attr = Attr { version, mtime_ms: now_ms(), authority: None, ..attr };
+		let new = self.s.tree.lock().unwrap().add_local(newparent.0, &name, attr.clone());
+		reply.entry(&self.s.ttl(true), &self.s.file_attr(new, &attr), Generation(0));
 	}
 
 	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
@@ -1400,5 +1514,28 @@ mod tests {
 		assert!(answered.map.len() <= ANSWERED_MAX / 2 + 1);
 		assert!(answered.map.contains_key(&(1, newest)) && answered.map.contains_key(&(1, "next".into())));
 		assert!(!answered.map.contains_key(&(1, "0".into())));
+	}
+
+	#[test]
+	fn knows_a_git_object_store_in_any_repository() {
+		for path in [
+			"code/app/.git/objects",
+			"code/app/.git/objects/ab/cdef",
+			"code/app/.git/objects/pack/tmp_pack_x",
+			"code/site.git/objects/ab/cdef",
+			"code/qorpera/app/repo.git/objects/ab/cdef",
+		] {
+			assert!(git_objects(path), "{path}");
+		}
+		for path in [
+			"docs/plan.md",
+			"code/app/.git/refs/heads/main",
+			"code/app/.git/objects.lock",
+			"code/app/objects/ab/cdef",
+			"code/app/.github/objects/ab",
+			"code/qorpera/app/repo.git/refs/heads/main",
+		] {
+			assert!(!git_objects(path), "{path}");
+		}
 	}
 }

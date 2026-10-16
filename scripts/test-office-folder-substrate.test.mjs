@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -46,6 +46,19 @@ test("synthetic node handles real wire framing and closes persisted writes witho
 	const fixture = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/office-folder-substrate.py");
 	const result = JSON.parse(execFileSync("python3", [fixture, "selftest"], { encoding: "utf8", timeout: 15_000 }));
 	assert.deepEqual(result, { wireFixture: "passed", privilegedProof: "not-run" });
+});
+
+test("every synthetic node speaks the folder program's protocol", () => {
+	// The program refuses a hello answered with another protocol, so a stale fixture fails a VM proof only as an unserved mount.
+	const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+	const program = Number(/^pub const PROTOCOL: u32 = (\d+);$/m.exec(readFileSync(join(root, "crates/qorpera-folder/src/proto.rs"), "utf8"))?.[1]);
+	assert.ok(Number.isInteger(program));
+	for (const name of ["office-folder-substrate.py", "office-folder-remount.py", "office-command-namespaces.py"]) {
+		const source = readFileSync(join(root, "scripts/fixtures", name), "utf8");
+		const spoken = [...source.matchAll(/^PROTOCOL = (\d+)$|"protocol": ?(\d+)|synthetic protocol-(\d+)/gm)].map((match) => Number(match[1] ?? match[2] ?? match[3]));
+		assert.ok(spoken.length > 0, name);
+		assert.deepEqual(new Set(spoken), new Set([program]), name);
+	}
 });
 
 test("preflight finds boot and legacy credentials, and refuses credential symlinks", () => {

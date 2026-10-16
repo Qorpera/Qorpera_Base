@@ -56,6 +56,10 @@ describe("Company File bounded control transport", () => {
 	it.each([
 		"qorpera_record_runtime_observation_batch",
 		"qorpera_begin_native_company_execution_v2",
+		"qorpera_begin_native_company_execution_v3",
+		"qorpera_bind_native_company_context",
+		"qorpera_memory_events_run",
+		"qorpera_memory_compaction_record",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
 		"qorpera_record_native_context_view",
@@ -252,6 +256,49 @@ describe("Company File bounded control transport", () => {
 		vi.useRealTimers();
 		answer(Response.json({ kept: [] }));
 		await expect(fenced).resolves.toEqual({ kept: [] });
+	});
+
+	it("waits a caller's own budget instead of its 3 s stop, and still cuts the call at that budget (16 Oct 2026)", async () => {
+		// Two TESTCO runs (62cd3036, 5ca8ded9) failed their run-start reads at 3 s, while the database had them waiting
+		// up to 4 s in line for the run's job row: the caller's 10 s never applied.
+		vi.useFakeTimers();
+		let answer: (response: Response) => void = () => undefined;
+		const transport = vi.fn<typeof fetch>(async (input) =>
+			String(input).endsWith("/qorpera_describe_company_run_context")
+				? new Promise<Response>((resolve) => {
+						answer = resolve;
+					})
+				: new Promise<Response>(() => undefined),
+		);
+		const control = fixture(transport);
+		const context = control.call("qorpera_describe_company_run_context", {}, new AbortController().signal, 10_000);
+		const wake = control.call("qorpera_read_native_wake", {}, new AbortController().signal, 10_000);
+		const wakeRejected = expect(wake).rejects.toMatchObject({ category: "timeout" });
+		// The same read with no budget of its own still stops at 3 s.
+		const unbudgeted = control.call("qorpera_read_native_wake", {}, new AbortController().signal);
+		const unbudgetedRejected = expect(unbudgeted).rejects.toMatchObject({ category: "timeout" });
+		await vi.advanceTimersByTimeAsync(3001);
+		await unbudgetedRejected;
+		// 4 s in, the run lock's longest wait: the budgeted calls are still waiting, and one answers.
+		await vi.advanceTimersByTimeAsync(1000);
+		answer(Response.json({ context: true }));
+		await expect(context).resolves.toEqual({ context: true });
+		// The one that never answers is cut at its budget, not before.
+		await vi.advanceTimersByTimeAsync(5998);
+		let settled = false;
+		void wake.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(2);
+		await wakeRejected;
+		expect(transport).toHaveBeenCalledTimes(3);
 	});
 
 	it("bounds responses and never interprets malformed errors as permission to retry", async () => {
