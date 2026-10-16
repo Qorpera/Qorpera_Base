@@ -464,6 +464,8 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				identity: harness.run.identity,
 			}),
 			options.operation,
+			// The time the call's reply is due by: a desktop's folder boundary at a capture is asked within it.
+			expect.any(Number),
 		);
 		await harness.call("computer_browser", { kind: "browser", action: "navigate", url: "https://example.com/" });
 		expect(harness.automation.perform).toHaveBeenCalledOnce();
@@ -505,6 +507,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				identity: harness.run.identity,
 			}),
 			vi.mocked(harness.operations.execute).mock.calls[0][0].operation,
+			expect.any(Number),
 		);
 	});
 
