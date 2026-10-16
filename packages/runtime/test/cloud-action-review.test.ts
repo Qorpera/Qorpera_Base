@@ -73,6 +73,20 @@ describe("which calls are reviewed", () => {
 		["computer_shell", { action: { kind: "shell", action: "list" } }, "read"],
 		["computer_shell", { action: { kind: "shell", action: "stop", sessionId: RULE } }, "internal"],
 		["computer_shell", { action: { kind: "shell", action: "stop" } }, "internal"],
+		// A company machine's command reaches the internet and, with the folder mounted, the company's files (F3 6d):
+		// every one is reviewed. Starting a machine runs nothing of the agent's; the others end work or only read.
+		["machine_run", { operationKey: "k", machine: "build-a", command: "npm test" }, "external"],
+		[
+			"machine_run",
+			{ operationKey: "k", machine: "build-a", command: "ls", timeoutMs: 5000, notify: false },
+			"external",
+		],
+		["machine_start", { operationKey: "k", machine: "build-a" }, "internal"],
+		["machine_cancel", { operationKey: "k", machine: "build-a", commandId: RULE }, "internal"],
+		["machine_stop", { operationKey: "k", machine: "build-a" }, "internal"],
+		["machine_delete", { operationKey: "k", machine: "build-a" }, "internal"],
+		["machine_read", { machine: "build-a", commandId: RULE }, "read"],
+		["machine_list", {}, "read"],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[
@@ -502,6 +516,21 @@ describe("what the card shows", () => {
 			}).title;
 		expect(start(true)).toBe("Run a command with internet access on the computer");
 		expect(start()).toBe("Run a command on the computer");
+	});
+
+	it("shows a company machine's command with its machine and its lines (F3 6d)", () => {
+		expect(
+			describeCloudAction(tool("machine_run"), {
+				operationKey: "suite:1",
+				machine: "build-a",
+				command: "cd /company/sales\n  npm test\t",
+				notify: true,
+			}),
+		).toEqual({
+			title: "Run a command on a company machine",
+			target: "build-a",
+			details: { command: "cd /company/sales\n  npm test" },
+		});
 	});
 
 	it("shows changes saved from a computer as the changes, in order, never their files", () => {

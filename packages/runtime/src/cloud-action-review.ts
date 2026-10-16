@@ -228,16 +228,20 @@ export function cloudActionEffect(
 		case "coding_cancel_command":
 		case "coding_ask":
 		case "coding_finish":
-		// A company machine is the company's own scratch compute, isolated like a
-		// coding VM: starting, using, stopping and deleting it stays inside.
+		// A company machine is the company's own scratch compute: starting one runs nothing of the agent's, and
+		// cancelling, stopping and deleting only end work. Its commands are reviewed (machine_run, below).
 		case "machine_start":
-		case "machine_run":
 		case "machine_cancel":
 		case "machine_stop":
 		case "machine_delete":
 			return "internal";
 		case "company_delete":
 			return "destructive";
+		// A command on a company machine can reach the internet and, with the company folder mounted (F3 6d), the
+		// company's files, as a networked shell command can. Every one is reviewed, also on a boot without the folder:
+		// whether a boot has it is decided per boot, after the review (RUNTIME-FOLDER-TEST-MACHINES.md, Q2).
+		case "machine_run":
+			return "external";
 		// A networked command can reach the internet, and so can what is typed into one. An offline command (F3 4d:
 		// `network: false`, the run's own tool's default) reaches only the computer and the company folder, as does
 		// input to one the run started so. A start that does not say is an older runtime's, run with the network.
@@ -534,6 +538,10 @@ export function describeCloudAction(
 					: "Run a command on the computer";
 		quote("command", action.command, 2000);
 		quote("text", action.text, 2000);
+	} else if (tool.name === "machine_run") {
+		title = "Run a command on a company machine";
+		target = text(args.machine) || null;
+		quote("command", args.command, 2000);
 	} else if (tool.name === "send_mail") {
 		title = "Send an email";
 		const addresses = (value: JsonValue | undefined) =>
