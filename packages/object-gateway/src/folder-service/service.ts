@@ -24,6 +24,7 @@ import {
 	gitFolders,
 	gitGuarded,
 	gitLockTarget,
+	gitPackedRefsTarget,
 	gitPublishedObject,
 	gitReflog,
 	gitRefused,
@@ -256,12 +257,14 @@ interface Settlement {
 
 /** A git lock a view holds (git.ts, §6): the core's lease on the shared file it guards, the versions the lease found,
  * the guarded files git removed under it (`git branch -D`), and those it replaced by a rename (`git reflog expire`
- * renames the log's own lock onto the log), which go when the lock does. */
+ * renames the log's own lock onto the log), which go when the lock does. `ended`: a publish ended the lease while the
+ * lock file stays (`git pack-refs` renames `packed-refs.new` onto `packed-refs`, then removes `packed-refs.lock`). */
 interface GitLock {
 	readonly leaseId: string;
 	readonly versions: GitVersions;
 	readonly deleted: Set<string>;
 	readonly replaced: Set<string>;
+	ended: boolean;
 }
 
 /** Rounds of the feed a view reads for a git lease's versions before the machine hears EEXIST (git tries again). */
@@ -1098,7 +1101,8 @@ export class FolderService {
 					pending.rmdir(path, this.#base(view, path, base));
 				}),
 			rename: async (request) => {
-				const target = gitLockTarget(request.from);
+				// A lock renamed onto its file, or the `packed-refs` `git pack-refs` writes under its lock.
+				const target = gitLockTarget(request.from) ?? gitPackedRefsTarget(request.from);
 				const lock = target === null ? undefined : view.gitLeases.get(target);
 				if (lock && target === request.to) return this.#gitPublish(view, request.from, request.to, lock);
 				this.#gitGuard(view, request.from);
@@ -1836,7 +1840,7 @@ export class FolderService {
 		if (gitRefused(path, host))
 			throw new ProtocolError(ErrorCode.notPermitted, "Git keeps this file on the machine, or refuses it");
 		if (!gitSharedPath(path, host)) return undefined;
-		for (const [target, lock] of view.gitLeases) if (gitGuarded(target).includes(path)) return lock;
+		for (const [target, lock] of view.gitLeases) if (!lock.ended && gitGuarded(target).includes(path)) return lock;
 		if (view.pending?.get(path)?.kind === "folder") return undefined;
 		throw new ProtocolError(ErrorCode.notPermitted, "Git changes this file only under its lock");
 	}
@@ -1903,6 +1907,7 @@ export class FolderService {
 			versions: lease.versions,
 			deleted: new Set(),
 			replaced: new Set(),
+			ended: false,
 		};
 		view.gitLeases.set(target, lock);
 		try {
@@ -1941,7 +1946,8 @@ export class FolderService {
 	/** Publishes a git lock (§6): renaming `X.lock` onto X saves X over the version the lease found, with the log git
 	 * appended for it and every object the view wrote in that git directory (a ref names only objects published with
 	 * it or before), in one change set, which ends the lease. A version changed since fails the rename (BUSY) and keeps
-	 * the lease: git then removes its lock (#gitUnlock). */
+	 * the lease: git then removes its lock (#gitUnlock). `packed-refs.new` renamed onto `packed-refs` under its lock
+	 * publishes the same way, so a `git pack-refs` that cannot publish stops before it prunes a loose ref. */
 	async #gitPublish(view: View, from: string, target: string, lock: GitLock): Promise<void> {
 		await this.#quiet(view);
 		const pending = view.pending;
@@ -2037,7 +2043,9 @@ export class FolderService {
 				if (error instanceof CoreRefusal || attempt === GIT_PUBLISH_TRIES) throw this.#gitError(error);
 			}
 		if (!answer.published) throw new ProtocolError(ErrorCode.busy, "A git file changed since its lock was taken");
-		view.gitLeases.delete(target);
+		// `packed-refs.lock` stays until git removes it (#gitUnlock).
+		if (from === `${target}.lock`) view.gitLeases.delete(target);
+		else lock.ended = true;
 		const settled = saved(answer.units, made.slice(first));
 		// The lock file is gone at once (git renamed it); what it published shows as the feed brings it. `from` stays in
 		// the later settling: a folder made for the ref (`refs/heads/feature/` for `feature/foo`) is live only then.
@@ -2095,10 +2103,9 @@ export class FolderService {
 	}
 
 	/** Removes a git lock (§6): the lease ends, publishing the guarded files git removed under it (`git branch -D`) and
-	 * those it replaced by a rename (the log `git reflog expire` writes, the `packed-refs.new` of `git pack-refs`), or
-	 * nothing (an update git rolled back, whose line in the log goes too, or a lock a killed git left). A change that no
-	 * longer matches the versions the lease found is not published: the machine hears BUSY, and shows the live files
-	 * again. */
+	 * the log it replaced (`git reflog expire`), or nothing (an update git rolled back, whose line in the log goes too, or
+	 * a lock a killed git left; `packed-refs.lock` after its publish ended the lease). A change that no longer matches
+	 * the versions the lease found is not published: the machine hears BUSY, and shows the live files again. */
 	async #gitUnlock(view: View, path: string, target: string, lock: GitLock): Promise<void> {
 		await this.#quiet(view);
 		const pending = view.pending;
@@ -2108,25 +2115,31 @@ export class FolderService {
 			throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
 		let published = true;
 		await this.#inTurn(view, async () => {
-			if (lock.replaced.size > 0) await this.#gitDirFirst(view, pending, target);
+			const guarded = gitGuarded(target);
+			if (lock.ended) {
+				view.gitLeases.delete(target);
+				pending.drop(guarded);
+				this.#push(view, guarded);
+				return { commitId: null, seq: null, paths: [] };
+			}
 			const actor = this.#gitActor(view);
 			const units: GitUnit[] = [];
-			const files: [string, string | null][] = [
+			const removed: [string, string | null][] = [
 				[target, lock.versions.file],
 				[gitReflog(target), lock.versions.reflog],
 			];
-			for (const [file, version] of files)
+			for (const [file, version] of removed)
 				if (version !== null && lock.deleted.has(file) && pending.nodes().get(file)?.kind !== "file")
 					units.push({ op: "delete", path: file, expectedVersion: version });
-			const made: { path: string; version: string }[] = [];
-			for (const [file, version] of files) {
-				const replaced = pending.nodes().get(file);
-				if (!lock.replaced.has(file) || replaced?.kind !== "file" || replaced.content === undefined) continue;
-				if (replaced.open > 0) throw new ProtocolError(ErrorCode.busy, "The git file is still open");
-				const staged = await this.#stage(view, replaced, file);
+			const reflog = gitReflog(target);
+			const log = pending.nodes().get(reflog);
+			let made: string | undefined;
+			if (lock.replaced.has(reflog) && log?.kind === "file" && log.content !== undefined) {
+				if (log.open > 0) throw new ProtocolError(ErrorCode.busy, "The git log is still open");
+				made = log.version;
+				const staged = await this.#stage(view, log, reflog);
 				if (!staged) throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
-				made.push({ path: file, version: replaced.version });
-				units.push({ op: "write", path: file, file: staged, expectedVersion: version });
+				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
 			}
 			if (units.length > 0) await this.#gitReadGate(view);
 			let answer: GitPublish | null = null;
@@ -2144,13 +2157,10 @@ export class FolderService {
 			}
 			view.gitLeases.delete(target);
 			published = units.length === 0 || answer?.published === true;
-			const written = answer?.published ? answer.units.slice(units.length - made.length) : [];
-			made.forEach(({ path, version }, i) => {
-				const outcome = written[i];
-				if (outcome?.outcome === "saved" && outcome.version) this.#alias(view, path, version, outcome.version);
-			});
+			const written = answer?.published ? answer.units.at(-1) : undefined;
+			if (made !== undefined && written?.outcome === "saved" && written.version)
+				this.#alias(view, reflog, made, written.version);
 			if (answer?.published && answer.seq !== null) await this.#gitCatchUpTo(view, answer.seq);
-			const guarded = gitGuarded(target);
 			pending.drop(guarded);
 			this.#push(view, guarded);
 			return { commitId: answer?.commitId ?? null, seq: answer?.seq ?? null, paths: [] };

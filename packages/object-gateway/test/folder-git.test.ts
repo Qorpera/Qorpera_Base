@@ -281,6 +281,17 @@ describe("the core's git leases", () => {
 			mediaType: "text/plain",
 			executable: false,
 		};
+		// A git directory not in the folder: nothing lands (446300).
+		const NEW = "code/acme/new/repo.git/refs/heads/main";
+		const fresh = await core.gitLeaseTake(ENV, other, NEW);
+		if (fresh.state !== "held") throw new Error("not held");
+		const missing = await core.gitPublish(ENV, other, fresh.leaseId, "k0", [
+			{ op: "write", path: NEW, file: ref, expectedVersion: null },
+		]);
+		expect(missing).toMatchObject({ published: false, units: [{ outcome: "conflict", reason: "parent_missing" }] });
+		expect(core.entries.has("code/acme/new/repo.git/refs")).toBe(false);
+		expect(await core.gitLeasesDrop(ENV, other)).toEqual([NEW]);
+		core.seed(["code", "code/acme", "code/acme/app", R].map((path) => folder(path)));
 		// A stale ref: its objects land all the same.
 		const stale = await core.gitPublish(ENV, actor, lease.leaseId, "k1", [
 			{ op: "write", path: `${R}/objects/ab/cdef`, file: ref },
@@ -665,7 +676,7 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitPublishes.map((publish) => publish.published)).toEqual([true]);
 	});
 
-	it("publishes the packed-refs git pack-refs renames into place under its lock, then the loose ref it prunes", async () => {
+	it("publishes the packed-refs git pack-refs renames into place under its lock, before the loose ref it prunes", async () => {
 		const { core, openAs } = await repo(codeHostGrants());
 		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
 		const host = await openAs(CODE_HOST);
@@ -675,10 +686,14 @@ describe("the lock protocol in the folder service", () => {
 		await refused(write(host, `${packed}.new`, lines, true), "NOT_PERMITTED");
 		await write(host, `${packed}.lock`, "", true);
 		await write(host, `${packed}.new`, lines, true);
+		// The rename is the publish, as a lock's onto its ref: it ends the lease, and the lock goes when git removes it.
 		await host.rename({ from: `${packed}.new`, to: packed, noReplace: false });
-		await host.unlink(`${packed}.lock`, undefined);
 		expect(core.entries.get(packed)?.fileSha256).toBe(hashOf(lines));
 		expect(core.entries.has(`${packed}.new`)).toBe(false);
+		expect(core.gitLeases.has(packed)).toBe(false);
+		await refused(write(host, `${packed}.new`, lines, true), "NOT_PERMITTED");
+		await host.unlink(`${packed}.lock`, undefined);
+		expect(await names(host, R)).not.toContain("packed-refs.lock");
 		await write(host, `${MAIN}.lock`, "", true);
 		await host.unlink(MAIN, undefined);
 		await host.unlink(`${MAIN}.lock`, undefined);
@@ -688,6 +703,17 @@ describe("the lock protocol in the folder service", () => {
 			[`write ${packed}`],
 			[`delete ${MAIN}`],
 		]);
+		// A packed-refs that changed since the lease found it fails the rename, so git stops before it prunes a ref.
+		await write(host, `${packed}.lock`, "", true);
+		await write(host, `${packed}.new`, "2222 refs/heads/topic\n", true);
+		const live = core.entries.get(packed)!;
+		core.entries.set(packed, { ...live, version: v(150) });
+		await refused(host.rename({ from: `${packed}.new`, to: packed, noReplace: false }), "BUSY");
+		await host.unlink(`${packed}.new`, undefined);
+		await host.unlink(`${packed}.lock`, undefined);
+		expect(core.entries.get(packed)?.fileSha256).toBe(hashOf(lines));
+		expect(core.gitLeases.size).toBe(0);
+		expect(core.gitPublishes.map((publish) => publish.published)).toEqual([true, true, false]);
 	});
 
 	it("saves an object, or an objects folder, another session published first as it is", async () => {

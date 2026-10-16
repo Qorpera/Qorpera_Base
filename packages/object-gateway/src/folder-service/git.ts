@@ -159,6 +159,13 @@ export function gitLockTarget(path: string): string | null {
 	return ok ? `${place.area}/repo.git/${target}` : null;
 }
 
+/** The `packed-refs` whose `packed-refs.new` `path` is: `git pack-refs` writes it under `packed-refs.lock` and renames it
+ * onto `packed-refs`, the publish (§6). */
+export function gitPackedRefsTarget(path: string): string | null {
+	const place = gitPlace(path);
+	return place.kind === "git" && place.rest === "packed-refs.new" ? `${place.area}/repo.git/packed-refs` : null;
+}
+
 /** The git directory (`code/<owner>/<name>/repo.git`) the shared file `target` is in. */
 export function gitDir(target: string): string {
 	const place = gitPlace(target);
