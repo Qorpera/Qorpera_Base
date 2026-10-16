@@ -1,3 +1,4 @@
+import type { InterfaceFile } from "@qorpera/cloud-client/interfaces";
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
@@ -219,6 +220,8 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
+	/** The pages each thread's review cards preview, which every reader of the folder reads too (Interfaces I10). */
+	const interfacePreviews = new Map<object, readonly InterfaceFile[]>();
 	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
@@ -945,6 +948,7 @@ export function mountApplication(
 			});
 			interfaceFolder = reader;
 			interfaceOffers = offers;
+			for (const [owner, pages] of interfacePreviews) reader.preview(owner, pages);
 			offers.open();
 			void reader.open();
 		}
@@ -1245,6 +1249,11 @@ export function mountApplication(
 									AbortSignal.any([controller.signal, signal]),
 									check,
 								);
+							},
+							previewInterfaces: (owner, pages) => {
+								if (pages.length > 0) interfacePreviews.set(owner, pages);
+								else interfacePreviews.delete(owner);
+								interfaceFolder?.preview(owner, pages);
 							},
 							...agentActions,
 							...workspaceActions,

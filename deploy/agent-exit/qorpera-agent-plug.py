@@ -689,6 +689,12 @@ class Reconciler:
                            f"{{ {address} }}"])
         if result.returncode != 0:
             print(f"cannot clear {address} from the exit's DNS map: {result.stderr.strip()[:200]}", flush=True)
+        # And where it may go (E8c), for the same reason: the next machine at this address would get the old
+        # company's rules.
+        result = self.run(["ip", "netns", "exec", self.args.netns, "nft", "destroy", "element", family, table, "reach",
+                           f"{{ {address} }}"])
+        if result.returncode != 0:
+            print(f"cannot clear {address} from the exit's reach map: {result.stderr.strip()[:200]}", flush=True)
 
     def bridge_state(self):
         """What the bridge rules hold now: the ports and pairs sets, the dhcp chain's per-machine rules (by their

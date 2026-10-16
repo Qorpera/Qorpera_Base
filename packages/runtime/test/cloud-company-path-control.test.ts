@@ -56,6 +56,10 @@ describe("Company File bounded control transport", () => {
 	it.each([
 		"qorpera_record_runtime_observation_batch",
 		"qorpera_begin_native_company_execution_v2",
+		"qorpera_begin_native_company_execution_v3",
+		"qorpera_bind_native_company_context",
+		"qorpera_memory_events_run",
+		"qorpera_memory_compaction_record",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
 		"qorpera_record_native_context_view",
@@ -518,8 +522,8 @@ describe("the folder core's entry points (core C3)", () => {
 	it("gives a listing page and a change set's outcomes room, and nothing else", async () => {
 		const sized = (bytes: number) => ({ padding: "x".repeat(bytes) });
 		for (const [method, bytes, fits] of [
-			["qorpera_folder_list", 1_900_000, true],
-			["qorpera_folder_list", 2_200_000, false],
+			["qorpera_folder_list", 8_000_000, true],
+			["qorpera_folder_list", 8_500_000, false],
 			["qorpera_folder_commit", 3_000_000, true],
 			["qorpera_folder_read", 300_000, false],
 			["qorpera_folder_record_release", 300_000, false],
@@ -536,5 +540,20 @@ describe("the folder core's entry points (core C3)", () => {
 				);
 			expect([method, bytes, result]).toEqual([method, bytes, fits]);
 		}
+	});
+
+	it("reads a listing page of 200 links with the longest paths and targets escaped at worst", async () => {
+		const entries = Array.from({ length: 200 }, (_, index) => ({
+			path: `${String(index).padStart(3, "0")}${'"'.repeat(4093)}`,
+			kind: "symlink",
+			receipt: "x".repeat(550),
+			target: "\u0001".repeat(4095),
+		}));
+		const answer = { schema: "fixture", entries, next: entries.at(-1)!.path };
+		expect(Buffer.byteLength(JSON.stringify(answer))).toBeGreaterThan(6_500_000);
+		const transport = vi.fn<typeof fetch>(async () => Response.json(answer));
+		await expect(fixture(transport).call("qorpera_folder_list", {}, new AbortController().signal)).resolves.toEqual(
+			answer,
+		);
 	});
 });

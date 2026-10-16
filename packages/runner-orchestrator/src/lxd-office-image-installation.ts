@@ -5,6 +5,9 @@ import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 export const OFFICE_IMAGE_ROOT = "/opt/qorpera-office";
 export const OFFICE_IMAGE_MOUNT_UNIT = "run-qorpera\\x2doffice-private.mount";
 export const OFFICE_IMAGE_USER = "qorpera-office";
+/** The company folder program, where the folder mount unit runs it (cloud-company-computer-folder-helper.ts). */
+export const OFFICE_IMAGE_FOLDER_PROGRAM = "/opt/qorpera-folder/qorpera-folder";
+export const OFFICE_IMAGE_FOLDER_MOUNT_UNIT = "qorpera-office-folder-mount@.service";
 /** The apt units through which an image upgrades itself. The office service
  * and preparation refuse unless all are masked. This list must equal the
  * guests' (lxd-guest-image-updates.ts); scripts/office-image-self-update.test.mjs
@@ -82,6 +85,17 @@ export const OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES = [
 	"qorpera-agent-plug-networkd.conf",
 ] as const;
 
+/** The office's company folder (F3 4e-2): the folder program, the root helper that mounts it for each desktop and
+ * command, and their units. Admitted by newer packages, all together. The helper is root code, so it changes only
+ * with a new image generation, never through a code package. */
+export const OFFICE_IMAGE_FOLDER_PACKAGE_FILES = [
+	"qorpera-company-computer-folder-helper.mjs",
+	"qorpera-office-folder-helper.service",
+	"qorpera-office-folder-helper.socket",
+	"qorpera-office-folder-mount@.service.in",
+	"qorpera-folder",
+] as const;
+
 export const OFFICE_IMAGE_RESET_PACKAGE_FILES = [
 	"qorpera-company-computer-reset-configuration-control.mjs",
 	"qorpera-company-computer-reset-service-start-control.mjs",
@@ -144,6 +158,13 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 		return { path: "/etc/apparmor.d/qorpera-office-browser-bwrap", mode: 0o444 };
 	if (file === "qorpera-office-private.mount.in")
 		return { path: `/etc/systemd/system/${OFFICE_IMAGE_MOUNT_UNIT}`, mode: 0o644 };
+	if (file === "qorpera-office-folder-mount@.service.in")
+		return { path: `/etc/systemd/system/${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}`, mode: 0o644 };
+	if (["qorpera-office-folder-helper.service", "qorpera-office-folder-helper.socket"].includes(file))
+		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
+	if (file === "qorpera-folder") return { path: OFFICE_IMAGE_FOLDER_PROGRAM, mode: 0o555 };
+	if (file === "qorpera-company-computer-folder-helper.mjs")
+		return { path: `${OFFICE_IMAGE_ROOT}/${file}`, mode: 0o444 };
 	if (["qorpera-company-computer.service", "qorpera-company-computer-preparation.service"].includes(file))
 		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
 	if (["qorpera-office-runtime.conf", "qorpera-office-preparation.conf"].includes(file))
@@ -251,12 +272,17 @@ export function parseOfficeImagePackage(value: unknown) {
 		![0, OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES.length].includes(
 			OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES.filter((f) => files.has(f)).length,
 		) ||
-		(files.has(OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES[0]) && !files.has(OFFICE_IMAGE_NETWORK_PACKAGE_FILES[0]))
+		(files.has(OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES[0]) && !files.has(OFFICE_IMAGE_NETWORK_PACKAGE_FILES[0])) ||
+		// A helper without the program it mounts, or a program no unit runs, is no company folder.
+		![0, OFFICE_IMAGE_FOLDER_PACKAGE_FILES.length].includes(
+			OFFICE_IMAGE_FOLDER_PACKAGE_FILES.filter((f) => files.has(f)).length,
+		)
 	)
 		throw new Error("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
 	return { artifacts, playwright: r.playwright };
 }
 
+/** Renders the private mount and the folder mount template: each names the office account's ids exactly once. */
 export function renderOfficeImageMount(template: string, uid: number, gid: number): string {
 	if (template.split("@OFFICE_UID@").length !== 2 || template.split("@OFFICE_GID@").length !== 2)
 		throw new Error("OFFICE_IMAGE_MOUNT_INVALID");

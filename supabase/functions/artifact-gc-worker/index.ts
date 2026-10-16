@@ -1,19 +1,15 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
-	parseArtifactGcWorkerJobs,
-	parseArtifactGcWorkerObjects,
 	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
 	parseCompanyStorageDeletions,
 	createRoutedArtifactGcStorageProvider,
 	resolveArtifactGcWorkerAuthorization,
-	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
 	runCompanyStorageDeletions,
 	runFolderObjectGc,
 	reconcileAuthorizedArtifactGcWorkerObjects,
 	type ArtifactGcStorageProvider,
-	type ArtifactGcWorkerStore,
 	type CompanyObjectGcWorkerStore,
 	type FolderObjectGcResult,
 } from "./artifact-gc-worker.ts";
@@ -237,68 +233,6 @@ Deno.serve(async (request) => {
 	} catch {
 		return jsonResponse({ error: "Authorized object reconciliation failed" }, 503);
 	}
-	const leaseId = crypto.randomUUID();
-	const { data: claimed, error: claimError } = await client.rpc("qorpera_claim_artifact_gc_plans", {
-		p_limit: 5,
-		p_lease_id: leaseId,
-	});
-	if (claimError) return jsonResponse({ error: "Artifact cleanup claim failed" }, 503);
-
-	let jobs;
-	try {
-		jobs = parseArtifactGcWorkerJobs(claimed);
-	} catch {
-		return jsonResponse({ error: "Artifact cleanup claim was invalid" }, 503);
-	}
-	const store: ArtifactGcWorkerStore = {
-		claimObjects: async (job) => {
-			const { data, error } = await client.rpc("qorpera_claim_artifact_gc_objects", {
-				p_plan_id: job.planId,
-				p_lease_id: job.leaseId,
-				p_limit: 100,
-			});
-			if (error) throw new Error("Artifact cleanup object claim failed");
-			return parseArtifactGcWorkerObjects(data, job);
-		},
-		renewLease: async (job, sha256s) => {
-			const { error } = await client.rpc("qorpera_renew_artifact_gc_lease", {
-				p_plan_id: job.planId,
-				p_lease_id: job.leaseId,
-				p_object_sha256s: sha256s,
-			});
-			if (error) throw new Error("Artifact cleanup lease renewal failed");
-		},
-		acknowledgeObjects: async (job, sha256s) => {
-			const { error } = await client.rpc("qorpera_complete_artifact_gc_objects", {
-				p_plan_id: job.planId,
-				p_lease_id: job.leaseId,
-				p_object_sha256s: sha256s,
-			});
-			if (error) throw new Error("Artifact cleanup acknowledgement failed");
-		},
-		complete: async (job) => {
-			const { error } = await client.rpc("qorpera_complete_artifact_gc_plan", {
-				p_plan_id: job.planId,
-				p_lease_id: job.leaseId,
-			});
-			if (error) throw new Error("Artifact cleanup completion failed");
-		},
-		fail: async (job, message) => {
-			const { data, error } = await client.rpc("qorpera_fail_artifact_gc_plan_v2", {
-				p_plan_id: job.planId,
-				p_lease_id: job.leaseId,
-				p_error: message,
-			});
-			if (error || !data || typeof data !== "object" || Array.isArray(data)) {
-				throw new Error("Artifact cleanup failure could not be recorded");
-			}
-			const status = (data as Record<string, unknown>).status;
-			if (status !== "retrying" && status !== "failed") {
-				throw new Error("Artifact cleanup failure returned an invalid state");
-			}
-			return status;
-		},
-	};
 	const storage: ArtifactGcStorageProvider = createRoutedArtifactGcStorageProvider({
 		removeSupabase: async (object, gcLeaseId) => {
 			const { data, error } = await client.rpc("qorpera_authorize_profile_object_deletion", {
@@ -337,47 +271,6 @@ Deno.serve(async (request) => {
 			if (!response.ok) throw new Error("NAS object removal failed");
 		},
 	});
-	const artifactResult = await runArtifactGcWorkerBatch(jobs, storage, store);
-	const companyLeaseId = crypto.randomUUID();
-	const { data: companyClaim, error: companyClaimError } = await client.rpc("qorpera_claim_company_object_gc", {
-		p_limit: 100,
-		p_lease_id: companyLeaseId,
-	});
-	let companyObjects = { claimed: 0, completed: 0, failed: 0 };
-	if (!companyClaimError) {
-		let companyJob;
-		try {
-			companyJob = parseCompanyObjectGcWorkerJob(companyClaim);
-		} catch {
-			return jsonResponse({ error: "Company object cleanup claim was invalid" }, 503);
-		}
-		const companyStore: CompanyObjectGcWorkerStore = {
-			renewLease: async (job) => {
-				const { error } = await client.rpc("qorpera_renew_company_object_gc", {
-					p_profile_id: job.profileId,
-					p_lease_id: job.leaseId,
-					p_object_sha256s: job.objects.map((object) => object.sha256),
-				});
-				if (error) throw new Error("Company object cleanup lease renewal failed");
-			},
-			complete: async (job) => {
-				const { error } = await client.rpc("qorpera_complete_company_object_gc", {
-					p_profile_id: job.profileId,
-					p_lease_id: job.leaseId,
-					p_object_sha256s: job.objects.map((object) => object.sha256),
-				});
-				if (error) throw new Error("Company object cleanup completion failed");
-			},
-			release: async (job) => {
-				const { error } = await client.rpc("qorpera_release_company_object_gc_v2", {
-					p_profile_id: job.profileId,
-					p_lease_id: job.leaseId,
-				});
-				if (error) throw new Error("Company object cleanup release failed");
-			},
-		};
-		companyObjects = await runCompanyObjectGcWorkerJob(companyJob, storage, companyStore);
-	}
 
 	const deletedProfileLeaseId = crypto.randomUUID();
 	const { data: deletedProfileClaim, error: deletedProfileClaimError } = await client.rpc(
@@ -423,5 +316,5 @@ Deno.serve(async (request) => {
 			deletedProfileStore,
 		);
 	}
-	return jsonResponse({ ...artifactResult, companyObjects, deletedProfileObjects, companyStorage, folderObjects });
+	return jsonResponse({ deletedProfileObjects, companyStorage, folderObjects });
 });

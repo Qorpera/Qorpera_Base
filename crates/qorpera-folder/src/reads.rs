@@ -1,7 +1,8 @@
-//! A mount's read journal, kept under /run across program/service restarts. A successful FUSE open is logged before
-//! its reply. Nothing is forgotten until the service says the core released it. The mount and a separate publisher
-//! share a fixed lock-file inode; replacing a compacted journal never replaces that lock. A damaged journal leaves
-//! a permanent lost marker: a later retry must not turn missing proof into an empty successful boundary.
+//! A mount's read journal, kept under /run across program/service restarts. A successful FUSE open (or readlink, or
+//! a hard link's read of its source) is logged before its reply. Nothing is forgotten until the service says the core
+//! released it. The mount and a separate publisher share a fixed lock-file inode; replacing a compacted journal never
+//! replaces that lock. A damaged journal leaves a permanent lost marker: a later retry must not turn missing proof
+//! into an empty successful boundary.
 
 use crate::frame::MAX_PAYLOAD;
 use crate::proto::{valid_path, Authority, LoggedRead, ReadsAnswer, ReadsRequest};

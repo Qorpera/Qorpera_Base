@@ -253,7 +253,7 @@ begin
 		raise exception 'The name copy runs inside the agent''s block'; end if;
 end $$;
 
--- 6. The schedule: the step every 2 seconds, and a daily cleanup of its run log ----------------------------------------------
+-- 6. The schedule: the step every 10 seconds (20260930483000), and a daily cleanup of its run log ------------------------
 
 do $$
 declare v jsonb; v_command text;
@@ -275,9 +275,9 @@ begin
 	v := public.qorpera_schedule_folder_follow_ups();
 	if v ->> 'scheduled' is distinct from 'true' or jsonb_array_length(v -> 'jobs') <> 2
 		or public.qorpera_schedule_folder_follow_ups() -> 'jobs' <> v -> 'jobs'
-		or (select schedule from cron.job where jobname = 'qorpera-folder-follow-ups') is distinct from '2 seconds'
+		or (select schedule from cron.job where jobname = 'qorpera-folder-follow-ups') is distinct from '10 seconds'
 		or (select schedule from cron.job where jobname = 'qorpera-folder-follow-ups-log') is distinct from '23 3 * * *' then
-		raise exception 'The queue is not scheduled once, every 2 seconds, with a daily cleanup: %', v; end if;
+		raise exception 'The queue is not scheduled once, every 10 seconds, with a daily cleanup: %', v; end if;
 	select command into v_command from cron.job where jobname = 'qorpera-folder-follow-ups';
 	if v_command is distinct from 'select public.qorpera_folder_follow_up_step()' then raise exception 'The step''s command: %', v_command; end if;
 	-- The commands run as the job's owner, with no JWT.

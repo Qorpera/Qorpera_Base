@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,8 +30,131 @@ export const CLUSTER_ENV = "QORPERA_HOSTED_DB_CLUSTER";
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/;
 const CONTAINER = /^qorpera-hosted-db-\d+-[0-9a-f]{8}$/;
 
+/** A suite's build is kept on the machine for later runs (a warm copy): its data directory, in a docker volume
+ * `qorpera-hosted-db-warm-<link>-<seconds>-<random>`, and a volume of the same name with `-ready` after it once the
+ * copy is complete. The link (`warmChain`) covers everything the build came from, so a copy is used only by a run
+ * whose image, bootstrap, build scripts and first migrations are byte for byte the ones it was made from. */
+const WARM = /^qorpera-hosted-db-warm-([0-9a-f]{32})-(\d{10})-([0-9a-f]{4})(-ready)?$/;
+/** How many complete copies a machine keeps, the newest. */
+const WARM_KEEP = 6;
+/** A run starts only from a copy younger than this. The rows the migrations write carry the time of the build that
+ * wrote them (now()), so a run started from a copy finds them that much older than a full replay would leave them. */
+const WARM_MAX_AGE_SECONDS = 6 * 3600;
+/** A copy still without its `-ready` volume this long after it was named was left by a run that ended first. A
+ * complete copy is removed this long after it is too old to start from, when no run that picked it is still starting. */
+const WARM_UNFINISHED_SECONDS = 3600;
+/** Changes when what a copy holds or how it is made changes, so older copies are not used. */
+const WARM_FORMAT = "1";
+/** Where a warm start finds the copy, and where a build that is kept is written, inside the container. */
+const WARM_IN = "/qorpera-warm";
+const WARM_OUT = "/qorpera-warm-out";
+/** A warm start copies the data directory in and starts PostgreSQL on it. A copy that cannot be read leaves an empty
+ * data directory, so the image initializes a fresh cluster, and `startBuilt` finds no build there. */
+const WARM_START = `if [ -d ${WARM_IN}/data ]; then cp -a ${WARM_IN}/data/. "$PGDATA"/ || find "$PGDATA" -mindepth 1 -delete; fi; exec docker-entrypoint.sh postgres`;
+
+const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+
 export function migrationNames() {
 	return sortMigrationNames(readdirSync(MIGRATIONS));
+}
+
+/** chain[i] is the link of a build of the first i migrations: chain[0] covers the image, the test bootstrap and the
+ * scripts that build it; chain[i] covers chain[i - 1] and migration i's name and bytes. `read` returns a file's bytes. */
+export function warmChain(names, read = readFileSync) {
+	const builders = [
+		join(TESTS, "bootstrap.sql"),
+		join(TESTS, PLATFORM_DEFAULTS),
+		fileURLToPath(import.meta.url),
+		join(repositoryRoot, "scripts", "test-hosted-db.mjs"),
+	];
+	let link = sha256([WARM_FORMAT, POSTGRES_IMAGE, ...builders.map((file) => sha256(read(file)))].join("\n"));
+	const chain = [link.slice(0, 32)];
+	for (const name of names) {
+		link = sha256(`${link}\n${name}\n${sha256(read(join(MIGRATIONS, name)))}`);
+		chain.push(link.slice(0, 32));
+	}
+	return chain;
+}
+
+/** A new copy's volume name for `link`. */
+export function warmVolumeName(link, nowSeconds = Math.floor(Date.now() / 1000)) {
+	return `qorpera-hosted-db-warm-${link}-${String(nowSeconds).padStart(10, "0")}-${randomBytes(2).toString("hex")}`;
+}
+
+/** The complete copy to start from: of those younger than WARM_MAX_AGE_SECONDS, the one of the most migrations of
+ * `chain`, the newest of those; null without one. */
+export function warmCopy(volumes, chain, nowSeconds) {
+	const ready = new Set(volumes.filter((volume) => volume.endsWith("-ready")).map((volume) => volume.slice(0, -"-ready".length)));
+	const applied = new Map(chain.map((link, index) => [link, index]));
+	let best = null;
+	for (const volume of volumes) {
+		const match = WARM.exec(volume);
+		if (!match || match[4] || !ready.has(volume) || !applied.has(match[1])) continue;
+		if (nowSeconds - Number(match[2]) >= WARM_MAX_AGE_SECONDS) continue;
+		const candidate = { applied: applied.get(match[1]), volume };
+		if (!best || candidate.applied > best.applied || (candidate.applied === best.applied && volume > best.volume)) best = candidate;
+	}
+	return best;
+}
+
+/** The volumes to remove, each `-ready` before its copy: complete copies beyond the newest WARM_KEEP or
+ * WARM_UNFINISHED_SECONDS past WARM_MAX_AGE_SECONDS, and copies never completed WARM_UNFINISHED_SECONDS after they
+ * were named. Docker refuses to remove one a container uses. */
+export function warmVolumesToRemove(volumes, nowSeconds) {
+	const named = volumes.map((volume) => [volume, WARM.exec(volume)]).filter(([, match]) => match);
+	const ready = new Set(named.filter(([, match]) => match[4]).map(([volume]) => volume.slice(0, -"-ready".length)));
+	const copies = named.filter(([, match]) => !match[4]);
+	const kept = new Set(
+		copies
+			.filter(([volume]) => ready.has(volume))
+			.sort(([left, a], [right, b]) => Number(b[2]) - Number(a[2]) || (left < right ? 1 : -1))
+			.slice(0, WARM_KEEP)
+			.map(([volume]) => volume),
+	);
+	const remove = [];
+	for (const [volume, match] of copies) {
+		const age = nowSeconds - Number(match[2]);
+		if (ready.has(volume) && (!kept.has(volume) || age > WARM_MAX_AGE_SECONDS + WARM_UNFINISHED_SECONDS)) remove.push(`${volume}-ready`, volume);
+		else if (!ready.has(volume) && age > WARM_UNFINISHED_SECONDS) remove.push(volume);
+	}
+	// A `-ready` volume whose copy is gone.
+	for (const volume of ready) if (!copies.some(([copy]) => copy === volume)) remove.push(`${volume}-ready`);
+	return remove;
+}
+
+/** The databases a build leaves: a snapshot before each migration in `snapshotBefore` and before the first, and
+ * `qorpera_migrated` after the last. */
+export function snapshotPlan(names, snapshotBefore = []) {
+	const points = new Set([0, names.length]);
+	for (const name of snapshotBefore) {
+		const index = names.indexOf(name);
+		if (index < 0) throw new Error(`Unknown migration ${name}`);
+		points.add(index);
+	}
+	return [...points].sort((a, b) => a - b).map((applied) => ({
+		applied,
+		database: applied === names.length ? MIGRATED : `qorpera_snapshot_${String(applied).padStart(4, "0")}`,
+	}));
+}
+
+/** Which of a warm copy's databases (`present`, those named qorpera_…) a build of `snapshots` drops when it goes on
+ * from the copy's `applied` migrations; null when they are not what a build leaves there (the snapshots before that
+ * point and the migrated database, plus snapshots this build does not take). */
+export function warmDatabasesToDrop(present, snapshots, applied) {
+	const wanted = [...snapshots.filter((snapshot) => snapshot.applied < applied).map((snapshot) => snapshot.database), MIGRATED];
+	if (wanted.some((database) => !present.includes(database))) return null;
+	const extra = present.filter((database) => !wanted.includes(database));
+	return extra.every((database) => /^qorpera_snapshot_\d{4}$/.test(database)) ? extra : null;
+}
+
+function warmVolumes() {
+	return run("docker", ["volume", "ls", "--quiet", "--filter", "name=qorpera-hosted-db-warm-"]).split("\n").filter(Boolean);
+}
+
+function checkWarmVolume(volume) {
+	const match = WARM.exec(volume);
+	if (!match || match[4]) throw new Error(`Invalid warm copy volume ${volume}`);
+	return volume;
 }
 
 /** The newest runtime bundle activation, which test-runtime-office-delete-disposition holds back. */
@@ -101,8 +224,9 @@ export class HostedDbCluster {
 
 	/** Starts a disposable PostgreSQL and copies the migrations and the test bootstrap into it. The data lives
 	 * on tmpfs unless `restartable`: a container restart empties tmpfs. With another `admin`, that role is the
-	 * bootstrap superuser and `postgres` an ordinary superuser, which a test may alter (the managed shape). */
-	static async start({ restartable = false, admin = "postgres" } = {}) {
+	 * bootstrap superuser and `postgres` an ordinary superuser, which a test may alter (the managed shape).
+	 * `warm`: a warm copy's volume, whose data directory it starts on; `keepIn`: the volume `keep()` writes to. */
+	static async start({ restartable = false, admin = "postgres", warm = null, keepIn = null } = {}) {
 		run("docker", ["info", "--format", "{{.ServerVersion}}"]);
 		const container = buildContainerName(process.pid, randomBytes(4).toString("hex"));
 		run("docker", [
@@ -117,7 +241,9 @@ export class HostedDbCluster {
 			`POSTGRES_PASSWORD=${PASSWORD}`,
 			...(admin === "postgres" ? [] : ["--env", `POSTGRES_USER=${checkDatabase(admin)}`]),
 			...(restartable ? [] : ["--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=2g"]),
-			POSTGRES_IMAGE,
+			...(warm ? ["--volume", `${checkWarmVolume(warm)}:${WARM_IN}:ro`] : []),
+			...(keepIn ? ["--volume", `${checkWarmVolume(keepIn)}:${WARM_OUT}`] : []),
+			...(warm ? ["--entrypoint", "/bin/sh", POSTGRES_IMAGE, "-c", WARM_START] : [POSTGRES_IMAGE]),
 		]);
 		const cluster = new HostedDbCluster(container, [], true, admin);
 		try {
@@ -132,6 +258,77 @@ export class HostedDbCluster {
 			throw error;
 		}
 		return cluster;
+	}
+
+	/** `start()` then `build()`, going on from the machine's warm copy of the most of these migrations when it keeps
+	 * one: only the migrations after the copy are replayed. A copy whose databases are not what a build leaves there
+	 * means a full replay in a fresh container. A full replay keeps its build for later runs (`keep`), and the
+	 * machine's oldest copies are removed; a run that went on from a copy keeps nothing (replaying the migrations
+	 * that land in WARM_MAX_AGE_SECONDS costs less than keeping a copy). Returns the cluster and how many migrations
+	 * were copied. */
+	static async startBuilt({ snapshotBefore = [], progress = true, keep = true } = {}) {
+		const names = migrationNames();
+		const chain = warmChain(names);
+		const warm = warmCopy(warmVolumes(), chain, Math.floor(Date.now() / 1000));
+		if (warm) {
+			const cluster = await HostedDbCluster.start({ warm: warm.volume });
+			let drop = null;
+			try {
+				const present = cluster.psql("postgres", "select datname from pg_database where datname like 'qorpera\\_%';", ["-qAt"]);
+				drop = warmDatabasesToDrop(present.split("\n").filter(Boolean), snapshotPlan(names, snapshotBefore), warm.applied);
+				if (drop) {
+					if (drop.length) cluster.admin(drop.map((database) => `drop database ${checkDatabase(database)};`).join("\n"));
+					cluster.build({ snapshotBefore, progress, from: warm.applied });
+				}
+			} catch (error) {
+				cluster.stop();
+				throw error;
+			}
+			if (drop) return { cluster, copied: warm.applied };
+			cluster.stop();
+			process.stdout.write(`The warm copy ${warm.volume} does not hold the databases a build leaves; replaying every migration\n`);
+		}
+		const out = keep ? warmVolumeName(chain.at(-1)) : null;
+		const cluster = await HostedDbCluster.start({ keepIn: out });
+		try {
+			cluster.build({ snapshotBefore, progress });
+		} catch (error) {
+			cluster.stop();
+			throw error;
+		}
+		if (out) cluster.keep(out);
+		return { cluster, copied: 0 };
+	}
+
+	/** Copies this build's data directory into `volume` (mounted by `start({ keepIn })`), marks it complete and removes
+	 * the machine's oldest copies. A copy that fails is reported and left for a later run to remove. */
+	keep(volume) {
+		const started = Date.now();
+		try {
+			run("docker", ["exec", this.container, "sh", "-c", `mkdir ${WARM_OUT}/data && chown postgres:postgres ${WARM_OUT}/data`]);
+			run("docker", [
+				"exec",
+				"--user",
+				"postgres",
+				this.container,
+				"pg_basebackup",
+				"--host",
+				"/var/run/postgresql",
+				"--username",
+				"postgres",
+				"--pgdata",
+				`${WARM_OUT}/data`,
+				"--checkpoint",
+				"fast",
+				"--no-manifest",
+			]);
+			run("docker", ["volume", "create", `${checkWarmVolume(volume)}-ready`]);
+			process.stdout.write(`Kept this build for later runs in ${volume} in ${((Date.now() - started) / 1000).toFixed(1)} s\n`);
+		} catch (error) {
+			process.stdout.write(`Could not keep this build for later runs: ${error.message}\n`);
+		}
+		for (const old of warmVolumesToRemove(warmVolumes(), Math.floor(Date.now() / 1000)))
+			spawnSync("docker", ["volume", "rm", old], { encoding: "utf8" });
 	}
 
 	/** The cluster a suite handed to this process, or null when the script runs on its own. */
@@ -240,21 +437,13 @@ export class HostedDbCluster {
 	}
 
 	/** Builds `qorpera_migrated`: the test bootstrap, then every migration. Before each migration named in
-	 * `snapshotBefore` (and before the first, and after the last) it leaves a copy for later databases. */
-	build({ snapshotBefore = [], progress = true } = {}) {
+	 * `snapshotBefore` (and before the first, and after the last) it leaves a copy for later databases. `from`: a warm
+	 * copy's migrations, which this cluster already holds with the copies before them; the build goes on after them. */
+	build({ snapshotBefore = [], progress = true, from = 0 } = {}) {
 		if (this.#admin !== "postgres") throw new Error("The shared replay runs where postgres is the bootstrap superuser");
 		const names = migrationNames();
 		if (names.length === 0) throw new Error("No hosted database migrations were found");
-		const points = new Set([0, names.length]);
-		for (const name of snapshotBefore) {
-			const index = names.indexOf(name);
-			if (index < 0) throw new Error(`Unknown migration ${name}`);
-			points.add(index);
-		}
-		const snapshots = [...points].sort((a, b) => a - b).map((applied) => ({
-			applied,
-			database: applied === names.length ? MIGRATED : `qorpera_snapshot_${String(applied).padStart(4, "0")}`,
-		}));
+		const snapshots = snapshotPlan(names, snapshotBefore);
 		const snapshotAt = (applied) => {
 			const snapshot = snapshots.find((candidate) => candidate.applied === applied);
 			// CREATE DATABASE … TEMPLATE needs the template without sessions: this one moves to postgres first.
@@ -262,9 +451,9 @@ export class HostedDbCluster {
 				? `\\connect postgres\ncreate database ${snapshot.database} template ${MIGRATED};\n`
 				: "";
 		};
-		let text = `\\connect postgres\ncreate database ${MIGRATED};\n`;
-		text += sessionPerFile(MIGRATED, BOOTSTRAP);
+		let text = from === 0 ? `\\connect postgres\ncreate database ${MIGRATED};\n${sessionPerFile(MIGRATED, BOOTSTRAP)}` : "";
 		names.forEach((name, index) => {
+			if (index < from) return;
 			text += snapshotAt(index);
 			text += sessionPerFile(MIGRATED, [`${IN_CONTAINER}/migrations/${name}`], { echo: progress });
 		});

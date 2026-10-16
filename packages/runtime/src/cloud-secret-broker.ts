@@ -21,12 +21,16 @@ import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-
 import {
 	type EventHookAnswer,
 	type EventHookAuthority,
+	type EventHookCaptureAnswer,
+	type EventHookCaptureRequest,
+	type EventHookCaptureVersion,
 	type EventHookCreate,
 	type EventHookFillAnswer,
 	type EventHookFillRequest,
 	type EventHookOpening,
 	type EventHookRefusal,
 	type EventHookRequest,
+	type EventHookStripeOpening,
 	EventHookVault,
 } from "./cloud-event-hook-vault.ts";
 import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
@@ -47,7 +51,15 @@ const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
 const EXECUTOR_OWNER = /^[A-Za-z0-9_.:-]{1,120}$/;
 /** GitHub OAuth, app and personal access tokens: letters, digits, underscores. */
 const REPOSITORY_TOKEN = /^[A-Za-z0-9_]{20,512}$/;
+/** A coding session's environment variable name: the vault name in upper case (5j-1). */
+const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const MAX_RPC_BYTES = 256 * 1024;
+
+/** The shortest environment value, in UTF-8 bytes, the vault takes or hands out. It equals
+ * `CODING_SECRET_MASK_MINIMUM_BYTES` in packages/runner-orchestrator/src/coding-secret-mask.ts (5j-2), so
+ * every value a coding machine is given is long enough to be masked in its output. The runtime does not
+ * import that package, so the two are kept equal by hand. */
+export const CODING_ENVIRONMENT_VALUE_MINIMUM_BYTES = 8;
 
 export interface CloudSecretCaptureRequest {
 	readonly ticketId: string;
@@ -147,6 +159,41 @@ export interface CodingRepositoryCredentialAuthorization extends CloudSecretEnve
 	readonly repository: CloudCodingRepository;
 }
 
+/** A coding executor asking for the environment of one session it holds (5j-3).
+ * Naming only: the kernel checks every part against the lease. */
+export interface CodingEnvironmentRequest {
+	readonly workerId: string;
+	readonly leaseToken: string;
+	readonly executorOwner: string;
+}
+
+/** The only answer that ever carries environment values out of the broker: each
+ * variable's name and value, in the authorization's order. It goes to the executor,
+ * which starts the session's processes with it, never into a model turn or a log. */
+export interface CodingEnvironment {
+	readonly schema: "qorpera.coding-environment/v1";
+	readonly environment: Readonly<Record<string, string>>;
+}
+
+export interface CodingEnvironmentSecret {
+	readonly name: string;
+	readonly secretId: string;
+	readonly version: number;
+	readonly keyId: string;
+	readonly ownerKind: "company" | "member";
+	readonly encryptedEnvelopeBase64: string;
+	readonly envelopeSha256: string;
+}
+
+export interface CodingEnvironmentAuthorization {
+	readonly schema: "qorpera.coding-environment-authorization/v1";
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly workerId: string;
+	readonly repository: CloudCodingRepository;
+	readonly secrets: readonly CodingEnvironmentSecret[];
+}
+
 export interface CloudSecretBrokerAuthority {
 	claimEmailDraftAction?(actionId: string, capabilitySha256: string, signal: AbortSignal): Promise<unknown>;
 	finishEmailDraftAction?(
@@ -166,6 +213,9 @@ export interface CloudSecretBrokerAuthority {
 	): Promise<unknown>;
 	authorizeOperation(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<unknown>;
 	authorizeRepositoryCredential(request: CodingRepositoryCredentialRequest, signal: AbortSignal): Promise<unknown>;
+	/** A coding session's environment secrets (5j-3); a broker whose database role cannot run the
+	 * function leaves this out and refuses every environment request. */
+	authorizeCodingEnvironment?(request: CodingEnvironmentRequest, signal: AbortSignal): Promise<unknown>;
 	/** Company website accounts (A1); a broker whose database cannot serve them leaves these out. */
 	describeCompanyAccountOpen?: CompanyAccountAuthority["describeCompanyAccountOpen"];
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
@@ -175,6 +225,12 @@ export interface CloudSecretBrokerAuthority {
 	describeSignedHook?: EventHookAuthority["describeSignedHook"];
 	openSignedHook?: EventHookAuthority["openSignedHook"];
 	readEventHookFill?: EventHookAuthority["readEventHookFill"];
+	/** Stripe hooks' captured secrets (E3c-2); without them a Stripe create or capture is refused as unavailable. */
+	openStripeHook?: EventHookAuthority["openStripeHook"];
+	describeHookCaptureKey?: EventHookAuthority["describeHookCaptureKey"];
+	replaceHookCaptureKey?: EventHookAuthority["replaceHookCaptureKey"];
+	readHookCapture?: EventHookAuthority["readHookCapture"];
+	storeHookCapture?: EventHookAuthority["storeHookCapture"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -461,6 +517,99 @@ function parseRepositoryAuthorization(
 	};
 }
 
+export function parseCodingEnvironmentRequest(value: {
+	readonly workerId: unknown;
+	readonly leaseToken: unknown;
+	readonly executorOwner: unknown;
+}): CodingEnvironmentRequest {
+	if (typeof value.executorOwner !== "string" || !EXECUTOR_OWNER.test(value.executorOwner))
+		throw new Error("Coding environment request is invalid");
+	return {
+		workerId: uuid(value.workerId, "Coding worker").toLowerCase(),
+		leaseToken: uuid(value.leaseToken, "Coding lease").toLowerCase(),
+		executorOwner: value.executorOwner,
+	};
+}
+
+function parseCodingEnvironmentAuthorization(
+	value: unknown,
+	request: CodingEnvironmentRequest,
+): CodingEnvironmentAuthorization {
+	const input = record(value, "Coding environment authorization");
+	exact(
+		input,
+		["schema", "companyId", "environmentId", "workerId", "repository", "secrets"],
+		"Coding environment authorization",
+	);
+	if (
+		input.schema !== "qorpera.coding-environment-authorization/v1" ||
+		typeof input.workerId !== "string" ||
+		input.workerId.toLowerCase() !== request.workerId ||
+		!Array.isArray(input.secrets)
+	)
+		throw new Error("Coding environment authorization differs from its request");
+	const repository = parseCloudCodingRepository(input.repository);
+	const companyId = uuid(input.companyId, "Cloud secret company");
+	const environmentId = uuid(input.environmentId, "Cloud secret environment");
+	// The database settles a member's and the company's secret of the same name before it
+	// answers, so a repeated name here means the answer is not the one it promised.
+	const names = new Set<string>();
+	const secrets = input.secrets.map((entry: unknown): CodingEnvironmentSecret => {
+		const secret = record(entry, "Coding environment secret");
+		exact(
+			secret,
+			["name", "secretId", "secretVersion", "keyId", "ownerKind", "encryptedEnvelopeBase64", "envelopeSha256"],
+			"Coding environment secret",
+		);
+		if (
+			typeof secret.name !== "string" ||
+			!ENVIRONMENT_NAME.test(secret.name) ||
+			names.has(secret.name) ||
+			(secret.ownerKind !== "company" && secret.ownerKind !== "member") ||
+			typeof secret.keyId !== "string" ||
+			!KEY_ID.test(secret.keyId) ||
+			typeof secret.encryptedEnvelopeBase64 !== "string" ||
+			!/^[A-Za-z0-9+/=\r\n]+$/.test(secret.encryptedEnvelopeBase64) ||
+			typeof secret.envelopeSha256 !== "string" ||
+			!SHA.test(secret.envelopeSha256)
+		)
+			throw new Error("Coding environment secret is invalid");
+		names.add(secret.name);
+		return {
+			name: secret.name,
+			secretId: uuid(secret.secretId, "Cloud secret id"),
+			version: integer(secret.secretVersion, "Cloud secret version"),
+			keyId: secret.keyId,
+			ownerKind: secret.ownerKind,
+			encryptedEnvelopeBase64: secret.encryptedEnvelopeBase64,
+			envelopeSha256: secret.envelopeSha256,
+		};
+	});
+	return {
+		schema: "qorpera.coding-environment-authorization/v1",
+		companyId,
+		environmentId,
+		workerId: request.workerId,
+		repository,
+		secrets,
+	};
+}
+
+/** An environment secret's one value: exactly the field `value`, at least the minimum in UTF-8 bytes so a
+ * coding machine can mask it in its output, and without NUL, which no environment variable can hold. The
+ * error never carries the value. */
+function environmentValue(fields: Readonly<Record<string, string>>): string {
+	const names = Object.keys(fields);
+	const value = names.length === 1 && names[0] === "value" ? fields.value : undefined;
+	if (
+		typeof value !== "string" ||
+		Buffer.byteLength(value, "utf8") < CODING_ENVIRONMENT_VALUE_MINIMUM_BYTES ||
+		value.includes("\0")
+	)
+		throw new Error("Coding environment value is invalid");
+	return value;
+}
+
 function adapterKey(value: {
 	connectorId: string;
 	operationId: string;
@@ -562,6 +711,8 @@ export class CloudSecretBroker {
 					})
 				: undefined;
 		const { describeSignedHook, openSignedHook, readEventHookFill } = options.authority;
+		const { openStripeHook, describeHookCaptureKey, replaceHookCaptureKey, readHookCapture, storeHookCapture } =
+			options.authority;
 		this.#eventHooks =
 			describeSignedHook && openSignedHook && readEventHookFill
 				? new EventHookVault({
@@ -569,6 +720,11 @@ export class CloudSecretBroker {
 							describeSignedHook: describeSignedHook.bind(options.authority),
 							openSignedHook: openSignedHook.bind(options.authority),
 							readEventHookFill: readEventHookFill.bind(options.authority),
+							openStripeHook: openStripeHook?.bind(options.authority),
+							describeHookCaptureKey: describeHookCaptureKey?.bind(options.authority),
+							replaceHookCaptureKey: replaceHookCaptureKey?.bind(options.authority),
+							readHookCapture: readHookCapture?.bind(options.authority),
+							storeHookCapture: storeHookCapture?.bind(options.authority),
 						},
 						keys: options.keyring,
 					})
@@ -645,6 +801,9 @@ export class CloudSecretBroker {
 		accountLabel: string | null,
 	): Promise<CloudSecretDescriptor> {
 		const description = await this.#describe(request, signal);
+		// A coding session's environment secret (5j-3) is handed out only if it has the shape and length the
+		// coding machine can mask, so a value that could never be handed out is not sealed either.
+		if (description.connectorId === "environment") environmentValue(request.fields);
 		const capabilitySha256 = createHash("sha256").update(request.captureCapability).digest("hex");
 		const envelope = this.#keys.seal(request.fields, description);
 		try {
@@ -692,6 +851,16 @@ export class CloudSecretBroker {
 	eventHookFill(request: EventHookFillRequest, signal: AbortSignal): Promise<EventHookFillAnswer | EventHookRefusal> {
 		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
 		return this.#eventHooks.fill(request, signal);
+	}
+
+	/** One vault_capture of a Stripe hook's signing secret off the Company Computer's page (E3c-2): the version the
+	 * vault holds after it; the secret never leaves. */
+	eventHookCapture(
+		request: EventHookCaptureRequest,
+		signal: AbortSignal,
+	): Promise<EventHookCaptureAnswer | EventHookRefusal> {
+		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
+		return this.#eventHooks.capture(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -894,6 +1063,52 @@ export class CloudSecretBroker {
 			envelope.fill(0);
 		}
 	}
+
+	/**
+	 * A coding session's environment (5j-3): the member's and the company's
+	 * environment secrets, released only for a session the kernel confirms the
+	 * executor holds right now. The values go back to the executor and nowhere
+	 * else; one bad secret refuses the whole answer, and every failure is the
+	 * same opaque refusal.
+	 */
+	async codingEnvironment(request: CodingEnvironmentRequest, signal: AbortSignal): Promise<CodingEnvironment> {
+		try {
+			return await this.#codingEnvironment(request, signal);
+		} catch {
+			throw new Error("Coding environment is unavailable");
+		}
+	}
+
+	async #codingEnvironment(value: CodingEnvironmentRequest, signal: AbortSignal): Promise<CodingEnvironment> {
+		if (!this.#authority.authorizeCodingEnvironment) throw new Error("Coding environment is unavailable");
+		const request = parseCodingEnvironmentRequest(value);
+		const authorization = parseCodingEnvironmentAuthorization(
+			await this.#authority.authorizeCodingEnvironment(request, signal),
+			request,
+		);
+		const environment: Record<string, string> = {};
+		// One envelope at a time, so at most one decoded envelope is in memory before it is zeroed.
+		for (const secret of authorization.secrets) {
+			const envelope = Buffer.from(secret.encryptedEnvelopeBase64, "base64");
+			try {
+				if (createHash("sha256").update(envelope).digest("hex") !== secret.envelopeSha256)
+					throw new Error("Cloud secret envelope digest differs");
+				const identity = {
+					companyId: authorization.companyId,
+					environmentId: authorization.environmentId,
+					secretId: secret.secretId,
+					version: secret.version,
+					keyId: secret.keyId,
+				};
+				const opened = await this.#keys.use(envelope, identity, async (fields) => environmentValue(fields));
+				environment[secret.name] = opened;
+			} finally {
+				envelope.fill(0);
+			}
+		}
+		signal.throwIfAborted();
+		return { schema: "qorpera.coding-environment/v1", environment };
+	}
 }
 
 function cloudOrigin(value: string): string {
@@ -1001,6 +1216,9 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		);
 	}
 
+	// No authorizeCodingEnvironment: service_role cannot execute qorpera_authorize_coding_environment (5j-1),
+	// so a broker on this authority refuses every coding environment request.
+
 	async #rpc(name: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		return withCloudDeadline(
 			async (requestSignal) => {
@@ -1032,10 +1250,10 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 
 /** Least-privilege broker authority. The database login is the NOINHERIT
  * `qorpera_secret_broker` role and can execute only the custody RPCs (capture
- * description and completion, operation and repository credential
- * authorization, handing a live run its model login and saving or giving back
- * one renewal); it has no table privileges and never holds a Supabase service
- * key. */
+ * description and completion, operation, repository credential and coding
+ * environment authorization, handing a live run its model login and saving or
+ * giving back one renewal); it has no table privileges and never holds a
+ * Supabase service key. */
 export class PostgresCloudSecretBrokerAuthority
 	implements
 		CloudSecretBrokerAuthority,
@@ -1208,6 +1426,98 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	openStripeHook(
+		binding: CloudNativeToolBinding,
+		request: EventHookCreate,
+		opening: EventHookStripeOpening,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_open_stripe_hook($1::uuid,$2::text,$3::jsonb,$4::jsonb,$5::uuid,$6::uuid,$7::uuid,$8::text,$9::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(binding),
+				JSON.stringify(request),
+				opening.secretId,
+				opening.companyId,
+				opening.environmentId,
+				opening.keyId,
+				opening.capturePublicKey,
+			],
+			signal,
+		);
+	}
+
+	describeHookCaptureKey(binding: CloudNativeToolBinding, hookId: string, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_describe_hook_capture_key($1::uuid,$2::text,$3::jsonb,$4::uuid) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding), hookId],
+			signal,
+		);
+	}
+
+	replaceHookCaptureKey(
+		binding: CloudNativeToolBinding,
+		hookId: string,
+		keyId: string,
+		publicKey: string,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_replace_hook_capture_key($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding), hookId, keyId, publicKey],
+			signal,
+		);
+	}
+
+	readHookCapture(request: EventHookFillRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_read_hook_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(request.binding),
+				request.receiptId,
+				request.envelope,
+				createHash("sha256").update(request.idempotencyKey).digest("hex"),
+			],
+			signal,
+		);
+	}
+
+	async storeHookCapture(
+		request: EventHookFillRequest,
+		stored: EventHookCaptureVersion,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		const envelope = Buffer.from(stored.encryptedEnvelope);
+		try {
+			return await this.#rpc(
+				"select public.qorpera_folder_store_hook_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::bigint,$9::uuid,$10::uuid,$11::text,$12::bytea,$13::text) as result",
+				[
+					this.#brokerAuthorityId,
+					this.#brokerCapabilitySha256,
+					JSON.stringify(request.binding),
+					request.receiptId,
+					request.envelope,
+					createHash("sha256").update(request.idempotencyKey).digest("hex"),
+					stored.secretId,
+					stored.version,
+					stored.companyId,
+					stored.environmentId,
+					stored.keyId,
+					envelope,
+					stored.envelopeSha256,
+				],
+				signal,
+			);
+		} finally {
+			// As openSignedHook: a query sent late carries zeros, which the database's envelope check refuses.
+			envelope.fill(0);
+		}
+	}
+
 	setCompanyAccountState(
 		call: CompanyAccountCall,
 		accountId: string,
@@ -1279,6 +1589,20 @@ export class PostgresCloudSecretBrokerAuthority
 				request.leaseToken,
 				request.executorOwner,
 				JSON.stringify(request.repository),
+			],
+			signal,
+		);
+	}
+
+	authorizeCodingEnvironment(request: CodingEnvironmentRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_authorize_coding_environment($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.workerId,
+				request.leaseToken,
+				request.executorOwner,
 			],
 			signal,
 		);
