@@ -25,6 +25,7 @@ import {
 	QUICK_SLOTS,
 	RUNNERS,
 	rankMachines,
+	runCommandLine,
 	runOrder,
 	runScript,
 	SET_UP,
@@ -242,6 +243,20 @@ test("a --front --cores run takes up to three slots, one such run per machine; a
 		pruneScript(),
 		/\nfor f in \/run\/lock\/qorpera-test-machine-cores-\*; do n=\$\{f#\/run\/lock\/qorpera-test-machine-cores-\}; if \[\[ "\$n" =~ \^\[0-9\]\{8\}T\[0-9\]\{6\}- && "\$\{n%%-\*\}" < "\$cutoff" \]\]; then rm -f -- "\$f"; fi; done\n/,
 	);
+});
+
+test("--sudo hands the command the vitest workers and a --cores run's cores file, which sudo would drop", () => {
+	const command = ["bash", "-c", 'echo "$VITEST_MAX_WORKERS ${QORPERA_RUN_CORES_FILE-none} $X"'];
+	// A stand-in for sudo's env_reset: the command sees only what its line names.
+	const run = (line) =>
+		spawnSync("bash", ["-c", `sudo() { [ "$1" = -n ] && shift; env -i "$@"; }; export VITEST_MAX_WORKERS=2 QORPERA_RUN_CORES_FILE=/run/lock/c X=lost; ${line}`], {
+			encoding: "utf8",
+		}).stdout.trim();
+	const sudoCores = { ...parseArgs(["--sudo", "--env", "X=a b", "--cores", "6", "changed"]), command };
+	assert.equal(run(runCommandLine(sudoCores)), "2 /run/lock/c a b");
+	assert.equal(run(runCommandLine({ ...parseArgs(["--sudo", "--env", "X=a b", "changed"]), command })), "2 none a b");
+	assert.equal(run(runCommandLine({ ...parseArgs(["--env", "X=a b", "--cores", "6", "changed"]), command })), "2 /run/lock/c a b");
+	assert.equal(runCommandLine({ command: ["npm", "test"] }), "npm test");
 });
 
 test("a --front run waits ahead of every other run in the CPU lane, front runs among themselves by arrival", () => {

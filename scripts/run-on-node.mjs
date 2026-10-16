@@ -331,6 +331,17 @@ export function baseCopyCompare(shared) {
 	return shared ? ["--checksum"] : [];
 }
 
+/** The command as runScript runs it, with its --env settings. sudo (--sudo) drops the environment, so the
+ * variables the session sets for the command go along by name: the vitest workers, and a --cores run's cores
+ * file (without it the steps would not know the slots' cores, nor write the all-started marker). */
+export function runCommandLine({ command, env = [], sudo = false, cores = null }) {
+	const settings = env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
+	const line = command.map(shellQuote).join(" ");
+	return sudo
+		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS"${cores ? ' QORPERA_RUN_CORES_FILE="$QORPERA_RUN_CORES_FILE"' : ""} ${settings} PATH="$PATH" ${line}`
+		: `${settings ? `env ${settings} ` : ""}${line}`;
+}
+
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
  * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
@@ -784,11 +795,7 @@ async function main() {
 	const run = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 	const runDir = `${HOME}/runs/${run}`;
 	const treeDir = `${HOME}/trees/${tree}`;
-	const env = options.env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
-	const command = options.command.map(shellQuote).join(" ");
-	const runCommand = options.sudo
-		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS" ${env} PATH="$PATH" ${command}`
-		: `${env ? `env ${env} ` : ""}${command}`;
+	const runCommand = runCommandLine(options);
 	if (!options.dryRun && !existsSync(key)) throw new Error(`Missing test machine key ${key}`);
 	// Before any machine is tried: a name rsync cannot copy is this tree's fault, not a machine's.
 	const rulesText = `${includeRules(files).join("\n")}\n+ */\n- *\n`;
