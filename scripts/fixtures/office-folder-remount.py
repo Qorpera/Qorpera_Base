@@ -649,7 +649,7 @@ def gap_trial(relay, mode, troubles):
         if trial["commandStart"]["started"]:
             started.append(command)
             trial["commandBefore"] = {"look": ask(relay, command, {"op": "look"}, troubles), "write": ask(relay, command, {"op": "write", "path": "gap.txt", "text": "gap"}, troubles)}
-        # A shell that starts in /company, as shell.ts's comment says it will once the folder is mounted.
+        # A shell that starts in /company, as the desktop's Terminal does once the folder is mounted (F3 4f-1b).
         trial["shellAtCompanyStart"] = relay.call("start", name=shell, shape="shell", folder="candidate", view=view, chdir="/company")
         if trial["shellAtCompanyStart"]["started"]:
             started.append(shell)

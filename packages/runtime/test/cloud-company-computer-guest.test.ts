@@ -1061,7 +1061,7 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 				args: ["type", "--clearmodifiers", "--file", "-"],
 				stdin: "$(touch /tmp/should-not-run)",
 				environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-				workingDirectory: "/srv/workbench",
+				workingDirectory: "/home/qorpera",
 			}),
 		);
 		await fixture.automation.perform(
@@ -1095,7 +1095,7 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			expect.objectContaining({
 				program: "/bin/bash",
 				args: ["--noprofile", "--norc", "-c", "pwd"],
-				workingDirectory: "/srv/workbench",
+				workingDirectory: "/home/qorpera",
 				timeoutMs: 1000,
 				maxOutputBytes: 16384,
 				// The screen's display is for its own tools: a shell command never gets it.
