@@ -56,15 +56,20 @@ export const beside = (first, second, label) =>
 
 /** The commands that run `waiting`, test files of packages/`workspace` that mostly wait, as a second vitest beside
  * the rest of the package. The rest excludes them by these same names (and `exclude` too), so every test file runs
- * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. */
-const besideTheRest = (workspace, waiting, exclude = []) => [
-	`(cd packages/${workspace} && for file in ${waiting.join(" ")}; do [ -f "$file" ] || { echo "== ${workspace}: $file is missing"; exit 1; }; done)`,
-	beside(
-		vitest(workspace, [...exclude, ...waiting].map((file) => ` --exclude ${file}`).join("")),
-		vitest(workspace, waiting.map((file) => ` ${file}`).join("")),
-		`${workspace}: the files that mostly wait`,
-	),
-];
+ * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. With `shard`
+ * ("k/n"), both vitests run only their k-th of n shares of those files (vitest --shard: by a hash of each file's path,
+ * so the same share on every machine), and the commands for 1/n to n/n together run every file once. */
+const besideTheRest = (workspace, waiting, exclude = [], shard = null) => {
+	const share = shard ? ` --shard=${shard}` : "";
+	return [
+		`(cd packages/${workspace} && for file in ${waiting.join(" ")}; do [ -f "$file" ] || { echo "== ${workspace}: $file is missing"; exit 1; }; done)`,
+		beside(
+			vitest(workspace, `${[...exclude, ...waiting].map((file) => ` --exclude ${file}`).join("")}${share}`),
+			vitest(workspace, `${waiting.map((file) => ` ${file}`).join("")}${share}`),
+			`${workspace}: the files that mostly wait${shard ? `, shard ${shard}` : ""}`,
+		),
+	];
+};
 
 /** Runner-orchestrator test files that spend nearly all their time waiting on real deadlines and timeouts, not on
  * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
@@ -233,10 +238,15 @@ export const STEPS = [
 		cores: 0.4,
 		commands: [vitest("object-gateway")],
 	},
-	{
-		name: "runner-orchestrator",
-		why: "packages/runner-orchestrator and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest",
-		seconds: 588,
+	// runner-orchestrator's tests in two halves, a step each, so a run in parts puts one half on each machine. As one
+	// step it was the long part in most of pr-loop's batches in parts (152-335 s, 16 Oct): its rest is CPU-bound, about
+	// 700 CPU s, so it took as long as one machine's spare CPU allowed. The halves are besideTheRest's vitest shards:
+	// 277 and 275 s of the rest's 552 s of test time, and 175 and 123 s of the waiting files' 298 s (batch qmvbe0ra4).
+	// `seconds`: half the whole step's.
+	...[1, 2].map((half) => ({
+		name: `runner-orchestrator-${half}`,
+		why: `packages/runner-orchestrator (half ${half} of its test files) and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest`,
+		seconds: 294,
 		paths: [
 			/^packages\/runner-orchestrator\//,
 			/^deploy\//,
@@ -247,11 +257,11 @@ export const STEPS = [
 		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s as one vitest. Since the files that mostly wait
 		// run beside the rest, the same CPU (689 s) takes about 400 s (402 s in pr-loop's one run so far): about 1.7.
 		// Side by side, the rest is the whole run's critical path, CPU-bound at 2 workers (634 s of a 651 s run, 16 Oct):
-		// 4 workers, packed as 3 cores so hosted-db still starts beside it.
+		// 4 workers, packed as 3 cores so hosted-db still starts beside it. Each half keeps that.
 		cores: 3,
 		workers: 4,
-		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING),
-	},
+		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING, [], `${half}/2`),
+	})),
 	{
 		name: "folder-program",
 		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image and, beside them, the release build, its check against the build record and the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
