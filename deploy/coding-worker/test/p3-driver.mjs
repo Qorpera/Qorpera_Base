@@ -72,6 +72,11 @@ const SLEEPER = "sleep 86400";
 // The workspace's head (the clone), an edit, a commit, the new head.
 const EDIT = "git rev-parse HEAD && printf 'P3 proof\\n' >P3-PROOF.md && git add P3-PROOF.md && " +
 	"git -c user.name='P3 proof' -c user.email=p3@qorpera.invalid commit -q -m 'P3 proof: an edit' && git rev-parse HEAD";
+// Each coding machine's journal on the NAS: its newest events, as the executor wrote them.
+const JOURNALS =
+	"for binding in $(find /mnt/qorpera-nas/coding -name binding.json); do dir=$(dirname \"$binding\"); echo \"== $dir\"; " +
+	"for event in $(ls \"$dir\" | grep -E '^[0-9]{6}[.]json$' | tail -n 12); do echo \"$event $(head -c 400 \"$dir/$event\")\"; done; done";
+
 const db = await database.openDatabase();
 let executor;
 let stopping;
@@ -397,19 +402,17 @@ function startExecutor() {
 /** Ends a run that can no longer pass, at once: diagnoses it, stops the executor and exits. */
 function stopRun(reason) {
 	stopping ??= (async () => {
-		console.error(`FAIL: ${reason}`);
-		await diagnose();
-		await executor?.stop().catch(() => undefined);
-		await db.close();
-		process.exit(1);
+		try {
+			console.error(`FAIL: ${reason}`);
+			await diagnose();
+		} finally {
+			await executor?.stop().catch(() => undefined);
+			await db.close().catch(() => undefined);
+			process.exit(1);
+		}
 	})();
 	return stopping;
 }
-
-// Each coding machine's journal on the NAS: its newest events, as the executor wrote them.
-const JOURNALS =
-	"for binding in $(find /mnt/qorpera-nas/coding -name binding.json); do dir=$(dirname \"$binding\"); echo \"== $dir\"; " +
-	"for event in $(ls \"$dir\" | grep -E '^[0-9]{6}[.]json$' | tail -n 12); do echo \"$event $(head -c 400 \"$dir/$event\")\"; done; done";
 
 /** What a failed run leaves to read: the node's machines, the stand-in GitHub's requests, the database's view. */
 async function diagnose() {
