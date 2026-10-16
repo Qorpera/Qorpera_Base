@@ -98,7 +98,10 @@ machine when it takes the reads in.
    `shared.txt` within a second and writes `carol-after.txt` 24 s later, after B
    has ended. Credits are per unit, by the windows open when the change was
    made: `bob-only.txt` `[B]` under Bob, `shared.txt` `[B, C]`, and
-   `carol-after.txt` `[C]` under Carol.
+   `carol-after.txt` `[C]` under Carol. The service publishes each change 2 s
+   after it is made, so each lands in a commit of its own; the commit's
+   `units` keep no credits, so the check reads a unit's credits from its commit
+   when the unit has none (`unitOf`).
 5. **`refusals`.**
    - Carol's command M writes `m.txt`, which is committed credited `[M]`.
    - Bob's command K sleeps 5 s, then writes `k.txt`. Right after its start
@@ -138,7 +141,7 @@ machine when it takes the reads in.
 | `otherMachineRefused` | the second VM's mount is not `mounted`, the service saw its open and refused every one, and the real machine reads afterwards |
 | `stopClosed` | the stop's outcome is `done`, the final boundary named the view, `restarted` was answered, SQL has the view closed and LXD has the VM stopped |
 | `secondBoot` | the second start mounted with a new boot id and a new view id, and its command reads the files |
-| `serviceClean` | no step raised, every cleanup closed, and the folder bridge did not exit on its own |
+| `serviceClean` | no step raised, no host pass failed or threw, every cleanup closed, and the folder bridge did not exit on its own |
 | `noSecretsInEvidence` | no holder token, view pass or service token of the run appears in the record (the record the wrapper prints) |
 
 ## Stood in
