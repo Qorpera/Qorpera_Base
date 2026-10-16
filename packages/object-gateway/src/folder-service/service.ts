@@ -1857,6 +1857,10 @@ export class FolderService {
 	 * the lease guards goes, and the view reads the feed up to the versions the lease found, so git updates them from
 	 * those. */
 	async #gitLock<T>(view: View, target: string, create: () => Promise<T>): Promise<T> {
+		// A test machine's changes are credited to its commands (F3 6b), and a git publish carries no credits: it takes no
+		// git lock, so git there changes no shared git file. It reads them as anywhere.
+		if (view.access?.testMachine)
+			throw new ProtocolError(ErrorCode.notPermitted, "A test machine takes no git locks");
 		const actor = this.#gitActor(view);
 		view.gitTaking.add(target);
 		try {

@@ -737,6 +737,10 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   instead.
 - **The final.** A test machine's view named in a boundary's `final` clears its quiet period and publishes with `final`;
   the core closes the view.
+- **Git (5d).** A test machine's view takes no git lock: creating a lock file in a `repo.git` is refused
+  `NOT_PERMITTED` (`EPERM`), so git there changes no shared git file, and reads them as anywhere. A git publish carries
+  no credits, and its changes would be the starter's. Credited git units need the core's git functions to take credits
+  (a follow-up).
 - **Tests.** `packages/object-gateway/test/folder-test-machine-views.test.ts`, against the stand-in core: a test
   machine's view is refused from another test machine, an office, a coding machine, an image builder, an unlisted
   project and the execution host, and an overlapping project stops the service; a change made in one window is credited
@@ -749,15 +753,15 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   refusal is kept and sent again; a draft is credited to the windows its chunks came under and the one its close landed
   it under; a draft landed over the view's own unsaved file keeps that file's credits too; a discarded draft is credited
   nothing; a file a draft held, the draft discarded or its close refused, publishes its own bytes with their credits
-  alone; a quiet publish comes about 2 s after the last change; a close publishes the command's
-  changes before it answers; the final boundary publishes with `final`; the control socket refuses a window from another
-  uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files: writes, renames, renames
-  over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended, several in a row, and
-  boundaries held at their commit while the machine closes a file it wrote before the boundary began, may remove it, and
-  writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and credits against a model: a
-  unit is credited to exactly the commands whose windows were open when a change now in it was made. It also checks that
-  a unit a boundary kept pending, or refused whole, goes again with the same credits until a change is made to it. The
-  model holds a file open only across a held boundary.
+  alone; a git lock file's create is refused; a quiet publish comes about 2 s after the last change; a close publishes
+  the command's changes before it answers; the final boundary publishes with `final`; the control socket refuses a
+  window from another uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files:
+  writes, renames, renames over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended,
+  several in a row, and boundaries held at their commit while the machine closes a file it wrote before the boundary
+  began, may remove it, and writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and
+  credits against a model: a unit is credited to exactly the commands whose windows were open when a change now in it
+  was made. It also checks that a unit a boundary kept pending, or refused whole, goes again with the same credits until
+  a change is made to it. The model holds a file open only across a held boundary.
 
 ## Not here
 

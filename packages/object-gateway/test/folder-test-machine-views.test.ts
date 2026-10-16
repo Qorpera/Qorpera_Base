@@ -682,6 +682,22 @@ describe("test machine views", () => {
 		]);
 		expect(core.entries.get("docs/moved.txt")?.fileSha256).toBe(hashOf("kept"));
 	});
+
+	it("takes no git lock on a test machine: a git publish would carry no credits", async () => {
+		const { core, service, open } = await company();
+		const repo = "code/acme/app/repo.git";
+		core.seed(
+			["code", "code/acme", "code/acme/app", repo, `${repo}/refs`, `${repo}/refs/heads`].map((p) => folder(p)),
+		);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await expect(
+			view.open({ path: `${repo}/refs/heads/main.lock`, create: true, exclusive: true, truncate: true }),
+		).rejects.toMatchObject({ code: "NOT_PERMITTED" });
+		expect(core.gitLeases.size).toBe(0);
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+	});
 });
 
 /** A seeded generator (mulberry32): a seed gives the same sequence at every run. */
