@@ -65,21 +65,40 @@ const CAPTURE_REFUSED = "the company folder refused the screen's view";
 export const COMPANY_COMPUTER_CAPTURE_RESTARTED =
 	"the company folder was restarted on this screen; take the screenshot again";
 
-/**
- * Open a desktop's view for whoever now holds its screen (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines").
- * A core that does not answer is asked again until `until` (performance.now()); then the folder is unavailable. A
- * refusal is final, with the core's reason when it is one the registry passes on. The pass is never logged.
- */
-export async function openCompanyComputerDesktopFolderView(
+/** Open a desktop's view for whoever now holds its screen, as `openCompanyComputerFolderView` opens one. */
+export function openCompanyComputerDesktopFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	request: { environmentId: string; screenId: string; holder: CompanyComputerScreenHolder },
 	signal: AbortSignal,
 	until: number,
 ): Promise<CompanyComputerFolderView | CompanyComputerFolderRefusal> {
-	const anchor =
+	const anchor: Readonly<Record<string, string>> =
 		request.holder.kind === "run"
 			? { screenId: request.screenId, holderRunId: request.holder.runId }
 			: { screenId: request.screenId, holderUserId: request.holder.userId };
+	return openCompanyComputerFolderView(
+		registry,
+		{ environmentId: request.environmentId, kind: "computer_desktop", anchor },
+		signal,
+		until,
+	);
+}
+
+/**
+ * Open a desktop's or a shell command's view (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines"). A core that
+ * does not answer is asked again until `until` (performance.now()); then the folder is unavailable. A refusal is
+ * final, with the core's reason when it is one the registry passes on. The pass is never logged.
+ */
+export async function openCompanyComputerFolderView(
+	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
+	request: {
+		environmentId: string;
+		kind: "computer_desktop" | "computer_shell_command";
+		anchor: Readonly<Record<string, string>>;
+	},
+	signal: AbortSignal,
+	until: number,
+): Promise<CompanyComputerFolderView | CompanyComputerFolderRefusal> {
 	for (;;) {
 		signal.throwIfAborted();
 		const remaining = Math.floor(until - performance.now());
@@ -91,8 +110,8 @@ export async function openCompanyComputerDesktopFolderView(
 				{
 					p_environment_id: request.environmentId,
 					p_opener: { kind: "platform" },
-					p_kind: "computer_desktop",
-					p_anchor: anchor,
+					p_kind: request.kind,
+					p_anchor: request.anchor,
 				},
 				AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
 			);
@@ -116,9 +135,9 @@ export async function openCompanyComputerDesktopFolderView(
 	}
 }
 
-/** Close a desktop's view the office no longer mounts. Best effort: an open view also ends with its lease, or at
+/** Close a view the office no longer mounts. Best effort: an open view also ends with its lease, and a desktop's at
  * the screen's next open. */
-export async function closeCompanyComputerDesktopFolderView(
+export async function closeCompanyComputerFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	view: CompanyComputerFolderView,
 ): Promise<void> {
@@ -348,7 +367,7 @@ export class CompanyComputerDesktopFolders {
 			if (answer !== "held") break;
 			mounted = true;
 		}
-		await closeCompanyComputerDesktopFolderView(this.#registry, view);
+		await closeCompanyComputerFolderView(this.#registry, view);
 		return UNAVAILABLE;
 	}
 
@@ -363,7 +382,7 @@ export class CompanyComputerDesktopFolders {
 		if (answer?.answer !== "unknown" && !(answer && "unmounted" in answer && answer.unmounted)) return false;
 		const view = folder.view;
 		Object.assign(folder, { mounted: false, view: undefined, holder: undefined });
-		if (view) await closeCompanyComputerDesktopFolderView(this.#registry, view);
+		if (view) await closeCompanyComputerFolderView(this.#registry, view);
 		return true;
 	}
 
@@ -399,7 +418,7 @@ export class CompanyComputerDesktopFolders {
 			else if (folder.view) {
 				const view = folder.view;
 				Object.assign(folder, { view: undefined, holder: undefined });
-				await closeCompanyComputerDesktopFolderView(this.#registry, view);
+				await closeCompanyComputerFolderView(this.#registry, view);
 			}
 		}).catch(() => undefined);
 	}
@@ -566,7 +585,7 @@ export class CompanyComputerDesktopFolders {
 	async #gone(folder: Folder): Promise<void> {
 		const view = folder.view;
 		Object.assign(folder, { mounted: false, view: undefined, holder: undefined, refused: undefined });
-		if (view) await closeCompanyComputerDesktopFolderView(this.#registry, view);
+		if (view) await closeCompanyComputerFolderView(this.#registry, view);
 	}
 
 	/**
@@ -662,3 +681,5 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 		signal.addEventListener("abort", abort, { once: true });
 	});
 }
+
+export { within as companyComputerFolderWithin };

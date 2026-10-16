@@ -24,6 +24,7 @@ import {
 	CompanyComputerBrowserLogins,
 	type CompanyComputerLoginContext,
 } from "./cloud-company-computer-browser-logins.ts";
+import type { CompanyComputerCommandFolders } from "./cloud-company-computer-command-folder.ts";
 import { prepareCompanyComputerScreenWallpaper } from "./cloud-company-computer-desktop.ts";
 import {
 	COMPANY_COMPUTER_CAPTURE_RESTARTED,
@@ -181,6 +182,8 @@ export interface CompanyComputerLinuxGuestOptions {
 	screenshots: (run: CloudNativeToolRun) => CompanyComputerScreenshotPublisher;
 	/** Each desktop's mount of the company folder (F3 4d); without the folder helper, desktops have no `/company`. */
 	folders?: CompanyComputerDesktopFolders;
+	/** Each shell command's mount of the company folder (F3 4d); without the folder helper, shells have no `/company`. */
+	commandFolders?: CompanyComputerCommandFolders;
 	onFailure(error: Error): void;
 }
 
@@ -428,18 +431,21 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	#screenShell(screen: SharedScreen): CompanyComputerLinuxShell {
 		if (screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
 		const binding = screen.binding;
+		const folders = this.#options.commandFolders;
 		screen.shell ??= new CompanyComputerLinuxShell(
 			createCompanyComputerLinuxShellLauncher({
 				...this.#options,
 				binding,
 				runtimeRoot: this.#options.displayRuntimeRoot,
 				timeZone: this.#options.desktopTimeZone,
+				company: folders !== undefined,
 				boundary: {
 					assertReady: async (exact, signal) => {
 						await this.#assertShared(exact, AbortSignal.any([signal, screen.stop.signal]));
 					},
 				},
 			}),
+			folders ? { folders, environmentId: binding.environmentId } : {},
 		);
 		return screen.shell;
 	}
@@ -1134,9 +1140,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
 				},
-				settle: (action, content, requestSignal, replyBy) =>
+				settle: (action, content, requestSignal, replyBy, runId) =>
 					automation
-						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy)
+						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy, runId)
 						: Promise.resolve(content),
 			},
 		});

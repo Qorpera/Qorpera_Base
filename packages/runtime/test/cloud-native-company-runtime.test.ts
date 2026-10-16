@@ -791,6 +791,8 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
+	// The run's offline commands (F3 4d), which its computer tools add to and its review reads: none here.
+	expect(f.officeSession.mock.calls[0][2]).toEqual({ offlineShells: new Set() });
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
