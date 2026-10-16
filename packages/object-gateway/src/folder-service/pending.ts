@@ -619,7 +619,6 @@ export class PendingView {
 		return undefined;
 	}
 
-	/** Whether the handle is still open (a draft whose close could not land it is given up). */
 	/** Where a handle's draft lands when it is closed; none for a handle that is not a draft's. */
 	draftPath(handle: number): string | undefined {
 		return this.#handles.get(handle)?.draft?.path;
@@ -630,10 +629,12 @@ export class PendingView {
 		return this.#handles.get(handle)?.draft?.held;
 	}
 
+	/** Whether the handle is still open (a draft whose close could not land it is given up). */
 	isOpen(handle: number): boolean {
 		return this.#handles.has(handle);
 	}
 
+	/** The file a handle writes. */
 	file(handle: number): PendingFile {
 		const open = this.#handles.get(handle);
 		if (!open) fail(ErrorCode.badRequest, "No such handle");
