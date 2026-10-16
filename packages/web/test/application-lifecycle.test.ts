@@ -791,7 +791,15 @@ describe("account and route ownership", () => {
 		const list = vi.fn(async () => ({
 			asOfSeq: 1,
 			entries: [
-				{ path: "notes", kind: "folder", version: id(101), seq: 1, updatedAt: session.updatedAt, file: null },
+				{
+					path: "notes",
+					kind: "folder",
+					version: id(101),
+					seq: 1,
+					updatedAt: session.updatedAt,
+					file: null,
+					target: null,
+				},
 			],
 			next: null,
 		}));

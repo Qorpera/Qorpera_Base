@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-144 functions, grouped for navigation. Signatures: see the migration that defines each.
+125 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -229,31 +229,26 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (10)
+### Objects, artifacts, retention (9)
 
 A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
 answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
 with legacy sweep E1 (20260930400000).
+The raw object reads and uploads by hash and the read lease went with legacy sweep E3 (20260930450000).
 
 - `qorpera_append_object_reachability_entries`
-- `qorpera_authorize_profile_object_download`
-- `qorpera_authorize_profile_object_upload`
 - `qorpera_begin_object_reachability_graph`
 - `qorpera_complete_object_reachability_graph`
 - `qorpera_create_object_restore_proof`
 - `qorpera_get_object_reachability_graph`
-- `qorpera_issue_profile_object_read_lease`
 - `qorpera_profile_object_writes_allowed`
-- `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, workspaces (5)
+### Company File and snapshots (3)
 
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
 - `qorpera_get_company_snapshot`
-- `qorpera_list_company_snapshots`
-- `qorpera_list_company_workspaces`
 
 
 ### Organization and staff (4)
@@ -361,39 +356,24 @@ with legacy sweep E1 (20260930400000).
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
-### Conversations, turns, wakes (28)
+### Conversations, turns, wakes (13)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
   the agent raised in the thread. See "Thread interactions" under §6.
 - `qorpera_append_session_input`
 - `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
-- `qorpera_claim_wake_v2`
 - `qorpera_close_shared_session`
-- `qorpera_complete_session_turn_v2`
-- `qorpera_complete_wake`
 - `qorpera_configure_session_execution`
-- `qorpera_create_shared_session`
-- `qorpera_create_shared_session_v2`
-- `qorpera_create_shared_session_v4`
 - `qorpera_ensure_member_private_staff_session`
 - `qorpera_ensure_staff_session`
-- `qorpera_get_session_turn_status`
-- `qorpera_get_shared_session_by_client`
-- `qorpera_list_session_execution_run_recoveries`
 - `qorpera_list_session_inputs`
-- `qorpera_list_session_recoveries`
 - `qorpera_list_session_turn_requests`
-- `qorpera_list_shared_sessions`
 - `qorpera_list_shared_sessions_page`
 - `qorpera_list_wake_occurrences`
-- `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
 - `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
 - Not an RPC: a conversation's erasure generation, read from its row (`select memory_generation from qorpera_shared_sessions where id = …`, under the table's `authenticated` read grant and its policy `qorpera_can_read_session`; migration `20260928509140`). An erase (`20260930441000`) rewrites an event's body to exactly `{"erased": true}` in place, under its sequence, and raises the generation without touching `updated_at` (so no `sessions` hint): a client that holds events reads them again when the generation differs from the one they reflect, and never lets a copy read before the erase replace the erased one. The web reads it with each full read of a thread.
-- `qorpera_renew_session_turn_v2`
-- `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
-- `qorpera_resolve_session_recovery`
 
 
 ### Coding sessions (4) — Order 9, part 1 (PR #211)
@@ -403,17 +383,14 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
-### Execution, sponsors, runners, computers (31)
+### Execution, sponsors, runners, computers (28)
 
-- `qorpera_begin_operation_receipt`
 - `qorpera_cancel_runner_job`
 - `qorpera_cancel_worker_run(p_run_id)` — a member's Stop of an in-house worker's own run (no conversation), by run id: the job's creator (the member whose work dispatched the worker) or an owner or admin, through `qorpera_cancel_runner_job`; returns the control below (20260930002800)
-- `qorpera_complete_operation_receipt`
 - `qorpera_configure_runner_model_policy`
 - `qorpera_create_execution_sponsor_binding`
 - `qorpera_create_member_execution_sponsor`
 - `qorpera_create_runner_registration`
-- `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
 - `qorpera_get_worker_run_control(p_run_id)` — `{run_id, status, can_cancel}` of an in-house worker's own run, for any member who can read the company; `can_cancel` is the Stop's rule (20260930002800). A `run_no_progress` member notice names such a run with `worker: true`
@@ -428,7 +405,6 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_list_staff_execution_activity`
 - `qorpera_reissue_runner_activation`
 - `qorpera_resolve_failed_execution_run`
-- `qorpera_resolve_operation_receipt`
 - `qorpera_resolve_run_operation_receipt`
 - `qorpera_revoke_runner`
 - `qorpera_set_execution_sponsor_status`
@@ -573,8 +549,6 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Every refusal is 22023, after the membership and write checks and before any lock. An unknown, foreign or
   account-mail `ref` reads the same way, whether or not it exists.
 - The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
-- A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
-  quoted message waits: only a cloud run fences one.
 - A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
   (`mentionFold`) folds each quote to its placeholder first.
 - Quotes are refused (22023) in a company whose runs can't fence them: an environment that is neither folder-v2 nor
@@ -846,7 +820,7 @@ a write under `human-tasks/` waits for P31.
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
   `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260928549380_folder_links`), its `target`, the
   text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
@@ -924,7 +898,7 @@ for a cell's offer; an agent's id is an agent offered to an area's supervisor ("
   most 500. Every member who reads the table sees its offers. Read it again after a folder change to the table and on
   focus; an offer settles with the save that changes its cell.
 
-### Supervision consent (20260930371000_interface_supervision)
+### Supervision consent (20260928549360_interface_supervision)
 
 Folder-v2 companies only (Interfaces I9b; `deploy/first-node/RUNTIME-INTERFACES.md` §5.1 "Supervision"). A member
 supervises the agents of an area (a row of `tables/areas`) by consent: their own save of the areas' rows that puts them
@@ -953,7 +927,7 @@ environment.
   supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
   first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
   names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
-- Agents join a supervised area by its supervisor (20260930372000_interface_supervision_agents). While an area's
+- Agents join a supervised area by its supervisor (20260928549370_interface_supervision_agents). While an area's
   consent is live, only its member's save adds an agent to the row's `agents` cell; anyone else's save that adds one
   is refused (`areas`: "only the area's supervisor adds its agents; offer the agent to them"). Removing an agent stays
   free, and so does adding one to an area nobody supervises.
@@ -979,7 +953,7 @@ environment.
   never the member who ended it. A key the supervisor
   changed in their own save that consents to the renamed row tells nobody.
 
-### Chat images (20260930260000_chat_images)
+### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
 the conversation's summary-tree root: `<root>/images/<clientInputId>/<sha256>.<png|jpg|gif|webp>`, the root being
@@ -1031,7 +1005,7 @@ whole folder of an input never posted, and the images a posted input does not li
 M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
 now; an image's path comes to the zoom with the runtime that opens it.
 
-### Coding environment secrets (20260930438000_coding_environment_secrets)
+### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
 like any other (`qorpera_begin_cloud_secret_capture`, the broker's screen, completion) with the connector id
@@ -1067,6 +1041,39 @@ A grant also ends when its secret is disconnected (`qorpera_revoke_cloud_secret`
 gave it stops being an owner or administrator or leaves: promoting them again revives none, so another owner or
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
+
+### Coding MCP sign-ins (20260930440000_coding_mcp_sign_ins)
+
+The API key a coding session's MCP server needs (an HTTP MCP server that asks for a sign-in). Each is a vault secret
+with the connector id `mcp`, owned by the company (owners and administrators start those) or by the member, captured
+like any other secret but started only with `qorpera_begin_coding_mcp_sign_in`, which names the server: a plain
+`qorpera_begin_cloud_secret_capture` under `mcp` never completes. The broker forwards the session's requests to that
+server with the key in a header, so the key never reaches the coding machine. A value never comes back to a client.
+
+A server is named by its origin, `https://host[:port]`: lower case, no path, no `:443` (so an origin has one spelling),
+a DNS name of two labels or more whose last label is not a number (decimal or `0x` hex, so no address in any spelling a
+URL parser reads as one) and not one kept for private networks (`localhost`, `local`, `internal`, `lan`, `home`, `corp`,
+`test`, `example` and others). The broker also refuses a private address when it connects. There is one active sign-in
+per owner and origin. A member's own sign-in reaches only that member's coding sessions; the company's reaches every
+coding session in the company. For an origin both have, the company's wins. Disconnect (`qorpera_revoke_cloud_secret`)
+ends a sign-in; a member's own end when they leave, as their other secrets do. Rotate one with
+`qorpera_begin_cloud_secret_capture` and the existing secret (connector `mcp`, its `secretName`).
+
+- `qorpera_begin_coding_mcp_sign_in(profile, environment, ownerKind, origin, headerName = 'authorization',
+  headerPrefix = 'Bearer ')`: starts the capture of an API key for the server at `origin`, owned by the company
+  (`ownerKind: "company"`, owners and administrators) or by the caller (`"member"`, any member who may write). The key
+  travels in `headerName` (a lower-case header name, never one the relay or HTTP sets itself: `host`, `cookie`,
+  `content-type`, `origin`, the `proxy-`, `x-forwarded-`, `mcp-` and `sec-` families and others) after `headerPrefix`
+  (empty, or one word and a space). Answers the capture (`qorpera.cloud-secret-capture/v1`: `ticketId`,
+  `captureCapability`, `serviceOrigin`, `scope`, `expiresAt`; the broker's screen takes the key) and `signIn:
+  {schema: "qorpera.coding-mcp-sign-in/v1", secretId, origin, kind: "api_key", headerName, headerPrefix}`. Refusals:
+  22023 "An MCP server is named by its origin, https://host[:port]", 22023 "That header is not available for an MCP
+  sign-in", and the capture's own (42501 "secret capture requires company write access", 22023 "secret capture scope
+  is invalid" for a company sign-in a contributor starts, 23505 "an active secret already has this name" for an origin
+  that already has one of this owner's).
+- `qorpera_list_coding_mcp_sign_ins(profile, environment)`: `[{schema: "qorpera.coding-mcp-sign-in/v1", secretId,
+  secretName, origin, kind, headerName, headerPrefix, ownerKind, version, createdAt, updatedAt}]`, the company's
+  active sign-ins and the caller's own, by origin. Every member may read it, a viewer too; anyone else gets `[]`.
 
 ## 3. Realtime
 
@@ -1344,7 +1351,7 @@ does locally that the contract forbids.
 | `profile:materialize-cloud` | desktop-only transitional (local checkout) — no web equivalent by design |
 | `profile:migrate-local` | desktop-only transitional — no web equivalent by design (qorpera_promote_local_profile went with legacy sweep D1, 20260930330000) |
 | `room:archive` | qorpera_close_shared_session |
-| `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
+| `room:create` | rooms: Order 3 fan-out (the plain shared session creators went with legacy sweep D15, 20260930414000) |
 | `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
 | `room:restore` | review |
 | `room:send` | qorpera_append_session_input |

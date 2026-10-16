@@ -25,7 +25,7 @@ export interface MemberInterfaceOffer {
 	readonly to: string;
 	readonly state: InterfaceOfferState;
 	/** The agent offered to an area's supervisor, to add to the area's agents (I9b, migration
-	 * 20260930372000_interface_supervision_agents); null for a cell's offer. */
+	 * 20260928549370_interface_supervision_agents); null for a cell's offer. */
 	readonly agent: string | null;
 	readonly at: string;
 }
