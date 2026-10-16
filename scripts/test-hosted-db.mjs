@@ -10,7 +10,16 @@ export const POSTGRES_IMAGE =
 	"docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const databaseName = "qorpera_test";
+
+/** Without `--only`, the SQL tests run in these databases at the same time, each a fresh copy of the migrated
+ * database. A database runs the tests from its first name on, in their usual order, up to the next database's.
+ * Every test that keeps rows (all below 700; 040's are read by 050–110 and 200) stays in the first, so a test
+ * still sees only rows its usual predecessors left. A test connecting to its database again uses
+ * `current_database()`, not a name. */
+export const SQL_TEST_DATABASES = [
+	["qorpera_test", ""],
+	["qorpera_test_2", "820"],
+];
 
 export function sortMigrationNames(names) {
 	const migrations = names.filter((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)).sort();
@@ -176,6 +185,18 @@ export function selectTests(tests, only) {
 	return tests.filter((test) => only.some((prefix) => test.startsWith(prefix)));
 }
 
+/** Each database with the tests it runs, in their usual order. `--only` runs every test it keeps on the first
+ * database alone, as before. */
+export function splitTests(tests, only, databases = SQL_TEST_DATABASES) {
+	if (only !== null) return [[databases[0][0], tests]];
+	return databases
+		.map(([database, first], index) => {
+			const next = databases[index + 1]?.[1];
+			return [database, tests.filter((test) => test >= first && (next === undefined || test < next))];
+		})
+		.filter(([, part]) => part.length > 0);
+}
+
 async function main() {
 	const { withScripts, only } = parseArguments(process.argv.slice(2));
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
@@ -202,19 +223,26 @@ async function main() {
 		process.stdout.write(`Applied the test bootstrap and ${migrations} migrations in ${seconds(building)}\n`);
 
 		const testing = performance.now();
-		cluster.create(databaseName);
+		const databases = splitTests(tests, only);
+		for (const [database] of databases) cluster.create(database);
 		// The scripts that share this PostgreSQL run in turn beside the SQL tests, each in a database of its own.
 		if (withScripts) shared = startInTurn(HOSTED_DB_SCRIPTS.filter((name) => !OWN_SERVER_SCRIPTS.has(name)), cluster.environment());
-		try {
-			await runSqlTests(cluster, databaseName, tests);
+		// A database stops at its first failure; the others run to their end.
+		const results = await Promise.allSettled(
+			databases.map(async ([database, part]) => {
+				const since = performance.now();
+				await runSqlTests(cluster, database, part);
+				if (databases.length > 1) process.stdout.write(`${part.length} tests passed on ${database} in ${seconds(since)}\n`);
+			}),
+		);
+		const errors = results.filter(({ status }) => status === "rejected");
+		for (const { reason } of errors) process.stdout.write(`${reason.message}\n`);
+		if (errors.length) failed.push("SQL tests");
+		else
 			process.stdout.write(
 				`Hosted database checks passed (${migrations} migrations, ${tests.length}${only ? ` of ${all.length}` : ""} tests) in ${seconds(testing)}\n`,
 			);
-		} catch (error) {
-			process.stdout.write(`${error.message}\n`);
-			failed.push("SQL tests");
-		}
-		cluster.drop(databaseName);
+		for (const [database] of databases) cluster.drop(database);
 	} finally {
 		// The scripts using this run's PostgreSQL end before it is removed.
 		await reportEach(failed, shared);

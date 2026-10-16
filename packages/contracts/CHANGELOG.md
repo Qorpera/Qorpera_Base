@@ -7,8 +7,13 @@
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 
+### Removed
+
+- `ExecutionIntentBudget`, `ExecutionIntentCapability`, `COMPANY_OPERATION_KINDS` and `CompanyOperationKind` are gone (legacy removal, step C, HP-E2). Nothing used them. `JsonValue` and `ExecutionIdentity` stay; the hosted primary's session events still use `ExecutionIdentity`.
+
 ### Added
 
+- `POSTGRES_UUID_PATTERN` validates the canonical lower-case text accepted by PostgreSQL UUID storage, including nil and reserved version/variant bits, for file formats that explicitly use that grammar. Runtime identity admission still uses the stricter `UUID_PATTERN` and `isUuid`; their rules are unchanged.
 - Added `folder-key`: `folderKey(path)`, the folder core's key for a path exactly as `public.qorpera_folder_key` computes it (NFKC, Unicode simple case mapping to upper and then lower case, NFKC), for every JavaScript copy of the key. Each code point maps on its own to one code point, so 'Straße' keeps its ß and 'İ' folds to 'i', as in the database; JavaScript's own `toUpperCase`/`toLowerCase` use full case mapping. `parseCloudCodingDispatch` checks the to-do path's folded form with it. `scripts/test-folder-key.mjs` checks it against the database's function for every code point.
 - Added `idle-rule`: the one idle rule's busy measure for every machine kind (the 2026-10-03 amendment "one idle rule for every machine"): `idleRuleBusy(before, after)` over two samples of a program's processor seconds and bytes moved, busy at `IDLE_RULE_BUSY_CORE_SHARE` (5% of one core) or `IDLE_RULE_BUSY_BYTES_PER_SAMPLE` per `IDLE_RULE_SAMPLE_SECONDS` (512 KiB per 30-second sample, about 17 KB a second, reads and writes alike; scaled to the sample's real length). The thresholds live here so every machine kind tunes them in one place.
 - `idle-rule` adds `idleRuleProcessIoBytes` (a process's `/proc/<pid>/io` rchar + wchar), every machine kind's data signal: a computer's shell and, summed over its processes, an agent's whole machine.

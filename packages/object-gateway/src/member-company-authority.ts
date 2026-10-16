@@ -5,12 +5,10 @@ import {
 	postgrestErrorCode,
 	readBoundedObjectResponse,
 } from "./dependency.ts";
-import type { FileSystemObjectStore } from "./object-store.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 export type MemberCompanyRpc =
 	| "qorpera_company_presence_scope"
-	| "qorpera_member_file_export_source"
 	// The chat image route (20260930260000): a member's begin of one image, and the read of a posted one.
 	| "qorpera_room_image_begin"
 	| "qorpera_room_image_download"
@@ -52,13 +50,6 @@ export interface MemberCompanyAuthority {
 		signal: AbortSignal,
 	): Promise<unknown>;
 	publisher(method: MemberCompanyPublisherRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
-}
-
-/** What the member export route reads through. */
-export interface MemberCompanyFileOptions {
-	authority: MemberCompanyAuthority;
-	store: FileSystemObjectStore;
-	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
 
 export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {

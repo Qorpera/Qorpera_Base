@@ -1,13 +1,4 @@
 import { folderKey } from "@qorpera/contracts";
-import type { CloudCompanyTreeEntry } from "./node/cloud-company-snapshot.ts";
-
-export interface CloudCompanyPathPlan {
-	schema: "qorpera.company-path-mutation/v1";
-	operationKey: string;
-	path: string;
-	expectedVersion: string | null;
-	entry: CloudCompanyTreeEntry | null;
-}
 
 /** Representation checks only. Path and audience authorization lives in SQL. */
 export function parseCloudCompanyPath(value: unknown, allowRoot = false): string {

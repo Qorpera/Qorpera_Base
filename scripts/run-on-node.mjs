@@ -93,11 +93,14 @@ const SIGNAL_TURN_MS = 100;
  * at 512 tasks, which every concurrent run under one shared user exhausted together. */
 export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
 /** At most this many runs execute at once, each with (vCPUs / CPU_SLOTS) vitest workers, so the slots
- * together use the machine's vCPUs: 2 each on 10 vCPUs, 3 each on 12. Measured 2026-09-29: a full npm test
+ * together use the machine's vCPUs: 2 each on 10 or 12 vCPUs. Measured 2026-09-29: a full npm test
  * is ~881 CPU-seconds; two full runs plus other sessions drove 6 vCPUs to load 22 and timing-bound tests
  * failed. Measured 2026-10-14 with 3 slots: both 10-vCPU machines had all 3 busy and 3-4 runs waiting at
- * load 4-6, ~12 GiB of 15.5 available, no memory pressure and no OOM kill. Later runs wait in arrival order. */
-export const CPU_SLOTS = 4;
+ * load 4-6, ~12 GiB of 15.5 available, no memory pressure and no OOM kill. Measured 2026-10-15 with 4 slots:
+ * all 4 busy and 11-15 runs waiting on each machine, load 6-8, the vCPUs 26-34% busy on node02 and 36-83%
+ * (about 55% on average) on node01 over a minute, iowait at most 4%, ~11.5 GiB available. A fifth run keeps
+ * 2 workers each. Later runs wait in arrival order. */
+export const CPU_SLOTS = 5;
 /** A hosted-db run narrowed with --only (a few SQL tests, about 15 s of work) takes one of QUICK_SLOTS slots of
  * its own, with its own arrival-ordered queue: on 14 Oct such runs waited 5-20 minutes behind the CPU slots'
  * 20-minute changed runs. */
