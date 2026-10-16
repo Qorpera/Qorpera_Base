@@ -315,6 +315,13 @@ export class HooksView {
 					? t("Waiting for its signing secret")
 					: t("Active"),
 			hook.lastReceivedAt ? t(text.last, { time: fmtTime(hook.lastReceivedAt) }) : t(text.none),
+			// A Stripe hook's events refused under the secret the vault read: the endpoint's secret may have changed.
+			hook.lastRefusal
+				? t("Last refused event {time}: {reason}", {
+						time: fmtTime(hook.lastRefusal.receivedAt),
+						reason: hook.lastRefusal.reason,
+					})
+				: "",
 			Object.hasOwn(SIGNERS, hook.proof) ? t(SIGNERS[hook.proof]!) : "",
 		]
 			.filter(Boolean)

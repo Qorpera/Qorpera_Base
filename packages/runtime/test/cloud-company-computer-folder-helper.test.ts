@@ -15,6 +15,7 @@ import {
 	type CompanyComputerProcessScan,
 	companyComputerFolderBoundaryAnswer,
 	companyComputerFolderProgram,
+	companyComputerFolderServed,
 	companyComputerFolderUnit,
 	companyComputerNamespaceInUse,
 	createCompanyComputerFolderHelperServer,
@@ -139,7 +140,8 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		if (this.program === "closes") return void this.units.set(unit, CLOSED);
 		this.units.set(unit, ACTIVE);
 		if (this.program === "hangs") return;
-		this.#mount(this.#paths(unit).mountpoint, "", "fuse.qorpera", "qorpera-company");
+		// As the kernel lists the program's direct mount (#1007): `fuse qorpera-company`.
+		this.#mount(this.#paths(unit).mountpoint, "", "fuse", "qorpera-company");
 		await this.#prove(unit);
 	}
 	async stop(unit: string) {
@@ -148,7 +150,7 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		const mountpoint = this.#paths(unit).mountpoint;
 		if (
 			this.stopPost &&
-			this.entries.some((line) => line.includes(" fuse.qorpera ") && line.split(" ")[4] === mountpoint)
+			this.entries.some((line) => line.includes(" - fuse qorpera-company ") && line.split(" ")[4] === mountpoint)
 		)
 			this.#unmount(mountpoint);
 	}
@@ -1144,6 +1146,8 @@ describe("the folder helper's machine", () => {
 			),
 		).toEqual([
 			{
+				id: 36,
+				parent: 35,
 				root: "/",
 				mountpoint: "/run/a b/company",
 				optional: ["master:1", "shared:7"],
@@ -1154,6 +1158,27 @@ describe("the folder helper's machine", () => {
 		expect(() => parseCompanyComputerMountinfo("36 35 0:51 / /run/a rw\n")).toThrow(
 			"COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED",
 		);
+		// The folder program's mount as root makes it (#1007's evidence): plain `fuse`, its subtype dropped.
+		const company = "/run/qorpera-folder/mounts/desktop-a/company";
+		const real = `373 657 0:67 / ${company} rw,nosuid,nodev,noatime master:380 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other\n`;
+		expect(companyComputerFolderServed(parseCompanyComputerMountinfo(real), company)).toBe(true);
+		expect(
+			companyComputerFolderServed(
+				parseCompanyComputerMountinfo(real.replace(" - fuse ", " - fuse.qorpera ")),
+				company,
+			),
+		).toBe(true);
+		// Another FUSE file system, or anything mounted over the program's, is not the folder.
+		expect(
+			companyComputerFolderServed(parseCompanyComputerMountinfo(real.replace("qorpera-company", "other")), company),
+		).toBe(false);
+		expect(
+			companyComputerFolderServed(
+				parseCompanyComputerMountinfo(`${real}374 373 0:68 / ${company} rw - tmpfs tmpfs rw\n`),
+				company,
+			),
+		).toBe(false);
+		expect(companyComputerFolderServed(parseCompanyComputerMountinfo(real), `${company}/x`)).toBe(false);
 		expect(companyComputerFolderProgram(ACTIVE)).toBe("running");
 		expect(companyComputerFolderProgram({ ...INACTIVE, active: "activating" })).toBe("restarting");
 		expect(companyComputerFolderProgram(CLOSED)).toBe("closed");
@@ -1174,6 +1199,11 @@ describe("the folder helper's machine", () => {
 		expect(lines).toContain(`ConditionPathExists=${template(at.view)}`);
 		expect(lines).toContain(
 			`ExecStart=${COMPANY_COMPUTER_FOLDER_PROGRAM} mount --view-file ${template(at.view)} --mountpoint ${template(at.mountpoint)} --state-dir ${template(at.state)} --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@`,
+		);
+		// Before each start too: a kill of the whole cgroup kills the stop-post umount with it (Q3, #1084).
+		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeGreaterThan(-1);
+		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeLessThan(
+			lines.findIndex((line) => line.startsWith("ExecStart=")),
 		);
 		expect(lines).toContain(`ExecStopPost=-/usr/bin/umount -l ${template(at.mountpoint)}`);
 		expect(lines).toContain("RestartPreventExitStatus=3");

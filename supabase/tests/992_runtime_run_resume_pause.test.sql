@@ -2,7 +2,7 @@
 -- Context tree W5a-1 (20260930170000): a started run whose login reaches its usage limit pauses, and goes on from its
 -- run log on the same login after the limit resets; never on another login, and never at once. Test 924's run of
 -- Alice's records its native start and acknowledges; the native host records the usage limit for the attempt, and the
--- runner reports the run failed. With the gate on (as W5a-2 turns it on), the job is queued again but held until the
+-- runner reports the run failed. With a run log (W5a-2's gate, 990), the job is queued again but held until the
 -- reset, the pause is not an attempt, and its day in the queue counts from the reset. The next attempt still has a new
 -- number (its machine's name). It starts on the same login and may reach the limit again: its own signal pauses it
 -- again, also when its lease runs out after the signal, and a reset time already past or only moments away never
@@ -46,9 +46,13 @@ create function pg_temp.rp_events(p_run uuid, p_type text) returns bigint langua
 	select count(*) from public.qorpera_execution_run_events where run_id = p_run and event_type = p_type
 $$;
 
--- The gate on, as W5a-2 turns it on for a run with a log (for this test only; the transaction rolls back).
-create or replace function public.qorpera_run_resumes_from_log(p_run_id uuid)
-returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
+-- The run has a log, as its runtime's first batch indexes runs/<run>/run.toml, and the gate is on for it.
+insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
+select run.environment_id, run.id, extensions.gen_random_uuid(), 'agents/alice/runs/' || run.id, 'agents/alice/runs/' || run.id,
+	extensions.gen_random_uuid(), extensions.gen_random_uuid()
+from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+select pg_temp.base_assert(public.qorpera_run_resumes_from_log((current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid),
+	'a run with a log resumes') \g /dev/null
 
 -- 1. The run starts and acknowledges; its login reaches its usage limit, which resets in 30 hours, and the runner
 --    reports the run failed. The run pauses: queued again but held until the reset, on the same sponsor version, with

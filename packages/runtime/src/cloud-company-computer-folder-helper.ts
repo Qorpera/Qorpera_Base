@@ -44,8 +44,9 @@ import { integer, properties, systemctl } from "./cloud-company-computer-systemd
 export const COMPANY_COMPUTER_FOLDER_PROGRAM = "/opt/qorpera-folder/qorpera-folder";
 /**
  * The mountpoint under the program's mount. Seen only while no program serves the mount (systemd's 5 s before a
- * restart): the office account then gets an error, not an empty company folder. Q3's proof measures `0000` against
- * this; the coordinator chose a loud error (14 Oct).
+ * restart): the office account then gets an error, not an empty company folder; the coordinator chose a loud error
+ * (14 Oct). Not `0000`: the program opens the mountpoint for its `rootmode=`, and root bounded to CAP_SYS_ADMIN may
+ * not open a `0000` directory (Q3 measured EACCES, 15 Oct), so it opens as the owner.
  */
 export const COMPANY_COMPUTER_FOLDER_MOUNTPOINT_MODE = 0o700;
 /** How long a mount may take to come up, and a switch to be taken, before the helper answers without it. */
@@ -155,6 +156,9 @@ export function companyComputerFolderBoundaryAnswer(
 }
 
 export interface CompanyComputerMountEntry {
+	/** The mount's id and its parent's, in the reading process's own mount namespace. */
+	readonly id: number;
+	readonly parent: number;
 	/** The mount's root within its filesystem. */
 	readonly root: string;
 	readonly mountpoint: string;
@@ -172,8 +176,11 @@ export function parseCompanyComputerMountinfo(text: string): CompanyComputerMoun
 		.map((line) => {
 			const fields = line.split(" ");
 			const dash = fields.indexOf("-", 6);
-			if (dash < 0 || fields.length < dash + 3) throw new Error("COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED");
+			if (dash < 0 || fields.length < dash + 3 || !/^[0-9]+$/.test(fields[0]) || !/^[0-9]+$/.test(fields[1]))
+				throw new Error("COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED");
 			return {
+				id: Number(fields[0]),
+				parent: Number(fields[1]),
 				root: decode(fields[3]),
 				mountpoint: decode(fields[4]),
 				optional: fields.slice(6, dash),
@@ -303,10 +310,22 @@ type Launched =
 	  }
 	| { readonly answer: Exclude<CompanyComputerFolderAnswers["run"]["answer"], "started"> };
 
+/**
+ * The folder program's mount. fuser's direct mount always passes the type `fuse` and names the source by FSName, so
+ * the kernel lists the program as `fuse qorpera-company` (#1007's mountinfo, Q3's run); `fuse.qorpera` is a mount
+ * made through fusermount.
+ */
+export function isCompanyComputerFolderMount(entry: Pick<CompanyComputerMountEntry, "fstype" | "source">): boolean {
+	return (entry.fstype === "fuse" || entry.fstype === "fuse.qorpera") && entry.source === "qorpera-company";
+}
+
 /** The top mount at the mountpoint is the folder program's. */
-function served(entries: readonly CompanyComputerMountEntry[], mountpoint: string): boolean {
+export function companyComputerFolderServed(
+	entries: readonly CompanyComputerMountEntry[],
+	mountpoint: string,
+): boolean {
 	const top = entries.filter((entry) => entry.mountpoint === mountpoint).at(-1);
-	return top?.fstype === "fuse.qorpera" && top.source === "qorpera-company";
+	return !!top && isCompanyComputerFolderMount(top);
 }
 
 function shared(entries: readonly CompanyComputerMountEntry[], parent: string): boolean {
@@ -587,7 +606,10 @@ export class CompanyComputerFolderHelper {
 		// The unit is up once the program runs (Type=exec); the mount comes after the node accepts its view.
 		const deadline = Date.now() + this.#mountMs;
 		for (;;) {
-			if (served(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)) return "mounted";
+			if (
+				companyComputerFolderServed(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)
+			)
+				return "mounted";
 			const state = await this.#system.inspect(unit).catch(() => undefined);
 			if (state && closedByNode(state)) return "closed";
 			if (Date.now() >= deadline) return "unanswered";
@@ -780,7 +802,9 @@ export class CompanyComputerFolderHelper {
 		// A command's mount is its own: once a command was claimed, even one that never started, none other runs in it.
 		if ((await this.#readRecord(name).catch(() => null)) !== undefined) return { answer: "refused" };
 		if (await this.#closed(companyComputerFolderUnit(name))) return { answer: "closed" };
-		if (!served(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)) {
+		if (
+			!companyComputerFolderServed(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)
+		) {
 			this.#log(`folder-helper: run ${name}: its mount is not served`);
 			return { answer: "failed" };
 		}

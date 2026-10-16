@@ -118,15 +118,19 @@ declare
 	v_before bigint; v_allowed bigint; v_resource bigint; v_objects bigint; v_started timestamptz; v_ms numeric;
 begin
 	select count(*) into v_objects from public.qorpera_profile_objects where profile_id = '63400000-0000-4000-8000-000000000010';
-	-- The statement as it was: the filter runs on the catalog rows before the join narrows them.
+	-- The statement as it was: the filter runs on the catalog rows before the join narrows them. No nested loop for it:
+	-- with the upload's rows outside, the catalog's key (profile, sha256) lets the inner scan stop at each first match, so
+	-- on a database whose statistics put the upload first the catalog is read only up to the upload's objects.
 	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', v_run, pg_temp.manifest_v2(E'Doc 1/1.\n'));
 	v_before := pg_temp.readable_calls();
+	perform set_config('enable_nestloop', 'off', true);
 	perform count(*) from public.qorpera_profile_objects o
 	join public.qorpera_folder_upload_intent_objects i on i.intent_id = (v_open ->> 'intentId')::uuid and i.sha256 = o.sha256
 		and i.bytes = o.bytes
 	where o.profile_id = '63400000-0000-4000-8000-000000000010'
 		and public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', v_auth,
 			o.sha256);
+	perform set_config('enable_nestloop', 'on', true);
 	if pg_temp.readable_calls() - v_before < v_objects then
 		raise exception 'B: the old statement must check every object under this plan (% of %)',
 			pg_temp.readable_calls() - v_before, v_objects; end if;
