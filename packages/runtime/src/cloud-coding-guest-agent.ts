@@ -568,10 +568,16 @@ async function unitState(at: Agent, unit: string): Promise<UnitState> {
 		mainStatus: fields.get("ExecMainStatus") ?? "",
 	};
 }
-/** Whether the folder program's own mount is the top one at the session's mountpoint. */
+/** Whether the folder program's own mount is the top one at the session's mountpoint. The program mounts directly as
+ * root, so the kernel lists it as `fuse qorpera-company` (cloud-machine-guest.ts reads it the same way); `fuse.qorpera`
+ * is a mount made through fusermount. The source names the program either way. */
 async function folderMountedAt(at: Agent, mountpoint: string): Promise<boolean> {
 	const top = mountOf(await at.readMountinfo(), mountpoint);
-	return top?.mountpoint === mountpoint && top.fstype === "fuse.qorpera" && top.source === "qorpera-company";
+	return (
+		top?.mountpoint === mountpoint &&
+		(top.fstype === "fuse" || top.fstype === "fuse.qorpera") &&
+		top.source === "qorpera-company"
+	);
 }
 async function folderMounted(at: Agent, session: Places): Promise<boolean> {
 	return (
