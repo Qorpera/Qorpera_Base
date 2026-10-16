@@ -6,7 +6,8 @@
 -- backends start slowly; on 16 Oct the erasure job failed twice with "job startup timeout". So:
 --   1. The follow-up step runs every 10 seconds (6 a minute). It is the backstop: a writer that commits marks converges
 --      them at once through the kicks (20260928479140 §10), and the step only picks up what no kick took and the rows whose
---      back-off ran out. Its sweep of gone environments still runs about once a minute (one step in each minute's first
+--      back-off ran out. The runtime's commits (hire_agent, an archive) have no kick, so they now wait up to 10 seconds
+--      for the step, not 2. Its sweep of gone environments still runs about once a minute (one step in each minute's first
 --      10 seconds). It also asks whether a company's follow-ups may run once per company with marks, not once per mark.
 --   2. The erasure drain runs every 30 seconds (2 a minute). One step drains up to 1,000 versions and 1,000 commits, so
 --      a drain does at most 2,000 of each a minute (it did 12,000).

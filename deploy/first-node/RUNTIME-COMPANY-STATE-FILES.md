@@ -1974,8 +1974,8 @@ and revoke its secret grants. What remains:
   marked, the company's first, answering whether more remain, so the caller calls again (the object gateway's member
   commit route, P34a, Interfaces, which knows the commit but not the staff ids; recorded in the registry and asked of
   Interfaces for C4-MEMBERS §P34a). A subject another transaction holds answers `busy`, and so
-  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the 2-second
-  step: a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
+  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the
+  step, up to 10 seconds (2 until 20260930483000): a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
   does not add. The step is the safety net.
 - A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`. The kicks run
   at read committed (25000 otherwise).

@@ -191,7 +191,7 @@ security definer nor carry `set`). Like the repo's other cron functions it check
 schedules their cleanup (a daily delete of this job's rows older than a day), since `cron.log_run` is cluster-wide.
 Both jobs follow the repo's optional-pg_cron pattern (20260930002600:199-225), so the migration applies where pg_cron
 is absent. A large agent folder (50,000 versions, 1,000 per
-step) takes about four minutes; the commit scan of a large environment takes longer (§4.3), and status shows it.
+step) takes about 25 minutes (about four at 5 seconds); the commit scan of a large environment takes longer (§4.3), and status shows it.
 
 `qorpera_folder_erasure_status(p_environment_id, p_actor, p_erasure_id)` (service role, through the member route, for
 the company's owners and admins): state and counters per phase, for the web's "Erase".
@@ -370,7 +370,7 @@ delete is refused in practice by older links the structured-file hook writes (20
     again an hour later. Bytes GC does take keep it working.
   - **Done:** a `done` erasure keeps its counts and no path. Its roots, needles and request digest go, and its stored
     reply loses `roots` and `copies` (a replay answers that).
-  - `qorpera_schedule_folder_erasure()` asks pg_cron for the 5-second job and its daily log cleanup. With no pg_cron
+  - `qorpera_schedule_folder_erasure()` asks pg_cron for the 5-second job (30 seconds since 20260930483000) and its daily log cleanup. With no pg_cron
     (1.5 or later) the migration still applies, with a notice.
 - **Status** `qorpera_folder_erasure_status(environment, actor, erasure_id)` answers owners and admins, with
   `lastError`.
