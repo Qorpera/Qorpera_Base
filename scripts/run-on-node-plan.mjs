@@ -384,7 +384,7 @@ export function planChanged(files) {
 	return { full: false, reason: null, steps: chosen, build: STEPS.some((step) => step.build && steps.has(step.name)) };
 }
 
-/** What planScript needs of a step. */
+/** What planScript and splitPlan need of a step. */
 function planned(step) {
 	return {
 		name: step.name,
@@ -394,7 +394,29 @@ function planned(step) {
 		cores: step.cores ?? 1,
 		seconds: step.seconds ?? 0,
 		workers: step.workers ?? null,
+		build: step.build ?? false,
 	};
+}
+
+/** A plan's steps in at most `parts` groups, for runs on different machines at once (run-on-node.mjs --parts): by CPU
+ * work (`seconds` × `cores`), the most first, each step to the group with the least work so far, then the fewest steps,
+ * so no group is empty while there are steps for it. Every step is in exactly one group. A group keeps the plan's
+ * order, and needs the build if one of its steps does. */
+export function splitPlan(steps, parts) {
+	const work = (step) => (step.seconds ?? 0) * (step.cores ?? 1);
+	const groups = Array.from({ length: Math.min(parts, steps.length) }, () => ({ indexes: [], work: 0 }));
+	const heaviest = steps.map((_, i) => i).sort((a, b) => work(steps[b]) - work(steps[a]) || a - b);
+	for (const i of heaviest) {
+		const lightest = groups.reduce((best, group) =>
+			group.work < best.work || (group.work === best.work && group.indexes.length < best.indexes.length) ? group : best,
+		);
+		lightest.indexes.push(i);
+		lightest.work += work(steps[i]);
+	}
+	return groups.map(({ indexes }) => {
+		const chosen = indexes.sort((a, b) => a - b).map((i) => steps[i]);
+		return { steps: chosen, build: chosen.some((step) => step.build) };
+	});
 }
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */

@@ -54,6 +54,13 @@ test("statuses name the machine the run used", () => {
 	assert.equal(machineLabel("node02"), "node 2");
 	assert.equal(machineLabel("node12"), "node 12");
 	assert.equal(machineLabel("custom"), "custom");
+	// A run in parts (changed --parts) names each part's machine.
+	assert.equal(machineLabel("node02+node01"), "node 2 + node 1");
+	assert.equal(machineLabel("node02+node02"), "node 2 + node 2");
+	assert.equal(
+		statusDescription({ machine: "node02+node01", result: "passed", elapsedSeconds: 301, runner: "ci03+ci05", changed: { steps: ["lint", "web", "scripts"] } }),
+		"passed on node 2 + node 1 in 5m01s: 3 steps (ci03+ci05)",
+	);
 });
 
 test("results map to GitHub states and short descriptions", () => {
