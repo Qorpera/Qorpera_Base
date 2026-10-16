@@ -183,14 +183,14 @@ begin
 	s2 := pg_temp.open_command(c2);
 	if (pg_temp.view_row(d)).state is distinct from 'open' or (pg_temp.view_row(s2)).state is distinct from 'open' then
 		raise exception 'A desktop view and a command view stand together'; end if;
-	-- The table's rules: a command view has no screen; only a command view names a command; the kinds built so far;
-	-- one view per command.
+	-- The table's rules: a command view has no screen; only a command view names a command; a test machine view names
+	-- its machine (20260930420000); one view per command.
 	perform pg_temp.violates(format('update public.qorpera_folder_views set screen_id = %L where id = %L',
 		'63900000-0000-4000-8000-0000000000e4', s2 ->> 'viewId'), 'qorpera_folder_views_shell_command');
 	perform pg_temp.violates(format('update public.qorpera_folder_views set shell_command_id = %L where id = %L', c2, d ->> 'viewId'),
 		'qorpera_folder_views_shell_command_kind');
 	perform pg_temp.violates(format('update public.qorpera_folder_views set kind = %L where id = %L', 'test_machine', d ->> 'viewId'),
-		'qorpera_folder_views_built_kind');
+		'qorpera_folder_views_test_machine');
 	perform pg_temp.violates(format('update public.qorpera_folder_views set shell_command_id = %L where id = %L', c, s2 ->> 'viewId'),
 		'qorpera_folder_views_one_per_command');
 	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');
@@ -291,7 +291,7 @@ begin
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	perform pg_temp.refused(format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		pg_temp.vactor(d) || '{"final":true}', 'desk-final', '[{"op":"mkdir","path":"refused"}]'), '22023',
-		'Only a command view publishes a final change set');
+		'Only a command or test machine view publishes a final change set');
 	perform pg_temp.refused(format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		v || '{"final":true}', 'run-final', '[{"op":"mkdir","path":"refused"}]'), '22023', 'Folder actor is invalid');
 	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');

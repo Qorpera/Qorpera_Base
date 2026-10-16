@@ -52,8 +52,9 @@ import {
 import type {
 	CloudNativeToolOperationControlPlane,
 	CompleteFolderToolOperationInput,
+	CompleteToolOperationInput,
 } from "./cloud-native-tool-operations.ts";
-import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+import type { BeginCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import {
 	type CloudInteractionRequestInput,
@@ -591,7 +592,7 @@ export class SupabaseNativeProviderControlPlane
 
 	async completeToolOperation(
 		binding: CloudNativeToolBinding,
-		input: CompleteCloudRunnerOperationInput,
+		input: CompleteToolOperationInput,
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
@@ -601,8 +602,6 @@ export class SupabaseNativeProviderControlPlane
 				p_receipt_id: input.receiptId,
 				p_input_sha256: input.inputSha256,
 				p_result: input.result,
-				p_output_snapshot_id: input.outputSnapshotId ?? null,
-				p_proposal_id: input.proposalId ?? null,
 			},
 			signal,
 		);

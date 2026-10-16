@@ -8,10 +8,10 @@ for the bridged leg, and the health file the node observer reads. The logs' tend
 small and safe for its disk, and counts each day per company for the line guard (below). E3 ships the logs to the
 NAS, keeps them 90 days there, and answers "who used this address at that time" across the nodes. E7's brake slows a
 company's new connections past the founder's levels, and is off until they are set. E8b's rules reader keeps the
-network rules (`RUNTIME-AGENT-EXIT.md` §10) of each company plugged in on the node, for the per-company resolvers that
-come next. Nothing is plugged in until
-the creators call `plug` (E2c); with no users and no legacy machines (founder decision, 3 October) there are no
-switches and nothing to migrate. Nothing is installed in production before a milestone release.
+network rules (`RUNTIME-AGENT-EXIT.md` §10) of each company plugged in on the node, and its names reconciler gives
+each company with rules a resolver of its own, which answers "no such name" for the company's blocked names. Nothing
+is plugged in until the creators call `plug` (E2c); with no users and no legacy machines (founder decision, 3 October)
+there are no switches and nothing to migrate. Nothing is installed in production before a milestone release.
 
 ## Layout
 
@@ -33,17 +33,20 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; the brake's map, sets and chains (E7, below); masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`, with the mark of the rule that refused them, E8c), each machine's share rate-limited; the brake's map, sets and chains (E7, below); each machine's plain DNS, to any address, sent to its company's resolver on 10.210.0.1 (`dns_port`, E8b, below), and dropped and counted (`refused_dns`) for a machine without an element there; masquerade out of `up0`; the exit answers DHCP, DNS (a machine only on its own resolver's port, `dns_allowed`) and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
-| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
+| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `names`, `resolver`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below). Its line guard is the brake (E7, below) |
 | `qorpera-agent-exit-logs.py` | the logs' tool: the tender (`tend`) seals and compresses the logs, cuts `dns.log`, counts each closed day per company, keeps 90 days and the cap; the shipper (`ship`, E3) copies the sealed logs, the counts and the deletion records to the NAS, each read back and compared, and keeps 90 days there; `lookup` (E3) answers who used an address, on every node; `count` (a day's numbers, writing nothing) and `report` (the founder's table) |
 | `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
-| `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log and plug units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
+| `qorpera-agent-exit-names.py` | the names reconciler (E8b, below): `reconcile` for the names unit, `elements` for `up` |
+| `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log, plug and names units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
 | `qorpera-agent-exit-dns.service` | dnsmasq, run inside `qexit` (`NetworkNamespacePath=`) and sandboxed: static DHCP leases (10 minutes) from `/var/lib/qorpera-agent-exit/dhcp-hosts` (E2 writes one `mac,address` file per machine, readable by dnsmasq's unprivileged user, and reloads the unit after removing one), machines' own names ignored and never published, DNS forwarded to 9.9.9.9 and 1.1.1.1, every query logged to `/var/log/qorpera-agent-exit/dns.log` |
 | `qorpera-agent-exit-log.service` | the connection log |
 | `qorpera-agent-plug.service` | the agent plug's reconciler, as root, after LXD |
+| `qorpera-agent-exit-names.service` | the names reconciler, as root (E8b, below) |
+| `qorpera-agent-exit-resolver@.service` | one company's resolver: dnsmasq in `qexit` on 10.210.0.1, port `%i`, sandboxed as the dns unit; the names reconciler starts, reloads and stops these, and none is ever enabled |
 | `qorpera-agent-exit-health.service`, `.timer` | `health` every 10 seconds: `verify`'s answer as `/run/qorpera-agent-exit/health.json` (`{schema, healthy, checkedAt, problems}`, mode 0644) for the node observer, which has no capabilities and cannot run `verify` |
 | `qorpera-agent-exit-logs.service`, `.timer` | `logs` every 5 minutes (nice, idle I/O) |
 | `qorpera-agent-exit-ship.service`, `.timer` | `ship` every 5 minutes (nice, idle I/O); a pass that hangs on the NAS ends after 15 minutes, and the next goes on from where it stopped |
@@ -141,18 +144,23 @@ with E3; a node that already runs the exit takes E3 as in "Adding E3 to a node t
    be new), then `bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules`. The rules reader stays off
    until its login is placed ("The rules reader (E8b)", below).
 5. `systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
-   qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer
-   qorpera-agent-exit-ship.timer`, then `systemctl start qorpera-agent-exit-ship.service` for a first pass at once (the
-   logs' and the shipper's timers are not optional: one keeps the logs off the node's disk, the other gets them onto
-   the NAS, and `verify` fails without either).
-6. `X verify` says `healthy`; `X status` shows the addresses and an empty client map;
+   qorpera-agent-plug.service qorpera-agent-exit-names.service qorpera-agent-exit-health.timer
+   qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer`, then
+   `systemctl start qorpera-agent-exit-logs.service qorpera-agent-exit-ship.service` for a first pass of each at once
+   (the logs' and the shipper's timers are not optional: one keeps the logs off the node's disk, the other gets them
+   onto the NAS, and `verify` fails without either).
+6. Until the rules reader runs, `X verify` fails with two `names:` lines and nothing else: no rules file yet, and the
+   rules reader not running. A node takes no machine before its reader runs (one would have no DNS), so its login
+   comes next, for both nodes in one go ("The rules reader (E8b)", below). Then:
+   `X verify` says `healthy`; `X status` shows the addresses and an empty client map;
    `/run/qorpera-agent-exit/health.json` says `"healthy": true`; `/run/qorpera-agent-exit/logs.json` and
    `/run/qorpera-agent-exit/ship.json` name no problem, and `ship.json` no error;
    `/srv/qorpera/agent-exit-logs/$(hostname)/status.json` is there.
 7. Undo, only with an empty client map (`X status`):
    `systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer
    qorpera-agent-exit.service`, then `systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
-   qorpera-agent-plug.service`. The exit's stop stops the name, log and plug units itself. Never stop those by name
+   qorpera-agent-plug.service qorpera-agent-exit-names.service`. The exit's stop stops the name, log, plug and names
+   units and the companies' resolvers itself. Never stop those by name
    while a machine is plugged in: traffic would keep flowing without names and without the log, and nothing would
    flush or unplug machines. The mount may stay: nothing writes there without the shipper.
 
@@ -178,17 +186,20 @@ machine and the exit is bridged and would be refused as a private destination.
 both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on
 10.210.0.1:53 (from a name service in the exit's current namespace), a logger heartbeat younger than 30 seconds with
 the logger neither paused nor failing to write, a brake status younger than 30 seconds with no problem (also while
-the brake is off), a reconciler status younger than 30 seconds with no problem, a logs' tender status younger than 15
-minutes with no problem, and a shipper status younger than 30 minutes with no problem (a NAS folder set, and no file
-waiting more than 24 hours to go to the NAS) are all there. The heartbeat is
+the brake is off), a reconciler status younger than 30 seconds with no problem, a names reconciler status younger than
+30 seconds with no problem (E8b, below: the rules reader alive and its rules usable, every resolver answering, the DNS
+map as wanted), a logs' tender status younger than 15 minutes with no problem, and a shipper status younger than 30
+minutes with no problem (a NAS folder set, and no file waiting more than 24 hours to go to the NAS) are all there. The
+heartbeat is
 written only while both of the logger's readers are alive. A NAS that is away for less than a day does not make the
 exit unhealthy: the files wait on the node (under the cap and the floor, as always) and go when it is back. Past a day,
 `verify` fails until they have gone. If the exit is down, its agent road machines have no internet; nothing falls back to
 the platform road. `X health` (every 10 seconds) writes the answer for the node observer; E2d keeps new agent road
 machines off a node whose exit is not healthy.
 
-`up` restarts the name service when it runs in an older namespace than the exit's (after a rebuild, also one an
-earlier, interrupted `up` made); the logger notices the same by itself and exits.
+`up` restarts the name service and the companies' resolvers when they run in an older namespace than the exit's (after
+a rebuild, also one an earlier, interrupted `up` made); the logger notices the same by itself and exits. `up` loads the
+exit's rules with the DNS map filled as the names reconciler's files say, so a reload takes no machine's names away.
 
 ## The logs on the node (E3's node half, E7's counts)
 
@@ -497,7 +508,8 @@ The exit answers each machine's names by its company's network rules (`rules/net
   folder belongs to `nobody` on disk, and systemd maps it to the reader's user in the reader's own view (an id-mapped
   mount), so a dynamic user that changes from run to run keeps its rules. `ls -l` on the node shows `nobody`; that is
   expected.
-- Nothing reads `rules.json` yet, and `verify` does not check the reader: the per-company resolvers (E8b-2) do both.
+- The names reconciler (below) reads `rules.json` and the status; `verify` fails while the reader is not running,
+  silent for 30 seconds or failing for 2 minutes.
 
 Its login: the role `qorpera_agent_exit` (migration 20260930230000, E8a) may call that one function and nothing else,
 and has no login until `rules-reader-login.py` gives it one. The login is a URL for Supabase's pooler on port 6543
@@ -542,12 +554,184 @@ First migration 20260930230000 (E8a), on the database.
    `--check`. It does both nodes in one go.
 3. Check: the script ends with `ok`; on each node `systemctl is-active qorpera-agent-exit-rules.service` says `active`,
    `cat /run/qorpera-agent-exit-rules/status.json` shows `"ok":true` and a `readAt` under 10 seconds old, and `X verify`
-   stays healthy.
+   stays healthy. From a release that carries E8b-2 (each company's names, below), `verify` fails from step 1 on with
+   "the names reconciler not running" until "Adding E8b-2 to a node that runs the exit", which comes right after this
+   check. Running machines keep their DNS meanwhile, as long as nothing reloads the exit before then: its new rules
+   would drop every machine's DNS until the names reconciler runs.
 4. Undo: on each node `systemctl disable --now qorpera-agent-exit-rules.service` and
    `rm /etc/qorpera-agent-exit/database-url`, then the role's login off, as the database owner:
    `alter role qorpera_agent_exit with nologin password null`.
 
 A new node takes step 1 with "Switching a node on" and step 2 once both nodes run the exit.
+
+## Each company's names (E8b)
+
+A company's block list (§10) is answered in the exit: a blocked name, and every name under it, is "no such name" for
+that company's machines, whatever resolver they ask. `qorpera-agent-exit-names.service` (root) runs the names
+reconciler, which every 2 seconds reads the rules reader's `rules.json` and status and the agent plug's verified
+machines (the entries LXD backs), and:
+- gives each company with rules and a machine a resolver of its own: `qorpera-agent-exit-resolver@<port>.service`,
+  dnsmasq in `qexit` on 10.210.0.1, on a port of its own (10001–19999, the lowest free one; kept in
+  `/var/lib/qorpera-agent-exit/names/ports.json`, so a company keeps its port across restarts). It has no DHCP and no
+  hosts; its servers file `/run/qorpera-agent-exit/names/<port>.servers` (mode 0644, dnsmasq reads it again as
+  `nobody`) has a `server=/name/` line per blocked name, which dnsmasq answers itself, "no such name", for the name
+  and every name under it (`server=/*.name/` for `*.name`: only the names under it). Every other name goes to the
+  same upstreams as the main dnsmasq's. A company whose rules are open with nothing blocked gets one too, blocking
+  nothing; one without rules (`null`) keeps the main dnsmasq;
+- on a new rules version rewrites the file and reloads the resolver (`systemctl reload`, SIGHUP: dnsmasq reads the
+  servers file again and empties its cache), so a new block applies within seconds, also to a name it had cached;
+- keeps the exit's map `dns_port` (address to port) and set `dns_allowed` (address and port) to the verified machines,
+  in one transaction: the exit sends every machine's plain DNS (UDP and TCP port 53, to any address, the exit's own
+  included) to its company's resolver, and a machine may ask the exit on that port only, so it never reaches another
+  company's resolver. A machine whose resolver changes has its DNS connections ended at once, so none goes on to the
+  old one, and so has every machine once in each exit table the reconciler has not seen yet (its first, or one the
+  exit's reload made again): a connection keeps where it was first sent, maybe the main dnsmasq of an exit before
+  E8b-2. A connection that could not be ended is tried again on each pass, a problem until it is;
+- when it starts, reloads every resolver that runs: a reconciler before it may have rewritten a servers file and
+  stopped before the reload;
+- fails closed: a machine without an element (no `rules.json` yet, its company not in it yet, its company's rules not
+  as the reader writes them, no port left) has its DNS dropped, counted in `refused_dns`. A company that just got rules
+  keeps the main dnsmasq until its resolver answers (both UDP and TCP), for at most 10 seconds; then its machines have
+  no DNS until it does. A resolver that runs but does not answer is restarted, at most every 10 seconds; one that
+  stopped is started again on its port;
+- stops a resolver no machine needs any more, removes its file and gives its port back (a port whose unit is still
+  loaded is not given out again);
+- writes `/run/qorpera-agent-exit/names.json` (`{schema, at, resolvers, mapped, problems}`, mode 0644) every pass.
+  `verify` fails while it is older than 30 seconds or has a problem: no rules file or one that cannot be used, a
+  company not in it for 30 seconds or with rules that cannot be used, the rules reader not running, silent for 30
+  seconds or failing for 2 minutes (meanwhile the rules last read stay in force), a resolver not answering or that
+  cannot be started, reloaded or stopped, systemd or the DNS map that cannot be read or set.
+
+`X status` lists the map `dns_port` (each machine's address and its resolver's port; 53 is the main dnsmasq).
+
+The agent plug clears a machine's elements when it unplugs it, also while the names reconciler is down. Without
+systemd's view the reconciler starts and stops nothing and hands out no port; the machines of companies with a port
+keep it.
+
+The resolvers log every query to the same `dns.log` as the main dnsmasq, with their own pid; the logs' tender cuts it
+for all of them, and the lookup tells their queries apart by the pid. A resolver runs only in `qexit`, as the dns
+unit does, and asks upstream from `up0`'s address; nothing from 10.210.0.1 leaves by the uplink.
+
+What it does not do: it answers names, so a machine of an "open" company that connects to an address straight, asks a
+resolver of its own over HTTPS (DoH) or TLS (port 853), or uses an answer it cached before the block is not stopped by
+it. Open connections stay open. An "only listed" company's machines are also held to the addresses of its list (E8c-1,
+below).
+
+### Adding E8b-2 to a node that runs the exit
+
+Only on a node whose rules reader runs ("Adding E8b to a node that runs the exit", step 3: `"ok":true` and a fresh
+`readAt`). Without it every machine on the node loses its DNS. As root, from a checkout of the release head with the
+reader's package built (step 4 of "Switching a node on"), in one go (the installer's new `verify` fails until the names
+reconciler runs):
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl enable --now qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+The names reconciler starts the companies' resolvers first (the old rules have no map yet: it says so until the
+reload). The reload loads the new rules with the map filled for every verified machine, so no machine loses its DNS
+for longer than its resolver takes to start. The plug's restart gives it the new code (it clears a machine's DNS
+elements on unplug). From a release with E8c-1 this brings it too: the reload fills `reach` as well, and its
+refused-flow sets keep each refusal's mark (below). The logger restarts before the reload for that: the new one reads
+the old sets and the new, the old one would misread the new.
+
+Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `cat /run/qorpera-agent-exit/names.json`
+shows `"problems": []`, a resolver for each plugged company with rules and each verified machine in `mapped`;
+`systemctl list-units 'qorpera-agent-exit-resolver@*'` lists those resolvers `active`; `X status` lists `dns_port`
+with the same addresses and ports.
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` (the old rules send every machine's DNS to the main dnsmasq again),
+`systemctl disable --now qorpera-agent-exit-names.service`, `systemctl stop 'qorpera-agent-exit-resolver@*.service'`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (E8c-1's, below: so adding it again
+restarts the "only listed" resolvers) and `systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`.
+What stays is harmless: the names tool and its two units (nothing starts them), `ports.json` and the servers files.
+
+## Where a company's machines may go (E8c-1)
+
+A company in "only listed" mode (§10) reaches its listed names only, over HTTPS (TCP 443) only. The exit goes by
+address, with no new kernel modules. The names reconciler (above) runs that company's resolver so that:
+- it answers only the listed names (and the names under a `*.name` entry) that are not blocked, from the main
+  dnsmasq's upstreams. Every other name is "no such name" and is never asked upstream: its servers file starts with
+  `server=/#/` and names the upstreams per listed name, and it has no upstreams of its own;
+- it puts each IPv4 address it answers (a CNAME's target's too) in the exit's set `allow_<port>` (dnsmasq's
+  `--nftset`; its unit keeps `CAP_NET_ADMIN` for it while it runs as `nobody`). `<port>.mode` says which mode it runs.
+
+The exit's map `reach` (address to verdict, set in the same transaction as `dns_port`) sends each verified machine's new
+flows on, after the refusals of our own networks and mail: to the chain `open` (the open bounds and the brake, as
+before) for a company without rules or in "open" mode, or to its company's chain `only_<port>`. There TCP 443 to an
+address in `allow_<port>` goes on to `open`; anything else is refused, counted in `refused_not_listed` and logged with
+the rule `not_listed`. A machine without an element (its company not known yet, its rules not usable, no port or no
+chain yet) is refused everything outside, counted in `refused_rules_unknown` and logged with `rules_unknown`: the exit
+fails closed. An established connection goes on past `reach` (the exit judges only new ones), so the reconciler ends
+every connection of a machine whose element went, and in a table it has not seen before those of every machine
+without one (a failed end is a problem in `names.json`, and tried again each pass). The agent plug clears a machine's
+element when it unplugs it. Both refusals mark the packet
+(`0x80000003` rules not known, `0x80000004` not listed; the brake's marks stay below `0x80000000`), and
+`refused_flows` and `refused_other` keep the mark with the flow: the logger reads the rule from it, so rules that
+change before it reads the set (the address listed since, the machine's company known since) do not change the rule
+it logs.
+
+When the list changes:
+- a wider list (a name listed, a block removed) rewrites the servers file and reloads the resolver, as in "open" mode;
+- a narrower list, a switch of mode (either way) or a company's first "only listed" resolver restarts the resolver:
+  about a second in which that company's machines get no answers. The reconciler writes the marker
+  `/run/qorpera-agent-exit/names/<port>.owed` first, then stops the resolver, empties `allow_<port>` and starts it
+  again. Unless the company is now in "open" mode, it then ends every connection of the company's machines once
+  `reach` is right, so none made before goes on. Then it removes the marker; one a reconciler left half way is carried
+  out by the next;
+- a company back in "open" mode gets `open` in `reach`; its chain and set are removed in the same pass.
+
+The exit's reload (or `up`) makes the table again with the sets empty and `reach` filled from the reconciler's last pass
+(`qorpera-agent-exit-names.py elements`); the reconciler sees the new table and reloads the only-listed resolvers,
+which empties their caches. Until a machine asks for a name again, its new connections to that name's address are
+refused.
+
+Limits:
+- it goes by address: a listed name's address lets out any name on it (a shared CDN address, say), and an address stays
+  in the set until the resolver restarts, also when its name now has another. Set elements have no timeout: dnsmasq
+  2.92 does not renew one when it adds the address again, so a timeout would cut a name in use;
+- the set holds at most 65,536 addresses. Past that dnsmasq cannot add one, and the new address is refused until the
+  resolver restarts;
+- UDP 443 (QUIC) is refused; browsers fall back to TCP.
+
+E8c-2 adds a check of the name a TLS hello asks for. It needs the kernel modules `nfnetlink_queue` and `nft_queue` on
+the nodes; without them "only listed" is this address check alone.
+
+### Adding E8c-1 to a node that runs the exit
+
+Only on a node with E8b-2 whose rules reader runs (`"ok":true` and a fresh `readAt`): without the rules a machine has
+no element in `reach` and reaches nothing outside. As root, from a checkout of the release head with the reader's
+package built, in one go:
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+Until the reload the names reconciler cannot set its maps (the old rules have no `reach`; it says so), and the
+machines keep their DNS and the old rules. The reload loads the new rules with `reach` filled for every verified
+machine, and refused-flow sets that keep each refusal's mark. The logger restarts before it: the new one reads the old
+sets and the new (and the rule of each refusal from its mark), the old one would misread the new. The plug's restart
+gives it the new code (it clears a machine's `reach` element on unplug). A company in "only listed" mode has its
+resolver restarted once (about a second without names) and its machines' connections ended.
+
+Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `cat /run/qorpera-agent-exit/names.json`
+shows `"problems": []`; `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each
+verified machine (`goto open`, or `goto only_<port>` for an "only listed" company).
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` (the old rules let every machine out as before),
+`systemctl restart qorpera-agent-exit-names.service`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (so that adding E8c-1 again
+restarts the "only listed" resolvers), `systemctl stop 'qorpera-agent-exit-resolver@*.service'` (the old reconciler
+starts them again with its own options) and `systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`.
 
 ## Test
 
@@ -572,13 +756,20 @@ that keep the brake; and the counts and the report with the brake's lines. Then 
 stand-ins for the Supabase API and the root helpers: its login in the one form the tool takes, its verifier as RFC
 7677's exchange proves it, the keychain's token, the pooler and the role taken only as Supabase and the migration make
 them, a run's order (checks, both files, the verifier, the readers), and a node not as this checkout or a file not as
-sent stopping the run before the role changes, with nothing printed that holds the login.
+sent stopping the run before the role changes, with nothing printed that holds the login. Then the names reconciler
+against stand-ins for systemd, the exit's map and set and its sockets: a company with rules given a resolver, its
+servers file and its machines once it answers; a resolver that does not answer (the main dnsmasq for 10 seconds, then
+no DNS, restarted at most every 10 seconds); failing closed (no rules file, a company not known yet or with rules not
+usable); the rules reader silent or failing; ports kept across restarts, the lowest free one, never one a unit still
+holds; no view of systemd, a failed reload tried again and a changed map set right; and the elements `up` loads. And
+the lookup on a `dns.log` where the main dnsmasq and a company's resolver give one query the same serial.
 `packages/runtime/test/agent-exit-rules.test.ts` tests the reader itself (the companies of the client map, the rules
 file and when it changes, a failing database or client map, rows refused, a restart), and
 `scripts/package-agent-exit-rules.test.mjs` its package.
-On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
-with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
-a kernel module (the kernel loads nftables' own on demand).
+On Linux with Docker, `qorpera-agent-exit-proof.test.mjs` runs `test/proof.sh` in a privileged container with no
+network of its own (`ubuntu:26.04` with the packages above, built once and cached). It is a file of its own so that
+`node --test` runs it beside `qorpera-agent-exit.test.mjs`. The proof never leaves the container's namespaces and
+never unloads a kernel module (the kernel loads nftables' own on demand).
 The proof plays a node: an agent road machine plugged into `qagent0` by a creator (a member of the plug group, umask
 077), the office network (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1
 on the tailnet. It checks:
@@ -620,6 +811,23 @@ on the tailnet. It checks:
   after, its company still braked; a
   restart without levels ending the brake at once (an `unbraked` line with what it dropped); and a share as large as
   its level, or a level that looks like an option, leaving the brake off and `verify` failing;
+- each company's names (E8b), with the names reconciler running against a stand-in for the rules reader and one for
+  systemd's resolver units: a company with rules gets its own resolver, whose blocked names and the names under them
+  (and only those under a `*.` name) are "no such name", asked of the exit or of any other address, while another
+  company's machine gets the same name; a company that gets rules moves to its own resolver and its machines' DNS
+  connections to the main dnsmasq end; a new block applies within seconds by a reload (the same dnsmasq), also to a
+  name it had cached; a machine never reaches another company's resolver, only its own; "only listed" (E8c-1): a
+  switch restarts the resolver and ends the machines' connections, unlisted names are "no such name" and never asked
+  upstream, a listed name's address is reachable on TCP 443 only (another port, an unlisted address and ping refused,
+  counted in `refused_not_listed` and logged as `not_listed`) while the other company's machine reaches it all, a
+  wider list reloads the same resolver and keeps connections, a narrower one restarts it and ends them, and back to
+  "open" removes the chain and set; a company whose rules are not usable, one not in the rules file yet, and no rules
+  file at all leave machines without DNS (to the exit or elsewhere, counted in `refused_dns`) and without a way out
+  (`rules_unknown`), a stopped resolver and its file gone and `verify` failing; a rules reader silent too long fails
+  `verify` while its last rules stay; a resolver that dies is
+  started again on its port; rules that block nothing; and an unplug taking the machine's elements out while the
+  names reconciler is stopped, its company's resolver then stopped and its port given back. Every query is in
+  `dns.log` under its dnsmasq's pid;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes
@@ -630,8 +838,9 @@ test machines do not load it, so it prints a SKIP line there. Not covered here: 
 filters and port isolation, LXD's API as the reconciler reads it, systemd's handling of the units, Supabase's pooler,
 a real NFS mount (the proofs' NAS is a tmpfs; the shipper reads each copy back), and running
 beside the guest guard, LXD and Tailscale on a real node. E2b's proof, in a throwaway VM with its own LXD inside a
-test machine, covers the first three; E8b's, in another, systemd's handling of the rules reader. The rollout script's
-last step reads Supabase through its pooler on each node.
+test machine, covers the first three; E8b's, in another, systemd's handling of the rules reader; E8b-2's, in another,
+systemd's handling of the names reconciler and the resolver units, with real LXD machines of two companies. The
+rollout script's last step reads Supabase through its pooler on each node.
 
 `run-on-node.mjs changed` runs it on the node 2 test machine.
 
@@ -727,6 +936,67 @@ Result (9 October 2026, node 1's test machine, Ubuntu 26.04.1 with kernel 7.0.0-
 its two credentials were 0440 and root's, and it read both. Its state folder was uid 65534 on disk and its own in its namespace. It refused
 the stand-in's certificate (`DEPTH_ZERO_SELF_SIGNED_CERT`) after asking it for TLS. Its journal had its one state
 line. The test machine's links, nft tables, sysctls and network modules were as before.
+
+## E8b-2: each company's names on real LXD
+
+`test/prove-names-vm.sh` runs as root on a test machine, never on a node (with the default install: it builds the
+reader's package there):
+
+```
+node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- bash deploy/agent-exit/test/prove-names-vm.sh </dev/null
+```
+
+With `-- env QORPERA_AGENT_EXIT_PROOF_PREVIOUS=<a previous release's deploy/agent-exit> bash …` it also proves the
+step for nodes that already run the exit. It changes nothing of the test machine. As E2b's proof, it makes a throwaway
+VM with no network card and sets up LXD inside, and as E8b's, it pushes in the reader's package and the packages for
+the nodes' Node, dnsmasq and conntrack. Inside, `test/prove-names.sh` stands in for the internet (a web server and
+two upstream name servers at 9.9.9.9 and 1.1.1.1 in a namespace of their own) and for the rules reader (a script that
+writes the rules file from a list), and:
+- installs with `install-agent-exit.sh` and switches the exit on as "Switching a node on" says: without a rules
+  reader and a rules file, `verify` names exactly those two problems; with them, the exit is healthy;
+- plugs two LXD machines of two companies in as a creator does; without rules both use the exit's own name server;
+- gives company 1 rules: its resolver starts as `qorpera-agent-exit-resolver@10001.service` (not enabled, inside the
+  exit's namespace, dnsmasq), its machine's names go through it, blocked names and names under a blocked wildcard
+  are NXDOMAIN whether asked of 10.210.0.1 or of 9.9.9.9, and never reach the upstreams, while the other company's
+  machine still gets them; each machine reaches only its own company's port;
+- changes the rules: a reload, not a restart, and the change holds at once; gives company 2 rules while its machine
+  keeps asking from one port, and the next answer already comes from its resolver (the old connection is flushed);
+- runs the step for nodes that already run the exit on this node: the resolvers keep running;
+- switches company 2 to "only listed" (E8c-1): its resolver restarts and its machine's connection made before ends;
+  names off its list are NXDOMAIN and never reach the upstreams; the resolver unit's own dnsmasq puts each address it
+  gives out in `allow_10002`, and the machine reaches TCP 443 on those only, never port 80 or another address, while
+  company 1's machine reaches any; the exit's reload empties the set and the resolver is reloaded, and a listed name
+  asked again reaches its address again; a narrower list restarts the resolver; back to open, `only_10002` and
+  `allow_10002` go; rules that cannot be used leave the machine without a way out;
+- kills a resolver: systemd starts it again and the names hold;
+- fails closed: unusable rules for a company and a missing rules file leave its machines (or all of them) with no
+  answer, and `verify` says why;
+- deletes the machines: the resolver of a company with no machine left stops and its port is given back, while the
+  other company keeps its own in `ports.json`; the exit's stop stops the last resolver with it;
+- with a previous release: installs it as its own "Switching a node on" says, then runs the step for nodes that run
+  the exit and its undo, with a machine plugged in throughout. A release before E8b-2 takes ROLLOUT.md's step 9: the
+  machine's flow opened before keeps its blocked names, `reach` sends it to `open`. A release with E8b-2 takes step
+  10 with the machine's company "only listed": its resolver restarts into the list and the machine's connection made
+  before ends; after the undo the previous release's resolver answers every name but the blocked ones again.
+
+Afterwards the test machine is compared with before, as for E2b. `test/prove-lxd.sh` (E2b) runs the names
+reconciler too, with no rules.
+
+Result (15 October 2026, node 1's test machine, Ubuntu 26.04.1 with kernel 7.0.0-30; run
+20261014T222735-58135-6049135c, 465 s, with E8b-1's release as the previous one): ALL PASSED. The first run found
+that a reload under systemd failed: dnsmasq runs as nobody, and signalling it takes CAP_KILL, which the units'
+bounding set leaves out. The reload of the dns unit and of the resolvers now runs outside it (`ExecReload=+…`); the
+proof reloads both. A resolver ran as dnsmasq in the exit's namespace, a rules change was a reload of the same
+process, a killed resolver was back with one restart, and m2's open DNS flow was ended when its company got rules.
+The test machine's links, nft tables, sysctls and network modules were as before.
+
+Result with E8c-1 (15 October 2026, the same machine and kernel; dnsmasq 2.92): run 20261015T012958-81189-a3d1b220,
+574 s, with E8b-2's release (#1080's head) as the previous one, so step 10: ALL PASSED. The unit's own dnsmasq, in
+its sandbox and as nobody, filled `allow_10002`; the switch, the narrower list and step 10 each restarted the
+resolver and ended the machine's connection made before; the exit's reload emptied the set and a listed name asked
+again was reached again. Run 20261015T015036-6952-aa4e32b2, 552 s, with E8b-1's release as the previous one, so
+step 9: ALL PASSED; `reach` sent the machine to `open`, and after the undo it went out as before. Both times the test
+machine's links, nft tables, sysctls and network modules were as before.
 
 ## Notes for later steps
 

@@ -24,6 +24,7 @@ import {
 	ErrorCode,
 	type Hello,
 	LIST_PAGE,
+	type LinkRequest,
 	MAX_PAYLOAD,
 	type OpenRequest,
 	ProtocolError,
@@ -125,6 +126,8 @@ export interface ReportEntry {
 	readonly receipt?: string;
 	/** The change is still pending in this view. */
 	readonly kept?: boolean;
+	/** A conflicting link's target, kept on the receipt (protocol 4). */
+	readonly target?: string;
 }
 
 export interface Report {
@@ -282,6 +285,15 @@ export type Released = "released" | "unanswered" | CoreRefusal["reason"];
 
 function readKey(read: ReleasedRead): string {
 	return JSON.stringify([read.path, read.version, read.authority]);
+}
+
+/** The links a unit makes, by path: a `symlink` unit's, or each of a new folder's. */
+function linksOf(unit: CommitUnit): Map<string, string> {
+	const links = new Map<string, string>();
+	if (unit.op === "symlink") links.set(unit.path, unit.target);
+	if (unit.op === "new_folder")
+		for (const c of unit.contents) if (c.target !== undefined) links.set(`${unit.path}/${c.path}`, c.target);
+	return links;
 }
 
 /** The paths a boundary leaves waiting (an open file among them), kept pending. */
@@ -473,6 +485,10 @@ export interface ViewHandle {
 	rename(request: RenameRequest): Promise<void>;
 	/** The version the path shows after: the bit makes a new one, which the machine's version map takes. */
 	setExecutable(path: string, executable: boolean, base: string | undefined): Promise<{ version: string }>;
+	/** A new link (protocol 4), and its version. */
+	symlink(path: string, target: string): Promise<{ version: string }>;
+	/** A hard link's new name (protocol 4), and its version. */
+	link(request: LinkRequest): Promise<{ version: string }>;
 	/** `final`: a command view's last boundary, whose change set closes the view (F3 4b). */
 	publish(final?: boolean): Promise<Report>;
 	/** Entries of the machine's read log, released before the view's next boundary (protocol 3, F3 4c). */
@@ -874,21 +890,27 @@ export class FolderService {
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 			view.admitted = true;
-			if (view.core && hello.protocol === 3) view.persistentHandles = true;
+			if (view.core && hello.protocol >= 3) view.persistentHandles = true;
 			if (hello.previous) await this.#transfer(view, hello, bridge);
 			if (hello.abandon) await this.#abandonProgram(view, hello);
 		} catch (error) {
 			release();
 			throw error;
 		}
+		// A machine below protocol 4 never sees a link: none is listed, read or found, and a name one holds is taken.
+		const links = hello.protocol >= 4;
+		const hidden = (path: string): void => {
+			if (!links && view.pending?.get(path)?.kind === "symlink")
+				throw new ProtocolError(ErrorCode.notFound, "No such path");
+		};
 		const handle: ViewHandle = {
 			asOfSeq: view.seq,
 			writable: view.pending !== undefined,
 			core: view.core,
 			switchable: view.identity?.kind === "computer_desktop",
-			list: async (path, after) => this.#list(view, path, after),
-			read: async (request) => this.#read(view, request),
-			search: async (request) => this.#search(view, request),
+			list: async (path, after) => this.#list(view, path, after, links),
+			read: async (request) => this.#read(view, request, links),
+			search: async (request) => this.#search(view, request, links),
 			subscribe: (sink) => {
 				if (released || view.closed || view.moving)
 					return sink.closed(ErrorCode.viewClosed, view.closed ?? "Released");
@@ -960,11 +982,20 @@ export class FolderService {
 			},
 			mkdir: async (path) => this.#change(view, [path], (pending) => pending.mkdir(path)),
 			unlink: async (path, base) =>
-				this.#change(view, [path], (pending) => pending.unlink(path, this.#base(view, path, base))),
+				this.#change(view, [path], (pending) => {
+					hidden(path);
+					pending.unlink(path, this.#base(view, path, base));
+				}),
 			rmdir: async (path, base) =>
-				this.#change(view, [path], (pending) => pending.rmdir(path, this.#base(view, path, base))),
+				this.#change(view, [path], (pending) => {
+					hidden(path);
+					pending.rmdir(path, this.#base(view, path, base));
+				}),
 			rename: async (request) =>
 				this.#change(view, { from: request.from, to: request.to }, (pending) => {
+					hidden(request.from);
+					if (!links && pending.get(request.to)?.kind === "symlink")
+						throw new ProtocolError(ErrorCode.exists, "The path exists");
 					const fromBase = this.#base(view, request.from, request.fromBase);
 					const toBase = this.#base(view, request.to, request.toBase);
 					pending.rename(request.from, request.to, {
@@ -975,10 +1006,23 @@ export class FolderService {
 				}),
 			setExecutable: async (path, executable, base) =>
 				this.#change(view, [path], (pending) => {
+					hidden(path);
 					pending.setExecutable(path, executable, this.#base(view, path, base));
 					// The version the path shows now: a save, so the machine's version map takes it.
 					return { version: pending.get(path)?.version ?? "" };
 				}),
+			// The server takes these from a protocol 4 machine only.
+			symlink: async (path, target) =>
+				this.#change(view, [path], (pending) => ({ version: pending.symlink(path, target) })),
+			link: async (request) =>
+				this.#change(view, [request.to], (pending) => ({
+					version: pending.link(
+						request.from,
+						request.to,
+						this.#base(view, request.from, request.fromBase),
+						(path, version) => view.superseded.get(path)?.find((old) => old.version === version),
+					),
+				})),
 			publish: async (final = false) => {
 				if (final && !view.access?.command)
 					throw new ProtocolError(ErrorCode.badRequest, "Only a command view publishes a final change set");
@@ -1021,6 +1065,8 @@ export class FolderService {
 			rmdir: (...args) => serve(() => handle.rmdir(...args)),
 			rename: (...args) => serve(() => handle.rename(...args)),
 			setExecutable: (...args) => serve(() => handle.setExecutable(...args)),
+			symlink: (...args) => serve(() => handle.symlink(...args)),
+			link: (...args) => serve(() => handle.link(...args)),
 			publish: (...args) => serve(() => handle.publish(...args)),
 			reads: (...args) => serve(() => handle.reads(...args)),
 		};
@@ -1040,7 +1086,7 @@ export class FolderService {
 		const previous = hello.previous!;
 		const refuse = (): ProtocolError =>
 			new ProtocolError(ErrorCode.viewRefused, "The previous view did not match this desktop");
-		if (hello.protocol !== 3 || target.identity?.kind !== "computer_desktop" || !target.access?.admits(bridge))
+		if (hello.protocol < 3 || target.identity?.kind !== "computer_desktop" || !target.access?.admits(bridge))
 			throw refuse();
 		let old = this.#views.get(`view:${previous.viewId}`);
 		// A restarted service has no pending state to transfer. The target's own pass, company and machine were
@@ -1091,7 +1137,8 @@ export class FolderService {
 			// versions too, both for retained read handles and for journal entries not handed over before the switch.
 			for (const path of old.tree?.paths() ?? []) {
 				const entry = old.tree?.get(path);
-				if (entry?.kind === "file" && target.tree?.get(path)?.version !== entry.version) this.#keep(target, entry);
+				if (entry && entry.kind !== "folder" && target.tree?.get(path)?.version !== entry.version)
+					this.#keep(target, entry);
 			}
 			for (const [key, value] of old.published) target.published.set(key, value);
 			for (const [key, value] of old.uploads) target.uploads.set(key, value);
@@ -1135,7 +1182,7 @@ export class FolderService {
 	 * files go back to, publishes after the quiet period as any change does. */
 	async #abandonProgram(view: View, hello: Hello): Promise<void> {
 		if (view.finalOut) return;
-		if (hello.protocol !== 3 || hello.role !== "io" || !view.pending)
+		if (hello.protocol < 3 || hello.role !== "io" || !view.pending)
 			throw new ProtocolError(ErrorCode.badRequest, "This view cannot abandon a mounted program");
 		if (view.moving) throw new ProtocolError(ErrorCode.busy, "The view is changing; try again");
 		view.moving = true;
@@ -1516,11 +1563,11 @@ export class FolderService {
 		return view.tree;
 	}
 
-	#list(view: View, path: string, after: string | undefined) {
+	#list(view: View, path: string, after: string | undefined, links: boolean) {
 		const tree = this.#tree(view);
 		const result = view.pending
-			? view.pending.children(path, after, LIST_PAGE)
-			: tree.children(path, after, LIST_PAGE);
+			? view.pending.children(path, after, LIST_PAGE, links)
+			: tree.children(path, after, LIST_PAGE, links);
 		if (result === "not_found") throw new ProtocolError(ErrorCode.notFound, "No such folder");
 		if (result === "not_a_folder") throw new ProtocolError(ErrorCode.notAFolder, "Not a folder");
 		// The root's listing is no read, as a machine's log has none (a logged path is never empty).
@@ -1528,12 +1575,18 @@ export class FolderService {
 		return result;
 	}
 
-	async #read(view: View, request: ReadRequest): Promise<Buffer> {
+	/** A file's bytes, or a link's target (protocol 4: below it a link is not there). */
+	async #read(view: View, request: ReadRequest, links: boolean): Promise<Buffer> {
 		this.#tree(view);
+		const target = (link: string): Buffer => {
+			if (!links) throw new ProtocolError(ErrorCode.notFound, "No such file");
+			return Buffer.from(link).subarray(request.offset, request.offset + request.length);
+		};
 		const pending = view.pending?.source(request.path, request.version);
 		const served = (authority: TreeEntry["authority"]): void =>
 			this.#served(view, { path: request.path, version: request.version, authority });
 		if (pending) {
+			if ("target" in pending) return target(pending.target);
 			try {
 				let bytes: Buffer;
 				if ("live" in pending)
@@ -1571,10 +1624,12 @@ export class FolderService {
 		if (current?.version === version) entry = current;
 		else entry = view.superseded.get(request.path)?.find((old) => old.version === version);
 		if (!entry) {
-			if (!current) throw new ProtocolError(ErrorCode.notFound, "No such file");
+			if (!current || (!links && current.kind === "symlink"))
+				throw new ProtocolError(ErrorCode.notFound, "No such file");
 			if (current.kind === "folder") throw new ProtocolError(ErrorCode.notAFile, "Not a file");
 			throw new ProtocolError(ErrorCode.stale, "That version is no longer readable");
 		}
+		if (entry.kind === "symlink") return target(entry.target!);
 		if (entry.kind !== "file") throw new ProtocolError(ErrorCode.notAFile, "Not a file");
 		try {
 			const profileId = await this.#profile(view, entry);
@@ -1593,16 +1648,18 @@ export class FolderService {
 	/** A search over the view's tree as it is now: the files' bytes as reads give them. A path that is not in the view
 	 * is NOT_FOUND; a share that cannot be read now fails the whole page (UNAVAILABLE), so no answer leaves a file out
 	 * without saying so. */
-	async #search(view: View, request: SearchRequest): Promise<SearchAnswer> {
+	async #search(view: View, request: SearchRequest, links: boolean): Promise<SearchAnswer> {
 		// A run's own view only (a core view): an operator mount's machine never searches through this service. A core
 		// view the core closed answers VIEW_CLOSED (from the tree), so its run opens another.
 		if (!view.core) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
 		const tree = this.#tree(view);
-		if (!tree.get(request.path)) throw new ProtocolError(ErrorCode.notFound, "No such path");
+		const start = tree.get(request.path);
+		if (!start || (!links && start.kind === "symlink")) throw new ProtocolError(ErrorCode.notFound, "No such path");
 		try {
 			const answer = await searchView(
 				{
 					tree,
+					links,
 					read: async (entry, offset, length) =>
 						this.#objects.read(await this.#profile(view, entry), entry, offset, length),
 					now: this.#now,
@@ -1911,7 +1968,7 @@ export class FolderService {
 					? await this.#objects.chunk(await this.#uploadProfile(view), chunk.sha256, chunk.bytes)
 					: Buffer.alloc(0);
 			}
-			const origin = node.origin?.entry;
+			const origin = node.origin?.entry ?? node.copyOf;
 			if (!origin) return Buffer.alloc(0);
 			const profile = await this.#profile(view, origin);
 			const chunk = (await this.#objects.manifestChunks(profile, origin))[index];
@@ -1937,11 +1994,11 @@ export class FolderService {
 		return node.staged?.version === node.version && node.staged.file.mediaType === this.#mediaType(view, node, path);
 	}
 
-	/** Stages a closed file's current version (its bytes, or its origin's chunks under a new bit) at `path`, once; the
-	 * intent it is sealed under is renewed while the file is pending. */
+	/** Stages a closed file's current version (its bytes, its origin's chunks under a new bit, or a hard link's copy of
+	 * another file's) at `path`, once; the intent it is sealed under is renewed while the file is pending. */
 	async #stage(view: View, node: PendingFile, path: string): Promise<FileRef | undefined> {
 		const staging = this.#staging;
-		const changed = node.content !== undefined || (node.origin && node.executable !== node.origin.entry?.executable);
+		const changed = node.content !== undefined || !node.origin || node.executable !== node.origin.entry?.executable;
 		if (!staging || node.open > 0 || !changed) return undefined;
 		const version = node.version;
 		if (this.#stagedNow(view, node, path)) return node.staged?.file;
@@ -1949,7 +2006,7 @@ export class FolderService {
 		node.staged = undefined;
 		const mediaType = this.#mediaType(view, node, path);
 		let content = node.content;
-		const origin = node.origin?.entry;
+		const origin = node.origin?.entry ?? node.copyOf;
 		if (!content && origin)
 			content = {
 				chunks: await this.#objects.manifestChunks(await this.#profile(view, origin), origin),
@@ -2153,7 +2210,7 @@ export class FolderService {
 			if (u.bytes)
 				for (const path of u.paths) {
 					const node = pending.nodes().get(path);
-					if (node?.kind === "file") made.set(path, node.version);
+					if (node?.kind === "file" || node?.kind === "symlink") made.set(path, node.version);
 				}
 		// The actor is read once: a renewal that closes the view between two tries of a final (which closed it) does not
 		// stop the next try, which the core answers as a replay. Nor does it drop the view, which stays for the final.
@@ -2236,7 +2293,8 @@ export class FolderService {
 		const authority = entry.authority ?? NO_RECEIPT;
 		if (entry.version === null) return { path: entry.path, version: null, authority };
 		const pending = view.pending?.source(entry.path, entry.version);
-		if (pending) return { path: entry.path, version: "live" in pending ? pending.live.version : null, authority };
+		if (pending)
+			return { path: entry.path, version: "live" in pending ? (pending.live?.version ?? null) : null, authority };
 		const version = this.#base(view, entry.path, entry.version) ?? entry.version;
 		const placed =
 			view.tree?.get(entry.path)?.version === version ||
@@ -2501,14 +2559,18 @@ export class FolderService {
 			// shows the live folder, as for a unit saved.
 			const parked = outcome?.outcome === "waiting_for_review" && outcome.reason === "parked";
 			const kept = !closing && planned.bytes && outcome?.outcome !== "saved" && !parked && !copied.has(i);
+			// A link the receipt keeps is reported with its target.
+			const targets = copied.has(i) ? linksOf(planned.unit) : undefined;
 			for (const path of planned.paths) {
 				if (kept) keep.add(path);
 				if (outcome?.outcome === "saved") saved.add(path);
+				const target = targets?.get(path);
 				entries.push({
 					path,
 					outcome: outcome?.outcome ?? "not_applied",
 					...(outcome?.reason ? { reason: outcome.reason } : {}),
 					...(copied.has(i) ? { receipt: answer.commitId } : {}),
+					...(target !== undefined ? { target } : {}),
 					...(kept ? { kept: true } : {}),
 				});
 			}
@@ -2516,9 +2578,9 @@ export class FolderService {
 		return { entries, keep, saved };
 	}
 
-	/** The units whose conflict kept this view's bytes on the receipt: every file of the unit is among the copies the
-	 * core kept for the commit (P17 keeps them only when the unit's bytes would have passed). A conflict whose bytes were
-	 * not kept stays pending, and the next boundary tries it again. */
+	/** The units whose conflict kept this view's bytes on the receipt: every file and link of the unit is among the
+	 * copies the core kept for the commit (P17 keeps them only when the unit's bytes would have passed). A conflict
+	 * whose bytes were not kept stays pending, and the next boundary tries it again. */
 	async #copied(view: View, plan: BoundaryPlan, answer: CommitAnswer): Promise<Set<number>> {
 		const copied = new Set<number>();
 		const conflicts = plan.units.flatMap((planned, i) =>
@@ -2540,8 +2602,14 @@ export class FolderService {
 					: unit.op === "new_folder"
 						? unit.contents.flatMap((c) => (c.file ? [c.file] : []))
 						: [];
-			const kept = new Set(copies.filter((c) => c.unit === i + 1).map((c) => c.manifestSha256));
-			if (files.every((file) => kept.has(file.manifestSha256))) copied.add(i);
+			const mine = copies.filter((c) => c.unit === i + 1);
+			const kept = new Set(mine.flatMap((c) => (c.kind === "file" ? [c.manifestSha256] : [])));
+			const keptLinks = new Set(mine.flatMap((c) => (c.kind === "symlink" ? [c.target] : [])));
+			if (
+				files.every((file) => kept.has(file.manifestSha256)) &&
+				[...linksOf(unit).values()].every((target) => keptLinks.has(target))
+			)
+				copied.add(i);
 		}
 		return copied;
 	}
@@ -2563,7 +2631,8 @@ export class FolderService {
 		const written = new Map<string, string>();
 		settlement.plan.units.forEach((planned, i) => {
 			const outcome = settlement.answer.units[i];
-			if (planned.unit.op === "write" && outcome?.outcome === "saved" && outcome.version)
+			const op = planned.unit.op;
+			if ((op === "write" || op === "symlink") && outcome?.outcome === "saved" && outcome.version)
 				written.set(planned.unit.path, outcome.version);
 		});
 		let moved: ReadonlyMap<string, MovedVersion> = new Map();
@@ -2602,7 +2671,7 @@ export class FolderService {
 				if (event.seq === seq && event.kind === "change_set")
 					for (const change of event.changes) {
 						if (change.op === "write") writes.set(change.path, change.version);
-						if (change.op === "move_in" && change.kind === "file" && change.priorVersion)
+						if (change.op === "move_in" && change.kind !== "folder" && change.priorVersion)
 							moved.set(change.path, { prior: change.priorVersion, version: change.version });
 					}
 			}
@@ -2737,7 +2806,10 @@ export class FolderService {
 				}
 				// The core let it lapse (C1D §3.5).
 				view.intents.delete(id);
-				if (held.staged && held.node.staged?.file === held.staged) held.node.staged = undefined;
+				// Every file that took that staging (a hard link's new name too) is staged again.
+				if (held.staged)
+					for (const node of [held.node, ...pending.nodes().values()])
+						if (node.kind === "file" && node.staged?.file === held.staged) node.staged = undefined;
 				if (held.chunk) await this.#holdAgain(view, id, held);
 			}
 		}

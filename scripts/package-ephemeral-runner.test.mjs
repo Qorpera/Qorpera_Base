@@ -49,7 +49,6 @@ test("packages directly executable ephemeral runner bundles", async () => {
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
 			[
-				"company-lock-heartbeat.mjs",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-native-provider-host.mjs",
 				"qorpera-identity-recovery-restore.mjs",

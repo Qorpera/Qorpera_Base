@@ -2,6 +2,20 @@
 
 `scripts/package-company-computer.mjs` now includes a standalone root installer, `qorpera-office-image-install.cjs`. It installs the complete headless package into an unconfigured Linux guest with a running systemd manager. It requires already prepared OS/browser dependencies; it never downloads packages, changes dependency pins, installs credentials, adopts company state, enables services, creates an LXD image or activates an office.
 
+## The image's dependencies
+
+[`office-image-dependencies.json`](office-image-dependencies.json) is the recipe for those dependencies: the Ubuntu base
+by fingerprint, the apt packages, the pinned downloads (Node.js 24, Chrome for Testing at the Playwright build, uv and
+mise, each by sha256), the npm tools (`typescript`, `tsx`) and the toolbox. The toolbox is what every computer's shell
+runs (the 2026-10-14 amendment's item 7); each entry is a command and the flag that prints its version.
+[`install-office-image-dependencies.sh`](install-office-image-dependencies.sh) installs the recipe offline, as root in
+the guest being built and before this installer: it checks each download, installs the pushed apt closure, puts one
+Node.js at `/usr/bin/node` (apt's `nodejs` is refused), masks the self-update units, turns swap off for good and runs
+every toolbox check. `scripts/build-office-image-candidate.sh` fetches the inputs and runs both installers in a nested
+VM on node01's test machine, then runs the same toolbox checks from a computer's shell under the office unit's
+confinement ([`OFFICE-IMAGE-CANDIDATE.md`](../test-machine/OFFICE-IMAGE-CANDIDATE.md)). Changing the recipe needs a new
+image generation.
+
 ## Reviewed inputs
 
 The root-owned specification uses schema `qorpera.office-image-installation/v1` and exactly these fields:
@@ -35,6 +49,24 @@ Two tmpfiles fragments create empty root-only credential/preparation custody and
 The image must never update itself. Before it installs anything, `--apply` masks `apt-daily.timer`, `apt-daily-upgrade.timer`, `apt-daily.service`, `apt-daily-upgrade.service` and `unattended-upgrades.service` (`systemctl mask`: links from `/etc/systemd/system` to `/dev/null`). It refuses with `OFFICE_IMAGE_APT_JOB_RUNNING` while an apt job is still running; it never stops one mid-upgrade. At the end it proves each link and that systemd reports it `masked` (`OFFICE_IMAGE_SELF_UPDATE_ENABLED` otherwise). Unmasked, the timers catch up on every boot from the build's stamps; unattended-upgrades then has needrestart restart the office under members, and its shutdown inhibitor refuses the VM's stop (run d1f454e2, 2026-09-24). The office service and preparation check the same five links before anything else and refuse with `RUNNER_IMAGE_SELF_UPDATE_ENABLED:<UNIT>`: the service as its first lifecycle stage (`image`), before any credential is read; preparation before it reads the provider's request. An office on an older image must get the masks before it receives v98+ office code: re-image it, or install a service-only or guest-code revision with the install tool version that masks; a code-only package revision still needs a re-image first. See "Before updating an office's code" in [README.md](README.md).
 
 Application verifies the actual units, creates only the declared empty local custody paths, reloads systemd and leaves the office service disabled; preparation and the private mount also remain inactive. It cannot prepare an already configured guest as a new image. An identical unconfigured reinstall preserves installed inodes and the preparation lock. Image creation/sealing, cold-boot validation, dependency acquisition, LXD/KVM/Secure Boot acceptance and signing remain separate steps. Do not infer those from an installer receipt.
+
+## The company folder
+
+A package built with `--folder-program <built qorpera-folder>` carries the company folder (F3 4e-2): the folder
+program, the root helper that mounts the folder for each desktop and command
+(`qorpera-company-computer-folder-helper.mjs`), its socket and service, and the mount template
+`qorpera-office-folder-mount@.service.in`. The packager takes only the program that
+[`folder-program-linux-x64.json`](../folder-service/folder-program-linux-x64.json) pins; build it with
+`scripts/build-folder-program.mjs`. The installer admits the five files all together or not at all
+(`OFFICE_IMAGE_PACKAGE_INCOMPLETE`). The program goes to `/opt/qorpera-folder/qorpera-folder` (`0555`), the helper to
+`/opt/qorpera-office` and the units to `/etc/systemd/system`. The mount template is rendered with the office account's
+ids, like the private mount. The folder's units must be stopped and unmodified, like the office units. They have no
+`[Install]`: the office service wants the helper's socket, and the helper starts one mount per computer.
+
+The helper is root code, so it changes only with a new image. A code package never adds, changes or removes the
+folder's files. A code package for a base that carries them is therefore also built with `--folder-program`, and its
+provision is prepared with `--folder-mount-template <the base's template>`. The verifier renders that template and
+refuses it unless the base carries exactly those bytes.
 
 ## Repeatable local acceptance
 

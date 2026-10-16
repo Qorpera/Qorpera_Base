@@ -66,7 +66,7 @@ export interface FolderWriterHookAnswer {
  * by default), and its last answer is whether a save pays. A commit is not replayed by its operation key (SQL's step
  * 0); the receipt ledger replays a completed call. */
 export async function folderWriterFixture(
-	seed: { files?: Record<string, string>; folders?: string[] } = {},
+	seed: { files?: Record<string, string>; folders?: string[]; links?: Record<string, string> } = {},
 	options: {
 		hook?: (path: string, text: string) => FolderWriterHookAnswer | null;
 		recorder?: (request: Record<string, unknown>) => Record<string, unknown> | null;
@@ -106,6 +106,12 @@ export async function folderWriterFixture(
 	const workerRequests: Record<string, unknown>[] = [];
 	const cancels: Record<string, unknown>[] = [];
 	const archives: Record<string, unknown>[] = [];
+	// The interface change notes asked for (I10), and the commits with no note yet that saved something under
+	// interfaces/ or tables/ (a table's rows aside), which SQL notes.
+	const notes: Record<string, unknown>[] = [];
+	let unnoted = 0;
+	const noted = (path: string) =>
+		/^(?:interfaces|tables)\//.test(path.toLowerCase()) && !/^tables\/[^/]+\/rows\.csv$/.test(path.toLowerCase());
 	// Routine key → how the index runs it, where that differs from its file.
 	const routineStates = new Map<string, FolderWriterRoutineState>();
 	// Whether the requester's login pays, as the last login preparation found it.
@@ -123,8 +129,8 @@ export async function folderWriterFixture(
 	const now = () =>
 		`2026-10-01T00:${String(Math.floor(tick / 60)).padStart(2, "0")}:${String(tick++ % 60).padStart(2, "0")}+00:00`;
 	// A file as another writer left it, in a folder that exists.
-	const store = (path: string, content: string) => {
-		const data = new TextEncoder().encode(content);
+	const store = (path: string, content: string | Uint8Array, mediaType = "text/markdown") => {
+		const data = typeof content === "string" ? new TextEncoder().encode(content) : Uint8Array.from(content);
 		bytesBySha.set(sha(data), data);
 		files.set(path, {
 			version: randomUUID(),
@@ -132,7 +138,7 @@ export async function folderWriterFixture(
 				manifestSha256: sha(`manifest:${sha(data)}`),
 				fileSha256: sha(data),
 				bytes: data.byteLength,
-				mediaType: "text/markdown",
+				mediaType,
 				executable: false,
 			},
 			updatedAt: now(),
@@ -140,7 +146,24 @@ export async function folderWriterFixture(
 		folders.add(path.split("/").slice(0, -1).join("/"));
 	};
 	for (const [path, content] of Object.entries(seed.files ?? {})) store(path, content);
+	// Links a view made (LK1): path → the target it holds, never followed.
+	const links = new Map<string, { version: string; target: string; updatedAt: string }>();
+	for (const [path, target] of Object.entries(seed.links ?? {})) {
+		links.set(path, { version: randomUUID(), target, updatedAt: now() });
+		folders.add(path.split("/").slice(0, -1).join("/"));
+	}
 	const entry = (path: string) => {
+		const link = links.get(path);
+		if (link)
+			return {
+				path,
+				kind: "symlink",
+				version: link.version,
+				seq,
+				updatedAt: link.updatedAt,
+				target: link.target,
+				authority: receipt,
+			};
 		const file = files.get(path);
 		if (file)
 			return {
@@ -346,7 +369,8 @@ export async function folderWriterFixture(
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (unit.op === "mkdir") {
-						if (files.has(path) || folders.has(path)) return { ...base, outcome: "conflict", reason: "exists" };
+						if (files.has(path) || folders.has(path) || links.has(path))
+							return { ...base, outcome: "conflict", reason: "exists" };
 						if (parent !== "" && !folders.has(parent))
 							return { ...base, outcome: "refused", reason: "parent_missing" };
 						folders.add(path);
@@ -366,23 +390,26 @@ export async function folderWriterFixture(
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (unit.op === "delete") {
-						const current = files.get(path);
+						const current = files.get(path) ?? links.get(path);
 						if (current?.version !== unit.expectedVersion)
 							return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
 						// A deletion is reviewed (C1B §6).
 						if (!reviewed(args, units)) return { ...base, outcome: "denied", reason: "review_required" };
 						files.delete(path);
+						links.delete(path);
 						routineStates.delete(path.slice(ROUTINES.length + 1, -3));
 						// The deletion's own version, as the commit answers it.
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
 					const current = files.get(path);
-					// A write without a version creates the file, and meets one that is there as SQL does.
-					if (unit.expectedVersion === undefined && current)
+					// A write without a version creates the file, and meets one that is there as SQL does; a write at a
+					// link's version makes the link a file (LK1).
+					const held = current ?? links.get(path);
+					if (unit.expectedVersion === undefined && held)
 						return { ...base, outcome: "conflict", reason: "exists" };
-					if (unit.expectedVersion !== undefined && current?.version !== unit.expectedVersion)
-						return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
+					if (unit.expectedVersion !== undefined && held?.version !== unit.expectedVersion)
+						return { ...base, outcome: "conflict", reason: held ? "version_changed" : "missing" };
 					// The structured hook: a parse with problems is refused with them (nulls stripped, as the commit does).
 					const structured = (unit.structured as { problems?: Record<string, unknown>[] }[] | undefined)?.[0];
 					if (structured?.problems)
@@ -453,12 +480,14 @@ export async function folderWriterFixture(
 						else if (state?.status === "expired" && !same) routineStates.delete(key);
 					}
 					const version = randomUUID();
+					links.delete(path);
 					files.set(path, { version, file: unit.file as CloudCompanyFolderFile, updatedAt: now() });
 					return { ...base, outcome: "saved", version };
 				});
 				// The folder's clock moves only when a unit is saved.
 				const any = results.some((result) => result.outcome === "saved");
 				if (any) seq += 1;
+				if (results.some((result) => result.outcome === "saved" && noted(result.path))) unnoted += 1;
 				return {
 					schema: "qorpera.folder-commit/v1",
 					commitId: randomUUID(),
@@ -587,7 +616,7 @@ export async function folderWriterFixture(
 			if (method === "qorpera_folder_list") {
 				const parent = args.p_parent as string;
 				const after = args.p_after as string | null;
-				const children = [...files.keys(), ...folders]
+				const children = [...files.keys(), ...folders, ...links.keys()]
 					.filter((path) =>
 						parent === ""
 							? !path.includes("/")
@@ -602,6 +631,13 @@ export async function folderWriterFixture(
 					entries: page.map(entry),
 					next: page.length === (args.p_limit as number) ? (page.at(-1) ?? null) : null,
 				};
+			}
+			// The run's interface changes in its conversation (I10): one note a commit, so a call notes what is left.
+			if (method === "qorpera_folder_note_interface_changes") {
+				notes.push(structuredClone(args));
+				const made = unnoted;
+				unnoted = 0;
+				return { schema: "qorpera.interface-change-notes/v1", noted: made };
 			}
 			if (method === "qorpera_folder_record_release") {
 				releases.push(structuredClone(args));
@@ -686,6 +722,7 @@ export async function folderWriterFixture(
 		folder,
 		files,
 		folders,
+		links,
 		commits,
 		recordings,
 		reviews,
@@ -694,6 +731,7 @@ export async function folderWriterFixture(
 		workerRequests,
 		cancels,
 		archives,
+		notes,
 		routineStates,
 		ledger,
 		operationControl,

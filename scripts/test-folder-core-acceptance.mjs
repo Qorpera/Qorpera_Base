@@ -294,6 +294,14 @@ const SERVICE_LINES = [
 	"a new folder, a move and deletes publish as the core's units",
 ];
 
+/** The folder links' lines (RUNTIME-FOLDER-LINKS.md, LK3): links through a machine's view on protocol 4. */
+const LINK_LINES = [
+	"a machine on protocol 4 makes a link (`Y`), which reads back and publishes as a symlink unit",
+	"`ln -sf` (a new link renamed over the old one) publishes as one symlink unit at the replaced version",
+	"a hard link (`J`) of a file publishes as a write of its source's bytes, putting no object again, and one of a " +
+		"link as a link with its target",
+];
+
 /** F3 step 4c's lines: a company machine's reads, released through its desktop view (RUNTIME-FOLDER-SERVICE.md). */
 const READ_LINES = [
 	"a read a company machine logged is released through its desktop view into the view's read set " +
@@ -737,13 +745,17 @@ async function hosted(report) {
 		// F3 step 3: a machine's writes through the folder service, on the same company.
 		const service = new Report("F3-3c", SERVICE_LINES);
 		report.serviceReport = service;
+		// Links (LK3): the same service and view, through a machine on protocol 4.
+		const links = new Report("F3-LK", LINK_LINES);
+		report.linksReport = links;
 		try {
-			await serviceWrites(service, { db, code, objectRoot, store, replication, env, profileId, member, commit, writeUnit, entry, saved });
+			await serviceWrites(service, { db, code, objectRoot, store, replication, env, profileId, member, commit, writeUnit, entry, saved, links });
 		} catch (error) {
 			const detail = `the folder service did not start: ${(error?.message ?? String(error)).split("\n")[0].slice(0, 300)}`;
-			SERVICE_LINES.forEach((_, index) => {
-				if (!service.results.has(index + 1)) service.results.set(index + 1, { state: "FAIL", detail });
-			});
+			for (const [lines, part] of [[SERVICE_LINES, service], [LINK_LINES, links]])
+				lines.forEach((_, index) => {
+					if (!part.results.has(index + 1)) part.results.set(index + 1, { state: "FAIL", detail });
+				});
 		}
 
 		// F3 step 4c: a company machine's reads through its desktop view, on SQL test 639's company.
@@ -789,7 +801,7 @@ async function hosted(report) {
  * through the object gateway's folder service route (served here, over HTTP), and publishes each boundary with the real
  * commit. Both reach the database through `postgrest(db)`, as their clients call PostgREST. */
 async function serviceWrites(report, context) {
-	const { db, code, objectRoot, store, replication, env, profileId, member, commit, writeUnit, entry, saved } = context;
+	const { db, code, objectRoot, store, replication, env, profileId, member, commit, writeUnit, entry, saved, links } = context;
 	const CHUNK = 4 * 1024 * 1024;
 	const PART = 1024 * 1024;
 	const origin = "https://postgrest.acceptance.invalid";
@@ -807,7 +819,6 @@ async function serviceWrites(report, context) {
 		store,
 		authority,
 		controlToken: token(),
-		verifierToken: token(),
 		replication,
 		folderServiceObjects: { token: serviceToken, authority },
 	});
@@ -825,6 +836,7 @@ async function serviceWrites(report, context) {
 	const logs = [];
 	let service;
 	let view;
+	let linking;
 	let finished = false;
 	try {
 		// The core as built, but an answer can be lost on its way back (line 4): the commit has run when one is.
@@ -1017,13 +1029,80 @@ async function serviceWrites(report, context) {
 				"the folder and its files are gone",
 			);
 		});
+
+		// Links (LK3): the same view, through a machine on protocol 4.
+		linking = await service.open(
+			{ protocol: 4, environmentId: env, viewId: "acceptance", pass, role: "io" },
+			{ cid: 3, lookup: "found", machine },
+		);
+		const linked = async (what) => {
+			const answer = await linking.publish();
+			if (!answer.paths.length || answer.paths.some((p) => p.outcome !== "saved"))
+				throw new Error(`${what} did not save: ${JSON.stringify(answer)}`);
+			return ops(answer);
+		};
+		const shown = async (name) => (await linking.list("machine", undefined)).entries.find((e) => e.name === name);
+		const target = async (name) => {
+			const link = await shown(name);
+			assert.equal(link?.kind, "symlink", `machine/${name} is listed as a link`);
+			return (await linking.read({ path: `machine/${name}`, version: link.version, offset: 0, length: link.size })).toString();
+		};
+		const linkAt = (path) => [live(path)?.kind, live(path)?.target];
+
+		await links.check(1, async () => {
+			await linking.symlink("machine/latest", "lost.md");
+			assert.equal(await target("latest"), "lost.md", "the link reads back before its boundary");
+			const answer = await linking.publish();
+			assert.deepEqual(answer.paths, [{ path: "machine/latest", outcome: "saved" }], JSON.stringify(answer));
+			assert.deepEqual(ops(answer), ["symlink"]);
+			assert.deepEqual(linkAt("machine/latest"), ["symlink", "lost.md"], "the link is live");
+			assert.equal((await shown("latest"))?.version, live("machine/latest")?.version, "the view lists the live link");
+			assert.equal(await target("latest"), "lost.md", "the live link reads back");
+			return `change set ${answer.seq}`;
+		});
+
+		await links.check(2, async () => {
+			// The new link under a temporary name, renamed over the old one at the version the machine showed.
+			const old = (await shown("latest"))?.version;
+			assert(old, "machine/latest is listed");
+			const temp = await linking.symlink("machine/CuAccept", "stale.md");
+			await linking.rename({ from: "machine/CuAccept", fromBase: temp.version, to: "machine/latest", toBase: old, noReplace: false });
+			assert.deepEqual(await linked("the replaced link"), ["symlink"], "one unit");
+			const units = db.json(`select coalesce(jsonb_agg(jsonb_build_object('op', op, 'path', path, 'target', target, 'prior', prior_version)), '[]')
+				from public.qorpera_folder_path_versions where environment_id = ${literal(env)} and commit_id = ${literal(core.commits.at(-1).commitId)}`);
+			assert.deepEqual(units, [{ op: "write", path: "machine/latest", target: "stale.md", prior: old }], "the replaced version");
+			assert.deepEqual(linkAt("machine/latest"), ["symlink", "stale.md"], "the link has its new target");
+			assert.equal(live("machine/CuAccept"), null, "the temporary name never reached the core");
+			assert.equal(await target("latest"), "stale.md", "the replaced link reads back");
+		});
+
+		await links.check(3, async () => {
+			const before = puts;
+			await linking.link({ from: "machine/lost.md", fromBase: (await shown("lost.md"))?.version, to: "machine/lost-too.md" });
+			await linking.link({ from: "machine/latest", fromBase: (await shown("latest"))?.version, to: "machine/also" });
+			assert.deepEqual([...(await linked("the hard links"))].sort(), ["symlink", "write"]);
+			const source = live("machine/lost.md");
+			const copy = live("machine/lost-too.md");
+			assert.equal(copy?.kind, "file", "the file's hard link is a file");
+			assert.deepEqual(
+				[copy.manifest_sha256, copy.file_sha256],
+				[source?.manifest_sha256, source?.file_sha256],
+				"the file's copy has its source's bytes",
+			);
+			assert.equal(puts, before, "a hard link puts no object again");
+			assert.deepEqual(linkAt("machine/also"), ["symlink", "stale.md"], "the link's hard link is a link with its target");
+			assert.deepEqual(linkAt("machine/latest"), ["symlink", "stale.md"], "the source link is as it was");
+			assert(Buffer.from("Saved once.\n").equals(await readBack("machine", "lost-too.md")), "the copy reads back");
+			assert.equal(await target("also"), "stale.md", "the hard-linked link reads back");
+		});
 		finished = true;
 	} finally {
+		linking?.release();
 		view?.release();
 		service?.stop();
 		server.closeAllConnections();
 		await new Promise((closed) => server.close(closed));
-		if (!finished || [...report.results.values()].some((r) => r.state === "FAIL"))
+		if (!finished || [report, links].some((part) => [...part.results.values()].some((r) => r.state === "FAIL")))
 			report.notes.push(...logs.map((line) => `Folder service: ${line}`));
 	}
 }
@@ -1488,6 +1567,10 @@ async function main() {
 	if (report.serviceReport) {
 		process.stdout.write("The folder service's writes through a machine's view (F3 step 3), on the company founded above:\n");
 		failed += report.serviceReport.print();
+	}
+	if (report.linksReport) {
+		process.stdout.write("The folder service's links (LK3), through a machine on protocol 4, on the same company:\n");
+		failed += report.linksReport.print();
 	}
 	if (report.readsReport) {
 		process.stdout.write("The folder service's read releases (F3 step 4c), on the views test's company (639):\n");

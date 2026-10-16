@@ -1,7 +1,8 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, command, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ const USAGE: &str = "Usage:
   qorpera-folder publish --view-file <file> [--state-dir /run/qorpera-folder/<viewId>] [--final] [--json] [--connect vsock:2:5250]
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
+  qorpera-folder command --shell-pid <pid> --tree <dir> --network yes|no -- <program> [args]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
@@ -33,7 +35,17 @@ path was not saved or the boundary was refused (including an unproven read log).
 stdout report: the exit code carries transport/unknown or closed status; closed:true is reserved for an answered final.
 
 relay: carries each connection to <socket> (systemd: the one its socket unit passed) to the node's folder service,
-byte for byte (the execution host's native hosts, which cannot open vsock).";
+byte for byte (the execution host's native hosts, which cannot open vsock).
+
+command: the office folder helper's starter for one command, run as root. Starts <program> (an absolute path in the
+shell's root) in the namespaces and cgroup of the office shell <pid>, with the helper's mount parent <dir> attached at
+/run/qorpera-company (the shell links /company to its company child), as the office account in the shell's user
+namespace (a member, never its parent) with the shell's capability bounding set, no capabilities, SECBIT_NOROOT
+locked, no_new_privs and the command filter. --network no gives it its own network with only lo.
+Fds 0 to 2 become the command's; fd 3 gets one JSON line when it is ready to run ({\"t\":\"started\",\"pid\",\"mntns\"}),
+ends ({\"t\":\"exit\",\"code\",\"signal\"}) or fails ({\"t\":\"failed\",\"error\"}, after started too). The command runs
+only after the caller writes G on fd 4; end of file there before it stops the start. SIGTERM stops it as the shell host
+does. Exit codes: 0 its end was reported, 1 failed (reported on fd 3), 2 usage or fds 0 to 4 not open.";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;
@@ -45,6 +57,7 @@ fn main() -> ExitCode {
 		Some("publish") => publish(&args[1..]),
 		Some("bridge") => bridge(&args[1..]),
 		Some("relay") => relay(&args[1..]),
+		Some("command") => command(&args[1..]),
 		Some("version" | "--version") => {
 			println!("qorpera-folder {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
 			Ok(ExitCode::SUCCESS)
@@ -331,6 +344,32 @@ fn relay(args: &[String]) -> Result<ExitCode, Usage> {
 	}
 }
 
+fn command(args: &[String]) -> Result<ExitCode, Usage> {
+	Ok(ExitCode::from(command::run(&command_request(args)?)))
+}
+
+/// `command`'s options, then `--` and the program with its arguments.
+fn command_request(args: &[String]) -> Result<command::Request, Usage> {
+	let split = args.iter().position(|a| a == "--").ok_or_else(|| Usage("command needs -- <program> [args]".into()))?;
+	let o = options(&args[..split], &["shell-pid", "tree", "network"])?;
+	let shell_pid = match o.get("shell-pid").map(|pid| pid.parse::<libc::pid_t>()) {
+		Some(Ok(pid)) if pid > 1 => pid,
+		_ => return Err(Usage("--shell-pid must be a process id above 1".into())),
+	};
+	let tree = o.get("tree").filter(|tree| tree.starts_with('/')).ok_or_else(|| Usage("--tree must be an absolute path".into()))?;
+	let network = match o.get("network").map(String::as_str) {
+		Some("yes") => true,
+		Some("no") => false,
+		_ => return Err(Usage("--network is yes or no".into())),
+	};
+	let argv = &args[split + 1..];
+	if !argv.first().is_some_and(|program| program.starts_with('/')) {
+		return Err(Usage("the program must be an absolute path".into()));
+	}
+	let c = |arg: &String| CString::new(arg.as_str()).map_err(|_| Usage("an argument has a NUL byte".into()));
+	Ok(command::Request { shell_pid, tree: c(tree)?, network, argv: argv.iter().map(c).collect::<Result<_, _>>()? })
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -375,6 +414,40 @@ mod tests {
 				o.insert(key.to_string(), value.to_string());
 				assert!(mount_owner(&o).is_err(), "{key}={value}");
 			}
+		}
+	}
+
+	fn command_args(args: &[&str]) -> Result<command::Request, Usage> {
+		command_request(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+	}
+
+	#[test]
+	fn a_command_names_its_shell_tree_network_and_absolute_program() {
+		let base = ["--shell-pid", "1578", "--tree", "/run/qorpera-folder-helper/commands/c/parent", "--network", "no", "--"];
+		let program = ["/usr/bin/bash", "--noprofile", "--norc", "-c", "echo --tree ok"];
+		let request = command_args(&[&base[..], &program[..]].concat()).ok().expect("a full command parses");
+		assert_eq!(request.shell_pid, 1578);
+		assert_eq!(request.tree.to_str(), Ok("/run/qorpera-folder-helper/commands/c/parent"));
+		assert!(!request.network);
+		assert_eq!(request.argv.iter().map(|a| a.to_str().unwrap()).collect::<Vec<_>>(), program);
+		let networked = command_args(&[&base[..5], &["yes", "--", "/usr/bin/true"][..]].concat()).ok().expect("networked");
+		assert!(networked.network);
+		for bad in [
+			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "no"],
+			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "no", "--"],
+			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "no", "--", "bash"],
+			vec!["--shell-pid", "1", "--tree", "/t", "--network", "no", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "-5", "--tree", "/t", "--network", "no", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "x", "--tree", "/t", "--network", "no", "--", "/usr/bin/true"],
+			vec!["--tree", "/t", "--network", "no", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "1578", "--tree", "t", "--network", "no", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "1578", "--network", "no", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "maybe", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "1578", "--tree", "/t", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "no", "--uid", "0", "--", "/usr/bin/true"],
+			vec!["--shell-pid", "1578", "--tree", "/t", "--network", "no", "--", "/usr/bin/true", "a\0b"],
+		] {
+			assert!(command_args(&bad).is_err(), "{bad:?}");
 		}
 	}
 }

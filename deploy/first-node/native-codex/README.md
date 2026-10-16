@@ -255,8 +255,8 @@ compaction checks. These run in a disposable Linux AMD64 container without
 external networking, using a scripted loopback provider. They do not establish
 real model interpretation or combined office/SQL/object-gateway readiness.
 
-The current [message-composition Linux proof](linux-x64-message-composition-proof.json)
-records the 308,143,880-byte release executable, SHA-256
+The historical [message-composition Linux proof](linux-x64-message-composition-proof.json)
+records the 0.147.0 308,143,880-byte release executable, SHA-256
 `9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0`.
 All four actual-binary composition scenarios pass, including early Writing
 while complete arguments are withheld and cancellation before delivery. The
@@ -266,6 +266,21 @@ new unit checks were run from the exact source modules using pinned `rustc
 harness was not run. The proof records the executed source hashes and actual
 Linux guest package manifest. These are scripted loopback checks in a dedicated
 Linux VM, with no real-model or production acceptance.
+
+The current [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
+the pinned 318,891,312-byte release executable, SHA-256
+`1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c`, run on the
+node02 test VM from a clean master commit. The five native test files pass 34
+of 34, none skipped, and the three standalone entrypoints (tool boundary,
+message composition, capture images) pass. Codex 0.155.1 has no remote
+compaction v1, so only local and remote-v2 compaction are checked.
+`patched-codex-live-halves.test.ts` adds the parts of the live model checks
+that need no model: context composition and the run's cache key on the wire,
+the run's compactor in the real app-server, one usage row per provider request,
+and a result fence held longer than 8 s. The proof records the executed source
+hashes. These are scripted loopback checks with no login, no real model and no
+deployment; real cache hits, compact-line quality and billing-exact usage are
+read from production rows.
 
 The native checks also caught the namespace description exceeding the pinned
 app-server's 1,024-character bound. Its catalog summary is now compact, while

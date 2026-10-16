@@ -20,17 +20,17 @@ Required configuration:
 - `QORPERA_SUPABASE_SECRET_KEY`
 - `QORPERA_OBJECT_GATEWAY_STORAGE_ROOT` (an absolute NAS-mounted directory)
 - `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`
-- `QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN` (distinct from the cleanup control token)
 
 `QORPERA_OBJECT_GATEWAY_HOST` defaults to `127.0.0.1` and
 `QORPERA_OBJECT_GATEWAY_PORT` defaults to `8090`. Production exposure requires
 an authenticated TLS reverse proxy, a dedicated service account, a private
-storage mount with no client filesystem access, distinct cleanup and verifier
-tokens, and verified NAS backup and restore. The verifier token grants
-integrity-checked reads to the trusted Company File verifier, but cannot upload
-or delete objects. Do not run this service on an execution worker.
+storage mount with no client filesystem access, a distinct cleanup control
+token, and verified NAS backup and restore. Do not run this service on an
+execution worker.
 
-Completed shared exports use `GET /v1/member-file-exports/<environment>/<asset>/<sha256>` with member bearer authentication. SQL requires current membership, a completed shared export receipt and available content. The gateway verifies bounded bytes and hash, then repeats authority before replying with `x-qorpera-access-mode: live-export-authority`. This route accepts no raw object hashes or local paths and performs no mutation. The member discovery API is `qorpera_list_member_file_exports`; its UUID cursor can advance over an empty page. `scripts/test-member-file-exports.mjs` (deleted in the legacy sweep) verifies actual SQL, Linux export, storage, member download through this gateway and revocation during a read; `QORPERA_WEB_EXPORT_TEST_BROWSER` adds the member web app's browser download. Hosted proxy/NAS acceptance remains separate.
+`/v1/profile-objects/<profile>/<sha256>` answers only `DELETE`, the cleanup
+route that folder GC and erasure use. Every other method answers 405: the
+gateway serves no raw object reads or uploads by hash, and no read leases.
 
 Native path activity uses `POST /v1/member-company-presence/<company>/<environment>` with a member bearer and JSON `{paths,candidates,truncated}`. The existing `QORPERA_MEMBER_COMPANY_FILES=1` configuration enables it through the member authority; embedded hosts may supply `memberPresence` separately. Each request checks member path scope before and after independent service-only native subject transactions, verifies Ed25519 signatures and intersects both actors' current path routes. It returns a closed display view plus verified client/sequence confirmations. It never returns native bindings, signing keys or routing tokens, stores no activity and admits no work. The operation is bounded to 2.5 seconds, 1 MiB, eight paths, 32 statements and four concurrent subject lookups. A stalled inbound body is disconnected. This optional display cannot authorize a file mutation.
 
@@ -40,13 +40,12 @@ Only canonical HTTPS origins are accepted; `http://127.0.0.1:<port>` is allowed
 for local development and acceptance. Wildcards, opaque origins, paths and
 credentials are rejected. The allowlist is read at service startup.
 
-CORS is limited to the member Company File object, folder object, folder commit, export,
+CORS is limited to the member folder object, folder commit,
 native activity display and session attachment routes and their specific methods and headers. Preflights
 perform no authority or storage I/O. Actual requests retain all member bearer
 token and live resource checks, including after object reads. Responses expose
 the access-mode and ETag headers; cookie credentials are not enabled. Private
-native, verifier, cleanup, diagnostics and raw profile-object routes receive no
-browser access. Desktop requests without an Origin header retain their existing
+native, cleanup and diagnostics routes receive no browser access. Desktop requests without an Origin header retain their existing
 transport. Configure the same exact public web origin at the deployment proxy,
 which must forward OPTIONS and preserve the gateway's CORS and Vary headers;
 hosted proxy/TLS acceptance is a separate deployment gate.
@@ -54,6 +53,8 @@ hosted proxy/TLS acceptance is a separate deployment gate.
 The vault's connection-file writer (P22b) is off by default. With `QORPERA_CONNECTION_FILE_WRITER=1` it writes, every 15 s in a loop of its own, up to ten due `connections/<name>.md` files of folder-v2 companies as the platform, from the vault's allow-listed settings only (`qorpera_claim_connection_file` / `qorpera_finish_connection_file`); `QORPERA_CONNECTION_FILE_WORKER_ID` names the worker (a random id otherwise). A company whose creation has not completed is skipped until it has (P14a). The vault stays the authority: no tool reads these files to act.
 
 A coding turn's results writer (C3d) is off by default. With `QORPERA_CODING_RESULTS_WRITER=1` it writes, every 5 s in a loop of its own (an agent's revival waits up to a minute for the file), up to ten due `agents/<agent>/todos/<todo>/<worker>/results.md` files of folder-v2 coding sessions as the platform, as each turn reported it (`qorpera_claim_coding_results_file` / `qorpera_finish_coding_results_file`); `QORPERA_CODING_RESULTS_WORKER_ID` names the worker (a random id otherwise). Problems are reported as codes, and the claim backs off.
+
+The memory message eraser (M3) is off by default. With `QORPERA_MEMORY_MESSAGE_ERASER=1` it carries, every 5 s in a loop of its own, up to ten due erases of a conversation's message through their four database steps (`qorpera_memory_message_erase_due` and `_take`, then `_open`, `_plan` and `_rewrite`, `_ask`, `_scrub`), staging each memory block it writes again as the platform. Each pass steps an erase on until a step leaves it where it was. A pass takes each erase before its first step (`_take`, migration `20260930443000`), which moves it behind every other erase due, so every erase due gets its turn before one gets another, and one a pass listed but never reached comes first next time; an erase whose step failed also rests a minute, and the queue passes over it meanwhile. A lock conflict or a state that refuses the call now (423) only rests it; an outage rests it and ends the pass (the database circuit may have opened); other problems are reported as codes once the pass has carried the rest.
 
 Company creation's worker (P14b) is off by default. With `QORPERA_COMPANY_FOLDER_CREATOR=1` it claims, every 15 s in a loop of its own, up to five creations a founding table started (`qorpera_folder_company_creation_claim`), builds each company's seeded tree from the founders' input, stages its files as the platform and calls `qorpera_folder_company_create` once: the creation commit, the Co-Founder and its silent first run in one transaction. It releases a claim with a back-off on any other problem, and fails it only for a seed tree the parser or a writer refuses, or a staging refusal (`stage_invalid`). `QORPERA_COMPANY_FOLDER_CREATOR_WORKER_ID` names the worker (a random id otherwise).
 
