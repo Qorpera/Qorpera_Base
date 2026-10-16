@@ -891,7 +891,7 @@ test(
 			first.child.stdin.end();
 			await first.ended;
 			assert.deepEqual([free(slot(1)), free(slot(3)), tickets(), existsSync(cores), existsSync(owner)], [true, true, [], false, true]);
-			// Two slots free at once: it takes both at once, the higher first, stops waiting, and holds them until its
+			// Two slots free at once: it takes both, the higher first, one a turn, stops waiting, and holds them until its
 			// session ends.
 			await release(slot(2));
 			const second = session(3);
@@ -938,6 +938,18 @@ test(
 			fourth.child.stdin.end();
 			await fourth.ended;
 			assert.deepEqual([free(slot(3)), tickets(), existsSync(cores)], [true, [], false]);
+			// Two slots free at once, and under GROW_MEMORY_MIB once it has taken the first: it reads the memory again
+			// before each slot, so it takes no second.
+			await release(slot(2));
+			const fifth = session(3);
+			await until("slot 3", () => fifth.out.includes("== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
+			memory(2047);
+			await until("the low-memory stop", () => fifth.out.includes("== run-on-node: 2047 MiB available, under 2048: no more slots until there is more\n"));
+			assert.doesNotMatch(fifth.out, /slot 2 too/);
+			assert.deepEqual([free(slot(2)), readFileSync(cores, "utf8"), tickets()], [true, "4\n", []]);
+			fifth.child.stdin.end();
+			await fifth.ended;
+			assert.deepEqual([free(slot(2)), free(slot(3)), tickets(), existsSync(cores)], [true, true, [], false]);
 		} finally {
 			for (const child of [...holders.values(), ...sessions]) child.kill("SIGKILL");
 			rmSync(locks, { recursive: true, force: true });

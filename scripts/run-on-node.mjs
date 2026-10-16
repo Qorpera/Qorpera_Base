@@ -481,8 +481,9 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 /** The bash function `grow` of a --front --cores run: it takes up to `$want` of the CPU lane's slots in all, the
  * session's first included, and keeps `$cores_file` at the cores they give (`$per` each). It waits like a queued run,
  * with a front ticket of its own (fd 7) named by the time it starts, so --front runs that came earlier go first and
- * every other run after, and it drops dead tickets as they do. It tries the kept slots first, as the session did. While
- * the machine has less than GROW_MEMORY_MIB available (`meminfo`) it takes none and leaves the queue, so the runs
+ * every other run after, and it drops dead tickets as they do. It tries the kept slots first, as the session did, and
+ * takes one slot a turn. While the machine has less than GROW_MEMORY_MIB available (`meminfo`, read before each slot)
+ * it takes none and leaves the queue, so the runs
  * behind it need not wait for a slot it would not take; it rejoins under the same name. It stops waiting once every step
  * has started (`allStarted`), and keeps the slots it took until its stdin ends: run as `exec 4> >(grow)`, that pipe ends
  * with the session's last process, so no slot outlives the run. */
@@ -509,7 +510,8 @@ export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo
 		'\t\t\t\t\tif flock -n "$fd"; then',
 		'\t\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
 		'\t\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
-		'\t\t\t\t\t\t[ "$held" -lt "$want" ] || break',
+		// One slot a turn: the memory is read again before the next.
+		"\t\t\t\t\t\tbreak",
 		"\t\t\t\t\telse exec {fd}>&-; fi",
 		"\t\t\t\tdone",
 		"\t\t\tfi",
