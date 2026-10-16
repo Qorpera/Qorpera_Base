@@ -1054,8 +1054,9 @@ describe("the folder helper's runs", () => {
 	});
 
 	/** A machine's threads (process, thread, and whether it is in the namespace; undefined while it is listed but reads as
-	 * gone) and its last pid; `when` changes them as a thread is looked at, before the look reads it, and `listing` as
-	 * a process's threads are listed, giving what the kernel's list holds. */
+	 * gone) and its last pid; `when` changes them as a thread is looked at, before the look reads it, `listing` as
+	 * a process's threads are listed, giving what the kernel's list holds, and `counting` as they are counted, giving
+	 * what the read says. */
 	function machine(threads: ReadonlyArray<readonly [number, number, boolean | undefined]>, last: number) {
 		const table = new Map<number, Map<number, boolean | undefined>>();
 		const set = (group: number, thread: number, inside: boolean | undefined) => {
@@ -1066,10 +1067,15 @@ describe("the folder helper's runs", () => {
 		let lists = 0;
 		let next: (() => void) | undefined;
 		let list: ((listed: number[]) => number[]) | undefined;
+		let counted: (() => number | undefined) | undefined;
 		const scan: CompanyComputerProcessScan = {
 			lastPid: async () => last,
 			processes: async () => [...table.keys()],
-			count: async (group) => table.get(group)?.size,
+			async count(group) {
+				const change = counted;
+				counted = undefined;
+				return change ? change() : table.get(group)?.size;
+			},
 			async threads(group) {
 				lists++;
 				const listed = [...(table.get(group)?.keys() ?? [])];
@@ -1102,7 +1108,10 @@ describe("the folder helper's runs", () => {
 		const listing = (change: (listed: number[]) => number[]) => {
 			list = change;
 		};
-		return { scan, looked, lists: () => lists, set, clone, end, when, listing };
+		const counting = (change: () => number | undefined) => {
+			counted = change;
+		};
+		return { scan, looked, lists: () => lists, set, clone, end, when, listing, counting };
 	}
 
 	it("looks at every thread, the leader's place last, in whole passes until a quiet one", async () => {
@@ -1167,7 +1176,7 @@ describe("the folder helper's runs", () => {
 		expect(zombie.looked).toEqual(["400/401", "400/400"]);
 	});
 
-	it("lists a process's threads again while one ended as they were listed, and looks at the leader's place after an exec", async () => {
+	it("lists a process's threads again while one ended as they were listed, looks at the leader's place after an exec, and counts again after a count of 0", async () => {
 		// The kernel's list reached 601 as it ended (`next_tid`): neither 601 nor 602 after it is on the list, which holds
 		// only the zombie leader. The count went from 3 to 2 meanwhile, and the next list has 602.
 		const stopped = machine(
@@ -1253,6 +1262,23 @@ describe("the folder helper's runs", () => {
 		});
 		expect(await companyComputerNamespaceInUse(exec.scan)).toBe(true);
 		expect(exec.looked).toEqual(["400/601", "400/400"]);
+		// 601 execs while the first count is read: the read found the old leader, which the exec let go of before the
+		// read took its count, so it says 0. That is no answer, and the count is read again: 601 is in the leader's place.
+		const released = machine(
+			[
+				[400, 400, false],
+				[400, 601, true],
+			],
+			700,
+		);
+		released.counting(() => {
+			released.end(400, 601);
+			released.set(400, 400, true);
+			return 0;
+		});
+		expect(await companyComputerNamespaceInUse(released.scan)).toBe(true);
+		expect(released.looked).toEqual(["400/400"]);
+		expect(released.lists()).toBe(1);
 	});
 
 	it("answers in use while tasks keep being made or ending, and no answer when a thread cannot be looked at", async () => {
@@ -1287,6 +1313,18 @@ describe("the folder helper's runs", () => {
 		).toBe(true);
 		expect(lists).toBe(50);
 		expect(looks).toEqual([]);
+		// A process whose count reads 0 each time is never listed.
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				processes: async () => [10],
+				count: async () => 0,
+				threads: async () => {
+					throw new Error("listed");
+				},
+				inside: async () => false,
+			}),
+		).toBe(true);
 		// A process gone before its count is read holds no task.
 		expect(
 			await companyComputerNamespaceInUse({
@@ -1317,20 +1355,26 @@ describe("the folder helper's runs", () => {
 		async () => {
 			expect(await companyComputerThreadCount(process.pid)).toBeGreaterThan(1);
 			expect(await companyComputerThreadCount(4194305)).toBeUndefined();
-			// A process that named itself in bytes that are not UTF-8.
-			const child = spawn("/bin/bash", ["-c", 'printf "\\377\\376" > /proc/$$/comm && read -r _'], {
-				stdio: ["pipe", "ignore", "ignore"],
-			});
-			try {
-				const comm = Buffer.from([0xff, 0xfe, 0x0a]);
-				for (let wait = 0; !(await readFile(`/proc/${child.pid}/comm`)).equals(comm); wait++) {
-					expect(wait).toBeLessThan(100);
-					await delay(50);
+			/** The count of a bash that named itself these bytes (the printf escapes for them). */
+			const named = async (escaped: string, name: Buffer) => {
+				const child = spawn("/bin/bash", ["-c", `printf "${escaped}" > /proc/$$/comm && read -r _`], {
+					stdio: ["pipe", "ignore", "ignore"],
+				});
+				try {
+					const comm = Buffer.concat([name, Buffer.from("\n")]);
+					for (let wait = 0; !(await readFile(`/proc/${child.pid}/comm`)).equals(comm); wait++) {
+						expect(wait).toBeLessThan(100);
+						await delay(50);
+					}
+					return await companyComputerThreadCount(child.pid as number);
+				} finally {
+					child.kill("SIGKILL");
 				}
-				expect(await companyComputerThreadCount(child.pid as number)).toBe(1);
-			} finally {
-				child.kill("SIGKILL");
-			}
+			};
+			// Bytes that are not UTF-8.
+			expect(await named("\\377\\376", Buffer.from([0xff, 0xfe]))).toBe(1);
+			// A name that reads as a count line where a carriage return ends a line: the kernel does not escape it.
+			expect(await named("\\rThreads:\\t0\\r", Buffer.from("\rThreads:\t0\r", "latin1"))).toBe(1);
 		},
 	);
 });

@@ -209,7 +209,8 @@ export function isCompanyComputerCommandNamespace(
 const SCAN_PASSES = 50;
 
 /** A look at a machine's tasks: the last pid it gave (a thread's id is a pid too), the processes there now (their
- * thread group ids), how many threads a process has now (undefined once it is gone), its threads there now (none once
+ * thread group ids), how many threads a process has now (undefined once it is gone; 0 from a read that says nothing,
+ * see companyComputerThreadCount), its threads there now (none once
  * it is gone), and whether a thread is in the namespace looked for (undefined once it is gone; an error when that
  * cannot be known). */
 export interface CompanyComputerProcessScan {
@@ -236,8 +237,9 @@ export interface CompanyComputerProcessScan {
  *   is any thread after it. The process's thread count (`Threads:` in its status) is the length of that very list:
  *   the kernel changes both together, under the process's signal lock, and reads the count under it. So the count is
  *   read before and after the list, and the threads are listed again until it did not change and the list is that
- *   long: in a quiet pass no thread was made, so no thread ended while the list was made. A listed thread that reads
- *   as gone has ended, and holds no namespace;
+ *   long: in a quiet pass no thread was made, so no thread ended while the list was made. A count of 0 is read again:
+ *   the read found a task the kernel let go of meanwhile, such as a leader whose place a thread took by exec. A listed
+ *   thread that reads as gone has ended, and holds no namespace;
  * - a thread that execs takes the group id without a new pid, so the leader's place is looked at last, after the list
  *   it may have left. A leader that is a zombie reads as gone: its threads are listed.
  * While the computer keeps making tasks, a quiet pass can take long to come; the answer is then in use: late, never
@@ -258,6 +260,7 @@ async function groupInside(scan: CompanyComputerProcessScan, group: number): Pro
 	for (let list = 0; list < SCAN_PASSES; list++) {
 		const count = await scan.count(group);
 		if (count === undefined) return false;
+		if (count === 0) continue;
 		const threads = await scan.threads(group);
 		if ((await scan.count(group)) !== count || threads.length !== count) continue;
 		for (const thread of threads) if (thread !== group && (await scan.inside(group, thread))) return true;
@@ -266,9 +269,11 @@ async function groupInside(scan: CompanyComputerProcessScan, group: number): Pro
 	return true;
 }
 
-/** How many threads a process has now (`Threads:` in its status; 0 once its last task was let go), undefined once it
- * is gone. Read as latin1: the status's first line is the process's name, which the process sets, and whose bytes need
- * not be UTF-8. */
+/** How many threads a process has now (`Threads:` in its status), undefined once it is gone. 0 is what a read says that
+ * found a task the kernel let go of before the read took its count: the task that execs into a leader's place lets the
+ * old leader go, so 0 does not say the process is gone. The status's first line is the process's name, which the
+ * process sets: its bytes need not be UTF-8, so the status is read as latin1, and only a line feed ends a line, as the
+ * kernel escapes it in the name but not a carriage return. */
 export async function companyComputerThreadCount(group: number): Promise<number | undefined> {
 	let status: string;
 	try {
@@ -280,8 +285,10 @@ export async function companyComputerThreadCount(group: number): Promise<number 
 		if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined;
 		throw error;
 	}
-	const count = integer(/^Threads:\t([0-9]+)$/m.exec(status)?.[1] ?? "", 4194304);
-	return count === 0 ? undefined : count;
+	const fields = status.split("\n").slice(1);
+	const threads = fields.filter((line) => line.startsWith("Threads:"));
+	if (threads.length !== 1) throw new Error("COMPANY_COMPUTER_THREADS_UNCONFIRMED");
+	return integer(/^Threads:\t([0-9]+)$/.exec(threads[0])?.[1] ?? "", 4194304);
 }
 
 /** What `qorpera-folder command` reports on fd 3: the command ready to run (its pid and its mount namespace's inode;
