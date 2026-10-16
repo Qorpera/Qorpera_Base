@@ -18,6 +18,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_read",
 	"qorpera_folder_list",
 	"qorpera_folder_commit",
+	"qorpera_folder_memory_commit",
 	"qorpera_folder_record_release",
 	"qorpera_folder_run_view_open",
 	"qorpera_folder_open_upload",
@@ -97,6 +98,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_read",
 			"qorpera_folder_list",
 			"qorpera_folder_commit",
+			// Dormant run-log persistence and trusted per-step protection (memory W1c-3).
+			"qorpera_folder_memory_commit",
+			"qorpera_memory_run_log_place",
+			"qorpera_memory_step_narrow",
+			"qorpera_memory_step_hashes",
 			"qorpera_folder_record_release",
 			// The run's own view, for the node's folder search (F3, 20260929999970).
 			"qorpera_folder_run_view_open",
@@ -176,6 +182,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 							? 2 * 1024 * 1024
 							: response.ok &&
 									(method === "qorpera_folder_commit" ||
+										method === "qorpera_folder_memory_commit" ||
+										// A classification returns the restricted subset of up to 1,024 complete paths.
+										method === "qorpera_memory_step_narrow" ||
 										method === "qorpera_folder_worker_commit" ||
 										// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
 										// structured files' whole parses, which SQL does not cut.

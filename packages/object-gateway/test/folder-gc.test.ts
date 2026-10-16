@@ -203,7 +203,6 @@ async function fixture() {
 			replication,
 			folderGc: gc,
 			controlToken: "synthetic-cleanup",
-			verifierToken: "synthetic-verifier",
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -292,7 +291,7 @@ describe("folder GC's unlink lane", () => {
 		const f = await fixture();
 		const lease = randomUUID();
 		await f.seed(lease);
-		expect((await f.lane(lease, { authorization: "Bearer synthetic-verifier" })).status).toBe(401);
+		expect((await f.lane(lease, { authorization: "Bearer wrong-token" })).status).toBe(401);
 		expect((await f.lane(lease, { "x-qorpera-gc-lease-id": "not-a-lease" })).status).toBe(400);
 		expect((await f.lane(lease, {}, { method: "GET" })).status).toBe(405);
 		for (const path of [

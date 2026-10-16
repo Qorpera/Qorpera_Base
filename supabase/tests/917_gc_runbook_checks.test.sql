@@ -45,7 +45,7 @@ cross join lateral (
 					when c.profile_id is null and p.id is null then 'kept: no catalog row, company gone (no phase removes it)'
 					when c.profile_id is null then 'kept: no catalog row, company live'
 					when exists (select 1 from public.qorpera_company_files cf where cf.profile_id = p.id and cf.core <> 'folder-v2')
-						then 'kept unless planned: catalogued, snapshot-v1 company (company GC, artifact plans)'
+						then 'kept: catalogued, snapshot-v1 company (no phase removes it)'
 					else 'kept: catalogued, folder-v2 company (folder GC once unreferenced 24 h and switched on)' end
 				from (select split_part(o.name, '/', 1)::uuid as profile_id, lower(split_part(o.name, '/', 2)) as sha256) n
 				left join public.qorpera_profile_objects c on c.profile_id = n.profile_id and c.sha256 = n.sha256
@@ -101,12 +101,8 @@ from public.qorpera_company_storage_deletions
 group by bucket
 order by bucket;
 create temp table gc_dry_4_0 as
-select 'artifact plans: ' || status as queue, count(*) as rows from public.qorpera_artifact_gc_plans group by status
-union all
-select 'deletion authorizations outstanding (' || source_kind || ')', count(*)
+select 'deletion authorizations outstanding (' || source_kind || ')' as queue, count(*) as rows
 from public.qorpera_profile_object_deletion_authorizations group by source_kind
-union all
-select 'company GC leases', count(*) from public.qorpera_company_object_gc_leases
 union all
 select 'deleted-profile GC leases', count(*) from public.qorpera_deleted_profile_object_gc_leases
 order by 1;
@@ -274,7 +270,7 @@ cross join lateral (
 					when c.profile_id is null and p.id is null then 'kept: no catalog row, company gone (no phase removes it)'
 					when c.profile_id is null then 'kept: no catalog row, company live'
 					when exists (select 1 from public.qorpera_company_files cf where cf.profile_id = p.id and cf.core <> 'folder-v2')
-						then 'kept unless planned: catalogued, snapshot-v1 company (company GC, artifact plans)'
+						then 'kept: catalogued, snapshot-v1 company (no phase removes it)'
 					else 'kept: catalogued, folder-v2 company (folder GC once unreferenced 24 h and switched on)' end
 				from (select split_part(o.name, '/', 1)::uuid as profile_id, lower(split_part(o.name, '/', 2)) as sha256) n
 				left join public.qorpera_profile_objects c on c.profile_id = n.profile_id and c.sha256 = n.sha256
@@ -330,12 +326,8 @@ from public.qorpera_company_storage_deletions
 group by bucket
 order by bucket;
 create temp table gc_dry_4 as
-select 'artifact plans: ' || status as queue, count(*) as rows from public.qorpera_artifact_gc_plans group by status
-union all
-select 'deletion authorizations outstanding (' || source_kind || ')', count(*)
+select 'deletion authorizations outstanding (' || source_kind || ')' as queue, count(*) as rows
 from public.qorpera_profile_object_deletion_authorizations group by source_kind
-union all
-select 'company GC leases', count(*) from public.qorpera_company_object_gc_leases
 union all
 select 'deleted-profile GC leases', count(*) from public.qorpera_deleted_profile_object_gc_leases
 order by 1;
