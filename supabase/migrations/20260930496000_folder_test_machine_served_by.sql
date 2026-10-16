@@ -5,8 +5,8 @@
 -- 1. the renewal needs the folder service's id (p_service, 22023 without it);
 -- 2. the first renewal sets served_by, and the same service renews;
 -- 3. a renewal from another service while served_by is set closes the view as 'service_crashed': the old service may
---    have served reads it never released. The folder service closes its copy of the view and the executor restarts the
---    machine (VIEW_CLOSED, F3 6d-2b), whose next boot opens a new view. The read set keeps what was released.
+--    have served reads it never released. The folder service drops the view; the executor, whose boundaries no longer
+--    find it, restarts the machine (F3 6d-2b), and the next boot opens a new view. The read set keeps what was released.
 -- qorpera_folder_service_stopped (a clean stop) already clears served_by on every view of the service, whatever its kind.
 -- Exact-text patches: each fails unless renew has the text given exactly once. Body marker "20260930496000"; the
 -- earlier markers (20260930104000, 20260930446000) stay.
