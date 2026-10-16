@@ -150,11 +150,13 @@ function eventEntry(value: unknown, index: number): EventEntry {
 	}
 	const attachments = (read.attachments === null ? [] : list(read.attachments, "an event's attachments")).map(
 		(item) => {
-			const attachment = parseClosedRecord(item, "an attachment", ["mediaType", "bytes"]);
+			// A member's image names its company-folder path, where company_read opens it (as the zoom shows it).
+			const attachment = parseClosedRecord(item, "an attachment", ["mediaType", "bytes"], ["path"]);
 			const { mediaType, bytes } = attachment;
 			if (mediaType !== null && typeof mediaType !== "string") throw new WireValueError("an attachment");
 			if (bytes !== null) parseInteger(bytes, "an attachment's size", 0, Number.MAX_SAFE_INTEGER);
-			return `${mediaType || "file"}${bytes === null ? "" : ` (${bytes} bytes)`}`;
+			const path = attachment.path === undefined ? null : nonEmpty(attachment.path, "an attachment's path");
+			return `${mediaType || "file"}${bytes === null ? "" : ` (${bytes} bytes)`}${path === null ? "" : ` at ${path}`}`;
 		},
 	);
 	const quotes = (read.quotes === null ? [] : list(read.quotes, "an event's quotes")).map(
