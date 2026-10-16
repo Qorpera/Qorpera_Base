@@ -8,7 +8,8 @@
 #   masked, the pinned tools;
 # - the session: its user in the sudo group, NOPASSWD sudo, its rootless Docker daemon started on first
 #   use, compose running a two-service app (a build, a published port, /company bound into a container), stdin closed
-#   half-way through the socket, container limits, `sudo docker` reaching the system daemon, Chromium with its
+#   half-way through the socket, container limits, `sudo docker` reaching the system daemon (which leaves the
+#   FORWARD policy at ACCEPT), Chromium with its
 #   sandbox, tmux, the pinned git, and the toolbox and languages of the contract's 2026-10-14 amendment (items 7 and
 #   11): TypeScript (tsc, tsx, node), C and C++ (gcc, clang), Ruby, Python with uv, mise installing a language in the
 #   user's home, LibreOffice converting a document, and sqlite3, zip and unzip.
@@ -230,6 +231,12 @@ pass "a rootless container's memory and processor limits hold"
 	$(as_session sudo docker run --rm -v "$MOUNT:/c:ro" "$ALPINE" cat /c/marker) == "company folder $W32" ]] ||
 	fail "sudo docker's binds are not the machine's"
 pass "sudo docker binds the machine's /company (empty) and the session's full mount path"
+# The system daemon, having run containers, turned forwarding on and left the FORWARD policy alone (daemon.json's
+# ip-forward-no-drop): a drop there would overrule the accept of each session's own NAT (5g).
+[[ $(sysctl -n net.ipv4.ip_forward) == 1 ]] || fail "the system daemon did not turn forwarding on"
+POLICY=$(iptables -S FORWARD | sed -n 1p)
+[[ $POLICY == "-P FORWARD ACCEPT" ]] || fail "the system daemon set the FORWARD policy: $POLICY"
+pass "the system daemon turned forwarding on and left the FORWARD policy at ACCEPT"
 
 DOM=$(as_session timeout 90 chromium --headless --disable-gpu --dump-dom "data:text/html,<p>qorpera-session</p>" 2>/dev/null) ||
 	fail "chromium does not start with its sandbox as the session"
