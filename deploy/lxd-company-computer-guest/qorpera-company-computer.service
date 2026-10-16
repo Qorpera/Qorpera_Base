@@ -7,6 +7,9 @@ After=network-online.target systemd-tmpfiles-setup.service
 # computers start without a network, never with an unfiltered one.
 Wants=qorpera-computer-network.service qorpera-computer-plumb.socket
 After=qorpera-computer-network.service qorpera-computer-plumb.socket
+# The company folder's helper. Wanted, not required: without it a desktop or command starts without the folder.
+Wants=qorpera-office-folder-helper.socket
+After=qorpera-office-folder-helper.socket
 After=apparmor.service
 RequiresMountsFor=/var/lib/qorpera-office /run/qorpera-office/private
 AssertPathIsMountPoint=/var/lib/qorpera-office

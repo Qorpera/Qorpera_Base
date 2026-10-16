@@ -97,10 +97,12 @@ runs.
 Outputs continue through the existing session-event and trail mechanisms; the
 queue governs only who may produce them.
 
-Operational trails are registered through `qorpera_create_shared_session_v4`.
-Their execution scope carries the exact claimed Company File and staff
-revisions, so delayed trail synchronization cannot silently re-pin a finished
-wake to newer state.
+Operational trails were registered through `qorpera_create_shared_session_v4`.
+Their execution scope carried the exact claimed Company File and staff
+revisions, so delayed trail synchronization could not silently re-pin a finished
+wake to newer state. Legacy sweep D15 (20260930414000) dropped it with the
+other plain session creators, the turn and wake operation receipts and the
+account events.
 
 ## Wake arbitration (20260819012000)
 

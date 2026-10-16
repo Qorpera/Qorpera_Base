@@ -22,6 +22,7 @@ import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "../../src/lx
 import { verifyLxdOfficeCodePackageProvision } from "../../src/lxd-office-code-package-provision-verification.ts";
 import {
 	OFFICE_IMAGE_EXECUTABLES,
+	OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
 	OFFICE_IMAGE_PACKAGE_FILES,
 	officeImageDestination,
 	renderOfficeImageMount,
@@ -190,6 +191,8 @@ if (scenario === "real-artifacts") {
 			targetBytes.set(name, Buffer.from(`provisioned:${name}`));
 }
 const mountTemplate = baselineBytes.get("qorpera-office-private.mount.in")!;
+// A real base built with the company folder carries its mount template too (F3 4e-2).
+const folderMountTemplate = baselineBytes.get(`${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`);
 const manifest = (map: Map<string, Buffer>) => ({
 	schema: "qorpera.company-computer-package/v1",
 	platform: "linux",
@@ -228,7 +231,7 @@ for (const [name, input] of baselineBytes) {
 			? { path: `/opt/qorpera-office/${name}`, mode: 0o444 }
 			: officeImageDestination(name),
 		bytes =
-			name === "qorpera-office-private.mount.in"
+			name === "qorpera-office-private.mount.in" || name === `${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`
 				? Buffer.from(renderOfficeImageMount(input.toString(), 1000, 1000))
 				: input;
 	await put(dest.path, bytes, dest.mode);
@@ -356,6 +359,7 @@ for (const [name, bytes] of Object.entries({
 	"target-manifest.json": target,
 	"base-installation.json": baseReceipt,
 	"base-mount-template": mountTemplate,
+	...(folderMountTemplate && { "base-folder-mount-template": folderMountTemplate }),
 	"bootstrap.cjs": tool,
 	"measure.cjs": measure,
 }))
@@ -366,7 +370,13 @@ const verified = verifyLxdOfficeCodePackageProvision(
 	envelope,
 	plan,
 	trust,
-	{ base, target, baseInstallationReceipt: baseReceipt, baseMountTemplate: mountTemplate },
+	{
+		base,
+		target,
+		baseInstallationReceipt: baseReceipt,
+		baseMountTemplate: mountTemplate,
+		...(folderMountTemplate && { baseFolderMountTemplate: folderMountTemplate }),
+	},
 	planReset,
 );
 if (scenario !== "compatible-noop")

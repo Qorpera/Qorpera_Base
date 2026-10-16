@@ -9,6 +9,10 @@ import {
 	verifyLxdOfficeCodePackageProvisionReceipt,
 	verifyLxdOfficeCodePackageProvisionRequest,
 } from "../src/lxd-office-code-package-provision-verification.ts";
+import {
+	OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
+	OFFICE_IMAGE_FOLDER_PACKAGE_FILES,
+} from "../src/lxd-office-image-installation.ts";
 import { officeCanonical, officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { verifyLxdOfficeServiceSoftware } from "../src/lxd-office-service-software.ts";
 import { officeSoftwareFixture } from "./fixtures/office-software.ts";
@@ -37,43 +41,78 @@ describe("pure signed code-only package verification", () => {
 		expect(v.changedArtifacts).toEqual([]);
 		expect(v.baseArtifacts).toEqual(v.targetArtifacts);
 	});
-	it.each(["render", "uid", "unit-reference", "bwrap", "extra-path", "template-bytes"])(
-		"rejects a signed but inconsistent installed mapping %s",
-		(kind) => {
-			const f = fixture(),
-				s = f.signed();
-			const receipt = JSON.parse(s.manifests.baseInstallationReceipt.toString()) as {
-				uid: number;
-				files: { path: string; mode: number; bytes: number; sha256: string }[];
-			};
-			if (kind === "render")
-				receipt.files.find((a) => a.path.endsWith(".mount"))!.sha256 = hash("unrendered template");
-			if (kind === "uid") receipt.uid = 1001;
-			if (kind === "unit-reference")
-				receipt.files = receipt.files.filter(
-					(a) => a.path !== "/opt/qorpera-office/qorpera-company-computer.service",
-				);
-			if (kind === "bwrap")
-				receipt.files.find((a) => a.path.endsWith("/qorpera-browser-bwrap"))!.sha256 = hash("foreign binary");
-			if (kind === "extra-path")
-				receipt.files.push({ path: "/etc/unrelated", bytes: 1, mode: 0o444, sha256: hash("unexpected") });
-			if (kind === "template-bytes") s.manifests.baseMountTemplate = Buffer.from("changed template");
-			s.manifests.baseInstallationReceipt = Buffer.from(JSON.stringify(receipt));
-			f.statement.compatibility.baseInstallationReceiptSha256 = hash(s.manifests.baseInstallationReceipt);
-			s.trust.baseInstallationReceiptSha256 = f.statement.compatibility.baseInstallationReceiptSha256;
-			f.plan.statementSha256 = officeDigest(f.statement);
-			s.trust.statementSha256 = f.plan.statementSha256;
-			s.trust.planSha256 = officeDigest(f.plan);
-			s.envelope.signature.value = sign(
-				null,
-				Buffer.from(officeCanonical(f.statement)),
-				f.old.keys.privateKey,
-			).toString("base64");
-			expect(() => verifyLxdOfficeCodePackageProvision(s.envelope, f.plan, s.trust, s.manifests, f.reset)).toThrow(
-				"OFFICE_CODE_PACKAGE_PROVISION_UNCONFIRMED",
-			);
-		},
-	);
+	it("renders a base's company folder mount template and leaves the folder's group as the image installed it", () => {
+		const v = fixture({ folder: true }).run();
+		const template = v.baseArtifacts.find((a) => a.file === `${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`)!;
+		const unit = v.baseInstalledArtifacts.find((a) => a.path === template.path)!;
+		expect(unit).toMatchObject({ path: `/etc/systemd/system/${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}`, mode: 0o644 });
+		expect(unit.sha256).not.toBe(template.sha256);
+		expect(v.targetInstalledArtifacts).toContainEqual(unit);
+		expect(v.changedArtifacts.map((a) => a.file)).toEqual([...COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS]);
+		for (const file of OFFICE_IMAGE_FOLDER_PACKAGE_FILES) {
+			const before = v.baseArtifacts.find((a) => a.file === file)!;
+			expect(v.targetArtifacts.find((a) => a.file === file)).toEqual(before);
+			expect(v.targetInstalledArtifacts.some((a) => a.path === before.path)).toBe(true);
+		}
+	});
+	it.each(["changed", "removed", "added"])("rejects a code package that %s the company folder", (kind) => {
+		const f = fixture({ folder: kind !== "added" });
+		if (kind === "changed") f.target.artifacts.find((a) => a.file === "qorpera-folder")!.sha256 = hash("other");
+		if (kind === "removed") f.target.artifacts = f.target.artifacts.filter((a) => a.file !== "qorpera-folder");
+		if (kind === "added")
+			for (const file of OFFICE_IMAGE_FOLDER_PACKAGE_FILES)
+				f.target.artifacts.push({ file, bytes: 1, sha256: hash(`folder:${file}`) });
+		expect(f.run).toThrow("OFFICE_CODE_PACKAGE_PROVISION_UNCONFIRMED");
+	});
+	it.each([
+		"render",
+		"uid",
+		"unit-reference",
+		"bwrap",
+		"extra-path",
+		"template-bytes",
+		"folder-render",
+		"folder-template-bytes",
+		"folder-template-missing",
+		"foreign-folder-template",
+	])("rejects a signed but inconsistent installed mapping %s", (kind) => {
+		const f = fixture({ folder: kind.startsWith("folder-") }),
+			s = f.signed();
+		const receipt = JSON.parse(s.manifests.baseInstallationReceipt.toString()) as {
+			uid: number;
+			files: { path: string; mode: number; bytes: number; sha256: string }[];
+		};
+		if (kind === "render") receipt.files.find((a) => a.path.endsWith(".mount"))!.sha256 = hash("unrendered template");
+		if (kind === "uid") receipt.uid = 1001;
+		if (kind === "unit-reference")
+			receipt.files = receipt.files.filter((a) => a.path !== "/opt/qorpera-office/qorpera-company-computer.service");
+		if (kind === "bwrap")
+			receipt.files.find((a) => a.path.endsWith("/qorpera-browser-bwrap"))!.sha256 = hash("foreign binary");
+		if (kind === "extra-path")
+			receipt.files.push({ path: "/etc/unrelated", bytes: 1, mode: 0o444, sha256: hash("unexpected") });
+		if (kind === "template-bytes") s.manifests.baseMountTemplate = Buffer.from("changed template");
+		if (kind === "folder-render")
+			receipt.files.find((a) => a.path.endsWith(OFFICE_IMAGE_FOLDER_MOUNT_UNIT))!.sha256 = hash("unrendered");
+		if (kind === "folder-template-bytes") s.manifests.baseFolderMountTemplate = Buffer.from("changed template");
+		if (kind === "folder-template-missing") delete s.manifests.baseFolderMountTemplate;
+		// A base without the company folder takes no folder template.
+		if (kind === "foreign-folder-template")
+			s.manifests.baseFolderMountTemplate = Buffer.from("[Service]\nExecStart=x @OFFICE_UID@ @OFFICE_GID@\n");
+		s.manifests.baseInstallationReceipt = Buffer.from(JSON.stringify(receipt));
+		f.statement.compatibility.baseInstallationReceiptSha256 = hash(s.manifests.baseInstallationReceipt);
+		s.trust.baseInstallationReceiptSha256 = f.statement.compatibility.baseInstallationReceiptSha256;
+		f.plan.statementSha256 = officeDigest(f.statement);
+		s.trust.statementSha256 = f.plan.statementSha256;
+		s.trust.planSha256 = officeDigest(f.plan);
+		s.envelope.signature.value = sign(
+			null,
+			Buffer.from(officeCanonical(f.statement)),
+			f.old.keys.privateKey,
+		).toString("base64");
+		expect(() => verifyLxdOfficeCodePackageProvision(s.envelope, f.plan, s.trust, s.manifests, f.reset)).toThrow(
+			"OFFICE_CODE_PACKAGE_PROVISION_UNCONFIRMED",
+		);
+	});
 	it.each([
 		"dependency",
 		"unit",
