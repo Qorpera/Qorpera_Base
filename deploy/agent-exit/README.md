@@ -33,7 +33,7 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; the brake's map, sets and chains (E7, below); each machine's plain DNS, to any address, sent to its company's resolver on 10.210.0.1 (`dns_port`, E8b, below), and dropped and counted (`refused_dns`) for a machine without an element there; masquerade out of `up0`; the exit answers DHCP, DNS (a machine only on its own resolver's port, `dns_allowed`) and ping from the agent range, only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`, with the mark of the rule that refused them, E8c), each machine's share rate-limited; the brake's map, sets and chains (E7, below); each machine's plain DNS, to any address, sent to its company's resolver on 10.210.0.1 (`dns_port`, E8b, below), and dropped and counted (`refused_dns`) for a machine without an element there; masquerade out of `up0`; the exit answers DHCP, DNS (a machine only on its own resolver's port, `dns_allowed`) and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `names`, `resolver`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below). Its line guard is the brake (E7, below) |
@@ -612,10 +612,10 @@ The resolvers log every query to the same `dns.log` as the main dnsmasq, with th
 for all of them, and the lookup tells their queries apart by the pid. A resolver runs only in `qexit`, as the dns
 unit does, and asks upstream from `up0`'s address; nothing from 10.210.0.1 leaves by the uplink.
 
-What it does not do: it answers names, so a machine that connects to an address straight, asks a resolver of its own
-over HTTPS (DoH) or TLS (port 853), or uses an answer it cached before the block is not stopped by it. Open connections
-stay open. "Only listed" (the allow list) is E8c: until then a company in that mode has its block list enforced and
-every other name answered.
+What it does not do: it answers names, so a machine of an "open" company that connects to an address straight, asks a
+resolver of its own over HTTPS (DoH) or TLS (port 853), or uses an answer it cached before the block is not stopped by
+it. Open connections stay open. An "only listed" company's machines are also held to the addresses of its list (E8c-1,
+below).
 
 ### Adding E8b-2 to a node that runs the exit
 
@@ -627,6 +627,7 @@ reconciler runs):
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-log.service
 systemctl reload qorpera-agent-exit.service
 systemctl restart qorpera-agent-plug.service
 ```
@@ -634,7 +635,9 @@ systemctl restart qorpera-agent-plug.service
 The names reconciler starts the companies' resolvers first (the old rules have no map yet: it says so until the
 reload). The reload loads the new rules with the map filled for every verified machine, so no machine loses its DNS
 for longer than its resolver takes to start. The plug's restart gives it the new code (it clears a machine's DNS
-elements on unplug).
+elements on unplug). From a release with E8c-1 this brings it too: the reload fills `reach` as well, and its
+refused-flow sets keep each refusal's mark (below). The logger restarts before the reload for that: the new one reads
+the old sets and the new, the old one would misread the new.
 
 Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `cat /run/qorpera-agent-exit/names.json`
 shows `"problems": []`, a resolver for each plugged company with rules and each verified machine in `mapped`;
@@ -643,9 +646,92 @@ with the same addresses and ports.
 
 Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
 `systemctl reload qorpera-agent-exit.service` (the old rules send every machine's DNS to the main dnsmasq again),
-`systemctl disable --now qorpera-agent-exit-names.service`, `systemctl stop 'qorpera-agent-exit-resolver@*.service'`
-and `systemctl restart qorpera-agent-plug.service`. What stays is harmless: the names tool and its two units (nothing
-starts them), `ports.json` and the servers files.
+`systemctl disable --now qorpera-agent-exit-names.service`, `systemctl stop 'qorpera-agent-exit-resolver@*.service'`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (E8c-1's, below: so adding it again
+restarts the "only listed" resolvers) and `systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`.
+What stays is harmless: the names tool and its two units (nothing starts them), `ports.json` and the servers files.
+
+## Where a company's machines may go (E8c-1)
+
+A company in "only listed" mode (§10) reaches its listed names only, over HTTPS (TCP 443) only. The exit goes by
+address, with no new kernel modules. The names reconciler (above) runs that company's resolver so that:
+- it answers only the listed names (and the names under a `*.name` entry) that are not blocked, from the main
+  dnsmasq's upstreams. Every other name is "no such name" and is never asked upstream: its servers file starts with
+  `server=/#/` and names the upstreams per listed name, and it has no upstreams of its own;
+- it puts each IPv4 address it answers (a CNAME's target's too) in the exit's set `allow_<port>` (dnsmasq's
+  `--nftset`; its unit keeps `CAP_NET_ADMIN` for it while it runs as `nobody`). `<port>.mode` says which mode it runs.
+
+The exit's map `reach` (address to verdict, set in the same transaction as `dns_port`) sends each verified machine's new
+flows on, after the refusals of our own networks and mail: to the chain `open` (the open bounds and the brake, as
+before) for a company without rules or in "open" mode, or to its company's chain `only_<port>`. There TCP 443 to an
+address in `allow_<port>` goes on to `open`; anything else is refused, counted in `refused_not_listed` and logged with
+the rule `not_listed`. A machine without an element (its company not known yet, its rules not usable, no port or no
+chain yet) is refused everything outside, counted in `refused_rules_unknown` and logged with `rules_unknown`: the exit
+fails closed. An established connection goes on past `reach` (the exit judges only new ones), so the reconciler ends
+every connection of a machine whose element went, and in a table it has not seen before those of every machine
+without one (a failed end is a problem in `names.json`, and tried again each pass). The agent plug clears a machine's
+element when it unplugs it. Both refusals mark the packet
+(`0x80000003` rules not known, `0x80000004` not listed; the brake's marks stay below `0x80000000`), and
+`refused_flows` and `refused_other` keep the mark with the flow: the logger reads the rule from it, so rules that
+change before it reads the set (the address listed since, the machine's company known since) do not change the rule
+it logs.
+
+When the list changes:
+- a wider list (a name listed, a block removed) rewrites the servers file and reloads the resolver, as in "open" mode;
+- a narrower list, a switch of mode (either way) or a company's first "only listed" resolver restarts the resolver:
+  about a second in which that company's machines get no answers. The reconciler writes the marker
+  `/run/qorpera-agent-exit/names/<port>.owed` first, then stops the resolver, empties `allow_<port>` and starts it
+  again. Unless the company is now in "open" mode, it then ends every connection of the company's machines once
+  `reach` is right, so none made before goes on. Then it removes the marker; one a reconciler left half way is carried
+  out by the next;
+- a company back in "open" mode gets `open` in `reach`; its chain and set are removed in the same pass.
+
+The exit's reload (or `up`) makes the table again with the sets empty and `reach` filled from the reconciler's last pass
+(`qorpera-agent-exit-names.py elements`); the reconciler sees the new table and reloads the only-listed resolvers,
+which empties their caches. Until a machine asks for a name again, its new connections to that name's address are
+refused.
+
+Limits:
+- it goes by address: a listed name's address lets out any name on it (a shared CDN address, say), and an address stays
+  in the set until the resolver restarts, also when its name now has another. Set elements have no timeout: dnsmasq
+  2.92 does not renew one when it adds the address again, so a timeout would cut a name in use;
+- the set holds at most 65,536 addresses. Past that dnsmasq cannot add one, and the new address is refused until the
+  resolver restarts;
+- UDP 443 (QUIC) is refused; browsers fall back to TCP.
+
+E8c-2 adds a check of the name a TLS hello asks for. It needs the kernel modules `nfnetlink_queue` and `nft_queue` on
+the nodes; without them "only listed" is this address check alone.
+
+### Adding E8c-1 to a node that runs the exit
+
+Only on a node with E8b-2 whose rules reader runs (`"ok":true` and a fresh `readAt`): without the rules a machine has
+no element in `reach` and reaches nothing outside. As root, from a checkout of the release head with the reader's
+package built, in one go:
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+Until the reload the names reconciler cannot set its maps (the old rules have no `reach`; it says so), and the
+machines keep their DNS and the old rules. The reload loads the new rules with `reach` filled for every verified
+machine, and refused-flow sets that keep each refusal's mark. The logger restarts before it: the new one reads the old
+sets and the new (and the rule of each refusal from its mark), the old one would misread the new. The plug's restart
+gives it the new code (it clears a machine's `reach` element on unplug). A company in "only listed" mode has its
+resolver restarted once (about a second without names) and its machines' connections ended.
+
+Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `cat /run/qorpera-agent-exit/names.json`
+shows `"problems": []`; `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each
+verified machine (`goto open`, or `goto only_<port>` for an "only listed" company).
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` (the old rules let every machine out as before),
+`systemctl restart qorpera-agent-exit-names.service`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (so that adding E8c-1 again
+restarts the "only listed" resolvers), `systemctl stop 'qorpera-agent-exit-resolver@*.service'` (the old reconciler
+starts them again with its own options) and `systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`.
 
 ## Test
 
@@ -729,10 +815,15 @@ on the tailnet. It checks:
   (and only those under a `*.` name) are "no such name", asked of the exit or of any other address, while another
   company's machine gets the same name; a company that gets rules moves to its own resolver and its machines' DNS
   connections to the main dnsmasq end; a new block applies within seconds by a reload (the same dnsmasq), also to a
-  name it had cached; a machine never reaches another company's resolver, only its own; "only listed" enforces its
-  block list; a company whose rules are not usable, one not in the rules file yet, and no rules file at all leave
-  machines without DNS (to the exit or elsewhere, counted in `refused_dns`), a stopped resolver and its file gone and
-  `verify` failing; a rules reader silent too long fails `verify` while its last rules stay; a resolver that dies is
+  name it had cached; a machine never reaches another company's resolver, only its own; "only listed" (E8c-1): a
+  switch restarts the resolver and ends the machines' connections, unlisted names are "no such name" and never asked
+  upstream, a listed name's address is reachable on TCP 443 only (another port, an unlisted address and ping refused,
+  counted in `refused_not_listed` and logged as `not_listed`) while the other company's machine reaches it all, a
+  wider list reloads the same resolver and keeps connections, a narrower one restarts it and ends them, and back to
+  "open" removes the chain and set; a company whose rules are not usable, one not in the rules file yet, and no rules
+  file at all leave machines without DNS (to the exit or elsewhere, counted in `refused_dns`) and without a way out
+  (`rules_unknown`), a stopped resolver and its file gone and `verify` failing; a rules reader silent too long fails
+  `verify` while its last rules stay; a resolver that dies is
   started again on its port; rules that block nothing; and an unplug taking the machine's elements out while the
   names reconciler is stopped, its company's resolver then stopped and its port given back. Every query is in
   `dns.log` under its dnsmasq's pid;
@@ -870,13 +961,22 @@ writes the rules file from a list), and:
 - changes the rules: a reload, not a restart, and the change holds at once; gives company 2 rules while its machine
   keeps asking from one port, and the next answer already comes from its resolver (the old connection is flushed);
 - runs the step for nodes that already run the exit on this node: the resolvers keep running;
+- switches company 2 to "only listed" (E8c-1): its resolver restarts and its machine's connection made before ends;
+  names off its list are NXDOMAIN and never reach the upstreams; the resolver unit's own dnsmasq puts each address it
+  gives out in `allow_10002`, and the machine reaches TCP 443 on those only, never port 80 or another address, while
+  company 1's machine reaches any; the exit's reload empties the set and the resolver is reloaded, and a listed name
+  asked again reaches its address again; a narrower list restarts the resolver; back to open, `only_10002` and
+  `allow_10002` go; rules that cannot be used leave the machine without a way out;
 - kills a resolver: systemd starts it again and the names hold;
 - fails closed: unusable rules for a company and a missing rules file leave its machines (or all of them) with no
   answer, and `verify` says why;
 - deletes the machines: the resolver of a company with no machine left stops and its port is given back, while the
   other company keeps its own in `ports.json`; the exit's stop stops the last resolver with it;
 - with a previous release: installs it as its own "Switching a node on" says, then runs the step for nodes that run
-  the exit and its undo, with a machine plugged in throughout.
+  the exit and its undo, with a machine plugged in throughout. A release before E8b-2 takes ROLLOUT.md's step 9: the
+  machine's flow opened before keeps its blocked names, `reach` sends it to `open`. A release with E8b-2 takes step
+  10 with the machine's company "only listed": its resolver restarts into the list and the machine's connection made
+  before ends; after the undo the previous release's resolver answers every name but the blocked ones again.
 
 Afterwards the test machine is compared with before, as for E2b. `test/prove-lxd.sh` (E2b) runs the names
 reconciler too, with no rules.
@@ -888,6 +988,14 @@ bounding set leaves out. The reload of the dns unit and of the resolvers now run
 proof reloads both. A resolver ran as dnsmasq in the exit's namespace, a rules change was a reload of the same
 process, a killed resolver was back with one restart, and m2's open DNS flow was ended when its company got rules.
 The test machine's links, nft tables, sysctls and network modules were as before.
+
+Result with E8c-1 (15 October 2026, the same machine and kernel; dnsmasq 2.92): run 20261015T012958-81189-a3d1b220,
+574 s, with E8b-2's release (#1080's head) as the previous one, so step 10: ALL PASSED. The unit's own dnsmasq, in
+its sandbox and as nobody, filled `allow_10002`; the switch, the narrower list and step 10 each restarted the
+resolver and ended the machine's connection made before; the exit's reload emptied the set and a listed name asked
+again was reached again. Run 20261015T015036-6952-aa4e32b2, 552 s, with E8b-1's release as the previous one, so
+step 9: ALL PASSED; `reach` sent the machine to `open`, and after the undo it went out as before. Both times the test
+machine's links, nft tables, sysctls and network modules were as before.
 
 ## Notes for later steps
 

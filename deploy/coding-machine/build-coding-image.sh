@@ -63,6 +63,7 @@ FILES=(
 	"qorpera-dockerd.service /etc/systemd/user/qorpera-dockerd.service 0644"
 	"qorpera-docker.socket /etc/systemd/user/qorpera-docker.socket 0644"
 	"qorpera-docker-proxy.service /etc/systemd/user/qorpera-docker-proxy.service 0644"
+	"qorpera-docker-daemon.json /etc/docker/daemon.json 0644"
 	"qorpera-user-delegate.conf /etc/systemd/system/user@.service.d/qorpera-delegate.conf 0644"
 	"qorpera-coding.sudoers /etc/sudoers.d/qorpera-coding 0440"
 	"60-qorpera-coding.conf /etc/sysctl.d/60-qorpera-coding.conf 0644"
@@ -170,7 +171,7 @@ lx exec "$BUILDER" -- env \
 	rm -rf /tmp/node.tar.xz /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu /tmp/mise /tmp/git.tar.xz "/tmp/git-$GIT_VERSION" \
 		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium
 	install -d -o root -g root -m 0755 /company /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
-		/etc/systemd/system/user@.service.d
+		/etc/systemd/system/user@.service.d /etc/docker
 '
 for entry in "${FILES[@]}"; do
 	read -r source destination mode <<<"$entry"
@@ -237,6 +238,10 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	[[ $SOCAT == *"ACCEPT-FD:<fdnum>"* ]] || refuse "socat has no ACCEPT-FD"
 	# qorpera-dockerd.service starts it, and rootlesskit runs it again by its path inside the namespaces.
 	[[ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ]] || refuse "dockerd-rootless.sh is not executable"
+	# The system daemon turns forwarding on but leaves the FORWARD policy alone: a drop there would overrule the
+	# accept of each session'"'"'s own NAT (5g), since in nft a drop in any forward chain is final.
+	dockerd --validate --config-file /etc/docker/daemon.json
+	[[ $(jq -c . /etc/docker/daemon.json) == '"'"'{"ip-forward-no-drop":true}'"'"' ]] || refuse "unexpected /etc/docker/daemon.json"
 	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]] || refuse "$unit is not masked"
 	done
