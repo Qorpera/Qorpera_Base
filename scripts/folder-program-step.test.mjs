@@ -22,6 +22,7 @@ const config = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8")
 const args = process.argv.slice(2);
 const script = args[0] === "run" ? args.at(-1) : "";
 const kind = args[0] === "volume" ? "volume " + args[1]
+	: args[0] === "ps" || args[0] === "rm" ? args[0]
 	: script.includes(".qorpera-key") ? "prepare"
 	: script.includes("cargo test") ? "test"
 	: script.includes("rm -rf /tmp/target/release") ? "clean build"
@@ -45,6 +46,8 @@ if (kind === "volume ls") console.log(config.volumes.join("\\n"));
 else if (kind === "volume inspect") for (const name of args.slice(4)) console.log(name + " " + config.created[name]);
 else if (kind === "volume rm") exit(args.some((name) => (config.inUse ?? []).includes(name)) ? 1 : 0);
 else if (kind === "volume create") exit(0);
+else if (kind === "ps") { console.log((config.left ?? []).join("\\n")); exit(config.ps); }
+else if (kind === "rm") exit(config.rm);
 else if (kind === "prepare") { console.log(config.cache); exit(config.prepare); }
 else if (kind === "test") {
 	if (config.beside) { fs.writeFileSync(path.join(dir, "test-started"), ""); wait("e2e-started"); }
@@ -131,11 +134,14 @@ test("the tests run beside the release build, its check and the program against 
 	const ran = step(root);
 	assert.ok(ran.passed, ran.output);
 	// The tests start beside the build (either may log first); the build, its check and the e2e follow each other.
-	assert.deepEqual(ran.kinds.filter((kind) => !["volume ls", "test"].includes(kind)), ["volume create", "prepare", "build", "check", "e2e", "volume rm"]);
+	assert.deepEqual(ran.kinds.filter((kind) => !["volume ls", "test"].includes(kind)), ["volume create", "ps", "prepare", "build", "check", "e2e", "volume rm"]);
 	assert.equal(ran.kinds.filter((kind) => kind === "test").length, 1);
 	assert.ok(ran.kinds.indexOf("test") > ran.kinds.indexOf("prepare") && ran.kinds.indexOf("test") < ran.kinds.indexOf("volume rm"));
 	const [out] = call(ran.calls, "volume create").slice(2);
 	assert.match(out, new RegExp(`^qorpera-folder-out-${NOW}-[0-9]+$`));
+	// Every container carries the runner's target volume in its label.
+	for (const kind of ["prepare", "test", "build", "check", "e2e"])
+		assert.deepEqual(flags(call(ran.calls, kind), "--label"), ["qorpera.folder-program-target=qorpera-folder-target-ci07"], kind);
 	// Every Rust container has the runner's target volume, the crates' cache and the source read-only.
 	for (const kind of ["prepare", "test", "build"]) {
 		const args = call(ran.calls, kind);
@@ -179,6 +185,23 @@ test("outside a runner user the target volume is the run's own, emptied first an
 	assert.match(target, new RegExp(`^qorpera-folder-target-run-${NOW}-[0-9]+$`));
 	assert.deepEqual(call(ran.calls, "volume rm").slice(2), [...call(ran.calls, "volume create").slice(2), target]);
 	assert.match(ran.output, /compiled crates in qorpera-folder-target-run-\S+ emptied for a clean build/);
+});
+
+test("containers a killed run left on the runner's volume are removed before the crates are touched", () => {
+	const ran = step(tree({ left: ["c1", "c2"] }));
+	assert.ok(ran.passed, ran.output);
+	assert.deepEqual(call(ran.calls, "ps"), ["ps", "-aq", "--filter", "label=qorpera.folder-program-target=qorpera-folder-target-ci07"]);
+	assert.deepEqual(call(ran.calls, "rm"), ["rm", "-f", "c1", "c2"]);
+	assert.deepEqual(ran.kinds.filter((kind) => ["ps", "rm", "prepare", "test", "build"].includes(kind)).slice(0, 3), ["ps", "rm", "prepare"]);
+	assert.match(ran.output, /removing 2 container\(s\) a killed run left on qorpera-folder-target-ci07/);
+	// With none left, nothing is removed; if they cannot be listed or removed, the step stops before the crates.
+	assert.ok(!step(tree({})).kinds.includes("rm"));
+	for (const config of [{ ps: 1 }, { left: ["c1"], rm: 1 }]) {
+		const stopped = step(tree(config));
+		assert.equal(stopped.passed, false, JSON.stringify(config));
+		assert.ok(!stopped.kinds.includes("prepare"), JSON.stringify(config));
+		assert.match(stopped.output, /a killed run left on qorpera-folder-target-ci07 could not be removed/);
+	}
 });
 
 test("the step fails when any part fails, and still shows the tests", () => {

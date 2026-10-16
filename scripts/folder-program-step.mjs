@@ -15,7 +15,11 @@ import { NODE_IMAGE, RUST_IMAGE } from "./run-on-node-plan.mjs";
  * ci01..ci16, and no other run has that user meanwhile. The volume is keyed by the image (the toolchain) and the
  * crate's manifest and lock file; a volume with any other key is emptied first, so the build starts clean. The folder
  * program itself is built again on every run (`cargo clean -p`): cargo goes by file times, and a copied tree's say
- * nothing. Outside run-on-node the volume is the run's own and is removed at the end. */
+ * nothing. Outside run-on-node the volume is the run's own and is removed at the end.
+ *
+ * run-on-node kills what a killed run left behind as the runner user, but the step's containers are docker's and
+ * keep running. Each carries its target volume in a label, and the next run on that volume removes them before it
+ * touches the crates, so no compiler of a killed run still writes there. */
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FUSE = ["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN", "--security-opt", "apparmor=unconfined"];
@@ -25,6 +29,8 @@ const TARGET = "/tmp/target";
 const RUNNER_DAYS = 2;
 const LEFTOVER_DAYS = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The label on every container the step starts; its value is the run's target volume. */
+const LABEL = "qorpera.folder-program-target";
 
 const PREPARE = `if [ "$(cat ${TARGET}/.qorpera-key 2>/dev/null)" = "$KEY" ]; then echo kept; else find ${TARGET} -mindepth 1 -delete && echo "$KEY" >${TARGET}/.qorpera-key && echo emptied; fi && touch ${TARGET}/.qorpera-used && cargo fetch --locked >&2`;
 const TEST = "cargo clean --locked -p qorpera-folder && cargo test --locked";
@@ -104,6 +110,17 @@ export async function pruneVolumes(docker, own, now = Date.now()) {
 		if ((await capture(docker, ["volume", "rm", name])).code === 0) console.log(`== folder-program: removed the unused volume ${name}`);
 }
 
+/** Removes the containers a killed run of the step left on `target`, running or not; true once none is left. This
+ * run holds the runner user, so no live run has that volume. */
+export async function removeLeftContainers(docker, target) {
+	const listed = await capture(docker, ["ps", "-aq", "--filter", `label=${LABEL}=${target}`]);
+	if (listed.code !== 0) return false;
+	const ids = listed.stdout.split("\n").filter(Boolean);
+	if (ids.length === 0) return true;
+	console.log(`== folder-program: removing ${ids.length} container(s) a killed run left on ${target}`);
+	return (await capture(docker, ["rm", "-f", ...ids])).code === 0;
+}
+
 /** Runs the step; true when the tests, the build, its check and the program against the service all passed. */
 export async function folderProgramStep({
 	root = repository,
@@ -118,6 +135,8 @@ export async function folderProgramStep({
 	const rust = (script, extra = []) => [
 		"run",
 		"--rm",
+		"--label",
+		`${LABEL}=${target}`,
 		...extra,
 		"-e",
 		`CARGO_TARGET_DIR=${TARGET}`,
@@ -137,6 +156,8 @@ export async function folderProgramStep({
 	const node = (script, extra = []) => [
 		"run",
 		"--rm",
+		"--label",
+		`${LABEL}=${target}`,
 		...extra,
 		"-e",
 		"QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder",
@@ -155,6 +176,10 @@ export async function folderProgramStep({
 	const work = mkdtempSync(join(tmpdir(), "qorpera-folder-step-"));
 	try {
 		if ((await run(docker, ["volume", "create", out], "ignore")) !== 0) return false;
+		if (!(await removeLeftContainers(docker, target))) {
+			console.log(`== folder-program: the containers a killed run left on ${target} could not be removed`);
+			return false;
+		}
 		const key = cacheKey(join(root, CRATE));
 		const prepared = await capture(docker, rust(PREPARE, ["-e", `KEY=${key}`]));
 		if (prepared.code !== 0) {
