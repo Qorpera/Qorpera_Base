@@ -165,18 +165,16 @@ test("a migration, the folder load test or its fixture puts one folder-v2 compan
 	assert.equal(load, "node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check");
 });
 
-test("the folder program runs its own step in the pinned Rust image", () => {
+test("the folder program runs its own step (scripts/folder-program-step.mjs, tested in its own file)", () => {
 	const plan = planChanged(["crates/qorpera-folder/src/mount.rs", "crates/qorpera-folder/Cargo.lock"]);
 	assert.equal(plan.full, false);
 	assert.ok(names(["crates/qorpera-folder/src/mount.rs"]).includes("folder-program"));
 	assert.ok(!names(["packages/object-gateway/src/cli.ts"]).includes("folder-program"));
-	const command = STEPS.find((step) => step.name === "folder-program").commands.join(" ");
-	assert.match(command, /rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64} sh -c 'cargo test --locked && cargo build/);
-	assert.match(command, /node:24\.21\.0-bookworm-slim@sha256:[0-9a-f]{64} sh -c 'node \.\.\/\.\.\/scripts\/folder-program-artifact\.mjs --check \/out\/qorpera-folder && node .* test\/folder-mount-e2e\.test\.ts'/);
+	assert.deepEqual(STEPS.find((step) => step.name === "folder-program").commands, ["node scripts/folder-program-step.mjs"]);
 	// A changed build record is checked against a build of today's source.
 	assert.ok(names(["deploy/folder-service/folder-program-linux-x64.json"]).includes("folder-program"));
-	assert.match(command, /--device \/dev\/fuse/);
 	assert.ok(names(["packages/object-gateway/src/folder-service/service.ts"]).includes("folder-program"));
+	for (const file of ["scripts/folder-program-step.mjs", "scripts/folder-program-artifact.mjs"]) assert.ok(names([file]).includes("folder-program"), file);
 });
 
 test("shared configuration and unknown paths run every step", () => {
