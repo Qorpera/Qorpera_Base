@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-132 functions, grouped for navigation. Signatures: see the migration that defines each.
+134 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
