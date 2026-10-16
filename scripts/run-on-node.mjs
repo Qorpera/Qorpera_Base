@@ -48,10 +48,11 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     first and alone (default: one step at a time). With --front the run takes
                                     up to 3 slots as they free (one such run per machine), each only while the
                                     machine has 2 GiB available; otherwise it keeps to its one slot's cores
-         --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own on
-                                    its own machine, all at once (N at most the machines' count). One exit code, status
-                                    and record: the run passes only if every part passed. With one machine open, or
-                                    --machine, one part
+         --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own, all
+                                    at once (N at most the machines' count). Each waits on every machine and runs on the
+                                    first with a slot for it, the part with the most work queued first. One exit code,
+                                    status and record: the run passes only if every part passed. With one machine open,
+                                    or --machine, one part
          --fail-fast                changed: stop at the first failed step: no step starts after it, the steps running
                                     side by side end, and so do the other parts' (pr-loop's batch runs, which are
                                     bisected when they fail). Without --cores, the shortest steps first
@@ -145,6 +146,17 @@ export const FRONT = "0-";
  * a 10-vCPU machine's cores for the batch, the other slots for everyone else. */
 export const WIDE_SLOTS = 3;
 const WIDE = `${LOCKS}/qorpera-test-machine-wide.lock`;
+/** A part of a changed --parts run waits on every machine its copy reached, and runs on the first that gives it a slot
+ * (claimParts): in proof run 20261016T144011 a part waited 587 s on one machine while slots freed on the other. Its
+ * session on each (runScript `claim`) says QUEUED once it holds a queue ticket, then SLOT and the slot once it holds one,
+ * and goes on only when its input says "go". When its input ends instead, it leaves, with exit code DROPPED. The
+ * coordinator's decision of 16 Oct. */
+export const QUEUED = "== run-on-node: queued";
+export const SLOT = "== run-on-node: holding slot";
+export const DROPPED = 95;
+/** A part that holds a slot on a machine where another part of its run runs waits this long for one on a machine
+ * without one, while its session there has not yet said it waits (pickSlot): only one --front run per machine grows. */
+export const SPREAD_MS = 15_000;
 /** A --cores run's cores file (the start of its name; the run's name follows): how many cores its slots give it now. */
 const CORES = `${LOCKS}/qorpera-test-machine-cores-`;
 const SECRET =
@@ -377,8 +389,10 @@ export function runCommandLine({ command, env = [], sudo = false, cores = null }
  * for the CPU lane's; a `front` run waits ahead of every run without it and tries the kept slots (KEPT_SLOTS) first,
  * which no other run takes. A `cores` run (changed --cores) tells its
  * steps how many cores its slots give it in its cores file; a `front` one takes up to WIDE_SLOTS slots (growScript).
+ * A `claim` session (a part that waits on several machines) says QUEUED and SLOT, and starts only on a "go" line; when its
+ * input ends first, it leaves the queue or frees its slot, removes its run directory and exits DROPPED.
  * Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null }) {
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null, claim = false }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const lane = quick ? LANES.quick : LANES.cpu;
 	const queue = `${LOCKS}/${lane.queue}`;
@@ -418,6 +432,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`ticket=${queue}/${front ? FRONT : ""}$(date +%s%N)-$$; exec 7>"$ticket"; flock 7; trap 'rm -f "$ticket"' EXIT`,
 		// Queued now: probes count the ticket instead of the copy marker.
 		`rm -f ${ARRIVING}/${run}`,
+		...(claim ? [`echo "${QUEUED}"`] : []),
 		'slot=""; queued=$(date +%s); shown=""',
 		'while [ -z "$slot" ]; do',
 		`\tfor t in ${queue}/*; do [ "$t" != "$ticket" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
@@ -432,10 +447,12 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		'\tif [ -z "$slot" ]; then',
 		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${slots} run${slots === 1 ? "" : "s"} at a time${front || !lane.kept ? "" : `, ${lane.kept} more slot${lane.kept === 1 ? "" : "s"} kept for --front runs`}), queue position $position" && shown=$position`,
 		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
-		"\t\tsleep 2",
+		// A claim session's input ends once its part has started elsewhere (read's status 1; a timeout's is over 128).
+		claim ? `\t\tread -r -t 2 _; [ $? -gt 128 ] || { rm -rf ${runDir}; exit ${DROPPED}; }` : "\t\tsleep 2",
 		"\tfi",
 		"done",
 		'rm -f "$ticket"; exec 7>&-',
+		...(claim ? [`echo "${SLOT} $slot"`, `read -r answer; [ "$answer" = go ] || { exec 9>&-; rm -rf ${runDir}; exit ${DROPPED}; }`] : []),
 		'queued_s=$(( $(date +%s) - queued ))',
 		'runner=""; waited=0',
 		'while [ -z "$runner" ]; do',
@@ -660,6 +677,27 @@ export async function firstTaking(ranked, copy, passOver) {
 	throw new Error("No test machine to run on");
 }
 
+/** A part's sessions before it starts: "gated" (not started: the part before it on that machine is not in the queue
+ * yet), "starting", "queued", "waiting" (it has said it waits for a slot), "slot" (it holds one, since `heldAt`), then
+ * "dropped", "skipped" (never started) or "ended". These may still offer a slot soon. */
+const OFFERS_SOON = ["gated", "starting", "queued"];
+
+/** Which of a part's sessions (`copies`, one per machine it waits on: `machine`, `state`) starts the part (claimParts):
+ * `{ take }` the first that holds a slot on a machine none of the run's other running parts uses (`busy`, machine
+ * names), so that the parts spread out and each can grow (one --front run per machine grows past its first slot). A slot
+ * on a busy machine is taken once no session on another machine may still offer one soon (none has yet said it waits)
+ * or SPREAD_MS after it was offered; until then `{ wait }`, the milliseconds left. `{}`: no slot offered yet. */
+export function pickSlot(copies, busy, now) {
+	const offers = copies.filter((copy) => copy.state === "slot");
+	if (!offers.length) return {};
+	const spread = offers.find((copy) => !busy.includes(copy.machine));
+	if (spread) return { take: spread };
+	const first = offers.reduce((earliest, copy) => (copy.heldAt < earliest.heldAt ? copy : earliest));
+	const left = first.heldAt + SPREAD_MS - now;
+	const soon = copies.some((copy) => !busy.includes(copy.machine) && OFFERS_SOON.includes(copy.state));
+	return soon && left > 0 ? { wait: left } : { take: first };
+}
+
 function signalTurn() {
 	return new Promise((resolveTurn) => setTimeout(resolveTurn, SIGNAL_TURN_MS));
 }
@@ -762,25 +800,62 @@ function probeOverSsh(machine, key, signal) {
 	});
 }
 
-/** Runs the script over ssh with this process's terminal. One of a run's several parts (`whole`) reads no input, and
- * hands its output on whole (wholeBlocks), its stderr in order with its stdout, so two parts' output never mixes inside a
- * line or a step. */
-function sshRun(t, remoteScript, whole = false) {
+/** A part's session on one of the machines it waits on (runScript `claim`): `events.queued()`, `events.waiting()` and
+ * `events.slot(n)` as it says so. Until it starts (`go`) its other lines name it (`label`). It hands its output on whole
+ * (wholeBlocks), its stderr in order with its stdout, so two parts' output never mixes inside a line or a step. `drop`
+ * ends its input, so it leaves. `done` settles with its exit code. */
+function claimSession(t, remoteScript, label, events) {
+	const child = spawn("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(`exec 2>&1\n${remoteScript}`)], { stdio: ["pipe", "pipe", "pipe"] });
+	let started = false;
+	const slot = new RegExp(`^${SLOT} ([0-9]+)\\n$`);
+	const out = wholeBlocks((text) => {
+		if (started) process.stdout.write(text);
+		else if (text === `${QUEUED}\n`) events.queued();
+		else if (slot.test(text)) events.slot(Number(slot.exec(text)[1]));
+		else {
+			if (text.startsWith("== run-on-node: waiting for a slot ")) events.waiting();
+			process.stdout.write(text.replace(/^== run-on-node: /, `== run-on-node: ${label}: `));
+		}
+	});
+	const err = wholeBlocks((text) => process.stderr.write(started ? text : `${label}: ${text}`));
+	// A session that has ended reads no more.
+	child.stdin.on("error", () => {});
+	child.stdout.setEncoding("utf8").on("data", (chunk) => out.push(chunk));
+	child.stderr.setEncoding("utf8").on("data", (chunk) => err.push(chunk));
+	return {
+		go() {
+			started = true;
+			child.stdin.end("go\n");
+		},
+		drop() {
+			child.stdin.end();
+		},
+		done: new Promise((resolvePromise, reject) => {
+			child.on("error", reject);
+			child.on("close", (code, signal) => {
+				out.end();
+				err.end();
+				resolvePromise(signal ? 128 + (constants.signals[signal] ?? 0) : (code ?? 1));
+			});
+		}),
+	};
+}
+
+/** Runs the script over ssh with this process's terminal. */
+function sshRun(t, remoteScript) {
 	return new Promise((resolvePromise, reject) => {
-		const child = spawn("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(whole ? `exec 2>&1\n${remoteScript}` : remoteScript)], {
-			stdio: whole ? ["ignore", "pipe", "pipe"] : "inherit",
-		});
-		const out = whole ? wholeBlocks((text) => process.stdout.write(text)) : null;
-		// ssh's own messages ("Connection to ... closed by remote host").
-		const err = whole ? wholeBlocks((text) => process.stderr.write(text)) : null;
-		child.stdout?.setEncoding("utf8").on("data", (chunk) => out.push(chunk));
-		child.stderr?.setEncoding("utf8").on("data", (chunk) => err.push(chunk));
+		const child = spawn("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(remoteScript)], { stdio: "inherit" });
 		child.on("error", reject);
-		child.on("close", (code, signal) => {
-			out?.end();
-			err?.end();
-			resolvePromise(signal ? 128 + (constants.signals[signal] ?? 0) : (code ?? 1));
-		});
+		child.on("close", (code, signal) => resolvePromise(signal ? 128 + (constants.signals[signal] ?? 0) : (code ?? 1)));
+	});
+}
+
+/** Runs a script over ssh that nothing waits for (a cleanup); settles when it ends, however it ends. */
+function sshAside(t, remoteScript) {
+	return new Promise((resolvePromise) => {
+		const child = spawn("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(remoteScript)], { stdio: "ignore" });
+		child.on("error", () => resolvePromise());
+		child.on("close", () => resolvePromise());
 	});
 }
 
@@ -948,7 +1023,8 @@ async function main() {
 		return { ...machine, ssh: sshArgs(machine, key) };
 	});
 	// changed --parts: the plan's steps split by their CPU work, each part a run of its own (RUN-p1, RUN-p2) with a plan
-	// of its own, which tries the machines from its own on: part 1 the best-ranked one, part 2 the next.
+	// of its own, the most work first. Each waits on every machine and runs on the first with a slot for it (claimParts);
+	// its order, from its own machine on (part 1 the best-ranked one, part 2 the next), is the order of its copies.
 	const split = plan && options.parts > 1 && ranked.length > 1 ? splitPlan(plan.steps, Math.min(options.parts, ranked.length)) : [];
 	const parts = (
 		split.length > 1
@@ -975,7 +1051,7 @@ async function main() {
 					install: options.install,
 					runCommand,
 					...(parts.length > 1
-						? { parts: parts.map((part) => ({ machine: part.order[0].name, run: part.run, steps: part.changed.steps, build: part.build })) }
+						? { parts: parts.map((part) => ({ machines: part.order.map((machine) => machine.name), run: part.run, steps: part.changed.steps, build: part.build })) }
 						: {}),
 					source,
 					githubStatus: github.plan,
@@ -996,7 +1072,7 @@ async function main() {
 		if (!ranked.length) throw new Error(`No open test machine: ${describeProbes(probes)}`);
 		if (parts.length > 1)
 			console.error(
-				`== run-on-node: in ${parts.length} parts at once: ${parts.map((part, k) => `part ${k + 1} on ${part.order[0].name}: ${part.changed.steps.join(", ")}`).join("; ")}`,
+				`== run-on-node: in ${parts.length} parts at once, each on the first machine with a slot for it: ${parts.map((part, k) => `part ${k + 1}: ${part.changed.steps.join(", ")}`).join("; ")}`,
 			);
 		else if (options.parts > 1) console.error(`== run-on-node: in one part: ${ranked.length > 1 ? "the plan has one step" : "one machine to run on"}`);
 		github.post("pending", pending(parts.map((part) => part.order[0])));
@@ -1006,12 +1082,13 @@ async function main() {
 		throw error;
 	}
 
-	/** Prune, make the part's run directory, mark it as arriving and copy the tree to one machine; throws when the
-	 * machine refuses, with `final` when a signal ended the copy. */
-	function copyTree(part, t) {
-		part.copyStarted = Date.now();
+	/** Prune, make the part's run directory, mark it as arriving and copy the tree to one machine: the copy, with its
+	 * times. Files are taken from `nearby` first, the run directories of the run's parts copied there before (the same
+	 * tree), then from the base copy. Throws when the machine refuses, with `final` when a signal ended the copy. */
+	function copyTree(part, t, nearby = []) {
+		const copy = { t, machine: t.name, copyStarted: Date.now() };
 		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${part.run}\n${pruneScript()}\nmkdir -p ${part.runDir} ${treeDir}\ntouch ${treeDir}.lock`);
-		part.pruned = Date.now();
+		copy.pruned = Date.now();
 		const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
 		const rules = join(rulesDir, "rules");
 		writeFileSync(rules, rulesText);
@@ -1022,6 +1099,7 @@ async function main() {
 				"--prune-empty-dirs",
 				`--filter=merge ${rules}`,
 				...baseCopyCompare(Boolean(options.tree)),
+				...nearby.map((dir) => `--copy-dest=${dir}/`),
 				`--copy-dest=${treeDir}/`,
 				// The base copy is read under a shared lock; its refresh below takes the exclusive one.
 				`--rsync-path=flock -s ${treeDir}.lock rsync`,
@@ -1045,36 +1123,60 @@ async function main() {
 				final: Boolean(rsync.signal) || [20, 23, 24].includes(rsync.status),
 			});
 		}
+		copy.synced = Date.now();
+		return copy;
+	}
+
+	/** A part's copies: one on each machine of its order that takes it (copyTree), in that order. A machine that refuses
+	 * is passed over; throws when none takes it, and on a copy a signal ended (`final`). */
+	async function copyEverywhere(part, k) {
+		const failures = [];
+		for (const t of part.order) {
+			const nearby = parts
+				.slice(0, k)
+				.filter((earlier) => earlier.copies.some((copy) => copy.machine === t.name))
+				.map((earlier) => earlier.runDir);
+			try {
+				part.copies.push(copyTree(part, t, nearby));
+			} catch (error) {
+				if (error.final) throw error;
+				failures.push(`${t.name}: ${error.message}`);
+				part.passedOver.push(t.name);
+				console.error(`== run-on-node: part ${k + 1}: ${t.name} failed before the suite started (${error.message})`);
+				await signalTurn();
+			}
+		}
+		if (!part.copies.length) throw new Error(`Copying part ${k + 1} failed on every machine (${failures.join("; ")})`);
 	}
 
 	async function execute() {
 		const started = Date.now();
-		// Every part is copied before any starts, so a part no machine takes ends the run before a suite starts.
-		const copied = [];
+		// Every part is copied before any starts, so a part no machine takes ends the run before a suite starts. One run
+		// goes to the first machine that takes it; a part of several to every machine that does.
 		try {
 			for (const [k, part] of parts.entries()) {
-				part.t = await firstTaking(
-					part.order,
-					(t) => copyTree(part, t),
-					(machine, error, next) => {
-						part.passedOver.push(machine.name);
-						console.error(
-							`== run-on-node: ${parts.length > 1 ? `part ${k + 1}: ` : ""}${machine.name} failed before the suite started (${error.message}); trying ${next.name}`,
-						);
-						if (parts.length === 1) github.post("pending", pending([next]));
-					},
-				);
-				part.synced = Date.now();
-				copied.push(part);
+				part.copies = [];
+				if (parts.length > 1) await copyEverywhere(part, k);
+				else
+					await firstTaking(
+						part.order,
+						(t) => part.copies.push(copyTree(part, t)),
+						(machine, error, next) => {
+							part.passedOver.push(machine.name);
+							console.error(`== run-on-node: ${machine.name} failed before the suite started (${error.message}); trying ${next.name}`);
+							github.post("pending", pending([next]));
+						},
+					);
 			}
 		} catch (error) {
-			for (const part of copied) {
-				try {
-					sshCapture(part.t, `rm -f ${ARRIVING}/${part.run}; sudo -n rm -rf -- ${part.runDir}`);
-				} catch {
-					// Pruned after a day; the arriving mark ages out of the probe's count in 10 minutes.
+			for (const part of parts)
+				for (const copy of part.copies ?? []) {
+					try {
+						sshCapture(copy.t, `rm -f ${ARRIVING}/${part.run}; sudo -n rm -rf -- ${part.runDir}`);
+					} catch {
+						// Pruned after a day; the arriving mark ages out of the probe's count in 10 minutes.
+					}
 				}
-			}
 			throw error;
 		}
 		// A signal that arrived during the synchronous copy ends the run here, before a suite starts.
@@ -1087,10 +1189,16 @@ async function main() {
 		)
 			github.abandon("the working tree changed while it was copied: this run is not the commit's");
 
-		if (parts.length === 1) return finish(await runPart(parts[0], started));
+		if (parts.length === 1) {
+			[parts[0].chosen] = parts[0].copies;
+			return finish(await runPart(parts[0], started));
+		}
 		// Every part runs to its end whatever the others do, unless --fail-fast stops them (runPart). The run passes only
 		// when every part passed: a part whose machine died or that was cut off makes the whole run fail (joinRecords).
+		const tidying = claimParts();
 		const outcomes = await Promise.allSettled(parts.map((part) => runPart(part, started)));
+		// The sessions the parts left, and the cleanup of copies they never used, end before the run does.
+		await Promise.all([...tidying, ...parts.flatMap((part) => part.copies.filter((copy) => copy.session).map((copy) => copy.session.done.catch(() => {})))]);
 		const rejected = outcomes.find((outcome) => outcome.status === "rejected");
 		if (rejected) throw rejected.reason;
 		return finish(
@@ -1127,41 +1235,159 @@ async function main() {
 		return record.exitCode;
 	}
 
-	/** One part's session on the machine that took its copy, then its status, the machine's versions and the cleanup:
-	 * the part's record. A part's output comes a step at a time when the run has more than one (sshRun `whole`). */
+	/** The session script of a part on the machine of one of its copies. */
+	function partScript(part, copy, claim) {
+		return runScript({
+			run: part.run,
+			runDir: part.runDir,
+			treeDir,
+			shared: Boolean(options.tree),
+			files: files.length,
+			copySeconds: (copy.synced - copy.copyStarted) / 1000,
+			install: options.install,
+			build: part.build,
+			runCommand: part.runCommand,
+			quick: options.quick,
+			front: options.front,
+			cores: options.cores,
+			claim,
+		});
+	}
+
+	/** Each part waits on every machine its copies reached, in a session there (claimSession), and starts in the first
+	 * slot one of them offers (pickSlot); its other sessions leave, and a copy whose session never started is removed. A
+	 * part's session on a machine starts once the part before it there holds its queue ticket (or left, or never started),
+	 * so the parts queue on each machine in plan order, the most work first. `part.claimed` settles with the exit code of
+	 * the session the part ran in (`part.chosen`), or of its last one when every session ended before the part started:
+	 * a part fails only when it can start nowhere. The cleanups of the copies no part started, to wait for. */
+	function claimParts() {
+		const tidying = [];
+		const behind = new Map();
+		let timer = null;
+		const busyMachines = () => parts.filter((part) => part.chosen && !part.ended).map((part) => part.chosen.machine);
+		const settle = () => {
+			clearTimeout(timer);
+			timer = null;
+			let wait = Number.POSITIVE_INFINITY;
+			// A part started on a machine makes it busy for the others: look again until no part starts.
+			for (let again = true; again; ) {
+				again = false;
+				wait = Number.POSITIVE_INFINITY;
+				for (const [k, part] of parts.entries()) {
+					if (part.chosen) continue;
+					const pick = pickSlot(part.copies, busyMachines(), Date.now());
+					if (pick.take) {
+						choose(k, part, pick.take);
+						again = true;
+					} else if (pick.wait) wait = Math.min(wait, pick.wait);
+				}
+			}
+			if (wait < Number.POSITIVE_INFINITY) timer = setTimeout(settle, wait);
+		};
+		const choose = (k, part, copy) => {
+			part.chosen = copy;
+			copy.state = "running";
+			copy.session.go();
+			const left = [];
+			for (const other of part.copies) {
+				if (other === copy || other.state === "ended") continue;
+				if (other.state === "gated") {
+					other.state = "skipped";
+					other.gate.resolve();
+					tidying.push(sshAside(other.t, `rm -f ${ARRIVING}/${part.run}; sudo -n rm -rf -- ${part.runDir}`));
+				} else {
+					other.state = "dropped";
+					other.session.drop();
+				}
+				left.push(other.machine);
+			}
+			console.error(`== run-on-node: part ${k + 1} starts in slot ${copy.slot} on ${copy.machine}${left.length ? `; it leaves ${left.join(", ")}` : ""}`);
+		};
+		const ended = (k, part, copy, code) => {
+			copy.gate.resolve();
+			if (part.chosen === copy) {
+				part.ended = true;
+				part.resolveClaim(code);
+			} else if (copy.state !== "dropped") {
+				copy.state = "ended";
+				const left = part.copies.filter((other) => !["ended", "skipped", "dropped"].includes(other.state));
+				if (!part.chosen && left.length) {
+					part.passedOver.push(copy.machine);
+					console.error(
+						`== run-on-node: part ${k + 1}: its session on ${copy.machine} ended before the part started (exit ${code}); it waits on ${left.map((other) => other.machine).join(", ")}`,
+					);
+					tidying.push(sshAside(copy.t, `rm -f ${ARRIVING}/${part.run}; sudo -n rm -rf -- ${part.runDir}`));
+				} else if (!part.chosen) {
+					// Nowhere left to start: the part fails with its last session (runPart reads that machine's status).
+					part.chosen = copy;
+					part.ended = true;
+					part.resolveClaim(code);
+				}
+			}
+			settle();
+		};
+		const start = (k, part, copy) => {
+			if (copy.state !== "gated") return;
+			copy.state = "starting";
+			const label = `part ${k + 1} on ${copy.machine}`;
+			copy.session = claimSession(copy.t, partScript(part, copy, true), label, {
+				queued() {
+					copy.gate.resolve();
+					if (copy.state === "starting") copy.state = "queued";
+				},
+				waiting() {
+					if (!["starting", "queued"].includes(copy.state)) return;
+					copy.state = "waiting";
+					settle();
+				},
+				slot(n) {
+					if (copy.state === "dropped") return;
+					Object.assign(copy, { state: "slot", slot: n, heldAt: Date.now() });
+					settle();
+				},
+			});
+			copy.session.done
+				.catch((error) => {
+					console.error(`run-on-node: ${label}: ${error.message}`);
+					return 255;
+				})
+				.then((code) => ended(k, part, copy, code));
+		};
+		for (const [k, part] of parts.entries()) {
+			const claim = Promise.withResolvers();
+			Object.assign(part, { claimed: claim.promise, resolveClaim: claim.resolve });
+			for (const copy of part.copies) {
+				const ahead = behind.get(copy.machine) ?? Promise.resolve();
+				Object.assign(copy, { state: "gated", gate: Promise.withResolvers() });
+				behind.set(copy.machine, copy.gate.promise);
+				ahead.then(() => start(k, part, copy));
+			}
+		}
+		return tidying;
+	}
+
+	/** One part's session on the machine it runs on (`part.chosen`: the copy there), then its status, the machine's
+	 * versions and the cleanup: the part's record. */
 	async function runPart(part, started) {
-		const { t } = part;
-		const code = await sshRun(
-			t,
-			runScript({
-				run: part.run,
-				runDir: part.runDir,
-				treeDir,
-				shared: Boolean(options.tree),
-				files: files.length,
-				copySeconds: (part.synced - part.copyStarted) / 1000,
-				install: options.install,
-				build: part.build,
-				runCommand: part.runCommand,
-				quick: options.quick,
-				front: options.front,
-				cores: options.cores,
-			}),
-			parts.length > 1,
-		);
+		const code = parts.length > 1 ? await part.claimed : await sshRun(part.chosen.t, partScript(part, part.chosen, false));
+		const { chosen } = part;
+		const { t } = chosen;
 		const finished = Date.now();
 		part.ended = true;
 		// --fail-fast: a part that did not pass stops the others still running; their steps end and no more start (planScript).
+		// One that has not started yet is stopped on every machine it may start on.
 		if (options.failFast && code !== 0)
 			for (const [k, other] of parts.entries()) {
 				if (other.ended) continue;
 				console.error(`== run-on-node: part ${parts.indexOf(part) + 1} failed: stopping part ${k + 1} (--fail-fast)`);
-				try {
-					// A part whose directory is gone has ended.
-					sshCapture(other.t, `sudo -n touch ${other.runDir}/${STOP} 2>/dev/null || [ ! -d ${other.runDir} ]`);
-				} catch (error) {
-					console.error(`run-on-node: could not stop part ${k + 1}: ${error.message}`);
-				}
+				const waiting = other.copies.filter((each) => !["dropped", "skipped", "ended"].includes(each.state));
+				for (const each of other.chosen ? [other.chosen] : waiting)
+					try {
+						// A part whose directory is gone has ended, or left that machine.
+						sshCapture(each.t, `sudo -n touch ${other.runDir}/${STOP} 2>/dev/null || [ ! -d ${other.runDir} ]`);
+					} catch (error) {
+						console.error(`run-on-node: could not stop part ${k + 1} on ${each.machine}: ${error.message}`);
+					}
 			}
 		let status = {};
 		try {
@@ -1210,11 +1436,11 @@ async function main() {
 			uncappedTestProcesses: status.uncapped ? Number(status.uncapped) : null,
 			...(part.changed ? { changed: part.changed } : {}),
 			startedAt: new Date(started).toISOString(),
-			copySeconds: (part.synced - part.copyStarted) / 1000,
+			copySeconds: (chosen.synced - chosen.copyStarted) / 1000,
 			// The copy's two parts: the ssh call that marks the run arriving, prunes old runs and makes the run directory;
 			// then rsync.
-			pruneSeconds: (part.pruned - part.copyStarted) / 1000,
-			rsyncSeconds: (part.synced - part.pruned) / 1000,
+			pruneSeconds: (chosen.pruned - chosen.copyStarted) / 1000,
+			rsyncSeconds: (chosen.synced - chosen.pruned) / 1000,
 			prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
 			suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 			elapsedSeconds: (finished - started) / 1000,

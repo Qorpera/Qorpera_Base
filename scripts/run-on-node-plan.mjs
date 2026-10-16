@@ -401,7 +401,8 @@ function planned(step) {
 /** A plan's steps in at most `parts` groups, for runs on different machines at once (run-on-node.mjs --parts): by CPU
  * work (`seconds` × `cores`), the most first, each step to the group with the least work so far, then the fewest steps,
  * so no group is empty while there are steps for it. Every step is in exactly one group. A group keeps the plan's
- * order, and needs the build if one of its steps does. */
+ * order, and needs the build if one of its steps does. The groups come the most work first (on a tie, in the order
+ * they were filled): run-on-node.mjs queues them in that order. */
 export function splitPlan(steps, parts) {
 	const work = (step) => (step.seconds ?? 0) * (step.cores ?? 1);
 	const groups = Array.from({ length: Math.min(parts, steps.length) }, () => ({ indexes: [], work: 0 }));
@@ -413,10 +414,12 @@ export function splitPlan(steps, parts) {
 		lightest.indexes.push(i);
 		lightest.work += work(steps[i]);
 	}
-	return groups.map(({ indexes }) => {
-		const chosen = indexes.sort((a, b) => a - b).map((i) => steps[i]);
-		return { steps: chosen, build: chosen.some((step) => step.build) };
-	});
+	return groups
+		.sort((a, b) => b.work - a.work)
+		.map(({ indexes }) => {
+			const chosen = indexes.sort((a, b) => a - b).map((i) => steps[i]);
+			return { steps: chosen, build: chosen.some((step) => step.build) };
+		});
 }
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */
