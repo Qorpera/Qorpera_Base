@@ -838,7 +838,7 @@ describe("a shell command in the company folder", () => {
 			output: "hello\n",
 		});
 		// The boundary has until two seconds before the reply is due; its paths not saved come with it.
-		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 2000, true);
+		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 2000);
 		expect(folder.inherit).not.toHaveBeenCalled();
 		// Nothing new since: no boundary is asked.
 		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "" });
