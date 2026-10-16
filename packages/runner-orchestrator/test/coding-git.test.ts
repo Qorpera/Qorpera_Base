@@ -240,9 +240,14 @@ describe("credential-isolated coding Git publication", () => {
 		).toEqual({ branch, headSha: next });
 		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(2);
 	});
-	it("fetches a thin bundle's prerequisites before verify and the base tip after the checks", async () => {
+	it("fetches a thin bundle's prerequisites before verify and a base tip it lacks after the checks", async () => {
 		const f = await fixture(),
 			path = join(f.root, "thin.bundle");
+		// The base moved on without the worker.
+		const tree = await f.git("rev-parse", `${f.input.baseSha}^{tree}`);
+		const upstream = await f.git("commit-tree", tree, "-p", f.input.baseSha, "-m", "upstream");
+		await f.git("push", "--quiet", join(f.root, "remote.git"), `${upstream}:refs/heads/main`);
+		f.setBase(upstream);
 		await f.git("bundle", "create", path, ref, `^${f.input.baseSha}`);
 		expect(await pushCloudCodingBundle(f.input, await readFile(path), f.options)).toEqual({
 			branch,
@@ -261,7 +266,7 @@ describe("credential-isolated coding Git publication", () => {
 			"https://github.com/qorpera/example.git",
 		];
 		expect(fetches[0].args.slice(-7)).toEqual([...depthOne, `${f.input.baseSha}:refs/qorpera/prerequisite/0`]);
-		expect(fetches[1].args.slice(-7)).toEqual([...depthOne, "refs/heads/main:refs/qorpera/base"]);
+		expect(fetches[1].args.slice(-7)).toEqual([...depthOne, `${upstream}:refs/qorpera/base`]);
 		for (const call of fetches) {
 			expect(call.network).toBe(true);
 			expect(call.env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/qorpera/example.git.extraHeader");
@@ -274,38 +279,50 @@ describe("credential-isolated coding Git publication", () => {
 		expect(f.calls.indexOf(fetches[1])).toBeLessThan(at("push"));
 		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
 	});
-	it("checks the head's history before it fetches a base tip that took a worker commit", async () => {
-		const f = await fixture(),
-			remote = join(f.root, "remote.git"),
-			path = join(f.root, "after-merge.bundle");
-		// The base took the worker's first push, and the worker built on it.
-		const tree = await f.git("rev-parse", `${f.input.headSha}^{tree}`);
-		const next = await f.git("commit-tree", tree, "-p", f.input.headSha, "-m", "after the merge");
-		await f.git("update-ref", ref, next);
-		await f.git("push", "--quiet", remote, `${f.input.headSha}:refs/heads/main`, `${f.input.headSha}:${ref}`);
-		f.setBase(f.input.headSha);
-		f.setRemote(f.input.headSha);
-		await f.git("bundle", "create", path, ref, `^${f.input.baseSha}`);
-		// The push is real here, from the broker's shallow repository.
-		const fake = f.options.runGit;
-		if (!fake) throw new Error("fixture missing");
-		f.options.runGit = async (command) => {
-			if (command.args.includes("push"))
-				await exec(
-					"/usr/bin/git",
-					command.args.map((arg) => (arg === "https://github.com/qorpera/example.git" ? `file://${remote}` : arg)),
-					{ cwd: command.cwd, env: { ...command.env, GIT_ALLOW_PROTOCOL: "file" }, signal: command.signal },
-				);
-			return fake(command);
-		};
-		expect(
-			await pushCloudCodingBundle(
-				{ ...f.input, headSha: next, expectedRemoteHeadSha: f.input.headSha },
-				await readFile(path),
-				f.options,
-			),
-		).toEqual({ branch, headSha: next });
-		expect(await f.git("ls-remote", remote, ref)).toBe(`${next}\t${ref}`);
+	it("keeps the head's history whole when the base took or merged the worker's first push", async () => {
+		for (const merged of [false, true]) {
+			const f = await fixture(),
+				remote = join(f.root, "remote.git"),
+				path = join(f.root, "after-merge.bundle");
+			// The base took the worker's first push (as is, or in a merge) and the
+			// worker built on the base; the remote branch is still that first push.
+			const tree = await f.git("rev-parse", `${f.input.headSha}^{tree}`);
+			let base = f.input.headSha;
+			if (merged) {
+				const upstream = await f.git("commit-tree", tree, "-p", f.input.baseSha, "-m", "upstream");
+				base = await f.git("commit-tree", tree, "-p", upstream, "-p", f.input.headSha, "-m", "merge");
+			}
+			const next = await f.git("commit-tree", tree, "-p", base, "-m", "after the merge");
+			await f.git("update-ref", ref, next);
+			await f.git("push", "--quiet", remote, `${base}:refs/heads/main`, `${f.input.headSha}:${ref}`);
+			f.setBase(base);
+			f.setRemote(f.input.headSha);
+			await f.git("bundle", "create", path, ref, `^${f.input.baseSha}`);
+			// The push is real here, from the broker's shallow repository, so Git's
+			// own fast-forward check walks the head's history.
+			const fake = f.options.runGit,
+				local = `file://${remote}`;
+			if (!fake) throw new Error("fixture missing");
+			f.options.runGit = async (command) => {
+				if (command.args.includes("push"))
+					await exec(
+						"/usr/bin/git",
+						command.args.map((arg) => (arg === "https://github.com/qorpera/example.git" ? local : arg)),
+						{ cwd: command.cwd, env: { ...command.env, GIT_ALLOW_PROTOCOL: "file" }, signal: command.signal },
+					);
+				return fake(command);
+			};
+			expect(
+				await pushCloudCodingBundle(
+					{ ...f.input, headSha: next, expectedRemoteHeadSha: f.input.headSha },
+					await readFile(path),
+					f.options,
+				),
+			).toEqual({ branch, headSha: next });
+			// The base tip came in the bundle, so it is not fetched (shallow) again.
+			expect(f.calls.filter((call) => call.args.includes("fetch"))).toHaveLength(1);
+			expect(await f.git("ls-remote", remote, ref)).toBe(`${next}\t${ref}`);
+		}
 	});
 	it("refuses a thin bundle whose prerequisite the repository does not have", async () => {
 		const f = await fixture(),

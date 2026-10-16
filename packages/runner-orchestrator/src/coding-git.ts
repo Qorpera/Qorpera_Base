@@ -154,8 +154,8 @@ export const runCodingBrokerGit = createCodingBrokerGitRunner();
  * imported into a new bare broker repository; no worktree, repository config,
  * hooks, filters, submodules or model code execute in the token lane. A thin
  * bundle's prerequisites are fetched from the repository at depth 1 before it
- * is verified, and the base branch tip after the checks, so the push sends only
- * new objects.
+ * is verified, and the base branch tip, when the bundle did not bring it, after
+ * the checks, so the push sends only new objects.
  * The caller holds exclusive branch publication authority through draft PR
  * creation. An uncertain push is observed with ls-remote and never reissued. */
 export async function pushCloudCodingBundle(
@@ -295,7 +295,7 @@ export async function pushCloudCodingBundle(
 			}
 		};
 		await run(["init", "--bare", "--template=", cwd], false, scratch);
-		const inspectRemote = async (): Promise<string | null> => {
+		const inspectRemote = async (): Promise<{ base: string; head: string | null }> => {
 			const output = await run(["ls-remote", "--refs", "--heads", remote, baseRef, ref], true);
 			const found = new Map<string, string>();
 			for (const line of output.trimEnd().split("\n")) {
@@ -306,13 +306,14 @@ export async function pushCloudCodingBundle(
 			}
 			// Base branch may advance normally. Worker ancestry remains pinned to the
 			// immutable original base below; its repository/branch cannot be retargeted.
-			if (!found.has(baseRef)) throw new Error("CODING_GIT_BASE_UNAVAILABLE");
-			return found.get(ref) ?? null;
+			const base = found.get(baseRef);
+			if (base === undefined) throw new Error("CODING_GIT_BASE_UNAVAILABLE");
+			return { base, head: found.get(ref) ?? null };
 		};
 		const observed = await inspectRemote();
-		if (observed === input.headSha) return { branch, headSha: input.headSha };
+		if (observed.head === input.headSha) return { branch, headSha: input.headSha };
 		if (claimed) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
-		if (observed !== input.expectedRemoteHeadSha) throw new Error("CODING_GIT_HEAD_CHANGED");
+		if (observed.head !== input.expectedRemoteHeadSha) throw new Error("CODING_GIT_HEAD_CHANGED");
 		const expectedHead = `${input.headSha} ${ref}\n`;
 		if ((await run(["bundle", "list-heads", bundlePath])) !== expectedHead)
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
@@ -334,10 +335,12 @@ export async function pushCloudCodingBundle(
 		await run(["merge-base", "--is-ancestor", input.baseSha, input.headSha]);
 		if (input.expectedRemoteHeadSha !== null)
 			await run(["merge-base", "--is-ancestor", input.expectedRemoteHeadSha, input.headSha]);
-		// Only now: a base tip fetched at depth 1 is shallow, and when the base took
-		// a worker commit it sits on the head's own history and would cut the walks
-		// above short. It lets the push leave out what the base already has.
-		if (prerequisites.length > 0) await run([...depthOne, `${baseRef}:refs/qorpera/base`], true, cwd, true);
+		// The base tip lets the push leave out what the base already has. Fetched at
+		// depth 1 it is shallow, so it is fetched only when the broker lacks it: then
+		// it is on none of the head's history, and the walks above and the push's own
+		// fast-forward check see that history whole.
+		if (prerequisites.length > 0 && (await run(["rev-list", "--no-walk", "--ignore-missing", observed.base])) === "")
+			await run([...depthOne, `${observed.base}:refs/qorpera/base`], true, cwd, true);
 		await authorize();
 		if (!(await publish(options.journalRoot, claimName, Buffer.from(JSON.stringify(claim)))))
 			throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
@@ -346,7 +349,7 @@ export async function pushCloudCodingBundle(
 			["push", "--porcelain", "--no-verify", "--recurse-submodules=no", remote, `${input.headSha}:${ref}`],
 			true,
 		);
-		if ((await inspectRemote()) !== input.headSha) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
+		if ((await inspectRemote()).head !== input.headSha) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
 		return { branch, headSha: input.headSha };
 	} finally {
 		await rm(scratch, { recursive: true, force: true });
