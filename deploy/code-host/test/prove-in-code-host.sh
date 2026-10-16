@@ -8,8 +8,9 @@
 set -euo pipefail
 
 GIT_VERSION=${QORPERA_PROOF_GIT:?the pinned git version}
-FOLDER_SHA256=${QORPERA_PROOF_FOLDER_SHA256:?the folder program's sha-256}
-CPUS=${QORPERA_PROOF_CPUS:?the policy's processors}
+FOLDER_SHA256=${QORPERA_PROOF_FOLDER_SHA256:?the sha-256 of the folder program}
+CPUS=${QORPERA_PROOF_CPUS:?the processors of the policy}
+DISK_BYTES=${QORPERA_PROOF_DISK_BYTES:?the root disk bytes of the policy}
 FOLDER=/opt/qorpera-folder/qorpera-folder
 
 fail() {
@@ -31,9 +32,27 @@ pass "booted to running without cloud-init"
 
 # --- The machine ---------------------------------------------------------------------------------------------------
 [[ $(systemctl show -P Result qorpera-grow-root.service) == success ]] || fail "qorpera-grow-root did not succeed"
-ROOT=$(findmnt -bno SIZE /)
-((ROOT > 11274289152)) || fail "the root file system is $ROOT bytes: it did not grow to the 12 GiB disk"
-pass "the root file system grew to the disk ($ROOT bytes)"
+# The image's /boot and EFI partitions and ext4's own tables take their share of the disk, so the root's size alone
+# says little: the disk is the policy's, the root partition reaches its end, and the file system fills the partition.
+PART=$(basename "$(readlink -f "$(findmnt -no SOURCE /)")")
+DISK=$(lsblk -no PKNAME "/dev/$PART")
+# Sizes in /sys/class/block are in 512-byte sectors.
+read -r DISK_SECTORS <"/sys/class/block/$DISK/size"
+read -r START_SECTOR <"/sys/class/block/$PART/start"
+read -r PART_SECTORS <"/sys/class/block/$PART/size"
+DISK_SIZE=$((DISK_SECTORS * 512))
+START=$((START_SECTOR * 512))
+PART_SIZE=$((PART_SECTORS * 512))
+((DISK_SIZE == DISK_BYTES)) || fail "the disk is $DISK_SIZE bytes, not the policy's $DISK_BYTES"
+# growpart leaves the backup GPT at the disk's end (33 sectors), and aligns.
+GAP=$((DISK_SIZE - START - PART_SIZE))
+((GAP < 1024 ** 2)) || fail "the root partition ends $GAP bytes before the disk's end: it did not grow"
+SUPER=$(dumpe2fs -h "/dev/$PART" 2>/dev/null)
+BLOCKS=$(awk -F: '/^Block count:/ {print $2 + 0}' <<<"$SUPER")
+BLOCK=$(awk -F: '/^Block size:/ {print $2 + 0}' <<<"$SUPER")
+((BLOCKS > 0 && BLOCK > 0 && PART_SIZE - BLOCKS * BLOCK < BLOCK)) ||
+	fail "the root file system is $BLOCKS blocks of $BLOCK bytes on a $PART_SIZE-byte partition: it did not grow"
+pass "the root partition and its file system grew to the $DISK_SIZE-byte disk ($(findmnt -bno SIZE /) bytes free and used)"
 [[ $(hostname) == qorpera-code-host ]] || fail "the hostname is $(hostname)"
 [[ $(cat /etc/machine-id) =~ ^[0-9a-f]{32}$ ]] || fail "no machine id of its own"
 [[ $(nproc) == "$CPUS" ]] || fail "$(nproc) processors, not the policy's $CPUS"
@@ -90,9 +109,12 @@ for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-
 done
 ! systemctl is-active --quiet apt-daily.timer || fail "apt-daily.timer is active"
 pass "no cloud-init and no compilers; apt's self-updates and the network wait masked"
-for tool in /usr/bin/mkdir /usr/bin/rm /usr/bin/find /usr/bin/cat /bin/sh /bin/false; do
+for tool in /usr/bin/mkdir /usr/bin/rm /usr/bin/find /usr/bin/cat /bin/sh /usr/bin/sh /bin/false /usr/bin/systemd-run; do
 	[[ -x $tool ]] || fail "$tool is not executable"
 done
-for tool in mkfifo cmp head mv; do command -v "$tool" >/dev/null || fail "no $tool"; done
+# The view's mount and its clean (runner-orchestrator code-host-views.ts) run these with PATH=/usr/sbin:/usr/bin.
+for tool in mkfifo cmp head mv tail findmnt mountpoint umount systemctl; do
+	PATH=/usr/sbin:/usr/bin command -v "$tool" >/dev/null || fail "no $tool in /usr/sbin:/usr/bin"
+done
 pass "the commands 5e's jobs run"
 echo "ALL PASSED"

@@ -4,7 +4,8 @@
 # and LXD state into $WORK; `compare <a> <b>` fails when anything differs between two of them, leaving out what
 # other runs on the test machine change meanwhile: Docker's tables, chains, rules, links and addresses, the sysctls
 # of links that come and go, the sysctls that changed on their own between the snapshots "calibrate" and "before",
-# and LXD projects that come and go (a proof checks its own are gone).
+# LXD projects that come and go (a proof checks its own are gone), and storage pools other than POOL that come and go
+# (a proof makes none).
 
 # LXD's state, one line per thing, each led by its project ("-" for storage pools, which have none).
 lxd_state() {
@@ -33,7 +34,7 @@ snapshot() {
 cat >"$WORK/compare.py" <<'PY'
 import collections, re, sys
 
-work, a, b = sys.argv[1:4]
+work, a, b, pool = sys.argv[1:5]
 def lines(name, kind):
     with open(f"{work}/{name}.{kind}") as f:
         return f.read().splitlines()
@@ -109,18 +110,25 @@ lb = {l for l in lines(b, "links") if not OTHERS.match(l)}
 report("links", la - lb, lb - la)
 
 # LXD: the same projects, managed networks, pools, profiles, instances, images and volumes, but in projects that are
-# not there in both (other runs', and this run's, which the run checks are gone).
+# not there in both (other runs', and this run's, which the run checks are gone), and pools other runs make or
+# remove meanwhile (the run's own pool stays as it was).
 xa, xb = set(lines(a, "lxd")), set(lines(b, "lxd"))
-def projects(entries):
-    return {e.split("\t")[0] for e in entries if e.split("\t")[1:2] == ["project"]}
-steady = (projects(xa) & projects(xb)) | {"-"}
-report("LXD state", {e for e in xa - xb if e.split("\t")[0] in steady}, {e for e in xb - xa if e.split("\t")[0] in steady})
-if passing := projects(xa) ^ projects(xb):
+def named(entries, kind, field):
+    return {f[field] for e in entries if (f := e.split("\t"))[1:2] == [kind]}
+steady = (named(xa, "project", 0) & named(xb, "project", 0)) | {"-"}
+coming = (named(xa, "pool", 2) ^ named(xb, "pool", 2)) - {pool}
+def kept(entry):
+    f = entry.split("\t")
+    return f[0] in steady and not (f[1] == "pool" and f[2] in coming)
+report("LXD state", {e for e in xa - xb if kept(e)}, {e for e in xb - xa if kept(e)})
+if passing := named(xa, "project", 0) ^ named(xb, "project", 0):
     print(f"(LXD projects in only one of {a} and {b}, left out: {', '.join(sorted(passing))})")
+if coming:
+    print(f"(storage pools in only one of {a} and {b}, left out: {', '.join(sorted(coming))})")
 
 if problems:
     print("\n".join(problems))
     sys.exit(1)
 print(f"{a} and {b}: modules, sysctls, nft rules, links and LXD state are the same")
 PY
-compare() { python3 "$WORK/compare.py" "$WORK" "$@"; }
+compare() { python3 "$WORK/compare.py" "$WORK" "$1" "$2" "$POOL"; }

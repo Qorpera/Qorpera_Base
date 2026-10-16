@@ -164,7 +164,8 @@ async function main(args: string[]): Promise<void> {
 		const push = lxc(PA, "file", "push", "--uid", "0", "--gid", "0", "--mode", "0500", script, "code-host/root/");
 		if (push.status !== 0) throw new Error(`file push: ${push.stderr}`);
 		const proof = lxc(PA, "exec", CODE_HOST_INSTANCE, "--", "env", `QORPERA_PROOF_GIT=${git}`,
-			`QORPERA_PROOF_FOLDER_SHA256=${folder}`, "QORPERA_PROOF_CPUS=1", "bash", "/root/prove-in-code-host.sh");
+			`QORPERA_PROOF_FOLDER_SHA256=${folder}`, `QORPERA_PROOF_CPUS=${policy.cpus}`,
+			`QORPERA_PROOF_DISK_BYTES=${policy.rootDiskBytes}`, "bash", "/root/prove-in-code-host.sh");
 		process.stdout.write(proof.stdout);
 		process.stderr.write(proof.stderr);
 		check(proof.status === 0 && proof.stdout.endsWith("ALL PASSED\n"), "the checks inside A's code host passed");
