@@ -254,6 +254,19 @@ export interface CloudNativeCompanyContext {
 	/** Every company run is on the company folder (folder-v2, workstream F2), whose agents' folders are
 	 * named: this agent's folder name, and its listed coworkers' by id. */
 	folder: CloudCompanyContextFolders;
+	/** Named only for a run that carries on the agent's own earlier work (a worker's report or its own run, a machine
+	 * event or check-in, an office start): the request of the run that started that chain, set by the platform. Only the
+	 * action review reads it; the model never sees it, so a worker still starts blank. */
+	origin?: CloudCompanyContextOrigin;
+}
+
+/** The request that started a run's chain: the first run's member inputs (and the room posts its wake named), its
+ * routine's intent, or its coworker message. */
+export interface CloudCompanyContextOrigin {
+	runId: string;
+	inputs: CloudCompanyContextSource[];
+	routineIntent: string | null;
+	message: string | null;
 }
 
 /** The folder names of the company's agents (agents/<handle>/). */
@@ -413,12 +426,13 @@ export function parseCloudNativeCompanyContext(
 	value: unknown,
 	binding: CloudNativeToolBinding,
 ): CloudNativeCompanyContext {
-	// One key is present only for some runs: serviceTier (fast mode). Every run names its agent's folder: every
-	// company is on the company folder (legacy sweep step C, C-P9).
+	// Two keys are present only for some runs: serviceTier (fast mode) and origin (a run of the agent's own chain).
+	// Every run names its agent's folder: every company is on the company folder (legacy sweep step C, C-P9).
 	const record =
 		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 	const tiered = record !== null && Object.hasOwn(record, "serviceTier");
-	const { serviceTier, ...always } = record ?? {};
+	const originated = record !== null && Object.hasOwn(record, "origin");
+	const { serviceTier, origin: originValue, ...always } = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
 	const data = closed(record ? always : value, [
 		"schema",
@@ -513,6 +527,7 @@ export function parseCloudNativeCompanyContext(
 	)
 		throw new Error("Cloud context does not match its admitted run");
 	const folder = contextFolders(data.folder, identity, coworkers);
+	const origin = originated ? contextOrigin(originValue, identity) : undefined;
 	return {
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity,
@@ -535,6 +550,41 @@ export function parseCloudNativeCompanyContext(
 		continuation,
 		...(tiered ? { serviceTier: serviceTier as CloudRuntimeServiceTier } : {}),
 		folder,
+		...(origin ? { origin } : {}),
+	};
+}
+
+/** The origin of a run's chain: another run of the same requester, whose member inputs (the requester's own, or the room
+ * posts its wake named), routine intent and coworker message are bounded text. */
+function contextOrigin(value: unknown, identity: CloudNativeToolIdentity): CloudCompanyContextOrigin {
+	const origin = closed(value, ["runId", "inputs", "routineIntent", "message"]);
+	const text = (item: unknown) =>
+		item === null ||
+		(typeof item === "string" &&
+			Buffer.byteLength(item) <= 16384 &&
+			Buffer.from(item).toString("utf8") === item &&
+			!item.includes("\0"));
+	if (!Array.isArray(origin.inputs) || origin.inputs.length > 32 || !text(origin.routineIntent) || !text(origin.message))
+		throw new Error("Invalid cloud context origin");
+	const runId = uuid(origin.runId);
+	const inputs = origin.inputs.map(contextSource);
+	if (
+		runId === identity.runId ||
+		inputs.some(
+			(source) =>
+				(source.sourceKind !== "input" && source.sourceKind !== "history") ||
+				(source.sourceKind === "input" && source.authorUserId !== identity.requesterUserId) ||
+				source.content.offset !== 0,
+		) ||
+		new Set(inputs.map((source) => source.id)).size !== inputs.length ||
+		(!inputs.length && origin.routineIntent === null && origin.message === null)
+	)
+		throw new Error("Invalid cloud context origin");
+	return {
+		runId,
+		inputs,
+		routineIntent: origin.routineIntent as string | null,
+		message: origin.message as string | null,
 	};
 }
 
