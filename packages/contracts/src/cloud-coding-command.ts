@@ -11,7 +11,9 @@ export interface CloudCodingCommandReceipt {
 	readonly workerId: string;
 	readonly commandId: string;
 	readonly inputSha256: string;
-	readonly state: "running" | "succeeded" | "failed" | "cancelled" | "unconfirmed";
+	/** `machine_stopped`: the member's coding machine stopped or restarted under the command (F3 step 5g), which may
+	 * have done part of its work. Its log stays readable. */
+	readonly state: "running" | "succeeded" | "failed" | "cancelled" | "unconfirmed" | "machine_stopped";
 	readonly exitCode: number | null;
 	readonly output: string;
 	readonly truncated: boolean;
@@ -21,6 +23,9 @@ export interface CloudCodingCommandReceipt {
 		readonly totalBytes: number;
 		readonly limitBytes: number;
 		readonly limitReached: boolean;
+		/** Only when bytes were lost: the command's output that the machine dropped before the host saved it. They are
+		 * not in the log, and its offsets do not count them. */
+		readonly gapBytes?: number;
 	};
 }
 
@@ -64,7 +69,9 @@ export function parseCloudCodingCommandReceipt(value: unknown): CloudCodingComma
 		!UUID.test(input.commandId) ||
 		typeof input.inputSha256 !== "string" ||
 		!SHA.test(input.inputSha256) ||
-		!["running", "succeeded", "failed", "cancelled", "unconfirmed"].includes(String(input.state)) ||
+		!["running", "succeeded", "failed", "cancelled", "unconfirmed", "machine_stopped"].includes(
+			String(input.state),
+		) ||
 		typeof input.output !== "string" ||
 		Buffer.byteLength(input.output) > 16384 ||
 		Buffer.from(input.output).toString("utf8") !== input.output ||
@@ -81,7 +88,11 @@ export function parseCloudCodingCommandReceipt(value: unknown): CloudCodingComma
 		!log ||
 		typeof log !== "object" ||
 		Array.isArray(log) ||
-		Object.keys(log).sort().join() !== "limitBytes,limitReached,nextOffset,offset,totalBytes" ||
+		Object.keys(log).sort().join() !==
+			(log.gapBytes === undefined
+				? "limitBytes,limitReached,nextOffset,offset,totalBytes"
+				: "gapBytes,limitBytes,limitReached,nextOffset,offset,totalBytes") ||
+		(log.gapBytes !== undefined && (!Number.isSafeInteger(log.gapBytes) || Number(log.gapBytes) < 1)) ||
 		![log.offset, log.nextOffset, log.totalBytes, log.limitBytes].every(
 			(n) => Number.isSafeInteger(n) && Number(n) >= 0,
 		) ||

@@ -40,7 +40,7 @@ Only canonical HTTPS origins are accepted; `http://127.0.0.1:<port>` is allowed
 for local development and acceptance. Wildcards, opaque origins, paths and
 credentials are rejected. The allowlist is read at service startup.
 
-CORS is limited to the member Company File object, folder object, folder commit, export,
+CORS is limited to the member folder object, folder commit, export,
 native activity display and session attachment routes and their specific methods and headers. Preflights
 perform no authority or storage I/O. Actual requests retain all member bearer
 token and live resource checks, including after object reads. Responses expose
