@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
 	COMPANY_COMPUTER_CONFIGURATION_LIMITS,
@@ -16,6 +17,7 @@ import {
 	OFFICE_PREPARATION_CONTROL_ROOT as root,
 } from "./cloud-company-computer-preparation-control.ts";
 import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
+import { publishCompanyComputerFoldersLeft } from "./cloud-company-computer-service-stop-folders.ts";
 import {
 	assertCompanyComputerServiceStopped,
 	type CompanyComputerServiceStopManager,
@@ -35,19 +37,28 @@ const invocation = (value: unknown) =>
 	value === null || (typeof value === "string" && /^(?!0{32}$)[0-9a-f]{32}$/.test(value));
 let pending = false;
 
+/** A stop control's run, from its start (`cloud-company-computer-service-stop-control-main.ts`). */
+export const COMPANY_COMPUTER_SERVICE_STOP_CONTROL_MS = 100000;
+/** What a run keeps after the mounts the office service left, to seal its history and write its completion. */
+const SEAL_MS = 5000;
+
 /** Trusted provider-to-root stop, after SQL revocation. Protected incoming
  * data is supplied only by the owning provider; its bytes are not a signature
  * or a guest-callable SQL capability. No workbench tree is read or rewritten.
  * A durable claim precedes systemctl. Retained claims allow observation only,
- * never another stop dispatch after uncertainty. */
+ * never another stop dispatch after uncertainty. Once the service is stopped,
+ * the mounts it left are published (`foldersLeft`) before the completion is
+ * written; a run that fails there writes none, and its replay asks again. */
 export async function controlCompanyComputerServiceStop(
 	value: unknown,
 	manager: CompanyComputerServiceStopManager,
 	signal: AbortSignal,
 	inspectionId?: string,
+	foldersLeft: (signal: AbortSignal, until: number) => Promise<void> = publishCompanyComputerFoldersLeft,
 ) {
 	if (pending) throw new Error("OFFICE_SERVICE_STOP_PENDING");
 	pending = true;
+	const until = performance.now() + COMPANY_COMPUTER_SERVICE_STOP_CONTROL_MS - SEAL_MS;
 	const buffers: Buffer[] = [];
 	try {
 		signal.throwIfAborted();
@@ -209,6 +220,8 @@ export async function controlCompanyComputerServiceStop(
 			}
 		}
 		const retainedCompletion = completionBytes ?? archivedCompletion;
+		// A retained or archived completion was written after its run published the mounts left; an inspection has one.
+		if (!retainedCompletion) await foldersLeft(signal, until);
 		const result = retainedCompletion
 			? parseCompanyComputerServiceStopCompletion(decode(retainedCompletion), command, request)
 			: parseCompanyComputerServiceStopCompletion(

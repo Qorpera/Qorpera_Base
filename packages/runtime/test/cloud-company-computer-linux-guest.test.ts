@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import type { CompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
+import { CompanyComputerCommandFolders } from "@qorpera/runtime/cloud-company-computer-command-folder";
 import { CompanyComputerDesktopFolders } from "@qorpera/runtime/cloud-company-computer-desktop-folder";
 import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
 import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-company-computer-effect-control";
@@ -82,8 +83,13 @@ const shells = vi.hoisted(
 			close: ReturnType<typeof vi.fn>;
 			pause: ReturnType<typeof vi.fn>;
 			reported: ReturnType<typeof vi.fn>;
+			list: ReturnType<typeof vi.fn>;
+			/** What the guest gave the shell for its company folder commands. */
+			folder: unknown;
 		}[],
 );
+/** The options each shell's launcher was made with. */
+const shellLaunchers = vi.hoisted(() => [] as Record<string, unknown>[]);
 /** The processor time of each shell namespace, and the bytes its commands moved, as /proc would show them. */
 const shellTicks = vi.hoisted(() => new Map<number, number>());
 const shellBytes = vi.hoisted(() => new Map<number, number>());
@@ -98,8 +104,11 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) =
 					{ memoryBytes: 0, tasks: 1, cpuTicks: shellTicks.get(pid) ?? 0, ioBytes: shellBytes.get(pid) ?? 0 },
 				]),
 			),
-		createCompanyComputerLinuxShellLauncher: () => async () => {
-			throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
+		createCompanyComputerLinuxShellLauncher: (options: Record<string, unknown>) => {
+			shellLaunchers.push(options);
+			return async () => {
+				throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
+			};
 		},
 		CompanyComputerShellPressureGuard: class {
 			close() {}
@@ -140,8 +149,10 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) =
 			});
 			report = () => ({ open: [...this.open], ended: [...this.ended] });
 			known = () => true;
-			list = () => ({ commands: [], processes: 0 });
-			constructor() {
+			list = vi.fn((_runId?: string) => ({ commands: [], processes: 0 }));
+			folder: unknown;
+			constructor(_launcher: unknown, folder?: unknown) {
+				this.folder = folder;
 				shells.push(this);
 			}
 		},
@@ -170,6 +181,7 @@ const windows = {
 };
 beforeEach(() => {
 	shells.length = 0;
+	shellLaunchers.length = 0;
 	shellTicks.clear();
 	shellBytes.clear();
 	windows.pages = [];
@@ -245,7 +257,12 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 async function fixture(
-	options: { browser?: boolean; desktop?: boolean; folderHelper?: typeof askCompanyComputerFolderHelper } = {},
+	options: {
+		browser?: boolean;
+		desktop?: boolean;
+		folderHelper?: typeof askCompanyComputerFolderHelper;
+		commandFolders?: CompanyComputerCommandFolders;
+	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
@@ -328,6 +345,17 @@ async function fixture(
 			return { schema: "qorpera.folder-view/v1", viewId: computerId(200 + opened), pass: `fixture-pass-${opened}` };
 		}
 		if (method === "qorpera_folder_view_close") return {};
+		if (method === "qorpera_folder_view_commits")
+			return {
+				schema: "qorpera.folder-view-commits/v1",
+				viewId: args.p_view_id,
+				state: "closed",
+				more: false,
+				commits:
+					args.p_after_commit_id === null
+						? [{ commitId: computerId(300), units: [{ path: "docs/a.md", outcome: "saved" }, folderConflict] }]
+						: [],
+			};
 		throw new Error(`Unexpected fixture RPC ${method}`);
 	});
 	const boundary = { assertReady: vi.fn(async () => undefined) };
@@ -357,6 +385,7 @@ async function fixture(
 		...(options.folderHelper
 			? { folders: new CompanyComputerDesktopFolders({ registry: { call }, ask: options.folderHelper }) }
 			: {}),
+		...(options.commandFolders ? { commandFolders: options.commandFolders } : {}),
 		boundary,
 		screenshots: () => ({
 			publish: async () => {
@@ -369,7 +398,7 @@ async function fixture(
 	const gate = new CompanyComputerScreenActionGate();
 	const effects = new CloudCompanyComputerEffectControl({ run, scope, control: { call } });
 	const create = () => guest.createSession({ run, descriptor, lease, gate, effects });
-	const operation = (action: { kind: string; [key: string]: string | number }) => ({
+	const operation = (action: { kind: string; [key: string]: string | number | boolean }) => ({
 		...computerOperation(),
 		tool: `computer_${action.kind}`,
 		arguments: action,
@@ -496,6 +525,53 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		const next = await f.create();
 		await next.endpoint.perform(f.operation(action), f.lease, f.effect());
 		expect(shells).toHaveLength(1);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("passes whether a start gets a network on to the shell, and the run asking on to each read and list", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		for (const network of [false, true]) {
+			const operation = f.operation({ kind: "shell", action: "start", command: "npm test", network, waitMs: 0 });
+			await session.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal);
+			await session.endpoint.perform(operation, f.lease, f.effect());
+		}
+		expect(shells[0].start.mock.calls.map(([input]) => input.network)).toEqual([false, true]);
+		// The reply's deadline goes with the read: a company folder command settles its folder before it.
+		expect(shells[0].result).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: f.run.identity.runId,
+				receiptId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				until: expect.any(Number),
+			}),
+		);
+		// The read's receipt is its action's own, by which another run would take in a folder command's reads.
+		expect((shells[0].result.mock.calls[0][0] as { receiptId?: string }).receiptId).toBe(
+			shells[0].start.mock.calls[0][0].key,
+		);
+		await session.endpoint.perform(f.operation({ kind: "shell", action: "list" }), f.lease, f.effect());
+		expect(shells[0].list).toHaveBeenCalledWith(f.run.identity.runId);
+		// Without the folder helper the screen's shell has no `/company`, and no folder for its commands.
+		expect(shellLaunchers).toEqual([expect.objectContaining({ company: false })]);
+		expect(shells[0].folder).toEqual({});
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("gives the screen's shell the company folder for its commands when the office has the folder helper", async () => {
+		const commandFolders = new CompanyComputerCommandFolders({ registry: { call: vi.fn() } });
+		const f = await fixture({ commandFolders });
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "ls /company", network: false, waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		expect(shellLaunchers).toEqual([expect.objectContaining({ company: true })]);
+		expect(shells[0].folder).toEqual({
+			folders: commandFolders,
+			environmentId: f.binding.environmentId,
+			screenId: f.binding.screenId,
+		});
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 
@@ -1086,7 +1162,11 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
 		// The member is typing a password into the window they opened.
 		const typed = { values: ["hunter2"] };
-		const frame = { isDetached: () => false, evaluate: async () => typed.values };
+		// Its private boxes' values; asked with the private attribute, the text it shows (nothing hidden, E3c-3).
+		const frame = {
+			isDetached: () => false,
+			evaluate: async (_script: unknown, arg?: unknown) => (typeof arg === "string" ? "" : typed.values),
+		};
 		windows.pages = [{ isClosed: () => false, frames: () => [frame] }] as never[];
 		const capture = vi
 			.spyOn(CompanyComputerLinuxCommands.prototype, "capturePng")
@@ -1571,6 +1651,9 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 	});
 });
 
+/** A path the company folder did not take from the fixture's desktop (F3 4f-2b). */
+const folderConflict = { path: "docs/b.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" };
+
 /** The folder helper as the screen's mount asks it: each request takes the next answer queued for its op. */
 function folderHelper() {
 	const asked: CompanyComputerFolderRequest[] = [];
@@ -1647,6 +1730,25 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_close:read",
 		]);
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("reports what the company folder did with the run's desktop changes through its session (F3 4f-2b)", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		await expect(session.folderReport?.("", f.run.signal)).resolves.toEqual({
+			mark: expect.stringMatching(/^[0-9a-f-]{36}:[0-9]+$/),
+			report: { saved: 1, notSaved: [folderConflict] },
+		});
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_folder_view_commits",
+			{ p_view_id: computerId(201), p_pass: "fixture-pass-1", p_after_commit_id: null, p_limit: 64 },
+			expect.any(AbortSignal),
+		);
+		// A guest with no company folder has no report to give.
+		const bare = await fixture();
+		expect((await bare.create()).folderReport).toBeUndefined();
 	});
 	it("unmounts a mount made after its run's open was cancelled, a minute later with no desktop", async () => {
 		const h = folderHelper();
@@ -1743,5 +1845,205 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			final: false,
 			timeoutMs: 30000,
 		});
+	});
+	it("answers a drain only once the screen's mount published its last changes and went, after its desktop stopped", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		await session.close();
+		const unmount = computerDeferred<unknown>();
+		h.answer("unmount", unmount.promise);
+		let drained = false;
+		const stopping = f.guest
+			.stopResources(f.binding, new AbortController().signal, { until: performance.now() + 19000 })
+			.then(() => {
+				drained = true;
+			});
+		await vi.waitFor(() => expect(h.ops()).toEqual(["mount", "unmount"]));
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(h.asked[1]).toMatchObject({ op: "unmount", name: `desktop-${f.binding.screenId}`, final: false });
+		expect(drained).toBe(false);
+		unmount.resolve({ answer: "saved", report: { commitId: null, seq: null, paths: [] }, unmounted: true });
+		await stopping;
+		// The view closed before the drain was answered, and no release asked a second boundary.
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_folder_view"))).toEqual([
+			"qorpera_folder_view_open:read",
+			"qorpera_folder_view_close:read",
+		]);
+		expect(h.ops()).toEqual(["mount", "unmount"]);
+	});
+	it("answers a drain only once the mounts of the screen's shell commands went, and fails with one still there", async () => {
+		const left = computerDeferred<void>();
+		const drain = vi.fn(() => left.promise);
+		const commandFolders = { drain } as unknown as CompanyComputerCommandFolders;
+		const f = await fixture({ commandFolders });
+		const signal = new AbortController().signal;
+		const until = performance.now() + 19000;
+		let drained = false;
+		const stopping = f.guest.stopResources(f.binding, signal, { until }).then(() => {
+			drained = true;
+		});
+		await vi.waitFor(() => expect(drain).toHaveBeenCalledWith(f.binding.screenId, signal, until));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(drained).toBe(false);
+		left.resolve();
+		await stopping;
+		drain.mockRejectedValueOnce(new Error("OFFICE_FOLDER_DRAIN_UNANSWERED"));
+		await expect(f.guest.stopResources(f.binding, signal, { until })).rejects.toThrow(
+			"OFFICE_FOLDER_DRAIN_UNANSWERED",
+		);
+		// Any other stop leaves them to their own final boundaries.
+		await f.guest.stopResources(f.binding, signal);
+		expect(drain).toHaveBeenCalledTimes(2);
+	});
+	it("holds a desktop screenshot back until the company folder released the desktop's reads, and says why", async () => {
+		const h = folderHelper();
+		const f = await fixture({ desktop: true, folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		const png = Buffer.alloc(33);
+		Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+		png.writeUInt32BE(13, 8);
+		png.write("IHDR", 12, "ascii");
+		png.writeUInt32BE(1920, 16);
+		png.writeUInt32BE(1200, 20);
+		const capture = vi.spyOn(CompanyComputerLinuxCommands.prototype, "capturePng").mockResolvedValue(png);
+		h.answer(
+			"boundary",
+			{ answer: "refused", report: { commitId: null, seq: null, paths: [], refused: "stopped" } },
+			{ answer: "saved", report: { commitId: "commit-1", seq: 1, paths: [] } },
+		);
+		const desktop = f.operation({ kind: "screenshot", surface: "desktop" });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).resolves.toEqual({
+			kind: "json",
+			value: {
+				screenId: f.binding.screenId,
+				surface: "desktop",
+				completed: false,
+				heldBack: {
+					code: "COMPANY_FOLDER_HELD_BACK",
+					message: "the company is paused, so the company folder holds the screenshot back",
+				},
+			},
+		});
+		expect(capture).toHaveBeenCalledOnce();
+		expect(h.asked.at(-1)).toMatchObject({ op: "boundary", name: `desktop-${f.binding.screenId}`, final: false });
+		// Released: the picture goes on to its publish, which this fixture refuses.
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow("NO_FIXTURE_CAPTURE");
+		expect(h.ops()).toEqual(["mount", "list", "boundary", "list", "boundary"]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+	/** A run's desktop on the screen's mount, whose screenshots the company folder decides on. */
+	async function screenshots(h: ReturnType<typeof folderHelper>, browser = false) {
+		const f = await fixture({ desktop: true, browser, folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		const png = Buffer.alloc(33);
+		Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+		png.writeUInt32BE(13, 8);
+		png.write("IHDR", 12, "ascii");
+		png.writeUInt32BE(1920, 16);
+		png.writeUInt32BE(1200, 20);
+		vi.spyOn(CompanyComputerLinuxCommands.prototype, "capturePng").mockResolvedValue(png);
+		const desktop = f.operation({ kind: "screenshot", surface: "desktop" });
+		const heldBack = (message: string) => ({
+			kind: "json",
+			value: {
+				screenId: f.binding.screenId,
+				surface: "desktop",
+				completed: false,
+				heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message },
+			},
+		});
+		return { f, session, desktop, heldBack };
+	}
+	const refusal = (refused: string) => ({
+		answer: "refused",
+		report: { commitId: null, seq: null, paths: [], refused },
+	});
+	it.each([
+		["a closed view", { answer: "closed" }],
+		["a read no longer readable", refusal("unreadable")],
+		["a read log that cannot be shown complete", refusal("unproven")],
+	])("stops the desktop before its mount goes after %s, and starts it again on a new mount", async (_case, answer) => {
+		const h = folderHelper();
+		const { f, session, desktop, heldBack } = await screenshots(h);
+		const name = `desktop-${f.binding.screenId}`;
+		// What the helper had been asked when the desktop stopped.
+		const stopped: string[][] = [];
+		displays[0].stop.mockImplementation(async () => {
+			stopped.push(h.ops());
+			displays[0].exited.resolve();
+		});
+		h.answer("boundary", answer);
+		h.answer("drop", { answer: "dropped" });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).resolves.toEqual(
+			heldBack("the company folder was restarted on this screen; take the screenshot again"),
+		);
+		// The desktop, with the apps that hold what it read, stopped before the mount went; the session goes on.
+		expect(stopped).toEqual([["mount", "list", "boundary"]]);
+		expect(h.ops()).toEqual(["mount", "list", "boundary", "drop"]);
+		expect(h.asked.at(-1)).toEqual({ op: "drop", name });
+		expect(physical.launch).toHaveBeenCalledOnce();
+		// The run's next action starts the desktop again, on a mount made again under a new view.
+		h.answer("mount", { answer: "mounted" });
+		h.answer("boundary", { answer: "saved", report: { commitId: "commit-1", seq: 1, paths: [] } });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow("NO_FIXTURE_CAPTURE");
+		expect(physical.launch).toHaveBeenCalledTimes(2);
+		expect(physical.launch.mock.calls[1][2]).toEqual({ company: { name, epoch: 2 } });
+		expect(h.ops()).toEqual(["mount", "list", "boundary", "drop", "mount", "boundary"]);
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_folder_view"))).toEqual([
+			"qorpera_folder_view_open:read",
+			"qorpera_folder_view_close:read",
+			"qorpera_folder_view_open:read",
+		]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+	it("drains the screen when the way out's stop fails, and its mount goes only once the drain stopped the desktop", async () => {
+		const h = folderHelper();
+		const { f, session, desktop } = await screenshots(h);
+		displays[0].stop.mockRejectedValueOnce(new Error("fixture desktop did not stop"));
+		// What the helper had been asked when the drain confirmed the desktop gone.
+		const drained: string[][] = [];
+		physical.drain.mockImplementation(async () => void drained.push(h.ops()));
+		h.answer("boundary", refusal("unreadable"));
+		h.answer("drop", { answer: "dropped" });
+		// The drain ends the run's session on the screen, the screenshot with it.
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow();
+		await vi.waitFor(() => expect(f.order).toContain("qorpera_folder_view_close:read"));
+		expect(drained).toEqual([["mount", "list", "boundary"]]);
+		// Then the mount went without a boundary, and its view closed.
+		expect(h.ops()).toEqual(["mount", "list", "boundary", "drop"]);
+		expect(f.events().find((event) => event.state === "closing")).toMatchObject({ reason: "AUTHORITY_LOST" });
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("keeps the mount for the stop control when neither the way out nor its drain can confirm the browser gone", async () => {
+		const h = folderHelper();
+		const { f, session, desktop } = await screenshots(h, true);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		browsers[0].close.mockRejectedValue(new Error("namespace still running"));
+		h.answer("boundary", refusal("unreadable"));
+		h.answer("drop", { answer: "dropped" });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow();
+		await vi.waitFor(() => expect(f.failure).toHaveBeenCalledOnce());
+		const failed = f.failure.mock.calls[0][0] as Error & { cause: Error & { cause: AggregateError } };
+		expect(failed.cause.message).toBe("OFFICE_DESKTOP_STOP_FAILED");
+		// The way out's stop failed on the browser, and so did the drain after it.
+		expect(failed.cause.cause.errors).toHaveLength(2);
+		expect(failed.cause.cause.errors[1]).toMatchObject({ message: "OFFICE_GUEST_DRAIN_UNCONFIRMED" });
+		await expect(f.guest.close()).rejects.toThrow("OFFICE_GUEST_DRAIN_UNCONFIRMED");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		// The drain stopped the desktop, but the browser's own namespace may still read the mount: no drop, no view
+		// closed. The mount is the stop control's now.
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(h.ops()).toEqual(["mount", "list", "boundary"]);
+		expect(f.order).not.toContain("qorpera_folder_view_close:read");
 	});
 });

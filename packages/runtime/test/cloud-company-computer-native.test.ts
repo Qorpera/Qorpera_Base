@@ -9,7 +9,6 @@ import type {
 	CompanyComputerOperation,
 	CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import type { JsonValue } from "@qorpera/contracts";
 import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import {
@@ -25,6 +24,7 @@ import {
 import {
 	CompanyComputerGuestSessionRefusedError,
 	CompanyComputerNativeGateway,
+	type CompanyComputerNativeGuestSession,
 	startCompanyComputerNativeGateway,
 } from "@qorpera/runtime/cloud-company-computer-native-gateway";
 import { HttpCloudCompanyComputerRegistry } from "@qorpera/runtime/cloud-company-computer-registry-http";
@@ -100,6 +100,10 @@ async function fixture(
 		screenshots?: Map<string, Uint8Array>;
 		/** The capture the database reads back for the run. */
 		capture?: () => unknown;
+		/** The boxes the guest's vault_captures sealed (E3c-3), by receipt. */
+		hookBoxes?: Map<string, Readonly<Record<string, string>>>;
+		/** The run's folder report as the guest keeps it (F3 4f-2b). */
+		folderReport?: NonNullable<CompanyComputerNativeGuestSession["folderReport"]>;
 	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
@@ -251,6 +255,16 @@ async function fixture(
 							},
 						}
 					: {}),
+				...(options.hookBoxes
+					? {
+							capture: (receiptId: string) => {
+								const box = options.hookBoxes?.get(receiptId);
+								options.hookBoxes?.delete(receiptId);
+								return box;
+							},
+						}
+					: {}),
+				...(options.folderReport ? { folderReport: options.folderReport } : {}),
 			};
 		},
 	);
@@ -373,11 +387,7 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		const session = await factory(f.run, operations);
 		if (!session) throw new Error("Missing admitted office session");
 		cleanups.push(session.close);
-		expect(session.tools.map((tool) => tool.name)).toEqual([
-			"computer_screen",
-			"computer_shell",
-			"computer_transfer",
-		]);
+		expect(session.tools.map((tool) => tool.name)).toEqual(["computer_screen", "computer_shell"]);
 		const tool = session.tools.find((tool) => tool.name === "computer_shell")!;
 		const context = { companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal };
 		const action = f.operation.arguments;
@@ -394,47 +404,6 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		f.run.close();
 		await session.close();
 		expect(f.physicalClose).toHaveBeenCalledOnce();
-	});
-	// Company objects carried a transfer's bytes and are gone (legacy removal, step C): the tool's answer is a refusal.
-	const transfers: { [key: string]: JsonValue }[] = [
-		{
-			kind: "transfer",
-			action: "export",
-			source: { realm: "company_computer", path: "reports/$(literal).bin" },
-			destination: { realm: "object_storage" },
-			mediaType: "application/octet-stream",
-		},
-		{
-			kind: "transfer",
-			action: "import",
-			source: { realm: "object_storage", assetId: "6f1d2c3b-4a59-4e8f-9b7a-1c2d3e4f5a6b", sha256: "a".repeat(64) },
-			destination: { realm: "company_computer", path: "inbox/report.bin" },
-		},
-	];
-	it.each(transfers)("refuses a file transfer ($action) before the database and any receipt", async (action) => {
-		const f = await fixture();
-		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
-		const factory = createHttpCompanyComputerSessionFactory({
-			url: f.url,
-			token: f.token,
-			holder: () => f.holder,
-			registry: f.registry,
-		});
-		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
-		if (!session) throw new Error("Missing admitted office session");
-		cleanups.push(session.close);
-		const tool = session.tools.find((tool) => tool.name === "computer_transfer")!;
-		const refused = tool.execute(
-			{ operationKey: "native-office:transfer", action },
-			{ companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal },
-		);
-		await expect(refused).rejects.toBeInstanceOf(CloudToolAuthorizeRefusal);
-		await expect(refused).rejects.toThrow("File transfer is not available on this computer yet.");
-		expect(control.beginToolOperation).not.toHaveBeenCalled();
-		expect(f.createSession).not.toHaveBeenCalled();
-		expect(f.perform).not.toHaveBeenCalled();
-		expect(f.order).not.toContain("qorpera_native_office_operation:authorize");
-		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
 	});
 	it("tells the model why the database refused a screenshot at its authorize, before any receipt or office work", async () => {
 		const message =
@@ -1036,6 +1005,74 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		expect(s.eventHookCapture).not.toHaveBeenCalled();
 	});
 
+	it("carries the box a guest's vault_capture sealed in that call's answer only, and never a done read without one (E3c-3)", async () => {
+		const hook = randomUUID();
+		const box = {
+			schema: "qorpera.event-hook-capture-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const hookFills = {
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(),
+			eventHook: vi.fn<CompanyComputerHookFills["eventHook"]>(async () => ({
+				schema: "qorpera.event-hook-rekey-answer/v1",
+				hook,
+				replaced: false,
+			})),
+			eventHookCapture: vi.fn<CompanyComputerHookFills["eventHookCapture"]>(async () => ({
+				schema: "qorpera.event-hook-capture-answer/v1",
+				hook,
+				version: 2,
+				unchanged: false,
+			})),
+		};
+		const hookBoxes = new Map<string, Readonly<Record<string, string>>>();
+		const f = await fixture({ capabilities: ["browser"], hookFills, hookBoxes });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_capture",
+				role: "button",
+				name: "Reveal",
+				hook,
+				field: "signing_secret",
+			},
+		};
+		const read = (extra: Record<string, unknown> = {}) => ({
+			kind: "json" as const,
+			value: { action: "vault_capture", tabId: randomUUID(), completed: true, ...extra },
+		});
+		f.perform.mockImplementationOnce(async (_action, _lease, context) => {
+			hookBoxes.set(context.receiptId, box);
+			return read();
+		});
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: true,
+				captured: { hook, field: "signing_secret", version: 2, unchanged: false },
+			},
+		});
+		expect(hookFills.eventHookCapture).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookCapture.mock.calls[0]![0]).toMatchObject({ receiptId: f.context.receiptId, box });
+		expect(hookBoxes.size).toBe(0);
+		// The receipt keeps the read, never the box.
+		expect(JSON.stringify(f.sql.mock.calls)).not.toContain("ciphertext");
+		// The page stopped the agent after the click: the stop is the answer, with no box, and nothing is stored.
+		const stop = read({ stop: "SITE_STOP_HUMAN_CHECK", message: "Stop" });
+		f.perform.mockResolvedValueOnce(stop);
+		expect(await f.endpoint.perform(operation, f.lease, { ...f.context, receiptId: randomUUID() })).toEqual(stop);
+		// A done read whose box is gone (the session ended under it) is no answer.
+		f.perform.mockResolvedValueOnce(read());
+		await expect(f.endpoint.perform(operation, f.lease, { ...f.context, receiptId: randomUUID() })).rejects.toThrow();
+		expect(hookFills.eventHookCapture).toHaveBeenCalledOnce();
+	});
+
 	it("re-derives the native principal, consumes the original receipt and physically closes before releasing occupancy", async () => {
 		const f = await fixture();
 		await f.endpoint.authorize(f.operation, f.run.identity, f.lease, f.run.signal);
@@ -1406,6 +1443,83 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		// Only the release's lease proof was asked (G2-6c).
 		expect(f.sql).toHaveBeenCalledOnce();
 		expect(f.proofs).toHaveLength(1);
+	});
+	it("carries the run's folder report from its session under its lease, and asks nothing without one (F3 4f-2b)", async () => {
+		const mark = `${randomUUID()}:3`;
+		const report = { saved: 2, notSaved: [{ path: "docs/a.md", outcome: "conflict" }], more: true as const };
+		const folderReport = vi.fn(async (shown: string, _signal: AbortSignal) =>
+			shown === mark ? undefined : { mark, report },
+		);
+		const f = await fixture({ folderReport });
+		// No lease there yet: the office is not asked.
+		await expect(f.endpoint.folderReport("", f.run.signal)).resolves.toBeUndefined();
+		expect(f.sql).not.toHaveBeenCalled();
+		await f.endpoint.perform(f.operation, f.lease, f.context);
+		const before = f.order.length;
+		f.proofs.splice(0);
+		await expect(f.endpoint.folderReport("", f.run.signal)).resolves.toEqual({ mark, report });
+		await expect(f.endpoint.folderReport(mark, f.run.signal)).resolves.toBeUndefined();
+		expect(folderReport.mock.calls.map(([shown]) => shown)).toEqual(["", mark]);
+		// Each ask proves the run's lease and starts no work: no authority read, no operation, no perform.
+		expect(f.proofs).toHaveLength(2);
+		expect(f.order).toHaveLength(before);
+		expect(f.perform).toHaveBeenCalledOnce();
+		// A mark that is not one, another field, or no holder: refused, and the session is not asked.
+		const ask = {
+			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
+			nativeBinding: f.source.binding,
+			action: "folder_report",
+			lease: f.lease,
+			shown: "",
+		};
+		for (const [value, options] of [
+			[{ ...ask, shown: "a mark" }, {}],
+			[{ ...ask, shown: 3 }, {}],
+			[{ ...ask, operation: f.operation }, {}],
+			[ask, { identity: null }],
+		] as const) {
+			const refused = await f.post(value, options);
+			expect(refused.status).toBe(503);
+			expect(await refused.text()).not.toContain(f.leaseToken);
+		}
+		expect(folderReport).toHaveBeenCalledTimes(2);
+		// A released lease has no session there: nothing to report, and the closed endpoint asks nothing more.
+		await f.endpoint.close();
+		const released = await f.post(ask);
+		expect(released.status).toBe(200);
+		expect(await released.json()).toEqual({ schema: COMPANY_COMPUTER_NATIVE_SCHEMA });
+		await expect(f.endpoint.folderReport("", f.run.signal)).resolves.toBeUndefined();
+		expect(folderReport).toHaveBeenCalledTimes(2);
+
+		// A guest that keeps no report has none.
+		const g = await fixture();
+		await g.endpoint.perform(g.operation, g.lease, g.context);
+		await expect(g.endpoint.folderReport("", g.run.signal)).resolves.toBeUndefined();
+	});
+	it("takes the office's folder report only in its own shape", async () => {
+		const f = await fixture({ folderReport: async () => ({ mark: `${randomUUID()}:1`, report: { saved: 1 } }) });
+		let answer: unknown;
+		const endpoint = new HttpCompanyComputerNativeEndpoint({
+			run: f.run,
+			descriptor: f.descriptor,
+			registry: f.registry,
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			fetch: async (input, init) => (answer === undefined ? fetch(input, init) : Response.json(answer)),
+		});
+		await endpoint.perform(f.operation, f.lease, f.context);
+		for (const [value, error] of [
+			[{ schema: COMPANY_COMPUTER_NATIVE_SCHEMA, mark: 3, report: { saved: 1 } }, "INVALID_OFFICE_NATIVE_RESULT"],
+			[{ schema: "qorpera.other/v1" }, "INVALID_OFFICE_NATIVE_RESULT"],
+			[{ schema: COMPANY_COMPUTER_NATIVE_SCHEMA, mark: "a" }, "INVALID_OFFICE_NATIVE_MESSAGE"],
+			[{ schema: COMPANY_COMPUTER_NATIVE_SCHEMA, report: { saved: 1 } }, "INVALID_OFFICE_NATIVE_MESSAGE"],
+		] as const) {
+			answer = value;
+			await expect(endpoint.folderReport("", f.run.signal)).rejects.toThrow(error);
+		}
+		answer = undefined;
+		await endpoint.close();
 	});
 	it("parses only scoped descriptors and fixed configured HTTPS routes", async () => {
 		const f = await fixture();

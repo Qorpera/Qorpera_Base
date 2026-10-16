@@ -1,3 +1,4 @@
+import { CompanyComputerCommandFolders } from "./cloud-company-computer-command-folder.ts";
 import { CompanyComputerDesktopFolders } from "./cloud-company-computer-desktop-folder.ts";
 import {
 	CompanyComputerLinuxBoundary,
@@ -18,7 +19,10 @@ export type CompanyComputerLinuxOfficeServiceOptions = Omit<
 > & {
 	startup?: CompanyComputerStartupControl;
 	screenLifecycle: CompanyComputerScreenLifecycle;
-	/** The folder helper of an image that has one: each desktop then gets the company folder at `/company` (F3 4d). */
+	/**
+	 * The folder helper of an image that has one: each desktop and each shell command then gets the company folder at
+	 * `/company` (F3 4d).
+	 */
 	folderHelper?: { socket: string };
 	linux: Omit<
 		CompanyComputerLinuxGuestOptions,
@@ -30,6 +34,7 @@ export type CompanyComputerLinuxOfficeServiceOptions = Omit<
 		| "screenshots"
 		| "screenLifecycle"
 		| "folders"
+		| "commandFolders"
 	> & {
 		attestation: CompanyComputerLinuxGuestAttestation;
 	};
@@ -57,6 +62,9 @@ export async function startCompanyComputerLinuxOfficeService(
 	// Mounts an earlier activation left belong to ended views. One that does not go now stays the helper's; the first
 	// holder of its screen finds it (`held`) and moves it to its own view.
 	await folders?.dropLeftovers(options.signal);
+	const commandFolders = options.folderHelper
+		? new CompanyComputerCommandFolders({ registry: options.registry, socket: options.folderHelper.socket })
+		: undefined;
 	const guest = new CompanyComputerLinuxGuest({
 		...options.linux,
 		scope: options.scope,
@@ -64,6 +72,7 @@ export async function startCompanyComputerLinuxOfficeService(
 		registry: options.registry,
 		screenLifecycle: options.screenLifecycle,
 		...(folders ? { folders } : {}),
+		...(commandFolders ? { commandFolders } : {}),
 		boundary,
 		// No file import or export: those moved bytes through company objects, which are gone (legacy removal, step C).
 		screenshots: (run) =>

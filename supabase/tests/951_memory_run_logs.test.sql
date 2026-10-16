@@ -543,9 +543,10 @@ declare
 	r jsonb;
 begin
 	-- A run names its own log; nobody else writes it, and only the platform deletes from it. (Each staged text is new.)
+	-- With no runLog, a run's change is its conversation tree's (M1b-4b-2, 20260930300000), which names no generation here.
 	r := public.qorpera_folder_memory_commit(env, a, 'w1b:whose:1', jsonb_build_array(pg_temp.rfile(t0,
 		pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"w1"}']), a)));
-	perform pg_temp.refused(r, 1, 'structured_rule', 'a run writes only its own run log');
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run tree change names exactly its own conversation and generation');
 	r := public.qorpera_folder_memory_commit(env, pg_temp.member(1), 'w1b:whose:2', jsonb_build_array(pg_temp.rfile(t0,
 		pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"w2"}']), pg_temp.member(1))),
 		jsonb_build_object('runLog', jsonb_build_object('run', nora, 'path', log)) || gen);

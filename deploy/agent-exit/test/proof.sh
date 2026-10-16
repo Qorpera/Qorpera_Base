@@ -4,7 +4,7 @@
 # (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1 on the tailnet. It
 # builds the exit with the real tool and rules, plugs the agent machine in, and checks what reaches what. The agent
 # plug's reconciler (E2) runs against a stand-in for LXD: a JSON file of instances the proof rewrites.
-# qorpera-agent-exit.test.mjs builds the container and runs this file. Prints PASS lines; any failure exits 1.
+# qorpera-agent-exit-proof.test.mjs builds the container and runs this file. Prints PASS lines; any failure exits 1.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -90,7 +90,7 @@ threading.Event().wait()
 EOF
 cat >"$work/resolver.py" <<'EOF'
 import socket
-# A public resolver stand-in: every A question is answered with 1.1.1.1.
+# A public resolver stand-in: every A question is answered with 1.1.1.1, one for a name starting "two." with 1.0.0.1.
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.bind(("9.9.9.9", 53))
 print("ready", flush=True)
@@ -100,7 +100,8 @@ while True:
     while q[i] != 0:
         i += q[i] + 1
     question = q[12:i + 5]
-    answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes([1, 1, 1, 1])
+    address = [1, 0, 0, 1] if q[12:16] == b"\x03two" else [1, 1, 1, 1]
+    answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes(address)
     s.sendto(q[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + question + answer, peer)
 EOF
 cat >"$work/ask.py" <<'EOF'
@@ -351,7 +352,8 @@ cat >"$work/db.py" <<'EOF'
 import json, os, sys, uuid
 # Sets companies' rules in the rules reader's stand-in database argv[1]; each further argument is company=null (no
 # rules), company=bad (rules not as the reader writes them), company=a,b (open, these names blocked, none if empty) or
-# company=only:a,b (only listed: listed.test allowed, these blocked). Each change is a new version.
+# company=only:a,b (only listed: listed.test allowed, these blocked) or company=only:a,b+c,d (c and d allowed). Each change
+# is a new version.
 path = sys.argv[1]
 db = json.load(open(path))
 for spec in sys.argv[2:]:
@@ -362,9 +364,10 @@ for spec in sys.argv[2:]:
         db[company] = {"version": "1", "mode": "open", "block": [], "allow": []}
     else:
         mode = "only-listed" if value.startswith("only:") else "open"
-        names = [n for n in value.removeprefix("only:").split(",") if n]
+        value, _, allowed = value.removeprefix("only:").partition("+")
+        names = [n for n in value.split(",") if n]
         db[company] = {"version": str(uuid.uuid4()), "mode": mode, "block": names,
-                       "allow": ["listed.test"] if mode == "only-listed" else []}
+                       "allow": (allowed.split(",") if allowed else ["listed.test"]) if mode == "only-listed" else []}
 with open(path + ".tmp", "w") as f:
     json.dump(db, f)
 os.replace(path + ".tmp", path)
@@ -444,7 +447,7 @@ ip link set lan0 up
 ip route replace default via 192.168.1.1
 for address in 192.168.1.1/24 192.168.1.40/24 192.168.1.27/24; do ip -n lan addr add "$address" dev lan1; done
 ip -n lan link set lan1 up
-for address in 1.1.1.1/32 9.9.9.9/32 93.164.62.162/32; do ip -n lan addr add "$address" dev lo; done
+for address in 1.1.1.1/32 1.0.0.1/32 9.9.9.9/32 93.164.62.162/32; do ip -n lan addr add "$address" dev lo; done
 # The office network has no route to the exit's addresses: what arrives must come from the node's own address.
 ip netns add tail
 ip -n tail link set lo up
@@ -465,6 +468,7 @@ background lan "$work/lan.out" python3 "$work/serve.py" "$work/lan-peers" 1.1.1.
 background lan "$work/resolver.out" python3 "$work/resolver.py"
 background lan "$work/udpseen.out" python3 "$work/udpseen.py" "$work/nas-udp" 192.168.1.40 9999
 background lan "$work/hold.out" python3 "$work/hold.py" 1.1.1.1 8443
+background lan "$work/hold2.out" python3 "$work/hold.py" 1.0.0.1 443
 background tail "$work/tail.out" python3 "$work/serve.py" "$work/tail-peers" 100.75.4.70:22
 
 # --- The exit ---------------------------------------------------------------------------------------------------
@@ -852,10 +856,11 @@ python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vm1:Running:10.210.1.2:
 wait_for "test ! -e $QORPERA_AGENT_EXIT_RUN_DIR/plug-stopped/10.210.1.2"
 pass "a sleeping machine keeps its address and entry; its TCP, UDP and ICMP connections end in the exit and on the node"
 
-# --- Each company's names (E8b) ------------------------------------------------------------------------------------
+# --- Each company's names (E8b) and where its machines may go (E8c-1) ------------------------------------------------
 # The agent machine is company c0's, the plugged one company c1's. A company with rules gets a resolver of its own on
 # 10.210.0.1 (a port of its own), which answers "no such name" for its blocked names; one without keeps the main
-# dnsmasq on 53. A machine's DNS goes to its company's, whatever address it asks.
+# dnsmasq on 53. A machine's DNS goes to its company's, whatever address it asks. The map reach sends each machine's
+# new flows to the chain open, or to its company's only_<port> in "only listed" mode.
 nft_elements() {
 	local text
 	text=$(ip netns exec qexit nft -j list "$1" inet qorpera_agent_exit "$2")
@@ -870,6 +875,19 @@ print(" ".join(sorted(found)))' "$text"
 dns_map() { nft_elements map dns_port; }
 dns_allowed() { nft_elements set dns_allowed; }
 dns_is() { [[ $(dns_map) == "$1" && $(dns_allowed) == "$1" ]]; }
+# The map reach as `nft -j` gives it ([address, {"goto": {"target": chain}}]): "address:chain ...".
+reach_map() {
+	local text
+	text=$(ip netns exec qexit nft -j list map inet qorpera_agent_exit reach)
+	python3 -c '
+import json, sys
+found = []
+for item in json.loads(sys.argv[1])["nftables"]:
+    for key, verdict in (item.get("map") or {}).get("elem", []) or []:
+        found.append("%s:%s" % (key, verdict["goto"]["target"]))
+print(" ".join(sorted(found)))' "$text"
+}
+counted() { ip netns exec qexit nft list counter inet qorpera_agent_exit "$1" | grep -o 'packets [0-9]*' | cut -d' ' -f2; }
 refused_dns() {
 	local text
 	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit refused_dns)
@@ -891,6 +909,7 @@ wait_for "names_is \"s['resolvers'] == {'c0': 10001} and s['mapped'] == {'10.210
 	$(cat "$servers_dir/10001.servers") == $'server=/*.wild.test/\nserver=/blocked.test/' ]] ||
 	fail "c0's servers file: $(ls -l "$servers_dir"; cat "$servers_dir/10001.servers")"
 dns_is "10.210.1.1:10001 10.210.1.2:53" || fail "the DNS map: $(dns_map) / $(dns_allowed)"
+[[ $(reach_map) == "10.210.1.1:open 10.210.1.2:open" ]] || fail "the reach map: $(reach_map)"
 for server in 10.210.0.1 8.8.8.8; do
 	for name in blocked.test sub.blocked.test a.wild.test; do
 		asks agent "$server" "$name" NXDOMAIN || fail "$name via $server: $(ask_code agent "$server" "$name")"
@@ -928,28 +947,98 @@ asks plugged 10.210.0.1 open.test "no answer" 10001 || fail "c1's machine asked 
 asks plugged 10.210.0.1 flush.test NXDOMAIN 10002 || fail "c1's machine cannot ask its own resolver's port"
 pass "a machine never reaches another company's resolver"
 
-# "Only listed": E8b enforces its block list; the allow list waits for E8c.
+# "Only listed" (E8c-1): the resolver answers only the listed names not blocked, and puts the addresses it gives out in
+# the company's set allow_10002; the machine reaches TCP 443 on those only. The switch restarts the resolver (the set
+# emptied first) and ends the machine's connections, so none made before goes on.
+ip netns exec plugged python3 -c 'import socket, time; s = socket.create_connection(("1.1.1.1", 8443)); time.sleep(600)' &
+pids+=($!)
+wait_for "shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null"
+resolver2=$(resolver_pid 10002)
+not_listed=$(counted refused_not_listed)
 python3 "$work/db.py" "$db" 'c1=only:only.test'
-wait_for "asks plugged 10.210.0.1 only.test NXDOMAIN"
-asks plugged 10.210.0.1 flush.test "NOERROR 1.1.1.1" || fail "flush.test is still blocked: $(ask_code plugged 10.210.0.1 flush.test)"
-asks plugged 10.210.0.1 unlisted.test "NOERROR 1.1.1.1" || fail "an unlisted name: $(ask_code plugged 10.210.0.1 unlisted.test)"
-pass "only listed: the block list is enforced, unlisted names still resolve (E8c)"
+wait_for "names_is \"s['reach'] == {'10.210.1.1': 'open', '10.210.1.2': 'only_10002'} and s['problems'] == []\""
+[[ $(reach_map) == "10.210.1.1:open 10.210.1.2:only_10002" ]] || fail "the reach map: $(reach_map)"
+[[ $(cat "$servers_dir/10002.mode") == only-listed ]] || fail "the mode file: $(cat "$servers_dir/10002.mode")"
+wait_for "asks plugged 10.210.0.1 unlisted.test NXDOMAIN"
+[[ $(resolver_pid 10002) != "$resolver2" ]] || fail "the switch reloaded c1's resolver; it must restart it"
+resolver2=$(resolver_pid 10002)
+shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null && fail "a connection made before the switch goes on"
+refused_now plugged 1.1.1.1 443 || fail "an address no listed name gave reached"
+asks plugged 8.8.8.8 only.test NXDOMAIN || fail "a blocked name: $(ask_code plugged 8.8.8.8 only.test)"
+asks plugged 10.210.0.1 listed.test "NOERROR 1.1.1.1" || fail "a listed name: $(ask_code plugged 10.210.0.1 listed.test)"
+connects plugged 1.1.1.1 443 || fail "the machine cannot reach a listed name's address"
+refused_now plugged 1.0.0.1 443 || fail "an unlisted address reached"
+refused_now plugged 1.1.1.1 8443 || fail "a listed address on another port reached"
+ip netns exec plugged busybox ping -c 1 -W 1 1.1.1.1 >/dev/null && fail "a listed address answered a ping"
+(($(counted refused_not_listed) >= not_listed + 3)) || fail "refused_not_listed: $not_listed, then $(counted refused_not_listed)"
+connects agent 1.0.0.1 443 || fail "an open company's machine lost its way out"
+asks plugged 10.210.0.1 two.listed.test "NOERROR 1.0.0.1" || fail "a name under a listed one: $(ask_code plugged 10.210.0.1 two.listed.test)"
+ip netns exec plugged python3 -c 'import socket, time; s = socket.create_connection(("1.0.0.1", 443)); time.sleep(600)' &
+pids+=($!)
+wait_for "shows 'dst=1.0.0.1 sport=[0-9]* dport=443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null"
+# The refused flow keeps the mark it was refused with (0x80000004, not listed): 1.0.0.1 listed since changes neither
+# it nor its log line.
+kept=$(ip netns exec qexit nft -j list set inet qorpera_agent_exit refused_flows | python3 "$here/qorpera-agent-exit-log.py" --parse-set)
+[[ $kept == *'[["10.210.1.2", "1.0.0.1", "tcp", 443, 2147483652], '* ]] || fail "the refusal of 1.0.0.1 as kept: $kept"
+wait_for "grep -q '\"dst\":\"1.0.0.1\",\"event\":\"refused\".*\"rule\":\"not_listed\"' $log_file"
+pass "only listed: unlisted names are no such name; the machine reaches TCP 443 on a listed name's addresses only, refused and logged as not_listed otherwise (also once the address is listed); the switch restarts the resolver and ends the connections made before"
 
-# Fail closed: a company whose rules are not usable has no element, and its machines' DNS is dropped wherever it goes.
+# A wider list reloads the resolver; a narrower one restarts it with its set emptied and ends the connections again.
+python3 "$work/db.py" "$db" 'c1=only:only.test+listed.test,more.test'
+wait_for "asks plugged 10.210.0.1 more.test 'NOERROR 1.1.1.1'"
+[[ $(resolver_pid 10002) == "$resolver2" ]] || fail "a wider list restarted the resolver"
+shows 'dst=1.0.0.1 sport=[0-9]* dport=443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null ||
+	fail "a wider list ended a connection"
+python3 "$work/db.py" "$db" 'c1=only:only.test+more.test'
+wait_for "asks plugged 10.210.0.1 listed.test NXDOMAIN"
+[[ $(resolver_pid 10002) != "$resolver2" ]] || fail "a narrower list only reloaded the resolver"
+wait_for "names_is \"s['problems'] == [] and not __import__('os').path.exists('$servers_dir/10002.owed')\""
+shows 'dst=1.0.0.1 sport=[0-9]* dport=443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null &&
+	fail "a connection to an address no longer listed goes on"
+refused_now plugged 1.1.1.1 443 || fail "the set was not emptied"
+asks plugged 10.210.0.1 more.test "NOERROR 1.1.1.1" || fail "more.test: $(ask_code plugged 10.210.0.1 more.test)"
+connects plugged 1.1.1.1 443 || fail "a listed name's address after the narrower list"
+pass "a wider list reloads the resolver and keeps the connections; a narrower one restarts it, empties its set and ends them"
+
+# Back to "open": the resolver restarted without the set, the chain and set removed, the machine out again.
+python3 "$work/db.py" "$db" 'c1=only.test'
+wait_for "names_is \"s['reach'] == {'10.210.1.1': 'open', '10.210.1.2': 'open'} and s['problems'] == []\""
+wait_for "asks plugged 10.210.0.1 unlisted.test 'NOERROR 1.1.1.1'"
+wait_for "! ip netns exec qexit nft list chain inet qorpera_agent_exit only_10002 >/dev/null 2>&1"
+ip netns exec qexit nft list set inet qorpera_agent_exit allow_10002 >/dev/null 2>&1 && fail "allow_10002 stayed"
+asks plugged 10.210.0.1 only.test NXDOMAIN || fail "only.test is not blocked: $(ask_code plugged 10.210.0.1 only.test)"
+connects plugged 1.0.0.1 443 || fail "an open company's machine cannot reach any address"
+pass "back to open: the resolver asks for every name again, its chain and set go, and the machine reaches out"
+
+# Fail closed: a company whose rules are not usable has no element, and its machines' DNS is dropped wherever it goes;
+# with no element in reach either, they reach nothing outside, and a connection made before is ended (the exit lets
+# an established one go on).
+ip netns exec plugged python3 -c 'import socket, time; s = socket.create_connection(("1.1.1.1", 8443)); time.sleep(600)' &
+pids+=($!)
+wait_for "shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null"
 refused=$(refused_dns)
 python3 "$work/db.py" "$db" 'c1=bad'
 wait_for "names_is \"s['resolvers'] == {'c0': 10001} and s['mapped'] == {'10.210.1.1': 10001}\""
+shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null &&
+	fail "a connection made before the rules were unusable goes on"
 dns_is "10.210.1.1:10001" || fail "the DNS map with c1's rules not usable: $(dns_map) / $(dns_allowed)"
 for server in 10.210.0.1 8.8.8.8; do
 	asks plugged "$server" open.test "no answer" || fail "c1's machine got DNS via $server: $(ask_code plugged "$server" open.test)"
 done
 (($(refused_dns) >= refused + 2)) || fail "refused_dns counted $refused, then $(refused_dns)"
 asks agent 10.210.0.1 open.test "NOERROR 1.1.1.1" || fail "c0's machine lost DNS"
+[[ $(reach_map) == "10.210.1.1:open" ]] || fail "the reach map with c1's rules not usable: $(reach_map)"
+refused_now plugged 1.1.1.1 443 || fail "c1's machine reached a site with its rules not usable"
+# A flow is logged once an hour for each rule that refused it: 443 to 1.1.1.1, refused before as not listed, again.
+refused_now plugged 1.1.1.1 80 || fail "c1's machine reached a site on port 80 with its rules not usable"
+wait_for "grep -q '\"dport\":80,\"dst\":\"1.1.1.1\",\"event\":\"refused\".*\"rule\":\"rules_unknown\"' $log_file"
+wait_for "grep -q '\"dport\":443,\"dst\":\"1.1.1.1\",\"event\":\"refused\".*\"rule\":\"rules_unknown\"' $log_file"
+connects agent 1.1.1.1 443 || fail "c0's machine lost its way out"
 if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed with a company's rules not usable"; fi
 grep -q "names: c1: its rules are not as the rules reader writes them" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 wait_for "test ! -e $work/units/10002.pid"
 [[ -e $servers_dir/10002.servers ]] && fail "a stopped resolver's servers file stayed"
-pass "a company whose rules are not usable: no element, its machines' DNS dropped (to the exit or elsewhere) and counted, its resolver stopped, verify fails"
+pass "a company whose rules are not usable: no element, its machines' DNS dropped (to the exit or elsewhere) and counted, their flows refused and logged as rules_unknown, their connections ended, its resolver stopped, verify fails"
 
 # A company the rules file does not list yet: no element either.
 python3 "$work/db.py" "$db" 'c1=null'
@@ -968,9 +1057,10 @@ EOF
 wait_for "names_is \"s['mapped'] == {'10.210.1.1': 10001}\""
 dns_is "10.210.1.1:10001" || fail "the DNS map with c1 unknown: $(dns_map) / $(dns_allowed)"
 asks plugged 10.210.0.1 open.test "no answer" || fail "c1's machine got DNS with its company unknown"
+refused_now plugged 1.1.1.1 443 || fail "c1's machine reached a site with its company unknown"
 rm "$db.pause"
 wait_for "names_is \"s['mapped'] == {'10.210.1.1': 10001, '10.210.1.2': 53}\""
-pass "a machine whose company the rules file does not list yet has no DNS"
+pass "a machine whose company the rules file does not list yet has no DNS and no way out"
 
 # No rules file at all: every machine's DNS is dropped. A reader silent too long fails verify (its rules stay).
 touch "$db.pause"
@@ -980,6 +1070,8 @@ wait_for "names_is \"s['mapped'] == {}\""
 dns_is "" || fail "the DNS map without a rules file: $(dns_map) / $(dns_allowed)"
 asks agent 10.210.0.1 open.test "no answer" || fail "c0's machine got DNS without a rules file"
 asks plugged 8.8.8.8 open.test "no answer" || fail "c1's machine got DNS without a rules file"
+[[ $(reach_map) == "" ]] || fail "the reach map without a rules file: $(reach_map)"
+refused_now agent 1.1.1.1 443 || fail "c0's machine reached a site without a rules file"
 if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed without a rules file"; fi
 grep -q "names: no rules file yet" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 rm "$db.pause"
@@ -994,9 +1086,11 @@ if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed with the r
 grep -q "names: the rules reader silent for" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 rm "$db.pause"
 wait_for "bash $tool verify >/dev/null 2>&1"
-pass "without a rules file no machine has DNS; a rules reader silent for too long fails verify, its last rules stay"
+pass "without a rules file no machine has DNS or a way out; a rules reader silent for too long fails verify, its last rules stay"
 
 # A resolver that dies is started again on its port.
+resolver=$(resolver_pid 10001)
+[[ -n $resolver ]] || fail "c0's resolver is not running"
 kill "$resolver"
 wait_for "[[ -n \$(resolver_pid 10001) && \$(resolver_pid 10001) != $resolver ]]"
 wait_for "asks agent 10.210.0.1 blocked.test NXDOMAIN"
@@ -1060,6 +1154,8 @@ assert c["c0"]["connections"] > 0 and c["c0"]["machines"] == 1, c
 assert c["c0"]["refusedByRule"].get("our_networks", 0) > 0, c
 # The plugged machine's TCP to 8443, its ping and its UDP, under the company its plugged line names.
 assert c["c1"]["connections"] >= 3 and set(c["c1"]["byProto"]) >= {"tcp", "udp", "icmp"}, c
+# Its flows refused in "only listed" mode and with its rules not usable.
+assert c["c1"]["refusedByRule"].get("not_listed", 0) > 0 and c["c1"]["refusedByRule"].get("rules_unknown", 0) > 0, c
 EOF
 pass "the counts tie each machine's connections and refusals to its company"
 # Parts of one byte: today's open files are sealed, and dns.log is cut while dnsmasq writes on into it.
@@ -1234,6 +1330,7 @@ bash "$tool" verify >/dev/null || fail "verify with the brake on: $(bash "$tool"
 pass "the founder's levels in the node's settings switch the brake on: its share rule is in the exit, nothing braked yet"
 
 [[ $(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 12 3) == 12 ]] || fail "a burst before the brake did not all get through"
+burst_end=$(date +%s)
 wait_for "grep -q '\"company\":\"cB\",\"event\":\"braked\",\"reason\":\"[0-9]* new connections in 10 seconds (level 5)\"' $LOG/flows-$today.jsonl"
 wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 1)]\""
 number=$(brake_get "s['braked'][0]['number']")
@@ -1241,7 +1338,10 @@ until_before=$(brake_get "s['braked'][0]['until']")
 wait_for "rules_are dropped \"r['machines'] == {'10.210.1.26': $number}\""
 pass "a company past a level is braked: a braked line, and its machine in the exit's braked map with its number"
 # Its share: 2 of 10 new connections at once get through, the rest are dropped (and resent once, at 1 second, before
-# they give up), each counted once. Another company's machine is not braked.
+# they give up), each counted once. Another company's machine is not braked. On a loaded machine the brake can land
+# before the burst's last connections start, and they take the share's tokens; the share is full again 10 seconds after
+# its last token was taken.
+while (($(date +%s) < burst_end + 11)); do sleep 0.5; done
 let_through=$(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 10 2)
 [[ $let_through == 2 ]] || fail "a braked company got $let_through of 10 new connections at once through, not its share of 2"
 for _ in 1 2 3; do connects agent 1.1.1.1 443 || fail "another company's machine was braked"; done
@@ -1340,6 +1440,7 @@ resolver=$(resolver_pid 10001)
 ip netns del qexit
 bash "$tool" up >/dev/null
 dns_is "10.210.1.1:10001" || fail "up did not fill the DNS map: $(dns_map) / $(dns_allowed)"
+[[ $(reach_map) == "10.210.1.1:open" ]] || fail "up did not fill the reach map: $(reach_map)"
 for _ in $(seq 1 150); do grep -q "watches an old namespace" "$work/log.out" && break; sleep 0.2; done
 grep -q "watches an old namespace" "$work/log.out" || fail "the logger kept watching the old namespace: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify3.err" && fail "verify passed with the name service in the old namespace"
@@ -1362,7 +1463,8 @@ exit_mac=$(ip -n qexit -br link show br0 | awk '{print $3}')
 ip -n agent neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
 asks agent 10.210.0.1 blocked.test NXDOMAIN ||
 	fail "c0's machine after the rebuild: $(ask_code agent 10.210.0.1 blocked.test)"
-pass "after an interrupted rebuild the logger leaves the old namespace by itself, verify fails until DNS follows, and a company's resolver left there is restarted into the new one"
+connects agent 1.1.1.1 443 || fail "the agent machine has no way out after the rebuild"
+pass "after an interrupted rebuild the logger leaves the old namespace by itself, verify fails until DNS follows, and a company's resolver left there is restarted into the new one; up filled reach and the machine goes out"
 
 # --- Fail closed -------------------------------------------------------------------------------------------------
 if bash "$tool" down 2>"$work/down.err"; then fail "down went ahead with a machine plugged in"; fi
@@ -1371,7 +1473,8 @@ ip netns exec qexit true || fail "a refused down changed the exit"
 bash "$tool" verify >/dev/null || fail "a refused down left the exit unhealthy"
 pass "down refuses while a machine is plugged in and changes nothing"
 # The exit crashes: its namespace and everything in it disappear while the machine stays plugged in.
-for pid in $(ip netns pids qexit); do kill -9 "$pid"; done
+# A process listed may have ended before its kill (as in the exit tool's own loop).
+for pid in $(ip netns pids qexit); do kill -9 "$pid" 2>/dev/null || true; done
 ip netns del qexit
 sleep 0.5
 connects agent 1.1.1.1 443 && fail "the machine still reaches the internet with the exit gone"

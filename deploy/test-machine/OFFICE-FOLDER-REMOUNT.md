@@ -6,12 +6,13 @@ when systemd restarts the office's company folder program, do the office
 namespaces that are already running see the new mount? It is not completion of
 4d, an office image release, or live-company acceptance.
 
-The real `qorpera-folder` program runs under master's mount unit. Only the unit's
-paths are moved to #1047's `/run` layout, and it talks to a synthetic protocol-3
-node on a Unix socket. The office namespaces are started by the runtime's own
-process gate (`cloud-company-computer-linux-process.ts`, types stripped) with
-mirrored bubblewrap arguments, from a relay that carries every confinement line
-of master's office unit. No plumber, credentials, vsock identity, SQL or model is
+The real `qorpera-folder` program runs under master's office mount unit,
+rendered with the office account's ids as the image installer renders it. Only
+its `ExecStart` changes: the program is the one pushed in, and it talks to a
+synthetic protocol-4 node on a Unix socket. The office namespaces are started
+by the runtime's own process gate (`cloud-company-computer-linux-process.ts`,
+types stripped) with mirrored bubblewrap arguments, from a relay that carries
+every confinement line of master's office unit. No plumber, credentials, vsock identity, SQL or model is
 claimed.
 
 ## Run
@@ -58,15 +59,24 @@ never their contents. The fixture's preflight checks again inside the guest.
 
 The default image is A1: fingerprint
 `9a4935f853ae27b80bb8d2fd8cbe33d1cb3db68bbfe0d47469bb0ebdbbf20f01`, built at
-commit `c1ac31535`. **A1 predates folder-v2.** The proof therefore does not use
-any folder program or folder unit the image may carry:
+commit `c1ac31535`. **A1 predates folder-v2.** On any image, the proof never
+starts a folder program or folder unit the image carries:
 
 - the `qorpera-folder` program is built from this tree and pushed in;
-- the mount unit is master's `deploy/folder-service/qorpera-folder-mount@.service`,
-  pushed in, with only the lines that name `/etc` and `/srv` moved to #1047's
-  `/run` layout, the synthetic node's socket, and no `[Install]`. It still runs
-  as root with `CapabilityBoundingSet=CAP_SYS_ADMIN`, `Restart=on-failure`,
-  `RestartSec=5s` and `RestartPreventExitStatus=3`;
+- the mount unit is master's
+  `deploy/lxd-company-computer-guest/qorpera-office-folder-mount@.service.in`,
+  pushed in. Each office id placeholder is replaced once, as the installer does.
+  `ExecStart` alone changes: the pushed program, and `--connect unix:` the
+  synthetic node's socket. It runs as `qorpera-remount-folder-mount@<view>`. An
+  image's own `qorpera-office-folder-mount@.service` in `/etc` would shadow a
+  unit of that name in `/run`. It runs as root with
+  `CapabilityBoundingSet=CAP_SYS_ADMIN`, `Restart=on-failure`, `RestartSec=5s`,
+  `RestartPreventExitStatus=3`, and #1085's `ExecStartPre` lazy umount of a dead
+  mount;
+- if the image carries `/etc/systemd/system/qorpera-office-folder-mount@.service`
+  (a 4e image does), the preflight requires it to be byte for byte that rendering
+  and records its sha256 (`imageMountUnitSha256`). The unit the proof runs is
+  then the image's own, but for its program, its node and its name;
 - the relay takes its confinement lines from master's
   `deploy/lxd-company-computer-guest/qorpera-company-computer.service`, pushed in.
 
@@ -75,13 +85,15 @@ the mount tools, any `fusermount`, the `qorpera-office` account, and how `/run` 
 mounted. The record's `guestImage` part keeps what A1 carries beside master's:
 the installed office unit's sha256 and its diff against master
 (`officeUnitSha256`, `officeUnitAgainstMaster`), what is in `/opt/qorpera-folder`
-and which `qorpera-folder*` units exist (`imageFolder`), `/run`'s mount options
-(`runMount`) and which of `fusermount` and `fusermount3` exist. The top-level
+and which `qorpera-folder*` and `qorpera-office-folder*` units exist
+(`imageFolder`), the office mount unit's sha256 (`imageMountUnitSha256`),
+`/run`'s mount options (`runMount`) and which of `fusermount` and `fusermount3`
+exist. The top-level
 `image` is the fingerprint the VM was made from.
 
-4d's acceptance reruns this harness on the 4d generation with
-`--image <fingerprint>`, once that image is staged. Building that image is 4d's
-work, not this proof's.
+4d's acceptance reruns this harness with `--image <fingerprint>` on a 4e
+candidate, staged by `scripts/build-office-image-candidate.sh --stage`
+([`OFFICE-IMAGE-CANDIDATE.md`](OFFICE-IMAGE-CANDIDATE.md)).
 
 ## What the JSON establishes
 
@@ -131,12 +143,10 @@ design; none of them decides `result`.
   processes, such as the `ExecStopPost` umount, only at debug, so each kill runs
   with the guest's systemd at log level `debug`, and the level it had
   (`logLevel`) is set back afterwards.
-- `kill3Cleared`: a third `systemctl kill -s KILL`, after the second kill's
-  checks, with a drop-in that adds
-  `ExecStartPre=-/usr/bin/umount -l /run/qorpera-folder/mounts/q3/company` to the
-  unit. It records the same fields as `kill1` and `kill2`, and `oneRestart`:
-  whether one restart served the folder again. The drop-in is removed before
-  the exit-3 step, so that step runs master's unit lines.
+- A1's run also had `kill3Cleared`, a third `systemctl kill -s KILL` with a
+  drop-in adding the `ExecStartPre` lazy umount (results below). #1085 put that
+  line into master's office mount unit, which the proof now runs, so the second
+  kill covers it and the third kill is gone.
 - `staleCwd`: the command namespace's working directory inside `/company` from
   before the kill: listing it after the kill, then `chdir` again and listing.
 - `oldDescriptor`: a read descriptor the desktop namespace opened before the
@@ -295,7 +305,7 @@ too, but the office user cannot enter it, so a shell spawned with
 
 The record lists these under `limitations`:
 
-- The node is a synthetic protocol-3 node on a Unix socket: no database, vsock
+- The node is a synthetic protocol-4 node on a Unix socket: no database, vsock
   identity, view switching or plumber.
 - The office namespaces come from the runtime's process gate and mirrored
   bubblewrap arguments, in a relay that runs under the office unit's
@@ -307,8 +317,9 @@ The record lists these under `limitations`:
   used without its display or capture.
 - `systemd-run` takes the office unit's `InaccessiblePaths=` lines as transient
   properties, where unit specifiers are not expanded.
-- A1 predates folder-v2: the folder program and the mount unit's lines were
-  pushed in from master.
+- The folder program is pushed in from this tree, and the mount unit is
+  master's office unit under the proof's own name. An image's own unit is
+  compared byte for byte, never started.
 
 ## Unprivileged checks
 
