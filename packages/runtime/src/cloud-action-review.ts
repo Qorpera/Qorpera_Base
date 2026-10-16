@@ -889,7 +889,7 @@ function bounded(text: string, bytes: number): string {
 	return Buffer.byteLength(text) <= bytes ? text : `${head(text, bytes - 6).trimEnd()} [...]`;
 }
 
-/** The member's (or routine's, or coworker's) request this run works on, as the
+/** The member's (or routine's) request this run works on, as the
  * reviewer reads it: the text that started the work, never the transcript. A
  * card answer reads as what the member chose; when members started the run, the
  * agent's message or card they were answering follows, marked as the agent's
@@ -913,9 +913,8 @@ export function cloudActionReviewRequest(context: CloudNativeCompanyContext, wak
 		}
 	const fromMembers = parts.length > 0;
 	if (wake?.routine) parts.push(`Routine: ${wake.routine.intent}`);
-	// A coworker's wake carries the sender's message as its payload's text.
-	if (wake?.kind === "agent" && wake.source.kind === "coworker" && typeof wake.payload.text === "string")
-		parts.push(`Message from a coworker: ${wake.payload.text}`);
+	// A coworker's message is another agent's words, never authority (contract 9.2): it is never the request, neither
+	// for the run it wakes nor for a chain that run starts.
 	const text = parts.join("\n\n").trim();
 	// A run of the agent's own chain (its workers reported, a machine event, an office start) names no request itself:
 	// the platform's origin is the request of the run that started the chain. Never counted as the members' own request.
@@ -924,7 +923,6 @@ export function cloudActionReviewRequest(context: CloudNativeCompanyContext, wak
 		const origin = [
 			...context.origin.inputs.map((source) => memberText(source.content.text)),
 			...(context.origin.routineIntent === null ? [] : [`Routine: ${context.origin.routineIntent}`]),
-			...(context.origin.message === null ? [] : [`Message from a coworker: ${context.origin.message}`]),
 		]
 			.join("\n\n")
 			.trim();

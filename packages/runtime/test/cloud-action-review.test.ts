@@ -1090,7 +1090,7 @@ describe("what the reviewer reads as the request", () => {
 		).toBe(`Go ahead.\n\n${ANSWERED}\nShall I hire both?`);
 	});
 
-	it("reads a member's message, a post named by the wake, a routine and a coworker message", () => {
+	it("reads a member's message, a post named by the wake and a routine, never a coworker's message", () => {
 		expect(cloudActionReviewRequest(context([source("a", "current_human_request", "Email Bob.")]), null)).toBe(
 			"Email Bob.",
 		);
@@ -1112,17 +1112,17 @@ describe("what the reviewer reads as the request", () => {
 				wake({ kind: "routine", routine: { id: randomUUID(), version: 1, intent: "Renew domains." } }),
 			),
 		).toBe("Routine: Renew domains.");
-		// A coworker's wake as the database writes it: the sender's message is its payload's text.
-		expect(
-			cloudActionReviewRequest(
-				context([]),
-				wake({
-					kind: "agent",
-					source: { kind: "coworker", id: randomUUID(), occurrenceKey: "k" },
-					payload: { text: "Please send it.", senderStaffId: randomUUID(), receiptId: randomUUID() },
-				}),
-			),
-		).toBe("Message from a coworker: Please send it.");
+		// A coworker's wake as the database writes it: the sender's message is another agent's words, never the request.
+		const fromCoworker = cloudActionReviewRequest(
+			context([]),
+			wake({
+				kind: "agent",
+				source: { kind: "coworker", id: randomUUID(), occurrenceKey: "k" },
+				payload: { text: "Please send it.", senderStaffId: randomUUID(), receiptId: randomUUID() },
+			}),
+		);
+		expect(fromCoworker).toBe("(No member request in this run; it was started by agent.)");
+		expect(fromCoworker).not.toContain("Please send it.");
 		expect(
 			cloudActionReviewRequest(
 				context([]),
@@ -1137,7 +1137,7 @@ describe("what the reviewer reads as the request", () => {
 		const originOf = (origin: Partial<NonNullable<CloudNativeCompanyContext["origin"]>>) =>
 			({
 				...context([]),
-				origin: { runId: randomUUID(), inputs: [], routineIntent: null, message: null, ...origin },
+				origin: { runId: randomUUID(), inputs: [], routineIntent: null, ...origin },
 			}) as CloudNativeCompanyContext;
 		// The TESTCO chain: a routine's run dispatched a worker, and its report's run corrects that worker.
 		expect(
@@ -1155,11 +1155,10 @@ describe("what the reviewer reads as the request", () => {
 			"machine-checkin": "a program kept a machine busy",
 			"office-activation": "the Company Computer started",
 		} as const;
+		const invoices = [source("i", "current_human_request", "Check the invoices.")] as never;
 		for (const [kind, said] of Object.entries(words))
-			expect(
-				cloudActionReviewRequest(originOf({ message: "Check the invoices." }), own(kind as keyof typeof words)),
-			).toBe(
-				`(This run carries on the agent's own earlier work: ${said}. The request that started it:)\n\nMessage from a coworker: Check the invoices.`,
+			expect(cloudActionReviewRequest(originOf({ inputs: invoices }), own(kind as keyof typeof words))).toBe(
+				`(This run carries on the agent's own earlier work: ${said}. The request that started it:)\n\nCheck the invoices.`,
 			);
 		// A member's request reads as their own words: a quote in it stays masked.
 		const quoted = JSON.stringify({

@@ -1,12 +1,12 @@
 -- A run that carries on the agent's own earlier work is reviewed against the request that started that work (finding
 -- 881f1f21, L12.2, 16 October 2026).
 --
--- The action review reads a run's request from its member inputs, its routine or its coworker message. A run of a chain
--- the agent started itself has none of them: a worker's report (worker-completion), the worker's own run
--- (worker-dispatch), a machine event or check-in (machine-event, machine-checkin) and an office start
--- (office-activation). On TESTCO the review read "No member request" for the run woken by a worker's report and denied
--- its follow-up to that worker (routine 7d26f746, run e89f892a, worker run 92c51cb4, completion wake 878621c0, run
--- 3e4ecb18, review 881f1f21).
+-- The action review reads a run's request from its member inputs or its routine (a coworker's message is never the
+-- request, contract 9.2). A run of a chain the agent started itself has neither: a worker's report
+-- (worker-completion), the worker's own run (worker-dispatch), a machine event or check-in (machine-event,
+-- machine-checkin) and an office start (office-activation). On TESTCO the review read "No member request" for the run
+-- woken by a worker's report and denied its follow-up to that worker (routine 7d26f746, run e89f892a, worker run
+-- 92c51cb4, completion wake 878621c0, run 3e4ecb18, review 881f1f21).
 --
 -- 1. qorpera_wake_occurrences.origin_run_id: for those five kinds only, the run whose request started the chain. A
 --    BEFORE INSERT trigger sets it from the platform's own parent_run_id, never from the inserter: the parent run's own
@@ -16,13 +16,19 @@
 --    origin (written before this migration) stays without one. qorpera_guard_wake_identity already refuses any later
 --    change. No foreign key: the review re-reads the run, and an origin it cannot find reads as none.
 -- 2. qorpera_run_review_origin(run): that origin run's request, with the lookups describe and
---    qorpera_worker_run_continuation use: its member inputs, the room posts its wake names, its routine's intent and
---    its coworker message. Null when the run has no origin or the origin has none of them, and when a source is
---    refused (qorpera_company_context_source's 42501), so the review reads what it reads today.
+--    qorpera_worker_run_continuation use: its member inputs, the room posts its wake names and its routine's intent.
+--    Never a coworker's message (contract 9.2), and not what a member's short reply answered. Null when the run has
+--    no origin or the origin has none of them, and when a source is refused (qorpera_company_context_source's 42501),
+--    so the review reads what it reads today.
 -- 3. qorpera_describe_company_run_context adds the key 'origin' with it when it is not null. The runtime gives it only
 --    to the action review, never to the model: a worker starts blank by design.
 --
 -- human-task wakes are left out (their parent is a member's task, not the agent's own work).
+--
+-- Deploy order: apply this only after every node runs a runtime that parses 'origin' (runtime CHANGELOG, finding
+-- 881f1f21), never in a roll's 10-migration step: an older runtime refuses a context with an unknown key, so its
+-- chain runs would fail. Before a reverse to such a runtime, undo step 3 (restore describe's body without the origin
+-- statement) first.
 
 alter table public.qorpera_wake_occurrences add column origin_run_id uuid;
 
@@ -57,7 +63,7 @@ create function public.qorpera_run_review_origin(p_run public.qorpera_execution_
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_wake public.qorpera_wake_occurrences%rowtype; v_origin public.qorpera_execution_runs%rowtype;
 	v_origin_wake public.qorpera_wake_occurrences%rowtype; v_id uuid; v_source jsonb; v_inputs jsonb := '[]';
-	v_routine text; v_message text;
+	v_routine text;
 begin
 	select * into v_wake from public.qorpera_wake_occurrences where run_id = p_run.id and origin_run_id is not null;
 	if not found then return null; end if;
@@ -91,11 +97,9 @@ begin
 		v_routine := (select left(prompt, 4096) from public.qorpera_cloud_routine_versions
 			where routine_id = v_origin_wake.routine_id and version = v_origin_wake.routine_version);
 	end if;
-	if v_origin_wake.source_kind = 'coworker' and jsonb_typeof(v_origin_wake.payload -> 'text') = 'string' then
-		v_message := left(v_origin_wake.payload ->> 'text', 4096);
-	end if;
-	if jsonb_array_length(v_inputs) = 0 and v_routine is null and v_message is null then return null; end if;
-	return jsonb_build_object('runId', v_origin.id, 'inputs', v_inputs, 'routineIntent', v_routine, 'message', v_message);
+	-- A coworker's message is another agent's words, never the request (contract 9.2): a chain it started has none.
+	if jsonb_array_length(v_inputs) = 0 and v_routine is null then return null; end if;
+	return jsonb_build_object('runId', v_origin.id, 'inputs', v_inputs, 'routineIntent', v_routine);
 end
 $$;
 revoke all on function public.qorpera_run_review_origin(public.qorpera_execution_runs)

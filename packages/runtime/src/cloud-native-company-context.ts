@@ -260,13 +260,12 @@ export interface CloudNativeCompanyContext {
 	origin?: CloudCompanyContextOrigin;
 }
 
-/** The request that started a run's chain: the first run's member inputs (and the room posts its wake named), its
- * routine's intent, or its coworker message. */
+/** The request that started a run's chain: the first run's member inputs (and the room posts its wake named) or its
+ * routine's intent. */
 export interface CloudCompanyContextOrigin {
 	runId: string;
 	inputs: CloudCompanyContextSource[];
 	routineIntent: string | null;
-	message: string | null;
 }
 
 /** The folder names of the company's agents (agents/<handle>/). */
@@ -555,21 +554,16 @@ export function parseCloudNativeCompanyContext(
 }
 
 /** The origin of a run's chain: another run of the same requester, whose member inputs (the requester's own, or the room
- * posts its wake named), routine intent and coworker message are bounded text. */
+ * posts its wake named) and routine intent are bounded text. A coworker's message is never part of it (contract 9.2). */
 function contextOrigin(value: unknown, identity: CloudNativeToolIdentity): CloudCompanyContextOrigin {
-	const origin = closed(value, ["runId", "inputs", "routineIntent", "message"]);
+	const origin = closed(value, ["runId", "inputs", "routineIntent"]);
 	const text = (item: unknown) =>
 		item === null ||
 		(typeof item === "string" &&
 			Buffer.byteLength(item) <= 16384 &&
 			Buffer.from(item).toString("utf8") === item &&
 			!item.includes("\0"));
-	if (
-		!Array.isArray(origin.inputs) ||
-		origin.inputs.length > 32 ||
-		!text(origin.routineIntent) ||
-		!text(origin.message)
-	)
+	if (!Array.isArray(origin.inputs) || origin.inputs.length > 32 || !text(origin.routineIntent))
 		throw new Error("Invalid cloud context origin");
 	const runId = uuid(origin.runId);
 	const inputs = origin.inputs.map(contextSource);
@@ -582,14 +576,13 @@ function contextOrigin(value: unknown, identity: CloudNativeToolIdentity): Cloud
 				source.content.offset !== 0,
 		) ||
 		new Set(inputs.map((source) => source.id)).size !== inputs.length ||
-		(!inputs.length && origin.routineIntent === null && origin.message === null)
+		(!inputs.length && origin.routineIntent === null)
 	)
 		throw new Error("Invalid cloud context origin");
 	return {
 		runId,
 		inputs,
 		routineIntent: origin.routineIntent as string | null,
-		message: origin.message as string | null,
 	};
 }
 

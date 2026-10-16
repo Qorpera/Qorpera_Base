@@ -1235,21 +1235,18 @@ it("carries a chain's origin for the action review only, never to the model (fin
 		runId: randomUUID(),
 		inputs: [f.source("input", randomUUID(), "Keep the price list current."), room],
 		routineIntent: null,
-		message: null,
 	};
 	const context = parseCloudNativeCompanyContext({ ...f.context, origin }, f.binding);
 	expect(context.origin).toEqual(origin);
 	expect(Object.hasOwn(parseCloudNativeCompanyContext(f.context, f.binding), "origin")).toBe(false);
-	for (const only of [{ routineIntent: "Renew the domains." }, { message: "Check the invoices." }])
-		expect(
-			parseCloudNativeCompanyContext({ ...f.context, origin: { ...origin, inputs: [], ...only } }, f.binding).origin,
-		).toEqual({ ...origin, inputs: [], ...only });
+	const routine = { ...origin, inputs: [], routineIntent: "Renew the domains." };
+	expect(parseCloudNativeCompanyContext({ ...f.context, origin: routine }, f.binding).origin).toEqual(routine);
 	// The model's context message never names it: a worker starts blank, and the request is the member's, not the agent's.
 	const prompt = composeCloudNativeCompanyPrompt(context);
 	expect(prompt).not.toContain("price list");
 	expect(Object.hasOwn(JSON.parse(prompt), "origin")).toBe(false);
 	// Refused: an origin with nothing in it, this run itself, another member's input, a cut source, a repeated or
-	// non-request source, an extra key, a long or bad text, and null.
+	// non-request source, an extra key (a coworker's message is never part of it), a long or bad text, and null.
 	const other = { ...f.source("input", randomUUID(), "Not the requester's."), authorUserId: randomUUID() };
 	const cut = f.source("input", randomUUID(), "Cut.");
 	cut.content = { ...cut.content, offset: 1, truncated: true };
@@ -1262,8 +1259,9 @@ it("carries a chain's origin for the action review only, never to the model (fin
 		{ ...origin, inputs: [origin.inputs[0], origin.inputs[0]] },
 		{ ...origin, inputs: [f.source("job", f.binding.runId, "{}")] },
 		{ ...origin, kind: "worker-completion" },
+		{ ...origin, message: "Check the invoices." },
 		{ ...origin, routineIntent: "x".repeat(16385) },
-		{ ...origin, message: 1 },
+		{ ...origin, routineIntent: 1 },
 		null,
 	])
 		expect(() => parseCloudNativeCompanyContext({ ...f.context, origin: bad }, f.binding)).toThrow();

@@ -88,7 +88,7 @@ begin
 	if pg_temp.origin(pg_temp.child(c, 'machine-event')) is not null then raise exception 'An older chain has no origin'; end if;
 end $$;
 
--- 3. The review reads the origin's request: its member input, routine or coworker message; none when it has none ----
+-- 3. The review reads the origin's request: its member input or routine, never a coworker's message; none without one
 do $$
 declare m jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
 	routine jsonb := pg_temp.routine_run(m, 'Keep the price list current.');
@@ -107,19 +107,20 @@ begin
 			or r -> 'inputs' -> 0 ->> 'authorUserId' is distinct from '63400000-0000-4000-8000-000000000002'
 			or r -> 'inputs' -> 0 -> 'content' ->> 'text' is distinct from 'Send the offer to Nora.'
 			or (r -> 'inputs' -> 0 -> 'content' ->> 'offset')::integer <> 0
-			or r -> 'routineIntent' <> 'null'::jsonb or r -> 'message' <> 'null'::jsonb then
+			or r -> 'routineIntent' <> 'null'::jsonb
+			or (select array_agg(key order by key) from jsonb_object_keys(r) key) <> array['inputs','routineIntent','runId'] then
 			raise exception 'A % run reads the member''s request: %', k, r; end if;
 	end loop;
 	r := pg_temp.review(pg_temp.child(routine, 'worker-completion'));
 	if r ->> 'runId' is distinct from routine ->> 'runId' or r -> 'inputs' <> '[]'::jsonb
-		or r ->> 'routineIntent' is distinct from 'Keep the price list current.' or r -> 'message' <> 'null'::jsonb then
+		or r ->> 'routineIntent' is distinct from 'Keep the price list current.' then
 		raise exception 'A routine''s chain reads its intent: %', r; end if;
+	-- A coworker's message is another agent's words, never the request (contract 9.2): a chain it started has none.
 	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set payload = jsonb_build_object('text',
 		'Check the invoices.', 'senderStaffId', '84000000-0000-4000-8000-0000000000e2') where run_id = %L$q$, coworker ->> 'runId'));
-	r := pg_temp.review(pg_temp.child(coworker, 'machine-event'));
-	if r ->> 'runId' is distinct from coworker ->> 'runId' or r -> 'inputs' <> '[]'::jsonb
-		or r -> 'routineIntent' <> 'null'::jsonb or r ->> 'message' is distinct from 'Check the invoices.' then
-		raise exception 'A coworker''s chain reads the message: %', r; end if;
+	if pg_temp.origin(pg_temp.child(coworker, 'machine-event')) is distinct from (coworker ->> 'runId')::uuid
+		or pg_temp.review(pg_temp.child(coworker, 'machine-event')) is not null then
+		raise exception 'A coworker''s chain reads no request: %', pg_temp.review(pg_temp.child(coworker, 'machine-event')); end if;
 	-- No origin, an origin with no request, and a source the context refuses (42501) read as none.
 	perform pg_temp.fx(format($q$update public.qorpera_session_inputs set runtime_bundle_sha256 = repeat('f', 64)
 		where id = (select input_ids[1] from public.qorpera_execution_runs where id = %L)$q$, refused ->> 'runId'));
@@ -133,4 +134,44 @@ begin
 			unnest(array['anon','authenticated','service_role']) role
 		where has_function_privilege(role, 'public.' || f, 'execute')) then
 		raise exception 'An API role can call an origin function'; end if;
+end $$;
+
+-- 4. Describe gives a worker's run its origin, exactly as the review reads it; the member's own run has none ----------
+select set_config('qorpera_test.ada5', pg_temp.agent_run('84000000-0000-4000-8000-0000000000e1')::text, false) \g /dev/null
+do $$
+declare ada jsonb := current_setting('qorpera_test.ada5')::jsonb; w constant uuid := '84000000-0000-4000-8000-000000000116';
+	x jsonb; r jsonb; v_bundle public.qorpera_active_runtime_bundle%rowtype; v_manifest jsonb;
+begin
+	perform pg_temp.dispatch(ada, 'agents/ada/todos/plan-the-trip/origin', w, 'origin-dispatch-0001');
+	perform pg_temp.drain();
+	if (pg_temp.wake((pg_temp.w(w)).occurrence_id)).origin_run_id is distinct from (ada -> 'actor' ->> 'runId')::uuid then
+		raise exception 'Fixture: the drain starts the worker with Ada''s run as its origin'; end if;
+	-- The worker's run, as the materializer makes it from the wake (here with triggers off), with the trigger's origin.
+	x := pg_temp.worker_run(ada, w);
+	perform pg_temp.fx(format('update public.qorpera_wake_occurrences w set origin_run_id = public.qorpera_wake_origin(w)
+		where run_id = %L', x -> 'actor' ->> 'runId'));
+	-- Both runs carry the active runtime bundle, whose model policy the context checks (as 647 §8 sets it up), and the
+	-- company has its folder index.
+	select * into strict v_bundle from public.qorpera_active_runtime_bundle where singleton;
+	select manifest into strict v_manifest from public.qorpera_runtime_bundles
+	where id = v_bundle.runtime_bundle_id and sha256 = v_bundle.runtime_bundle_sha256;
+	perform pg_temp.fx(format('update public.qorpera_execution_runs set runtime_bundle_id = %L, runtime_bundle_sha256 = %L,
+		reasoning_effort = %L, reasoning_policy_sha256 = %L, service_tier = ''standard'' where id in (%L, %L)',
+		v_bundle.runtime_bundle_id, v_bundle.runtime_bundle_sha256, v_manifest #>> '{modelPolicy,effort}',
+		encode(extensions.digest(convert_to((v_manifest -> 'modelPolicy')::text, 'utf8'), 'sha256'), 'hex'),
+		ada -> 'actor' ->> 'runId', x -> 'actor' ->> 'runId'));
+	perform pg_temp.fx(format($q$update public.qorpera_session_inputs set runtime_bundle_id = %L, runtime_bundle_sha256 = %L,
+		body = '{"text":"Send the offer to Nora."}' where execution_run_id = %L$q$, v_bundle.runtime_bundle_id,
+		v_bundle.runtime_bundle_sha256, ada -> 'actor' ->> 'runId'));
+	perform pg_temp.fx(format('insert into public.qorpera_folder_company_index(environment_id, profile_id, name, vision_path_version,
+		vision_seeded, commit_id) select %L, %L, %L, %L, true, %L where not exists (select 1 from public.qorpera_folder_company_index
+		where environment_id = %L)', '63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', 'Nordlys',
+		extensions.gen_random_uuid(), extensions.gen_random_uuid(), '63400000-0000-4000-8000-000000000020'));
+	r := public.qorpera_describe_company_run_context(x -> 'binding');
+	if r -> 'origin' is null or r -> 'origin' is distinct from pg_temp.review(x -> 'actor')
+		or r -> 'origin' ->> 'runId' is distinct from ada -> 'actor' ->> 'runId'
+		or r -> 'origin' -> 'inputs' -> 0 -> 'content' ->> 'text' is distinct from 'Send the offer to Nora.' then
+		raise exception 'Describe gives a worker''s run its origin: %', r -> 'origin'; end if;
+	if public.qorpera_describe_company_run_context(ada -> 'binding') ? 'origin' then
+		raise exception 'The member''s own run has no origin'; end if;
 end $$;
