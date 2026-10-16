@@ -666,6 +666,40 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	);
 
 	it(
+		"the code host makes a new repository with git init, its boundary publishes HEAD and config, and a session cannot write them",
+		async () => {
+			const at = await area();
+			const host = await mountSession(at, "host");
+			const fresh = "code/acme/fresh/repo.git";
+			const gitDir = join(host.company, fresh);
+			const init = ["--quiet", "--bare", "--template=", "--ref-format=files", "--initial-branch=main"];
+			await git(host.company, host.home, "init", ...init, gitDir);
+			const head = "ref: refs/heads/main\n";
+			expect(await readFile(join(gitDir, "HEAD"), "utf8")).toBe(head);
+			const published = await host.publish();
+			expect(published.code, published.out).toBe(0);
+			expect(at.core.entries.get(`${fresh}/HEAD`)?.fileSha256).toBe(hashOf(head));
+			const config = hashOf(await readFile(join(gitDir, "config")));
+			expect(at.core.entries.get(`${fresh}/config`)?.fileSha256).toBe(config);
+			// git init's probe file (`tXXXXXX`) came and went before the boundary.
+			const top = [...at.core.entries.keys()].filter(
+				(path) => path.startsWith(`${fresh}/`) && !path.slice(fresh.length + 1).includes("/"),
+			);
+			expect(top.filter((path) => path.startsWith(`${fresh}/t`))).toEqual([]);
+			await at.service.poll();
+
+			const first = await mountSession(at, "first");
+			expect(await readFile(join(first.company, fresh, "HEAD"), "utf8")).toBe(head);
+			for (const name of ["HEAD.lock", "tXXXXXX"])
+				await expect(
+					writeFile(join(first.company, fresh, name), "ref: refs/heads/w1\n", { flag: "wx" }),
+				).rejects.toThrow(/EPERM/);
+			expect(at.core.entries.get(`${fresh}/HEAD`)?.fileSha256).toBe(hashOf(head));
+		},
+		TIMEOUT,
+	);
+
+	it(
 		"a cache folder stays on the machine's disk, and leaves the list once git tracks it",
 		async () => {
 			const at = await area();

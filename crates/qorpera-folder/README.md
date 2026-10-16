@@ -81,7 +81,9 @@ Git on the mount (F3 step 5d; `RUNTIME-COMPANY-FOLDER.md` §6, `RUNTIME-FOLDER-C
 `config.worktree`) live on the machine's disk under `--local-dir` (default `<state-dir>/local`, `src/local.rs`): seeded
 from the published copy when first used, never published, so a hook one session writes runs in that session alone.
 The company's code host keeps none of them on its disk: its `code_host` view (the node says so in its hello answer)
-writes and publishes the copies the sessions seed theirs from.
+writes and publishes the copies the sessions seed theirs from. It writes the other shared files no lease guards
+(`HEAD`, the probe files `git init` makes) as plain files too, so `git init` makes a new `repo.git` there; a ref,
+`packed-refs`, `shallow` and a ref's log change under their lease for it, as for a session.
 Cache folders in a worker's worktree (`node_modules`, `target`, `dist`, `build` and the rest of `src/git.rs`'s list)
 live there too, kept out of the company folder. The program reads the worktree's index (`src/index.rs`) each time git
 renames a new one into place; a name the index holds as a folder leaves that worktree's list for good

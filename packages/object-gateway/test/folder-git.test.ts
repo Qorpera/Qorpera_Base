@@ -83,6 +83,23 @@ describe("git paths", () => {
 			expect(gitShared(rest), rest).toBe(false);
 	});
 
+	it("shares in the code host's view only what a lease guards: refs, packed-refs, shallow and ref logs", () => {
+		for (const rest of [
+			"refs",
+			"refs/heads/main",
+			"refs/heads/main.lock",
+			"packed-refs",
+			"packed-refs.lock",
+			"shallow",
+			"shallow.lock",
+			"logs/refs",
+			"logs/refs/heads/main",
+		])
+			expect(gitShared(rest, true), rest).toBe(true);
+		for (const rest of ["HEAD", "HEAD.lock", "tXXXXXX", "description", "logs", "logs/HEAD", "FETCH_HEAD", "config"])
+			expect(gitShared(rest, true), rest).toBe(false);
+	});
+
 	it("refuses the session's own files and alternates, and in the code host's view only alternates", () => {
 		for (const rest of [
 			"config",
@@ -609,6 +626,27 @@ describe("the lock protocol in the folder service", () => {
 		expect(session.codeHost).toBe(false);
 		await refused(write(session, `${R}/config`, "[core]\n"), "NOT_PERMITTED");
 		await refused(session.mkdir(`${R}/info`), "NOT_PERMITTED");
+	});
+
+	it("lets the code host write git init's HEAD and probe file as plain files its boundary publishes, and no session", async () => {
+		const { core, open, openAs } = await repo(codeHostGrants());
+		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
+		const host = await openAs(CODE_HOST);
+		await write(host, `${R}/tXXXXXX`, "", true);
+		await host.unlink(`${R}/tXXXXXX`, undefined);
+		await write(host, `${R}/HEAD.lock`, "ref: refs/heads/main\n", true);
+		await host.rename({ from: `${R}/HEAD.lock`, to: `${R}/HEAD`, noReplace: false });
+		// A ref is still written only under its lock.
+		await refused(write(host, MAIN, "4444\n"), "NOT_PERMITTED");
+		await host.publish();
+		expect(core.entries.get(`${R}/HEAD`)?.fileSha256).toBe(hashOf("ref: refs/heads/main\n"));
+		expect(core.entries.has(`${R}/tXXXXXX`)).toBe(false);
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
+		const session = await open("first");
+		await refused(write(session, `${R}/HEAD.lock`, "ref: refs/heads/topic\n", true), "NOT_PERMITTED");
+		await refused(write(session, `${R}/HEAD`, "ref: refs/heads/topic\n"), "NOT_PERMITTED");
+		await refused(write(session, `${R}/tXXXXXX`, "", true), "NOT_PERMITTED");
+		expect(core.gitPublishes).toEqual([]);
 	});
 
 	it("saves an object, or an objects folder, another session published first as it is", async () => {
