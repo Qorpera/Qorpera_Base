@@ -75,10 +75,14 @@ outlive its connections instead: they are abandoned only when a program holding 
 program before it is gone (a restarted mount, or a publisher), or when the view ends (Step 4c-3).
 
 A draft's file joins the view only when its close lands it there (step 5d): until then the view keeps what it had at
-the path, so no boundary publishes the draft half written. It lands as the change its open would have made, against
-what the open saw: a file another machine created or changed there since is a conflict when it is published, not
-overwritten. Over the view's own unsaved file, the draft holds that file unpublished, as an open handle does, and its
-close is the file's next save. A discard gives a handle up as the end of its connection does; a draft's leaves nothing.
+the path, so no boundary publishes the draft half written. It lands as the view's newest change at the path: over what
+this view itself did there since the open (a save, a removal or a move, published or not), and against what another
+machine did there since, which is a conflict when it is published, not overwritten. A removal or move of the view's
+that never happens (refused, or let go as a conflict) leaves the draft landing against the file it would have taken
+away. The draft takes the executable bit of what it lands over (none as a new file). Over the view's own unsaved file,
+the draft holds that file unpublished, as an open handle does, and its close is the file's next save. A discard gives a
+handle up as the end of its connection does; a draft's leaves nothing, and the quiet period then publishes a file it held.
+A close that cannot land the draft (a folder is at its path now, say) gives it up the same way.
 The mount writes a cache it moves into the folder as drafts, so a move it gives up leaves no file behind.
 
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own

@@ -730,7 +730,11 @@ export class FolderService {
 				// with no chunk sent. Its bytes become its own from the origin's chunks first, and the close cuts them.
 				const origin = view.pending?.originToCopy(handle);
 				if (origin && size !== origin.bytes) await this.#beginFromOrigin(view, handle, origin);
-				const node = await this.#change(view, (pending) => pending.close(handle, size));
+				const node = await this.#change(view, (pending) => pending.close(handle, size)).catch((error: unknown) => {
+					// A draft its close could not land was given up: it leaves nothing, as a discard.
+					if (view.pending && !view.pending.isOpen(handle)) this.#giveUp(view, handle);
+					throw error;
+				});
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
@@ -739,8 +743,7 @@ export class FolderService {
 			},
 			discard: async (handle) => {
 				if (!view.handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
-				this.#abandon(view, handle);
-				view.handles.delete(handle);
+				this.#giveUp(view, handle);
 			},
 			mkdir: async (path) => this.#change(view, (pending) => pending.mkdir(path)),
 			unlink: async (path, base) => {
@@ -1852,6 +1855,14 @@ export class FolderService {
 		}
 	}
 
+	/** A handle given up (a discard): the file a draft held unpublished, if any, is no longer open, and the quiet period
+	 * publishes it. */
+	#giveUp(view: View, handle: number): void {
+		this.#abandon(view, handle);
+		view.handles.delete(handle);
+		this.#resumeQuiet(view);
+	}
+
 	#abandon(view: View, handle: number): void {
 		for (const [key, upload] of view.uploads)
 			if (key.startsWith(`${handle}:`)) {
@@ -2595,6 +2606,8 @@ export class FolderService {
 	): void {
 		view.unsettled = undefined;
 		this.#notePublished(view, settlement, written, moved);
+		for (const [path, version] of written) view.pending?.publishedAt(path, version);
+		for (const [path, { version }] of moved) view.pending?.publishedAt(path, version);
 		this.#settleNodes(
 			view,
 			settlement.keep,

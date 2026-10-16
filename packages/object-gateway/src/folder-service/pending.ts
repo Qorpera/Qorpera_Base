@@ -81,6 +81,9 @@ type Node = PendingFile | PendingFolder | Gone;
 interface Draft {
 	readonly path: string;
 	readonly held?: PendingFile;
+	/** The live file this view took away there since (removed or moved it). If that never happens (refused, or let go
+	 * as a conflict) and the path shows that file again, the draft lands against it. */
+	took?: LiveRef;
 }
 
 /** What a path shows in this view: a pending node, or a live entry (inside a moved folder, through its origin). */
@@ -513,8 +516,17 @@ export class PendingView {
 			held.open++;
 		}
 		const handle = this.#nextHandle++;
-		this.#handles.set(handle, { node, draft: { path, ...(held ? { held } : {}) } });
+		const took = r ? undefined : this.#removed.get(path);
+		this.#handles.set(handle, {
+			node,
+			draft: { path, ...(held ? { held } : {}), ...(took?.kind === "file" ? { took } : {}) },
+		});
 		return { handle, size: 0, version: node.version };
+	}
+
+	/** Whether the handle is still open (a draft whose close could not land it is given up). */
+	isOpen(handle: number): boolean {
+		return this.#handles.has(handle);
 	}
 
 	file(handle: number): PendingFile {
@@ -576,7 +588,14 @@ export class PendingView {
 			if (this.#unfixed.has(node) || before.size !== size || before.chunks.length !== chunks.length)
 				this.#changed(node);
 		}
-		if (open.draft) return this.#land(handle, open.draft, node);
+		if (open.draft)
+			try {
+				return this.#land(handle, open.draft, node);
+			} catch (error) {
+				// Refused for good (its path is a folder now, say): the draft is given up and leaves nothing.
+				if (!(error instanceof PublishFirst)) this.abandon(handle);
+				throw error;
+			}
 		this.#handles.delete(handle);
 		node.open--;
 		this.#fix(node);
@@ -587,8 +606,8 @@ export class PendingView {
 	/** A draft's close: on the view's own file at its path (the one its open held, or one written since), its bytes
 	 * are that file's next save. Otherwise its file lands there as the change its open would have made: a file another
 	 * machine created or changed there since is a conflict when it is published, not overwritten; a path this view
-	 * removed since takes it as a new file, as a create there would. Refused (the path is a folder now, say), the
-	 * handle stays open. */
+	 * removed since takes it as a new file, as a create there would, unless that removal never happened. It takes the
+	 * executable bit of what it lands over (none for a new file), whether or not a boundary came between. */
 	#land(handle: number, draft: Draft, written: PendingFile): PendingFile {
 		const path = draft.path;
 		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
@@ -602,10 +621,10 @@ export class PendingView {
 			this.#changed(node);
 		} else {
 			if (r?.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
-			if (!r) {
-				this.#newName(path);
-				if (this.#nodes.get(path)?.kind === "gone") written.origin = undefined;
-			}
+			if (!r) this.#newName(path);
+			else if (!written.origin && r.entry.version === draft.took?.version)
+				written.origin = { path: r.source, kind: "file", version: r.entry.version, entry: r.entry };
+			written.executable = r?.entry.executable ?? false;
 			node = written;
 			node.open--;
 			this.#set(path, node);
@@ -749,6 +768,11 @@ export class PendingView {
 				version: source.entry.version,
 				mtimeMs: source.entry.mtimeMs,
 			};
+		if (source.kind === "live") this.#forget(source.source);
+		else {
+			this.#forget(from);
+			if (source.node.origin) this.#forget(source.node.origin.path, source.node.origin);
+		}
 		if (target) this.#remove(target, options.toBase, true);
 		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
 		const moved: [string, Node][] = [];
@@ -860,6 +884,7 @@ export class PendingView {
 				version: base ?? r.entry.version,
 				...(r.entry.kind === "folder" ? { asOfSeq: this.#seq() } : { entry: r.entry }),
 			});
+			this.#forget(r.source);
 		} else {
 			const origin = r.node.origin;
 			// A changed file whose live version moved on since its base is not removed with it: the change goes, and the
@@ -872,10 +897,27 @@ export class PendingView {
 				if (this.#nodes.get(origin.path)?.kind === "gone") this.#unset(origin.path);
 				return;
 			}
-			if (origin)
+			// What the view had at the path goes: a draft open there lands over that, as a new file.
+			this.#forget(r.path);
+			if (origin) {
 				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+				this.#forget(origin.path, origin);
+			}
 		}
 		this.#hide(r.path);
+	}
+
+	/** This view took the live entry at `path` away (removed or moved it; `ref`, under the view's own file there): a
+	 * draft opened over it, or over a file in it, lands as a new file, over what the view did there, not against the
+	 * version its open saw, unless the view's change never happens. */
+	#forget(path: string, ref?: LiveRef): void {
+		for (const { node, draft } of this.#handles.values()) {
+			if (!draft) continue;
+			if (node.origin && within(node.origin.path, path)) {
+				draft.took = node.origin;
+				node.origin = undefined;
+			} else if (!node.origin && ref && draft.path === ref.path) draft.took = ref;
+		}
 	}
 
 	/** The live version now at a live path (the planner checks a removal it would fold into its folder's). */
@@ -922,6 +964,15 @@ export class PendingView {
 	 * bytes the service must keep holding while the file is open. */
 	fixedState(node: PendingFile): Pick<PendingFile, "content" | "staged"> | undefined {
 		return this.#fixed.get(node);
+	}
+
+	/** After a boundary: this view's own save or move gave `path` the live version `version`. A draft open there lands
+	 * over it, as over the view's file before the boundary; a change another machine makes after it is a conflict. */
+	publishedAt(path: string, version: string): void {
+		const entry = this.#live().get(path);
+		for (const { node, draft } of this.#handles.values())
+			if (draft?.path === path)
+				node.origin = { path, kind: "file", version, ...(entry?.version === version ? { entry } : {}) };
 	}
 
 	/** Live entries the view removed, by live path. */
