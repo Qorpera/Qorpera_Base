@@ -46,14 +46,15 @@ const methods = [
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
 /**
- * Why the core refused a desktop's folder view, in its own words, when they are one of these: the office passes them
- * on to the run or member it gives the screen back to (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A desktop's mount"). Any
- * other text, and every other method's, is never kept.
+ * Why the core refused a desktop's or a shell command's folder view, in its own words, when they are one of these: the
+ * office passes them on to the run or member it gives the screen back to, or to the run whose command did not start
+ * (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A desktop's mount"). Any other text, and every other method's, is never kept.
  */
 const FOLDER_VIEW_REFUSALS = new Set([
 	"Folder core authority is required",
 	"Company folder is unavailable",
 	"Folder view holder is not current",
+	"Folder view command is not current",
 	"Folder view computer is unavailable",
 	"Folder view principals are unavailable",
 	"Folder view needs the company-wide view",
