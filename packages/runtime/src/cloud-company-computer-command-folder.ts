@@ -373,7 +373,12 @@ export class CompanyComputerCommandFolder {
 			timeoutMs + 1000,
 			signal,
 		);
-		if (answer && "report" in answer && answer.report) this.#note(answer.report, false);
+		// Rule 4's way out: no later boundary reports what this one kept, so its report lists every path not saved.
+		const out =
+			answer?.answer === "closed" ||
+			(answer?.answer === "refused" &&
+				(answer.report.refused === "unreadable" || answer.report.refused === "unproven"));
+		if (answer && "report" in answer && answer.report) this.#note(answer.report, out);
 		signal.throwIfAborted();
 		// Saved, or refused only for some paths (refused or conflicting saves): the reads were released.
 		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined))
@@ -383,11 +388,7 @@ export class CompanyComputerCommandFolder {
 			this.#run?.stop();
 			return { released: false, heldBack: HELD_GONE };
 		}
-		if (
-			answer?.answer === "closed" ||
-			(answer?.answer === "refused" &&
-				(answer.report.refused === "unreadable" || answer.report.refused === "unproven"))
-		) {
+		if (out) {
 			// Rule 4's way out: the command stops, and once no process of it is left its mount goes without a boundary
 			// and its view closes.
 			this.#hold(HELD_STOPPED);

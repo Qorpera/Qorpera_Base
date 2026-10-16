@@ -22,6 +22,13 @@ const refusal = (refused: string) => ({
 	answer: "refused",
 	report: { commitId: null, seq: null, paths: [], refused },
 });
+/** What a view refused for good keeps, as the service reports it: a path left waiting and those not published. */
+const kept = [
+	{ path: "draft.md", outcome: "waiting", reason: "open for writing", kept: true },
+	{ path: "notes.md", outcome: "refused", reason: "unproven", kept: true },
+];
+const shut = (refused: string) => ({ answer: "refused", report: { commitId: null, seq: null, paths: kept, refused } });
+const listed = kept.map(({ kept: _, ...entry }) => entry);
 
 const START_UNMOUNTED = "The company folder could not be mounted for this command; start it again.";
 const START_FAILED = "The command could not start in the company folder; start it again.";
@@ -340,7 +347,7 @@ describe("a command's output before it reaches the run", () => {
 		expect(timeoutMs).toBeLessThanOrEqual(16000);
 		expect(f.options[1]).toEqual({ timeoutMs: timeoutMs + 1000, signal: expect.any(AbortSignal) });
 		// Refused for some paths only: the reads were released all the same.
-		await expect(f.release()).resolves.toEqual({ released: true });
+		await expect(f.release()).resolves.toEqual({ released: true, notSaved: [{ path: "a", outcome: "refused" }] });
 		// Far from its deadline, a boundary takes at most the helper's own 30 s.
 		await expect(f.release(performance.now() + 60000)).resolves.toEqual({ released: true });
 		expect((f.asked[3] as { timeoutMs: number }).timeoutMs).toBe(30000);
@@ -363,17 +370,18 @@ describe("a command's output before it reaches the run", () => {
 	});
 
 	it.each([
-		["its view closed", { answer: "closed" }, STOPPED],
-		["its view unreadable", refusal("unreadable"), STOPPED],
-		["its view unproven", refusal("unproven"), STOPPED],
-		["its mount unknown to the helper", { answer: "unknown" }, GONE],
+		["its view closed", { answer: "closed" }, STOPPED, {}],
+		["its view unreadable", shut("unreadable"), STOPPED, { notSaved: listed }],
+		["its view unproven", shut("unproven"), STOPPED, { notSaved: listed }],
+		["its mount unknown to the helper", { answer: "unknown" }, GONE, {}],
 	])(
 		"is held back for good with %s: the command stops, and its mount goes without a boundary once it ended",
-		async (_, answer, heldBack) => {
+		async (_, answer, heldBack, shown) => {
 			const f = await running();
 			f.answer("boundary", answer);
 			f.answer("drop", { answer: "dropped" });
-			await expect(f.release()).resolves.toEqual({ released: false, heldBack });
+			// Every path it kept is listed, since no boundary comes after it.
+			await expect(f.release()).resolves.toEqual({ released: false, heldBack, ...shown });
 			expect(f.stop).toHaveBeenCalledTimes(1);
 			expect(f.folder.status).toBe("held");
 			await expect(f.release()).resolves.toEqual({ released: false, heldBack });
@@ -381,6 +389,7 @@ describe("a command's output before it reaches the run", () => {
 			await settle();
 			expect(f.ops()).toEqual(["mount", "boundary", "drop"]);
 			expect(f.closed).toHaveLength(1);
+			await expect(f.release()).resolves.toEqual({ released: false, heldBack });
 		},
 	);
 
