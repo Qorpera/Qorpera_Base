@@ -20,6 +20,7 @@ import {
 	type CompanyComputerFolderRunEvent,
 	type CompanyComputerFolderRunInput,
 	type CompanyComputerFolderView,
+	companyComputerFolderAnswerLogged,
 	companyComputerFolderPaths,
 	isCompanyComputerFolderName,
 	isCompanyComputerFolderReport,
@@ -708,7 +709,11 @@ export class CompanyComputerFolderHelper {
 			timeoutMs,
 		);
 		const answer = companyComputerFolderBoundaryAnswer(run.code, run.stdout);
-		this.#log(`folder-helper: boundary ${name}${final ? " (final)" : ""}: ${answer.answer}`);
+		// The report as a log keeps it ("The report"): a stop's has no other place, since the stop control writes
+		// nothing and ends the office service.
+		this.#log(
+			`folder-helper: boundary ${name}${final ? " (final)" : ""}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
+		);
 		return answer;
 	}
 

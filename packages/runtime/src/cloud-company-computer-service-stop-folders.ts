@@ -24,9 +24,11 @@ const BOUNDARY_LEAST_MS = 1000;
  * (the core did not answer the commit, or a path still waits) throws once every mount was asked: the stop has no
  * completion, the provider dispatches it again, and the next run, finding its claim retained, asks again with nearly
  * all its time. Every other answer is final for its mount (rule 4's refusal, the company's pause, `denied`), whose
- * changes are refused and whose report says why; a mount it left goes without a boundary (`drop`). The helper's
- * journal keeps each answer; the stop control writes nothing. An image without the helper has no socket and no mount:
- * every mount is made through it.
+ * changes are refused and whose report says why; a mount it left goes without a boundary (`drop`). The helper logs
+ * each boundary's report as it answers (`companyComputerFolderAnswerLogged`: the refusal, the commit and how many paths
+ * had each outcome, never a path or a reason), and its journal outlives the office service: that is a stop's report
+ * ("The report"). The stop control writes nothing, since its locked child runs with no output. An image without the
+ * helper has no socket and no mount: every mount is made through it.
  */
 export async function publishCompanyComputerFoldersLeft(
 	signal: AbortSignal,

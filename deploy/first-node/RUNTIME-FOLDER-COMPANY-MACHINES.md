@@ -511,11 +511,13 @@ has unsaved changes (4a).
   commit by its view. 4f builds it: a notification through the helper's connection, and the holder run's next tool
   result reading the view's commits since the last one shown, and the publishes refused since, which the office
   service has from the notifications (a refused publish makes no commit). Until then the service logs it (4a).
-- A drain's or a stop's boundaries answer with reports too, refusals included (rule 3), and the office service logs
-  them with the drain, the stop control with the stop. 4f also puts a drain's into the next tool result of the run
-  that held the desktop (a command's goes to its next output read, above), and shows it to the member who took over
-  as a notification on that member's desktop. A stop ends the office service and its desktops, so a stop's report is
-  the log's alone (review round 13).
+- A drain's or a stop's boundaries answer with reports too, refusals included (rule 3). The folder helper logs every
+  boundary's report as it answers (the refusal, the commit and how many paths had each outcome, never a path or a
+  reason), and the office service logs a drain's with the drain too. The stop control writes nothing (its locked child
+  runs with no output), so a stop's is the helper's log, whose journal outlives the office service. 4f also puts a
+  drain's into the next tool result of the run that held the desktop (a command's goes to its next output read,
+  above), and shows it to the member who took over as a notification on that member's desktop. A stop ends the office
+  service and its desktops, so a stop's report is the log's alone (review round 13).
 
 ## Slices
 

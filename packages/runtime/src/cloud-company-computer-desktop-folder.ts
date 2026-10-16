@@ -8,9 +8,9 @@ import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
 	COMPANY_COMPUTER_FOLDER_ROOT,
-	type CompanyComputerFolderAnswer,
 	type CompanyComputerFolderRequest,
 	type CompanyComputerFolderView,
+	companyComputerFolderAnswerLogged,
 	companyComputerFolderName,
 	companyComputerFolderPaths,
 	isCompanyComputerFolderView,
@@ -470,7 +470,9 @@ export class CompanyComputerDesktopFolders {
 					continue;
 				}
 				answered = true;
-				this.#log(`office-folder: drain ${folder.name}: ${JSON.stringify(drainLogged(answer))}`);
+				this.#log(
+					`office-folder: drain ${folder.name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
+				);
 				if (answer.answer === "unknown" || answer.unmounted) {
 					folder.mounted = false;
 					break;
@@ -592,30 +594,6 @@ export class CompanyComputerDesktopFolders {
 function sameHolder(a: CompanyComputerScreenHolder | undefined, b: CompanyComputerScreenHolder): boolean {
 	if (a?.kind === "run") return b.kind === "run" && a.runId === b.runId;
 	return a?.kind === "member" && b.kind === "member" && a.userId === b.userId;
-}
-
-/** A drain's answer as the office logs it ("The report"): the commit and how many paths had each outcome. No path
- * and no reason, which are the company's; the helper's words pass only when they are plain names. */
-function drainLogged(answer: CompanyComputerFolderAnswer<"unmount">): Record<string, unknown> {
-	const report = "report" in answer ? answer.report : undefined;
-	const outcomes = new Map<string, number>();
-	for (const { outcome } of report?.paths ?? []) outcomes.set(word(outcome), (outcomes.get(word(outcome)) ?? 0) + 1);
-	return {
-		answer: answer.answer,
-		...("unmounted" in answer ? { unmounted: answer.unmounted } : {}),
-		...(report
-			? {
-					refused: report.refused === undefined ? null : word(report.refused),
-					commitId: report.commitId === null || /^[\w-]{1,64}$/.test(report.commitId) ? report.commitId : "other",
-					seq: report.seq,
-					outcomes: Object.fromEntries(outcomes),
-				}
-			: {}),
-	};
-}
-
-function word(value: string): string {
-	return /^[a-z_]{1,32}$/.test(value) ? value : "other";
 }
 
 /** The work's answer, or `late` once `until` (performance.now()) passes; the work goes on either way. */
