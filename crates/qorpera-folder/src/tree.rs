@@ -35,11 +35,11 @@ impl Attr {
 	pub fn root() -> Attr {
 		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: String::new(), authority: None }
 	}
-	/// Whether `next` is another version of the file (or not the same kind of thing at all).
+	/// Whether `next` is another version of the file or link (or not the same kind of thing at all).
 	fn replaced_by(&self, next: &Attr) -> bool {
 		match (self.kind, next.kind) {
 			(EntryKind::Folder, EntryKind::Folder) => false,
-			(EntryKind::File, EntryKind::File) => self.version != next.version,
+			(a, b) if a == b => self.version != next.version,
 			_ => true,
 		}
 	}

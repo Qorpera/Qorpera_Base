@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	OFFICE_IMAGE_EXECUTABLES,
+	OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
 	OFFICE_IMAGE_MOUNT_UNIT,
 	OFFICE_IMAGE_ROOT,
 	OFFICE_IMAGE_SELF_UPDATE_UNITS,
@@ -31,6 +32,10 @@ const units = [
 	"qorpera-company-computer-preparation.service",
 	OFFICE_IMAGE_MOUNT_UNIT,
 ];
+// The company folder's units come with newer packages only. The helper starts one folder mount per desktop or command
+// from the template.
+const folderUnits = ["qorpera-office-folder-helper.socket", "qorpera-office-folder-helper.service"];
+const folderMounts = OFFICE_IMAGE_FOLDER_MOUNT_UNIT.replace("@.", "@*.");
 const lock = "/run/qorpera-office-image-install.lock";
 const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 const infoKey = (s: Awaited<ReturnType<typeof lstat>>) => [
@@ -233,7 +238,7 @@ function account(uid: number, gid: number, create = false): void {
 }
 
 async function cleanImage(uid: number, gid: number): Promise<void> {
-	for (const name of units) {
+	for (const name of [...units, ...folderUnits]) {
 		const state = command("/usr/bin/systemctl", ["show", name, "--property=ActiveState", "--value"]);
 		if (
 			!["inactive", "failed"].includes(state) ||
@@ -241,7 +246,24 @@ async function cleanImage(uid: number, gid: number): Promise<void> {
 		)
 			throw new Error("OFFICE_IMAGE_UNIT_NOT_STOPPED");
 	}
-	await assertOfficeInstallUnitsUnmodified(units);
+	// No folder mount may run or wait to run.
+	if (
+		command("/usr/bin/systemctl", ["list-units", "--all", "--plain", "--no-legend", "--full", folderMounts])
+			.split("\n")
+			.some((line) => line && !["inactive", "failed"].includes(line.split(/\s+/)[2]!)) ||
+		command("/usr/bin/systemctl", ["list-jobs", "--plain", "--no-legend", folderMounts])
+	)
+		throw new Error("OFFICE_IMAGE_UNIT_NOT_STOPPED");
+	await assertOfficeInstallUnitsUnmodified([...units, ...folderUnits, OFFICE_IMAGE_FOLDER_MOUNT_UNIT]);
+	// Nor may one folder mount (an instance, named after the @) carry a unit file or drop-in of its own.
+	for (const directory of command("/usr/bin/systemd-analyze", ["unit-paths"]).split("\n")) {
+		const entries = await readdir(directory).catch((error: unknown) => {
+			if (absent(error)) return [];
+			throw error;
+		});
+		if (entries.some((entry) => /^qorpera-office-folder-mount@[^.]/.test(entry)))
+			throw new Error("OFFICE_INSTALL_UNIT_OVERRIDE");
+	}
 	for (const path of [
 		"/var/lib/qorpera",
 		"/var/lib/qorpera-native-provider",
@@ -330,7 +352,8 @@ async function load(path: string) {
 		targets.push({
 			path: artifact.path,
 			bytes:
-				artifact.file === "qorpera-office-private.mount.in"
+				artifact.file === "qorpera-office-private.mount.in" ||
+				artifact.file === `${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`
 					? Buffer.from(renderOfficeImageMount(bytes.toString("utf8"), spec.uid, spec.gid))
 					: bytes,
 			mode: artifact.mode,
@@ -457,12 +480,14 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 	]);
 	await officeInstallParents("/var/lib/qorpera-office/.placeholder", true);
 	await chmod("/var/lib/qorpera-office", 0o755);
-	// Each computer's network units come with newer packages only.
-	const networkUnits: string[] = [];
+	// Each computer's network units and the company folder's come with newer packages only.
+	const optionalUnits: string[] = [];
 	for (const name of [
 		"qorpera-computer-network.service",
 		"qorpera-computer-plumb.socket",
 		"qorpera-computer-plumb@.service",
+		...folderUnits,
+		OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
 	])
 		if (
 			await lstat(`/etc/systemd/system/${name}`).then(
@@ -473,8 +498,8 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 				},
 			)
 		)
-			networkUnits.push(`/etc/systemd/system/${name}`);
-	command("/usr/bin/systemd-analyze", ["verify", ...units.map((n) => `/etc/systemd/system/${n}`), ...networkUnits]);
+			optionalUnits.push(`/etc/systemd/system/${name}`);
+	command("/usr/bin/systemd-analyze", ["verify", ...units.map((n) => `/etc/systemd/system/${n}`), ...optionalUnits]);
 	command("/usr/bin/systemd-tmpfiles", [
 		"--create",
 		"/usr/lib/tmpfiles.d/qorpera-office-preparation.conf",

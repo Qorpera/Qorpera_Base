@@ -1,0 +1,11 @@
+[Unit]
+Description=Stop member coding machines without a live host lease, independently of the executor and SQL
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+Unit=qorpera-coding-host-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -31,6 +31,8 @@ interface MachineState {
 	folderInMemory: boolean;
 	/** What the folder program does once started: mounts, exits 3 (the node closed the view), or stays silent. */
 	folder: "mount" | "close" | "silent";
+	/** How the program's mount lists in mountinfo: its type and source. */
+	mountsAs: string;
 	/** What a command's unit does: runs the real relay, holds, or systemd-run refuses it. */
 	command: "relay" | "hold" | "refuse";
 	stuckMount: boolean;
@@ -105,6 +107,8 @@ async function machine() {
 		skewMs: 0,
 		folderInMemory: true,
 		folder: "mount",
+		// The program mounts directly as root.
+		mountsAs: "fuse qorpera-company",
 		command: "relay",
 		stuckMount: false,
 		stubborn: new Set(),
@@ -142,8 +146,7 @@ async function machine() {
 					? { ActiveState: "failed", Result: "exit-code", ExecMainCode: "1", ExecMainStatus: "3" }
 					: { ...ACTIVE },
 			);
-			if (state.folder === "mount")
-				mounts.set(args[args.indexOf("--mountpoint") + 1], "fuse.qorpera qorpera-company");
+			if (state.folder === "mount") mounts.set(args[args.indexOf("--mountpoint") + 1], state.mountsAs);
 			return "";
 		}
 		if (state.command === "refuse") throw failure(1);
@@ -674,6 +677,22 @@ describe("mounting a session", () => {
 		expect(silent.calls.filter((entry) => entry[1] === "show")).toHaveLength(102);
 		expect(silent.sleeps).toEqual(Array.from({ length: 99 }, () => 200));
 		expect(silent.calls.some(([tool]) => tool === "loginctl")).toBe(false);
+	});
+	it("takes the program's mount as either type it lists as, and only from its own source", async () => {
+		for (const mountsAs of ["fuse qorpera-company", "fuse.qorpera qorpera-company"]) {
+			const m = await machine();
+			m.state.mountsAs = mountsAs;
+			const workerId = await mounted(m);
+			expect(m.calls).toEqual([]);
+			expect((await ran(m, workerId, "true")).directory).toBeTruthy();
+		}
+		const other = await machine();
+		other.state.mountsAs = "fuse other-program";
+		const workerId = randomUUID();
+		expect((await call(other, "mount", mountRequest(workerId))).line.mount).toBe("unanswered");
+		expect(other.calls.some(([tool]) => tool === "loginctl")).toBe(false);
+		const request = runRequest(other, workerId, randomUUID(), "true");
+		expect((await call(other, "run", request)).line).toEqual(refusal("CODING_GUEST_FOLDER_UNMOUNTED"));
 	});
 	it("refuses a folder root that is not in memory, before anything else", async () => {
 		const m = await machine();

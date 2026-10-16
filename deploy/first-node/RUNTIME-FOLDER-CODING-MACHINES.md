@@ -299,7 +299,10 @@ folder on the list lives on the disk, is never published, and other views and ma
 the cache lives in the VM, the folder program keeps the list and reads the worktree's index (5d); a wrong list only
 keeps the session's own files unpublished, which root could do anyway. The amendment's item 8 (dependencies and builds
 in each machine's own cache) is a slice of its own for every machine; whichever of it and 5d lands first builds the
-program's part, and the other reuses it.
+program's part, and the other reuses it. 5d builds it (the local layer, the worktree's list and the index reader), and
+item 8's plan, [RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md), extends it: what git ignores in a
+worktree is a cache too, unless tracked, and the cache moves to a folder the coding setup gives (`--cache-dir`), one
+per machine, so it outlives the session (MC3).
 
 **Links.** A checkout writes a mode-120000 entry as a symbolic link, and `git clone --local` hard-links objects. Links
 in the folder are [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)'s (LK1–LK6), which leaves the per-session git
@@ -498,6 +501,15 @@ went wrong reaches only its own company. It does what no member's root may:
 - **gc**, with the lease block (§6 "Cleanup"), and **reading the setup file** (`git show`).
 
 It retires `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap and git custody on the NAS.
+
+A company's code hosts go with its deletion (coordinator decision D3; migration `20260930398000`). A code host is no
+allocation and its code area is erased with the company folder, so the deletion does not wait for it. Each node's
+coding executor asks at its start and every minute after, beside its housekeeping, which of the companies with a code
+host project on the node are being deleted (`qorpera_code_hosts_deleting`, read-only, under its custody check), and
+removes each of their code hosts with its project. The listing of the node's projects and each removal, its wait for the
+host's other steps among it, have the agent wait; a removal out of time never runs later. One in a job or with a job
+waiting for its start (`CODE_HOST_BUSY` at once), refused, failed or out of time is logged and goes on a later pass, as
+does one a job made again after its removal.
 
 ## The report
 

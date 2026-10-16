@@ -129,6 +129,25 @@ export class NodeWebSocket {
 		this.#write(0x2, payload);
 	}
 
+	/** Sends one binary message and resolves once the socket has taken it (its write buffer drained), so a long input
+	 * goes no faster than the server reads it. Rejects when the connection ends first. */
+	async sendBinaryDrained(payload: Buffer): Promise<void> {
+		if (this.#closing || this.#closed || this.#socket.destroyed) throw new Error("WebSocket is closed");
+		if (this.#write(0x2, payload)) return;
+		await new Promise<void>((resolveDrained, rejectDrained) => {
+			const settle = (error?: Error): void => {
+				this.#socket.off("drain", drained);
+				this.#socket.off("close", closed);
+				if (error) rejectDrained(error);
+				else resolveDrained();
+			};
+			const drained = (): void => settle();
+			const closed = (): void => settle(new Error("WebSocket is closed"));
+			this.#socket.on("drain", drained);
+			this.#socket.on("close", closed);
+		});
+	}
+
 	/** Sends a normal close and lets the connection end; the close handler runs once it has. */
 	close(): void {
 		if (this.#closing || this.#closed) return;
@@ -142,7 +161,8 @@ export class NodeWebSocket {
 		setTimeout(() => this.#socket.destroy(), CLOSE_GRACE_MS).unref();
 	}
 
-	#write(opcode: number, payload: Buffer): void {
+	/** Writes one masked frame; false when the socket's write buffer is past its high-water mark. */
+	#write(opcode: number, payload: Buffer): boolean {
 		const length = payload.byteLength;
 		const header = Buffer.alloc(length < 126 ? 2 : length < 65_536 ? 4 : 10);
 		header[0] = 0x80 | opcode;
@@ -156,9 +176,15 @@ export class NodeWebSocket {
 			header.writeUInt32BE(length, 6);
 		}
 		const mask = randomBytes(4);
-		const masked = Buffer.allocUnsafe(length);
-		for (let index = 0; index < length; index++) masked[index] = payload[index]! ^ mask[index & 3]!;
-		this.#socket.write(Buffer.concat([header, mask, masked]));
+		// Masked four bytes at a time (a fresh buffer is 4-byte aligned): under --jitless this loop is most of what a
+		// long input costs.
+		const masked = Buffer.allocUnsafeSlow(length);
+		payload.copy(masked);
+		const words = new Uint32Array(masked.buffer, masked.byteOffset, length >>> 2);
+		const key = new Uint32Array(Uint8Array.from(mask).buffer)[0]!;
+		for (let index = 0; index < words.length; index++) words[index] = words[index]! ^ key;
+		for (let index = words.length * 4; index < length; index++) masked[index] = masked[index]! ^ mask[index & 3]!;
+		return this.#socket.write(Buffer.concat([header, mask, masked]));
 	}
 
 	#receive(chunk: Buffer): void {

@@ -19,6 +19,7 @@ import {
 	cloudRunLogReleases,
 } from "./cloud-run-log.ts";
 import {
+	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
 	cloudRuntimeErrorCategory,
@@ -64,6 +65,10 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
+ * replaces it, so a cut answer never grows. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
+const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
 /** The pinned fence's bound on one tool result's PNG. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
 /** A run carries every tool its agent is granted, with no count cap (founder,
@@ -125,6 +130,10 @@ export interface CloudNativeTool {
 	prepare?(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue>;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
+	/** Why an answer says the call changed nothing, when the tool answers a refusal rather than throwing one (a
+	 * folder-v2 change that was not saved): the call is observed as denied with this category, never as succeeded
+	 * (contract, Minimum operational observability). Read from the answer alone; the model's answer is unchanged. */
+	refused?(content: CloudToolContent): CloudRuntimeErrorCategory | undefined;
 	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
 	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
 	 * denial. It never runs the call; if it fails, the denial stands as it is. */
@@ -932,7 +941,18 @@ export class CloudNativeToolBoundary {
 			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
 			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
 			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
-			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
+			if (
+				tool.name === "computer_screenshot" &&
+				tool.source === "runtime" &&
+				// No picture when the office gave the screen back or the company folder held the capture back (F3 4d).
+				!(
+					content.kind === "json" &&
+					content.value !== null &&
+					typeof content.value === "object" &&
+					!Array.isArray(content.value) &&
+					content.value.completed === false
+				)
+			) {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),
 					this.#signal,
@@ -972,7 +992,13 @@ export class CloudNativeToolBoundary {
 				!Array.isArray(content.value) &&
 				content.value.schema === "qorpera.company-path-result/v1" &&
 				content.value.state === "proposed";
-			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
+			// A refusal the tool answered: nothing happened, as for a thrown one. A call that took a receipt was observed
+			// by its operation already, with the same reading of the answer; the first finish stands.
+			const refused = tool.refused?.(content);
+			observation?.finish(
+				refused ? "denied" : proposed ? "proposed" : "succeeded",
+				refused ? { errorCategory: refused } : proposed ? { errorCategory: "protected_path" } : {},
+			);
 			return response;
 		} catch (error) {
 			if (
@@ -1038,9 +1064,12 @@ export class CloudNativeToolBoundary {
 			(tool?.source !== "company_file" || status !== "ok" || !UUID.test(content.companyReadId))
 		)
 			throw new Error("Invalid Company File read provenance");
-		const text = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
-		if (typeof text !== "string" || Buffer.byteLength(text) > MAX_SOURCE_BYTES)
+		const raw = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
+		if (typeof raw !== "string" || Buffer.byteLength(raw) > MAX_SOURCE_BYTES)
 			throw new Error("Invalid cloud tool content");
+		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
+		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
+		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;

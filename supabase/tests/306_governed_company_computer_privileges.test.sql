@@ -43,7 +43,10 @@ begin
 	-- (20260930160000) add describing and opening a GitHub or HMAC hook whose secret the broker makes, each bound to
 	-- the agent's manage_hook run, and reading that secret for a vault_fill browser call. Stripe hooks
 	-- (20260930344000) add opening a Stripe hook with its capture key, describing and replacing that key, and reading
-	-- and storing a secret a vault_capture browser call took from Stripe's screen.
+	-- and storing a secret a vault_capture browser call took from Stripe's screen. Coding environment secrets
+	-- (20260930438000) add reading a coding session's environment, bound to its live lease. Coding MCP sign-ins
+	-- (20260930440000) add reading one MCP server's sign-in and the repository fetch of a running session, each bound
+	-- to its live lease.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -53,7 +56,10 @@ begin
 	if v_functions is distinct from array[
 		'qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text)',
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
+		'qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)',
+		'qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
+		'qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)',
 		'qorpera_broker_principal_companies(uuid,text)',
 		'qorpera_broker_principal_event_verifications_due(uuid,text)',
 		'qorpera_claim_connector_token_revocations(uuid,text,integer)',

@@ -5,10 +5,12 @@ import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	type CloudNativeTool,
+	CloudNativeToolBoundary,
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -19,8 +21,11 @@ afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 });
 
-async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
-	const f = await folderWriterFixture(seed);
+async function fixture(
+	seed: Parameters<typeof folderWriterFixture>[0] = {},
+	options: Parameters<typeof folderWriterFixture>[1] = {},
+) {
+	const f = await folderWriterFixture(seed, options);
 	runs.push(f.run);
 	const tools = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
 	const tool = (name: string) => tools.find((candidate) => candidate.name === name) as CloudNativeTool;
@@ -300,6 +305,197 @@ it("lists an absent path as absent and refuses to list a file", async () => {
 	expect(f.releases).toHaveLength(0);
 });
 
+it("reads and lists a link as the target it holds, never following it, and lists nothing under it", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
+	const version = f.links.get("docs/latest")?.version;
+	const read = await f.call("company_read", { path: "docs/latest", offset: 0, limit: 4096 });
+	expect(parse(read)).toEqual({
+		path: "docs/latest",
+		kind: "symlink",
+		version,
+		offset: 0,
+		bytesRead: 7,
+		totalBytes: 7,
+		target: "plan.md",
+		nextOffset: null,
+	});
+	// The link is released, and nothing of the file it names.
+	expect(read.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.releases[0]?.p_reads).toEqual([{ path: "docs/latest", version, authority: expect.any(Object) }]);
+	// A path through a link is absent: the core never resolves one (LK1).
+	const through = await f.call("company_read", { path: "docs/latest/plan.md", offset: 0, limit: 4 });
+	expect(parse(through)).toEqual({ path: "docs/latest/plan.md", kind: "absent", version: null });
+	const page = parse(await f.call("company_list", { path: "docs", after: null, limit: 5 }));
+	expect(page.entries).toEqual([
+		{ path: "docs/latest", kind: "symlink", version, bytes: null, target: "plan.md" },
+		{ path: "docs/plan.md", kind: "file", version: f.files.get("docs/plan.md")?.version, bytes: 8 },
+	]);
+	await refuses(
+		f.call("company_list", { path: "docs/latest", after: null, limit: 5 }),
+		CloudToolRefusal,
+		"COMPANY_FILE_NOT_A_FOLDER: that path is a link",
+	);
+	expect(f.releases).toHaveLength(2);
+});
+
+it("reads a link's target in windows that each fit one result, however much its characters escape", async () => {
+	for (const target of ["&".repeat(4095), "\u0001".repeat(4095)]) {
+		const f = await fixture({ links: { "docs/latest": target } });
+		let shown = "";
+		let offset: number | null = 0;
+		let windows = 0;
+		while (offset !== null) {
+			const content = await f.call("company_read", { path: "docs/latest", offset, limit: 4096 });
+			expect(fitsOneResult(String(content.value))).toBe(true);
+			const answer = parse(content);
+			expect(answer).toMatchObject({ kind: "symlink", offset, totalBytes: 4095 });
+			expect(answer.bytesRead).toBeGreaterThan(0);
+			shown += answer.target;
+			offset = answer.nextOffset;
+			windows++;
+		}
+		expect(shown).toBe(target);
+		expect(windows).toBeGreaterThan(4);
+		// Each window is released as shown.
+		expect(f.releases).toHaveLength(windows);
+	}
+	// A window that starts inside a character is not text, one that ends inside one stops before it, and one past the
+	// end is empty.
+	const accent = await fixture({ links: { "docs/accent": "é".repeat(10) } });
+	await refuses(
+		accent.call("company_read", { path: "docs/accent", offset: 1, limit: 4 }),
+		CloudToolRefusal,
+		"COMPANY_FILE_NOT_TEXT",
+	);
+	expect(parse(await accent.call("company_read", { path: "docs/accent", offset: 2, limit: 5 }))).toMatchObject({
+		target: "éé",
+		bytesRead: 4,
+		nextOffset: 6,
+	});
+	expect(parse(await accent.call("company_read", { path: "docs/accent", offset: 99, limit: 4 }))).toMatchObject({
+		target: "",
+		bytesRead: 0,
+		totalBytes: 20,
+		nextOffset: null,
+	});
+});
+
+it("cuts a listed link's target, and a first link's further when its path is long", async () => {
+	const long = "\u0001".repeat(4095);
+	// Its path, escaped and shown twice (the entry and next), leaves less than 512 bytes of the target room.
+	const wide = `docs/${"&".repeat(300)}`;
+	const f = await fixture({ files: { "docs/b.md": "b" }, links: { [wide]: long, "docs/a": long, "docs/c": "b.md" } });
+	const first = await f.call("company_list", { path: "docs", after: null, limit: 50 });
+	expect(fitsOneResult(String(first.value))).toBe(true);
+	const page = parse(first);
+	expect(page.entries).toEqual([
+		{
+			path: wide,
+			kind: "symlink",
+			version: f.links.get(wide)?.version,
+			bytes: null,
+			target: expect.any(String),
+			targetCut: true,
+		},
+	]);
+	expect(page.entries[0].target.length).toBeGreaterThan(0);
+	expect(page.entries[0].target.length).toBeLessThan(512);
+	expect(long.startsWith(page.entries[0].target)).toBe(true);
+	expect(page.next).toBe(wide);
+	const second = await f.call("company_list", { path: "docs", after: page.next, limit: 50 });
+	expect(fitsOneResult(String(second.value))).toBe(true);
+	expect(parse(second)).toMatchObject({
+		entries: [
+			{
+				path: "docs/a",
+				kind: "symlink",
+				version: f.links.get("docs/a")?.version,
+				bytes: null,
+				target: "\u0001".repeat(512),
+				targetCut: true,
+			},
+			{ path: "docs/b.md", kind: "file", bytes: 1 },
+			{ path: "docs/c", kind: "symlink", target: "b.md" },
+		],
+		next: null,
+	});
+	expect(parse(second).entries[2]).not.toHaveProperty("targetCut");
+});
+
+it("names as much of a long link's target as fits when it refuses to write over the link", async () => {
+	const f = await fixture({ links: { "docs/long": "\u0001".repeat(4095) } });
+	const expectedVersion = f.links.get("docs/long")?.version as string;
+	const refused = await f.call("company_write", {
+		path: "docs/long",
+		operationKey: "write-1",
+		expectedVersion,
+		text: "x",
+	});
+	expect(fitsOneResult(String(refused.value))).toBe(true);
+	const answer = parse(refused);
+	expect(answer).toMatchObject({
+		state: "not_applied",
+		reason: "link",
+		targetCut: true,
+		next: expect.stringContaining("read the link with company_read for all of it"),
+	});
+	expect(answer.target.length).toBeGreaterThan(0);
+	expect("\u0001".repeat(4095).startsWith(answer.target)).toBe(true);
+	expect(refused.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.commits).toHaveLength(0);
+});
+
+it("never writes over a link at its version, naming its target, and meets one as there when creating a file", async () => {
+	const f = await fixture({ links: { "docs/latest": "plan.md" } });
+	const expectedVersion = f.links.get("docs/latest")?.version as string;
+	const refused = await f.call("company_write", {
+		path: "docs/latest",
+		operationKey: "write-1",
+		expectedVersion,
+		text: "x",
+	});
+	expect(parse(refused)).toEqual({
+		schema: "qorpera.company-folder-result/v1",
+		state: "not_applied",
+		operationKey: "write-1",
+		path: "docs/latest",
+		version: null,
+		reason: "link",
+		target: "plan.md",
+		next: expect.stringContaining("COMPANY_FILE_IS_A_LINK: nothing was written"),
+	});
+	// The target shown is a read of the link, released; nothing was written and no receipt taken.
+	expect(refused.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.releases[0]?.p_reads).toEqual([
+		{ path: "docs/latest", version: expectedVersion, authority: expect.any(Object) },
+	]);
+	expect(f.commits).toHaveLength(0);
+	expect(f.ledger.size).toBe(0);
+	const exists = parse(
+		await f.call("company_write", { path: "docs/latest", operationKey: "write-2", expectedVersion: null, text: "x" }),
+	);
+	expect(exists).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
+	const mkdir = parse(
+		await f.call("company_mkdir", { path: "docs/latest", operationKey: "mkdir-1", expectedVersion: null }),
+	);
+	expect(mkdir).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
+	expect(f.links.get("docs/latest")).toMatchObject({ version: expectedVersion, target: "plan.md" });
+	expect(f.files.has("docs/latest")).toBe(false);
+	expect(f.folders.has("docs/latest")).toBe(false);
+});
+
+it("deletes a link, never the file it names", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
+	const expectedVersion = f.links.get("docs/latest")?.version as string;
+	const answer = parse(
+		await f.call("company_delete", { path: "docs/latest", operationKey: "delete-1", expectedVersion }),
+	);
+	expect(answer).toMatchObject({ state: "applied", outcome: "saved" });
+	expect(f.commits[0]?.units).toEqual([{ op: "delete", path: "docs/latest", expectedVersion }]);
+	expect(f.links.has("docs/latest")).toBe(false);
+	expect(f.text("docs/plan.md")).toBe("the plan");
+});
+
 it("writes a file as one change set under the call's receipt, and replays the same call from it", async () => {
 	const f = await fixture({ folders: ["docs"] });
 	const write = { path: "docs/new.md", operationKey: "write-1", expectedVersion: null, text: "# New\n" };
@@ -361,6 +557,105 @@ it("answers a stale version and a missing folder as not applied, with what to do
 	expect(orphan).toMatchObject({ state: "not_applied", outcome: "refused", reason: "parent_missing" });
 	expect(orphan.next).toContain("COMPANY_FILE_PARENT_MISSING");
 	expect(f.text("docs/plan.md")).toBe("one");
+});
+
+it("observes a change that was not saved as denied with why, a replay too, and a parked one as proposed", async () => {
+	const f = await fixture(
+		{ files: { "docs/plan.md": "one" }, folders: ["docs", "held"] },
+		{
+			hook: (path) =>
+				path === "docs/locked.md"
+					? { outcome: "denied", reason: "denied" }
+					: path === "held/plan.md"
+						? { outcome: "waiting_for_review", reason: "waiting_for_review" }
+						: path === "docs/bad.md"
+							? { outcome: "refused", reason: "too_long" }
+							: null,
+		},
+	);
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async () => {},
+	});
+	const observed = async (tools: CloudNativeTool[], value: JsonValue) => {
+		const span = observability.start("company_write");
+		const tool = tools[2] as CloudNativeTool;
+		await tool.execute(tool.parseArguments(value), { ...f.context, observation: span });
+		return { status: span.result?.status, errorCategory: span.result?.errorCategory };
+	};
+	const write = (path: string, operationKey: string, expectedVersion: string | null = null) => ({
+		path,
+		operationKey,
+		expectedVersion,
+		text: "x",
+	});
+	const orphan = write("none/plan.md", "write-orphan");
+	const denied = (errorCategory: string) => ({ status: "denied", errorCategory });
+	expect(await observed(f.tools, write("docs/new.md", "write-new"))).toEqual({
+		status: "succeeded",
+		errorCategory: null,
+	});
+	expect(await observed(f.tools, write("docs/plan.md", "write-stale", randomUUID()))).toEqual(denied("stale_version"));
+	expect(await observed(f.tools, write("docs/plan.md", "write-exists"))).toEqual(denied("stale_version"));
+	expect(await observed(f.tools, orphan)).toEqual(denied("parent_missing"));
+	expect(await observed(f.tools, write("docs/locked.md", "write-locked"))).toEqual(denied("authority_unavailable"));
+	expect(await observed(f.tools, write("docs/bad.md", "write-bad"))).toEqual(denied("invalid_arguments"));
+	expect(await observed(f.tools, write("held/plan.md", "write-held"))).toEqual({
+		status: "proposed",
+		errorCategory: "protected_path",
+	});
+	// The same refused call again, in this run and after a restart: its receipt answers, and nothing happened.
+	expect(await observed(f.tools, orphan)).toEqual(denied("parent_missing"));
+	const restarted = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
+	expect(await observed(restarted, orphan)).toEqual(denied("parent_missing"));
+	expect(f.text("docs/locked.md")).toBeNull();
+	await observability.close();
+});
+
+it("observes a refusal answered before any receipt as denied at the boundary, and the model's answer stays ok", async () => {
+	const f = await fixture({ links: { "docs/latest": "plan.md" } });
+	const rows: CloudRuntimeObservation[] = [];
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async (batch) => {
+			rows.push(...batch);
+		},
+		batchDelayMs: 0,
+	});
+	const boundary = new CloudNativeToolBoundary({
+		companyId: f.identity.companyId,
+		runId: f.identity.runId,
+		identity: f.identity,
+		tools: f.tools,
+		assertActive: async () => undefined,
+		signal: new AbortController().signal,
+		observability,
+	});
+	const write = async (callId: string, path: string, expectedVersion: string | null) => {
+		const response = await boundary.invoke(callId, "qorpera", "company_write", {
+			path,
+			operationKey: callId,
+			expectedVersion,
+			text: "x",
+		});
+		return JSON.parse(response.contentItems[0]?.text ?? "null").status;
+	};
+	expect(await write("write-link", "docs/latest", f.links.get("docs/latest")?.version as string)).toBe("ok");
+	expect(await write("write-orphan", "none/plan.md", null)).toBe("ok");
+	expect(await write("write-new", "docs/new.md", null)).toBe("ok");
+	boundary.close();
+	await observability.close();
+	expect(
+		rows
+			.filter((row) => row.phase === "finish" && row.operation === "company_write")
+			.map((row) => [row.status, row.errorCategory]),
+	).toEqual([
+		["denied", "invalid_arguments"],
+		["denied", "parent_missing"],
+		["succeeded", null],
+	]);
+	expect(f.links.has("docs/latest")).toBe(true);
+	expect(f.text("docs/new.md")).toBe("x");
 });
 
 it("keeps a changed file's media type and executable bit", async () => {

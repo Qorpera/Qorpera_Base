@@ -78,7 +78,9 @@ What it changes in the build:
 follow-up to 4b for networked commands' views and quiet publishing, 4d, and
 4e's toolbox), and new slices for links: the core's link entries, the write
 protocol, the folder program and service, and the server-side tools
-([RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)).
+([RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)), and for the caches in
+the folder program
+([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)).
 
 ## Decided on 2 October 2026 (light threads)
 
@@ -459,7 +461,8 @@ machine's starter.
   `.#*`, `*~`, `.Trash-*`;
 - a file that is created and removed between two boundaries;
 - a project's installed dependencies and build output (amended 2026-10-14,
-  contract amendment item 8): they stay in the machine's own cache.
+  contract amendment item 8): they stay in the machine's own cache
+  ([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)).
 
 ### How pending bytes are handled
 
@@ -700,7 +703,9 @@ Agents search and read through the shell and still write with today's tools.
 
 **Retired after acceptance** (amended 2026-09-28: at the steps named):
 - the five `company_*` tools, at step 3;
-- the Company File realm of `computer_transfer`, at step 4.
+- the Company File realm of `computer_transfer`, at step 4. The whole tool retired there (F3 4f-1,
+  `RUNTIME-FOLDER-COMPANY-MACHINES.md` "Slices"): legacy sweep step C's removal of company objects had left no
+  realm working.
 
 **Workers.** A worker gets its own box, with the worker's authority.
 
@@ -961,29 +966,36 @@ job's host all run the same pinned git.
 
 ### The per-session cache
 
+(Amended 2026-10-14, contract amendment item 8. The plan is
+[RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md), and it
+governs where this section differs. The cache lives on the machine's disk,
+not in a NAS cache folder, and outlives the session. The folder program keeps
+the list and reads the index, not the folder service. Outside worktrees,
+dependency folders anywhere and build folders in a project are caches too.
+In a worktree, what git ignores is a cache too, unless git tracks it.)
+
 Dependencies and build output are caches, not company files. Each worktree
 has a cache list:
 
 - It starts from a fixed set of folder names: `node_modules`, `.venv`,
   `venv`, `target`, `dist`, `build`, `.next`, `.nuxt`, `__pycache__`,
   `.gradle`, `.cache`, `.turbo`, `.pytest_cache`, `coverage`.
-- It drops any name under which the worktree's own index has entries. At each
-  command end where that index changed, the folder service reads its paths
-  (git's documented index format). A name that now has tracked files leaves
-  the list, and the files at that name are published at the same boundary.
-  This covers a worker that `git add`s files under `build/` on its own
-  branch. A name that has left a worktree's list stays off it, so files that
-  are already published never fall back into a cache.
+- It drops any name under which the worktree's own index has entries. When
+  that index changes, the folder program reads its paths (git's documented
+  index format). A name that now has tracked files leaves the list, and the
+  files at that name are published at the next boundary. This covers a worker
+  that `git add`s files under `build/` on its own branch. A name that has left
+  a worktree's list stays off it, so files that are already published never
+  fall back into a cache.
 
-Inside a worktree, a folder whose name is on the list lives in the session's
-own NAS cache folder:
+Inside a worktree, a folder whose name is on the list, and a file or folder
+that git ignores, lives on the machine's disk:
 - It is never published.
 - Other views and machines see nothing at that path.
 - It can be rebuilt at any time.
 
-Everything else in a worktree, including untracked output such as `out/` or
-reports, is company data that members see. There is no ignore-pattern
-matching in the folder service; `.gitignore` decides only what git commits.
+Everything else in a worktree, including untracked output that git does not
+ignore, such as reports, is company data that members see.
 
 ### Names
 

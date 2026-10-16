@@ -5,13 +5,23 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { COMPANY_COMPUTER_WALLPAPER_FILES } from "../packages/runtime/src/cloud-company-computer-wallpapers.ts";
+import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--out" || !args[1]) {
-	throw new Error("Usage: node scripts/package-company-computer.mjs --out <new-directory>");
+if (![2, 4].includes(args.length) || args[0] !== "--out" || !args[1] || (args.length === 4 && (args[2] !== "--folder-program" || !args[3]))) {
+	throw new Error("Usage: node scripts/package-company-computer.mjs --out <new-directory> [--folder-program <built qorpera-folder>]");
 }
 const output = resolve(args[1]);
+// The company folder (F3 4e-2): the folder program the record pins, the helper that mounts it and their units come
+// together. They are image code: the image installer places them, a code package never changes them.
+const folderProgram = args[3] ? await readFile(resolve(args[3])) : undefined;
+if (folderProgram) {
+	const record = readFolderProgramRecord(root);
+	if (folderProgram.length !== record.bytes || createHash("sha256").update(folderProgram).digest("hex") !== record.sha256) {
+		throw new Error(`--folder-program is not the folder program ${RECORD} pins; build it with scripts/build-folder-program.mjs`);
+	}
+}
 const wallpaperRoot = join(root, "deploy/lxd-company-computer-guest/backdrops");
 const wallpapers = await readdir(wallpaperRoot, { withFileTypes: true });
 if (wallpapers.some((entry) => !entry.isFile()) || wallpapers.map((entry) => entry.name).sort().join() !== COMPANY_COMPUTER_WALLPAPER_FILES.join()) {
@@ -36,6 +46,7 @@ const bundled = await build({
 		"qorpera-company-computer-reset-configuration-control": "packages/runtime/src/cloud-company-computer-reset-configuration-control-main.ts",
 		"qorpera-company-computer-reset-service-start-control": "packages/runtime/src/cloud-company-computer-reset-service-start-control-main.ts",
 		"office-browser-child": "packages/runtime/src/cloud-company-computer-browser-child.ts",
+		...(folderProgram && { "qorpera-company-computer-folder-helper": "packages/runtime/src/cloud-company-computer-folder-helper-main.ts" }),
 	},
 	outdir: output, outExtension: { ".js": ".mjs" }, bundle: true,
 	external: ["playwright-core"], platform: "node", format: "esm", target: "node22.19", metafile: true,
@@ -71,6 +82,14 @@ for (const name of ["qorpera-company-computer.service", "qorpera-company-compute
 	// The plumber is root-only where it is installed (it locks its own file); the
 	// package copy stays readable for every build step that hashes or stages it.
 	await chmod(join(output, name), name.startsWith("qorpera-screen-") || name === "qorpera-computer-plumb" ? 0o555 : 0o444);
+}
+if (folderProgram) {
+	for (const name of ["qorpera-office-folder-helper.service", "qorpera-office-folder-helper.socket", "qorpera-office-folder-mount@.service.in"]) {
+		await copyFile(join(root, "deploy/lxd-company-computer-guest", name), join(output, name));
+		await chmod(join(output, name), 0o444);
+	}
+	await writeFile(join(output, "qorpera-folder"), folderProgram);
+	await chmod(join(output, "qorpera-folder"), 0o555);
 }
 await mkdir(join(output, "wallpapers"), { mode: 0o755 });
 // Reuse the existing artwork as inert image bytes, never desktop application code.
