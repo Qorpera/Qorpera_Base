@@ -276,11 +276,14 @@ directory, not walls; the walls are the folder's rules (5b) and the code host's 
 
 **The lock protocol, refusals, names and cleanup** are §6's ("Git on the mount"). The folder program serves them
 (5d): an exclusive create of a shared `X.lock` takes the lease and refreshes `X` before `open()` returns, the rename
-over `X` is the publish point inside the syscall, a lock's removal publishes `X`'s pending change, `utime` under
+over `X` is the publish point inside the syscall, a lock's removal publishes `X`'s pending change (a deletion, or the
+`packed-refs` that `git pack-refs` renamed from `packed-refs.new`, which the same lease guards), `utime` under
 `repo.git/objects` returns EPERM, and a written file keeps its time in the session's view. The code host's view (the
 platform's) writes the session-local files and every other file no lease covers (`HEAD`, the probe files `git init`
 makes) as plain files its boundary publishes, so it can make a new `repo.git`; a ref, `packed-refs`, `shallow` and a
-ref's log change under their lease for it too. The core enforces the rules (5b, §7 item 9 as amended here):
+ref's log change under their lease for it too. A lease's change set makes only the folders below `repo.git`, so the
+first publish under a lease in a `repo.git` new in the view runs a boundary first, which saves the directory with
+`HEAD` and `config`. The core enforces the rules (5b, §7 item 9 as amended here):
 
 - `.git` and `repo.git` refused at any depth outside `code/<owner>/<name>/`, accepted inside;
 - leases on the shared files in `repo.git` (`refs/`, `packed-refs`, `shallow`), with the version check at the rename

@@ -700,6 +700,40 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	);
 
 	it(
+		"the code host moves a new repository's first branch before any boundary, and packs its refs without losing one",
+		async () => {
+			const at = await area();
+			const host = await mountSession(at, "host");
+			const fresh = "code/acme/fresh/repo.git";
+			const gitDir = join(host.company, fresh);
+			const init = ["--quiet", "--bare", "--template=", "--ref-format=files", "--initial-branch=main"];
+			await git(host.company, host.home, "init", ...init, gitDir);
+			// The seed's order (5e): the base ref moves under its lease while the new repo.git is only the view's.
+			const tree = (await git(gitDir, host.home, "hash-object", "-w", "-t", "tree", "/dev/null")).trim();
+			const commit = (await git(gitDir, host.home, "commit-tree", tree, "-m", "base")).trim();
+			await git(gitDir, host.home, "update-ref", "refs/heads/main", commit);
+			expect(at.core.entries.get(`${fresh}/HEAD`)?.fileSha256).toBe(hashOf("ref: refs/heads/main\n"));
+			expect(at.core.entries.get(`${fresh}/refs/heads/main`)?.fileSha256).toBe(hashOf(`${commit}\n`));
+			// git gc's pack-refs: packed-refs.new renamed onto packed-refs under its lock, then the loose ref pruned.
+			await git(gitDir, host.home, "pack-refs", "--all");
+			const packed = await readFile(join(gitDir, "packed-refs"), "utf8");
+			expect(packed).toContain(`${commit} refs/heads/main`);
+			expect(at.core.entries.get(`${fresh}/packed-refs`)?.fileSha256).toBe(hashOf(packed));
+			expect(at.core.entries.has(`${fresh}/packed-refs.new`)).toBe(false);
+			expect(at.core.entries.has(`${fresh}/refs/heads/main`)).toBe(false);
+			const published = await host.publish();
+			expect(published.code, published.out).toBe(0);
+			await at.service.poll();
+
+			const first = await mountSession(at, "first");
+			expect((await git(join(first.company, fresh), first.home, "rev-parse", "refs/heads/main")).trim()).toBe(
+				commit,
+			);
+		},
+		TIMEOUT,
+	);
+
+	it(
 		"a cache folder stays on the machine's disk, and leaves the list once git tracks it",
 		async () => {
 			const at = await area();

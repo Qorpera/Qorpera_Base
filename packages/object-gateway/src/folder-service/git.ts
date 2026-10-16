@@ -110,13 +110,15 @@ export function gitAlternates(rest: string): boolean {
 }
 
 /** A file or folder a lease guards (`rest` is below `repo.git/`), with its lock: a ref (`refs/**`, and `refs`),
- * `packed-refs`, `shallow`, and a ref's log (`logs/refs/**`, and `logs/refs`). Sessions race on these. */
+ * `packed-refs` (and `packed-refs.new`, which git renames onto it under its lock), `shallow`, and a ref's log
+ * (`logs/refs/**`, and `logs/refs`). Sessions race on these. */
 export function gitLeased(rest: string): boolean {
 	const file = rest.endsWith(".lock") ? rest.slice(0, -".lock".length) : rest;
 	return (
 		file === "refs" ||
 		file.startsWith("refs/") ||
 		file === "packed-refs" ||
+		file === "packed-refs.new" ||
 		file === "shallow" ||
 		file === "logs/refs" ||
 		file.startsWith("logs/refs/")
@@ -164,10 +166,13 @@ export function gitDir(target: string): string {
 	return `${place.area}/repo.git`;
 }
 
-/** The files a lock on the shared file `target` guards: the file, its log, and the locks git writes them through. */
+/** The files a lock on the shared file `target` guards: the file, its log, and the locks git writes them through
+ * (`packed-refs` also through `packed-refs.new`, which `git pack-refs` renames onto it). */
 export function gitGuarded(target: string): readonly string[] {
 	const reflog = gitReflog(target);
-	return [target, `${target}.lock`, reflog, `${reflog}.lock`];
+	const files = [target, `${target}.lock`, reflog, `${reflog}.lock`];
+	const place = gitPlace(target);
+	return place.kind === "git" && place.rest === "packed-refs" ? [...files, `${target}.new`] : files;
 }
 
 /** The reflog of the shared file `target` (`code/<owner>/<name>/repo.git/X`). */

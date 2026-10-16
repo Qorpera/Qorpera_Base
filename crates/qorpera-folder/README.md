@@ -83,7 +83,9 @@ from the published copy when first used, never published, so a hook one session 
 The company's code host keeps none of them on its disk: its `code_host` view (the node says so in its hello answer)
 writes and publishes the copies the sessions seed theirs from. It writes the other shared files no lease guards
 (`HEAD`, the probe files `git init` makes) as plain files too, so `git init` makes a new `repo.git` there; a ref,
-`packed-refs`, `shallow` and a ref's log change under their lease for it, as for a session.
+`packed-refs` (and the `packed-refs.new` `git pack-refs` renames onto it), `shallow` and a ref's log change under their
+lease for it, as for a session. A new `repo.git` reaches the folder at a boundary before its first ref's lease
+publishes (the core makes only the folders below `repo.git`).
 Cache folders in a worker's worktree (`node_modules`, `target`, `dist`, `build` and the rest of `src/git.rs`'s list)
 live there too, kept out of the company folder. The program reads the worktree's index (`src/index.rs`) each time git
 renames a new one into place; a name the index holds as a folder leaves that worktree's list for good

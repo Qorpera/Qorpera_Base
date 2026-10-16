@@ -767,8 +767,8 @@ export class FakeCore implements FolderCore {
 	}
 
 	/** One git change set: its objects land (one already there is saved as it is), and the ref and its log land at the
-	 * versions the lease found or not at all (one written with none, onto nothing). Missing parents are made; the folders
-	 * the core makes for it (each from the repo's own down) count against its 1000 units. */
+	 * versions the lease found or not at all (one written with none, onto nothing). The missing folders below the git
+	 * directory are made, and count against its 1000 units; a git directory not in the folder lands nothing (446300). */
 	#gitApply(leaseId: string, units: readonly GitUnit[]): GitPublish {
 		const folders = new Set<string>();
 		for (const u of units) {
@@ -779,7 +779,8 @@ export class FakeCore implements FolderCore {
 		const live = (path: string) => this.entries.get(path)?.version ?? null;
 		const commitId = v(this.#nextVersion++);
 		const changed = (u: GitUnit) => !gitObjectPath(u.path) && live(u.path) !== (u.expectedVersion ?? null);
-		const stale = units.some(changed);
+		const missing = units.some((u) => !this.entries.has(u.path.split("/").slice(0, 4).join("/")));
+		const stale = missing || units.some(changed);
 		this.gitPublishes.push({ leaseId, units, published: !stale });
 		const now = "2026-10-05T12:00:00.000Z";
 		const changes: FeedChange[] = [];
@@ -790,6 +791,7 @@ export class FakeCore implements FolderCore {
 				reason: null,
 				version,
 			});
+			if (missing) return { unit: i + 1, outcome: "conflict", reason: "parent_missing", version: null };
 			if (stale && !gitObjectPath(u.path))
 				return { unit: i + 1, outcome: "conflict", reason: "version_changed", version: null };
 			const old = this.entries.get(u.path);
@@ -800,7 +802,7 @@ export class FakeCore implements FolderCore {
 			}
 			if (old && u.expectedVersion === undefined) return saved(old.version);
 			const segments = u.path.split("/");
-			for (let n = 1; n < segments.length; n++) {
+			for (let n = 5; n < segments.length; n++) {
 				const parent = segments.slice(0, n).join("/");
 				if (this.entries.has(parent)) continue;
 				const folder: CoreEntry = { path: parent, kind: "folder", version: v(this.#nextVersion++), updatedAt: now };

@@ -333,6 +333,16 @@ function waitingOf(plan: BoundaryPlan): ReportEntry[] {
 	return plan.waiting.map((w): ReportEntry => ({ path: w.path, outcome: "waiting", reason: w.reason, kept: true }));
 }
 
+/** Whether the git directory `target` is in, or a folder above it, is new in the view (`git init` made it): not in the
+ * folder yet. */
+function gitDirNew(pending: PendingView, target: string): boolean {
+	for (let path = gitDir(target); path.includes("/"); path = path.slice(0, path.lastIndexOf("/"))) {
+		const node = pending.nodes().get(path);
+		if (node?.kind === "folder" && !node.origin) return true;
+	}
+	return false;
+}
+
 /** The report of a boundary whose commit got no answer: every path it planned stays pending, to be asked again. */
 function notYet(plan: BoundaryPlan): ReportEntry[] {
 	return plan.units.flatMap((u) =>
@@ -1950,6 +1960,7 @@ export class FolderService {
 		lock: GitLock,
 	): Promise<GitPublish> {
 		const actor = this.#gitActor(view);
+		await this.#gitDirFirst(view, pending, target);
 		const node = pending.nodes().get(from);
 		if (node?.kind !== "file") throw new ProtocolError(ErrorCode.notFound, "The git lock is gone");
 		if (node.open > 0) throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
@@ -2073,10 +2084,21 @@ export class FolderService {
 		for (const unsettled of due) view.pending?.settlePaths(unsettled.made);
 	}
 
+	/** A git directory `git init` made in the view (the code host's seed), or a folder above it, is saved first by an
+	 * ordinary boundary, with what else the view has pending (`HEAD`, `config`): a lease's change set makes only the
+	 * folders below its git directory (446300). */
+	async #gitDirFirst(view: View, pending: PendingView, target: string): Promise<void> {
+		if (!gitDirNew(pending, target)) return;
+		await this.#boundary(view, false);
+		if (gitDirNew(pending, target))
+			throw new ProtocolError(ErrorCode.busy, "The new git directory is not in the folder yet");
+	}
+
 	/** Removes a git lock (§6): the lease ends, publishing the guarded files git removed under it (`git branch -D`) and
-	 * the log it replaced (`git reflog expire`), or nothing (an update git rolled back, whose line in the log goes too, or
-	 * a lock a killed git left). A change that no longer matches the versions the lease found is not published: the
-	 * machine hears BUSY, and shows the live files again. */
+	 * those it replaced by a rename (the log `git reflog expire` writes, the `packed-refs.new` of `git pack-refs`), or
+	 * nothing (an update git rolled back, whose line in the log goes too, or a lock a killed git left). A change that no
+	 * longer matches the versions the lease found is not published: the machine hears BUSY, and shows the live files
+	 * again. */
 	async #gitUnlock(view: View, path: string, target: string, lock: GitLock): Promise<void> {
 		await this.#quiet(view);
 		const pending = view.pending;
@@ -2086,24 +2108,25 @@ export class FolderService {
 			throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
 		let published = true;
 		await this.#inTurn(view, async () => {
+			if (lock.replaced.size > 0) await this.#gitDirFirst(view, pending, target);
 			const actor = this.#gitActor(view);
 			const units: GitUnit[] = [];
-			const removed: [string, string | null][] = [
+			const files: [string, string | null][] = [
 				[target, lock.versions.file],
 				[gitReflog(target), lock.versions.reflog],
 			];
-			for (const [file, version] of removed)
+			for (const [file, version] of files)
 				if (version !== null && lock.deleted.has(file) && pending.nodes().get(file)?.kind !== "file")
 					units.push({ op: "delete", path: file, expectedVersion: version });
-			const reflog = gitReflog(target);
-			const log = pending.nodes().get(reflog);
-			let made: string | undefined;
-			if (lock.replaced.has(reflog) && log?.kind === "file" && log.content !== undefined) {
-				if (log.open > 0) throw new ProtocolError(ErrorCode.busy, "The git log is still open");
-				made = log.version;
-				const staged = await this.#stage(view, log, reflog);
+			const made: { path: string; version: string }[] = [];
+			for (const [file, version] of files) {
+				const replaced = pending.nodes().get(file);
+				if (!lock.replaced.has(file) || replaced?.kind !== "file" || replaced.content === undefined) continue;
+				if (replaced.open > 0) throw new ProtocolError(ErrorCode.busy, "The git file is still open");
+				const staged = await this.#stage(view, replaced, file);
 				if (!staged) throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
-				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
+				made.push({ path: file, version: replaced.version });
+				units.push({ op: "write", path: file, file: staged, expectedVersion: version });
 			}
 			if (units.length > 0) await this.#gitReadGate(view);
 			let answer: GitPublish | null = null;
@@ -2121,9 +2144,11 @@ export class FolderService {
 			}
 			view.gitLeases.delete(target);
 			published = units.length === 0 || answer?.published === true;
-			const written = answer?.published ? answer.units.at(-1) : undefined;
-			if (made !== undefined && written?.outcome === "saved" && written.version)
-				this.#alias(view, reflog, made, written.version);
+			const written = answer?.published ? answer.units.slice(units.length - made.length) : [];
+			made.forEach(({ path, version }, i) => {
+				const outcome = written[i];
+				if (outcome?.outcome === "saved" && outcome.version) this.#alias(view, path, version, outcome.version);
+			});
 			if (answer?.published && answer.seq !== null) await this.#gitCatchUpTo(view, answer.seq);
 			const guarded = gitGuarded(target);
 			pending.drop(guarded);

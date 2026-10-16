@@ -649,6 +649,47 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitPublishes).toEqual([]);
 	});
 
+	it("saves a new repository by a boundary before its first ref's lease publishes it, as the code host's seed does", async () => {
+		const { core, openAs } = await repo(codeHostGrants());
+		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
+		const host = await openAs(CODE_HOST);
+		const fresh = "code/acme/fresh/repo.git";
+		for (const folder of ["code/acme/fresh", fresh, `${fresh}/refs`, `${fresh}/refs/heads`]) await host.mkdir(folder);
+		await write(host, `${fresh}/HEAD`, "ref: refs/heads/main\n", true);
+		// The core makes only the folders below a git directory for a lease's change set (446300).
+		await write(host, `${fresh}/refs/heads/main.lock`, "5555\n", true);
+		await host.rename({ from: `${fresh}/refs/heads/main.lock`, to: `${fresh}/refs/heads/main`, noReplace: false });
+		expect(core.entries.get(fresh)?.kind).toBe("folder");
+		expect(core.entries.get(`${fresh}/HEAD`)?.fileSha256).toBe(hashOf("ref: refs/heads/main\n"));
+		expect(core.entries.get(`${fresh}/refs/heads/main`)?.fileSha256).toBe(hashOf("5555\n"));
+		expect(core.gitPublishes.map((publish) => publish.published)).toEqual([true]);
+	});
+
+	it("publishes the packed-refs git pack-refs renames into place under its lock, then the loose ref it prunes", async () => {
+		const { core, openAs } = await repo(codeHostGrants());
+		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
+		const host = await openAs(CODE_HOST);
+		const packed = `${R}/packed-refs`;
+		const lines = "1111 refs/heads/main\n2222 refs/heads/topic\n";
+		// packed-refs.new is a file packed-refs' lease guards, in the code host's view too.
+		await refused(write(host, `${packed}.new`, lines, true), "NOT_PERMITTED");
+		await write(host, `${packed}.lock`, "", true);
+		await write(host, `${packed}.new`, lines, true);
+		await host.rename({ from: `${packed}.new`, to: packed, noReplace: false });
+		await host.unlink(`${packed}.lock`, undefined);
+		expect(core.entries.get(packed)?.fileSha256).toBe(hashOf(lines));
+		expect(core.entries.has(`${packed}.new`)).toBe(false);
+		await write(host, `${MAIN}.lock`, "", true);
+		await host.unlink(MAIN, undefined);
+		await host.unlink(`${MAIN}.lock`, undefined);
+		expect(core.entries.has(MAIN)).toBe(false);
+		expect(core.entries.get(packed)?.fileSha256).toBe(hashOf(lines));
+		expect(core.gitPublishes.map((publish) => publish.units.map((unit) => `${unit.op} ${unit.path}`))).toEqual([
+			[`write ${packed}`],
+			[`delete ${MAIN}`],
+		]);
+	});
+
 	it("saves an object, or an objects folder, another session published first as it is", async () => {
 		const { core, open } = await repo();
 		const first = await open("first");
