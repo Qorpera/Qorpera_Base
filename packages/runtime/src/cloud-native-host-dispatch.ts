@@ -16,10 +16,10 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * 20260930093000 (proposals, P40b), 20260930106000 (manage_hook), 20260930202000 (zoom, M1b-3), 20260930203000 (the
  * release of tree blocks, M1b-3), 20260930204000 (the primary view and its record, M1b-4a), 20260930220000 (branches,
  * M4), 20260930231000 (run logs, W1b), 20260930300000 (tree writer, M1b-4b-2), 20260930300100 (the admission split,
- * M1b-4b-3) and 20260930340000 (resumed attempts, W5b-2) list them, without the two identity calls, which the host
- * makes between jobs (G2-3), and without the agents' old todo, worker, routine and sidebar writers, which legacy sweep
- * D6 (20260930335000) took out. The long budget is the lease validator's and, since 20260930109500, the model
- * request's fence's. */
+ * M1b-4b-3), 20260930340000 (resumed attempts, W5b-2) and 20260930341000 (worker memory, W4b) list them, without the
+ * two identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
+ * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and,
+ * since 20260930109500, the model request's fence's. */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],
@@ -70,6 +70,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_renew_upload", "standard"],
 	["qorpera_folder_seal_upload", "standard"],
 	["qorpera_folder_worker_commit", "standard"],
+	["qorpera_folder_worker_parent_run", "standard"],
 	["qorpera_list_agent_event_hooks", "standard"],
 	["qorpera_list_company_paths", "standard"],
 	["qorpera_list_company_paths_v2", "standard"],
@@ -85,6 +86,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_memory_step_narrow", "standard"],
 	["qorpera_memory_view", "standard"],
 	["qorpera_memory_view_record", "standard"],
+	["qorpera_memory_view_reference_check_run", "standard"],
 	["qorpera_memory_zoom", "standard"],
 	["qorpera_native_company_file_write", "standard"],
 	["qorpera_native_company_file_write_source", "standard"],

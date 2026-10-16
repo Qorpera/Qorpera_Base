@@ -80,6 +80,15 @@ test("results map to GitHub states and short descriptions", () => {
 		statusDescription({ machine: "node02", result: "failed", elapsedSeconds: 41, runner: "ci01", failedSteps: ["runtime", "scripts"] }),
 		"failed on node 2 in 41s: runtime, scripts (ci01)",
 	);
+	// --fail-fast: the steps it stopped, by their number.
+	assert.equal(
+		statusDescription({ machine: "node02+node01", result: "failed", elapsedSeconds: 75, runner: "ci01+ci04", failedSteps: ["hosted-db"], stoppedSteps: ["runtime", "runner-orchestrator"] }),
+		"failed on node 2 + node 1 in 1m15s: hosted-db, 2 stopped (ci01+ci04)",
+	);
+	assert.equal(
+		statusDescription({ machine: "node01", result: "failed", elapsedSeconds: 75, runner: "ci04", stoppedSteps: ["runtime"] }),
+		"failed on node 1 in 1m15s: 1 stopped (ci04)",
+	);
 	assert.equal(
 		statusDescription({ machine: "node01", result: "setup-failed", elapsedSeconds: 3, runner: null }),
 		"setup-failed on node 1 in 3s: the harness, not the suite",

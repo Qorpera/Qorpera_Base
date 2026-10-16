@@ -217,6 +217,14 @@ test("--parts splits changed over the machines, at most one part each, and is on
 	assert.throws(() => parseArgs(["--parts", "2", "--", "true"]), /--parts is for changed/);
 });
 
+test("--fail-fast is only for changed, and a fail-fast run still speaks for the suite", () => {
+	assert.equal(parseArgs(["changed"]).failFast, false);
+	const options = parseArgs(["--front", "--cores", "6", "--parts", "2", "--fail-fast", "changed"]);
+	assert.deepEqual([options.failFast, options.parts, options.plain], [true, 2, true]);
+	assert.throws(() => parseArgs(["--fail-fast", "test"]), /--fail-fast is for changed/);
+	assert.throws(() => parseArgs(["--fail-fast", "--", "true"]), /--fail-fast is for changed/);
+});
+
 test("a run in parts passes only when every part passed; a part that ran no steps never lets another's result stand for it", () => {
 	const order = ["lint", "hosted-db", "runtime", "scripts", "runner-orchestrator"];
 	const part = (k, result, extra = {}) => ({
@@ -288,6 +296,17 @@ test("a run in parts passes only when every part passed; a part that ran no step
 	// no list of known reds can pass it.
 	const cut = joinRecords([part(1, "failed", { failedSteps: ["hosted-db"] }), part(2, "failed", { exitCode: 255 })], common);
 	assert.deepEqual([cut.result, cut.exitCode, cut.failedSteps], ["failed", 1, undefined]);
+	// --fail-fast: a part the other's failure stopped names the steps it stopped; both lists in plan order.
+	const stopped = joinRecords(
+		[part(1, "failed", { stoppedSteps: ["runner-orchestrator"] }), part(2, "failed", { failedSteps: ["hosted-db"], stoppedSteps: ["scripts", "runtime"] })],
+		{ ...common, failFast: true },
+	);
+	assert.deepEqual(
+		[stopped.result, stopped.exitCode, stopped.failedSteps, stopped.stoppedSteps, stopped.failFast],
+		["failed", 1, ["hosted-db"], ["runtime", "scripts", "runner-orchestrator"], true],
+	);
+	assert.equal(joinRecords([part(1, "failed", { stoppedSteps: ["runtime"] }), part(2, "failed", { exitCode: 255 })], common).stoppedSteps, undefined);
+	assert.equal(one.stoppedSteps, undefined);
 	// Each part's own record is kept; with no runner in any part, none.
 	assert.deepEqual(one.parts.map((record) => record.result), ["passed", "failed"]);
 	assert.equal(joinRecords([part(1, "setup-failed", { runner: null }), part(2, "setup-failed", { runner: null })], common).runner, null);

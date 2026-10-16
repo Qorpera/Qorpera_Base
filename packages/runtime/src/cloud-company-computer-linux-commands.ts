@@ -6,8 +6,6 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import { readCompanyComputerWorkbenchFile } from "./cloud-company-computer-file-reader.ts";
-import { writeCompanyComputerWorkbenchFile } from "./cloud-company-computer-file-writer.ts";
 import type { CompanyComputerGuestBoundary, CompanyComputerGuestCommands } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
@@ -297,53 +295,6 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 		);
 	}
 
-	async readFile(input: { path: string; signal: AbortSignal }): Promise<Uint8Array> {
-		const { path, signal: caller } = input;
-		return this.#track(async (deadline) => {
-			const signal = AbortSignal.any([caller, this.#stop.signal, deadline]);
-			await this.#ready(signal);
-			const root = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);
-			try {
-				await assertCompanyComputerWorkbenchMount(root, this.#mount, [
-					this.#layout.workbenchRoot,
-					this.#layout.desktopHome,
-				]);
-				const bytes = await readCompanyComputerWorkbenchFile(root, path, signal);
-				await this.#ready(signal);
-				return bytes;
-			} finally {
-				await root.close();
-			}
-		}, 15000);
-	}
-	async writeFile(input: { path: string; bytes: Uint8Array; sha256: string; signal: AbortSignal }): Promise<void> {
-		const file = { path: input.path, bytes: Uint8Array.from(input.bytes), sha256: input.sha256 },
-			caller = input.signal;
-		return this.#track(async (deadline) => {
-			const signal = AbortSignal.any([caller, this.#stop.signal, deadline]);
-			await this.#ready(signal);
-			const handles: FileHandle[] = [];
-			const closeFiles = async () => {
-				const closed = await Promise.allSettled(handles.map((handle) => handle.close()));
-				const failed = closed.find((entry) => entry.status === "rejected");
-				if (failed?.status === "rejected") throw failed.reason;
-			};
-			try {
-				const root = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);
-				handles.push(root);
-				// Only individual screen UUID children are mounted into desktops;
-				// the parent is broker-private and shares the persistent NAS mount.
-				const staging = await openCompanyComputerLinuxDirectory(this.#layout.screenStateRoot, true);
-				handles.push(staging);
-				for (const handle of handles)
-					await assertCompanyComputerWorkbenchMount(handle, this.#mount, Object.values(this.#layout));
-				await writeCompanyComputerWorkbenchFile(root, staging, file, signal);
-				await this.#ready(signal);
-			} finally {
-				await closeFiles();
-			}
-		}, 15000);
-	}
 	async capturePng(input: Parameters<CompanyComputerGuestCommands["capturePng"]>[0]): Promise<Uint8Array> {
 		const copied = { ...input };
 		return this.#track(
