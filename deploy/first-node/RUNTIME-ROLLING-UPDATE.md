@@ -188,7 +188,10 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - Rehearse first: `05-rehearse-migrations` (dry-run only) applies every release migration in
      order in one transaction and rolls back, so every exact-text patch is checked before anything
      commits. It refuses if a guard the roll relies on is missing after them: then commit nothing, and
-     the release pauses. It holds every
+     the release pauses. When a later migration creates a `pg_temp` function again (v179:
+     20260930394000 and 20260930445000 both create `s5a_patch`), `05` drops it right after the
+     migration that made it; each `10-*` packet runs alone and needs no drop. `packets` still refuses
+     a temporary table's name in two migrations (a table made `if not exists` may be shared). It holds every
      migration's locks until its rollback (for v166: `qorpera_runner_jobs`, `qorpera_profiles`, the
      vault tables), so run it in the same quiet minute as the commits, never in a busy hour; a `55P03`
      from it only means "try again later". A release with no migration has no `05`. Each `10-migration-*` packet needs the one before it recorded, so on its own only the
