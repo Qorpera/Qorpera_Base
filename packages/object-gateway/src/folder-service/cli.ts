@@ -12,7 +12,7 @@ import { FolderStaging, GatewayUploads } from "./staging.ts";
 
 /** The node's folder service. Under systemd it takes its configuration and the service credential from
  * `LoadCredential=` (qorpera-folder-config, qorpera-supabase-service-key, and for writes qorpera-folder-gateway-token),
- * its socket from `qorpera-folder-service.socket`, and on a node with coding machines its control socket from
+ * its socket from `qorpera-folder-service.socket`, and on a node with coding or test machines its control socket from
  * `qorpera-folder-control.socket` (named `control`); see deploy/folder-service/. */
 
 function credential(name: string): string {
@@ -32,7 +32,11 @@ interface Config {
 	readonly companyMachineProjects?: unknown;
 	/** The LXD projects of this node's coding machines: each machine there may present its own sessions' views (F3 5c). */
 	readonly codingMachineProjects?: unknown;
-	/** The coding executor's uid: the only one the control socket's file may let connect (F3 5c). */
+	/** The LXD projects of this node's agents' test machines: each machine there may present its own view (F3 6b). None
+	 * may be an office or coding project too. */
+	readonly testMachineProjects?: unknown;
+	/** The coding executor's uid, which runs the coding machines and the test machines: the only one the control socket's
+	 * file may let connect (F3 5c, 6b). */
 	readonly codingExecutorUid?: number;
 	/** Writes through the mount (F3 step 3): the object gateway that stores the views' bytes. Without it, every view is
 	 * read-only. Its token is the credential qorpera-folder-gateway-token. */
@@ -49,6 +53,7 @@ function config(): Config {
 		"runBoxHosts",
 		"companyMachineProjects",
 		"codingMachineProjects",
+		"testMachineProjects",
 		"codingExecutorUid",
 		"gatewayUrl",
 	];
@@ -65,6 +70,8 @@ function config(): Config {
 		throw new Error("companyMachineProjects must be a list");
 	if (value.codingMachineProjects !== undefined && !Array.isArray(value.codingMachineProjects))
 		throw new Error("codingMachineProjects must be a list");
+	if (value.testMachineProjects !== undefined && !Array.isArray(value.testMachineProjects))
+		throw new Error("testMachineProjects must be a list");
 	const executor = value.codingExecutorUid;
 	if (executor !== undefined && (typeof executor !== "number" || !Number.isSafeInteger(executor) || executor <= 0))
 		throw new Error("codingExecutorUid must be the coding executor's uid, not root's");
@@ -99,6 +106,8 @@ const service = new FolderService({
 		Array.isArray(settings.runBoxHosts) ? settings.runBoxHosts.map(parseMachineRef) : [],
 		Array.isArray(settings.companyMachineProjects) ? settings.companyMachineProjects.map(parseMachineProject) : [],
 		Array.isArray(settings.codingMachineProjects) ? settings.codingMachineProjects.map(parseMachineProject) : [],
+		// A project listed here and as an office or coding project too stops the service at its start.
+		Array.isArray(settings.testMachineProjects) ? settings.testMachineProjects.map(parseMachineProject) : [],
 	),
 	log,
 });
@@ -134,7 +143,7 @@ if (fds.control !== undefined) {
 	control.listen({ fd: fds.control }, () => log("folder-service: serving the control socket from systemd"));
 }
 service.start();
-/** The unit's TimeoutStopSec= is 60s: a clean stop has 45 of them to release and publish its coding views. */
+/** The unit's TimeoutStopSec= is 60s: a clean stop has 45 of them to release and publish its machines' views. */
 const STOP_DEADLINE_MS = 45_000;
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const)
@@ -150,7 +159,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
 				return false;
 			})
 			.then((clean) => {
-				// Its coding views stay marked served: the next run refuses them, and their machines restart.
+				// Its machines' views stay marked served: the next run refuses them, and their machines restart.
 				if (!clean) log("folder-service: stopped without a clean stop");
 				process.exit(0);
 			});

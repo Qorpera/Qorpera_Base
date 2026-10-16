@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,6 +11,9 @@ const guest = join(repositoryRoot, "deploy/lxd-company-computer-guest");
 const recipePath = join(guest, "office-image-dependencies.json");
 const recipe = JSON.parse(readFileSync(recipePath, "utf-8"));
 const installer = readFileSync(join(guest, "install-office-image-dependencies.sh"), "utf-8");
+// The candidate builder and the recipe it sources.
+const builders = ["build-office-image-candidate.sh", "office-image-recipe.sh"].map((file) => join(repositoryRoot, "scripts", file));
+const builderSource = () => builders.map((file) => readFileSync(file, "utf-8")).join("\n");
 
 // QORPERA-RUNTIME-CONTRACT.md, the 2026-10-14 amendment's item 7: what every computer's shell runs.
 // Adding a tool needs no founder decision; dropping one of these does.
@@ -89,9 +92,8 @@ test("the in-guest installer stays offline and leaves swap off", () => {
 });
 
 test("the candidate builder copies every confinement key of the office unit and stays offline", () => {
-	const builder = join(repositoryRoot, "scripts/build-office-image-candidate.sh");
-	execFileSync("bash", ["-n", builder]);
-	const source = readFileSync(builder, "utf-8");
+	for (const builder of builders) execFileSync("bash", ["-n", builder]);
+	const source = builderSource();
 	const keys = source.match(/grep -E '\^\(([A-Za-z|]+)\)='\)/)[1].split("|");
 	const unit = readFileSync(join(guest, "qorpera-company-computer.service"), "utf-8").split("\n");
 	const copied = unit.filter((line) => keys.includes(line.split("=", 1)[0]));
@@ -111,7 +113,7 @@ test("the candidate builder copies every confinement key of the office unit and 
 });
 
 test("the candidate carries the pinned folder program and leaves the folder's units stopped", () => {
-	const source = readFileSync(join(repositoryRoot, "scripts/build-office-image-candidate.sh"), "utf-8");
+	const source = builderSource();
 	assert.match(source, /node scripts\/build-folder-program\.mjs --out "\$work\/qorpera-folder"/);
 	assert.match(source, /package-company-computer\.mjs --out "\$push\/package" --folder-program "\$work\/qorpera-folder"/);
 	for (const unit of ["helper.service", "helper.socket", "mount@.service"])
@@ -119,8 +121,25 @@ test("the candidate carries the pinned folder program and leaves the folder's un
 	assert.match(source, /sha256sum \/opt\/qorpera-folder\/qorpera-folder/);
 });
 
+test("the candidate builder takes the office account's id, production's by default", () => {
+	const candidate = builders[0];
+	const run = (args) => spawnSync("bash", [candidate, ...args], { encoding: "utf8", stdio: "pipe", timeout: 30000 });
+	for (const args of [["--office-id"], ["--office-id", "0"], ["--office-id", "020048"], ["--office-id", "2147483648"],
+		["--office-id", "20048x"], ["--office-id", "-1"], ["--stage", "x"], ["--stage=1"]]) {
+		const result = run(args);
+		assert.equal(result.status, 1, args.join(" "));
+		assert.match(result.stderr, /^FAIL: usage: build-office-image-candidate\.sh \[--stage\] \[--office-id <N>\]$/m);
+	}
+	// Good arguments get past the parse to the root check.
+	if (process.getuid() !== 0)
+		for (const args of [[], ["--stage"], ["--office-id", "2147483647", "--stage"]])
+			assert.match(run(args).stderr, /^FAIL: run through run-on-node\.mjs --sudo$/m, args.join(" "));
+	// qofleet01's policy.json: workbench uid and gid 20048. A node prepares an office only as that account.
+	assert.match(readFileSync(candidate, "utf-8"), /^office_id=20048$/m);
+});
+
 test("the candidate builder's apt runs none of this machine's apt hooks", () => {
-	const source = readFileSync(join(repositoryRoot, "scripts/build-office-image-candidate.sh"), "utf-8");
+	const source = builderSource();
 	const written = source.match(/^printf '%s\\n' ((?:'[^']*' )+)>"\$apt_root\/apt\.conf"\nexport APT_CONFIG="\$apt_root\/apt\.conf"\n/m);
 	assert.ok(written, "the builder writes apt its own configuration");
 	assert.ok(source.indexOf("export APT_CONFIG=") < source.indexOf('apt-get "${apt_options[@]}"'));

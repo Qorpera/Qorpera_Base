@@ -1,7 +1,6 @@
 import { performance } from "node:perf_hooks";
 import {
 	closeCompanyComputerFolderView,
-	companyComputerFolderDrainLogged as drainLogged,
 	openCompanyComputerFolderView,
 	companyComputerFolderWithin as within,
 } from "./cloud-company-computer-desktop-folder.ts";
@@ -14,6 +13,7 @@ import {
 	type CompanyComputerFolderRun,
 	type CompanyComputerFolderRunEvent,
 	type CompanyComputerFolderView,
+	companyComputerFolderAnswerLogged,
 	companyComputerFolderName,
 	startCompanyComputerFolderRun,
 } from "./cloud-company-computer-folder-helper-client.ts";
@@ -537,7 +537,10 @@ export class CompanyComputerCommandFolder {
 				await this.#later(wait);
 				continue;
 			}
-			if (drained) this.#seams.log(`office-folder: drain ${this.#name}: ${JSON.stringify(drainLogged(answer))}`);
+			if (drained)
+				this.#seams.log(
+					`office-folder: drain ${this.#name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
+				);
 			if (answer.answer === "unknown") {
 				this.#hold(HELD_GONE);
 				break;

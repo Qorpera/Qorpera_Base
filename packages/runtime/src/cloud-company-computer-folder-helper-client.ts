@@ -556,6 +556,33 @@ export function isCompanyComputerFolderReport(value: unknown): value is CompanyC
 	);
 }
 
+/** A boundary's answer as a log keeps it ("The report"): the commit and how many paths had each outcome. No path
+ * and no reason, which are the company's; the program's words pass only when they are plain names. The helper logs
+ * every boundary's with it, so a stop's outlives the office service, and the office service logs a drain's too. */
+export function companyComputerFolderAnswerLogged(
+	answer: CompanyComputerFolderAnswer<"boundary" | "unmount">,
+): Record<string, unknown> {
+	const report = "report" in answer ? answer.report : undefined;
+	const outcomes = new Map<string, number>();
+	for (const { outcome } of report?.paths ?? []) outcomes.set(word(outcome), (outcomes.get(word(outcome)) ?? 0) + 1);
+	return {
+		answer: answer.answer,
+		...("unmounted" in answer ? { unmounted: answer.unmounted } : {}),
+		...(report
+			? {
+					refused: report.refused === undefined ? null : word(report.refused),
+					commitId: report.commitId === null || /^[\w-]{1,64}$/.test(report.commitId) ? report.commitId : "other",
+					seq: report.seq,
+					outcomes: Object.fromEntries(outcomes),
+				}
+			: {}),
+	};
+}
+
+function word(value: string): string {
+	return /^[a-z_]{1,32}$/.test(value) ? value : "other";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

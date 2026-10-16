@@ -8,9 +8,9 @@ import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
 	COMPANY_COMPUTER_FOLDER_ROOT,
-	type CompanyComputerFolderAnswer,
 	type CompanyComputerFolderRequest,
 	type CompanyComputerFolderView,
+	companyComputerFolderAnswerLogged,
 	companyComputerFolderName,
 	companyComputerFolderPaths,
 	isCompanyComputerFolderView,
@@ -438,8 +438,9 @@ export class CompanyComputerDesktopFolders {
 	/**
 	 * A drain's boundary on the screen's mount, after its desktop stopped and before the drain's acknowledgement
 	 * ("Drains and stops"): the mount's last changes are published, then it goes and its view closes. A boundary with no
-	 * answer, or refused in a way a retry gets past (QRC01, the run check), is asked again until `until`
-	 * (performance.now()); then the drain fails, and the mount stays for the stop control. Every other answer is final,
+	 * answer, refused in a way a retry gets past (QRC01, the run check), or refused with no reason while it keeps a path
+	 * (the core did not answer the commit, or a path still waits) is asked again until `until` (performance.now()); then
+	 * the drain fails, and the mount stays for the stop control. Every other answer is final,
 	 * the pause's included: a mount still there after it goes without another boundary, and none of its refused changes
 	 * carry into the next holder's view. The answer is logged with the drain. `still` is asked when the request's turn
 	 * comes: a desktop started meanwhile keeps the mount.
@@ -480,13 +481,17 @@ export class CompanyComputerDesktopFolders {
 					!answer ||
 					answer.answer === "invalid" ||
 					answer.answer === "unanswered" ||
-					(answer.answer === "refused" && answer.report.refused === "run_ended")
+					(answer.answer === "refused" &&
+						(answer.report.refused === "run_ended" ||
+							(answer.report.refused === undefined && answer.report.paths.some((entry) => entry.kept))))
 				) {
 					await pause(Math.min(BOUNDARY_RETRY_MS, until - performance.now()), signal);
 					continue;
 				}
 				answered = true;
-				this.#log(`office-folder: drain ${folder.name}: ${JSON.stringify(drainLogged(answer))}`);
+				this.#log(
+					`office-folder: drain ${folder.name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
+				);
 				if (answer.answer === "unknown" || answer.unmounted) {
 					folder.mounted = false;
 					break;
@@ -610,30 +615,6 @@ function sameHolder(a: CompanyComputerScreenHolder | undefined, b: CompanyComput
 	return a?.kind === "member" && b.kind === "member" && a.userId === b.userId;
 }
 
-/** A drain's answer as the office logs it ("The report"): the commit and how many paths had each outcome. No path
- * and no reason, which are the company's; the helper's words pass only when they are plain names. */
-function drainLogged(answer: CompanyComputerFolderAnswer<"unmount">): Record<string, unknown> {
-	const report = "report" in answer ? answer.report : undefined;
-	const outcomes = new Map<string, number>();
-	for (const { outcome } of report?.paths ?? []) outcomes.set(word(outcome), (outcomes.get(word(outcome)) ?? 0) + 1);
-	return {
-		answer: answer.answer,
-		...("unmounted" in answer ? { unmounted: answer.unmounted } : {}),
-		...(report
-			? {
-					refused: report.refused === undefined ? null : word(report.refused),
-					commitId: report.commitId === null || /^[\w-]{1,64}$/.test(report.commitId) ? report.commitId : "other",
-					seq: report.seq,
-					outcomes: Object.fromEntries(outcomes),
-				}
-			: {}),
-	};
-}
-
-function word(value: string): string {
-	return /^[a-z_]{1,32}$/.test(value) ? value : "other";
-}
-
 /** The work's answer, or `late` once `until` (performance.now()) passes; the work goes on either way. */
 function within<T>(work: Promise<T>, signal: AbortSignal, until: number, late: T): Promise<T> {
 	return new Promise((resolve, reject) => {
@@ -682,4 +663,4 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-export { drainLogged as companyComputerFolderDrainLogged, within as companyComputerFolderWithin };
+export { within as companyComputerFolderWithin };

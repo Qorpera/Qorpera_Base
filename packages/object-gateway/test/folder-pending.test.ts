@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
+import { folderKey } from "@qorpera/contracts";
 import { describe, expect, it } from "vitest";
 import {
 	CHUNK_BYTES,
 	type ChunkRef,
 	type FileRef,
-	folderKey,
 	type PendingFile,
 	PendingView,
 	PublishFirst,
@@ -621,6 +621,25 @@ describe("a view's pending changes", () => {
 				refused(() => f.view.rmdir("D"), "NOT_EMPTY");
 				f.publish();
 				expect(f.tree().get("D/x")?.version, `${kind} ${how}`).toBe(made);
+			}
+	});
+
+	it("keeps what the view moved away hidden when a new file or link made where it left goes", () => {
+		const kinds: [string, Content, (f: ReturnType<typeof setup>) => void][] = [
+			["a file", "v1", (f) => write(f.view, "D/a", "mine")],
+			["a link", { link: "v1.md" }, (f) => f.view.symlink("D/a", "v2.md")],
+		];
+		for (const [kind, live, make] of kinds)
+			for (const how of ["removed", "moved away"]) {
+				const f = setup({ D: null, "D/a": live });
+				f.view.rename("D/a", "D/b");
+				make(f);
+				if (how === "moved away") f.view.rename("D/a", "D/c");
+				else f.view.unlink("D/a");
+				// The live one is at its new name in this view: it does not show where it left as well.
+				expect(f.view.get("D/a"), `${kind} ${how}`).toBeUndefined();
+				f.publish();
+				expect(f.tree().get("D/a"), `${kind} ${how}`).toBeUndefined();
 			}
 	});
 
