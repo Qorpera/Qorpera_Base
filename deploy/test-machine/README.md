@@ -103,7 +103,17 @@ pressure, so a fourth slot was added. On 2026-10-15, with four slots, both machi
 runs waiting, at load 6-8 with the vCPUs 26-34% busy on node02 and about 55% on node01 (36-83% over a minute),
 iowait at most 4% and ~11.5 GiB available, so a fifth slot was added; each run keeps 2 workers on 10 vCPUs. A client
 from before a change still takes only its own number of slots, so while it is first in the queue it waits for one of
-those even when a higher slot is free. Later runs wait in arrival order and print
+those even when a higher slot is free.
+
+A run without `--front` takes only slots 1-4: slot 5 is kept for `--front` runs (pr-loop's batch), which try it
+first, so a batch starts at once even on a full machine (in proof run 20261016T144011 one of its parts waited 587 s
+for a slot). `guest-setup.sh` makes slot 5's lock file root's and read-only (`/etc/tmpfiles.d/qorpera-test-machine.conf`
+makes it again at boot): current clients open a slot's file for reading, while clients from before the change open it
+for writing and so skip it. A `--front --cores` run takes more slots as they free, up to three, but only while the
+machine has at least 2 GiB available (`MemAvailable`); below that it leaves the queue until there is more. With five
+busy runs node01 had dropped to 1264 MiB.
+
+Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
 `npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
 deleted afterwards (`--keep` keeps it; it then belongs to the runner user, so use sudo inside it). At the start of every run, runs older than a day (by the UTC time
