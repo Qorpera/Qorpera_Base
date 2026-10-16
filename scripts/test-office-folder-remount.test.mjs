@@ -110,7 +110,8 @@ test("each shape places the folder once, after its other mounts and before the s
 	assert.deepEqual(shapes.shapes.desktop.args.slice(shapes.shapes.desktop.args.indexOf("--ro-bind-fd"), shapes.shapes.desktop.args.indexOf("--ro-bind-fd") + 3), ["--ro-bind-fd", "8", "/etc/machine-id"]);
 	assert.equal(shapes.shapes.shell.args[shapes.shapes.shell.args.indexOf("--tmpfs") - 1], String(512 * 1024 * 1024));
 	assert.equal(shapes.shapes.desktop.args.filter((arg) => arg?.requiredRoBind).length, 8);
-	assert.equal(shapes.shapes.shell.args.filter((arg) => arg?.optionalRoBind).length, 9);
+	assert.equal(shapes.shapes.desktop.args.filter((arg) => arg?.optionalRoBind).length, 1);
+	assert.equal(shapes.shapes.shell.args.filter((arg) => arg?.optionalRoBind).length, 10);
 });
 
 test("the runtime's process gate runs with its types stripped and nothing else changed", async () => {

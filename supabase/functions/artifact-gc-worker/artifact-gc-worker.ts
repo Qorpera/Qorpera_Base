@@ -1,13 +1,6 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-export interface ArtifactGcWorkerJob {
-	planId: string;
-	profileId: string;
-	leaseId: string;
-	attemptCount: number;
-}
-
 export interface ArtifactGcWorkerObject {
 	sha256: string;
 	bytes: number;
@@ -30,14 +23,6 @@ export interface CompanyObjectGcWorkerStore {
 	renewLease(job: CompanyObjectGcWorkerJob): Promise<void>;
 	complete(job: CompanyObjectGcWorkerJob): Promise<void>;
 	release(job: CompanyObjectGcWorkerJob): Promise<void>;
-}
-
-export interface ArtifactGcWorkerStore {
-	claimObjects(job: ArtifactGcWorkerJob): Promise<ArtifactGcWorkerObject[]>;
-	renewLease(job: ArtifactGcWorkerJob, sha256s: string[]): Promise<void>;
-	acknowledgeObjects(job: ArtifactGcWorkerJob, sha256s: string[]): Promise<void>;
-	complete(job: ArtifactGcWorkerJob): Promise<void>;
-	fail(job: ArtifactGcWorkerJob, message: string): Promise<"failed" | "retrying">;
 }
 
 export interface ArtifactGcStorageProvider {
@@ -76,14 +61,6 @@ export function createRoutedArtifactGcStorageProvider(options: {
 	};
 }
 
-export interface ArtifactGcWorkerResult {
-	claimed: number;
-	completed: number;
-	retrying: number;
-	failed: number;
-	failurePending: number;
-}
-
 export interface CompanyObjectGcWorkerResult {
 	claimed: number;
 	completed: number;
@@ -100,27 +77,9 @@ function uuid(value: unknown, label: string): string {
 	return value;
 }
 
-function positiveInteger(value: unknown, label: string): number {
-	if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`Invalid ${label}`);
-	return value as number;
-}
-
-export function parseArtifactGcWorkerJobs(value: unknown): ArtifactGcWorkerJob[] {
-	if (!Array.isArray(value) || value.length > 20) throw new Error("Invalid artifact cleanup job list");
-	return value.map((entry) => {
-		const input = record(entry, "artifact cleanup job");
-		return {
-			planId: uuid(input.plan_id, "artifact cleanup plan id"),
-			profileId: uuid(input.profile_id, "artifact cleanup profile id"),
-			leaseId: uuid(input.lease_id, "artifact cleanup lease id"),
-			attemptCount: positiveInteger(input.attempt_count, "artifact cleanup attempt count"),
-		};
-	});
-}
-
 export function parseArtifactGcWorkerObjects(
 	value: unknown,
-	job: ArtifactGcWorkerJob,
+	owner: { profileId: string },
 ): ArtifactGcWorkerObject[] {
 	if (!Array.isArray(value) || value.length > 100) throw new Error("Invalid artifact cleanup object list");
 	const seen = new Set<string>();
@@ -136,7 +95,7 @@ export function parseArtifactGcWorkerObjects(
 		if (!Number.isSafeInteger(bytes) || (bytes as number) < 0 || (bytes as number) > 8 * 1024 * 1024) {
 			throw new Error("Invalid artifact cleanup object size");
 		}
-		if (path !== `${job.profileId}/${sha256}`) throw new Error("Invalid artifact cleanup object path");
+		if (path !== `${owner.profileId}/${sha256}`) throw new Error("Invalid artifact cleanup object path");
 		if (backend !== "missing" && backend !== "nas-object-gateway" && backend !== "supabase-storage") {
 			throw new Error("Invalid artifact cleanup object backend");
 		}
@@ -150,8 +109,7 @@ export function parseCompanyObjectGcWorkerJob(value: unknown): CompanyObjectGcWo
 	const input = record(value, "company object cleanup job");
 	const profileId = uuid(input.profile_id, "company object cleanup profile id");
 	const leaseId = uuid(input.lease_id, "company object cleanup lease id");
-	const job = { planId: leaseId, profileId, leaseId, attemptCount: 1 };
-	const objects = parseArtifactGcWorkerObjects(input.objects, job);
+	const objects = parseArtifactGcWorkerObjects(input.objects, { profileId });
 	if (objects.length === 0) throw new Error("Invalid empty company object cleanup job");
 	return { profileId, leaseId, objects };
 }
@@ -172,7 +130,7 @@ export function parseAuthorizedArtifactGcWorkerObjects(value: unknown): Authoriz
 					backend: input.backend,
 				},
 			],
-			{ planId: authorizationId, profileId, leaseId: authorizationId, attemptCount: 1 },
+			{ profileId },
 		)[0];
 		if (!parsed || seen.has(authorizationId)) throw new Error("Invalid object deletion authorization list");
 		seen.add(authorizationId);
@@ -186,52 +144,6 @@ export async function reconcileAuthorizedArtifactGcWorkerObjects(
 ): Promise<number> {
 	for (const object of objects) await remove(object);
 	return objects.length;
-}
-
-function cleanupError(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
-	return (message.trim() || "Storage cleanup failed").slice(0, 1000);
-}
-
-export async function runArtifactGcWorkerBatch(
-	jobs: readonly ArtifactGcWorkerJob[],
-	storage: ArtifactGcStorageProvider,
-	store: ArtifactGcWorkerStore,
-): Promise<ArtifactGcWorkerResult> {
-	const result: ArtifactGcWorkerResult = {
-		claimed: jobs.length,
-		completed: 0,
-		retrying: 0,
-		failed: 0,
-		failurePending: 0,
-	};
-	for (const job of jobs) {
-		try {
-			while (true) {
-				const objects = await store.claimObjects(job);
-				if (objects.length === 0) break;
-				await store.renewLease(
-					job,
-					objects.map((object) => object.sha256),
-				);
-				await storage.remove(objects, job.leaseId);
-				await store.acknowledgeObjects(
-					job,
-					objects.map((object) => object.sha256),
-				);
-			}
-			await store.complete(job);
-			result.completed += 1;
-		} catch (error) {
-			try {
-				const status = await store.fail(job, cleanupError(error));
-				result[status] += 1;
-			} catch {
-				result.failurePending += 1;
-			}
-		}
-	}
-	return result;
 }
 
 export async function runCompanyObjectGcWorkerJob(

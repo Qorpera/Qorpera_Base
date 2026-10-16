@@ -309,14 +309,24 @@ dns() {
 # One company's resolver (E8b): answers "no such name" for its blocked names (the servers file the names reconciler
 # writes) and asks the upstreams for every other. No DHCP, no leases: the main dnsmasq keeps those. It logs to the same
 # file as the main one (each writes whole lines, appending). Without its servers file it does not start: dnsmasq would
-# run with no list at all.
+# run with no list at all. In "only listed" mode (E8c, the mode file says so) the servers file names the upstreams for
+# each allowed name and answers every other itself, so it gets no upstreams of its own, and it puts each address it
+# gives out for an allowed name in the company's set allow_<port>, which its machines' chain only_<port> lets through.
 resolver() {
-	local port=$1 args=() server servers
+	local port=$1 args=() server servers mode=open
 	[[ $port =~ ^[1-9][0-9]{4}$ ]] && ((port >= 10001 && port <= 19999)) || die "resolver: not a resolver port: $port"
 	has_ns || die "the exit is not up"
 	servers="$run_dir/names/$port.servers"
 	[[ -f $servers && ! -L $servers ]] || die "resolver: no servers file $servers"
-	for server in $upstreams; do args+=("--server=$server"); done
+	if [[ -e $run_dir/names/$port.mode ]]; then
+		[[ -f $run_dir/names/$port.mode && ! -L $run_dir/names/$port.mode ]] || die "resolver: bad mode file"
+		mode=$(<"$run_dir/names/$port.mode")
+	fi
+	case $mode in
+	open) for server in $upstreams; do args+=("--server=$server"); done ;;
+	only-listed) args+=("--nftset=/#/4#inet#qorpera_agent_exit#allow_$port") ;;
+	*) die "resolver: bad mode in $run_dir/names/$port.mode" ;;
+	esac
 	local command=(dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file=
 		--no-resolv --no-hosts --no-poll --bind-interfaces --listen-address="$GATEWAY" --port="$port"
 		"${args[@]}" --servers-file="$servers"
@@ -360,7 +370,7 @@ names() {
 	state_dirs
 	install -d -m 0755 "$state_dir/names" "$run_dir/names"
 	exec python3 "$names_tool" reconcile --netns "$NS" --state-dir "$state_dir" --run-dir "$run_dir" \
-		--rules "$network_rules" --rules-status "$rules_status"
+		--rules "$network_rules" --rules-status "$rules_status" --upstreams "$upstreams"
 }
 
 verify() {

@@ -214,12 +214,16 @@ async function main() {
 	let cluster;
 	let shared = [];
 	try {
-		cluster = await HostedDbCluster.start();
-		process.stdout.write(`Started ${cluster.container} in ${seconds(started)}\n`);
-		const building = performance.now();
+		// Every run takes the scripts' start points, so a warm copy a run keeps serves runs with and without --scripts.
 		const names = migrationNames();
-		const migrations = cluster.build({ snapshotBefore: withScripts ? scriptStartPoints(names) : [] });
-		process.stdout.write(`Applied the test bootstrap and ${migrations} migrations in ${seconds(building)}\n`);
+		const built = await HostedDbCluster.startBuilt({ snapshotBefore: scriptStartPoints(names) });
+		cluster = built.cluster;
+		const migrations = names.length;
+		const how =
+			built.copied === 0
+				? `the test bootstrap and ${migrations} migrations applied`
+				: `${built.copied} of ${migrations} migrations copied from a warm copy${built.copied < migrations ? ` and the other ${migrations - built.copied} applied` : ""}`;
+		process.stdout.write(`Started ${cluster.container} with ${how} in ${seconds(started)}\n`);
 
 		const testing = performance.now();
 		const databases = splitTests(tests, only);

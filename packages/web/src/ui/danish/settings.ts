@@ -425,6 +425,66 @@ export const SETTINGS: Record<string, string> = {
 	"The mailbox is ready. Email sent to it can start the company's routines.":
 		"Postkassen er klar. E-mail sendt til den kan starte virksomhedens rutiner.",
 
+	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
+	"Environment variables for coding": "Miljøvariabler til kodning",
+	"Your coding sessions get these in every repository. They leave with you.":
+		"Dine kodesessioner får dem i alle repositories. De følger med dig, når du går.",
+	"A coding session gets one of these only in a repository it's given to. They stay when someone leaves.":
+		"En kodesession får kun en af dem i et repository, den er givet til. De bliver, når nogen går.",
+	"Only founders and admins can add, change or remove them.":
+		"Kun stiftere og administratorer kan tilføje, ændre eller fjerne dem.",
+	"Viewers can see them, but not add or change them.": "Læsere kan se dem, men ikke tilføje eller ændre dem.",
+	"Add a variable": "Tilføj en variabel",
+	"No variables yet.": "Ingen variabler endnu.",
+	"The environment variables could not be read.": "Miljøvariablerne kunne ikke hentes.",
+	"Coding sessions in {repositories} get it.": "Kodesessioner i {repositories} får den.",
+	"No coding session gets it yet.": "Ingen kodesession får den endnu.",
+	"Your coding sessions get it.": "Dine kodesessioner får den.",
+	"In {repositories}, the company's {name} is used instead.": "I {repositories} bruges virksomhedens {name} i stedet.",
+	"Replace value": "Erstat værdien",
+	"Give to a repository": "Giv den til et repository",
+	"Once saved, a value is never shown again.": "Når en værdi er gemt, bliver den aldrig vist igen.",
+	"Paste the new value": "Indsæt den nye værdi",
+	"New value for {name}": "Ny værdi for {name}",
+	"Save value": "Gem værdien",
+	"Coding sessions in that repository get {name} from their next start.":
+		"Kodesessioner i det repository får {name} fra deres næste start.",
+	"owner/name": "ejer/navn",
+	"Repository for {name}": "Repository til {name}",
+	"Remove {repository}": "Fjern {repository}",
+	"e.g. NPM_TOKEN": "f.eks. NPM_TOKEN",
+	"Variable name": "Variablens navn",
+	"Capital letters, digits and underscores, starting with a letter.":
+		"Store bogstaver, tal og understregninger, og navnet starter med et bogstav.",
+	"What it is for, e.g. installs private packages": "Hvad den er til, f.eks. installerer private pakker",
+	"Paste the value": "Indsæt værdien",
+	Value: "Værdi",
+	"A variable name is capital letters, digits and underscores, and starts with a letter.":
+		"Et variabelnavn består af store bogstaver, tal og understregninger og starter med et bogstav.",
+	"The value must be at least 8 characters.": "Værdien skal være mindst 8 tegn.",
+	"The value can be at most 32 KB.": "Værdien må højst fylde 32 KB.",
+	"The value can't contain a null character.": "Værdien må ikke indeholde et nul-tegn.",
+	"That name is taken by the coding machine or an AI provider's sign-in. Choose another.":
+		"Det navn bruges af kodemaskinen eller af et login hos en AI-udbyder. Vælg et andet.",
+	"An earlier try to save this value is still open. Try again in a few minutes.":
+		"Et tidligere forsøg på at gemme værdien er stadig åbent. Prøv igen om et par minutter.",
+	"Write the repository as owner/name, for example acme/web.": "Skriv repositoriet som ejer/navn, f.eks. acme/web.",
+	"{name} is saved. Your coding sessions get it from their next start.":
+		"{name} er gemt. Dine kodesessioner får den fra deres næste start.",
+	"{name} is saved. Give it to a repository so coding sessions there get it.":
+		"{name} er gemt. Giv den til et repository, så kodesessioner der får den.",
+	"The value of {name} is replaced. Your coding sessions get the new one from their next start.":
+		"Værdien af {name} er erstattet. Dine kodesessioner får den nye fra deres næste start.",
+	"The value of {name} is replaced. Coding sessions in {repositories} get the new one from their next start.":
+		"Værdien af {name} er erstattet. Kodesessioner i {repositories} får den nye fra deres næste start.",
+	"The value of {name} is replaced. No coding session gets it yet.":
+		"Værdien af {name} er erstattet. Ingen kodesession får den endnu.",
+	"Coding sessions in {repository} get {name} from their next start.":
+		"Kodesessioner i {repository} får {name} fra deres næste start.",
+	"Remove {name}? New coding sessions won't get it.": "Fjern {name}? Nye kodesessioner får den ikke.",
+	"Coding sessions in {repository} will stop getting {name}.":
+		"Kodesessioner i {repository} holder op med at få {name}.",
+
 	// Rules, auto-review (Settings → General, settings-rules.ts)
 	Rules: "Regler",
 	"e.g. reply to emails for me": "f.eks. svare på e-mails for mig",

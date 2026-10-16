@@ -587,26 +587,6 @@ begin
 		raise exception 'The core flag changed'; end if;
 end $$;
 
--- Review round 2: artifact GC collects nothing of a folder-v2 company until the folder core's GC.
-do $$
-declare v_plan uuid := extensions.gen_random_uuid(); v_lease uuid := extensions.gen_random_uuid(); v_claimed jsonb;
-	a jsonb := pg_temp.stage('alpha');
-begin
-	-- The plan's own artifact, graph and restore proof do not matter here.
-	set local session_replication_role = replica;
-	insert into public.qorpera_artifact_gc_plans(id, profile_id, artifact_id, graph_id, restore_proof_id, client_plan_id, status,
-		lease_id, lease_expires_at, created_by_user_id, started_at)
-	values (v_plan, '63000000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'deleting', v_lease, statement_timestamp() + interval '10 minutes',
-		'63000000-0000-4000-8000-000000000001', statement_timestamp());
-	insert into public.qorpera_artifact_gc_plan_entries(plan_id, object_sha256, bytes)
-	values (v_plan, a ->> 'manifestSha256', 1), (v_plan, a ->> 'fileSha256', 1);
-	set local session_replication_role = origin;
-	v_claimed := public.qorpera_claim_artifact_gc_objects(v_plan, v_lease, 100);
-	if v_claimed <> '[]'::jsonb or exists (select 1 from public.qorpera_artifact_gc_plan_entries where plan_id = v_plan and status <> 'retained') then
-		raise exception 'Artifact GC must retain a folder-v2 company''s objects: %', v_claimed; end if;
-end $$;
-
 -- Operation keys: a replay returns the stored outcomes; a reused key for another change set is refused.
 -- An agent acts as a run (C1b), never as a bare staff-agent actor. No claim outlives its transaction.
 do $$

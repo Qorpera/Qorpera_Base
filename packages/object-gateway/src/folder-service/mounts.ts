@@ -37,8 +37,9 @@ export interface Grant {
 export interface CoreAccess {
 	readonly write: boolean;
 	readonly quietMs?: number;
-	/** A command's view (F3 4b): published only when asked, its last publish final (the core closes the view with it);
-	 * kept when its last connection leaves; its renewals say nothing is unsaved (no seat waits on a command). */
+	/** A command's view (F3 4b): published after its quiet period while held (4b-2) and when asked, its last publish
+	 * final (the core closes the view with it); kept when its last connection leaves; its renewals say nothing is
+	 * unsaved (no seat waits on a command). */
 	readonly command?: true;
 	/** Whether the calling machine may present the view. */
 	admits(bridge: BridgeInfo): boolean;
@@ -50,7 +51,8 @@ const CORE_PASS = /^[A-Za-z0-9_-]{43}$/;
 /** A company machine: the node names it after its allocation (`lxd-office-guest.ts`). */
 const OFFICE = /^qorpera-office-[0-9a-f]{32}$/;
 
-/** A desktop publishes this long after its last change (RUNTIME-COMPANY-FOLDER.md §2: "one to two seconds"). */
+/** A desktop publishes this long after its last change (RUNTIME-COMPANY-FOLDER.md §2: "one to two seconds"), and so
+ * does a running command (the contract's 14 October 2026 amendment, item 3: "as a desktop's saves do"). */
 export const DESKTOP_QUIET_MS = 2_000;
 
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -119,8 +121,8 @@ export class MountGrants {
 	/** How a core view the core says is `kind`, on machine allocation `machineId`, is served; none for a kind this node
 	 * does not serve yet (a coding session's: step 5). A run box view is read-only, from a run box host. A computer
 	 * desktop's and a shell command's are served to their own company machine alone (named after the view's
-	 * allocation, in a company machine project) and write: a desktop's publishes after a quiet period, a command's only
-	 * when asked. */
+	 * allocation, in a company machine project) and write, publishing after a quiet period; a command's only while its
+	 * machine holds it, and also when asked, its last publish final. */
 	coreAccess(identity: { readonly kind: string; readonly machineId: string | null }): CoreAccess | undefined {
 		if (identity.kind === "run_box")
 			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };
@@ -136,7 +138,9 @@ export class MountGrants {
 				bridge.machine !== undefined &&
 				this.#companyMachineProjects.includes(bridge.machine.project) &&
 				bridge.machine.name === name;
-			return desktop ? { write: true, quietMs: DESKTOP_QUIET_MS, admits } : { write: true, command: true, admits };
+			return desktop
+				? { write: true, quietMs: DESKTOP_QUIET_MS, admits }
+				: { write: true, quietMs: DESKTOP_QUIET_MS, command: true, admits };
 		}
 		return undefined;
 	}

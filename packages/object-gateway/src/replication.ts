@@ -79,13 +79,6 @@ export class ObjectGatewayReplication {
 		this.#authority = authority;
 	}
 
-	async upload(token: string, profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
-		return this.uploadWithAuthority(profileId, sha256, bytes, {
-			authorize: () => this.#authority.authorizeUpload(token, profileId, sha256, bytes.byteLength),
-			confirm: () => this.#authority.confirmUpload(profileId, sha256, bytes.byteLength),
-		});
-	}
-
 	/** Callbacks belong to the trusted gateway, never to a request body. */
 	async uploadWithAuthority(
 		profileId: string,
