@@ -18,7 +18,7 @@ import {
 	type CodingCommandSecrets,
 	noCodingCommandSecrets,
 } from "./coding-command-secrets.ts";
-import type { CodingFolderBoundary, CodingFolderControl } from "./coding-folder-control.ts";
+import type { CodingFolderControl } from "./coding-folder-control.ts";
 import { CodingGuestRefused, type LxdCodingGuestClient } from "./coding-guest-client.ts";
 import { type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-machine.ts";
 
@@ -796,7 +796,7 @@ export class LxdCodingFolderCommandTransport {
 		const moved = request.startOperationId !== this.#startOperationId;
 		// Past the limit nothing more is kept: only where the command is.
 		const skip = progress.limitReached;
-		const pages: { gap: number; bytes: Buffer }[] = [];
+		const pages: { offset: number; gap: number; bytes: Buffer }[] = [];
 		let at = progress.raw,
 			command: CodingGuestCommand | undefined;
 		try {
@@ -817,7 +817,7 @@ export class LxdCodingFolderCommandTransport {
 					at = page.answer.end;
 					break;
 				}
-				pages.push({ gap: page.answer.gap, bytes: page.bytes });
+				pages.push({ offset: page.answer.offset, gap: page.answer.gap, bytes: page.bytes });
 				at = page.answer.offset + page.bytes.length;
 				if (at >= page.answer.end || !page.bytes.length) break;
 			}
@@ -828,7 +828,7 @@ export class LxdCodingFolderCommandTransport {
 				error instanceof CodingGuestRefused &&
 				error.code === "CODING_GUEST_COMMAND_UNKNOWN"
 			)
-				return this.#unknown(folder, progress, moved);
+				return this.#unknown(folder, progress, moved, budget, signal);
 			// Out of time: what was kept stands.
 			if (budget.aborted) return { progress, shown: "running" };
 			throw error;
@@ -845,29 +845,25 @@ export class LxdCodingFolderCommandTransport {
 				progress: await this.#note(folder, progress, { acknowledged: true, end, raw: skip ? at : progress.raw }),
 				shown: "running",
 			};
-		let boundary: CodingFolderBoundary | undefined;
-		try {
-			boundary = await this.#control.boundary(this.#machineId, [], budget);
-		} catch {
-			// No answer is no release.
-			signal.throwIfAborted();
-		}
 		// Held: nothing of the machine's reaches the model until its reads are released (5g-5 restarts a machine whose
 		// reads are left unproven).
-		if (boundary?.reads !== "released")
+		if (!(await this.#released(budget, signal)))
 			return { progress: await this.#note(folder, progress, { acknowledged: true, end }), shown: "running" };
 		const secrets = await this.#secrets.resolve(this.#secretRequest(commandId), budget);
 		let mask = secrets.mask(),
 			gapBytes = progress.gapBytes;
 		// The pull starts with the bytes the last one's mask held back, so this mask takes over from that one there.
 		mask.resume(progress.masked);
+		// The guest's offset up to which the kept output's last `***` already covers the bytes.
+		const covered = progress.raw + (progress.masked ?? 0);
 		const kept: Uint8Array[] = [];
 		for (const page of pages) {
 			if (page.gap) {
 				// The tail the mask held back may start a secret whose rest was lost: it is lost with the gap, and the
-				// mask starts again after it.
+				// mask starts again after it. Bytes past the gap that the kept `***` already covers stay behind it.
 				gapBytes += mask.pending();
 				mask = secrets.mask();
+				if (covered > page.offset) mask.resume(covered - page.offset);
 			}
 			gapBytes += page.gap;
 			kept.push(mask.push(page.bytes));
@@ -907,6 +903,8 @@ export class LxdCodingFolderCommandTransport {
 		folder: string,
 		progress: Progress,
 		moved: boolean,
+		budget: AbortSignal,
+		signal: AbortSignal,
 	): Promise<{ progress: Progress; outcome?: Outcome; shown: State }> {
 		// A start may still land.
 		if (!progress.acknowledged && !moved)
@@ -914,12 +912,24 @@ export class LxdCodingFolderCommandTransport {
 		const state: Final =
 			!progress.acknowledged && progress.cancelled ? "cancelled" : moved ? "machine_stopped" : "unconfirmed";
 		// Past the limit nothing more would have been kept anyway.
-		const next = await this.#note(folder, progress, {
-			gapBytes: progress.gapBytes + (progress.limitReached ? 0 : Math.max(0, progress.end - progress.raw)),
-		});
+		const lost = progress.limitReached ? 0 : Math.max(0, progress.end - progress.raw);
+		// The guest's end is the guest's word, as its output is: the count reaches the model only once the machine's reads
+		// are released. Until then the command shows running.
+		if (lost > 0 && !(await this.#released(budget, signal))) return { progress, shown: "running" };
+		const next = await this.#note(folder, progress, { gapBytes: progress.gapBytes + lost });
 		const outcome: Outcome = { schema: "qorpera.coding-host-command-outcome/v1", state, exitCode: null };
 		if (!(await linkOnce(folder, "outcome.json", outcome))) throw new Error(INVALID);
 		return { progress: next, outcome, shown: state };
+	}
+
+	/** Whether the machine's boundary released every read the machine was served until now. No answer is no release. */
+	async #released(budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
+		try {
+			return (await this.#control.boundary(this.#machineId, [], budget)).reads === "released";
+		} catch {
+			signal.throwIfAborted();
+			return false;
+		}
 	}
 
 	/** Asks the guest to stop the command. One it doesn't have has nothing to stop. */
