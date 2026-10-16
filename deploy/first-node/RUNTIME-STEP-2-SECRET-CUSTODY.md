@@ -54,7 +54,7 @@ The separately packaged service binds only to loopback. A TLS reverse proxy publ
 - `qorpera-cloud-secret-runtime`; and
 - `qorpera-cloud-secret-keyring`.
 
-Two credentials are optional: `qorpera-cloud-secret-connectors` (Step 7 connectors and their OAuth routes) and, since bundle v88, `qorpera-cloud-secret-coding-executor`, the coding executor's own bearer for `/v1/repository-credentials` (distinct from the runtime token; without it that route answers 404). See `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`.
+Two credentials are optional: `qorpera-cloud-secret-connectors` (Step 7 connectors and their OAuth routes) and, since bundle v88, `qorpera-cloud-secret-coding-executor`, the coding executor's own bearer for `/v1/repository-credentials` and, since 5j-3, `/v1/coding-environment`, which returns a leased coding session's environment variables (`{schema, environment}`, opened from its `environment` secrets and never cached). Only that bearer opens the two routes: it is distinct from the runtime token, which opens neither, and without it both answer 404. See `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`.
 
 The broker service does not receive a Supabase `service_role` key. The isolated canary driver retains a separately encrypted service credential only for synthetic run setup and recovery; it is not loaded by the broker unit or exposed to a model guest.
 
@@ -90,7 +90,7 @@ The legacy desktop vault and coding-agent `secret://` compatibility paths are no
 - HTTP tests cover one-time capture transport, private runtime authentication, safe closed descriptor parsing, and reflected-secret withholding.
 - Native runtime tests prove the model sees only the named business operation and not its grant or destination, while the durable operation ledger and current authority are checked before and after the effect.
 - SQL test `305_cloud_secret_custody.test.sql` covers table/function privileges, company/member ownership, capture, immutable rotation, grants, agent archive, member removal, and absence of agent work or public sends.
-- `npm run test:cloud-secret-custody` applies every migration to a disposable pinned PostgreSQL image, runs that SQL fixture directly, and removes the database.
+- `npm run test:cloud-secret-custody` applied every migration to a disposable pinned PostgreSQL image, ran that SQL fixture directly, and removed the database. (Legacy sweep F1c, 20260930246000, deleted the script and its upgrade fixture: the fixture rewrote the snapshot-v1 run check and lease check that F1c removes. 305 runs in `hosted-db`.)
 - The standalone broker package test verifies a syntax-valid bundle, hardened systemd unit, explicit credential inputs, artifact hashes, and refusal to overwrite an existing artifact directory.
 - The isolated Azure/Supabase acceptance passed capture, exact final-artifact use, reflected-response fencing, lost-response retry, restart, bounded stall, encrypted backup/restore, KEK rotation and live-key deletion, grant revocation, agent archive, member removal, and post-run non-exposure scans. The immutable record is [RUNTIME-STEP-2-SECRET-CUSTODY-ACCEPTANCE.md](../cloud-secret-broker/azure/RUNTIME-STEP-2-SECRET-CUSTODY-ACCEPTANCE.md).
 - The dedicated-login extension re-applied all 91 migrations in disposable PostgreSQL, proved the live broker has no elevated role attributes, table privileges, `service_role` membership, or functions beyond its three fixed custody calls, and revoked `service_role` execution of those calls.

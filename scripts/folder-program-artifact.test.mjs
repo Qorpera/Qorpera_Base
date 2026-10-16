@@ -8,7 +8,7 @@ import { RUST_IMAGE } from "./run-on-node-plan.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("the folder program's build record names today's source, the pinned image and the installer's pin", () => {
+test("the folder program's build record names today's source, the pinned image and the installers' pins", () => {
 	const record = readFolderProgramRecord();
 	assert.equal(
 		record.sourceSha256,
@@ -18,4 +18,7 @@ test("the folder program's build record names today's source, the pinned image a
 	assert.equal(record.image, RUST_IMAGE);
 	const installer = readFileSync(join(repositoryRoot, "deploy/shared-execution/install-shared-execution-guest.sh"), "utf-8");
 	assert.ok(installer.includes(`EXPECTED_FOLDER_PROGRAM_SHA256="${record.sha256}"`));
+	// The company machine image (F3 step 6c) installs the same build.
+	const machineImage = readFileSync(join(repositoryRoot, "deploy/machine/build-machine-image.sh"), "utf-8");
+	assert.ok(machineImage.includes(`EXPECTED_FOLDER_PROGRAM_SHA256="${record.sha256}"`));
 });

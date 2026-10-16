@@ -17,14 +17,17 @@ import {
 	parseExecutable,
 	parseGetChunk,
 	parseHello,
+	parseLink,
 	parseList,
 	parseMkdir,
 	parseOpen,
 	parsePublish,
 	parseRead,
+	parseReads,
 	parseRemove,
 	parseRename,
 	parseSearch,
+	parseSymlink,
 	REQUEST_MAX_PAYLOAD,
 } from "./protocol.ts";
 import type { ChangeMessage, FolderService, ViewHandle } from "./service.ts";
@@ -50,8 +53,9 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	let bridge: BridgeInfo | undefined;
 	let handle: ViewHandle | undefined;
 	let role: "io" | "feed" | undefined;
-	/** The machine speaks protocol 2 and its view takes writes. */
+	/** The machine speaks protocol 2 (3 for a core view: it logs its reads) and its view takes writes. */
 	let writes = false;
+	let protocol = 0;
 	let busy = false;
 	let opening = false;
 	let ended = false;
@@ -139,7 +143,10 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			}
 			role = hello.role;
-			writes = hello.protocol >= 2 && handle.writable && role === "io";
+			protocol = hello.protocol;
+			// A core view's saves are its reads' consequences: only a machine that logs its reads (protocol 3) writes.
+			const writing = hello.protocol >= (handle.core ? 3 : 2) && handle.writable;
+			writes = writing && role === "io";
 			// A chunk's parts are up to 1 MiB: a writing connection takes frames up to the protocol's limit. `readOnly`
 			// says whether the view takes writes, on either role: the folder program learns it from its feed's hello and
 			// mounts read-write, and its writes then go on `io` connections only.
@@ -149,7 +156,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 					protocol: hello.protocol,
 					viewId: hello.viewId,
 					asOfSeq: handle.asOfSeq,
-					readOnly: !(hello.protocol >= 2 && handle.writable),
+					readOnly: !writing,
+					...(handle.switchable ? { switchable: true } : {}),
 				}),
 			);
 			if (role === "feed")
@@ -190,7 +198,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				send(encodeJson(Kind.found, await handle.search(parseSearch(frame.payload))));
 				return;
 		}
-		// Writes (protocol 2), on a writing connection only.
+		// Writes (protocol 2), reads to release (protocol 3) and links (protocol 4), on a writing connection only.
 		const write = [
 			Kind.open,
 			Kind.chunk,
@@ -202,6 +210,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			Kind.rename,
 			Kind.executable,
 			Kind.publish,
+			...(protocol >= 3 ? [Kind.reads] : []),
+			...(protocol >= 4 ? [Kind.symlink, Kind.link] : []),
 		] as number[];
 		if (!write.includes(frame.kind)) throw new ProtocolError(ErrorCode.badRequest, "Unknown request", true);
 		if (!writes) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
@@ -246,6 +256,17 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			}
 			case Kind.publish:
 				send(encodeJson(Kind.report, await handle.publish(parsePublish(frame.payload).final)));
+				return;
+			case Kind.reads:
+				send(encodeJson(Kind.readsOk, await handle.reads(parseReads(frame.payload))));
+				return;
+			case Kind.symlink: {
+				const request = parseSymlink(frame.payload);
+				send(encodeJson(Kind.done, await handle.symlink(request.path, request.target)));
+				return;
+			}
+			case Kind.link:
+				send(encodeJson(Kind.done, await handle.link(parseLink(frame.payload))));
 				return;
 		}
 		send(encodeJson(Kind.done, {}));

@@ -175,6 +175,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	send: ["M12 19V5m-6 6 6-6 6 6"],
 	edit: ["m4 16 11-11a2 2 0 0 1 4 4L8 20H4v-4Z", "m13 7 4 4"],
 	file: ["M14 2H5v20h14V7l-5-5ZM14 2v6h5", "M8 12h8M8 16h6"],
+	link: ["M9 17H7A5 5 0 0 1 7 7h2", "M15 7h2a5 5 0 1 1 0 10h-2", "M8 12h8"],
 	copy: ["M8 8h12v13H8Z", "M16 8V3H3v13h5"],
 	mail: [
 		"M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",

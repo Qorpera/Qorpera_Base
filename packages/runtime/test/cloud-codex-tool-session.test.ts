@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -69,6 +69,7 @@ function run(
 		runLog?: CloudRunLog;
 		compactor?: MemoryCompactChannel;
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
+		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -96,7 +97,7 @@ function run(
 		binarySha256,
 		boundary,
 		model: "offline-probe",
-		prompt: "Private test input",
+		...(options.opening ? {} : { prompt: "Private test input" }),
 		...options,
 		signal,
 	});
@@ -273,7 +274,7 @@ it("loads the exact host-generated AGENTS.md bytes without enabling ambient inst
 	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["capture-image", "response-first"])(
+it.each(["capture-image", "missing-capture-image"])(
 	"requires the image capability and transports a capture above the text-message budget: %s",
 	async (mode) => {
 		const pixels = Buffer.alloc(2 * 1024 * 1024);
@@ -316,7 +317,7 @@ it.each(["capture-image", "response-first"])(
 			prompt: "Capture fixture",
 			signal,
 		});
-		if (mode === "response-first") {
+		if (mode === "missing-capture-image") {
 			await expect(result).rejects.toThrow("requires capture image support");
 			expect(execute).not.toHaveBeenCalled();
 		} else {
@@ -1130,6 +1131,13 @@ it("keeps the agent's own words, never its reasoning, with the next step of its 
 		runId,
 		conversationId: randomUUID(),
 		signal: new AbortController().signal,
+		protection: {
+			narrow: async () => ({ log: false, narrow: false }),
+			hashes: async (run, digests) =>
+				digests.map((digest) =>
+					createHmac("sha256", "codex-session-test-platform-key").update(`${run}:${digest}`).digest("hex"),
+				),
+		},
 		folder: {
 			locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
 			read: async (path) => (files.has(path) ? { version: path, text: files.get(path)! } : null),
@@ -1394,6 +1402,99 @@ it("compacts at closing in a fresh tool-less thread, never as the agent's contex
 	expect(recorded.interrupt).toBeNull();
 });
 
+// Settle (§5.4): the opening runs after the admission and before the agent's thread, with the compactor's lane open.
+it("settles through the compactor at the opening, then starts the agent with what the opening composed", async () => {
+	const compactor = new MemoryCompactChannel();
+	const steps: string[] = [];
+	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
+		input: request.items.map((_, keep) => ({ keep })),
+	}));
+	const { result, evidence } = run("compact-opening", {
+		compactor,
+		beforeModelStart: async () => {
+			steps.push("admitted");
+		},
+		opening: async (signal) => {
+			steps.push("opening");
+			const thread = await compactor.call("PRIVATE_SETTLE_SYSTEM", signal);
+			const line = await thread.send("PRIVATE_SETTLE_WINDOW", signal);
+			thread.close?.();
+			return {
+				prompt: `Private input after ${line.text}`,
+				runtimeInstructions: `PRIVATE_VIEW ${line.text}`,
+				composeContext,
+			};
+		},
+		closing: async (signal) => {
+			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+			await thread.send("PRIVATE_WINDOW_2", signal);
+			thread.close?.();
+		},
+	});
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	expect(steps).toEqual(["admitted", "opening"]);
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	// The settle's thread started before the agent's, and closing's after it.
+	expect(recorded.order).toEqual(["compact-thread", "main-thread", "compact-thread"]);
+	const systems = recorded.compactThreads.map(
+		(thread: { developerInstructions: string }) => thread.developerInstructions,
+	);
+	expect(systems).toEqual(["PRIVATE_SETTLE_SYSTEM", "PRIVATE_COMPACT_SYSTEM"]);
+	// The agent starts with the opening's instructions and input; the opening's composer composes its requests.
+	expect(recorded.mainThread.developerInstructions).toContain("PRIVATE_VIEW LINE 1");
+	expect(recorded.mainTurn.input).toEqual([{ type: "text", text: "Private input after LINE 1", text_elements: [] }]);
+	expect(composeContext).toHaveBeenCalledOnce();
+	expect(composeContext).toHaveBeenCalledWith(
+		expect.objectContaining({ threadId: "thread_fixture" }),
+		expect.any(AbortSignal),
+	);
+	expect(recorded.agent).toMatchObject({ threadId: "thread_fixture", input: [{ keep: 0 }, { keep: 1 }] });
+});
+
+it("ends the run before the agent's thread when the opening fails or composes too much", async () => {
+	for (const opening of [
+		async () => {
+			throw new Error("PRIVATE_SETTLE_FAILURE");
+		},
+		async () => ({ prompt: "x".repeat(4 * 1024 * 1024) }),
+	]) {
+		const compactor = new MemoryCompactChannel();
+		const { result, evidence } = run("compact-opening", { compactor, opening });
+		const error = await result.catch((failure: unknown) => failure);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "execution-admission" });
+		await expect(stat(evidence)).rejects.toMatchObject({ code: "ENOENT" });
+		// The run is over: the compactor's lane is closed.
+		await expect(compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal)).rejects.toMatchObject({
+			reason: "outage",
+		});
+	}
+});
+
+it("refuses an opening beside a given input", async () => {
+	const opening = vi.fn(async () => ({ prompt: "Private test input" }));
+	const { result } = run("compact-opening", { opening, runtimeInstructions: "PRIVATE_LAW" });
+	await expect(result).rejects.toThrow("Invalid native boundary input");
+	expect(opening).not.toHaveBeenCalled();
+});
+
+it("starts no compactor thread while the agent's thread starts, so the prewarm meanwhile is the agent's", async () => {
+	const compactor = new MemoryCompactChannel();
+	const { result, evidence } = run("compact-gate", { compactor });
+	await vi.waitFor(() => stat(`${evidence}.main-starting`), { timeout: 10_000 });
+	const signal = new AbortController().signal;
+	// The call waits for the agent's thread id; the agent's prewarm is sent only once it is made.
+	const calling = compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+	await writeFile(`${evidence}.continue`, "");
+	const thread = await calling;
+	await expect(thread.send("PRIVATE_WINDOW_1", signal)).resolves.toMatchObject({ text: "LINE 1" });
+	thread.close?.();
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.order).toEqual(["main-thread", "compact-thread"]);
+	expect(recorded.mainPrewarm).toMatchObject({ threadId: "thread_fixture", outputs: [] });
+	expect(recorded.prewarms).toEqual([expect.objectContaining({ threadId: "thread_compact", outputs: [] })]);
+});
+
 it("refuses the compactor any tool and answers its outputs as unavailable", async () => {
 	const compactor = new MemoryCompactChannel();
 	let failure: unknown;
@@ -1449,7 +1550,7 @@ it.each([
 	const compactor = new MemoryCompactChannel();
 	const { result } = run(mode, { compactor });
 	const signal = new AbortController().signal;
-	// Attached once the agent's thread is bound; until then a call stops as an outage does.
+	// Attached once the run is bound; until then a call stops as an outage does.
 	const thread = await vi.waitFor(() => compactor.call("PRIVATE_COMPACT_SYSTEM", signal), { timeout: 10_000 });
 	const failure = await thread.send("PRIVATE_WINDOW_1", signal).catch((error: unknown) => error);
 	// The run's failure stops it with the provider's signal; a process that closes with none stops it as an outage.

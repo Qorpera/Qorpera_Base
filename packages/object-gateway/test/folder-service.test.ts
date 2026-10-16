@@ -199,7 +199,14 @@ describe("folder protocol", () => {
 		expect(parseHello(json({ protocol: 2, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
 			2,
 		);
-		expect(() => parseHello(json({ protocol: 3, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
+		expect(parseHello(json({ protocol: 3, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			3,
+		);
+		expect(parseHello(json({ protocol: 4, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			4,
+		);
+		for (const protocol of [0, 5, "4", 3.5])
+			expect(() => parseHello(json({ protocol, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
 		expect(() =>
 			parseHello(json({ protocol: 1, environmentId: ENV, viewId: "v", pass: "p", role: "io", x: 1 })),
 		).toThrow();

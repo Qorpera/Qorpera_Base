@@ -37,6 +37,15 @@ pub mod kind {
 	pub const DONE: u8 = b'k';
 	pub const PUBLISH: u8 = b'P';
 	pub const REPORT: u8 = b'p';
+	/// Protocol 3: transfer the mount's durable read log; acknowledge taken and released prefixes.
+	pub const READS: u8 = b'I';
+	pub const READS_OK: u8 = b'i';
+	// Links (protocol 4).
+	/// A link made, answered with `k` and the version made.
+	pub const SYMLINK: u8 = b'Y';
+	/// A hard link: a new file with the source's bytes, or a new link with its target, answered with `k` and the
+	/// version made.
+	pub const LINK: u8 = b'J';
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

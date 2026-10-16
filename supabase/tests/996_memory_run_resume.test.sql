@@ -111,6 +111,11 @@ begin
 		jsonb_set(v_request, '{unknownCalls}', jsonb_build_array(v_request #> '{unknownCalls,0}', v_request #> '{unknownCalls,1}')))) loop
 		perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next, v_bad), '22023');
 	end loop;
+	-- A finished step that is not erased has a known outcome, even when listed with its real call.
+	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next,
+		v_request || jsonb_build_object('unknownCalls', (v_request -> 'unknownCalls')
+			|| '[{"call":"resume-call-0","step":0,"receiptId":null}]'::jsonb)),
+		'22023', 'Run resume unknown calls disagree with the log');
 	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next,
 		v_request || '{"stepsRead":4}'), '55000', 'Run resume log is unavailable or changed');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_memory_run_resumes), 'refusals record nothing');

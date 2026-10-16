@@ -18,6 +18,7 @@ import {
 } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import {
+	type CompanyComputerFolderRefusal,
 	createCompanyComputerTools,
 	parseCompanyComputerAction,
 	parseCompanyComputerToolArguments,
@@ -39,7 +40,10 @@ afterEach(async () => {
 	for (const close of cleanup.splice(0)) await close();
 });
 
-function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] = ["browser", "desktop", "shell"]) {
+function toolHarness(
+	capabilities: readonly ("browser" | "desktop" | "shell")[] = ["browser", "desktop", "shell"],
+	offlineShells?: Set<string>,
+) {
 	const run = computerRun();
 	const order: string[] = [];
 	const screens: CompanyComputerScreenLeaseControl = {
@@ -62,7 +66,7 @@ function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] 
 		stopBrowser: vi.fn(async (): Promise<void> => undefined),
 	};
 	const gate = new CompanyComputerScreenActionGate();
-	const prepareScreen = vi.fn(async (): Promise<void> => undefined);
+	const prepareScreen = vi.fn(async (): Promise<CompanyComputerFolderRefusal | undefined> => undefined);
 	const endpoint = new CompanyComputerGuestEndpoint({
 		binding: computerBinding(),
 		capabilities,
@@ -88,7 +92,14 @@ function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] 
 			return output.content;
 		}),
 	};
-	const session = createCompanyComputerTools({ run, scope: computerScope(), screens, endpoint, operations });
+	const session = createCompanyComputerTools({
+		run,
+		scope: computerScope(),
+		screens,
+		endpoint,
+		operations,
+		...(offlineShells ? { offlineShells } : {}),
+	});
 	cleanup.push(session.close);
 	const call = (name: string, action: JsonValue, operationKey = "test:1") => {
 		const tool = session.tools.find((entry) => entry.name === name);
@@ -156,6 +167,24 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				},
 			},
 		]);
+		// And vault_capture: a Stripe hook's id and the control that shows its secret, which the vault reads (E3c-2).
+		expect(
+			actions.filter((schema) => (schema.properties.action as { const: string }).const === "vault_capture"),
+		).toEqual([
+			{
+				type: "object",
+				additionalProperties: false,
+				required: ["kind", "action", "role", "name", "hook", "field"],
+				properties: {
+					kind: { const: "browser" },
+					action: { const: "vault_capture" },
+					role: { enum: ["button", "link"] },
+					name: { type: "string", maxLength: 512 },
+					hook: { type: "string", pattern: expect.any(String) },
+					field: { const: "signing_secret" },
+				},
+			},
+		]);
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
@@ -167,6 +196,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		});
 		harness.prepareScreen.mockImplementation(async () => {
 			order.push("ready");
+			return undefined;
 		});
 		harness.automation.perform.mockImplementation(async () => {
 			order.push("execute");
@@ -185,7 +215,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 
 	it("does not report an open screen before the actual display becomes ready", async () => {
 		const harness = toolHarness();
-		const ready = computerDeferred<void>();
+		const ready = computerDeferred<undefined>();
 		harness.prepareScreen.mockReturnValue(ready.promise);
 		let returned = false;
 		const result = harness.call("computer_screen", { kind: "screen", action: "open" }).then((value) => {
@@ -195,7 +225,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await vi.waitFor(() => expect(harness.prepareScreen).toHaveBeenCalledOnce());
 		expect(returned).toBe(false);
 		expect(harness.effects.finish).not.toHaveBeenCalled();
-		ready.resolve();
+		ready.resolve(undefined);
 		await result;
 		expect(returned).toBe(true);
 		expect(harness.effects.finish).toHaveBeenCalledOnce();
@@ -230,7 +260,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 
 	it("does not dispatch after cancelled preparation resolves late", async () => {
 		const harness = toolHarness();
-		const ready = computerDeferred<void>();
+		const ready = computerDeferred<undefined>();
 		harness.prepareScreen.mockReturnValue(ready.promise);
 		const stop = new AbortController();
 		const result = harness.endpoint
@@ -238,7 +268,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			.catch((error: unknown) => error);
 		await vi.waitFor(() => expect(harness.prepareScreen).toHaveBeenCalledOnce());
 		stop.abort();
-		ready.resolve();
+		ready.resolve(undefined);
 		expect(await result).toBeInstanceOf(Error);
 		expect(harness.automation.perform).not.toHaveBeenCalled();
 		expect(harness.effects.finish).not.toHaveBeenCalled();
@@ -396,17 +426,51 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await expect(harness.call("computer_shell", { kind: "shell", action: "list" }, "test:2")).resolves.toMatchObject({
 			kind: "json",
 		});
+		// Offline unless the model asks; the run asking goes with the wait, as only it sees a folder command's output.
 		expect(settle.mock.calls[0]).toEqual([
-			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000 },
+			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000, network: false },
 			{ kind: "json", value: { sessionId: computerId(90) } },
 			expect.any(AbortSignal),
 			expect.any(Number),
+			harness.run.identity.runId,
 		]);
 		waited.resolve({ kind: "json", value: { sessionId: computerId(90), state: "running", output: "" } });
 		await expect(reply).resolves.toEqual({
 			kind: "json",
 			value: { sessionId: computerId(90), state: "running", output: "" },
 		});
+	});
+
+	it("adds each offline command the run started to its offline commands, and never a networked one (F3 4d)", async () => {
+		const offlineShells = new Set<string>();
+		const harness = toolHarness(["shell"], offlineShells);
+		let session = 90;
+		harness.automation.perform.mockImplementation(async () => ({
+			kind: "json",
+			value: { sessionId: computerId(session++) },
+		}));
+		await harness.call("computer_shell", { kind: "shell", action: "start", command: "npm test", waitMs: 0 }, "t:1");
+		await harness.call(
+			"computer_shell",
+			{ kind: "shell", action: "start", command: "npm publish", waitMs: 0, network: true },
+			"t:2",
+		);
+		await harness.call(
+			"computer_shell",
+			{ kind: "shell", action: "start", command: "make", waitMs: 0, network: false },
+			"t:3",
+		);
+		// The office gets the start the review saw: offline filled in unless the model asked.
+		expect(vi.mocked(harness.operations.execute).mock.calls.map(([options]) => options.operation.arguments)).toEqual([
+			{ kind: "shell", action: "start", command: "npm test", waitMs: 0, network: false },
+			{ kind: "shell", action: "start", command: "npm publish", waitMs: 0, network: true },
+			{ kind: "shell", action: "start", command: "make", waitMs: 0, network: false },
+		]);
+		expect([...offlineShells]).toEqual([computerId(90), computerId(92)]);
+		// A reply without a session id adds nothing.
+		harness.automation.perform.mockResolvedValueOnce({ kind: "json", value: { state: "refused" } });
+		await harness.call("computer_shell", { kind: "shell", action: "start", command: "ls", waitMs: 0 }, "t:4");
+		expect(offlineShells.size).toBe(2);
 	});
 
 	it("keeps a cancelled shell wait from leaving an unresolved resource behind", async () => {
@@ -444,6 +508,8 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				identity: harness.run.identity,
 			}),
 			options.operation,
+			// The time the call's reply is due by: a desktop's folder boundary at a capture is asked within it.
+			expect.any(Number),
 		);
 		await harness.call("computer_browser", { kind: "browser", action: "navigate", url: "https://example.com/" });
 		expect(harness.automation.perform).toHaveBeenCalledOnce();
@@ -485,6 +551,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				identity: harness.run.identity,
 			}),
 			vi.mocked(harness.operations.execute).mock.calls[0][0].operation,
+			expect.any(Number),
 		);
 	});
 
@@ -611,6 +678,9 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(variants).toEqual(["start", "read", "write", "stop", "stop", "list"]);
 		expect(shell.description).not.toContain("15 seconds");
 		expect(shell.description).toContain("public internet");
+		// F3 4d: commands run in the company folder, offline unless the start asks for the network.
+		expect(shell.description).toContain("with the company folder at /company");
+		expect(shell.description).toContain("unless start sets network: true");
 		// One idle rule: only a busy shell keeps the machine awake; the next run is told what sleep stopped.
 		expect(shell.description).toContain(
 			"Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake",
@@ -744,6 +814,29 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});
 
+	it("reads a vault_capture of a Stripe hook's secret as a button or link, the hook and its secret, never a value (E3c-2)", () => {
+		const capture = {
+			kind: "browser",
+			action: "vault_capture",
+			role: "button",
+			name: "Reveal",
+			hook: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+			field: "signing_secret",
+		};
+		expect(parseCompanyComputerAction(capture)).toEqual({ ...capture, hook: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+		expect(parseCompanyComputerAction({ ...capture, role: "link" })).toMatchObject({ role: "link" });
+		for (const bad of [
+			{ ...capture, value: "whsec_x" },
+			{ ...capture, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+			{ ...capture, field: "password" },
+			{ ...capture, role: "textbox" },
+			{ ...capture, hook: "stripe-payments" },
+			{ ...capture, hook: 1 },
+			{ ...capture, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
+
 	it("bounds input and validates coordinates before cloud acquisition", async () => {
 		const harness = toolHarness();
 		await expect(
@@ -767,6 +860,68 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			"COMPUTER_RUN_MISMATCH",
 		);
 		expect(harness.screens.acquire).toHaveBeenCalledOnce();
+	});
+
+	it("gives the screen back after the final check when the office refuses its folder, and only an explicit open asks again", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_REFUSED",
+			message: "Folder view holder is not current",
+		});
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:1"),
+		).resolves.toEqual({
+			kind: "json",
+			value: {
+				action: "snapshot",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_REFUSED", message: "Folder view holder is not current" },
+			},
+		});
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
+		// The run's next action does not take the screen again by itself.
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledOnce();
+		// An explicit open does, and the run's actions work again.
+		await harness.call("computer_screen", { kind: "screen", action: "open" }, "given-back:3");
+		await harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:4");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).toHaveBeenCalledOnce();
+	});
+
+	it("gives the screen back again when a refused open's completed receipt is replayed under the same key", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_UNAVAILABLE",
+			message: "company folder is unavailable",
+		});
+		const refused = {
+			kind: "json",
+			value: {
+				action: "open",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_UNAVAILABLE", message: "company folder is unavailable" },
+			},
+		};
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		// The same open again takes a new lease, gets the stored refusal back, and gives that lease back too.
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.prepareScreen).toHaveBeenCalledOnce();
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.order).toEqual(["receipt-completed", "released", "released"]);
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "replay:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
 	});
 
 	it("refuses foreign runtime caller identity before acquiring a resource", async () => {

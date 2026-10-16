@@ -1,14 +1,8 @@
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const OBJECT = new RegExp(`^/v1/member-company(?:-snapshot)?-objects/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's bytes of a folder-v2 company, one manifest or chunk (folder core C4, P27b). */
 const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64}$`);
 /** A member's change set to a folder-v2 company (folder core C4, P34a). */
 const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
-const FILE = new RegExp(
-	`^/v1/member-company-file/${UUID}/(edits|proposals)(?:/(${UUID}))?(?:/(review|content|file))?$`,
-);
-const UPLOAD = new RegExp(`^/v1/member-company-file/${UUID}/uploads$`);
-const EXPORT = new RegExp(`^/v1/member-file-exports/${UUID}/${UUID}/[0-9a-f]{64}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const MAX_BYTES = 8 * 1024 * 1024;
 
@@ -21,18 +15,10 @@ export interface MemberCompanyGatewayOptions {
 }
 
 function route(path: string): { method: string; headers: string[] } | undefined {
-	if (OBJECT.test(path)) return { method: "GET", headers: ["authorization", "x-qorpera-company-path"] };
 	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"] };
 	if (FOLDER_COMMIT.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
-	if (EXPORT.test(path)) return { method: "GET", headers: ["authorization"] };
 	if (PRESENCE.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
-	if (UPLOAD.test(path))
-		return { method: "PUT", headers: ["authorization", "content-type", "x-qorpera-company-upload"] };
-	const match = FILE.exec(path);
-	if (!match) return undefined;
-	const [, kind, id, action] = match;
-	if ((!id && (kind !== "edits" || action)) || (kind === "proposals" && !action)) return undefined;
-	return { method: !id || action === "review" ? "POST" : "GET", headers: ["authorization", "content-type"] };
+	return undefined;
 }
 
 class BodyTooLarge extends Error {}
@@ -155,14 +141,8 @@ export async function forwardMemberCompanyGateway(
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
 	let body: Uint8Array<ArrayBuffer> | undefined;
 	try {
-		// Match the gateway's JSON bound: a valid 32 KiB text edit can expand sixfold
-		// when control characters are escaped in JSON.
-		if (request.method !== "GET")
-			body = await bytes(
-				request,
-				UPLOAD.test(path) ? MAX_BYTES : PRESENCE.test(path) || FOLDER_COMMIT.test(path) ? 1024 * 1024 : 256 * 1024,
-				signal,
-			);
+		// Match the gateway's bound for both writes, a folder commit and a presence report.
+		if (request.method !== "GET") body = await bytes(request, 1024 * 1024, signal);
 	} catch (error) {
 		return fail(error instanceof BodyTooLarge ? 413 : 408, "Member gateway request could not be read");
 	}
@@ -182,11 +162,11 @@ export async function forwardMemberCompanyGateway(
 			credentials: "omit",
 		});
 		const content = await bytes(response, MAX_BYTES, signal);
-		for (const name of ["content-type", "x-qorpera-access-mode", "etag", "x-qorpera-plan-sha256"]) {
+		for (const name of ["content-type", "x-qorpera-access-mode", "etag"]) {
 			const value = response.headers.get(name);
 			if (value !== null) headers.set(name, value);
 		}
-		headers.set("access-control-expose-headers", "x-qorpera-access-mode, etag, x-qorpera-plan-sha256");
+		headers.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
 		return new Response([204, 205, 304].includes(response.status) ? null : content, {
 			status: response.status,
 			headers,

@@ -62,9 +62,6 @@ begin
 		if has_function_privilege(v_role,'public.qorpera_native_tool_locked_run(jsonb)','EXECUTE') then
 			raise exception 'Private native tool binding validator exposed to %',v_role;
 		end if;
-		if has_function_privilege(v_role,'public.qorpera_validate_native_provider_execution_lease_before_recovery(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)','EXECUTE') then
-			raise exception 'Private base native lease validator exposed to %',v_role;
-		end if;
 		if has_function_privilege(v_role,'public.qorpera_runner_broker_job(uuid,text,uuid,text)','EXECUTE') then
 			raise exception 'Private runner broker validator exposed to %',v_role;
 		end if;
@@ -93,12 +90,11 @@ begin
 		pg_get_functiondef('public.qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)'::regprocedure)) = 0
 		or position('if auth.role() is distinct from ''service_role'' and session_user <> ''qorpera_secret_broker'' then' in
 		pg_get_functiondef('public.qorpera_native_connector_locked_grant(jsonb,uuid)'::regprocedure)) = 0
+		-- Since legacy sweep F1c (20260930246000) the run check and the lease check are the folder core's.
 		or position('if auth.role() is distinct from ''service_role'' and session_user <> ''qorpera_secret_broker'' then' in
-		pg_get_functiondef('public.qorpera_native_tool_locked_run(jsonb)'::regprocedure)) = 0
+		pg_get_functiondef('public.qorpera_folder_native_actor(jsonb)'::regprocedure)) = 0
 		or position('if auth.role() is distinct from ''service_role'' and session_user <> ''qorpera_secret_broker'' then' in
-		pg_get_functiondef('public.qorpera_validate_native_provider_execution_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure)) = 0
-		or position('if auth.role() <> ''service_role'' and session_user <> ''qorpera_secret_broker'' then' in
-		pg_get_functiondef('public.qorpera_validate_native_provider_execution_lease_before_recovery(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure)) = 0
+		pg_get_functiondef('public.qorpera_folder_validate_native_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure)) = 0
 		or position('if auth.role() <> ''service_role'' and session_user <> ''qorpera_secret_broker''' in
 		pg_get_functiondef('public.qorpera_runner_broker_job(uuid,text,uuid,text)'::regprocedure)) = 0 then
 		raise exception 'Secret broker execution is not bound to its dedicated login session';

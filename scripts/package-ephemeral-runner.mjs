@@ -35,7 +35,6 @@ await build({
 await copyFile("deploy/ephemeral-runner/image/run-job", resolve(outputRoot, "run-job"));
 
 const files = [
-	"company-lock-heartbeat.mjs",
 	"qorpera-ephemeral-runner.mjs",
 	"qorpera-native-provider-host.mjs",
 	"qorpera-identity-recovery-restore.mjs",

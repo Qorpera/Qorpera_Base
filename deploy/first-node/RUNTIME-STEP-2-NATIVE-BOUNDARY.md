@@ -270,7 +270,7 @@ prompt-injection resistance.
 Run from `packages/runtime`:
 
 ```sh
-node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-authority.test.ts test/cloud-native-tool-operations.test.ts test/cloud-native-tool-control-plane.test.ts test/cloud-native-run-tool-session.test.ts test/cloud-native-tool-boundary.test.ts test/cloud-codex-tool-session.test.ts test/official-codex-boundary.test.ts test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/official-codex-mouth.test.ts test/cloud-native-provider-service-main.test.ts
+node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-authority.test.ts test/cloud-native-tool-operations.test.ts test/cloud-native-tool-control-plane.test.ts test/cloud-native-run-tool-session.test.ts test/cloud-native-tool-boundary.test.ts test/cloud-codex-tool-session.test.ts test/official-codex-boundary.test.ts test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider-service-main.test.ts
 ```
 
 Run the same provider-default native proof on Linux without a test runner:
@@ -278,6 +278,11 @@ Run the same provider-default native proof on Linux without a test runner:
 ```sh
 node packages/runtime/test/fixtures/run-official-codex-boundary-probe.ts /absolute/path/to/pinned/codex
 ```
+
+The probe's `send_message` delivers through `CloudAgentMouth.send` in process,
+as a company run does; it starts no MCP endpoint (legacy sweep step C, C-R4).
+A lost receipt still reaches the model only as an unconfirmed outcome, and the
+fence checks and proof fields are unchanged.
 
 At the historical result-only checkpoint, the Linux x86_64 artifact was a release-profile build with debug sections
 removed by the pinned Rust toolchain's LLVM utility. The input/tool/output hashes

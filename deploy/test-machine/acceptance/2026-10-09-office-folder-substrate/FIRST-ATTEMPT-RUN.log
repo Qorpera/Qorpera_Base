@@ -1,0 +1,18 @@
+== run-on-node: copying 5 untracked file(s) too
+== run-on-node: node01 3/3 slots busy, 0 waiting
+== run-on-node: qorpera-testvm-node01 20261009T124833-27886-c7740c25 as ci03 in slot 3 of 3 (3687 files, copy 1.2 s, queued 0 s)
+Project qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36 created
+Storage pool qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36 created
+Image copied successfully!
+Creating qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36
+
+The instance you are starting does not have any network attached to it.
+  To create a new network, use: lxc network create
+  To attach a network to an instance, use: lxc network attach
+
+Error: Failed running: forklimits limit=memlock:unlimited:unlimited fd=3 fd=4 fd=5 -- /snap/lxd/40424/bin/qemu-system-x86_64 -S -name qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36 -uuid 1b330ae9-bfc3-4d40-9c28-defc00e17735 -daemonize -cpu host,hv_passthrough -nographic -serial chardev:console -nodefaults -no-user-config -sandbox on,obsolete=deny,elevateprivileges=allow,spawn=allow,resourcecontrol=deny -readconfig /var/snap/lxd/common/lxd/logs/qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36_qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36/qemu.conf -spice unix=on,disable-ticketing=on,addr=/var/snap/lxd/common/lxd/logs/qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36_qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36/qemu.spice -pidfile /var/snap/lxd/common/lxd/logs/qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36_qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36/qemu.pid -D /var/snap/lxd/common/lxd/logs/qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36_qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36/qemu.log -smbios type=2,manufacturer=Canonical Ltd.,product=LXD -run-with user=lxd: : exit status 1
+Try `lxc info --show-log qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36` for more info
+Project qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36 deleted
+Storage pool qorpera-substrate-2a3e82c1-b3bb-45b4-8326-43f010985d36 deleted
+== run-on-node: exit 1 after 99967 ms
+== run-on-node record {"schema":"qorpera.run-on-node/v1","machine":"node01","host":"tester@10.201.0.3","via":"company41-node-01","machines":[{"name":"node01","busy":3,"waiting":0,"arriving":0,"closed":false,"setUp":true,"cpus":10,"load":2.34}],"probeSeconds":0.513,"environment":{"machine":"qorpera-testvm-node01","kernel":"7.0.0-30-generic","os":"Ubuntu 26.04.1 LTS","node":"v24.21.0","npm":"11.19.0","docker":"29.8.2","git":"git version 2.53.0","cpus":"10","kvm":true},"source":{"head":"2caf1d1ea1200474cead07e16ce88d9faa09ad10","dirty":true,"files":3687,"untracked":5,"treeSha256":"5452cd52631433f3f1b2e79e8564c77362fb9465f76aa70bc3067423aa2a3202"},"command":["bash","scripts/prove-office-folder-substrate-vm.sh"],"sudo":true,"install":false,"build":false,"run":"20261009T124833-27886-c7740c25","runner":"ci03","cpuSlot":3,"queuedSeconds":0,"vitestMaxWorkers":3,"loadAtStart":2.24,"uncappedTestProcesses":0,"startedAt":"2026-10-09T12:48:34.295Z","copySeconds":1.242,"prepareSeconds":0.002,"suiteSeconds":99.967,"elapsedSeconds":101.841,"exitCode":1,"result":"failed","githubStatus":{"context":null,"sha":"2caf1d1ea1200474cead07e16ce88d9faa09ad10","posted":false,"reason":"--no-status"}}

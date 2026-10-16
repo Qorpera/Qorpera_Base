@@ -170,11 +170,15 @@ function record(value: JsonValue): Record<string, JsonValue> {
 	return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-/** Classifies one parsed call. A tool this table does not know is reviewed. */
+/**
+ * Classifies one parsed call. A tool this table does not know is reviewed. `offlineShells`: the session ids of the
+ * run's own offline commands (F3 4d), whose input stays inside as their start does.
+ */
 export function cloudActionEffect(
 	tool: Pick<CloudNativeTool, "name" | "source">,
 	parsed: JsonValue,
 	connectorEffects: ReadonlyMap<string, "read" | "write"> = new Map(),
+	offlineShells: ReadonlySet<string> = new Set(),
 ): CloudActionEffect {
 	const args = record(parsed);
 	const action = record(args.action ?? null);
@@ -233,12 +237,18 @@ export function cloudActionEffect(
 			return "internal";
 		case "company_delete":
 			return "destructive";
-		// A command can reach the internet, and so can what is typed into one.
+		// A networked command can reach the internet, and so can what is typed into one. An offline command (F3 4d:
+		// `network: false`, the run's own tool's default) reaches only the computer and the company folder, as does
+		// input to one the run started so. A start that does not say is an older runtime's, run with the network.
 		// Reading output and listing change nothing; stopping only ends work.
 		case "computer_shell":
 			return ["read", "list"].includes(action.action as string)
 				? "read"
-				: action.action === "stop"
+				: action.action === "stop" ||
+						(action.action === "start" && action.network === false) ||
+						(action.action === "write" &&
+							typeof action.sessionId === "string" &&
+							offlineShells.has(action.sessionId))
 					? "internal"
 					: "external";
 		// An email from a company mailbox leaves the company (M2b).
@@ -490,14 +500,16 @@ export function describeCloudAction(
 						? action.hook
 							? "Type a hook's signing secret into a web page"
 							: "Type a company account's sign-in into a web page"
-						: verb === "press"
-							? "Press a key in the browser"
-							: "Click in the browser";
+						: verb === "vault_capture"
+							? "Read a hook's signing secret off a web page into the vault"
+							: verb === "press"
+								? "Press a key in the browser"
+								: "Click in the browser";
 		target = text(action.url) || (action.name ? `${text(action.role)} "${text(action.name, 200)}"` : null);
 		quote("text", action.text);
 		add("key", action.key);
-		// The vault types the value; the card names the account (or the signed hook) and which of its values, never
-		// the value.
+		// The vault types the value (or reads a Stripe hook's into itself); the card names the account (or the signed
+		// hook) and which of its values, never the value.
 		add("account", action.account);
 		add("hook", action.hook);
 		add("field", action.field);
@@ -514,7 +526,11 @@ export function describeCloudAction(
 		add("key", action.key);
 	} else if (tool.name === "computer_shell") {
 		title =
-			action.action === "write" ? "Type into a running command on the computer" : "Run a command on the computer";
+			action.action === "write"
+				? "Type into a running command on the computer"
+				: action.network === true
+					? "Run a command with internet access on the computer"
+					: "Run a command on the computer";
 		quote("command", action.command, 2000);
 		quote("text", action.text, 2000);
 	} else if (tool.name === "send_mail") {
@@ -543,11 +559,16 @@ export function describeCloudAction(
 						: "Remove a hook";
 		target = text(args.name) || text(args.localPart) || text(args.hook) || null;
 		add("purpose", args.purpose);
-		// A signed hook (E3b): who signs, and the one site its secret may be typed into.
+		// A signed hook (E3b): who signs, and the one site its secret may be typed into. A Stripe hook's secret is Stripe's
+		// own, read off Stripe's dashboard into the vault (E3c), whatever site the call names.
 		const signed = args.action === "create" && (args.proof === "github" || args.proof === "hmac-sha256");
+		const stripe = args.action === "create" && args.proof === "stripe";
 		if (signed) {
 			add("signed by", args.proof === "github" ? "GitHub" : "The sender, with HMAC-SHA256");
 			add("site", args.site);
+		} else if (stripe) {
+			add("signed by", "Stripe");
+			add("site", "dashboard.stripe.com");
 		}
 		if (args.action === "create")
 			add(
@@ -556,7 +577,9 @@ export function describeCloudAction(
 					? "Anyone may send email to this address; what arrives can wake the company's routines"
 					: signed
 						? "The vault makes the hook's secret, which no one sees, to be typed only on the site; events signed with it can wake the company's routines"
-						: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
+						: stripe
+							? "Stripe makes the hook's secret; the vault reads it off dashboard.stripe.com, and no one sees it. Only events Stripe signs with it can wake the company's routines"
+							: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
 			);
 		if (args.action === "remove")
 			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
@@ -1012,6 +1035,7 @@ export class CloudActionReviewGate {
 	readonly #pollMs: number;
 	readonly #request: string;
 	readonly #connectorEffects: ReadonlyMap<string, "read" | "write">;
+	readonly #offlineShells: ReadonlySet<string>;
 	readonly #facts: CloudActionFacts;
 	readonly #observability?: CloudRuntimeObservability;
 
@@ -1022,6 +1046,8 @@ export class CloudActionReviewGate {
 		request: string;
 		holdMs: number;
 		connectorEffects?: ReadonlyMap<string, "read" | "write">;
+		/** The run's own offline commands (F3 4d), as the computer tools add them: read at each call. */
+		offlineShells?: ReadonlySet<string>;
 		/** Coworkers' names and the wake's time zone (a routine run's own, else UTC), for the card's facts. */
 		facts?: Omit<CloudActionFacts, "requester">;
 		observability?: CloudRuntimeObservability;
@@ -1035,6 +1061,7 @@ export class CloudActionReviewGate {
 		this.#holdMs = options.holdMs;
 		this.#pollMs = options.pollMs ?? POLL_MS;
 		this.#connectorEffects = options.connectorEffects ?? new Map();
+		this.#offlineShells = options.offlineShells ?? new Set();
 		this.#facts = options.facts ?? {};
 		this.#observability = options.observability;
 	}
@@ -1051,7 +1078,7 @@ export class CloudActionReviewGate {
 	}
 
 	async #check(call: CloudActionCall, signal: AbortSignal): Promise<CloudActionGateResult> {
-		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects);
+		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects, this.#offlineShells);
 		if (effect === "read" || effect === "internal") return { run: true };
 		const begin = object(
 			await this.#control.call(

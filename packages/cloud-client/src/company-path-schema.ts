@@ -1,12 +1,4 @@
-import type { CloudCompanyTreeEntry } from "./node/cloud-company-snapshot.ts";
-
-export interface CloudCompanyPathPlan {
-	schema: "qorpera.company-path-mutation/v1";
-	operationKey: string;
-	path: string;
-	expectedVersion: string | null;
-	entry: CloudCompanyTreeEntry | null;
-}
+import { folderKey } from "@qorpera/contracts";
 
 /** Representation checks only. Path and audience authorization lives in SQL. */
 export function parseCloudCompanyPath(value: unknown, allowRoot = false): string {
@@ -18,7 +10,7 @@ export function parseCloudCompanyPath(value: unknown, allowRoot = false): string
 		value.normalize("NFC") !== value
 	)
 		throw new Error("Invalid Company File path");
-	for (const candidate of [value, value.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC")]) {
+	for (const candidate of [value, folderKey(value)]) {
 		if (
 			/[\u0000-\u001f\u007f-\u009f\\%]/.test(candidate) ||
 			candidate.split("/").length !== value.split("/").length ||

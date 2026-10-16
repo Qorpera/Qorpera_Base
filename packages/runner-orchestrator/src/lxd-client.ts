@@ -23,9 +23,22 @@ import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
+import { NodeWebSocket } from "./node-websocket.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
+const MAX_EXEC_STREAM_INPUT_BYTES = 64 * 1024;
+const MAX_EXEC_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
+/** LXD starts the command once all three are connected, and gives up after 10 seconds. */
+const EXEC_STREAM_CONNECT_MS = 10_000;
+/** After the operation ends, its streams' end barriers are already sent; this covers only their delivery. */
+const EXEC_STREAM_DRAIN_MS = 5_000;
+/** The code host's largest read (Q13: a file or pack under 256 MiB). */
+const MAX_EXEC_PIPE_OUTPUT_BYTES = 256 * 1024 * 1024;
+const MAX_EXEC_PIPE_STDERR_TAIL_BYTES = 64 * 1024;
+const MAX_EXEC_PIPE_ENVIRONMENT = 256;
+/** Each stdin message; the next waits for the socket to drain. */
+const EXEC_PIPE_MESSAGE_BYTES = 64 * 1024;
 
 export type LxdInstancePowerAction = "start" | "stop";
 
@@ -138,6 +151,23 @@ export interface LxdClient {
 	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
 }
 
+export interface LxdProjectRecord {
+	name: string;
+	config: Readonly<Record<string, string>>;
+	/** LXD's `used_by`: the URL of everything in the project. */
+	usedBy: readonly string[];
+}
+
+/** A node's code hosts (code-host.ts): the coding executor makes each company's project itself, on first use. */
+export interface LxdCodeHostClient
+	extends Pick<LxdClient, "getInstance" | "createInstance" | "setInstancePower" | "execInstance" | "deleteInstance"> {
+	getProject(name: string, signal?: AbortSignal): Promise<LxdProjectRecord | undefined>;
+	createProject(name: string, config: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<void>;
+	/** True when it existed. LXD refuses a project that holds anything but its default profile. */
+	deleteProject(name: string, signal?: AbortSignal): Promise<boolean>;
+	listProjectNames(signal?: AbortSignal): Promise<string[]>;
+}
+
 export interface LxdInstanceFile {
 	content: Buffer;
 	uid: number;
@@ -175,6 +205,71 @@ export type LxdOperationState = "pending" | "succeeded" | "failed";
 
 /** A coding machine's session folders are its only devices that change after
  * creation (lxd-client replaceInstanceDevices). */
+export interface LxdExecStreamRequest {
+	/** Run as root in `/`, with LXD's default environment. */
+	readonly command: readonly string[];
+	/** Written to the command's stdin, which is then closed. Never recorded or logged. */
+	readonly stdin: Buffer;
+	/** A command printing more than this on stdout is killed and the call fails. */
+	readonly maxStdoutBytes: number;
+	readonly maxStderrBytes: number;
+	/** The whole call, from the request to the last byte. Past it the command is killed and the call fails. */
+	readonly timeoutMs: number;
+}
+
+export interface LxdExecStreamResult {
+	readonly exitCode: number;
+	readonly stdout: Buffer;
+	readonly stderr: Buffer;
+}
+
+/** Exec over LXD's websockets: input on stdin and output read off the stream, never in an argument or on the
+ * host's disk. Separate from the runner mocks, like the capabilities below. */
+export interface LxdInstanceExecStreamClient {
+	execInstanceStream(
+		project: string,
+		name: string,
+		request: LxdExecStreamRequest,
+		signal?: AbortSignal,
+	): Promise<LxdExecStreamResult>;
+}
+
+export interface LxdExecPipeRequest {
+	/** Run as root, at most 64 arguments. */
+	readonly command: readonly string[];
+	/** The command's environment, over LXD's defaults (`PATH`, `LANG`, `HOME` and `USER` where not given) and the
+	 * instance's `environment.*` keys. */
+	readonly environment: Readonly<Record<string, string>>;
+	/** An absolute path in the instance. */
+	readonly cwd: string;
+	/** Streamed to the command's stdin, which is then closed; without it stdin is closed at once. Never recorded or
+	 * logged. A source the call does not read to its end is closed (its `return()`) when the call ends, also while a
+	 * read is pending; an async generator runs its own close once that read settles. */
+	readonly stdin?: Uint8Array | AsyncIterable<Uint8Array>;
+	/** A command printing more than this on stdout is killed and the call fails. */
+	readonly maxStdoutBytes: number;
+	/** How much of the end of stderr to keep; the rest is dropped, never a failure. */
+	readonly stderrTailBytes: number;
+}
+
+export interface LxdExecPipeResult {
+	readonly exitCode: number;
+	readonly stdout: Buffer;
+	readonly stderrTail: Buffer;
+}
+
+/** Exec over LXD's websockets for commands of any length: an input of any size streamed at the pace the command
+ * reads it, an environment and a working directory, and no deadline but the signal. The code host's jobs run on it
+ * (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"). */
+export interface LxdInstanceExecPipeClient {
+	execInstancePipe(
+		project: string,
+		name: string,
+		request: LxdExecPipeRequest,
+		signal: AbortSignal,
+	): Promise<LxdExecPipeResult>;
+}
+
 export interface LxdInstanceDeviceClient {
 	replaceInstanceDevices(
 		project: string,
@@ -611,7 +706,7 @@ function officeCodePackageMaximum(file: string, write: boolean): number {
 	if (file === "original-preparation.json") return COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
 	if (file === "trust.json") return 4096;
 	if (["base-manifest.json", "target-manifest.json", "base-installation.json"].includes(file)) return 1024 ** 2;
-	if (file === "base-mount-template") return 65536;
+	if (["base-mount-template", "base-folder-mount-template"].includes(file)) return 65536;
 	if (["bootstrap.cjs", "measure.cjs"].includes(file)) return 16 * 1024 ** 2;
 	if (COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.some((name) => file === `artifacts/${name}`)) return 32 * 1024 ** 2;
 	if (new RegExp(`^challenge-${CODE_PACKAGE_UUID}\\.json$`).test(file)) return 65536;
@@ -1129,6 +1224,16 @@ function instance(value: unknown): LxdInstanceRecord {
 	};
 }
 
+function projectRecord(value: unknown): LxdProjectRecord {
+	const input = record(value, "LXD project");
+	if (typeof input.name !== "string") throw new Error("LXD project is invalid");
+	return {
+		name: input.name,
+		config: stringRecord(input.config, "LXD project config"),
+		usedBy: strings(input.used_by ?? [], "LXD project used by"),
+	};
+}
+
 function instanceState(value: unknown): LxdInstanceStateRecord {
 	const input = record(value, "LXD instance state");
 	if (typeof input.status !== "string" || typeof input.status_code !== "number") {
@@ -1231,8 +1336,115 @@ function projectPath(path: string, project: string): string {
 	return `${path}${path.includes("?") ? "&" : "?"}project=${encodeURIComponent(project)}`;
 }
 
+/** At most 64 arguments and 256 environment variables, nothing with a NUL, each argument and value at most 64 KiB and
+ * all of them together at most 256 KiB (well under the kernel's limit for a new program). */
+function validExecPipe(request: LxdExecPipeRequest): boolean {
+	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+	if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command[0]) return false;
+	if (typeof environment !== "object" || environment === null) return false;
+	const variables = Object.entries(environment);
+	if (variables.length > MAX_EXEC_PIPE_ENVIRONMENT) return false;
+	let bytes = 0;
+	for (const value of [...command, ...variables.flat()]) {
+		if (typeof value !== "string" || value.includes("\0")) return false;
+		const length = Buffer.byteLength(value);
+		if (length > 64 * 1024) return false;
+		bytes += length;
+	}
+	return (
+		bytes <= 256 * 1024 &&
+		variables.every(([key]) => /^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(key)) &&
+		typeof cwd === "string" &&
+		cwd.startsWith("/") &&
+		!cwd.includes("\0") &&
+		Buffer.byteLength(cwd) <= 4096 &&
+		(stdin === undefined ||
+			stdin instanceof Uint8Array ||
+			(typeof stdin === "object" && stdin !== null && typeof stdin[Symbol.asyncIterator] === "function")) &&
+		Number.isSafeInteger(maxStdoutBytes) &&
+		maxStdoutBytes >= 0 &&
+		maxStdoutBytes <= MAX_EXEC_PIPE_OUTPUT_BYTES &&
+		Number.isSafeInteger(stderrTailBytes) &&
+		stderrTailBytes >= 0 &&
+		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES
+	);
+}
+
+/** Hands `stdin` to an exec's stdin websocket in messages of at most 64 KiB, each sent once the last has drained, then
+ * its end. True once all of it and the end are sent; false when the websocket closed first or `stop` ends the call. A
+ * source that fails, or yields something other than bytes, throws. A source not read to its end is told to close (its
+ * `return()`) as soon as the input stops, also while a read is pending: `stop` ends the wait for that read. */
+async function pipeInput(
+	socket: NodeWebSocket,
+	stdin: Uint8Array | AsyncIterable<Uint8Array> | undefined,
+	stop: AbortSignal,
+): Promise<boolean> {
+	const send = async (chunk: Uint8Array): Promise<boolean> => {
+		for (let offset = 0; offset < chunk.byteLength; offset += EXEC_PIPE_MESSAGE_BYTES) {
+			if (stop.aborted) return false;
+			const length = Math.min(EXEC_PIPE_MESSAGE_BYTES, chunk.byteLength - offset);
+			try {
+				await socket.sendBinaryDrained(Buffer.from(chunk.buffer, chunk.byteOffset + offset, length));
+			} catch {
+				return false;
+			}
+		}
+		return true;
+	};
+	if (stdin instanceof Uint8Array) {
+		if (!(await send(stdin))) return false;
+	} else if (stdin !== undefined) {
+		const source = stdin[Symbol.asyncIterator]();
+		// One abort listener for the whole input, which ends only the read pending at the time: racing each read
+		// against one promise for the abort would keep every read's reaction on it until the call ends.
+		let stopRead: (() => void) | undefined;
+		const stopped = () => stopRead?.();
+		stop.addEventListener("abort", stopped, { once: true });
+		let open = true;
+		try {
+			for (;;) {
+				if (stop.aborted) return false;
+				const pending = source.next();
+				const next = await new Promise<IteratorResult<Uint8Array> | undefined>((resolveNext, rejectNext) => {
+					stopRead = () => resolveNext(undefined);
+					if (stop.aborted) resolveNext(undefined);
+					Promise.resolve(pending).then(resolveNext, rejectNext);
+				});
+				stopRead = undefined;
+				if (next === undefined) return false;
+				if (next.done) {
+					open = false;
+					break;
+				}
+				if (!(next.value instanceof Uint8Array)) throw new Error("LXD exec pipe input is invalid");
+				if (!(await send(next.value))) return false;
+			}
+		} finally {
+			stop.removeEventListener("abort", stopped);
+			// Not awaited: an async generator closes only once its pending read settles.
+			if (open) {
+				try {
+					Promise.resolve(source.return?.()).catch(() => undefined);
+				} catch {
+					// A source that cannot close has nothing more to give the command.
+				}
+			}
+		}
+	}
+	if (stop.aborted) return false;
+	try {
+		socket.send("");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export class LxdUnixClient
 	implements
+		LxdCodeHostClient,
+		LxdInstanceExecStreamClient,
+		LxdInstanceExecPipeClient,
 		LxdInstanceDeviceClient,
 		LxdInstanceDeviceUpdateClient,
 		LxdOfficeConfigurationClient,
@@ -3081,6 +3293,47 @@ export class LxdUnixClient
 		await this.#waitForOperation(result, signal);
 	}
 
+	async getProject(name: string, signal?: AbortSignal): Promise<LxdProjectRecord | undefined> {
+		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
+		const result = await this.#request("GET", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
+		if (result.status === 404) return undefined;
+		return projectRecord(envelopeMetadata(result));
+	}
+
+	async createProject(name: string, config: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<void> {
+		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
+		const result = await this.#request(
+			"POST",
+			"/1.0/projects",
+			{ name, description: "", config: { ...config } },
+			signal,
+		);
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's create answers synchronously, with null metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
+	}
+
+	async deleteProject(name: string, signal?: AbortSignal): Promise<boolean> {
+		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
+		const result = await this.#request("DELETE", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
+		if (result.status === 404) return false;
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's delete answers synchronously, with or without metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
+		return true;
+	}
+
+	async listProjectNames(signal?: AbortSignal): Promise<string[]> {
+		const result = await this.#request("GET", "/1.0/projects", undefined, signal);
+		return strings(envelopeMetadata(result), "LXD projects").map((url) => {
+			if (!url.startsWith("/1.0/projects/") || url.slice(14).includes("/"))
+				throw new Error("LXD projects is invalid");
+			return decodeURIComponent(url.slice(14));
+		});
+	}
+
 	async execInstance(project: string, name: string, command: readonly string[], signal?: AbortSignal): Promise<void> {
 		if (
 			command.length < 1 ||
@@ -3105,6 +3358,291 @@ export class LxdUnixClient
 		const operation = await this.#waitForOperation(result, signal);
 		const metadata = record(operation.metadata, "LXD exec operation metadata");
 		if (metadata.return !== 0) throw new Error("LXD instance command failed");
+	}
+
+	/** LXD's non-interactive exec with `wait-for-websocket`: one websocket each for stdin, stdout and stderr, binary
+	 * messages, and an empty text message as each stream's end. The control websocket is left unconnected, so closing
+	 * the stdout websocket before the command ends makes LXD kill it (SIGKILL): every early exit here does that. */
+	async execInstanceStream(
+		project: string,
+		name: string,
+		request: LxdExecStreamRequest,
+		signal?: AbortSignal,
+	): Promise<LxdExecStreamResult> {
+		const { command, stdin, maxStdoutBytes, maxStderrBytes, timeoutMs } = request;
+		if (
+			command.length < 1 ||
+			command.length > 64 ||
+			command.some((argument) => !argument || /[\0\r\n]/.test(argument) || Buffer.byteLength(argument) > 4096) ||
+			!Buffer.isBuffer(stdin) ||
+			stdin.byteLength > MAX_EXEC_STREAM_INPUT_BYTES ||
+			[maxStdoutBytes, maxStderrBytes].some(
+				(bound) => !Number.isSafeInteger(bound) || bound < 0 || bound > MAX_EXEC_STREAM_OUTPUT_BYTES,
+			) ||
+			!Number.isSafeInteger(timeoutMs) ||
+			timeoutMs < 1 ||
+			timeoutMs > this.#operationTimeoutSeconds * 1000
+		)
+			throw new Error("LXD instance command is invalid");
+		const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
+		checked.throwIfAborted();
+		const result = await this.#request(
+			"POST",
+			projectPath(`/1.0/instances/${encodeURIComponent(name)}/exec`, project),
+			{
+				command: [...command],
+				interactive: false,
+				"wait-for-websocket": true,
+				"record-output": false,
+				user: 0,
+				group: 0,
+				cwd: "/",
+				environment: {},
+			},
+			checked,
+		);
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD exec stream was refused");
+		const envelope = record(result.body, "LXD exec stream");
+		if (
+			envelope.type !== "async" ||
+			typeof envelope.operation !== "string" ||
+			!envelope.operation.startsWith("/1.0/operations/") ||
+			!OPERATION_UUID.test(envelope.operation.slice("/1.0/operations/".length))
+		)
+			throw new Error("LXD exec stream operation is invalid");
+		const fds = record(
+			record(record(envelope.metadata, "LXD exec stream operation").metadata, "LXD exec stream metadata").fds,
+			"LXD exec stream fds",
+		);
+		const fdStream = (fd: "0" | "1" | "2", bound: number) => {
+			const secret = fds[fd];
+			if (typeof secret !== "string" || !/^[0-9A-Za-z]{16,256}$/.test(secret))
+				throw new Error("LXD exec stream fds are invalid");
+			return { secret, bound, chunks: [] as Buffer[], bytes: 0, ended: false };
+		};
+		const input = fdStream("0", 0);
+		const stdout = fdStream("1", maxStdoutBytes);
+		const stderr = fdStream("2", maxStderrBytes);
+		const sockets: NodeWebSocket[] = [];
+		let failure: Error | undefined;
+		let settle: () => void = () => undefined;
+		const drained = new Promise<void>((resolveDrained) => {
+			settle = resolveDrained;
+		});
+		// Ends the call: the stdout websocket closes first, which kills a command still running.
+		const fail = (error: Error): void => {
+			failure ??= error;
+			for (const socket of sockets) socket.close();
+			settle();
+		};
+		const aborted = (): void => fail(new Error("LXD exec stream was stopped"));
+		checked.addEventListener("abort", aborted, { once: true });
+		try {
+			for (const stream of [stdout, stderr, input]) {
+				const socket = await NodeWebSocket.connect(
+					new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+					{
+						// A text message is the stream's end; LXD sends it once the command's side has closed.
+						message: () => {
+							if (stream === input) return;
+							stream.ended = true;
+							if (stdout.ended && stderr.ended) settle();
+						},
+						binary: (payload) => {
+							if (stream === input || stream.ended || failure) return;
+							stream.bytes += payload.byteLength;
+							if (stream.bytes > stream.bound) {
+								fail(new Error("LXD exec stream output exceeded its bound"));
+								return;
+							}
+							stream.chunks.push(payload);
+						},
+						close: () => {
+							if (stream !== input && !stream.ended) fail(new Error("LXD exec stream ended before its output"));
+						},
+					},
+					EXEC_STREAM_CONNECT_MS,
+					// The deadline and the signal also stop a handshake LXD has not answered yet.
+					{ socketPath: this.#socketPath, signal: checked },
+				);
+				sockets.push(socket);
+				if (failure || checked.aborted) {
+					fail(failure ?? new Error("LXD exec stream was stopped"));
+					throw failure;
+				}
+			}
+			const stdinSocket = sockets[2]!;
+			if (stdin.byteLength > 0) stdinSocket.sendBinary(stdin);
+			stdinSocket.send("");
+			const operation = await this.#waitForOperation(result, checked);
+			const metadata = record(operation.metadata, "LXD exec stream result");
+			const exitCode = metadata.return;
+			if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode))
+				throw new Error("LXD exec stream result is invalid");
+			const drainTimer = setTimeout(
+				() => fail(new Error("LXD exec stream output did not end")),
+				EXEC_STREAM_DRAIN_MS,
+			);
+			try {
+				await drained;
+			} finally {
+				clearTimeout(drainTimer);
+			}
+			if (failure) throw failure;
+			return { exitCode, stdout: Buffer.concat(stdout.chunks), stderr: Buffer.concat(stderr.chunks) };
+		} catch (error) {
+			fail(error instanceof Error ? error : new Error("LXD exec stream failed"));
+			throw failure;
+		} finally {
+			checked.removeEventListener("abort", aborted);
+			for (const socket of sockets) socket.close();
+		}
+	}
+
+	/** `execInstanceStream`'s exec for the code host's jobs, which run as long as they need and move whole bundles: the
+	 * command gets its environment and working directory, its input streams in beside its output (one message at a
+	 * time, each once the last has drained, so the source is read no faster than the command reads), stdout is kept up
+	 * to its bound and only the end of stderr. The output's end messages, not a deadline, end the wait; the signal is
+	 * the only bound. As there, every early exit closes the stdout websocket, on which LXD kills the command; the end of
+	 * the call also stops a handshake LXD has not answered and closes a source it did not read to its end. */
+	async execInstancePipe(
+		project: string,
+		name: string,
+		request: LxdExecPipeRequest,
+		signal: AbortSignal,
+	): Promise<LxdExecPipeResult> {
+		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+		if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
+		signal.throwIfAborted();
+		const result = await this.#request(
+			"POST",
+			projectPath(`/1.0/instances/${encodeURIComponent(name)}/exec`, project),
+			{
+				command: [...command],
+				interactive: false,
+				"wait-for-websocket": true,
+				"record-output": false,
+				user: 0,
+				group: 0,
+				cwd,
+				environment: { ...environment },
+			},
+			signal,
+		);
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD exec pipe was refused");
+		const envelope = record(result.body, "LXD exec pipe");
+		if (
+			envelope.type !== "async" ||
+			typeof envelope.operation !== "string" ||
+			!envelope.operation.startsWith("/1.0/operations/") ||
+			!OPERATION_UUID.test(envelope.operation.slice("/1.0/operations/".length))
+		)
+			throw new Error("LXD exec pipe operation is invalid");
+		const fds = record(
+			record(record(envelope.metadata, "LXD exec pipe operation").metadata, "LXD exec pipe metadata").fds,
+			"LXD exec pipe fds",
+		);
+		const secretOf = (fd: "0" | "1" | "2"): string => {
+			const secret = fds[fd];
+			if (typeof secret !== "string" || !/^[0-9A-Za-z]{16,256}$/.test(secret))
+				throw new Error("LXD exec pipe fds are invalid");
+			return secret;
+		};
+		const streams = [
+			{ name: "stdout", secret: secretOf("1") },
+			{ name: "stderr", secret: secretOf("2") },
+			{ name: "stdin", secret: secretOf("0") },
+		] as const;
+		const stdout: Buffer[] = [];
+		let stdoutBytes = 0;
+		let stderrTail = Buffer.alloc(0);
+		let stdoutEnded = false;
+		let stderrEnded = false;
+		let inputSent = false;
+		// Aborted when the call ends: it stops a handshake LXD has not answered, and the input, which closes a source
+		// not read to its end.
+		const callEnd = new AbortController();
+		const sockets: NodeWebSocket[] = [];
+		let failure: Error | undefined;
+		let settle: () => void = () => undefined;
+		const ended = new Promise<void>((resolveEnded) => {
+			settle = resolveEnded;
+		});
+		// Ends the call: the stdout websocket closes first, which kills a command still running.
+		const fail = (error: Error): void => {
+			failure ??= error;
+			callEnd.abort();
+			for (const socket of sockets) socket.close();
+			settle();
+		};
+		const aborted = (): void => fail(new Error("LXD exec pipe was stopped"));
+		signal.addEventListener("abort", aborted, { once: true });
+		const handshake = AbortSignal.any([signal, callEnd.signal]);
+		try {
+			for (const stream of streams) {
+				const socket = await NodeWebSocket.connect(
+					new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+					{
+						// A text message is the stream's end; LXD sends it once the command's side has closed.
+						message: () => {
+							if (stream.name === "stdout") stdoutEnded = true;
+							else if (stream.name === "stderr") stderrEnded = true;
+							if (stdoutEnded && stderrEnded) settle();
+						},
+						binary: (payload) => {
+							if (failure) return;
+							if (stream.name === "stdout" && !stdoutEnded) {
+								stdoutBytes += payload.byteLength;
+								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
+								else stdout.push(payload);
+							} else if (stream.name === "stderr" && !stderrEnded) {
+								const kept = Buffer.concat([stderrTail, payload]);
+								stderrTail = Buffer.from(kept.subarray(Math.max(0, kept.byteLength - stderrTailBytes)));
+							}
+						},
+						// The stdin websocket may close as soon as the command is done with it.
+						close: () => {
+							if ((stream.name === "stdout" && !stdoutEnded) || (stream.name === "stderr" && !stderrEnded))
+								fail(new Error("LXD exec pipe ended before its output"));
+						},
+					},
+					EXEC_STREAM_CONNECT_MS,
+					// The signal and the call's end also stop a handshake LXD has not answered yet.
+					{ socketPath: this.#socketPath, signal: handshake },
+				);
+				sockets.push(socket);
+				if (failure || signal.aborted) {
+					fail(failure ?? new Error("LXD exec pipe was stopped"));
+					throw failure;
+				}
+			}
+			// The input runs beside the output: a command may print before it has read all of its stdin. Only the
+			// source's own failure fails the call; a websocket that closed under the input leaves it to the exit code.
+			pipeInput(sockets[2]!, stdin, callEnd.signal).then(
+				(sent) => {
+					inputSent = sent;
+				},
+				(error: unknown) => fail(error instanceof Error ? error : new Error("LXD exec pipe input failed")),
+			);
+			await ended;
+			if (failure) throw failure;
+			const operation = await this.#waitForOperation(result, signal);
+			const metadata = record(operation.metadata, "LXD exec pipe result");
+			const exitCode = metadata.return;
+			if (typeof exitCode !== "number" || !Number.isSafeInteger(exitCode))
+				throw new Error("LXD exec pipe result is invalid");
+			if (failure) throw failure;
+			// A command that succeeded without all of its input never saw what the caller gave it.
+			if (exitCode === 0 && !inputSent) throw new Error("LXD exec pipe command ended before its input");
+			return { exitCode, stdout: Buffer.concat(stdout), stderrTail };
+		} catch (error) {
+			fail(error instanceof Error ? error : new Error("LXD exec pipe failed"));
+			throw failure;
+		} finally {
+			callEnd.abort();
+			signal.removeEventListener("abort", aborted);
+			for (const socket of sockets) socket.close();
+		}
 	}
 
 	async #waitForOperation(result: HttpResult, signal?: AbortSignal): Promise<Record<string, unknown>> {

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Grows the root partition and its ext4 file system to fill the machine's disk. A
+# coding machine's disk is larger than the image's, and the image has no cloud-init
+# to grow it. Runs at every boot; a root that already fills its disk stays as it is.
+set -euo pipefail
+[[ $(findmnt -no FSTYPE /) == ext4 ]] || { echo "the root is not ext4: left as it is"; exit 0; }
+part=$(basename "$(readlink -f "$(findmnt -no SOURCE /)")")
+disk=/dev/$(lsblk -no PKNAME "/dev/$part")
+number=$(cat "/sys/class/block/$part/partition")
+# growpart exits 1 when the partition already fills the disk (NOCHANGE).
+growpart "$disk" "$number" || [[ $? -eq 1 ]]
+resize2fs "/dev/$part"

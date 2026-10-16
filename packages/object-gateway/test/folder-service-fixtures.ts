@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	COMMAND_ENDED,
 	type CommitActor,
 	type CommitAnswer,
 	type CommitOutcome,
@@ -15,14 +16,18 @@ import {
 	type FeedEvent,
 	type FolderActor,
 	type FolderCore,
+	MEMBER_HELD_READS,
+	type ReleaseAnswer,
+	type ReleasedRead,
 	type UploadSeal,
 	type ViewRenewal,
 } from "../src/folder-service/core.ts";
 import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
-import type { CommitUnit } from "../src/folder-service/plan.ts";
+import type { CommitUnit, NewFolderEntry } from "../src/folder-service/plan.ts";
 import type { BridgeInfo } from "../src/folder-service/protocol.ts";
 import type { FolderUploads, Upload } from "../src/folder-service/staging.ts";
+import type { CreditedUnit } from "../src/folder-service/windows.ts";
 
 export const ENV = "11111111-2222-4333-8444-555555555555";
 export const PROFILE = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -84,6 +89,11 @@ export function folder(path: string, version = 1): CoreEntry {
 	return { path, kind: "folder", version: v(version), updatedAt: "2026-10-01T12:00:00.000Z" };
 }
 
+/** A link's core entry (20260930380000): its target, and nothing of a file's. */
+export function link(path: string, target: string, version = 1): CoreEntry {
+	return { path, kind: "symlink", version: v(version), target, updatedAt: "2026-10-01T12:00:00.000Z" };
+}
+
 /** The folder core, in memory: one company, a journal of change sets and access changes, and a visibility rule for
  * the member. Pages are two entries long so paging is exercised. */
 export class FakeCore implements FolderCore {
@@ -96,7 +106,8 @@ export class FakeCore implements FolderCore {
 	profileCalls = 0;
 	/** Core views, as C1b-3a keeps them: id to pass and state, the view's kind and the machine allocation it was opened
 	 * on (null for a run box: 20260930104000), what each renewal said was unsaved since, and for a shell command's view
-	 * (20260930183000) whether its command has ended. */
+	 * (20260930183000) whether its command has ended. A coding session's names its coding machine, and a coding or code
+	 * host view the service that serves it (F3 5a `served_by`). */
 	readonly views = new Map<
 		string,
 		{
@@ -106,10 +117,14 @@ export class FakeCore implements FolderCore {
 			environmentId: string;
 			kind: string;
 			machineId: string | null;
+			codingMachineId: string | null;
+			servedBy: string | null;
 			unsaved: (string | null)[];
 			ended: boolean;
 		}
 	>();
+	/** Every clean stop the core heard (F3 5a `qorpera_folder_service_stopped`), by service. */
+	readonly stopped: string[] = [];
 	renewalFails = false;
 	/** The database's clock, for leases. */
 	now: () => number = Date.now;
@@ -122,7 +137,12 @@ export class FakeCore implements FolderCore {
 	openView(
 		viewId: string,
 		pass: string,
-		options: { environmentId?: string; kind?: string; machineId?: string | null } = {},
+		options: {
+			environmentId?: string;
+			kind?: string;
+			machineId?: string | null;
+			codingMachineId?: string | null;
+		} = {},
 	): void {
 		this.views.set(viewId, {
 			pass,
@@ -131,9 +151,18 @@ export class FakeCore implements FolderCore {
 			environmentId: options.environmentId ?? ENV,
 			kind: options.kind ?? "run_box",
 			machineId: options.machineId ?? null,
+			codingMachineId: options.codingMachineId ?? null,
+			servedBy: null,
 			unsaved: [],
 			ended: false,
 		});
+	}
+
+	/** Whose read set a view's releases reach and its commits are checked against: a coding session's is its machine's
+	 * (F3 5a), every other view's its own. */
+	readSetOf(viewId: string): string {
+		const coding = this.views.get(viewId)?.codingMachineId;
+		return coding ? `machine:${coding}` : viewId;
 	}
 
 	/** The office's report ends a shell command's view's command: the view still renews, and saves only its final. */
@@ -148,8 +177,8 @@ export class FakeCore implements FolderCore {
 	#check(actor: FolderActor, environmentId: string) {
 		if (actor.kind !== "view") return undefined;
 		const view = this.views.get(actor.viewId);
-		if (!view || view.pass !== actor.pass || view.state !== "open" || view.environmentId !== environmentId)
-			throw new CoreRefusal("denied");
+		if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		if (view.state !== "open") throw new CoreRefusal("denied", "Folder view has ended");
 		return view;
 	}
 	/** Events per feed page (0: all in one page), and the feed call (counted from `feedCalls`) that fails. */
@@ -271,16 +300,21 @@ export class FakeCore implements FolderCore {
 	/** Objects on the share the catalog knows, by hash: their sizes. */
 	readonly catalog = new Map<string, number>();
 	readonly intents = new Map<string, { manifest: string; objects: Map<string, number>; put: Set<string> }>();
+	/** Opt-in possession check from folder_core_bytes: a view needs its own live seal or an already-readable file. */
+	checkViewPossession = false;
+	readonly sealedIntents = new Map<string, { viewId: string; manifestSha256: string }>();
 	/** Every commit asked, in order (a replay included), and whether it was a command view's final. */
 	readonly commits: { key: string; units: readonly CommitUnit[]; final: boolean }[] = [];
 	readonly #answers = new Map<string, { request: string; answer: CommitAnswer }>();
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
+	/** Commands that have ended (F3 6a-2): a test machine's unit credited to one of them is refused. */
+	readonly endedCommands = new Set<string>();
 	/** A path's units the core parks for review, applying nothing (P40: an agent's change that needs a member's). */
 	park: (path: string) => boolean = () => false;
-	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
-	 * would have passed); the copies kept, by commit. */
+	/** Whether a conflicting write, link or new folder keeps its files and links on the receipt (P17 keeps them only
+	 * when their bytes would have passed); the copies kept, by commit. */
 	copyConflicts = true;
 	readonly copies = new Map<string, ConflictCopy[]>();
 	/** Intents the core let lapse (their renewal is refused), the next renewals that do not get through, and every
@@ -324,6 +358,8 @@ export class FakeCore implements FolderCore {
 			mediaType: string;
 			executable: boolean;
 		};
+		if (actor.kind === "view")
+			this.sealedIntents.set(intentId, { viewId: actor.viewId, manifestSha256: hashOf(intent.manifest) });
 		return {
 			state: "sealed",
 			file: {
@@ -350,7 +386,8 @@ export class FakeCore implements FolderCore {
 	/** The core's unit rules (core §3), each unit whole or not at all, applied in order; the saved ones are one change
 	 * set on the journal. A key asked again with the same units (and the same `final`) answers the same, its view
 	 * closed or not, given its pass; with others, 22023. A command view's final (20260930183000) closes it, saved or
-	 * not, and may be empty; once its command has ended, the view saves nothing else (42501). */
+	 * not, and may be empty; once its command has ended, the view saves nothing else (42501). A test machine's final
+	 * closes its view the same way (F3 6a). */
 	async commit(environmentId: string, actor: CommitActor, key: string, units: readonly unknown[]) {
 		await this.commitGate;
 		await this.commitHook?.(this.commits.length);
@@ -367,9 +404,16 @@ export class FakeCore implements FolderCore {
 			return this.#answered(earlier.answer);
 		}
 		const view = this.#check(actor, environmentId);
-		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
+		if (final && view?.kind !== "computer_shell_command" && view?.kind !== "test_machine")
+			throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
-		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied");
+		if (view?.kind === "computer_shell_command" && view.ended && !final)
+			throw new CoreRefusal("denied", COMMAND_ENDED);
+		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it. A
+		// coding view's is its machine's (F3 5a).
+		const readSet = actor.kind === "view" ? this.readSets.get(this.readSetOf(actor.viewId)) : undefined;
+		if ([...(readSet?.keys() ?? [])].some((p) => this.hidden(p)))
+			throw new CoreRefusal("denied", "A read is no longer readable");
 		if (this.commitRefusal) throw new CoreRefusal(this.commitRefusal);
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "down") {
 			this.commitFailures.count--;
@@ -393,25 +437,75 @@ export class FakeCore implements FolderCore {
 				version: null,
 			});
 			const path = u.op === "move" ? u.to : u.path;
-			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
-			if (this.park(path)) return no("waiting_for_review", "parked");
-			const conflict = (reason: string): CommitOutcome => {
+			if (this.checkViewPossession && actor.kind === "view") {
 				const files =
 					u.op === "write"
-						? [{ path: u.path, file: u.file }]
+						? [u.file]
 						: u.op === "new_folder"
-							? u.contents.flatMap((c) => (c.file ? [{ path: `${u.path}/${c.path}`, file: c.file }] : []))
+							? u.contents.flatMap((entry) => (entry.file ? [entry.file] : []))
 							: [];
+				if (
+					files.some(
+						(file) =>
+							![...this.sealedIntents].some(
+								([id, seal]) =>
+									seal.viewId === actor.viewId &&
+									seal.manifestSha256 === file.manifestSha256 &&
+									!this.lapsed.has(id),
+							) &&
+							![...this.entries.values()].some(
+								(entry) =>
+									entry.kind === "file" &&
+									entry.manifestSha256 === file.manifestSha256 &&
+									!this.hidden(entry.path),
+							),
+					)
+				)
+					return no("refused", "bytes_unverified");
+			}
+			const credits = (u as CreditedUnit).credits ?? [];
+			if (credits.some((id) => this.endedCommands.has(id))) return no("refused", "command_ended");
+			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
+			if (this.park(path)) return no("waiting_for_review", "parked");
+			// The receipt keeps a conflicting unit's files and links (20260930380000), each with its place in the unit.
+			const conflict = (reason: string): CommitOutcome => {
+				const made: NewFolderEntry[] =
+					u.op === "write"
+						? [{ path: u.path, kind: "file", file: u.file }]
+						: u.op === "symlink"
+							? [{ path: u.path, kind: "symlink", target: u.target }]
+							: u.op === "new_folder"
+								? u.contents.map((c) => ({ ...c, path: `${u.path}/${c.path}` }))
+								: [];
 				if (this.copyConflicts)
-					for (const [i, { path, file }] of files.entries())
-						kept.push({ unit, file: i + 1, path, manifestSha256: file.manifestSha256 });
+					for (const [i, c] of made.filter((e) => e.kind !== "folder").entries())
+						kept.push(
+							c.file
+								? { unit, file: i + 1, path: c.path, kind: "file", manifestSha256: c.file.manifestSha256 }
+								: { unit, file: i + 1, path: c.path, kind: "symlink", target: c.target! },
+						);
 				return no("conflict", reason);
 			};
 			switch (u.op) {
-				case "write": {
+				case "write":
+				case "symlink": {
+					// A write or a link replaces the file or link at the version it names (a link's write makes it a file).
 					const e = this.entries.get(u.path);
-					if (u.expectedVersion !== undefined ? e?.kind !== "file" || e.version !== u.expectedVersion : e)
+					if (u.expectedVersion !== undefined ? e?.kind === "folder" || e?.version !== u.expectedVersion : e)
 						return conflict(u.expectedVersion !== undefined ? "version_changed" : "exists");
+					if (u.op === "symlink") {
+						if (!parentOk(u.path)) return no("refused", "parent_missing");
+						const entry: CoreEntry = {
+							path: u.path,
+							kind: "symlink",
+							version: v(this.#nextVersion++),
+							target: u.target,
+							updatedAt: now,
+						};
+						this.entries.set(u.path, entry);
+						changes.push({ ...entry, op: "write" });
+						return { unit, outcome: "saved", reason: null, version: entry.version };
+					}
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
 					const entry: CoreEntry = {
 						path: u.path,
@@ -439,21 +533,13 @@ export class FakeCore implements FolderCore {
 					changes.push({ ...entry, op: "mkdir" });
 					if (u.op === "new_folder")
 						for (const c of u.contents) {
+							const at = { path: `${u.path}/${c.path}`, version: v(this.#nextVersion++), updatedAt: now };
 							const inner: CoreEntry =
 								c.kind === "folder"
-									? {
-											path: `${u.path}/${c.path}`,
-											kind: "folder",
-											version: v(this.#nextVersion++),
-											updatedAt: now,
-										}
-									: {
-											path: `${u.path}/${c.path}`,
-											kind: "file",
-											version: v(this.#nextVersion++),
-											...c.file!,
-											updatedAt: now,
-										};
+									? { ...at, kind: "folder" }
+									: c.kind === "symlink"
+										? { ...at, kind: "symlink", target: c.target! }
+										: { ...at, kind: "file", ...c.file! };
 							this.entries.set(inner.path, inner);
 							changes.push({ ...inner, op: c.kind === "folder" ? "mkdir" : "write" });
 						}
@@ -519,20 +605,113 @@ export class FakeCore implements FolderCore {
 		return this.copies.get(commitId) ?? [];
 	}
 
-	async renewView(viewId: string, pass: string, unsavedSince: string | null): Promise<ViewRenewal> {
+	// ---- Releases (F3 4c), as core §6 and 20260928259230 decide them, in memory ----------------------------------------
+
+	/** Every release asked, in order (a replay included), and the reads each view's read set holds, by view: a path's
+	 * last read. */
+	readonly releases: { viewId: string; releaseId: string; reads: readonly ReleasedRead[] }[] = [];
+	readonly readSets = new Map<string, Map<string, ReleasedRead>>();
+	readonly #releaseAnswers = new Map<string, string>();
+	/** Views a member holds: they record no reads (22023). */
+	readonly memberHeld = new Set<string>();
+	/** The next releases get no answer: `lost` files them first (the reply was lost), `down` does not. */
+	releaseFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
+	/** When set, the core refuses every release not asked before, and why (the pause, the run check, and the like). */
+	releaseRefusal: CoreRefusal["reason"] | undefined;
+	/** When set, every release waits for it before it is heard. */
+	releaseGate: Promise<void> | undefined;
+	/** When set, called as each release is asked, by the view it is asked under; the release is heard once what it
+	 * returns has settled. */
+	releaseHook: ((viewId: string) => Promise<void> | undefined) | undefined;
+
+	/** A release id used once per view: the same reads replay (the view's pass checked, open or not), others are refused
+	 * (22023). A read of a path the view does not see now is refused whole (42501, as `qorpera_folder_release_pairs`
+	 * re-resolves a receipt that names nothing). */
+	async releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+	): Promise<ReleaseAnswer> {
+		await this.releaseGate;
+		await this.releaseHook?.(actor.viewId);
+		this.releases.push({ viewId: actor.viewId, releaseId, reads });
+		if (reads.length > 10_000 || reads.some((r) => r.path === "")) throw new CoreRefusal("invalid");
+		const view = this.views.get(actor.viewId);
+		if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		const request = JSON.stringify(reads);
+		const key = `${actor.viewId}:${releaseId}`;
+		const earlier = this.#releaseAnswers.get(key);
+		if (earlier !== undefined) {
+			if (earlier !== request) throw new CoreRefusal("invalid", "Release id was used for other reads");
+			return this.#released({ releaseId, replay: true });
+		}
+		this.#check(actor, environmentId);
+		if (this.memberHeld.has(actor.viewId)) throw new CoreRefusal("invalid", MEMBER_HELD_READS);
+		if (this.releaseRefusal) throw new CoreRefusal(this.releaseRefusal);
+		if (this.releaseFailures.count > 0 && this.releaseFailures.mode === "down") {
+			this.releaseFailures.count--;
+			throw new Error("The database did not answer");
+		}
+		if (reads.some((r) => this.hidden(r.path)))
+			throw new CoreRefusal("unreadable", "A released read is no longer readable");
+		// A code host's view records nothing (F3 5a): its machine reaches no model.
+		if (view.kind !== "code_host") {
+			const set = this.readSets.get(this.readSetOf(actor.viewId)) ?? new Map<string, ReleasedRead>();
+			for (const read of reads) set.set(read.path, read);
+			this.readSets.set(this.readSetOf(actor.viewId), set);
+		}
+		this.#releaseAnswers.set(key, request);
+		return this.#released({ releaseId, replay: false });
+	}
+
+	/** A release's answer, unless the next one is lost. */
+	#released(answer: ReleaseAnswer): ReleaseAnswer {
+		if (this.releaseFailures.count > 0 && this.releaseFailures.mode === "lost") {
+			this.releaseFailures.count--;
+			throw new Error("The answer was lost");
+		}
+		return answer;
+	}
+
+	/** A coding or code host view's renewal names its service (22023 without one): the first sets `served_by`, and
+	 * another service's while it is set closes the view (`service_crashed`, F3 5a). */
+	async renewView(viewId: string, pass: string, unsavedSince: string | null, service: string): Promise<ViewRenewal> {
 		const view = this.views.get(viewId);
 		if (!view || view.pass !== pass) throw new CoreRefusal("denied");
 		if (this.renewalFails) throw new Error("The database did not answer");
+		const served = view.kind === "coding_session" || view.kind === "code_host";
+		if (served && !service) throw new CoreRefusal("invalid");
 		view.renewals++;
 		view.unsaved.push(unsavedSince);
+		if (view.state === "open" && served) {
+			if (view.servedBy !== null && view.servedBy !== service) {
+				view.state = "closed";
+				return { state: "closed", reason: "service_crashed" };
+			}
+			view.servedBy = service;
+		}
 		return view.state === "open"
 			? {
 					state: "open",
 					leaseUntil: new Date(this.now() + 120_000).toISOString(),
 					kind: view.kind,
 					machineId: view.machineId,
+					companyId: PROFILE,
+					codingMachineId: view.codingMachineId,
 				}
 			: { state: "closed", reason: "ended" };
+	}
+
+	async serviceStopped(service: string): Promise<number> {
+		this.stopped.push(service);
+		let cleared = 0;
+		for (const view of this.views.values())
+			if (view.servedBy === service) {
+				view.servedBy = null;
+				cleared++;
+			}
+		return cleared;
 	}
 }
 
@@ -571,6 +750,41 @@ export const OFFICE: MachineRef = {
 /** No operator mount: the execution host presents run boxes, and the office project's machines their desktops. */
 export function companyGrants(): MountGrants {
 	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT]);
+}
+
+/** The node's coding machine project (F3 5c), a coding machine, and the machine the node made for it, named after it. */
+export const CODING_PROJECT = "qn25b2-coding";
+export const CODING_MACHINE_ID = "c0de0000-1111-4222-8333-444455556666";
+export const CODING: MachineRef = {
+	project: CODING_PROJECT,
+	name: `qorpera-coding-machine-${CODING_MACHINE_ID.replaceAll("-", "")}`,
+	physicalId: "dddddddd-eeee-4fff-8000-111111111111",
+};
+/** The company's code host, alone in its own project (F3 5b). */
+export const CODE_HOST: MachineRef = {
+	project: `qorpera-codehost-${PROFILE.replaceAll("-", "")}`,
+	name: "qorpera-codehost",
+	physicalId: "eeeeeeee-ffff-4000-8111-222222222222",
+};
+
+/** As `companyGrants`, and the coding project's machines present their own coding sessions' views. */
+export function codingGrants(): MountGrants {
+	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT], [CODING_PROJECT]);
+}
+
+/** The node's test machine project (F3 6b), a test machine's placement, and the instance the node made for it, named
+ * after it (`lxdCompanyMachineName`). */
+export const TEST_PROJECT = "qn25b2-machines";
+export const PLACEMENT = "7e570000-1111-4222-8333-444455556666";
+export const TEST_MACHINE: MachineRef = {
+	project: TEST_PROJECT,
+	name: `qorpera-machine-${PLACEMENT.replaceAll("-", "")}`,
+	physicalId: "ffffffff-0000-4111-8222-333333333333",
+};
+
+/** As `codingGrants`, and the test machine project's instances present their own test machines' views. */
+export function testGrants(): MountGrants {
+	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT], [CODING_PROJECT], [TEST_PROJECT]);
 }
 
 /** The object gateway's route for the folder service, onto the stand-in share: each put checked against its hash,

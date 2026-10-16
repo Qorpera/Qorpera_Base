@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
@@ -19,6 +18,7 @@ import type {
 	CloudCompanyPathPresence,
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -45,6 +45,7 @@ import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-t
 import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
 import { MEMORY_BRANCHES_SCHEMA } from "@qorpera/runtime/memory-tree/branches";
 import { MEMORY_VIEW_RECORD_SCHEMA, MEMORY_VIEW_SCHEMA } from "@qorpera/runtime/memory-tree/compose";
+import { MEMORY_COMPACTION_RECORD_SCHEMA } from "@qorpera/runtime/memory-tree/conversation-lines";
 import { memoryBlockPath } from "@qorpera/runtime/memory-tree/tree";
 import { memoryPromptCacheKey } from "@qorpera/runtime/memory-tree/view";
 import { MEMORY_RELEASE_SCHEMA } from "@qorpera/runtime/memory-tree/zoom";
@@ -199,18 +200,6 @@ async function fixture(
 					parentRunId: null,
 					causal: { rootId: randomUUID(), agentIds: [wakeIdentity.staffAgentId] },
 				};
-	const objects = new Map<string, Uint8Array>();
-	const transport: CloudObjectTransport = {
-		async put(path, bytes) {
-			objects.set(path, Uint8Array.from(bytes));
-			return "stored";
-		},
-		async get(path) {
-			const bytes = objects.get(path);
-			if (!bytes) throw new Error("Missing synthetic object");
-			return bytes;
-		},
-	};
 	// A background worker of the same agent: blank, read-only here, and without a conversation.
 	const workerId = randomUUID();
 	const workerParentRunId = randomUUID();
@@ -252,9 +241,10 @@ async function fixture(
 			},
 		},
 	};
-	const store = new CloudContentAddressedStore(transport);
 	const observations: CloudRuntimeObservation[] = [];
 	let nativeStarted = false;
+	// The admission the bind takes (M1b-4b-3), as qorpera_begin_native_company_execution_v3 answers it.
+	let nativeAdmission: Record<string, unknown> | undefined;
 	const connectorGrantId = randomUUID();
 	const connectorDescriptor = {
 		schema: "qorpera.native-connector-tool/v1",
@@ -273,7 +263,6 @@ async function fixture(
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
-	const decisions: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
@@ -354,11 +343,14 @@ async function fixture(
 			}
 			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
 			expect(args.p_binding).toEqual(f.binding);
-			if (method === "qorpera_begin_native_company_execution_v2") {
+			// What a run's machine saved under interfaces/ or tables/, noted in its conversation (Interfaces I10).
+			if (method === "qorpera_folder_note_interface_changes") {
+				expect(args.p_request).toEqual({});
+				return { schema: "qorpera.interface-change-notes/v1", noted: 1 };
+			}
+			if (method === "qorpera_begin_native_company_execution_v3") {
 				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
-				nativeStarted = true;
-				return {
-					schema: "qorpera.native-company-execution-start/v1",
+				nativeAdmission = {
 					runId: f.binding.runId,
 					jobId: f.binding.jobId,
 					leaseId: f.binding.leaseId,
@@ -369,6 +361,18 @@ async function fixture(
 					toolCatalogSha256: createHash("sha256")
 						.update(args.p_tool_catalog_text as string)
 						.digest("hex"),
+				};
+				return { schema: "qorpera.native-company-execution-admission/v1", ...nativeAdmission };
+			}
+			if (method === "qorpera_bind_native_company_context") {
+				const admission = nativeAdmission;
+				if (!admission) throw new Error("Native execution is not admitted");
+				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
+				nativeAdmission = undefined;
+				nativeStarted = true;
+				return {
+					schema: "qorpera.native-company-execution-start/v1",
+					...admission,
 					contextSha256: args.p_context_sha256,
 					contextBytes: args.p_context_bytes,
 				};
@@ -386,21 +390,6 @@ async function fixture(
 			}
 			if (method === "qorpera_read_native_wake")
 				return structuredClone(mode === "company-worker" ? workerWake : wake);
-			if (method === "qorpera_decide_agent_routine") {
-				decisions.push(args.p_request as Record<string, unknown>);
-				return {
-					schema: "qorpera.agent-routine-receipt/v1",
-					runId: f.binding.runId,
-					receiptId: randomUUID(),
-					action: "upsert",
-					routine: {
-						routineKey: "invoice-watch",
-						status: "active",
-						version: 2,
-						nextRunAt: "2026-09-02T10:00:00Z",
-					},
-				};
-			}
 			if (method === "qorpera_describe_agent_open_work") {
 				if (mode === "company-worker") throw new Error("A worker keeps no todos");
 				return {
@@ -610,7 +599,6 @@ async function fixture(
 					},
 				})
 			: { call: pathCall },
-		objectStore: () => store,
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
 		timeoutMs: 10_000,
@@ -694,12 +682,10 @@ async function fixture(
 		proposalsAnswer: (value: unknown) => {
 			proposalsAnswer = value;
 		},
-		decisions,
 		folderReads,
 		folderFiles,
 		folderReleases,
 		reviewedTools,
-		store,
 		deliveries,
 		evidence,
 		identityRoot,
@@ -717,22 +703,15 @@ async function fixture(
 
 it("binds path presence to the run and closes it with the native execution", async () => {
 	const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
-	const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
-		schema: "qorpera.company-path-presence-view/v1",
-		state: "available",
-		observedAt: Date.now(),
-		paths: [{ path, participants: [] }],
-	}));
 	const close = vi.fn(async () => {});
-	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, claim, close }));
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
 	const f = await fixture("company-runtime", false, presence);
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(presence).toHaveBeenCalledOnce();
 	expect(presence.mock.calls[0][0]).toEqual(f.binding);
-	// Only a file-event wake observes at startup; the folder core's file tools claim no presence.
+	// Only a file-event wake observes at startup; the folder core's file tools observe no presence.
 	expect(observe).not.toHaveBeenCalled();
-	expect(claim).not.toHaveBeenCalled();
 	expect(close).toHaveBeenCalledOnce();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(JSON.stringify(evidence.fenced.outputs)).not.toContain("qorpera.company-path-presence-view/v1");
@@ -771,8 +750,7 @@ it.each(["available", "unavailable"])(
 			};
 		});
 		const close = vi.fn(async () => {});
-		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
-		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
+		const f = await fixture("company-silent", false, () => ({ observe, close }));
 		const commitId = randomUUID();
 		Object.assign(f.wake, {
 			source: { kind: "company-file", id: commitId, occurrenceKey: `file:7:1` },
@@ -797,9 +775,7 @@ it.each(["available", "unavailable"])(
 		expect(prompt.presence.view.paths[0].participants).toEqual(
 			state === "available" ? [expect.objectContaining({ runId: peer })] : [],
 		);
-		const start = f.pathCall.mock.calls.find(
-			([method]) => method === "qorpera_begin_native_company_execution_v2",
-		)![1];
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
 		// The run's context is its head, views (none yet) and context message.
 		const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
 		expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
@@ -815,11 +791,20 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
+	// The run's offline commands (F3 4d), which its computer tools add to and its review reads: none here.
+	expect(f.officeSession.mock.calls[0][2]).toEqual({ offlineShells: new Set() });
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
 	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
+	// What the machine saved under interfaces/ or tables/ is noted in the run's conversation once, after it closed
+	// (Interfaces I10).
+	const notes = f.pathCall.mock.calls.flatMap(([method], index) =>
+		method === "qorpera_folder_note_interface_changes" ? [f.pathCall.mock.invocationCallOrder[index]] : [],
+	);
+	expect(notes).toHaveLength(1);
+	expect(notes[0]).toBeGreaterThan(f.officeClose.mock.invocationCallOrder[0]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("computer_shell");
@@ -841,13 +826,43 @@ it("fails the native result when office cleanup is unconfirmed, without repeatin
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow("cleanup");
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
+	// A failed run's machine changes are noted too.
+	const methods = f.pathCall.mock.calls.map(([method]) => method);
+	expect(methods.filter((method) => method === "qorpera_folder_note_interface_changes")).toHaveLength(1);
+});
+
+it("keeps the run's outcome when its machine's changes could not be noted, and logs the category only", async () => {
+	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const f = await fixture("company-office");
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_folder_note_interface_changes")
+				throw new CloudCompanyFolderRpcError("55000", "PRIVATE_NOTE_ERROR");
+			return original(method, args, signal);
+		});
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.messageCount).toBe(2);
+		expect(f.officeClose).toHaveBeenCalledTimes(1);
+		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("The run's interface changes"))).toEqual([
+			["The run's interface changes were not noted (authority_unavailable)"],
+		]);
+	} finally {
+		logged.mockRestore();
+	}
+});
+
+it("asks for no interface change notes after a run with no machine: its tools note their own", async () => {
+	const f = await fixture("company-runtime");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_folder_note_interface_changes");
 });
 
 it("closes an initialized office session when native execution admission fails", async () => {
 	const f = await fixture("company-office");
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
-		if (method === "qorpera_begin_native_company_execution_v2") throw new Error("START_REVOKED");
+		if (method === "qorpera_begin_native_company_execution_v3") throw new Error("START_REVOKED");
 		return original(method, args, signal);
 	});
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
@@ -1085,7 +1100,7 @@ it("still rejects extra configuration passed directly to the native runtime", as
 		"Native boundary requires an auth-only identity",
 	);
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v2")).toBe(false);
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v3")).toBe(false);
 	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
@@ -1178,12 +1193,9 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_manage_agent_routine")).toBe(false);
+	// The host refused the early final and the save of its own routine, and showed the model why (below).
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
-	// The decision goes to the routine's file (the next test), never to the kernel's own decision.
-	expect(f.decisions).toEqual([]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("decide_routine");
@@ -1212,8 +1224,7 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
-	expect(f.decisions).toEqual([]);
+	// The decision went to the routine's file: no file there, so nothing is owed.
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
@@ -1284,7 +1295,7 @@ it("refuses a company run whose context names no company folder, before reading 
 	expect(nativeRuntimeFailureMetadata(error)?.stage).toBe("company-context");
 	const methods = f.pathCall.mock.calls.map(([method]) => method);
 	expect(methods.filter((method) => method.startsWith("qorpera_folder_"))).toEqual([]);
-	expect(methods).not.toContain("qorpera_begin_native_company_execution_v2");
+	expect(methods).not.toContain("qorpera_begin_native_company_execution_v3");
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
 	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -1294,7 +1305,7 @@ it("releases what a folder-v2 run's composition read under the composed context,
 	f.folderFiles.set("agents/nora/memory/profile.md", "- (2026-09-01) I am Nora, the bookkeeper\n");
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const calls = f.pathCall.mock.calls;
-	const start = calls.findIndex(([method]) => method === "qorpera_begin_native_company_execution_v2");
+	const start = calls.findIndex(([method]) => method === "qorpera_bind_native_company_context");
 	const released = calls.findIndex(
 		([method, args]) =>
 			method === "qorpera_folder_record_release" &&
@@ -1381,9 +1392,7 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 		expect(promptText).not.toContain("ignore all previous");
 		// The head's reads are released under the context the run starts with: its head, views (none yet) and context
 		// message.
-		const start = f.pathCall.mock.calls.find(
-			([method]) => method === "qorpera_begin_native_company_execution_v2",
-		)![1];
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
 		const composed = createHash("sha256").update(`${head}\n\n${promptText}`).digest("hex");
 		expect(start.p_context_sha256).toBe(composed);
 		const released = f.folderReleases.filter((release) =>
@@ -1459,7 +1468,7 @@ it("releases the paths of the proposals a folder-v2 run's context shows with tha
 	});
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const calls = f.pathCall.mock.calls;
-	const start = calls.findIndex(([method]) => method === "qorpera_begin_native_company_execution_v2");
+	const start = calls.findIndex(([method]) => method === "qorpera_bind_native_company_context");
 	const released = calls.findIndex(
 		([method, args]) =>
 			method === "qorpera_folder_record_release" &&
@@ -1687,18 +1696,25 @@ it("offers no card in a group chat, where the kernel lets the agent stay silent"
 
 /** What the summary tree's lines say, so a test finds them in the developer instructions. */
 const MEMORY_LINE = "MEMORY_LINE_CANARY";
+/** What the line of Nora's thread says, as a group chat's run shows it in its branch. */
+const BRANCH_LINE = "BRANCH_LINE_CANARY";
 
 /**
  * A folder-v2 run of Nora's, a post in the agent's own thread unless `final` says otherwise, whose host answers the
- * summary tree's calls (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a): qorpera_memory_view answers the run's conversation
- * with the tree of its first two messages (or `view`), there are no branches, and the release and the record accept
- * unless they are given an error to throw. The fixture composes the run's model request and keeps the reply.
+ * summary tree's calls (RUNTIME-AGENT-MEMORY-TREE.md §5.3, §5.4, M1b-4a, M4c, M1b-4b-3): qorpera_memory_view answers
+ * the run's conversation with the tree of its first two messages (or `view`; `later` for the reads after the writer's
+ * first), and the release and the record accept unless they are given an error to throw. A `bare` tree has no lines
+ * yet, and its events are not read: settle builds nothing and records the batch. A post in a group chat (final
+ * optional) is in the group chat "Launch", whose run has Nora's thread as its one branch, one message long; her own
+ * thread's run has none. The fixture composes the run's model request and keeps the reply.
  */
 async function memoryTreeFixture(
 	options: {
 		mode?: string;
 		final?: "required" | "optional" | null;
 		view?: null | Error;
+		later?: null | Error;
+		bare?: boolean;
 		release?: Error;
 		record?: Error;
 	} = {},
@@ -1707,36 +1723,57 @@ async function memoryTreeFixture(
 	if (options.final !== null) roomWake(f, options.final ?? "required");
 	f.folderFiles.set("note.md", "The company note.\n");
 	const sessionId = f.context.identity.sessionId as string;
+	const group = options.final === "optional";
 	// A line for each of the two messages, and one for both.
-	const root = "agents/nora/memory/thread";
+	const root = group ? "agents/groups/launch/memory" : "agents/nora/memory/thread";
 	const blocks: { path: string; version: string }[] = [];
 	const lines: { l: number; k: number; text: string; block: number }[] = [];
-	for (let l = 0; l < 2; l += 1)
+	for (let l = 0; l < 2 && !options.bare; l += 1)
 		for (let k = 0; k < 2 - l; k += 1) {
 			const path = `${root}/${memoryBlockPath(l, k)}`;
 			let block = blocks.findIndex((item) => item.path === path);
 			if (block < 0) block = blocks.push({ path, version: randomUUID() }) - 1;
 			lines.push({ l, k, text: `${MEMORY_LINE} ${l}.${k}`, block });
 		}
+	let views = 0;
+	const thread = {
+		sessionId: randomUUID(),
+		generation: 1,
+		messages: 1,
+		root: "agents/nora/memory/thread",
+		nodeBytes: 512,
+		blocks: [{ path: `agents/nora/memory/thread/${memoryBlockPath(0, 0)}`, version: randomUUID() }],
+		lines: [{ l: 0, k: 0, text: BRANCH_LINE, block: 0 }],
+	};
+	const branches = group
+		? [{ ref: "thread:nora", kind: "thread", name: "Nora", sessionId: thread.sessionId, messages: 1 }]
+		: [];
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
 		if (!method.startsWith("qorpera_memory_")) return original(method, args, signal);
 		expect(args.p_binding).toEqual(f.binding);
 		const request = (args.p_request ?? {}) as Record<string, unknown>;
 		if (method === "qorpera_memory_view") {
-			if (options.view !== undefined) {
-				if (options.view) throw options.view;
+			const view = views++ > 0 && options.later !== undefined ? options.later : options.view;
+			if (view !== undefined) {
+				if (view) throw view;
 				return null;
 			}
 			return {
 				schema: MEMORY_VIEW_SCHEMA,
-				conversation: { sessionId, kind: "thread", name: null },
+				conversation: { sessionId, kind: group ? "group" : "thread", name: group ? "Launch" : null },
 				messages: 2,
 				lastSequence: 2,
 				tree: { sessionId, generation: 3, messages: 2, root, nodeBytes: 512, blocks, lines },
 			};
 		}
-		if (method === "qorpera_memory_branches") return { schema: MEMORY_BRANCHES_SCHEMA, branches: [], trees: [] };
+		if (method === "qorpera_memory_branches") {
+			const trees = (request.sessions as string[]).includes(thread.sessionId) ? [thread] : [];
+			return { schema: MEMORY_BRANCHES_SCHEMA, branches, trees };
+		}
+		if (method === "qorpera_memory_events_run" && options.bare) throw new Error("PRIVATE_EVENTS_ERROR");
+		if (method === "qorpera_memory_compaction_record")
+			return { schema: MEMORY_COMPACTION_RECORD_SCHEMA, batch: request.batch, payerConnectionId: null };
 		if (method === "qorpera_memory_release") {
 			if (options.release) throw options.release;
 			return {
@@ -1761,22 +1798,40 @@ function memoryTreeCalls(f: Awaited<ReturnType<typeof fixture>>) {
 it("shows an own-thread run its summary tree, released and recorded before the model starts", async () => {
 	const f = await memoryTreeFixture();
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// The writer reads the tree before the catalog is admitted; the opening composes from a read after settle, and
+	// closing reads it again after the agent's turn.
 	expect(memoryTreeCalls(f)).toEqual([
+		"qorpera_memory_view",
 		"qorpera_memory_view",
 		"qorpera_memory_branches",
 		"qorpera_memory_release",
 		"qorpera_memory_view_record",
+		"qorpera_memory_view",
 	]);
 	const calls = f.pathCall.mock.calls;
-	const at = (name: string) => calls.findIndex(([method]) => method === name);
-	const start = at("qorpera_begin_native_company_execution_v2");
+	const methods = calls.map(([method]) => method);
+	const at = (name: CloudCompanyPathRpc) => methods.indexOf(name);
+	const views = methods.flatMap((method, index) => (method === "qorpera_memory_view" ? [index] : []));
+	const admitted = at("qorpera_begin_native_company_execution_v3");
+	const start = at("qorpera_bind_native_company_context");
+	expect(views[0]).toBeLessThan(admitted);
+	expect(admitted).toBeLessThan(views[1]!);
 	expect(at("qorpera_memory_view_record")).toBeLessThan(start);
-	const request = (name: string) => (calls[at(name)]![1] as { p_request: Record<string, unknown> }).p_request;
-	// The lines it shows are released under exactly the context the run starts with; its first request is recorded.
+	expect(methods.lastIndexOf("qorpera_memory_view")).toBeGreaterThan(start);
+	const request = (name: CloudCompanyPathRpc) =>
+		(calls[at(name)]![1] as { p_request: Record<string, unknown> }).p_request;
+	// The lines it shows are released under exactly the context the run starts with; its first request is recorded,
+	// with settle's wait: nothing was missing.
 	expect(request("qorpera_memory_release").outputSha256).toBe(
 		(calls[start]![1] as { p_context_sha256: string }).p_context_sha256,
 	);
-	expect(request("qorpera_memory_view_record")).toMatchObject({ step: 0, messages: 2, placeholders: 0 });
+	expect(request("qorpera_memory_view_record")).toMatchObject({
+		step: 0,
+		messages: 2,
+		placeholders: 0,
+		waitedLines: 0,
+	});
+	expect(request("qorpera_memory_view_record").waitMs).toEqual(expect.any(Number));
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(evidence.threadParameters.developerInstructions).toContain(MEMORY_LINE);
 	// The context message counts the messages the view covers and lists the branches.
@@ -1793,9 +1848,59 @@ it("shows an own-thread run its summary tree, released and recorded before the m
 	);
 });
 
+it("shows a group-chat run the chat's summary tree, with the agent's own thread as a branch", async () => {
+	const f = await memoryTreeFixture({ final: "optional" });
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// The writer reads the chat's tree too, as in a thread (M1b-4b-3): before the catalog is admitted, and again at
+	// closing. Between them the opening's read, the list of branches, then the tree of the one there is.
+	expect(memoryTreeCalls(f)).toEqual([
+		"qorpera_memory_view",
+		"qorpera_memory_view",
+		"qorpera_memory_branches",
+		"qorpera_memory_branches",
+		"qorpera_memory_release",
+		"qorpera_memory_view_record",
+		"qorpera_memory_view",
+	]);
+	const calls = f.pathCall.mock.calls;
+	const requests = (name: string) =>
+		calls
+			.filter(([method]) => method === name)
+			.map(([, args]) => (args as { p_request: Record<string, unknown> }).p_request);
+	const [list, read] = requests("qorpera_memory_branches");
+	expect(list).toEqual({ sessions: [] });
+	expect(read?.sessions).toHaveLength(1);
+	// The lines of the chat and of the thread are released together, before the model starts.
+	const [release] = requests("qorpera_memory_release");
+	const released = (release?.blocks as { path: string }[]).map((block) => block.path);
+	expect(released.filter((path) => path.startsWith("agents/groups/launch/memory/"))).not.toHaveLength(0);
+	expect(released).toContain(`agents/nora/memory/thread/${memoryBlockPath(0, 0)}`);
+	expect(requests("qorpera_memory_view_record")).toEqual([expect.objectContaining({ step: 0, messages: 2 })]);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const instructions: string = evidence.threadParameters.developerInstructions;
+	expect(instructions).toContain(`<conversation ref="." name="Launch (group chat)">`);
+	expect(instructions).toContain(MEMORY_LINE);
+	const context = JSON.parse(evidence.turnParameters.input[0].text);
+	expect(context).toMatchObject({
+		conversationMessages: 2,
+		branches: [{ ref: "thread:nora", name: "Nora (thread)", messages: 1 }],
+	});
+	expect(context.branches[0].lines.join("\n")).toContain(BRANCH_LINE);
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("zoom");
+	// The chat's own cache key: its session, for this agent and payer (§6.2).
+	expect(evidence.context.agent.promptCacheKey).toBe(
+		memoryPromptCacheKey({
+			payerLoginConnectionId: f.context.identity.providerConnectionId,
+			agentId: f.context.identity.staffAgentId,
+			conversationId: f.context.identity.sessionId as string,
+		}),
+	);
+});
+
 it.each([
-	{ run: "a post in a group chat", mode: "company-context", final: "optional" },
 	{ run: "a routine's run", mode: "company-dynamic", final: null },
+	{ run: "a background worker", mode: "company-worker", final: null },
 ] as const)("asks no summary tree for $run, and gives it no zoom", async ({ mode, final }) => {
 	const f = await memoryTreeFixture({ mode, final });
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1813,6 +1918,7 @@ it.each([
 	try {
 		const f = await memoryTreeFixture({ view });
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		// Nor settle or closing: the writer read no tree.
 		expect(memoryTreeCalls(f)).toEqual(["qorpera_memory_view"]);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		expect(evidence.threadParameters.developerInstructions).not.toContain(MEMORY_LINE);
@@ -1821,12 +1927,59 @@ it.each([
 		expect(names).not.toContain("zoom");
 		expect(evidence.context.agent).not.toHaveProperty("promptCacheKey");
 		// A failure is logged by its category only.
-		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("Memory view"))).toEqual(
-			view ? [["Memory view was not composed (unknown)"]] : [],
+		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("Memory"))).toEqual(
+			view ? [["Memory tree was not read (unknown)"]] : [],
 		);
 	} finally {
 		logged.mockRestore();
 	}
+});
+
+it("keeps zoom for a run whose view failed after the catalog was admitted with it, and shows the history", async () => {
+	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const f = await memoryTreeFixture({ later: new Error("PRIVATE_VIEW_ERROR") });
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		// Closing's read fails too, and builds nothing.
+		expect(memoryTreeCalls(f)).toEqual(["qorpera_memory_view", "qorpera_memory_view", "qorpera_memory_view"]);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		expect(evidence.threadParameters.developerInstructions).not.toContain(MEMORY_LINE);
+		expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("conversationMessages");
+		const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+		expect(names).toContain("zoom");
+		expect(evidence.context.agent).not.toHaveProperty("promptCacheKey");
+		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("Memory"))).toEqual([
+			["Memory view was not composed (unknown)"],
+			["Memory tree lines were not closed (unknown)"],
+		]);
+	} finally {
+		logged.mockRestore();
+	}
+});
+
+it("settles an own-thread run's tree at the opening, after the admission, and records its wait", async () => {
+	const f = await memoryTreeFixture({ bare: true });
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// Settle reads the events [0, T) misses lines for: none read, so it tried no line and has no batch to record. The
+	// view shows a placeholder for each message, and no block is released.
+	expect(memoryTreeCalls(f)).toEqual([
+		"qorpera_memory_view",
+		"qorpera_memory_events_run",
+		"qorpera_memory_view",
+		"qorpera_memory_branches",
+		"qorpera_memory_view_record",
+		"qorpera_memory_view",
+	]);
+	const calls = f.pathCall.mock.calls;
+	const methods = calls.map(([method]) => method);
+	expect(methods.indexOf("qorpera_begin_native_company_execution_v3")).toBeLessThan(
+		methods.indexOf("qorpera_memory_events_run"),
+	);
+	const request = (name: CloudCompanyPathRpc) =>
+		(calls[methods.indexOf(name)]![1] as { p_request: Record<string, unknown> }).p_request;
+	expect(request("qorpera_memory_events_run")).toEqual({ session: f.context.identity.sessionId, start: 0, count: 2 });
+	expect(request("qorpera_memory_view_record")).toMatchObject({ placeholders: 2, waitedLines: 0 });
+	expect(request("qorpera_memory_view_record").waitMs).toEqual(expect.any(Number));
 });
 
 it("starts a run whose first request was not recorded, with its view, zoom and cache key", async () => {
@@ -1849,8 +2002,14 @@ it("starts a run whose first request was not recorded, with its view, zoom and c
 it("fails a run whose view's lines were not released, before the record and the model start", async () => {
 	const f = await memoryTreeFixture({ release: new Error("PRIVATE_RELEASE_ERROR") });
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow();
-	expect(memoryTreeCalls(f)).toEqual(["qorpera_memory_view", "qorpera_memory_branches", "qorpera_memory_release"]);
-	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_begin_native_company_execution_v2");
+	// Nor is the context bound, or the tree closed.
+	expect(memoryTreeCalls(f)).toEqual([
+		"qorpera_memory_view",
+		"qorpera_memory_view",
+		"qorpera_memory_branches",
+		"qorpera_memory_release",
+	]);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_bind_native_company_context");
 	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
@@ -2067,13 +2226,6 @@ it.each([
 			if (presenceFails) throw new Error("Presence is unavailable");
 			return {
 				observe: async () => ({ state: "unavailable" }) as never,
-				// As the real claim answers before it holds any observation: at once, unavailable.
-				claim: (path) => ({
-					schema: "qorpera.company-path-presence-view/v1",
-					state: "unavailable",
-					observedAt: Date.now(),
-					paths: [{ path, participants: [] }],
-				}),
 				close: async () => {},
 			};
 		});
@@ -2091,7 +2243,7 @@ it.each([
 		expect(error).toBeInstanceOf(Error);
 		expect((error as Error).message).toBe(message);
 		expect(nativeRuntimeFailureMetadata(error)?.stage).toBe(stage);
-		expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v2")).toBe(
+		expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v3")).toBe(
 			false,
 		);
 	},
@@ -2218,23 +2370,46 @@ it("binds durable start admission to the exact lease and refuses same-run restar
 		"requires reconciliation",
 	);
 	expect(f.control.sendMessage).toHaveBeenCalledTimes(sent);
-	expect(
-		f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
-	).toHaveLength(2);
+	// The restart is refused at its admission: no context is bound again.
+	const methods = f.pathCall.mock.calls.map(([method]) => method);
+	expect(methods.filter((method) => method === "qorpera_begin_native_company_execution_v3")).toHaveLength(2);
+	expect(methods.filter((method) => method === "qorpera_bind_native_company_context")).toHaveLength(1);
 });
 
-it("does not send or expose a tool when the start acknowledgement is for a different lease", async () => {
+it.each([
+	{ call: "admission", method: "qorpera_begin_native_company_execution_v3", field: "leaseId", value: randomUUID() },
+	{ call: "admission", method: "qorpera_begin_native_company_execution_v3", field: "contextSha256", value: "0" },
+	{ call: "start", method: "qorpera_bind_native_company_context", field: "leaseId", value: randomUUID() },
+	{ call: "start", method: "qorpera_bind_native_company_context", field: "contextBytes", value: 1 },
+])(
+	"does not send or expose a tool when the $call's answer differs in $field",
+	async ({ method: changed, field, value }) => {
+		const f = await fixture();
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			const answer = await original(method, args, signal);
+			return method === changed ? { ...(answer as Record<string, unknown>), [field]: value } : answer;
+		});
+		await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+			"admission was not confirmed",
+		);
+		expect(f.control.sendMessage).not.toHaveBeenCalled();
+		await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+	},
+);
+
+it("starts no thread for a run whose context's bind is refused, and binds it once", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
-		const value = await original(method, args, signal);
-		return method === "qorpera_begin_native_company_execution_v2"
-			? { ...(value as Record<string, unknown>), leaseId: randomUUID() }
-			: value;
+		if (method === "qorpera_bind_native_company_context") throw new Error("Native execution is not admitted");
+		return original(method, args, signal);
 	});
-	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
-		"admission was not confirmed",
-	);
+	const error = await f.runtime
+		.execute(f.request, f.identityRoot, new AbortController().signal)
+		.catch((caught: unknown) => caught);
+	expect(nativeRuntimeFailureMetadata(error)?.stage).toBe("execution-admission");
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_bind_native_company_context")).toHaveLength(1);
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
 	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -2403,9 +2578,9 @@ it.each(["failed", "stalled", "malformed-receipt", "wrong-run-receipt"])(
 		const exports = f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_runtime_observation_batch");
 		expect(exports.length).toBeGreaterThanOrEqual(1);
 		expect(exports.length).toBeLessThanOrEqual(Math.ceil((Date.now() - started) / 150) + 2);
-		expect(
-			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
-		).toHaveLength(1);
+		expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_bind_native_company_context")).toHaveLength(
+			1,
+		);
 		expect(f.control.sendMessage).toHaveBeenCalledTimes(3);
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_EXPORT_DIAGNOSTIC");
 	},
@@ -2483,12 +2658,17 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	expect(wave("qorpera_folder_list")).toBe(4);
 	expect(wave("qorpera_folder_read")).toBe(4);
 	expect(wave("qorpera_describe_agent_open_work")).toBe(4);
-	// Run admission, one context check, then the first request's fence in one call
-	// (qorpera_fence_native_context, 20260929400000): its two checks, this record and the check
-	// after it, once four serial round trips (waves 10 to 13), share one. 12 before that fence,
-	// 13 before the connector catalog joined the context reads.
+	// Run admission, the composed context's bind at the opening, one context check, then the first
+	// request's fence in one call (qorpera_fence_native_context, 20260929400000): its two checks,
+	// this record and the check after it, once four serial round trips (waves 10 to 13), share one.
+	// 10 before the bind was split from the admission (M1b-4b-3), 12 before that fence, 13 before
+	// the connector catalog joined the context reads.
+	expect(wave("qorpera_bind_native_company_context")).toBeGreaterThan(
+		wave("qorpera_begin_native_company_execution_v3"),
+	);
+	expect(wave("qorpera_fence_native_context")).toBeGreaterThan(wave("qorpera_bind_native_company_context"));
 	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
-	expect(wave("qorpera_record_native_context_view")).toBe(10);
+	expect(wave("qorpera_record_native_context_view")).toBe(11);
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {
@@ -2496,12 +2676,15 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
-	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v2")?.[1];
+	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v3")?.[1];
 	const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 	// master's folder-v2 values at a2d6cb27a, which the legacy sweep (step C, C-P1) kept byte for byte, with
 	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
 	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
-	// description no longer names save_attachment, so the last two moved; every other tool is as on master.
+	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
+	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
+	// supervisor, so they moved again. Since save_interface's description gives an interface.toml's form and the files'
+	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2536,9 +2719,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"1313f48b04f4560c329b2e06819750cb8ed86898d35cb021ff2318e81070a665",
+		"e5a6e4334d8d273ddeee2a903049dcf545c2134a72dba7164f567615f78d1023",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"9a72e9b6ef7ebad5921ded098ccd47b28c4569aaba66708c9f5a3cf0e3139974",
+		"af93a5cf6e612796c0fc8be50b0ac0d736442a474c281eb095ebb9fe05916146",
 	);
 });
