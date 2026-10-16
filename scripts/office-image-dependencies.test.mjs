@@ -64,6 +64,12 @@ test("apt installs each package once, and the toolbox covers the contract's list
 	}
 });
 
+test("the office desktop can show a notice", () => {
+	// F3 4f-2: a save's report reaches the screen through notify-send, run as the office account on its session bus,
+	// and the desktop's notification daemon, xfce4-notifyd, draws it.
+	for (const name of ["libnotify-bin", "xfce4-notifyd"]) assert.ok(recipe.packages.office.includes(name), name);
+});
+
 test("the in-guest installer reads the recipe the way the recipe is written", () => {
 	const program = installer.match(/python3 - "\$recipe" "\$1" <<'EOF'\n([\s\S]*?)\nEOF\n/)[1];
 	const query = (name) => execFileSync("python3", ["-", recipePath, name], { input: program, encoding: "utf8", timeout: 5000 }).trimEnd();
