@@ -267,6 +267,7 @@ impl Shared {
 	/// Each file leaves the disk once it is in the folder, and each folder once it is empty, with their names there
 	/// (`Local::moved_out`); a link moves as the folder's link. What stays is what has not moved yet, and what cannot
 	/// (a link the folder does not take, anything else not a file or a folder), seen in the folder's place as a cache's are.
+	/// A file or a link the node did not take now fails the move, which is tried again (`move_caches`).
 	fn move_folder(&self, local: &Local, held: &mut HashMap<String, Writer>, path: &str, disk: &Path) -> Result<(), i32> {
 		let made = |p: &str| match self.link.mkdir(p) {
 			Err(f) if f.errno() != libc::EEXIST => Err(f.errno()),
@@ -282,9 +283,8 @@ impl Shared {
 				self.write_in(held, &to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
 				local.moved_out(&disk.join(rel))?;
 			} else if meta.file_type().is_symlink() {
-				match self.link_in(&to, &disk.join(rel)) {
-					Ok(()) => local.moved_out(&disk.join(rel))?,
-					Err(e) => eprintln!("qorpera-folder: the link {to} stays out of the folder: errno {e}"),
+				if self.link_in(&to, &disk.join(rel))? {
+					local.moved_out(&disk.join(rel))?;
 				}
 			} else {
 				eprintln!("qorpera-folder: {to} is not a file, a folder or a link, and stays out of the folder");
@@ -298,14 +298,26 @@ impl Shared {
 		Ok(())
 	}
 
-	/// Makes the disk's link `disk` the folder's link at `path`, to the same target (protocol 4). One the folder cannot
-	/// keep (a target that is not UTF-8, a name it has already) is not made.
-	fn link_in(&self, path: &str, disk: &Path) -> Result<(), i32> {
+	/// Makes the disk's link `disk` the folder's link at `path`, to the same target (protocol 4): whether it did. One the
+	/// folder cannot keep (a target that is not UTF-8, a name it has already, one it refuses) is not made, and stays on
+	/// the disk; one the node did not take now (`again`) is a failure, so the move stays to be made.
+	fn link_in(&self, path: &str, disk: &Path) -> Result<bool, i32> {
 		let target = fs::read_link(disk).map_err(local::errno)?;
-		let target = target.to_str().ok_or(libc::EINVAL)?;
-		let version = self.link.symlink(path, target).map_err(|f| f.errno())?;
-		self.versions.lock().unwrap().saved(path, &version);
-		Ok(())
+		let Some(target) = target.to_str() else {
+			eprintln!("qorpera-folder: the link {path} stays out of the folder: its target is not UTF-8");
+			return Ok(false);
+		};
+		match self.link.symlink(path, target) {
+			Ok(version) => {
+				self.versions.lock().unwrap().saved(path, &version);
+				Ok(true)
+			}
+			Err(f) if again(&f) => Err(f.errno()),
+			Err(f) => {
+				eprintln!("qorpera-folder: the link {path} stays out of the folder: {f}");
+				Ok(false)
+			}
+		}
 	}
 
 	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file. The write is a draft: the file

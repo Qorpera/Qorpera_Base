@@ -590,6 +590,34 @@ fn a_cache_move_the_node_does_not_take_at_once_goes_on_through_the_same_handle()
 }
 
 #[test]
+fn a_cache_move_whose_link_the_node_does_not_take_at_once_is_made_again() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	// A cache with a file and a link to it, on the machine's disk.
+	let modules = company.join("code/o/n/worktrees/w/node_modules");
+	std::fs::create_dir(&modules).unwrap();
+	std::fs::write(modules.join("x.js"), "cached").unwrap();
+	std::os::unix::fs::symlink("x.js", modules.join("y.js")).unwrap();
+	// Git comes to track both while a boundary settles: the node answers BUSY to the link.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js", "node_modules/y.js"])).unwrap();
+	node.busy_links(1);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	// The move is not done while the link is not in the folder: it is tried again, and the link moves in.
+	let moved = || node.target("code/o/n/worktrees/w/node_modules/y.js").as_deref() == Some("x.js");
+	assert!(eventually(Duration::from_secs(20), moved), "the link did not move into the folder");
+	assert_eq!(node.content("code/o/n/worktrees/w/node_modules/x.js").unwrap(), b"cached");
+	assert_eq!(std::fs::read_link(modules.join("y.js")).unwrap(), Path::new("x.js"));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn a_cache_move_given_up_leaves_nothing_in_the_folder() {
 	if !wanted() {
 		return;

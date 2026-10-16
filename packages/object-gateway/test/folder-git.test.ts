@@ -22,7 +22,10 @@ import { FolderService, type ViewHandle } from "../src/folder-service/service.ts
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
 	ALLOCATION,
+	CODING,
+	CODING_MACHINE_ID,
 	codeHostGrants,
+	codingGrants,
 	companyGrants,
 	ENV,
 	FakeCore,
@@ -303,6 +306,7 @@ afterEach(async () => {
 });
 
 const AT_OFFICE: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
+const AT_CODING: BridgeInfo = { cid: 95, lookup: "found", machine: CODING };
 const SESSIONS = {
 	first: { viewId: "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4", pass: "cmdpass_0123456789-abcdefghijklmnopqrstuvwx" },
 	second: { viewId: "6f708192-a3b4-4c5d-8e6f-708192a3b4c5", pass: "cmdpass_1123456789-abcdefghijklmnopqrstuvwx" },
@@ -330,8 +334,8 @@ const receipt = (n: number): CoreReceipt => ({
 const readOfMain = (seq: number): ReadLogEntry => ({ seq, path: MAIN, version: v(101), authority: receipt(1) });
 
 /** A code area's git directory with two branches, two shell commands' views on it (two sessions, as the core opens
- * them), and the node's service. */
-async function repo(grants = companyGrants()) {
+ * them), and the node's service. `coding`: the two are coding sessions' views on one coding machine (F3 5c). */
+async function repo(grants = companyGrants(), coding = false) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-git-"));
 	const core = new FakeCore();
 	const folders = ["code", "code/acme", "code/acme/app", R, `${R}/objects`, `${R}/objects/ab`, `${R}/refs`];
@@ -344,7 +348,13 @@ async function repo(grants = companyGrants()) {
 		await storeFile(root, TOPIC_LOG, "0000 2222\n", 104),
 	]);
 	for (const { viewId, pass } of Object.values(SESSIONS))
-		core.openView(viewId, pass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		core.openView(
+			viewId,
+			pass,
+			coding
+				? { kind: "coding_session", codingMachineId: CODING_MACHINE_ID }
+				: { kind: "computer_shell_command", machineId: ALLOCATION },
+		);
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 	const service = new FolderService({
 		core,
@@ -360,8 +370,8 @@ async function repo(grants = companyGrants()) {
 		await rm(root, { recursive: true, force: true });
 	});
 	const openAs = async (view: { viewId: string; pass: string }) => {
-		const hello: Hello = { protocol: 2, environmentId: ENV, ...view, role: "io" };
-		const handle = await service.open(hello, AT_OFFICE);
+		const hello: Hello = { protocol: coding ? 3 : 2, environmentId: ENV, ...view, role: "io" };
+		const handle = await service.open(hello, coding ? AT_CODING : AT_OFFICE);
 		handles.push(handle);
 		return handle;
 	};
@@ -670,6 +680,52 @@ describe("the lock protocol in the folder service", () => {
 		const view = await open("first");
 		await view.reads({ log: LOG, reads: [readOfMain(1)], lost: false });
 		core.releaseRefusal = "denied";
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "DENIED");
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await refused(view.unlink(`${TOPIC}.lock`, undefined), "DENIED");
+		expect(core.gitPublishes).toEqual([]);
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
+		expect(core.entries.has(TOPIC)).toBe(true);
+	});
+
+	it("releases the reads of every view of a coding machine before a git change through one of them is published", async () => {
+		const { core, open } = await repo(codingGrants(), true);
+		const view = await open("first");
+		const other = await open("second");
+		const otherReads = () =>
+			core.releases
+				.filter((r) => r.viewId === SESSIONS.second.viewId)
+				.flatMap((r) => r.reads.map((read) => read.path));
+		const publish = core.gitPublish.bind(core);
+		const atPublish: string[][] = [];
+		core.gitPublish = async (...args) => {
+			atPublish.push(otherReads());
+			return publish(...args);
+		};
+		// git on the machine read a branch's log through the other view.
+		await other.read({ path: MAIN_LOG, version: v(102), offset: 0, length: 10 });
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		expect(otherReads()).toEqual([]);
+		await view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
+		await other.read({ path: TOPIC_LOG, version: v(104), offset: 0, length: 10 });
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await view.unlink(TOPIC_LOG, undefined);
+		await view.unlink(`${TOPIC}.lock`, undefined);
+		expect(atPublish).toEqual([[MAIN_LOG], [MAIN_LOG, TOPIC_LOG]]);
+		expect(core.gitPublishes).toMatchObject([{ published: true }, { published: true }]);
+		expect(core.entries.has(TOPIC)).toBe(false);
+	});
+
+	it("publishes no git change through a coding machine's view when the core refuses a read of another view of it", async () => {
+		const { core, open } = await repo(codingGrants(), true);
+		const view = await open("first");
+		const other = await open("second");
+		await other.read({ path: MAIN_LOG, version: v(102), offset: 0, length: 10 });
+		// The branch's log is no longer readable: the read the machine made of it through the other view is refused.
+		core.hidden = (path) => path === MAIN_LOG;
 		await write(view, `${MAIN}.lock`, "3333\n", true);
 		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "DENIED");
 		await write(view, `${TOPIC}.lock`, "", true);

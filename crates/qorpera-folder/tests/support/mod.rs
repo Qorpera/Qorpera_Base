@@ -55,10 +55,11 @@ struct State {
 	publishes: usize,
 	/// Chunks asked back.
 	gets: usize,
-	/// How many of the next chunks, closes and discards to answer BUSY (a boundary settling).
+	/// How many of the next chunks, closes, discards and links to answer BUSY (a boundary settling).
 	busy_chunks: usize,
 	busy_closes: usize,
 	busy_discards: usize,
+	busy_links: usize,
 	logs: std::collections::HashMap<String, u64>,
 	/// Every read the machine handed over, as (path, version).
 	logged: Vec<(String, Option<String>)>,
@@ -247,6 +248,11 @@ impl FakeNode {
 	/// The next `discards` discards of a handle are answered BUSY.
 	pub fn busy_discards(&self, discards: usize) {
 		self.state.lock().unwrap().busy_discards = discards;
+	}
+
+	/// The next `links` symbolic links are answered BUSY.
+	pub fn busy_links(&self, links: usize) {
+		self.state.lock().unwrap().busy_links = links;
 	}
 
 	/// How many of the discards `busy_discards` asked for were not answered BUSY yet.
@@ -537,6 +543,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::SYMLINK => {
 			let req: SymlinkRequest = serde_json::from_slice(body).unwrap();
+			if st.busy_links > 0 {
+				st.busy_links -= 1;
+				return error(s, code::BUSY);
+			}
 			if st.entries.contains_key(&req.path) {
 				return error(s, code::EXISTS);
 			}

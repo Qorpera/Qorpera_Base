@@ -47,7 +47,7 @@ const GIT_VERSION = "2.56.0";
 const GIT_SHA256 = "26c56c296b38c0695b26fa95f475f1d01704d2d38e73465ca30b0b2f5dc789d3";
 const GIT_VOLUME = `qorpera-git-${GIT_VERSION}`;
 const GIT_MAKE = `make -C git-${GIT_VERSION} -j$(nproc) prefix=/opt/git RUNTIME_PREFIX=YesPlease NO_TCLTK=YesPlease NO_RUST=YesPlease NO_PERL=YesPlease NO_PYTHON=YesPlease NO_GETTEXT=YesPlease NO_CURL=YesPlease NO_EXPAT=YesPlease NO_OPENSSL=YesPlease`;
-const GIT = `test -x /git/${GIT_VERSION}/bin/git || { cd /tmp && curl -fsSLo git.tar.xz https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz && echo "${GIT_SHA256}  git.tar.xz" | sha256sum -c - && tar xf git.tar.xz && ${GIT_MAKE} all >/dev/null && s=/git/.stage-$$ && ${GIT_MAKE} DESTDIR=$s install >/dev/null && { mv -T $s/opt/git /git/${GIT_VERSION} || true; } && rm -rf $s; }`;
+const GIT = `test -x /git/${GIT_VERSION}/bin/git || { cd /tmp && curl -fsSLo git.tar.xz https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz && echo "${GIT_SHA256}  git.tar.xz" | sha256sum -c - && tar xf git.tar.xz && ${GIT_MAKE} all >/dev/null && s=$(mktemp -d /git/.stage-XXXXXX) && ${GIT_MAKE} DESTDIR=$s install >/dev/null && { mv -T $s/opt/git /git/${GIT_VERSION} || true; } && rm -rf $s; }`;
 const STAMPS = 'for d in /v/*; do echo "${d#/v/} $(stat -c %Y "$d/.qorpera-used" 2>/dev/null || echo 0)"; done';
 
 /** The runner user whose target volume this run keeps: the one run-on-node's status file names, if this process runs

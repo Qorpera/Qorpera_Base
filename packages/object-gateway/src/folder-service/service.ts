@@ -1947,11 +1947,17 @@ export class FolderService {
 	}
 
 	/** A boundary's read gate, before a git change is published: a view whose machine lost its read log publishes
-	 * nothing more, and the machine's reads reach the read sets before anything made from them (the log's rule 1). */
+	 * nothing more, and the machine's reads reach the read sets before anything made from them (the log's rule 1), the
+	 * reads of every view of the machine, as at an ordinary boundary (#boundaryOf): git on the machine read through
+	 * any of them. */
 	async #gitReadGate(view: View): Promise<void> {
-		if (view.unproven)
-			throw new ProtocolError(ErrorCode.denied, "The machine lost its read log, so nothing it makes is published");
-		const release = await this.#releaseReads(view);
+		const lost = () =>
+			new ProtocolError(ErrorCode.denied, "The machine lost its read log, so nothing it makes is published");
+		if (view.unproven) throw lost();
+		const machine = view.access?.machine;
+		const release = machine === undefined ? await this.#releaseReads(view) : await this.#releaseMachine(machine);
+		// Another view of the machine went while the release ran, with reads it never released.
+		if (view.unproven) throw lost();
 		if (release === "unanswered")
 			throw new ProtocolError(ErrorCode.busy, "The machine's reads have not got through yet");
 		if (release !== "released")
