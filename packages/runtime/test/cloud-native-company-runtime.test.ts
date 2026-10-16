@@ -791,6 +791,8 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
+	// The run's offline commands (F3 4d), which its computer tools add to and its review reads: none here.
+	expect(f.officeSession.mock.calls[0][2]).toEqual({ offlineShells: new Set() });
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
@@ -2681,7 +2683,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
 	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
 	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
-	// supervisor, so they moved again; every other tool is as on master.
+	// supervisor, so they moved again. Since save_interface's description gives an interface.toml's form and the files'
+	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2716,9 +2719,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"3d35dedb939da8d2f811cea22a8b0a772c16601e548bf4abeb26a635c8077a46",
+		"e5a6e4334d8d273ddeee2a903049dcf545c2134a72dba7164f567615f78d1023",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"17e085ecdc998942daf5020165a61796d4bee805b7e00f327f7667778275e37e",
+		"af93a5cf6e612796c0fc8be50b0ac0d736442a474c281eb095ebb9fe05916146",
 	);
 });

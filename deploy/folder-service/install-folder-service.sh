@@ -3,11 +3,11 @@
 # scripts/package-folder-service.mjs. Verifies every file against the package's manifest and the unit files
 # against the pins below, makes the two accounts, installs, and leaves every unit disabled. The coordinator then
 # writes /etc/qorpera-folder-service/{config.json,supabase-key} (root, 0400) and enables the socket and the bridge,
-# and on a node with the coding executor the control socket (its account must exist first).
+# and on a node with coding or test machines the control socket (the executor's account must exist first).
 set -euo pipefail
 
 EXPECTED_SOCKET_UNIT_SHA256="dbf2b45f55312a1bd94cf19b89d0ea6f33e367d4a996ade854f13fb5d453bbd9"
-EXPECTED_CONTROL_SOCKET_UNIT_SHA256="05b11217340859454cdd987d334c08d317e0e57264f497c13f4fdcb9716fc73b"
+EXPECTED_CONTROL_SOCKET_UNIT_SHA256="66fdf826130d5167e0b2add79ce1037283f9e0e4690e1858a4756a70c0422f8a"
 EXPECTED_SERVICE_UNIT_SHA256="8931f93479bcf45bcba5052d846961d9a9e01441a3a163f2e608b79d382b9cba"
 EXPECTED_BRIDGE_UNIT_SHA256="829e7e53e5d91e6412babf16efd6c8167236bb6986c23e08fc28073fa2db77f8"
 PACKAGE=$(cd "$(dirname "$0")" && pwd)

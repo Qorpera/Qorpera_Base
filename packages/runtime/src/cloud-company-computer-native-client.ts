@@ -474,7 +474,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	const reaches = (companyComputerId: string) =>
 		route.companyComputerId === null || route.companyComputerId === companyComputerId;
 	if (!/^[A-Za-z0-9_-]{43}$/.test(options.token)) throw new Error("INVALID_OFFICE_NATIVE_CONFIGURATION");
-	return async (run, operations) => {
+	return async (run, operations, sessionOptions) => {
 		if (run.identity.audienceKind !== "company") return undefined;
 		const descriptor = parseCompanyComputerNativeDescriptor(
 			await options.registry.call("qorpera_native_office_descriptor", { p_binding: run.binding }, run.signal),
@@ -521,6 +521,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 			scope: descriptor.scope,
 			control: options.registry,
 			endpoint: remote,
+			...(sessionOptions?.offlineShells ? { offlineShells: sessionOptions.offlineShells } : {}),
 		});
 		return {
 			tools: session.tools,

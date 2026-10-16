@@ -549,6 +549,8 @@ describe("the control socket", () => {
 			restarted: (machine: string) => {
 				restarts.push(machine);
 			},
+			openWindow: () => undefined,
+			closeWindow: async (machine: string): Promise<MachineBoundary> => ({ machine, reads: "released", views: [] }),
 		};
 		const close = (server: Server) => new Promise<void>((resolve) => server.close(() => resolve()));
 		/** A control server on the socket, for an executor of `executorUid`, the socket's file made `mode`. */
@@ -560,7 +562,9 @@ describe("the control socket", () => {
 			await chmod(path, mode);
 			return server;
 		};
-		const refused = { error: { code: "VIEW_REFUSED", message: "This socket admits only the coding executor" } };
+		const REFUSED = "This socket admits only the executor of the coding and test machines";
+		const refused = { error: { code: "VIEW_REFUSED", message: REFUSED } };
+		const MACHINE = "machine is a coding machine's id or a test machine's placement id";
 
 		// The kernel lets a uid connect only with write permission on the file, so a connection is served only while the
 		// file is the executor's and no one else's: otherwise any peer may be calling, as this test's is.
@@ -603,11 +607,11 @@ describe("the control socket", () => {
 		);
 		expect(answers).toEqual([
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
-			{ error: { code: "BAD_REQUEST", message: "A request is a boundary or a restart" } },
-			{ error: { code: "BAD_REQUEST", message: "machine is a coding machine's id" } },
+			{ error: { code: "BAD_REQUEST", message: "A request's op is boundary, restarted, open or close" } },
+			{ error: { code: "BAD_REQUEST", message: MACHINE } },
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
-			{ error: { code: "BAD_REQUEST", message: "final is a boundary's" } },
-			{ error: { code: "BAD_REQUEST", message: "machine is a coding machine's id" } },
+			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },
+			{ error: { code: "BAD_REQUEST", message: MACHINE } },
 			{ restarted: { machine: CODING_MACHINE_ID } },
 		]);
 		expect(asked).toEqual([

@@ -690,9 +690,70 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
   tests.
 
+## Step 6b: test machine views
+
+In slice 6b the folder service serves agents' test machines' views (RUNTIME-FOLDER-TEST-MACHINES.md, "Views and
+machines", "Commands and credit" and "Boundaries"), against 6a's core (migration slots `20260930420000`–`429000`):
+
+- **Which machine.** A `test_machine` view's machine is its placement (`machineId`). It is served only to the instance
+  named after it, `qorpera-machine-<placement id without dashes>`, in one of the node's `testMachineProjects`; an image
+  builder (`qorpera-machine-build-…`) never is. It writes over protocol 3 and publishes 2 s after its last change. A
+  project listed there and in `companyMachineProjects` or `codingMachineProjects` stops the service at start.
+- **As a coding machine.** The control socket's `machine` is the placement id, and 5c's machine rules hold as they are:
+  the read record, the releases before each commit, the boundaries, held refusals, a lost machine and `restarted`,
+  `served_by` and the clean stop.
+- **Command windows.** The executor opens a window when a command starts on the machine:
+  `{"op":"open","machine":"<placement id>","commandId","runId","staffAgentId","requestedByUserId"}` answers
+  `{"opened":{"machine","commandId"}}`. Opening it again is a no-op; the same command with other ids is `BAD_REQUEST`.
+  `{"op":"close","machine","commandId"}` closes it, runs the machine's boundary (the command's end boundary) and answers
+  as a boundary does. Closing a window that is not open is a no-op. Windows are kept in memory only: a restart of the
+  service, `restarted` and the machine's final boundary close them all, and the executor opens them again (6d).
+- **Tags and credits.** Each change a test machine's view takes (an open that creates or truncates, a write, a close
+  that cuts a file, a folder made or removed, a file removed, the executable bit, a rename) is tagged, as it enters,
+  with the commands whose windows are open, or with the starter when none is. Tags are kept on the two things a boundary
+  publishes, and nowhere else. A pending file or folder keeps the tags of its changes through renames (a new folder's
+  with what it has inside) until it is removed, settled, or left with nothing to publish (a move moved back, a file made
+  and removed again). A pending removal of a live path is kept by that path, which no rename moves: it takes the
+  remover's tags and those of the file or folder it took, and holds them only while it is the removal pending there.
+  Chunks take the windows open as they arrive and become the file's in the step of the close that fixes them, so a
+  change made after the close (a removal waiting behind the same boundary) takes them with the file; a file abandoned,
+  or removed, with chunks unfixed loses them and their tags. Each change and its tags are made in one synchronous step,
+  after the change's last wait, and so are a boundary's plan and its credits, and its settling: no other change sees one
+  without the other. Each unit's `credits` are read from what it publishes as the boundary plans it: a removal's from
+  the removals it names, any other unit's from its files and folders, and a new file published as the next version of a
+  live file the view removed also from that removal. They are the sorted commands, and none when only the starter
+  changed them. A unit that mixes both is credited to the commands alone: `credits` cannot name the starter, and leaving
+  it out would credit the commands' changes to the starter. A commit tried again, or replayed under its key at the next
+  boundary, sends the same credits. A new file the core refused and the boundary keeps pending takes the tags of the
+  removal it carried as the settling drops that removal, so a unit kept pending goes again with the same credits. Every
+  tag goes with the view.
+- **`command_ended`.** A unit the core refuses because a command it is credited to has ended is kept, as any refused
+  unit, and sent again at each boundary with the same credits, until the final. It is never credited to the starter
+  instead.
+- **The final.** A test machine's view named in a boundary's `final` clears its quiet period and publishes with `final`;
+  the core closes the view.
+- **Tests.** `packages/object-gateway/test/folder-test-machine-views.test.ts`, against the stand-in core: a test
+  machine's view is refused from another test machine, an office, a coding machine, an image builder, an unlisted
+  project and the execution host, and an overlapping project stops the service; a change made in one window is credited
+  to it, one made in two windows to both, one in none to the starter (no `credits`); a rename keeps its tags; a moved
+  file's removal is credited at its origin, also when a new file made there replaces the moved one; a file removed and
+  made again is credited to its maker alone, not to the command whose refused boundary left it pending; a file a command
+  wrote, closed and removed by the starter while a boundary runs, both waiting for it, has its removal credited to the
+  command; a refused new file that took in a command's removal is sent with the same credits at three boundaries; a cut
+  takes the windows open at its close; an undone change's tags go; a retry sends the same credits; a `command_ended`
+  refusal is kept and sent again; a quiet publish comes about 2 s after the last change; a close publishes the command's
+  changes before it answers; the final boundary publishes with `final`; the control socket refuses a window from another
+  uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files: writes, renames, renames
+  over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended, several in a row, and
+  boundaries held at their commit while the machine closes a file it wrote before the boundary began, may remove it, and
+  writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and credits against a model: a
+  unit is credited to exactly the commands whose windows were open when a change now in it was made. It also checks that
+  a unit a boundary kept pending, or refused whole, goes again with the same credits until a change is made to it. The
+  model holds a file open only across a held boundary.
+
 ## Not here
 
 The office service's side of a command's view (opening it, mounting it for the command, and the final
 boundary at the command's end: slice 4d); a coding machine's flush of its folder programs before a boundary and git on
 the mount (slice 5d); the executor's side of coding views (opening them, mounting them, asking boundaries: slice 5g);
-test machines (step 6). Each is a later slice.
+the rest of step 6 (6a's core, 6c's image and folder program, 6d's executor). Each is a later slice.

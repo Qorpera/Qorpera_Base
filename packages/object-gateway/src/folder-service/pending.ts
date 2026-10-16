@@ -620,6 +620,11 @@ export class PendingView {
 	}
 
 	/** Whether the handle is still open (a draft whose close could not land it is given up). */
+	/** Where a handle's draft lands when it is closed; none for a handle that is not a draft's. */
+	draftPath(handle: number): string | undefined {
+		return this.#handles.get(handle)?.draft?.path;
+	}
+
 	isOpen(handle: number): boolean {
 		return this.#handles.has(handle);
 	}
@@ -1123,21 +1128,23 @@ export class PendingView {
 		const current = origin && this.#live().get(origin.path)?.version === origin.version;
 		this.#dropUnder(r.path);
 		this.#unset(r.path);
+		// Its live origin moved on: the newer version shows again where it is, not hidden by this change's move.
 		if (origin && !current) {
-			// Its live origin moved on: the newer version shows again where it is, not hidden by this change's move.
 			if (this.#nodes.get(origin.path)?.kind === "gone") this.#unset(origin.path);
-			return;
+		} else {
+			// What the view had at the path goes: a draft open there lands over that, as a new file.
+			this.#forget(r.path);
+			if (origin) {
+				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+				this.#forget(origin.path, origin);
+			}
+			// A new file or link lets the live one it replaced go: removed at its base, or shown again if newer.
+			else if (r.node.kind !== "folder") this.#release(r.node);
 		}
-		// What the view had at the path goes: a draft open there lands over that, as a new file.
-		this.#forget(r.path);
-		if (origin) {
-			this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
-			this.#forget(origin.path, origin);
-		}
-		// A new file or link lets the live one it replaced go: removed at its base, or shown again if newer.
-		else if (r.node.kind !== "folder") this.#release(r.node);
-		// What the live folder still shows at the path the view never took: what the node held is removed now, so it is
-		// another machine's (made, or renamed there only in case), and shows again.
+		// What the live folder still shows at the path stays hidden if the view moved it away; anything else there the
+		// view never took: what the node held is removed now, so it is another machine's (made, or renamed there only in
+		// case), and shows again.
+		this.#hideMoved(r.path);
 	}
 
 	// ---- A new file or link that replaces a live one ---------------------------------------------------------------
@@ -1226,13 +1233,27 @@ export class PendingView {
 	}
 
 	/** After `node` left `path`: a gone node there if the live folder still shows what the node holds (its origin, or
-	 * the live one it still replaces). Anything else there the view never took, and it shows: another machine's (made,
-	 * or renamed there only in case), or a newer version the node let go. */
+	 * the live one it still replaces), or what the view moved away. Anything else there the view never took, and it
+	 * shows: another machine's (made, or renamed there only in case), or a newer version the node let go. */
 	#hideHeld(path: string, node: PendingFile | PendingFolder | PendingLink): void {
 		const r = this.resolve(path);
 		if (r?.kind !== "live") return;
 		if (r.source === node.origin?.path || (node.kind !== "folder" && r.source === node.replaces?.path))
 			this.#set(path, { kind: "gone" });
+		else this.#hideMoved(path);
+	}
+
+	/** A gone node at `path` if the live folder still shows there an entry the view moved away (a pending node at
+	 * another path holds it as its origin): a new file or link made where it left, then removed or moved on, does not
+	 * bring it back. */
+	#hideMoved(path: string): void {
+		const r = this.resolve(path);
+		if (r?.kind !== "live") return;
+		for (const [p, node] of this.#nodes)
+			if (node.kind !== "gone" && p !== r.source && node.origin?.path === r.source) {
+				this.#set(path, { kind: "gone" });
+				return;
+			}
 	}
 
 	#set(path: string, node: Node): void {

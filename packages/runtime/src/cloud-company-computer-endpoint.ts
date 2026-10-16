@@ -272,6 +272,8 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		// The screen went back with nothing done: there is nothing to wait for.
 		if (givenBack) return result;
 		// Outside the gate and after the resource drained: waiting stops nothing.
-		return this.#automation.settle ? this.#automation.settle(action, result, context.signal, replyBy) : result;
+		return this.#automation.settle
+			? this.#automation.settle(action, result, context.signal, replyBy, identity.runId)
+			: result;
 	}
 }
