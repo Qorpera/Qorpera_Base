@@ -1051,7 +1051,7 @@ export class FolderService {
 							return closed;
 						} finally {
 							// A draft that landed elsewhere, or that its close gave up, let go of the view's own file it held.
-							if (tags !== undefined && held !== closed) this.#letGo(view, held);
+							if (tags !== undefined && held !== closed) this.#lost(view, held);
 						}
 					},
 					tags,
@@ -2323,13 +2323,13 @@ export class FolderService {
 			// Closed already: nothing of it is left to abandon.
 		}
 		view.pending?.abandon(handle);
-		this.#letGo(view, file);
-		this.#letGo(view, held);
+		this.#lost(view, file);
+		this.#lost(view, held);
 	}
 
 	/** A file a handle, or a draft's hold, let go of: with none left on it, it is back at the bytes its last close fixed,
 	 * and a test machine's chunks no close fixed lose their tags (F3 6b). */
-	#letGo(view: View, file: PendingFile | undefined): void {
+	#lost(view: View, file: PendingFile | undefined): void {
 		if (file !== undefined && file.open === 0) view.credit.abandoned(file);
 	}
 
