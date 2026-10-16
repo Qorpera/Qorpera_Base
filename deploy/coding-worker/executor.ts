@@ -359,9 +359,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		})();
 		// Code hosts: once at start, every one an earlier executor left started
 		// stops, and one made under another policy goes; each starts again on its
-		// company's next job. Then, at once and every minute after a pass, the code
-		// hosts of companies being deleted go with their projects; one still in a
-		// job goes on a later pass.
+		// company's next job.
 		const hosting = (async () => {
 			if (!codeHosts) return;
 			try {
@@ -369,6 +367,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			} catch (error) {
 				if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "housekeep", code: errorCode(error) }));
 			}
+		})();
+		// Beside it, at start and every minute after a pass, the code hosts of
+		// companies being deleted go with their projects; one still in a job, or
+		// whose removal failed or ran out of time, goes on a later pass.
+		const deletions = (async () => {
+			if (!codeHosts) return;
 			const deleting = controlCodeHostDeletions({
 				control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 			});
@@ -381,7 +385,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(60_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines, hosting]);
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions]);
 	} finally {
 		stop.abort();
 		await executor?.drain();

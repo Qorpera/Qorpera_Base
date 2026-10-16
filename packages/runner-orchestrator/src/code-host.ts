@@ -311,10 +311,15 @@ export class LxdCodeHosts {
 	}
 
 	/** A pass of company deletion: each code host project on the node whose company `deleting` names goes with its
-	 * code host (`remove`), each within `agentWaitMs`. One still in a job (CODE_HOST_BUSY), refused or failed is logged
-	 * and goes on a later pass, as does one a job made again after its removal. Returns how many went. */
+	 * code host (`remove`). The listing of the node's projects and each removal (its wait for the host's other steps
+	 * among it) has `agentWaitMs`. One still in a job or waiting for its start (CODE_HOST_BUSY), refused, failed or out
+	 * of time is logged and goes on a later pass, as does one a job made again after its removal. Returns how many
+	 * went. */
 	async removeDeleting(deleting: CodeHostDeletions, signal: AbortSignal): Promise<number> {
-		const companies = (await this.#client.listProjectNames(signal)).flatMap((name) => codeHostCompany(name) ?? []);
+		const listed = await this.#client.listProjectNames(
+			AbortSignal.any([signal, AbortSignal.timeout(this.#agentWaitMs)]),
+		);
+		const companies = listed.flatMap((name) => codeHostCompany(name) ?? []);
 		if (companies.length === 0) return 0;
 		const deleted = new Set(await deleting(companies, signal));
 		let removed = 0;
@@ -331,21 +336,29 @@ export class LxdCodeHosts {
 		return removed;
 	}
 
-	/** The company's deletion, after its runs ended: its code host and project go. False when it had none. */
+	/** The company's deletion, after its runs ended: its code host and project go. False when it had none. One with a
+	 * job, or a job waiting for its start, is CODE_HOST_BUSY at once. The wait for the host's other steps ends at
+	 * `signal`'s abort, and the removal then never runs. */
 	async remove(companyId: string, signal: AbortSignal): Promise<boolean> {
 		const host = this.#host(companyId);
-		return this.#step(host, async () => {
-			if (host.jobs > 0) throw new Error("CODE_HOST_BUSY");
-			if (!(await this.#project(host, signal, false))) return false;
-			clearTimeout(host.idle);
-			host.idle = undefined;
-			await this.#halt(host, signal);
-			if (await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal))
-				await this.#client.deleteInstance(host.project, CODE_HOST_INSTANCE, signal);
-			await this.#client.deleteProject(host.project, signal);
-			this.#log({ event: "code-host", step: "removed", project: host.project });
-			return true;
-		});
+		if (host.jobs > 0) throw new Error("CODE_HOST_BUSY");
+		return this.#step(
+			host,
+			async () => {
+				// A job may have come while the removal waited.
+				if (host.jobs > 0) throw new Error("CODE_HOST_BUSY");
+				if (!(await this.#project(host, signal, false))) return false;
+				clearTimeout(host.idle);
+				host.idle = undefined;
+				await this.#halt(host, signal);
+				if (await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal))
+					await this.#client.deleteInstance(host.project, CODE_HOST_INSTANCE, signal);
+				await this.#client.deleteProject(host.project, signal);
+				this.#log({ event: "code-host", step: "removed", project: host.project });
+				return true;
+			},
+			signal,
+		);
 	}
 
 	/** At the executor's end: no new job starts, and each code host stops once its jobs end. */
@@ -366,9 +379,15 @@ export class LxdCodeHosts {
 		return host;
 	}
 
-	#step<T>(host: Host, step: () => Promise<T>): Promise<T> {
-		const run = host.steps.then(step, step);
-		host.steps = run.catch(() => undefined);
+	/** Runs `step` after the host's earlier steps. With `signal`, the wait for them ends at its abort, and the step
+	 * then never runs; the host's next step still waits for every one before it. */
+	#step<T>(host: Host, step: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		const earlier = host.steps;
+		const run = (signal ? settledUnlessAborted(earlier, signal) : earlier).then(() => {
+			signal?.throwIfAborted();
+			return step();
+		});
+		host.steps = Promise.allSettled([earlier, run]).then(() => undefined);
 		return run;
 	}
 
@@ -545,4 +564,21 @@ export class LxdCodeHosts {
 		host.idle = setTimeout(stop, this.#idleStopMs);
 		host.idle.unref();
 	}
+}
+
+/** Settles once `earlier` has, or rejects with the signal's reason if it aborts first. */
+function settledUnlessAborted(earlier: Promise<unknown>, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		if (signal.aborted) {
+			abort();
+			return;
+		}
+		signal.addEventListener("abort", abort, { once: true });
+		const settled = () => {
+			signal.removeEventListener("abort", abort);
+			resolve();
+		};
+		earlier.then(settled, settled);
+	});
 }
