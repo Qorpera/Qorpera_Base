@@ -14,6 +14,8 @@ import {
 	parseCloudActionVerdict,
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
 import { CloudFolderRoutineDecision } from "@qorpera/runtime/cloud-folder-routine-decision";
@@ -29,6 +31,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -1283,12 +1286,20 @@ function gate(options: {
 	begin?: Record<string, unknown>;
 	verdict?: unknown;
 	record?: Record<string, unknown>;
-	waits?: Array<Record<string, unknown>>;
+	/** The kernel's answers to the hold's waits, in order; an error is thrown. */
+	waits?: Array<Record<string, unknown> | Error>;
+	/** Its answers to a leaving hold's park, in order (by default, parked); an error is thrown. */
+	leaving?: Array<Record<string, unknown> | Error>;
+	/** How long each failed wait takes, on Date's clock (fake it to use this). */
+	failMs?: number;
+	/** How far Date's clock jumps during the pause after each failed wait (an event loop that stalls; fake Date). */
+	stallMs?: number;
 	holdMs?: number;
 	reviewerFails?: boolean;
 }) {
 	const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
 	const waits = [...(options.waits ?? [])];
+	const leaving = [...(options.leaving ?? [])];
 	const control: CloudActionReviewControl = {
 		call: async (method, args) => {
 			calls.push({ method, args });
@@ -1304,8 +1315,20 @@ function gate(options: {
 				);
 			if (method === "qorpera_record_action_review")
 				return { reviewId: "review-1", decision: "allow", card: false, reason: "Fine.", ...options.record };
+			if (args.p_leaving) {
+				const left = leaving.shift();
+				if (left instanceof Error) throw left;
+				return left ?? { state: "parked" };
+			}
 			// As the kernel does: a wait that asks to park is never answered "still pending".
 			const next = waits.shift();
+			if (next instanceof Error) {
+				if (options.failMs) vi.setSystemTime(Date.now() + options.failMs);
+				// Runs before the hold's pause after this failure ends (it is set first, for no longer).
+				const stall = options.stallMs;
+				if (stall) setTimeout(() => vi.setSystemTime(Date.now() + stall), 0);
+				throw next;
+			}
 			return args.p_park && (!next || next.state === "pending")
 				? { state: "parked" }
 				: (next ?? { state: "pending" });
@@ -1670,6 +1693,224 @@ describe("the review step", () => {
 			method: "qorpera_await_action_review",
 			args: { p_review_id: "review-8", p_park: true, p_leaving: true },
 		});
+	});
+
+	// Production pass 2 (16 Oct 2026): one poll in about 150 waited past the lock timeout behind a same-run step,
+	// the hold ended, and the held call was told its review was unavailable.
+	const late = () => new CloudRuntimeDiagnosticError("timeout", "Company File control request timed out");
+	const lost = () => new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
+
+	it("keeps holding through lost or late answers, and runs the call once approved", async () => {
+		const { check, calls } = gate({
+			holdMs: 60_000,
+			record: { decision: "ask", card: true, reviewId: "review-10", approverName: "Jonas" },
+			waits: [{ state: "pending" }, late(), lost(), { state: "pending" }, late(), { state: "approved" }],
+		});
+		await expect(check()).resolves.toEqual({ run: true });
+		const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+		expect(waits).toHaveLength(6);
+		// Every wait held (none parked, none left): the hold never ended.
+		expect(waits.every((call) => call.args.p_review_id === "review-10" && call.args.p_park === false)).toBe(true);
+		expect(waits.some((call) => "p_leaving" in call.args)).toBe(false);
+	});
+
+	it("asks a park again through lost or late answers until the card parks", async () => {
+		const { check, calls } = gate({
+			holdMs: 0,
+			record: { decision: "ask", card: true, reviewId: "review-11", approverName: "Jonas" },
+			waits: [late(), lost()],
+		});
+		await expect(check()).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^APPROVAL_PENDING: .*from Jonas/),
+		});
+		const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+		expect(waits).toHaveLength(3);
+		expect(waits.every((call) => call.args.p_park === true && !("p_leaving" in call.args))).toBe(true);
+	});
+
+	it("ends the hold at a refusal or an unknown failure, and parks the card on its way out", async () => {
+		for (const failure of [
+			new CloudControlRpcRefused("42501", "native tool run is unavailable"),
+			new CloudControlRpcRefused("55000", "Company execution is paused"),
+			new Error("PRIVATE_UNKNOWN_FAILURE"),
+		]) {
+			const { check, calls } = gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: "review-12" },
+				waits: [{ state: "pending" }, failure],
+			});
+			await expect(check()).rejects.toBe(failure);
+			const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+			expect(waits).toHaveLength(3);
+			expect(waits.at(-1)).toMatchObject({ args: { p_review_id: "review-12", p_park: true, p_leaving: true } });
+		}
+	});
+
+	it("parks the card of a stopped hold through lost or late answers, and stops at a refusal", async () => {
+		const stopped = async (leaving: Array<Record<string, unknown> | Error>) => {
+			const { check, calls, abort } = gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: "review-13" },
+				waits: [{ state: "pending" }],
+				leaving,
+			});
+			const result = check();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			abort.abort();
+			await expect(result).rejects.toBeDefined();
+			return calls.filter((call) => call.args.p_leaving);
+		};
+		// Two lost answers, then the park lands: the card is parked, so its answer wakes the agent.
+		const parked = await stopped([late(), lost()]);
+		expect(parked).toHaveLength(3);
+		expect(parked.every((call) => call.args.p_review_id === "review-13" && call.args.p_park === true)).toBe(true);
+		// A refusal (the run is gone) is not asked again.
+		const refused = await stopped([new CloudControlRpcRefused("42501", "native tool run is unavailable"), late()]);
+		expect(refused).toHaveLength(1);
+	});
+
+	// The wait that failed in production (16:03:13.671Z) was cancelled by the statement timeout while its row lock
+	// queued on the run's budget row behind a same-run step. PostgREST answers that (57014), and a lock timeout
+	// (55P03), with a 500 and the SQLSTATE: the run's control reads both as lost answers, never as refusals.
+	it("holds through the kernel's statement and lock timeouts as PostgREST returns them", async () => {
+		const timeouts = [
+			{ code: "57014", message: "canceling statement due to statement timeout" },
+			{ code: "55P03", message: "canceling statement due to lock timeout" },
+		];
+		const methods: string[] = [];
+		const paths = new HttpCloudCompanyPathControl({
+			supabaseUrl: "https://authority.example",
+			serviceRoleKey: "synthetic-service-key",
+			fetch: vi.fn<typeof fetch>(async (input) => {
+				const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
+				methods.push(method);
+				if (method === "qorpera_begin_action_review")
+					return Response.json({ state: "pending", reviewId: "review-14", approverName: "Jonas" });
+				const timeout = timeouts.shift();
+				return timeout
+					? Response.json({ ...timeout, details: null, hint: null }, { status: 500 })
+					: Response.json({ state: "approved", answeredBy: "Jonas" });
+			}),
+		});
+		// As production wires it: the gate's control is the run's path control.
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: { call: (method, args, signal) => paths.call(method, args, signal) },
+			reviewer: { review: vi.fn<CloudActionReviewer["review"]>() },
+			request: "Email Bob at Acme that the meeting moved.",
+			holdMs: 60_000,
+			pollMs: 1,
+			connectorEffects: new Map([["gmail_send_message", "write"]]),
+		});
+		const result = instance.check(
+			{
+				tool: tool("gmail_send_message", "connector"),
+				parsed: { input: { to: "bob@acme.test", subject: "Moved" } },
+				argumentsText: ARGUMENTS,
+				argumentSha256: "a".repeat(64),
+				callId: "call_1",
+			},
+			new AbortController().signal,
+		);
+		await expect(result).resolves.toEqual({ run: true });
+		expect(methods).toEqual([
+			"qorpera_begin_action_review",
+			"qorpera_await_action_review",
+			"qorpera_await_action_review",
+			"qorpera_await_action_review",
+		]);
+	});
+
+	// A wait uses an answered approval, and the agent its answer woke is told so only within 30 s of the wake. So a
+	// failed wait is asked again only for 5 s after the answer could first have woken the agent: a heartbeat (a wait
+	// that holds) puts that 10 s off; a card found waiting, or a park, may wake it at once. Each hold below ends just
+	// before an approval it would otherwise have used.
+	it("asks a failed wait again only soon after the answer could wake the agent, then parks the card", async () => {
+		vi.useFakeTimers({ now: Date.parse("2026-10-16T16:00:00Z"), toFake: ["Date"] });
+		try {
+			const ended = async (options: Parameters<typeof gate>[0], failure: Error) => {
+				const { check, calls } = gate(options);
+				await expect(check()).rejects.toBe(failure);
+				const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+				// The hold parked its card on the way out, and used nothing.
+				expect(waits.at(-1)).toMatchObject({ args: { p_park: true, p_leaving: true } });
+				return waits.slice(0, -1);
+			};
+			// Raised held at 0 s: failures at 6 s and 12 s are asked again (before 15 s). A heartbeat at 12 s: failures at
+			// 18 s and 24 s are asked again (before 27 s), the one at 30 s is not.
+			const late30 = late();
+			const held = await ended(
+				{
+					holdMs: 60_000,
+					failMs: 6_000,
+					record: { decision: "ask", card: true, reviewId: "review-15" },
+					waits: [
+						{ state: "pending" },
+						late(),
+						lost(),
+						{ state: "pending" },
+						late(),
+						lost(),
+						late30,
+						{ state: "approved" },
+					],
+				},
+				late30,
+			);
+			expect(held).toHaveLength(7);
+			expect(held.every((call) => call.args.p_review_id === "review-15" && call.args.p_park === false)).toBe(true);
+			// Found waiting at 0 s: the failure at 3 s is asked again, the one at 6 s is not.
+			const lost6 = lost();
+			const found = await ended(
+				{
+					begin: { state: "pending", reviewId: "review-16", approverName: "Jonas" },
+					holdMs: 60_000,
+					failMs: 3_000,
+					waits: [late(), lost6, { state: "approved" }],
+				},
+				lost6,
+			);
+			expect(found).toHaveLength(2);
+			// The hold runs out at once and parks at 0 s: the failure at 3 s is asked again, the one at 6 s is not.
+			const parks6 = lost();
+			const parks = await ended(
+				{
+					holdMs: 0,
+					failMs: 3_000,
+					record: { decision: "ask", card: true, reviewId: "review-17" },
+					waits: [late(), parks6, { state: "approved" }],
+				},
+				parks6,
+			);
+			expect(parks).toHaveLength(2);
+			expect(parks.every((call) => call.args.p_park === true && !("p_leaving" in call.args))).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not ask a failed wait again when its pause ends too late, and parks the card", async () => {
+		vi.useFakeTimers({ now: Date.parse("2026-10-16T16:00:00Z"), toFake: ["Date"] });
+		try {
+			// Raised held at 0 s, so a failed wait is asked again only before 15 s. It fails at once, but the pause after
+			// it ends at 30 s: the approval is not used, and the card is parked.
+			const failure = late();
+			const { check, calls } = gate({
+				holdMs: 60_000,
+				stallMs: 30_000,
+				record: { decision: "ask", card: true, reviewId: "review-18" },
+				waits: [failure, { state: "approved" }],
+			});
+			await expect(check()).rejects.toBe(failure);
+			const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+			expect(waits.map((call) => call.args)).toEqual([
+				{ p_binding: binding, p_review_id: "review-18", p_park: false },
+				{ p_binding: binding, p_review_id: "review-18", p_park: true, p_leaving: true },
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("passes on the approval's id on each approving path, and none from a malformed answer", async () => {
