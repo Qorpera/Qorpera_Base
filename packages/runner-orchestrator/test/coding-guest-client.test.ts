@@ -115,6 +115,9 @@ describe("LxdCodingGuestClient", () => {
 		const status = { schema: "qorpera.coding-guest-status/v1", workerId: at.workerId, commands: [at.command] };
 		at.execInstanceStream.mockResolvedValueOnce({ exitCode: 0, stdout: line(status), stderr: Buffer.alloc(0) });
 		await expect(at.guest.status(at.session, signal)).resolves.toEqual(status);
+		const quiesced = { schema: "qorpera.coding-guest-session-quiesced/v1", workerId: at.workerId };
+		at.execInstanceStream.mockResolvedValueOnce({ exitCode: 0, stdout: line(quiesced), stderr: Buffer.alloc(0) });
+		await expect(at.guest.quiesce(at.session, signal)).resolves.toEqual(quiesced);
 		const stopped = { schema: "qorpera.coding-guest-session-stopped/v1", workerId: at.workerId };
 		at.execInstanceStream.mockResolvedValueOnce({ exitCode: 0, stdout: line(stopped), stderr: Buffer.alloc(0) });
 		await expect(at.guest.stopSession(at.session, signal)).resolves.toEqual(stopped);
@@ -122,6 +125,7 @@ describe("LxdCodingGuestClient", () => {
 			["run", 120000],
 			["cancel", 60000],
 			["status", 60000],
+			["quiesce", 120000],
 			["stop-session", 120000],
 		]);
 	});
