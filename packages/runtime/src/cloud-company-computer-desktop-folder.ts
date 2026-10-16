@@ -216,7 +216,11 @@ export class CompanyComputerDesktopFolders {
 		this.#socket = options.socket;
 	}
 
-	#helper<Request extends CompanyComputerFolderRequest>(request: Request, timeoutMs?: number, signal?: AbortSignal) {
+	#helper<Request extends Exclude<CompanyComputerFolderRequest, { op: "run" }>>(
+		request: Request,
+		timeoutMs?: number,
+		signal?: AbortSignal,
+	) {
 		return this.#ask(request, {
 			...(this.#socket ? { socket: this.#socket } : {}),
 			...(timeoutMs ? { timeoutMs } : {}),
