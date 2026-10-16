@@ -1,3 +1,5 @@
+import { folderKey } from "@qorpera/contracts";
+
 /** Representation checks only. Path and audience authorization lives in SQL. Under code/ (by the key's first name), a
  * name may hold '%' and ':' and may be a device name, as `qorpera_company_path_valid` allows (20260930446100). */
 export function parseCloudCompanyPath(value: unknown, allowRoot = false): string {
@@ -9,7 +11,7 @@ export function parseCloudCompanyPath(value: unknown, allowRoot = false): string
 		value.normalize("NFC") !== value
 	)
 		throw new Error("Invalid Company File path");
-	const key = value.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
+	const key = folderKey(value);
 	const code = key.split("/")[0] === "code";
 	for (const candidate of [value, key]) {
 		if (

@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
+import { folderKey } from "@qorpera/contracts";
 import { describe, expect, it } from "vitest";
 import {
 	CHUNK_BYTES,
 	type ChunkRef,
 	type FileRef,
-	folderKey,
 	type PendingFile,
 	PendingView,
 	PublishFirst,

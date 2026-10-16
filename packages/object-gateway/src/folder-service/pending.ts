@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { COMPANY_STATE_SEEDED_PATHS } from "@qorpera/cloud-client/company-state-files";
+import { folderKey } from "@qorpera/contracts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
 import { byteOrder, nameOf, parentOf, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
 
@@ -143,11 +144,6 @@ export function unpublished(path: string): boolean {
 }
 
 const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
-
-/** The core's folding of a name or path (`qorpera_folder_key`): two paths that fold alike are one path. */
-export function folderKey(path: string): string {
-	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
-}
 
 /** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key: git's directories only below
  * code/<owner>/<name>/ (20260930446100). */

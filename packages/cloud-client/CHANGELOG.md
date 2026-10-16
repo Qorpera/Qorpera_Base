@@ -122,3 +122,7 @@
 - `CloudRunnerJob.substrateVersionId` is optional: a folder-v2 run has no Company File substrate (folder core C3, P23).
 - `cloudAgentFolder(companyId, staffAgentId, place?)` takes where the company keeps its agents' folders (`CloudAgentFolderPlace`): `agents/<staffAgentId>` for a snapshot-v1 company (`CLOUD_AGENT_FOLDER_BY_ID`, the default) and `agents/<handle>` for a folder-v2 company, the handle checked against the company folder's naming rule. `isCloudAgentFolder(path)` tells such a folder from other paths.
 - `HostedOperationRecoveryReceipt.status` may be `outcome_unknown` (agent context tree W5b-1, no SQL): the run was cut off while the operation ran, and a resume settled its receipt (W5a-1, migration `20260928519120`). Both recovery lists (`listSessionRecoveries`, `listSessionExecutionRunRecoveries`) accept it.
+
+### Fixed
+
+- `companyPathKey` and the path check in `parseCloudCompanyPath` compute the folder core's key exactly (`qorpera_folder_key`, through `@qorpera/contracts`' `folderKey`): Unicode simple case mapping, as the database does, where they used JavaScript's full case mapping. 'Straße' keeps its ß (it was 'strasse'), 'İ' folds to 'i' (it was 'i' with a combining dot), the Greek letters with ypogegrammeni stay one letter each, and a final sigma no longer depends on the letters around it.
