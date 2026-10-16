@@ -1100,6 +1100,51 @@ describe("writes through the mount", () => {
 		}
 	});
 
+	it("reads the version the view's own folder showed while pending as its live one: an rmdir after its publish removes it", async () => {
+		const shownIn = async (view: ViewHandle, parent: string, name: string): Promise<string> =>
+			(await view.list(parent, undefined)).entries.find((entry) => entry.name === name)!.version;
+		// A new folder: the folder above lists it at the version it showed while pending, which the publish replaces.
+		{
+			const { core, open } = await fixture();
+			const view = await open();
+			await view.mkdir("out");
+			const shown = await shownIn(view, "", "out");
+			await view.publish();
+			expect(core.entries.get("out")?.version).not.toBe(shown);
+			await view.rmdir("out", shown);
+			await view.publish();
+			expect(core.entries.has("out")).toBe(false);
+		}
+		// A folder moved into another folder.
+		{
+			const { core, open } = await fixture();
+			core.seed([folder("a"), folder("c")]);
+			const view = await open();
+			await view.rename({ from: "a", to: "c/a", noReplace: false });
+			const shown = await shownIn(view, "c", "a");
+			await view.publish();
+			expect(core.entries.has("c/a")).toBe(true);
+			await view.rmdir("c/a", shown);
+			await view.publish();
+			expect(core.entries.has("c/a")).toBe(false);
+		}
+		// A folder another machine made too.
+		{
+			const { core, service, open } = await fixture();
+			const view = await open();
+			await view.mkdir("shared");
+			core.write(folder("shared"));
+			await service.poll();
+			await service.settled();
+			const shown = await shownIn(view, "", "shared");
+			await view.publish();
+			expect(core.entries.get("shared")?.version).not.toBe(shown);
+			await view.rmdir("shared", shown);
+			await view.publish();
+			expect(core.entries.has("shared")).toBe(false);
+		}
+	});
+
 	it("bases a save on what this view's move published when it names the version the file showed before", async () => {
 		const { root, core, service, open } = await fixture();
 		core.seed([

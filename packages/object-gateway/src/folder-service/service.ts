@@ -1626,7 +1626,8 @@ export class FolderService {
 	/** A base as the machine sent it, except that the version one of this view's saves made, published since, is read
 	 * as the version its change set gave the path: the machine's version map holds the first (RUNTIME-FOLDER-WRITES.md,
 	 * "After a save the map holds the version the save made"). Likewise the version a file this view moved showed at its
-	 * new path before the move was published: the move gave it a new one. */
+	 * new path before the move was published: the move gave it a new one; and the version one of the view's own folders
+	 * showed while pending, live since (`#liveFolders`). */
 	#base(view: View, path: string, base: string | undefined): string | undefined {
 		if (base === undefined) return undefined;
 		return view.published.get(path)?.find((p) => p.made === base)?.live ?? base;
@@ -1678,10 +1679,16 @@ export class FolderService {
 		this.#push(view, changed);
 	}
 
-	/** The view's own folders among `paths`: those it made or moved, still pending. */
-	#ownFolders(view: View, paths: readonly string[]): Set<string> {
+	/** The view's own folders among `paths` (those it made or moved, still pending), each with the version it shows. */
+	#ownFolders(view: View, paths: Iterable<string>): Map<string, string> {
+		const own = new Map<string, string>();
 		const nodes = view.pending?.nodes();
-		return new Set(nodes ? paths.filter((path) => nodes.get(path)?.kind === "folder") : []);
+		if (nodes)
+			for (const path of paths) {
+				const node = nodes.get(path);
+				if (node?.kind === "folder") own.set(path, node.version);
+			}
+		return own;
 	}
 
 	/** `changed`, with each of the view's own folders (`own`, taken before the change) that still shows as a folder told
@@ -1689,11 +1696,23 @@ export class FolderService {
 	 * could not name it again until something looked the path up: `getcwd` fails (ENOENT), so does git in a new
 	 * `repo.git` the boundary before its first ref's lease saved (git makes each lock's path absolute by it). What the
 	 * folder holds may still change with it (a moved folder listed between the feed's round and the settle, or one
-	 * another machine made too, with files in it): the machine lists it again. */
-	#shown(view: View, changed: readonly string[], own: ReadonlySet<string>): string[] {
+	 * another machine made too, with files in it): the machine lists it again. The folder above still lists the folder
+	 * at the version it showed while pending, a base the view reads as the live one (`#liveFolders`). */
+	#shown(view: View, changed: readonly string[], own: ReadonlyMap<string, string>): string[] {
 		return changed.map((path) =>
 			own.has(path) && view.pending?.get(path)?.kind === "folder" ? `${path}/${LISTING_ONLY}` : path,
 		);
+	}
+
+	/** Notes, for each of the view's own folders (`own`, taken before a settle) that is live now, the version it showed
+	 * while pending as the one it has live (#base): the machine's listing of the folder above holds the first (the
+	 * machine is never told the folder's path, `#shown`), and an `rmdir` or a move of the folder names it as its base. */
+	#liveFolders(view: View, own: ReadonlyMap<string, string>): void {
+		for (const [path, made] of own) {
+			const live = view.tree?.get(path);
+			if (live?.kind === "folder" && live.version !== made && !view.pending?.nodes().has(path))
+				this.#alias(view, path, made, live.version);
+		}
 	}
 
 	#push(view: View, changed: readonly string[]): void {
@@ -2083,7 +2102,9 @@ export class FolderService {
 		const settled = saved(answer.units, made.slice(first));
 		// The lock file is gone at once (git renamed it); what it published shows as the feed brings it. `from` stays in
 		// the later settling: a folder made for the ref (`refs/heads/feature/` for `feature/foo`) is live only then.
+		const own = this.#ownFolders(view, pending.nodes().keys());
 		pending.settlePaths(new Map([[from, node.version]]));
+		this.#liveFolders(view, own);
 		this.#push(view, [from]);
 		if (answer.seq !== null) {
 			view.gitUnsettled.push({ seq: answer.seq, made: settled });
@@ -2123,7 +2144,9 @@ export class FolderService {
 		const due = view.gitUnsettled.filter((unsettled) => unsettled.seq <= view.seq);
 		if (due.length === 0) return;
 		view.gitUnsettled.splice(0, view.gitUnsettled.length, ...view.gitUnsettled.filter((u) => u.seq > view.seq));
+		const own = this.#ownFolders(view, view.pending?.nodes().keys() ?? []);
 		for (const unsettled of due) view.pending?.settlePaths(unsettled.made);
+		this.#liveFolders(view, own);
 	}
 
 	/** A git directory `git init` made in the view (the code host's seed), or a folder above it, is saved first by an
@@ -3323,6 +3346,7 @@ export class FolderService {
 		const before = [...pending.nodes().keys()];
 		const own = this.#ownFolders(view, before);
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
+		this.#liveFolders(view, own);
 		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file or link kept
 		// keeps the removal it holds, and so that one's.
 		view.credit.prune(pending);
