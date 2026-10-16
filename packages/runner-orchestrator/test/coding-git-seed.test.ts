@@ -120,6 +120,10 @@ describe("trusted GitHub seed bundle broker", () => {
 		expect((await readFile(bundle)).includes(Buffer.from("github_pat_fixture"))).toBe(false);
 		expect(f.calls.some((call) => call.args.includes("checkout"))).toBe(false);
 		for (const call of f.calls) if (!call.args.includes("fetch")) expect(call.env.GIT_CONFIG_VALUE_0).toBeUndefined();
+		// Only the whole-history steps get the longer limits.
+		expect(
+			f.calls.filter((call) => call.long).map((call) => call.args.find((arg) => ["fetch", "fsck", "bundle"].includes(arg))),
+		).toEqual(["fetch", "fsck", "bundle"]);
 		expect((await readdir(f.root)).some((name) => name.startsWith(".git-seed-"))).toBe(false);
 	});
 	it("rejects a moved base instead of silently seeding a different commit", async () => {

@@ -46,6 +46,10 @@ async function fixture() {
 	const bundlePath = join(root, "export.bundle");
 	await git("bundle", "create", bundlePath, ref);
 	const bundle = await readFile(bundlePath);
+	// The fetchable "GitHub" side holds only the base, as main.
+	const remote = join(root, "remote.git");
+	await exec("/usr/bin/git", ["init", "--bare", "--template=", remote], { cwd: root, env });
+	await git("push", "--quiet", remote, `${baseSha}:refs/heads/main`);
 	const input: CodingGitPush = {
 		repository: { host: "github.com", owner: "qorpera", name: "example", baseBranch: "main" },
 		workerId,
@@ -67,6 +71,14 @@ async function fixture() {
 			if (loseReply) throw new Error(`untrusted stderr ${token}`);
 			return "ok\n";
 		}
+		if (command.args.includes("fetch"))
+			return (
+				await exec(
+					"/usr/bin/git",
+					command.args.map((arg) => (arg === "https://github.com/qorpera/example.git" ? `file://${remote}` : arg)),
+					{ cwd: command.cwd, env: { ...command.env, GIT_ALLOW_PROTOCOL: "file" }, signal: command.signal },
+				)
+			).stdout;
 		if (process.platform === "linux")
 			return createCodingBrokerGitRunner({ bubblewrapPath: process.env.QORPERA_TEST_BWRAP })(command);
 		// Supplemental macOS fixture executes Git directly; production transport
@@ -125,6 +137,7 @@ describe("credential-isolated coding Git publication", () => {
 			`${f.input.headSha}:${ref}`,
 		]);
 		expect(f.calls.some((call) => call.args.includes("checkout"))).toBe(false);
+		expect(f.calls.some((call) => call.args.includes("fetch"))).toBe(false);
 		expect(f.calls.some((call) => call.args.includes("fsck"))).toBe(true);
 		for (const command of f.calls) {
 			expect(command.args.join(" ")).not.toContain(token);
@@ -227,14 +240,60 @@ describe("credential-isolated coding Git publication", () => {
 		).toEqual({ branch, headSha: next });
 		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(2);
 	});
-	it("rejects incomplete bundles whose prerequisites are absent from the fresh broker repository", async () => {
+	it("fetches a thin bundle's prerequisites and the base tip at depth 1, then verifies and pushes it", async () => {
 		const f = await fixture(),
-			path = join(f.root, "partial.bundle");
+			path = join(f.root, "thin.bundle");
 		await f.git("bundle", "create", path, ref, `^${f.input.baseSha}`);
-		await expect(pushCloudCodingBundle(f.input, await readFile(path), f.options)).rejects.toThrow(
-			"CODING_GIT_OPERATION_UNCONFIRMED",
+		expect(await pushCloudCodingBundle(f.input, await readFile(path), f.options)).toEqual({
+			branch,
+			headSha: f.input.headSha,
+		});
+		const fetches = f.calls.filter((call) => call.args.includes("fetch"));
+		expect(fetches).toHaveLength(1);
+		expect(fetches[0].network).toBe(true);
+		// The base's history may be large: the fetch gets a seed's limits.
+		expect(fetches[0].long).toBe(true);
+		expect(f.calls.filter((call) => call.long)).toHaveLength(1);
+		expect(fetches[0].args.slice(-8)).toEqual([
+			"fetch",
+			"--depth=1",
+			"--no-tags",
+			"--no-recurse-submodules",
+			"--no-write-fetch-head",
+			"https://github.com/qorpera/example.git",
+			`${f.input.baseSha}:refs/qorpera/prerequisite/0`,
+			"refs/heads/main:refs/qorpera/base",
+		]);
+		expect(fetches[0].env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/qorpera/example.git.extraHeader");
+		expect(fetches[0].env.GIT_ALLOW_PROTOCOL).toBe("https");
+		const step = (word: string) => f.calls.findIndex((call) => call.args.includes(word));
+		expect(step("list-heads")).toBeLessThan(step("fetch"));
+		expect(step("fetch")).toBeLessThan(step("verify"));
+		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
+	});
+	it("refuses a thin bundle whose prerequisite the repository does not have", async () => {
+		const f = await fixture(),
+			path = join(f.root, "elsewhere.bundle");
+		const tree = await f.git("rev-parse", `${f.input.headSha}^{tree}`);
+		const local = await f.git("commit-tree", tree, "-p", f.input.baseSha, "-m", "local only");
+		const next = await f.git("commit-tree", tree, "-p", local, "-m", "on local");
+		await f.git("update-ref", ref, next);
+		await f.git("bundle", "create", path, ref, `^${local}`);
+		await expect(pushCloudCodingBundle({ ...f.input, headSha: next }, await readFile(path), f.options)).rejects.toThrow(
+			/^CODING_GIT_OPERATION_UNCONFIRMED$/,
 		);
+		expect(f.calls.some((call) => call.args.includes("fetch"))).toBe(true);
+		expect(f.calls.some((call) => call.args.includes("unbundle"))).toBe(false);
 		expect(f.calls.some((call) => call.args.includes("push"))).toBe(false);
+	});
+	it("refuses malformed or too many prerequisites before any Git command", async () => {
+		const f = await fixture();
+		const header = (lines: string[]) =>
+			Buffer.from(`# v2 git bundle\n${lines.join("")}${f.input.headSha} ${ref}\n\nPACK`, "latin1");
+		const many = Array.from({ length: 65 }, (_, index) => `-${index.toString(16).padStart(40, "0")} c\n`);
+		for (const bundle of [header(["-xyz\n"]), header([`-${f.input.baseSha}x\n`]), header(many)])
+			await expect(pushCloudCodingBundle(f.input, bundle, f.options)).rejects.toThrow("INVALID_CODING_GIT_PUSH");
+		expect(f.calls).toHaveLength(0);
 	});
 	it("cannot change the next head for an already claimed branch predecessor", async () => {
 		const f = await fixture();
