@@ -1941,6 +1941,27 @@ export class CloudCompanyFolderClient {
 		);
 	}
 
+	/** The platform's own conversation-tree batch (M1b-4b-2): with no runLog, a run writes only its own conversation's
+	 * tree, and every unit names exactly that conversation's generation. Otherwise as `memoryCommitStaged`. */
+	async memorySessionCommitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		session: { readonly sessionId: string; readonly generation: number },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		const { sessionId, generation } = session;
+		if (!UUID.test(sessionId) || !Number.isSafeInteger(generation) || generation < 0)
+			throw new Error("Invalid conversation tree generation");
+		return this.#commitStaged(
+			"qorpera_folder_memory_commit",
+			{ p_preconditions: { sessionGenerations: [{ sessionId, generation }] } },
+			operationKey,
+			changeSet,
+			{},
+			signal,
+		);
+	}
+
 	async #commitStaged(
 		method: "qorpera_folder_commit" | "qorpera_folder_worker_commit" | "qorpera_folder_memory_commit",
 		extra: Record<string, unknown>,

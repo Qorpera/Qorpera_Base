@@ -26,8 +26,12 @@ import {
 import {
 	type MemoryRunFile,
 	type MemoryRunFileKind,
+	type MemoryTreeFile,
+	type MemoryTreeFileKind,
 	memoryRunFilePath,
+	memoryTreeFilePath,
 	parseMemoryRunFile,
+	parseMemoryTreeFile,
 } from "./memory-run-files.ts";
 import { NETWORK_RULES_PATH, type NetworkRulesFile, parseNetworkRulesFile } from "./network-rules.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
@@ -55,7 +59,9 @@ export type CompanyStateFileKind =
 	/** The company's network rules, `rules/network.toml` (./network-rules.ts, RUNTIME-AGENT-EXIT.md §10). */
 	| "network-rules"
 	/** Run metadata, step blocks and run summary blocks (W1b, ./memory-run-files.ts). */
-	| MemoryRunFileKind;
+	| MemoryRunFileKind
+	/** A conversation's summary tree: its tree.toml and blocks (M1a, ./memory-run-files.ts). */
+	| MemoryTreeFileKind;
 
 /** One reason a file cannot be saved. Lines count from 1 over the whole file. */
 export interface CompanyStateProblem {
@@ -416,7 +422,8 @@ export type CompanyStateFile =
 	| TableFile
 	| TableRowsFile
 	| NetworkRulesFile
-	| MemoryRunFile;
+	| MemoryRunFile
+	| MemoryTreeFile;
 
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
@@ -447,6 +454,8 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	const [a, b, c, d, e, f] = parts;
 	const memory = memoryRunFilePath(path);
 	if (memory) return { ...none, kind: memory.kind, agent: memory.agent, group: memory.group };
+	const tree = memoryTreeFilePath(path);
+	if (tree) return { ...none, kind: tree.kind, agent: tree.agent, group: tree.group };
 	if (parts.length === 2 && a === "vision" && b === "vision.md") return { kind: "vision", ...none };
 	if (parts.length === 2 && a === "agents" && b === "sections.md") return { kind: "sections", ...none };
 	if (parts.length === 2 && a === "connections" && stem(b) !== null) {
@@ -2109,7 +2118,9 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		kind === "network-rules" ||
 		kind === "memory-run" ||
 		kind === "memory-steps" ||
-		kind === "memory-run-block";
+		kind === "memory-run-block" ||
+		kind === "memory-tree" ||
+		kind === "memory-block";
 	if (kind && kind !== "vision" && kind !== "sections" && !fixedName && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
 	else if (!problems.list.length && path !== companyPathKey(path))
@@ -2131,6 +2142,14 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 		const placed = companyStatePathProblems(path);
 		if (placed.length) return { ok: false, path: where, problems: placed };
 		const parsed = parseMemoryRunFile(where.kind, path, text);
+		return parsed.ok
+			? { ok: true, path: where, file: parsed.file }
+			: { ok: false, path: where, problems: parsed.problems };
+	}
+	if (where.kind === "memory-tree" || where.kind === "memory-block") {
+		const placed = companyStatePathProblems(path);
+		if (placed.length) return { ok: false, path: where, problems: placed };
+		const parsed = parseMemoryTreeFile(where.kind, path, text);
 		return parsed.ok
 			? { ok: true, path: where, file: parsed.file }
 			: { ok: false, path: where, problems: parsed.problems };
