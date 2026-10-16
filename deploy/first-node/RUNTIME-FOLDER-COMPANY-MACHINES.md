@@ -532,9 +532,9 @@ has unsaved changes (4a).
   the final boundary, its kept answer), and the office service adds it (4d).
 - A desktop save shows a desktop notification, and its report goes into the next tool result of the run holding the
   screen (§2 "The report"). The folder service has it (the quiet boundary is the service's), and the core has every
-  commit by its view. 4f builds it: a notification through the helper's connection, and the holder run's next tool
-  result reading the view's commits since the last one shown, and the publishes refused since, which the office
-  service has from the notifications (a refused publish makes no commit). Until then the service logs it (4a).
+  commit by its view. 4f builds it: the helper asking the folder service for the view's notices, and the holder run's
+  next tool result reading the view's commits since the last one shown, and the publishes refused since, which the
+  office service has from the notices (a refused publish makes no commit). The service also logs it (4a).
 - A drain's or a stop's boundaries answer with reports too, refusals included (rule 3). The folder helper logs every
   boundary's report as it answers (the refusal, the commit and how many paths had each outcome, never a path or a
   reason), and the office service logs a drain's with the drain too. The stop control writes nothing (its locked child
@@ -555,11 +555,24 @@ has unsaved changes (4a).
   (`cloud-company-computer-desktop-folder.ts`) holds the pass of every view it opens, keeps per view the id of the
   last commit it showed, and reads the ones since when it builds a report. Its registry
   (`cloud-company-computer-registry-http.ts`) names the function.
-- **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service sends each
-  quiet boundary's answer as a notification on the connection of the helper that holds the mount (the refusal, its
-  reason and the change set's paths, or the commit; never a pass), and the helper passes it to the office service on
-  its socket. The office service keeps a view's refusals since its last report; a refusal asked again with the same
-  reason and paths is kept once, with how many times.
+- **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service keeps,
+  per view, what came of each change set a boundary no machine asked for asked (a quiet period's, the last
+  connection's leaving, one a change needed first, or one with no answer asked again before a change): its commit,
+  or its refusal with the reason and the paths it refused (at most 20, sorted, and how many), the last 32 numbered in
+  a series of the view's own. A boundary that first asks again a change set that had no answer keeps that one's
+  notice, from its own outcomes, then its own change set's. A boundary a machine asked for is not kept: its answer
+  reaches the office service already. The office service
+  has no vsock, so the helper asks for them: it runs the folder program's `relay` on a socket only root reaches, and
+  speaks the folder protocol's `notices` role through it with the view file's id and pass (protocol 4,
+  RUNTIME-FOLDER-SERVICE.md), so the folder service checks it as it does the machine that holds the mount. It never
+  opens, holds or keeps a view, and never carries a pass back to the office service. The office service asks the
+  helper (a new `notices` operation, after the last one it has) for each view it opened for a run, at most once a
+  second, and once more before a drain or a `switch` moves the mount. It keeps a view's refusals since its last
+  report; a refusal asked again with the same reason and paths is kept once, with how many times.
+  - **Rollout.** The service's role (4f-2b-2a) goes out with a folder service deploy on the nodes; the helper's
+    relay and operation (4f-2b-2b) with a new office image generation, as the helper is the image's. Either may go
+    first: a service before the role answers the helper's hello "Bad role", which the helper reads as no notices,
+    and a service with it is asked by no helper before the image.
 - **The holder run's next tool result, whatever its tool.** Every tool result of a native run is built in one place,
   the native tool boundary (`cloud-native-tool-boundary.ts`, `#result`). For a run whose computer session has held a
   screen, it first asks the office service for the run's report, through the run's computer endpoint
@@ -593,9 +606,11 @@ has unsaved changes (4a).
     boundary's report in the result of every call that runs, and their tests. Those include a report in a tool result
     that is not a desktop action's, and a drain's report in the next result of the run that held the desktop, whatever
     its tool.
-  - 4f-2b-2: the folder service's notifications of quiet boundaries (a change set refused whole), the helper passing
-    them on, and the office service keeping them per view, with their tests (a quiet save refused after the desktop
-    action returned, reported in the run's next `company_read`).
+  - 4f-2b-2: the folder service's notices of the boundaries no machine asked for (a change set refused whole), the
+    helper asking for them, and the office service keeping them per view, with their tests (a quiet save refused
+    after the desktop action returned, reported in the run's next `company_read`). Two PRs: 4f-2b-2a the service's
+    `notices` role and its tests (`folder-notices.test.ts`); 4f-2b-2b the helper's relay and `notices` operation and
+    the office service's asks, in a new office image generation.
   - 4f-2b-3: the desktop notifications (`notify-send`). Its proof on the test machine needs an image with #1225's
     packages.
 
