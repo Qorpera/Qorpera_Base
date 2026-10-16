@@ -1874,6 +1874,13 @@ export class ConversationView {
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
+		// Read before any message is drawn: a message brought up to date in place (erased) drops a link in it that had
+		// the keyboard.
+		const focused = document.activeElement;
+		const focusedMessage =
+			focused instanceof HTMLElement && this.#messages.contains(focused)
+				? focused.closest<HTMLElement>("article.message[data-message-id]")?.dataset.messageId
+				: undefined;
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -2580,7 +2587,6 @@ export class ConversationView {
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		const proposalCard = active?.closest<HTMLElement>("[data-proposal-id]")?.dataset.proposalId;
 		const changeLine = active?.closest<HTMLElement>("[data-interface-change]")?.dataset.interfaceChange;
-		const focusedMessage = active?.closest<HTMLElement>("article.message[data-message-id]")?.dataset.messageId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
@@ -2777,9 +2783,10 @@ export class ConversationView {
 			const retry = line?.querySelector<HTMLButtonElement>("button:not(:disabled)");
 			(retry ?? line)?.focus({ preventScroll: true });
 		}
-		// A link in a message that was redrawn without it (the message erased) leaves the keyboard on the message.
-		const lost = !document.activeElement?.isConnected || document.activeElement === document.body;
-		if (focusedMessage && active && !active.isConnected && lost) this.#focusMessage(focusedMessage);
+		// A link in a message that was redrawn without it (the message erased) leaves the keyboard on the message, and a
+		// message gone from the thread leaves it on the thread.
+		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))
+			this.#focusMessage(focusedMessage);
 		this.#pinToBottom();
 	}
 
