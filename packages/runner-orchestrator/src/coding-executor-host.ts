@@ -35,7 +35,7 @@ import {
 	type CodingFolderRepositorySession,
 	codingFolderNoRepositories,
 } from "./coding-folder-repositories.ts";
-import type { CodingFolderViews } from "./coding-folder-views.ts";
+import type { CodingFolderViewEnd, CodingFolderViews } from "./coding-folder-views.ts";
 import { type CodingBrokerGitRunner, pushCloudCodingBundle } from "./coding-git.ts";
 import { fetchCloudCodingSeed, resolveCloudCodingBase } from "./coding-git-seed.ts";
 import { LxdCodingGitTransfer } from "./coding-git-transfer.ts";
@@ -164,14 +164,14 @@ export interface LxdCodingExecutorHostOptions {
 	 * runs as its own user, and runs its commands through the guest agent; nothing is hot-plugged, installed or seeded.
 	 * Absent, the NAS model. */
 	folder?: {
-		views: Pick<CodingFolderViews, "attach" | "end" | "endMachine">;
+		views: Pick<CodingFolderViews, "attach" | "held" | "end" | "endMachine">;
 		control: Pick<CodingFolderControl, "boundary">;
 		/** The guest agent's exec client (the executor's LXD client). */
 		client: LxdInstanceExecStreamClient;
 		/** Where a session's commands start and what its finished turn exports (default: none, at /company). */
 		repositories?: CodingFolderRepositories;
-		/** Each view the guest mounted for a session. */
-		onMount?(mount: { workerId: string; machineId: string; viewId: string }): void;
+		/** Each view the guest mounted for a session, and how the view it replaced ended, if it replaced one. */
+		onMount?(mount: { workerId: string; machineId: string; viewId: string; replaced?: CodingFolderViewEnd }): void;
 	};
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
@@ -1250,13 +1250,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const folder = this.#options.folder;
 		let generation: string | null;
 		if (folder) {
-			// The generation this process holds on the machine's boot: the session's view stays, with whatever its
-			// commands left running, if SQL keeps it.
-			const known = this.#attachments.get(claim.workerId);
-			generation =
-				!fresh && known?.machine.machineId === machine.machineId && known.bootId === guest.bootId
-					? digest(known.token)
-					: null;
+			// The generation the session's view was opened under on this boot of the machine, by its record, so also after
+			// this process restarted: the view stays, with whatever its commands left running, if SQL keeps it. One from
+			// an earlier boot ends first, while its attachment is still the live one, so its final boundary saves what it
+			// has pending before a new generation leaves it nothing to save under. A view on another machine is left to
+			// SQL, which attaches nothing here while that machine's attachment lives.
+			const held = await folder.views.held(claim.workerId, signal);
+			const onMachine = held !== undefined && held.machineId === machine.machineId;
+			generation = !fresh && onMachine && held.bootId === guest.bootId ? digest(held.attachmentToken) : null;
+			if (generation === null && onMachine) {
+				const end = await this.#exclusive(machine.machineId, signal, () =>
+					folder.views.end(claim.workerId, signal),
+				);
+				if (end && !end.saved) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
+				if (end && !end.closed) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
+			}
 		} else {
 			// The generation the guest still holds, if a renewal can still reach it:
 			// SQL keeps it only if it is also the live attachment on this machine.
@@ -1322,17 +1330,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				environmentId: claim.environmentId,
 				attachmentToken: attachment.token,
 				machine,
+				bootId: guest.bootId,
 				uid: guest.folder.uid,
 			};
-			// Its view, under the attachment and while SQL keeps it, never beside the machine's lifecycle steps.
-			const { viewId } = await this.#exclusive(machine.machineId, signal, () =>
+			// Its view, under the attachment and while SQL keeps it, never beside the machine's lifecycle steps. A view it
+			// replaces is one whose attachment SQL let lapse, or one the node closed: how that one ended is reported.
+			const { viewId, replaced } = await this.#exclusive(machine.machineId, signal, () =>
 				folder.views.attach(
 					session,
 					Date.now() + (started + Number(attached.validForMs) - performance.now()),
 					signal,
 				),
 			);
-			folder.onMount?.({ workerId: claim.workerId, machineId: machine.machineId, viewId });
+			folder.onMount?.({
+				workerId: claim.workerId,
+				machineId: machine.machineId,
+				viewId,
+				...(replaced && { replaced }),
+			});
 			return;
 		}
 		try {
