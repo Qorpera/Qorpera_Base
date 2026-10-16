@@ -29,6 +29,8 @@
 -- them at most. One loop writes the view's run, a coding machine's turns and a test machine's runs, each once, in run
 -- id order. The view's run and the turns get the view's pairs, as in 5a; a test machine's other runs get them checked
 -- for their own authority.
+-- And on top of 20260930446000 (step 5a, the code host's view): its take-in compares the view's agent and member with
+-- "is distinct from", so a code host's view, which has neither, is no run's own. Part 4 keeps that comparison.
 --
 -- Exact-text patches: each fails unless the function has the text given exactly once; each function is replaced once,
 -- after the last. Body marker "20260930480000".
@@ -177,14 +179,14 @@ select pg_temp.folder_test_machine_reads_patch(
 -- 4. The take-in: a test machine's view for a company-audience run whose agent and member read the root.
 select pg_temp.folder_test_machine_reads_patch(
 	'public.qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)'::regprocedure,
-	$old$	if not found or v_view.environment_id <> p_environment_id or v_view.staff_agent_id <> (v_resolved ->> 'staffAgentId')::uuid
-		or v_view.member_user_id <> (v_resolved ->> 'requesterUserId')::uuid then
+	$old$	if not found or v_view.environment_id <> p_environment_id or v_view.staff_agent_id is distinct from (v_resolved ->> 'staffAgentId')::uuid
+		or v_view.member_user_id is distinct from (v_resolved ->> 'requesterUserId')::uuid then
 		raise exception 'A run inherits only its own agent''s and member''s views' using errcode = '42501'; end if;$old$,
 	$new$	if not found or v_view.environment_id <> p_environment_id then
 		raise exception 'A run inherits only its own agent''s and member''s views' using errcode = '42501';
-	elsif (v_view.staff_agent_id <> (v_resolved ->> 'staffAgentId')::uuid
-		or v_view.member_user_id <> (v_resolved ->> 'requesterUserId')::uuid) is not true then
-		null; -- Its own agent's and member's view, of any kind.
+	elsif v_view.staff_agent_id is not distinct from (v_resolved ->> 'staffAgentId')::uuid
+		and v_view.member_user_id is not distinct from (v_resolved ->> 'requesterUserId')::uuid then
+		null; -- Its own agent's and member's view, of any kind (20260930446000: a code host's view has neither).
 	elsif v_view.kind = 'test_machine' then
 		-- 20260930480000: a test machine's output can show what any command on it read, so any run that sees it takes in
 		-- the machine's reads: a company-audience run whose agent and member read the root now.

@@ -58,9 +58,10 @@ create function pg_temp.inherit(p_run jsonb, p_view jsonb, p_id uuid) returns js
 	select public.qorpera_folder_run_inherit_view_reads('63200000-0000-4000-8000-000000000020', p_run, (p_view ->> 'viewId')::uuid, p_id)
 $$;
 
--- The migration's marker is in the release and the take-in; the release keeps 5a's marker (20260930445000).
+-- The migration's marker is in the release and the take-in; the release keeps 5a's marker (20260930445000), and the
+-- take-in keeps the code host's (20260930446000) and its "is distinct from" comparison of the agent and member.
 do $$
-declare f regprocedure;
+declare f regprocedure; v_inherit text;
 begin
 	foreach f in array array['public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)',
 		'public.qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)']::regprocedure[] loop
@@ -69,6 +70,10 @@ begin
 	if strpos(pg_get_functiondef('public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure),
 		'20260930445000') = 0 then
 		raise exception 'The release lost 5a''s marker 20260930445000'; end if;
+	v_inherit := pg_get_functiondef('public.qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)'::regprocedure);
+	if strpos(v_inherit, '20260930446000') = 0 or strpos(v_inherit, 'v_view.staff_agent_id <>') > 0
+		or strpos(v_inherit, 'v_view.member_user_id <>') > 0 then
+		raise exception 'The take-in lost the code host''s comparison (20260930446000)'; end if;
 end $$;
 
 -- Setup: tmr/ with two files, which the machines read.
