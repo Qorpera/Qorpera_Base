@@ -28,16 +28,39 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 const DECISIONS = ["next", "conclude"] as const;
 
+function fits(
+	value: unknown,
+	allowed: readonly string[],
+	required: readonly string[],
+): value is Record<string, unknown> {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		Object.keys(value).every((key) => allowed.includes(key)) &&
+		required.every((key) => Object.hasOwn(value, key))
+	);
+}
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		Object.keys(value).some((key) => !allowed.includes(key)) ||
-		required.some((key) => !Object.hasOwn(value, key))
-	)
-		throw new Error("Invalid routine request");
-	return value as Record<string, unknown>;
+	if (!fits(value, allowed, required)) throw new Error("Invalid routine request");
+	return value;
+}
+const words = (keys: readonly string[]) =>
+	keys.length < 2 ? keys.join("") : `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
+/** A trigger's keys, for its kind. A missing or unknown key is refused with the keys the kind takes and an example; the
+ * model's own keys are not repeated, as a reason the boundary cannot pass on as plain text would be dropped. */
+function triggerKeys(
+	value: unknown,
+	kind: string,
+	required: readonly string[],
+	optional: readonly string[],
+	example: Record<string, unknown>,
+): Record<string, unknown> {
+	if (!fits(value, ["kind", ...required, ...optional], ["kind", ...required]))
+		throw new CloudToolArgumentRefusal(
+			`a trigger of kind ${kind} takes ${words(required)}, and optionally ${words(optional)}, nothing else, like ${JSON.stringify({ kind, ...example })}`,
+		);
+	return value;
 }
 function text(value: unknown, maxBytes: number, singleLine = false): string {
 	if (
@@ -51,24 +74,26 @@ function text(value: unknown, maxBytes: number, singleLine = false): string {
 		throw new Error("Invalid routine text");
 	return value.trim();
 }
-function timeZone(value: unknown): string {
-	if (typeof value !== "string" || !value || value === "auto" || value.length > 64)
-		throw new Error("Invalid time zone");
+// A bad value is refused in words that name the argument (label) and show a good one, so the model can correct it.
+function timeZone(value: unknown, label: string): string {
+	const refusal = () => new CloudToolArgumentRefusal(`${label} is an IANA time zone, like Europe/Copenhagen`);
+	if (typeof value !== "string" || !value || value === "auto" || value.length > 64) throw refusal();
 	try {
 		new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
 	} catch {
-		throw new Error("Invalid time zone");
+		throw refusal();
 	}
 	return value;
 }
-function localTime(value: unknown): string {
-	if (typeof value !== "string" || !LOCAL_TIME.test(value)) throw new Error("Invalid local time");
+function localTime(value: unknown, label: string): string {
+	if (typeof value !== "string" || !LOCAL_TIME.test(value))
+		throw new CloudToolArgumentRefusal(`${label} is a time of day as HH:MM on a 24-hour clock, like 08:00`);
 	return value;
 }
 function reply(value: unknown): (typeof REPLY)[number] {
 	if (value === undefined) return "optional";
 	if (typeof value !== "string" || !REPLY.includes(value as (typeof REPLY)[number]))
-		throw new Error("Invalid routine reporting");
+		throw new CloudToolArgumentRefusal("report is optional, required or silent");
 	return value as (typeof REPLY)[number];
 }
 
@@ -91,20 +116,20 @@ function instant(value: unknown, label: string): string {
  */
 function compileTrigger(value: unknown): Record<string, unknown> {
 	const kind = (value as { kind?: unknown } | null)?.kind;
+	const zone = "Europe/Copenhagen";
 	if (kind === "every") {
-		const t = object(value, ["kind", "minutes", "firstRunAt", "report"], ["kind", "minutes"]);
+		const t = triggerKeys(value, kind, ["minutes"], ["firstRunAt", "report"], { minutes: 60 });
 		if (!Number.isSafeInteger(t.minutes) || (t.minutes as number) < 5 || (t.minutes as number) > 10_080)
-			throw new Error("Invalid routine interval");
+			throw new CloudToolArgumentRefusal("minutes is a whole number from 5 to 10080 (one week), like 60");
 		const trigger: Record<string, unknown> = { kind: "schedule", intervalMinutes: t.minutes };
 		if (t.firstRunAt !== undefined) trigger.startAt = instant(t.firstRunAt, "firstRunAt");
 		return { ...trigger, replyPolicy: reply(t.report) };
 	}
 	if (kind === "weekly") {
-		const t = object(
-			value,
-			["kind", "weekdays", "localTime", "timeZone", "firstRunAt", "report"],
-			["kind", "localTime", "timeZone"],
-		);
+		const t = triggerKeys(value, kind, ["localTime", "timeZone"], ["weekdays", "firstRunAt", "report"], {
+			localTime: "08:00",
+			timeZone: zone,
+		});
 		const startAt: Record<string, unknown> =
 			t.firstRunAt === undefined ? {} : { startAt: instant(t.firstRunAt, "firstRunAt") };
 		// Weekday default: a wall-clock routine runs on business days unless the agent says otherwise.
@@ -116,30 +141,36 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			new Set(days).size !== days.length ||
 			days.some((day) => !WEEKDAYS.includes(day as (typeof WEEKDAYS)[number]))
 		)
-			throw new Error("Invalid routine weekdays");
+			throw new CloudToolArgumentRefusal(
+				'weekdays is 1 to 7 different days, sunday to saturday in lowercase, like ["monday", "thursday"]',
+			);
 		return {
 			kind: "schedule",
 			intervalMinutes: 1440,
 			...startAt,
 			weekdays: days,
-			localTime: localTime(t.localTime),
-			timeZone: timeZone(t.timeZone),
+			localTime: localTime(t.localTime, "localTime"),
+			timeZone: timeZone(t.timeZone, "timeZone"),
 			replyPolicy: reply(t.report),
 		};
 	}
 	if (kind === "dynamic") {
-		const t = object(value, ["kind", "firstRunAt", "timeZone", "report"], ["kind", "timeZone"]);
+		const t = triggerKeys(value, kind, ["timeZone"], ["firstRunAt", "report"], { timeZone: zone });
 		return {
 			kind: "once",
 			...(t.firstRunAt === undefined ? {} : { at: instant(t.firstRunAt, "firstRunAt") }),
-			timeZone: timeZone(t.timeZone),
+			timeZone: timeZone(t.timeZone, "timeZone"),
 			replyPolicy: reply(t.report),
 		};
 	}
 	if (kind === "file_change") {
-		const t = object(value, ["kind", "path", "match", "timeZone", "report"], ["kind", "path", "timeZone"]);
+		const t = triggerKeys(value, kind, ["path", "timeZone"], ["match", "report"], {
+			path: "sales/leads",
+			timeZone: zone,
+		});
 		const match = t.match ?? "exact";
-		if (match !== "exact" && match !== "subtree") throw new Error("Invalid routine path match");
+		if (match !== "exact" && match !== "subtree")
+			throw new CloudToolArgumentRefusal("match is exact (the path itself) or subtree (anything under it)");
 		// A folder is often written with a slash at the end (inbox/l23/): it is dropped, as the routine file's
 		// parser does. Any other bad path is refused with the parser's reason, so the model can correct it.
 		const path = typeof t.path === "string" ? t.path.replace(/\/+$/, "") : "";
@@ -155,13 +186,20 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			source: "company-file",
 			path,
 			match,
-			timeZone: timeZone(t.timeZone),
+			timeZone: timeZone(t.timeZone, "timeZone"),
 			replyPolicy: reply(t.report),
 		};
 	}
 	if (kind === "event") {
-		const t = object(value, ["kind", "hookId", "only", "timeZone", "report"], ["kind", "hookId", "timeZone"]);
-		if (typeof t.hookId !== "string" || !UUID.test(t.hookId)) throw new Error("Invalid routine hook");
+		// An example id would be called as it is, so the example names where a real one comes from.
+		const t = triggerKeys(value, kind, ["hookId", "timeZone"], ["only", "report"], {
+			hookId: "<an id from list_hooks>",
+			timeZone: zone,
+		});
+		if (typeof t.hookId !== "string" || !UUID.test(t.hookId))
+			throw new CloudToolArgumentRefusal(
+				"hookId is the id of one of the company's hooks or mailboxes, a UUID copied from list_hooks",
+			);
 		const only =
 			t.only === undefined
 				? {}
@@ -172,17 +210,22 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 						t.only.every((type) => typeof type === "string" && EVENT_TYPE.test(type))
 					? { only: [...t.only] }
 					: undefined;
-		if (!only) throw new Error("Invalid routine event types");
+		if (!only)
+			throw new CloudToolArgumentRefusal(
+				'only is 1 to 20 different event types, each up to 128 ASCII letters, digits or punctuation marks without spaces, like ["invoice.paid"]',
+			);
 		return {
 			kind: "listener",
 			source: "event",
 			hookId: t.hookId.toLowerCase(),
 			...only,
-			timeZone: timeZone(t.timeZone),
+			timeZone: timeZone(t.timeZone, "timeZone"),
 			replyPolicy: reply(t.report),
 		};
 	}
-	throw new Error("Invalid routine trigger");
+	throw new CloudToolArgumentRefusal(
+		`trigger is an object whose kind is dynamic, every, weekly, file_change or event, like ${JSON.stringify({ kind: "dynamic", timeZone: zone })}`,
+	);
 }
 
 export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
@@ -550,10 +593,11 @@ export function cloudRoutineTools(
 			if (a.effort !== undefined) request.effort = a.effort;
 			if (a.quietHours !== undefined) {
 				const quiet = object(a.quietHours, ["start", "end", "timeZone"], ["start", "end", "timeZone"]);
-				const start = localTime(quiet.start),
-					end = localTime(quiet.end);
-				if (start === end) throw new Error("Invalid routine quiet hours");
-				request.quietHours = { start, end, timeZone: timeZone(quiet.timeZone) };
+				const start = localTime(quiet.start, "quietHours.start"),
+					end = localTime(quiet.end, "quietHours.end");
+				if (start === end)
+					throw new CloudToolArgumentRefusal("quietHours.start and quietHours.end differ, like 22:00 and 07:00");
+				request.quietHours = { start, end, timeZone: timeZone(quiet.timeZone, "quietHours.timeZone") };
 			}
 			// The file's own checks, before the automatic review, so a card is never raised for a save that cannot be.
 			refuseRebinding(request);
