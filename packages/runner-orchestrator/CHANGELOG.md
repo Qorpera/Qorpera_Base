@@ -151,6 +151,8 @@
 
 ### Fixed
 
+- The code host's jobs (5e-1) key a base branch and a path in the folder with `@qorpera/contracts`' `folderKey`, exactly as `qorpera_folder_key` does, instead of an inlined copy with JavaScript's full case mapping: 'Straße' and 'STRASSE' are two names there, as in the folder.
+
 - Failed or forgotten office service-stop attempts without a completion retry the same retained command after 30 seconds, doubling to ten minutes. Each retry has its own observed dispatch journal; a persisted schedule survives provider restarts and retains only the original and latest attempt directories. Pending operations are not repeated, and stop acknowledgement still requires protected completion plus fresh inspection.
 
 - A journal that never starts again no longer stops the node's claims (4–6 Oct 2026: node 1 claimed no run for two and a half days). The LXD provider's reconcile no longer demands the recovery volume of a stopping, stopped or lost run whose guest is gone, and it still releases that run's capacity; a run whose guest exists, or that may start again, still has to name its volume. A dead journal (stopping, stopped or lost, its own guest gone in LXD) that still fails its share of a pass, for example one this build cannot read because it was written before G2-3bc's identity credential digest (node 2), is named in the log at most once an hour (`dead journal kept: acquisition=… stage=…`) and no longer fails the pass; the capacity inventory before a start, a stop's runner lookup and the prior-attempt scan pass over it too (the scan still counts its attempt). Every other failure is named in the log as `reconcile failed: acquisition=… stage=…`, with the failed call's function, status and code where there is one, and never the error's text.
