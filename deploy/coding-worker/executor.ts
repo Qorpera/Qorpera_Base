@@ -204,14 +204,17 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
-	const journalRoot = await createCodingNasStorage(config.storagePolicy).prepareControl();
+	const storage = createCodingNasStorage(config.storagePolicy);
+	const journalRoot = await storage.prepareControl();
 	const lxd = new LxdUnixClient();
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
 		const folderControl = new CodingFolderControl(config.folder.controlSocket ? { path: config.folder.controlSocket } : {});
+		// The views it holds are recorded beside its journals, on the NAS: a restarted executor still ends them.
+		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		folder = {
-			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program }), control: folderControl, client: lxd,
+			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: folderControl, client: lxd,
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
 		};
 		// Which model this executor runs, and with what: a proof reads it from the log.

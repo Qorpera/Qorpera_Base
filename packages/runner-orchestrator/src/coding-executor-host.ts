@@ -1528,7 +1528,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** Takes a session off its member's machine under detach custody: its named
 	 * running commands are cancelled first (so a later read says cancelled),
 	 * then the guest stops its slice, flushes, and removes its boot-local state
-	 * and user, and its NAS folders are unplugged. The folders themselves stay. */
+	 * and user, and its NAS folders are unplugged. The folders themselves stay.
+	 * On the folder model, its view ends in between (below). */
 	#takeOff(
 		machine: Readonly<LxdCodingMachineBinding>,
 		storage: Readonly<CloudCodingStorageBinding>,
@@ -1545,21 +1546,26 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await this.#custody(journal, text, "detach", signal, session);
 			const instance = await client.getInstance(machine.project, name, signal);
 			if (folder) {
-				// Nothing is plugged on the folder model: the session's commands stop, its view ends (its final boundary
-				// saves what it has pending, then it closes), and the guest agent stops the session and unmounts it. A
-				// machine that is not running has nothing of it left to stop, only its view to end.
+				// Nothing is plugged on the folder model. The session's commands are cancelled, and then nothing of it
+				// runs any more (its commands, its user manager) while its view stays mounted; a session the guest can't
+				// confirm so keeps its view, and the take-off fails. Its view ends (its final boundary saves what it has
+				// pending, then it closes), and the guest agent stops the session and unmounts it. A machine that is not
+				// running has nothing of it left to stop, only its view to end.
 				if (instance) assertLxdCodingMachineInstance(machine, this.#placement, instance);
 				const awake = instance?.status === "Running" && instance.statusCode === 103;
-				if (awake) await this.#cancelCommands(machine, session.workerId, running, signal);
+				const guest = new LxdCodingGuestClient({ machine, client: folder.client });
+				const request = { schema: "qorpera.coding-guest-session/v1", workerId: session.workerId } as const;
+				if (awake) {
+					await this.#cancelCommands(machine, session.workerId, running, signal);
+					await this.#custody(journal, text, "detach", signal, session);
+					await guest.quiesce(request, signal);
+				}
 				const end = await folder.views.end(session.workerId, signal);
 				let guestFailure: unknown;
 				if (awake)
 					try {
 						await this.#custody(journal, text, "detach", signal, session);
-						await new LxdCodingGuestClient({ machine, client: folder.client }).stopSession(
-							{ schema: "qorpera.coding-guest-session/v1", workerId: session.workerId },
-							signal,
-						);
+						await guest.stopSession(request, signal);
 					} catch (error) {
 						guestFailure = error;
 					}
@@ -2198,8 +2204,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** The folder model's observation (5g-6a): the machine's boot, and for each of `workerIds` the commands the guest
 	 * agent still runs, as the host kept them when they started (one the host kept no start of is not reported). The
-	 * agent reports a session it does not carry with none. Every session is in it: one left out would be released.
-	 * Processor time, bytes and guest leases are not read. */
+	 * agent lists every command it still runs, however old, or refuses (CODING_GUEST_STATUS_OVERFLOW), and reports a
+	 * session it does not carry with none. Every session is in it: one left out would be released. Processor time,
+	 * bytes and guest leases are not read. */
 	async #observeFolder(
 		folder: FolderOptions,
 		machine: Readonly<LxdCodingMachineBinding>,
@@ -2440,14 +2447,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * folders unplugged while it is off, and the node demand suspended: asleep,
 	 * it holds no node capacity. Each attached session's detach is recorded with
 	 * what it stopped (SLEEP, or RETIRED for a machine being removed). On the
-	 * folder model nothing is plugged: the machine's views end before it stops. */
+	 * folder model nothing is plugged: nothing of an attached session runs any
+	 * more (its user manager too) while its view stays mounted, and then the
+	 * machine's views end before it stops. */
 	async #sleep(entry: ListedMachine, signal: AbortSignal): Promise<void> {
 		if (!entry.instanceSha256) return;
 		const { journal, text } = this.#journal(entry);
 		const client = this.#options.client;
 		const budget = AbortSignal.any([
 			signal,
-			AbortSignal.timeout(CODING_VM_STOP_BUDGET_MS * 2 + CODING_SESSION_QUIESCE_MS),
+			AbortSignal.timeout(CODING_VM_STOP_BUDGET_MS * 2 + CODING_SESSION_QUIESCE_MS * 2),
 		]);
 		await this.#custody(journal, text, "stop", budget);
 		const instance = await client.getInstance(journal.project, journal.name, budget);
@@ -2457,6 +2466,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				: null;
 		const folder = this.#options.folder;
 		let observed: Observed | null = null;
+		// The first failure, reported once the machine is asleep.
+		let failure: unknown;
 		if (member && entry.attached.length && instance && instance.status === "Running" && instance.statusCode === 103) {
 			const quiet = AbortSignal.any([budget, AbortSignal.timeout(CODING_SESSION_QUIESCE_MS)]);
 			try {
@@ -2478,7 +2489,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					(observed?.sessions.get(workerId)?.running ?? []).map((command) => command.commandId),
 					quiet,
 				);
-				// Nothing is plugged on the folder model: the power-off below ends the guest's session.
+				// Nothing is plugged on the folder model: below, nothing of the session runs any more before its view's
+				// final boundary, and the power-off ends the guest's session.
 				if (folder) continue;
 				try {
 					await client.execInstance(
@@ -2491,6 +2503,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					/* The slice stop and the power-off below end it. */
 				}
 			}
+			if (folder) {
+				// Each session's commands and user manager, all at once: the slice stop below stops only the commands.
+				const settle = AbortSignal.any([budget, AbortSignal.timeout(CODING_SESSION_QUIESCE_MS)]);
+				const guest = new LxdCodingGuestClient({ machine: member, client: folder.client });
+				for (const quiesced of await Promise.allSettled(
+					entry.attached.map(({ workerId }) =>
+						guest.quiesce({ schema: "qorpera.coding-guest-session/v1", workerId }, settle),
+					),
+				))
+					if (quiesced.status === "rejected") failure ??= quiesced.reason;
+			}
 		}
 		if (instance && instance.status === "Running" && instance.statusCode === 103) {
 			const quiet = AbortSignal.any([budget, AbortSignal.timeout(CODING_VM_QUIESCE_MS)]);
@@ -2502,14 +2525,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						break;
 				}
 		}
-		// The machine's views end before it powers off: their final boundary saves what its stopped commands left (the
+		// The machine's views end before it powers off: their final boundary saves what its stopped sessions left (the
 		// mount program is outside the command slices), then each closes, saved or not. One not saved or not confirmed
-		// closed is reported once the machine is asleep.
-		let failure: unknown;
+		// closed, or views whose records can't be read or removed, are reported once the machine is asleep.
 		if (folder && member)
-			for (const end of await folder.views.endMachine(member.machineId, budget))
-				if (!end.saved) failure ??= new Error("CODING_FOLDER_VIEW_UNSAVED");
-				else if (!end.closed) failure ??= new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
+			try {
+				for (const end of await folder.views.endMachine(member.machineId, budget))
+					if (!end.saved) failure ??= new Error("CODING_FOLDER_VIEW_UNSAVED");
+					else if (!end.closed) failure ??= new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
+			} catch (error) {
+				failure ??= error;
+			}
 		const state = await this.#reconcile(
 			journal,
 			"stopped",

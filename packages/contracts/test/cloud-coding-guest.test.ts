@@ -49,9 +49,10 @@ describe("coding guest requests", () => {
 		expect(parseCodingGuestRequest("cancel", cancel)).toEqual(cancel);
 		const session = { schema: "qorpera.coding-guest-session/v1", workerId };
 		expect(parseCodingGuestRequest("stop-session", session)).toEqual(session);
+		expect(parseCodingGuestRequest("quiesce", session)).toEqual(session);
 		expect(Object.isFrozen(parseCodingGuestRequest("status", session))).toBe(true);
 		expect(parseCodingGuestRequest("run", { ...run, timeoutMs: null }).timeoutMs).toBeNull();
-		expect(CODING_GUEST_VERBS).toEqual(["mount", "run", "output", "cancel", "stop-session", "status"]);
+		expect(CODING_GUEST_VERBS).toEqual(["mount", "run", "output", "cancel", "quiesce", "stop-session", "status"]);
 	});
 	it.each<[string, (typeof CODING_GUEST_VERBS)[number], unknown]>([
 		["an unknown verb", "exec" as never, run],
@@ -142,6 +143,17 @@ describe("coding guest answers", () => {
 				workerId,
 			}),
 		).toEqual({ schema: "qorpera.coding-guest-session-stopped/v1", workerId });
+		expect(
+			parseCodingGuestAnswer("quiesce", session, { schema: "qorpera.coding-guest-session-quiesced/v1", workerId }),
+		).toEqual({ schema: "qorpera.coding-guest-session-quiesced/v1", workerId });
+		// Each session verb's answer is its own: a stop does not answer a quiesce, nor the other way round.
+		for (const [verb, schema] of [
+			["quiesce", "qorpera.coding-guest-session-stopped/v1"],
+			["stop-session", "qorpera.coding-guest-session-quiesced/v1"],
+		] as const)
+			expect(() => parseCodingGuestAnswer(verb, session, { schema, workerId })).toThrow(
+				"Invalid coding guest answer",
+			);
 		const status = parseCodingGuestAnswer("status", session, {
 			schema: "qorpera.coding-guest-status/v1",
 			workerId,
