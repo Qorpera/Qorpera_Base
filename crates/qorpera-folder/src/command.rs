@@ -13,11 +13,11 @@
 //! SECBIT_NOROOT, holds no capabilities, sets no_new_privs and the command filter, and execs in `/company`. A stays to
 //! report the start and the end on fd 3, and to stop the command.
 //!
-//! B attaches nothing and runs nothing of the command's until the helper lets it: A reports the command's pid and mount
-//! namespace (`started`), and lets B go on only after the helper answers `G` on fd 4, which it does once that namespace
-//! is on record. A helper that gives up on the start, or goes, closes fd 4: A then kills B and reaps it, and B, which
-//! waits on a pipe only A writes, ends by itself if A was killed. So a command never runs that the helper can't account
-//! for.
+//! B runs nothing of the command's until the helper lets it: once the tree is attached, A reports the command's pid and
+//! mount namespace (`started`), so the namespace on record already names its command, and lets B go on only after the
+//! helper answers `G` on fd 4, which it does once that namespace is on record. A helper that gives up on the start, or
+//! goes, closes fd 4: A then kills B and reaps it, and B, which waits on a pipe only A writes, ends by itself if A was
+//! killed. So a command never runs that the helper can't account for.
 //!
 //! Joining a user namespace needs a single-threaded process with an fs of its own (`userns_install`). This program
 //! starts no thread, and B is forked from A without CLONE_FS, so B makes every step from the fork to the exec itself.
@@ -528,13 +528,6 @@ fn child_steps(c: &Child) -> Result<std::convert::Infallible, String> {
 		if !c.network {
 			loopback_up()?;
 		}
-		// A reads this mount namespace's inode through its own /proc and reports it, and answers once the helper let the
-		// command go. Until then B has attached nothing and runs only this program.
-		cvt(libc::write(REPORTS, b"U".as_ptr().cast(), 1), "report the mount namespace")?;
-		let mut ack = 0u8;
-		if libc::read(c.ack, (&raw mut ack).cast(), 1) != 1 {
-			return Err("no answer from the launcher".into());
-		}
 		// The shell's root belongs to the office account: find the mount parent one name at a time, following no link
 		// and no `..` (openat2 with RESOLVE_IN_ROOT would, but the helper unit's RestrictSUIDSGID filter answers openat2
 		// with ENOSYS), and attach the tree to it by fd. The attached copy only receives the helper's remounts.
@@ -550,6 +543,15 @@ fn child_steps(c: &Child) -> Result<std::convert::Infallible, String> {
 		let size = std::mem::size_of::<libc::mount_attr>();
 		cvt(libc::syscall(libc::SYS_mount_setattr, p.tree.as_raw_fd(), empty, flags, &raw const attr, size), "make the command's tree a slave")?;
 		drop(target);
+		// A reads this mount namespace's inode through its own /proc and reports it, and answers once the helper let the
+		// command go. The tree is attached first: from the report on, the namespace's own mount table names its command,
+		// which is how the helper's `ended` tells it from a namespace whose inode was used again. Until the answer B runs
+		// only this program.
+		cvt(libc::write(REPORTS, b"U".as_ptr().cast(), 1), "report the mount namespace")?;
+		let mut ack = 0u8;
+		if libc::read(c.ack, (&raw mut ack).cast(), 1) != 1 {
+			return Err("no answer from the launcher".into());
+		}
 		// Only stdio, the start pipe and the shell's user namespace stay open. The namespace's fd closes once B joined,
 		// and the pipe at the exec. Fds 0 to 4 were open before A opened anything, so the namespace's is above them, and
 		// the helper's fd 4 closes here.
@@ -779,8 +781,9 @@ fn abandon(b: libc::pid_t, error: &str) -> u8 {
 }
 
 /// Waits for B's start, then for its end, and stops it on SIGTERM as the shell host does. B's start is in three steps:
-/// its mount namespace, reported as `started`; the helper's `G`, after which A lets B go on; and the exec, which closes
-/// B's end of the start pipe. A failure before the exec, after `started` too, is reported as `failed`.
+/// its mount namespace with the command's tree attached, reported as `started`; the helper's `G`, after which A lets B
+/// go on; and the exec, which closes B's end of the start pipe. A failure before the exec, after `started` too, is
+/// reported as `failed`.
 fn supervise(b: libc::pid_t, proc: &OwnedFd, start: &OwnedFd, ack: OwnedFd, signals: &OwnedFd) -> u8 {
 	let deadline = Instant::now() + START_DEADLINE;
 	let mut message = Vec::new();

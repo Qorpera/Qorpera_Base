@@ -249,6 +249,17 @@ def propagation(mountinfo, point):
     return found
 
 
+def top_mount(mountinfo, point):
+    """The device and root of the top mount at `point` in a mountinfo text (the last one there), or None: the helper's
+    `ended` tells a command's namespace by the root of what is mounted at its mount parent."""
+    found = None
+    for line in mountinfo.splitlines():
+        fields = line.split(" ")
+        if fields[4] == point:
+            found = [fields[2], fields[3]]
+    return found
+
+
 def receive(conn):
     def exact(n):
         result = bytearray()
@@ -760,9 +771,16 @@ def launcher_main(shell, mode, control, tree, program):
     output = os.open(control / "launcher-output.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     start = [program, "command", "--shell-pid", str(shell), "--tree", tree,
              "--network", "yes" if mode == "networked" else "no", "--", "/usr/bin/python3"]
+    def tree_at_start(started):
+        # What a helper's `ended` reads between the start report and the go: the started namespace's own mount table.
+        if started.get("t") != "started":
+            return None
+        return top_mount(Path(f"/proc/{started['pid']}/mountinfo").read_text(), COMPANY_PARENT)
+
     launcher, reports, go = spawn_launcher(
         program, start + ["-c", f"open('{SHARE}/withheld-ran', 'w').close()"], output)
     started = read_reports(reports, True)[0]
+    trees = [tree_at_start(started)]
     # Long enough for the command to run, had it been let go.
     time.sleep(1)
     os.close(go)
@@ -774,6 +792,7 @@ def launcher_main(shell, mode, control, tree, program):
     launcher, reports, go = spawn_launcher(program, start + [PROBE, "command", mode], output)
     os.close(output)
     started = read_reports(reports, True)[0]
+    trees.append(tree_at_start(started))
     if started.get("t") == "started":
         os.write(go, b"G")
     os.close(go)
@@ -782,7 +801,7 @@ def launcher_main(shell, mode, control, tree, program):
                                              "output": (control / "launcher-output.log").read_text(errors="replace")})
         raise RuntimeError(f"launcher: {started}")
     emit(control / "starter-ready.json", {"kind": "launcher", "topPid": os.getpid(), "aPid": launcher, "started": started,
-                                          "withheld": withheld})
+                                          "withheld": withheld, "treeAtStart": trees})
     while True:
         time.sleep(1)
 
@@ -1061,8 +1080,11 @@ def probe(directory, mode, kind):
         record["shellOutside"] = {"pid": s, "uid": status(s)["Uid"].split(), "caps": caps_of(s), "ns": ns_links(s),
                                   "nsOwner": ns_owners(s), "usernsChain": userns_chain(s), "cgroup": _cgroup_path(s),
                                   "tmpDevIno": [tmp.st_dev, tmp.st_ino],
-                                  "lsm": Path(f"/proc/{s}/attr/current").read_text().strip()}
-        record["helperPropagation"] = propagation(Path("/proc/self/mountinfo").read_text(), str(mount))
+                                  "lsm": Path(f"/proc/{s}/attr/current").read_text().strip(),
+                                  "tree": top_mount(Path(f"/proc/{s}/mountinfo").read_text(), COMPANY_PARENT)}
+        helper_mounts = Path("/proc/self/mountinfo").read_text()
+        record["helperPropagation"] = propagation(helper_mounts, str(mount))
+        record["helperTree"] = top_mount(helper_mounts, str(mount))
 
         starter = start_starter(directory, shell, mode, helper_unit, kind)
         record["starter"] = starter
@@ -1237,6 +1259,12 @@ def checks_for(record, node_errors):
             w["started"].get("t") == "started" and w["exit"] == 1 and w["commandAlive"] is False
             and w["after"] == [{"t": "failed", "error": "the helper did not let the command start"}]
             and record["withheldRan"] is False)
+        # Review round 2 of #1157: an `ended` asked between the start report and the go reads the started namespace's
+        # own mount table, so the command's tree is attached there by the report (in both starts), not after the go;
+        # the shell's own table, which the namespace began as, has something else there.
+        checks["launcherTreeAtStart"] = (
+            record["helperTree"] is not None and st["treeAtStart"] == [record["helperTree"]] * 2
+            and so["tree"] != record["helperTree"])
     if record["mode"] == "networked":
         checks.update({
             "sharesComputerNetns": c["ns"]["net"] == so["ns"]["net"],
@@ -1323,12 +1351,13 @@ def synthetic_record(mode, kind):
         starter = {"kind": kind, "aPid": 300, "topPid": 299, "started": {"t": "started", "pid": 301, "mntns": 4026532310},
                    "withheld": {"started": {"t": "started", "pid": 297, "mntns": 4026532309}, "exit": 1,
                                 "after": [{"t": "failed", "error": "the helper did not let the command start"}],
-                                "commandAlive": False}}
+                                "commandAlive": False},
+                   "treeAtStart": [["0:52", "/tmp/qorpera-cmdns/mount"]] * 2}
     record = {"mode": mode, "kind": kind, "office": {"uid": 990, "gid": 990}, "initialUser": initial, "command": command,
               "shell": {"pid": 200, "state": shell_state},
               "shellOutside": {"caps": dict(caps), "ns": shell_ns, "nsOwner": owners, "usernsChain": [inner, outer, initial],
-                               "cgroup": cgroup, "tmpDevIno": [40, 1]},
-              "helperPropagation": ["shared:41"],
+                               "cgroup": cgroup, "tmpDevIno": [40, 1], "tree": None},
+              "helperPropagation": ["shared:41"], "helperTree": ["0:52", "/tmp/qorpera-cmdns/mount"],
               "starter": starter,
               "commandOutside": {"pid": 301, "cgroup": cgroup, "nspid": ["301", "7"], "ppid": 300, "setsidChildren": [302],
                                  "user": inner, "nsOwner": command_owners, "usernsChain": [inner, outer, initial]},
@@ -1381,6 +1410,7 @@ def selftest():
     assert propagation(mountinfo, "/run/x") == []
     assert propagation(mountinfo, "/run/x/company") == ["master:42", "propagate_from:40"]
     assert propagation(mountinfo, "/run/y") is None
+    assert top_mount(mountinfo, "/run/x") == ["0:7", "/"] and top_mount(mountinfo, "/run/y") is None
 
     # The mount point's walk: a link or a missing name is refused, and so is any empty, `.` or `..` name. O_PATH is
     # Linux's, where the proof runs; elsewhere only the names are checked.
@@ -1452,6 +1482,8 @@ def selftest():
             flips["launcherStopEndedGroup"] = lambda r: r["afterLauncherStop"].update(command=True, starterA=True)
             # A launcher that runs the command at the end of the go pipe as if it were the go.
             flips["launcherWithoutGoRanNothing"] = lambda r: r.update(withheldRan=True)
+            # Round 2's launcher, which attached the tree after the go: at the report the namespace had the shell's.
+            flips["launcherTreeAtStart"] = lambda r: r["starter"].update(treeAtStart=[None, None])
         if mode == "networked":
             flips.update({
                 "sharesComputerNetns": lambda r: r["command"]["ns"].update(net="net:[1]"),

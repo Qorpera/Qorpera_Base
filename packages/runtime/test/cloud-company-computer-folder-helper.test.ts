@@ -1052,84 +1052,192 @@ describe("the folder helper's runs", () => {
 		).toBe(false);
 	});
 
-	/** A machine's processes (pid: in the namespace or not) and its last pid; `when` changes them as a pid is looked at. */
-	function machine(processes: ReadonlyArray<readonly [number, boolean]>, last: number) {
-		const table = new Map(processes);
-		const looked: number[] = [];
-		let next: ((pid: number) => void) | undefined;
+	/** A machine's threads (process, thread, and whether it is in the namespace; undefined while it is listed but reads as
+	 * gone) and its last pid; `when` changes them as a thread is looked at, before the look reads it. */
+	function machine(threads: ReadonlyArray<readonly [number, number, boolean | undefined]>, last: number) {
+		const table = new Map<number, Map<number, boolean | undefined>>();
+		const set = (group: number, thread: number, inside: boolean | undefined) => {
+			table.set(group, (table.get(group) ?? new Map<number, boolean | undefined>()).set(thread, inside));
+		};
+		for (const [group, thread, inside] of threads) set(group, thread, inside);
+		const looked: string[] = [];
+		let next: (() => void) | undefined;
 		const scan: CompanyComputerProcessScan = {
 			lastPid: async () => last,
-			pids: async () => [...table.keys()],
-			async inside(pid) {
-				looked.push(pid);
+			processes: async () => [...table.keys()],
+			threads: async (group) => [...(table.get(group)?.keys() ?? [])],
+			async inside(group, thread) {
+				looked.push(`${group}/${thread}`);
 				const change = next;
 				next = undefined;
-				change?.(pid);
-				return table.get(pid) ?? false;
+				change?.();
+				return table.get(group)?.get(thread);
 			},
 		};
-		const fork = (pid: number, inside: boolean) => {
-			table.set(pid, inside);
-			last = pid;
+		/** A thread made now (a process, when it is its own group), which takes the next pid. */
+		const clone = (group: number, thread: number, inside: boolean) => {
+			set(group, thread, inside);
+			last = thread;
 		};
-		const when = (change: (pid: number) => void) => {
+		/** A thread ends: its process goes with its last thread. */
+		const end = (group: number, thread: number) => {
+			const listed = table.get(group);
+			listed?.delete(thread);
+			if (listed?.size === 0) table.delete(group);
+		};
+		const when = (change: () => void) => {
 			next = change;
 		};
-		return { scan, table, looked, fork, when };
+		return { scan, looked, set, clone, end, when };
 	}
 
-	it("finds a process forked while it looked whose parent exited before it was looked at", async () => {
+	it("looks at every thread, the leader's place last, in whole passes until a quiet one", async () => {
 		const quiet = machine(
 			[
-				[400, false],
-				[500, false],
+				[400, 400, false],
+				[400, 401, false],
+				[500, 500, false],
 			],
 			600,
 		);
 		expect(await companyComputerNamespaceInUse(quiet.scan)).toBe(false);
-		expect(quiet.looked).toEqual([400, 500]);
-		const forked = machine(
+		expect(quiet.looked).toEqual(["400/401", "400/400", "500/500"]);
+		// A process made during a pass, outside: one more pass, which is quiet.
+		const busy = machine(
 			[
-				[400, true],
-				[500, false],
+				[400, 400, false],
+				[400, 401, false],
 			],
 			600,
 		);
-		forked.when((pid) => {
-			forked.fork(601, true);
-			forked.table.delete(pid);
+		busy.when(() => busy.clone(601, 601, false));
+		expect(await companyComputerNamespaceInUse(busy.scan)).toBe(false);
+		expect(busy.looked).toEqual(["400/401", "400/400", "400/401", "400/400", "601/601"]);
+		// A process made during a pass, inside, whose parent ended before the next pass: that pass finds it.
+		const forked = machine(
+			[
+				[400, 400, false],
+				[500, 500, false],
+			],
+			600,
+		);
+		forked.when(() => {
+			forked.clone(601, 601, true);
+			forked.end(400, 400);
 		});
 		expect(await companyComputerNamespaceInUse(forked.scan)).toBe(true);
-		expect(forked.looked).toEqual([400, 500, 601]);
-		// Pids given in a cycle: the next pass looks only at those given during the one before, across the wrap.
-		const wrapped = machine(
-			[
-				[400, false],
-				[32000, false],
-			],
-			32766,
-		);
-		wrapped.when(() => {
-			wrapped.fork(32767, false);
-			wrapped.fork(301, false);
-		});
-		expect(await companyComputerNamespaceInUse(wrapped.scan)).toBe(false);
-		expect(wrapped.looked).toEqual([400, 32000, 32767, 301]);
+		expect(forked.looked).toEqual(["400/400", "500/500", "500/500", "601/601"]);
 	});
 
-	it("answers in use while processes keep being forked, and no answer when a process cannot be looked at", async () => {
+	it("looks at the threads of a process whose leader ended before them", async () => {
+		// The leader is a zombie while its threads live: its place reads as gone, and its threads are each looked at.
+		const workers = machine(
+			[
+				[400, 400, undefined],
+				[400, 401, false],
+				[400, 402, true],
+			],
+			600,
+		);
+		expect(await companyComputerNamespaceInUse(workers.scan)).toBe(true);
+		expect(workers.looked).toEqual(["400/401", "400/402"]);
+		// A zombie leader asks for no new list of its threads: those listed were looked at.
+		const zombie = machine(
+			[
+				[400, 400, undefined],
+				[400, 401, false],
+			],
+			600,
+		);
+		expect(await companyComputerNamespaceInUse(zombie.scan)).toBe(false);
+		expect(zombie.looked).toEqual(["400/401", "400/400"]);
+	});
+
+	it("lists a process's threads again while a listed one ended, and looks at the leader's place after an exec", async () => {
+		// The kernel's list stopped at 601, which ended meanwhile (`next_tid`): 602, there before the look began (the
+		// last pid does not move), was not on it, and the next list has it.
+		const stopped = machine(
+			[
+				[400, 400, undefined],
+				[400, 601, false],
+			],
+			700,
+		);
+		stopped.when(() => {
+			stopped.set(400, 602, true);
+			stopped.end(400, 601);
+		});
+		expect(await companyComputerNamespaceInUse(stopped.scan)).toBe(true);
+		expect(stopped.looked).toEqual(["400/601", "400/400", "400/602"]);
+		// 601 made 701 after the list and ended before it was looked at: the next list has 701.
+		const replaced = machine(
+			[
+				[400, 400, undefined],
+				[400, 601, true],
+			],
+			700,
+		);
+		replaced.when(() => {
+			replaced.clone(400, 701, true);
+			replaced.end(400, 601);
+		});
+		expect(await companyComputerNamespaceInUse(replaced.scan)).toBe(true);
+		expect(replaced.looked).toEqual(["400/601", "400/400", "400/701"]);
+		// 601 made 701 after the list and lives on: the pass was not quiet, and the next one has 701.
+		const added = machine(
+			[
+				[400, 400, false],
+				[400, 601, false],
+			],
+			700,
+		);
+		added.when(() => added.clone(400, 701, true));
+		expect(await companyComputerNamespaceInUse(added.scan)).toBe(true);
+		expect(added.looked).toEqual(["400/601", "400/400", "400/601", "400/701"]);
+		// 601 execs before it is looked at: it takes the process's id without a new pid, and its old one reads as gone.
+		const exec = machine(
+			[
+				[400, 400, false],
+				[400, 601, true],
+			],
+			700,
+		);
+		exec.when(() => {
+			exec.end(400, 601);
+			exec.set(400, 400, true);
+		});
+		expect(await companyComputerNamespaceInUse(exec.scan)).toBe(true);
+		expect(exec.looked).toEqual(["400/601", "400/400"]);
+	});
+
+	it("answers in use while tasks keep being made or ending, and no answer when a thread cannot be looked at", async () => {
 		let last = 1000;
 		expect(
 			await companyComputerNamespaceInUse({
 				lastPid: async () => last++,
-				pids: async () => [10],
+				processes: async () => [10],
+				threads: async () => [10],
 				inside: async () => false,
 			}),
 		).toBe(true);
+		const looks: number[] = [];
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				processes: async () => [10],
+				threads: async () => [10, 11],
+				async inside(_group, thread) {
+					looks.push(thread);
+					return thread === 10 ? false : undefined;
+				},
+			}),
+		).toBe(true);
+		expect(looks.length).toBe(100);
 		await expect(
 			companyComputerNamespaceInUse({
 				lastPid: async () => 5,
-				pids: async () => [4],
+				processes: async () => [4],
+				threads: async () => [4],
 				inside: async () => {
 					throw new Error("EACCES");
 				},
