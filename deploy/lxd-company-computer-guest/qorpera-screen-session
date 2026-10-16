@@ -82,9 +82,9 @@ if [[ -e ${screen_state}/backdrops ]]; then
 fi
 # The company folder, when the office service bound this desktop's mount (F3 4d, "A desktop's mount"): Terminal and
 # Files open there, and Desktop, Documents and Downloads are it. Without one, or while its program restarts (the
-# bare mountpoint is root's), they stay in the workbench. Caches and thumbnails are kept in memory (the runtime
-# root), never on the computer's disk.
-folder_root=${workbench_root}
+# bare mountpoint is root's), they open in the desktop's home, never in the workbench (F3 4f-1b). Caches and
+# thumbnails are kept in memory (the runtime root), never on the computer's disk.
+folder_root=${desktop_home}
 if [[ ${QORPERA_COMPANY_FOLDER:-} == /company && -d /company && -x /company ]]; then
 	folder_root=/company
 fi
@@ -775,7 +775,7 @@ dock_helper=/usr/local/bin/qorpera-screen-browser
 if [[ ${folder_root} == /company ]]; then
 	folder_name="company folder"
 else
-	folder_name="company workbench"
+	folder_name="home folder"
 fi
 write_dock_launcher terminal 4 idle Terminal "Shell in the ${folder_name}" "${dock_helper} terminal" "${folder_root}"
 write_dock_launcher files 5 idle Files "Files of the ${folder_name}" "${dock_helper} files" "${folder_root}"

@@ -1,3 +1,4 @@
+/// <reference lib="es2024.string" />
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { isUuid, type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
@@ -28,7 +29,7 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   comes from the platform's per-run keyed-hash service, never from a plain digest.
  * - The protection port classifies every step before any bytes are staged. A narrow step and every later step keep
  *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. Production
- *   wiring still needs the folder adapter and origin/refusal handling before any run is built with a log.
+ *   wiring remains gated on the matching SQL, closing/compaction and erasure support before a run is built with a log.
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
  *   its batches check the run's generation: they are derived, and are refused when it moved.
@@ -39,9 +40,12 @@ export const CLOUD_RUN_LOG_BLOCK_STEPS = 16;
 export const CLOUD_RUN_LOG_BLOCK_BYTES = 64 * 1024;
 /** The most a step record takes as stored, with its keys and newline. A pending step counts at this size, so filling
  * in its result never takes its block past CLOUD_RUN_LOG_BLOCK_BYTES. */
-export const CLOUD_RUN_LOG_STEP_BYTES = 41 * 1024;
-/** `args`, `text` and the result envelope, each as stored (JSON escaping and quotes included). */
+export const CLOUD_RUN_LOG_STEP_BYTES = 49 * 1024;
+/** `args`, `text`, the result envelope and `paths`, each as stored (JSON escaping and quotes included). */
 export const CLOUD_RUN_LOG_FIELD_BYTES = 8 * 1024;
+/** The most paths a step's line names. `paths` is never cut: a step that names more, or more than
+ * CLOUD_RUN_LOG_FIELD_BYTES of them, is written narrow (§4.5). */
+export const CLOUD_RUN_LOG_PATHS = 1024;
 /** The copy of the result's read references, as stored. */
 export const CLOUD_RUN_LOG_READS_BYTES = 16 * 1024;
 /** STEP_COMMIT: a batch writes at most this many new steps, and waiting finished steps are committed at this count. */
@@ -91,6 +95,14 @@ export class CloudRunLogUnavailable extends Error {
 }
 
 /** Where a run's log is now. */
+export interface CloudRunLogOrigin {
+	readonly conversation: string;
+	readonly parent: string | null;
+	readonly step: number | null;
+	readonly continues: string | null;
+	readonly narrow: boolean;
+}
+
 export interface CloudRunLogPlace {
 	/** The log's folder, `<tree root>/runs/<run>`: the path `qorpera_memory_run_logs` gives the run now, or for a log not
 	 * yet created, the tree root of the run's conversation at its owner's current path. */
@@ -103,6 +115,9 @@ export interface CloudRunLogPlace {
 	readonly last: number | null;
 	/** `qorpera_memory_run_generations.memory_generation` (0 before the first batch). */
 	readonly generation: number;
+	/** The platform's current origin, or the existing run.toml read as this run. The concrete folder adapter always
+	 * supplies it; an in-memory port may instead use the constructor's already trusted origin. */
+	readonly origin?: CloudRunLogOrigin;
 }
 
 /** The memory commit's preconditions for a change set of a run log's folder. */
@@ -145,9 +160,9 @@ export interface CloudRunLogRelease {
 export interface CloudRunLogProtection {
 	/** Checks complete argument and result needles, every read path, and the run's machine against §4.5's every-agent
 	 * rule. resultPaths comes from the whole tool result before its envelope is fitted; readPaths is never clipped.
-	 * The adapter sends these paths through qorpera_memory_step_narrow, in chunks of at most 1,024, and combines its
-	 * machine and restricted answers. Its log flag is separate: it says some part of the log is narrow, not that a
-	 * pending earlier step is narrow. It must not infer sharing from paths or ordinary grant metadata. */
+	 * The adapter sends their `cloudRunLogStepPaths` through qorpera_memory_step_narrow, in chunks of at most 1,024, and
+	 * combines its machine and restricted answers. Its log flag is separate: it says some part of the log is narrow, not
+	 * that a pending earlier step is narrow. It must not infer sharing from paths or ordinary grant metadata. */
 	narrow(
 		runId: string,
 		step: {
@@ -200,6 +215,28 @@ export function cloudRunLogPaths(value: JsonValue): readonly string[] {
 		}
 	}
 	return [...paths];
+}
+
+/** A step's needles, as the platform's check reads them: every path its whole arguments, its whole result and every
+ * read its releases recorded name, before anything is cut, without a leading `/company/`, each once. Its line's `paths`
+ * pass no reads: the reads copy and the release records name those. SQL decides which strings are valid company paths;
+ * only those that cannot be are left out here: empty, past qorpera_company_path_valid's 4,096 bytes, with a control or
+ * NUL, or with an unpaired UTF-16 surrogate (which cannot be PostgreSQL text: JSONB decoding would refuse the whole
+ * request or line). */
+export function cloudRunLogStepPaths(
+	argumentsText: string,
+	resultPaths: readonly string[],
+	readPaths: readonly string[],
+): readonly string[] {
+	const needles = [...cloudRunLogPaths(argumentsText), ...resultPaths, ...readPaths];
+	if (needles.some((path) => typeof path !== "string")) throw new CloudRunLogUnavailable("paths_invalid");
+	return [...new Set(needles.map((path) => (path.startsWith("/company/") ? path.slice(9) : path)))].filter(
+		(path) =>
+			path.length > 0 &&
+			path.isWellFormed() &&
+			!/[\u0000-\u001f\u007f]/.test(path) &&
+			Buffer.byteLength(path) <= 4096,
+	);
 }
 
 /** One step as its line stores it, for the run's step lines (W2). A hashes-only step has `args` "". */
@@ -407,7 +444,7 @@ function loggedStep(line: Line): CloudRunLogStep {
 	return Object.freeze({
 		...step,
 		args: line.stored?.args ?? "",
-		result: result && typeof result === "object" && !Array.isArray(result) ? JSON.stringify(result) : null,
+		result: result !== null && result !== undefined ? JSON.stringify(result) : null,
 		text: line.stored?.text ?? "",
 		at: typeof record.at === "string" ? record.at : "",
 	});
@@ -415,10 +452,7 @@ function loggedStep(line: Line): CloudRunLogStep {
 
 export class CloudRunLog {
 	readonly #runId: string;
-	readonly #conversationId: string;
-	readonly #parent?: { readonly runId: string; readonly step: number };
-	readonly #continues?: string;
-	readonly #startNarrow: boolean;
+	#origin: CloudRunLogOrigin;
 	readonly #protection: CloudRunLogProtection;
 	readonly #folder: CloudRunLogFolder;
 	readonly #effectful: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
@@ -484,12 +518,15 @@ export class CloudRunLog {
 		)
 			throw new Error("Invalid run log protection");
 		this.#runId = options.runId;
-		this.#conversationId = options.conversationId;
-		this.#parent = options.parent ? { ...options.parent } : undefined;
-		this.#continues = options.continues;
-		this.#startNarrow = options.narrow === true;
+		this.#origin = {
+			conversation: options.conversationId,
+			parent: options.parent?.runId ?? null,
+			step: options.parent?.step ?? null,
+			continues: options.continues ?? null,
+			narrow: options.narrow === true,
+		};
 		this.#protection = options.protection;
-		if (this.#startNarrow) this.#narrowFrom = 0;
+		if (this.#origin.narrow) this.#narrowFrom = 0;
 		this.#folder = options.folder;
 		this.#effectful = options.effectful ?? ((tool, parsed) => cloudActionEffect(tool, parsed) !== "read");
 		this.#signal = options.signal;
@@ -935,10 +972,17 @@ export class CloudRunLog {
 	}
 
 	async #batch(signal: AbortSignal, precommit?: number): Promise<void> {
+		const retried = new Set<string>();
 		for (let attempt = 1; ; attempt++) {
 			await this.#refresh(signal);
 			const outcome = await this.#attempt(signal, precommit);
 			if (outcome === "done") return;
+			// W1's two precise races have one retry each. Any other structured refusal is a bug, not a reason to
+			// change the origin or discard content. Ordinary location/version contention keeps its existing bound.
+			if (outcome === "origin_changed" || outcome === "machine_narrow") {
+				if (retried.has(outcome)) throw new CloudRunLogUnavailable(outcome);
+				retried.add(outcome);
+			}
 			if (attempt >= ATTEMPTS) throw new CloudRunLogUnavailable(outcome);
 		}
 	}
@@ -956,6 +1000,10 @@ export class CloudRunLog {
 			throw error;
 		}
 		if (place.exists) this.#root = place.path;
+		if (place.origin) {
+			this.#origin = { ...place.origin };
+			if (place.origin.narrow) this.#narrowFrom = 0;
+		}
 		this.#generation = place.generation;
 		return place;
 	}
@@ -1034,7 +1082,16 @@ export class CloudRunLog {
 		// flag alone must not redact an earlier public fill. A log with no trusted start cannot be safely interpreted.
 		if (classification.log && this.#narrowFrom === Number.POSITIVE_INFINITY)
 			throw new CloudRunLogUnavailable("protection_narrow_start_unknown");
-		if (classification.narrow) this.#narrowFrom = Math.min(this.#narrowFrom, step.j);
+		// A pending line names its arguments' paths; the finished line adds those of its result (§4.5). Reads stay with
+		// the reads copy and the release records. Paths are never cut: a step that names more than its line holds is
+		// written narrow, and so is every step after it.
+		const paths = cloudRunLogStepPaths(snapshot.argumentsText, pending ? [] : snapshot.resultPaths, []);
+		if (
+			classification.narrow ||
+			paths.length > CLOUD_RUN_LOG_PATHS ||
+			Buffer.byteLength(JSON.stringify(paths)) > CLOUD_RUN_LOG_FIELD_BYTES
+		)
+			this.#narrowFrom = Math.min(this.#narrowFrom, step.j);
 		snapshot.narrow = step.j >= this.#narrowFrom;
 		const digests: string[] = [];
 		if (step.argsHash === undefined && step.argsDigest !== null) digests.push(step.argsDigest);
@@ -1051,11 +1108,11 @@ export class CloudRunLog {
 		if (step.argsHash === undefined) step.argsHash = step.argsDigest === null ? null : hashes[0]!;
 		snapshot.argsHash = step.argsHash;
 		step.narrow = snapshot.narrow;
-		return this.#line(snapshot, pending, snapshot.narrow && !pending ? hashes.at(-1)! : null);
+		return this.#line(snapshot, pending, snapshot.narrow && !pending ? hashes.at(-1)! : null, paths);
 	}
 
 	/** A step's line as stored, fitted so it never passes CLOUD_RUN_LOG_STEP_BYTES with its newline. */
-	#line(step: Step, pending: boolean, resultHash: string | null): Line {
+	#line(step: Step, pending: boolean, resultHash: string | null, paths: readonly string[]): Line {
 		if (step.narrow) {
 			const text = JSON.stringify({
 				j: step.j,
@@ -1076,9 +1133,9 @@ export class CloudRunLog {
 		let args = CLOUD_RUN_LOG_FIELD_BYTES;
 		for (;;) {
 			const stored = { args: step.hashOnly ? "" : clip(step.argumentsText, args), text: clip(step.text, text) };
-			const line = this.#render(step, pending, reads, stored);
+			const line = this.#render(step, pending, reads, stored, paths);
 			const over = Buffer.byteLength(line) + 1 - CLOUD_RUN_LOG_STEP_BYTES;
-			// Only a result with very many release parts gets past it: the copies give way, never the release ids.
+			// Only a result with very many release parts gets past it: the copies give way, never release ids or paths.
 			if (over > 0 && reads > 2) reads = Math.max(2, reads - over);
 			else if (over > 0 && text > 2) text = Math.max(2, text - over);
 			else if (over > 0 && args > 2) args = Math.max(2, args - over);
@@ -1086,7 +1143,7 @@ export class CloudRunLog {
 		}
 	}
 
-	#render(step: Step, pending: boolean, budget: number, stored: Stored): string {
+	#render(step: Step, pending: boolean, budget: number, stored: Stored, paths: readonly string[]): string {
 		const reads: string[] = [];
 		let readBytes = 2;
 		// Reads past CLOUD_RUN_LOG_READS_BYTES were not kept: the copy is cut short either way.
@@ -1112,6 +1169,7 @@ export class CloudRunLog {
 			`"reads":[${reads.join(",")}]`,
 			...(cut ? [`"reads_cut":true`] : []),
 			`"releases":${JSON.stringify(pending ? [] : step.releases)}`,
+			`"paths":${JSON.stringify(paths)}`,
 			`"text":${JSON.stringify(stored.text)}`,
 			`"at":${JSON.stringify(step.at)}`,
 		].join(",")}}`;
@@ -1121,10 +1179,10 @@ export class CloudRunLog {
 		return [
 			"format = 1",
 			`run = "${this.#runId}"`,
-			`conversation = "${this.#conversationId}"`,
-			...(this.#parent ? [`parent = "${this.#parent.runId}"`, `step = ${this.#parent.step}`] : []),
-			...(this.#continues ? [`continues = "${this.#continues}"`] : []),
-			...(this.#startNarrow ? ["narrow = true"] : []),
+			`conversation = "${this.#origin.conversation}"`,
+			...(this.#origin.parent ? [`parent = "${this.#origin.parent}"`, `step = ${this.#origin.step}`] : []),
+			...(this.#origin.continues ? [`continues = "${this.#origin.continues}"`] : []),
+			...(this.#origin.narrow ? ["narrow = true"] : []),
 			"",
 		].join("\n");
 	}
@@ -1265,11 +1323,38 @@ export class CloudRunLog {
 			let relocate: string | null = null;
 			let conflict: string | null = null;
 			let refused: string | null = null;
+			let retryOrigin = false;
+			let retryNarrow = false;
 			result.units.forEach((unit, index) => {
 				const first = set.blocks[index];
 				if (unit.outcome !== "saved") {
 					const reason = unit.reason ?? unit.outcome;
-					if (reason === "memory_run_log_gone") this.#gone = true;
+					const structured = reason === "structured_rule" || reason === "structured_invalid";
+					if (
+						structured &&
+						!place.exists &&
+						unit.op === "new_folder" &&
+						unit.problems.length === 1 &&
+						unit.problems[0]!.message ===
+							"run.toml names the run's conversation, parent step, the run it continues and whether it is narrow"
+					) {
+						retryOrigin = true;
+					} else if (
+						structured &&
+						unit.op === "write" &&
+						unit.problems.length > 0 &&
+						unit.problems.every((problem) => {
+							const match = /^step ([0-9]+) comes after its machine went narrow and is written narrow$/.exec(
+								problem.message,
+							);
+							return match !== null && prepared.has(Number(match[1])) && placed.get(Number(match[1])) === first;
+						})
+					) {
+						// The machine went narrow after classification. Every changed/new line in the retried batch is
+						// narrow; already committed immutable lines remain byte for byte as read.
+						this.#narrowFrom = Math.min(this.#narrowFrom, ...candidates.map(({ step }) => step.j));
+						retryNarrow = true;
+					} else if (reason === "memory_run_log_gone") this.#gone = true;
 					else if (
 						reason === "memory_run_log_moved" ||
 						reason === "parent_missing" ||
@@ -1324,6 +1409,11 @@ export class CloudRunLog {
 			}
 			if (this.#gone) throw new CloudRunLogGone();
 			if (refused !== null) throw new CloudRunLogUnavailable(refused);
+			if (retryOrigin) {
+				this.#place = null;
+				return "origin_changed";
+			}
+			if (retryNarrow) return "machine_narrow";
 			if (relocate !== null) {
 				// Only the blocks the run can still write are read again at the new place.
 				this.#place = null;

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	linkSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -32,6 +33,8 @@ const WORKER_3 = "12345678-1234-4234-8234-0000000000b3";
 const TOKEN = "12345678-1234-4234-8234-0000000000d1";
 const TOKEN_2 = "12345678-1234-4234-8234-0000000000d2";
 const TOKEN_3 = "12345678-1234-4234-8234-0000000000d3";
+const BOOT = "12345678-1234-4234-8234-0000000000a9";
+const BOOT_2 = "12345678-1234-4234-8234-0000000000aa";
 /** The views the core opens, in turn, and their passes (fake, never real). */
 const VIEWS = [
 	"12345678-1234-4234-8234-00000000ee01",
@@ -84,6 +87,7 @@ function session(scope: Partial<Session> = {}): Session {
 		workerId: WORKER,
 		environmentId: ENVIRONMENT,
 		attachmentToken: TOKEN,
+		bootId: BOOT,
 		machine: MACHINE_BINDING,
 		uid: 200001,
 		...scope,
@@ -435,7 +439,10 @@ describe("CodingFolderViews", () => {
 			await at.views.attach(session(), later(), live());
 			at.events.splice(0);
 			at.script.mount.push("closed");
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[1] });
+			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+			});
 			expect(at.events).toEqual(["sha256sum", "mount", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
 			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
@@ -455,6 +462,7 @@ describe("CodingFolderViews", () => {
 			at.events.splice(0);
 			await expect(at.views.attach(session({ attachmentToken: TOKEN_2 }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -463,12 +471,31 @@ describe("CodingFolderViews", () => {
 			expect(at.mounts.at(-1)!.view).toEqual({ environmentId: ENVIRONMENT, viewId: VIEWS[1], pass: PASSES[1] });
 		});
 
+		it("replaces the view of an earlier boot of the machine, under the same attachment too", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			await expect(at.views.attach(session({ bootId: BOOT_2 }), later(), live())).resolves.toEqual({
+				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+			});
+			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
+			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
+			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
+			await expect(at.views.held(WORKER, live())).resolves.toEqual({
+				machineId: MACHINE,
+				bootId: BOOT_2,
+				attachmentToken: TOKEN,
+			});
+		});
+
 		it("ends a moved session's old view on its old machine", async () => {
 			const at = fixture();
 			await at.views.attach(session(), later(), live());
 			at.events.splice(0);
 			await expect(at.views.attach(session({ machine: OTHER_MACHINE_BINDING }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -480,7 +507,7 @@ describe("CodingFolderViews", () => {
 		});
 
 		it("maps each refusal of the open to its code, and does not try again", async () => {
-			const refusals: [string, string][] = [
+			const refusals: [string | null, string][] = [
 				["Folder view attachment is not current", "ATTACHMENT_NOT_CURRENT"],
 				["Company folder is unavailable", "FOLDER_UNAVAILABLE"],
 				["Folder view principals are unavailable", "PRINCIPALS_UNAVAILABLE"],
@@ -489,15 +516,18 @@ describe("CodingFolderViews", () => {
 				["Folder view opener is invalid", "VIEW_INVALID"],
 				["Folder view anchor is invalid", "VIEW_INVALID"],
 				["Something the core never says", "UNKNOWN"],
+				// A 42501 refusal whose message the control does not keep.
+				[null, "UNKNOWN"],
 			];
 			for (const [reason, code] of refusals) {
+				const label = reason ?? "no reason";
 				const at = fixture();
-				at.script.open.push(new CodingControlRefused(reason));
+				at.script.open.push(new CodingControlRefused(null, reason));
 				const error = await rejection(at.views.attach(session(), later(), live()));
-				expect(error, reason).toBeInstanceOf(CodingFolderViewRefused);
-				expect((error as CodingFolderViewRefused).code, reason).toBe(code);
-				expect(error.message, reason).toBe(`CODING_FOLDER_VIEW_REFUSED:${code}`);
-				expect(at.events, reason).toEqual(["sha256sum", "boundary", "open"]);
+				expect(error, label).toBeInstanceOf(CodingFolderViewRefused);
+				expect((error as CodingFolderViewRefused).code, label).toBe(code);
+				expect(error.message, label).toBe(`CODING_FOLDER_VIEW_REFUSED:${code}`);
+				expect(at.events, label).toEqual(["sha256sum", "boundary", "open"]);
 				await expect(at.views.end(WORKER, live())).resolves.toBeUndefined();
 			}
 		});
@@ -737,8 +767,8 @@ describe("CodingFolderViews", () => {
 			const cases: [Scripted<unknown>[], number, boolean][] = [
 				[[new CodingControlBusy()], 2, true],
 				[[new Error("CODING_CONTROL_UNCONFIRMED")], 2, true],
-				[[new CodingControlRefused("Folder view is unavailable")], 1, true],
-				[[new CodingControlRefused("Folder core authority is required")], 1, false],
+				[[new CodingControlRefused(null, "Folder view is unavailable")], 1, true],
+				[[new CodingControlRefused(null, "Folder core authority is required")], 1, false],
 			];
 			for (const [answers, tries, closed] of cases) {
 				const at = fixture();
@@ -854,6 +884,7 @@ describe("CodingFolderViews", () => {
 				schema: "qorpera.coding-folder-view-held/v1",
 				workerId: WORKER,
 				machineId: MACHINE,
+				bootId: BOOT,
 				attachmentToken: TOKEN,
 				viewId: VIEWS[0],
 				pass: PASSES[0],
@@ -890,6 +921,7 @@ describe("CodingFolderViews", () => {
 			const restarted = new CodingFolderViews(at.options);
 			await expect(restarted.attach(session({ attachmentToken: TOKEN_2 }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -899,6 +931,57 @@ describe("CodingFolderViews", () => {
 				viewId: VIEWS[1],
 				pass: PASSES[1],
 			});
+		});
+
+		it("names the attachment and boot a session's view was opened under, also to a restarted executor", async () => {
+			const at = fixture();
+			await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
+			await at.views.attach(session(), later(), live());
+			await at.views.attach(session({ workerId: WORKER_2, attachmentToken: TOKEN_2, uid: 200002 }), later(), live());
+			at.events.splice(0);
+			const restarted = new CodingFolderViews(at.options);
+			await expect(restarted.held(WORKER.toUpperCase(), live())).resolves.toEqual({
+				machineId: MACHINE,
+				bootId: BOOT,
+				attachmentToken: TOKEN,
+			});
+			await expect(restarted.held(WORKER_2, live())).resolves.toEqual({
+				machineId: MACHINE,
+				bootId: BOOT,
+				attachmentToken: TOKEN_2,
+			});
+			await expect(restarted.held(WORKER_3, live())).resolves.toBeUndefined();
+			await expect(restarted.held("not-a-uuid", live())).resolves.toBeUndefined();
+			expect(at.events).toEqual([]);
+			await restarted.end(WORKER, live());
+			await expect(restarted.held(WORKER, live())).resolves.toBeUndefined();
+			at.script.unmounted = () => true;
+			expect(await failure(restarted.held(WORKER_2, live()))).toBe(RECORD_FAILED);
+		});
+
+		it("clears what a write that died left behind: a second link of its record, a half-written one", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			await at.views.attach(session({ workerId: WORKER_2, attachmentToken: TOKEN_2, uid: 200002 }), later(), live());
+			at.events.splice(0);
+			// The executor died between a record's link and its temporary file's unlink, and in another write's middle.
+			linkSync(join(at.root, `${WORKER}.json`), join(at.root, ".write-12345678-1234-4234-8234-0000000000f7"));
+			writeFileSync(join(at.root, ".write-12345678-1234-4234-8234-0000000000f8"), '{"schema":"qorpera.cod');
+			expect(statSync(join(at.root, `${WORKER}.json`)).nlink).toBe(2);
+			const restarted = new CodingFolderViews(at.options);
+			await expect(restarted.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			expect(at.events.splice(0)).toEqual(["sha256sum", "mount"]);
+			expect(readdirSync(at.root).sort()).toEqual([`${WORKER}.json`, `${WORKER_2}.json`]);
+			expect(statSync(join(at.root, `${WORKER}.json`)).nlink).toBe(1);
+			// So does a restart's end.
+			linkSync(join(at.root, `${WORKER_2}.json`), join(at.root, ".write-12345678-1234-4234-8234-0000000000f9"));
+			await expect(new CodingFolderViews(at.options).end(WORKER_2, live())).resolves.toEqual({
+				workerId: WORKER_2,
+				viewId: VIEWS[1],
+				saved: true,
+				closed: true,
+			});
+			expect(readdirSync(at.root)).toEqual([`${WORKER}.json`]);
 		});
 
 		it("closes a view it could not record, never showing it", async () => {
@@ -934,17 +1017,20 @@ describe("CodingFolderViews", () => {
 				schema: "qorpera.coding-folder-view-held/v1",
 				workerId: WORKER,
 				machineId: MACHINE,
+				bootId: BOOT,
 				attachmentToken: TOKEN,
 				viewId: VIEWS[0],
 				pass: PASSES[0],
 			};
 			const { pass: _, ...passless } = valid;
+			const { bootId: __, ...bootless } = valid;
 			const records: [string, string, number][] = [
 				["not JSON", "{", 0o600],
 				["another schema", JSON.stringify({ ...valid, schema: "qorpera.coding-folder-view-held/v2" }), 0o600],
 				["another session's", JSON.stringify({ ...valid, workerId: WORKER_2 }), 0o600],
 				["an extra key", JSON.stringify({ ...valid, extra: true }), 0o600],
 				["no pass", JSON.stringify(passless), 0o600],
+				["no boot", JSON.stringify(bootless), 0o600],
 				["a pass that is not one", JSON.stringify({ ...valid, pass: "A".repeat(42) }), 0o600],
 				["an id not in lower case", JSON.stringify({ ...valid, viewId: VIEWS[0].toUpperCase() }), 0o600],
 				["readable by others", JSON.stringify(valid), 0o644],

@@ -192,7 +192,10 @@ clean stop). It is how a crash is noticed (rule 4 in "Reads").
 
 The guest agent starts one folder program per session (P1 proposes it stays that way), as root, at
 `/run/qorpera-folder/mounts/<worker32>`, with `--owner-uid` set to the session's uid and `allow_other`, so the session's
-units, its Docker daemon and its root all see the same tree. Each unit of the session gets `/company` bound to that
+units, its Docker daemon and its root all see the same tree. Each session's program gets its own
+`--local-dir /var/lib/qorpera-folder/local/<worker>` (5d's local layer), and all of them share the machine's one
+`--cache-dir /var/lib/qorpera-folder/cache/machine`, with a lock per top cache folder (item 8's MC3,
+RUNTIME-FOLDER-MACHINE-CACHES.md). Each unit of the session gets `/company` bound to that
 path (`BindPaths`), as step 4's commands do. The program reaches the node's folder service on vsock, as on every
 machine (step 1); the CID check is the boundary, so §6's "command units get RestrictAddressFamilies without AF_VSOCK"
 no longer holds (root can open vsock anyway). A folder program that restarts (a crash, or root killing it) follows
@@ -281,8 +284,9 @@ over `X` is the publish point inside the syscall, a lock's removal publishes `X`
 (5b, §7 item 9 as amended here):
 
 - `.git` and `repo.git` refused at any depth outside `code/<owner>/<name>/`, accepted inside;
-- leases on shared files in `repo.git` (objects, `refs/`, `packed-refs`, `shallow` and their reflogs), with the version
-  check at the rename as the correctness rule;
+- leases on the shared files in `repo.git` (`refs/`, `packed-refs`, `shallow`), with the version check at the rename
+  as the correctness rule: `X` and its reflog `logs/X` land together or not at all. A lease lives as long as its view.
+  Objects take no lease: a session writes them freely and never removes them;
 - the per-worker rule: only a worker's session and the platform write under `worktrees/<workerId>/` and
   `repo.git/worktrees/<workerId>/`, and no session takes a lease on another worker's branch
   `refs/heads/qorpera/coding/<other>`;
@@ -290,8 +294,10 @@ over `X` is the publish point inside the syscall, a lock's removal publishes `X`
 - no session deletes a published path under `repo.git/objects` (EPERM), and `objects/pack/*.keep` is never published;
 - the session-local files above and the alternates files platform-only in the folder;
 - §6's names under `code/` (`%`, `:` and device names allowed; NFC and no case-only siblings kept);
-- old versions of `repo.git/objects/**` kept 7 days, not forever, and the history view folding git's own changes into
-  one line per publish;
+- old versions of `repo.git/objects/**` kept 7 days, not forever: a version goes 7 days after a write over it, a delete
+  or a move ended it (pg_cron, each minute), and its bytes then wait for the folder's GC, which takes them only once
+  nothing roots them. The current objects, the refs and the worktrees keep every version. The history view shows a
+  change set's paths under `repo.git` (by key) as one line, the folder;
 - the gc job blocking new leases in `repo.git` while it runs (5e).
 
 **The cache list** (§6 "The per-session cache") moves from the session's NAS cache folder to the machine's disk: a
@@ -501,6 +507,15 @@ went wrong reaches only its own company. It does what no member's root may:
 - **gc**, with the lease block (§6 "Cleanup"), and **reading the setup file** (`git show`).
 
 It retires `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap and git custody on the NAS.
+
+A company's code hosts go with its deletion (coordinator decision D3; migration `20260930398000`). A code host is no
+allocation and its code area is erased with the company folder, so the deletion does not wait for it. Each node's
+coding executor asks at its start and every minute after, beside its housekeeping, which of the companies with a code
+host project on the node are being deleted (`qorpera_code_hosts_deleting`, read-only, under its custody check), and
+removes each of their code hosts with its project. The listing of the node's projects and each removal, its wait for the
+host's other steps among it, have the agent wait; a removal out of time never runs later. One in a job or with a job
+waiting for its start (`CODE_HOST_BUSY` at once), refused, failed or out of time is logged and goes on a later pass, as
+does one a job made again after its removal.
 
 ## The report
 

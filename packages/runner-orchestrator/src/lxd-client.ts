@@ -243,23 +243,6 @@ export interface LxdInstanceExecStreamClient {
 	): Promise<LxdExecStreamResult>;
 }
 
-/** A program the executor writes into a coding machine (F3 5g-4: the guest agent and the folder program), as bytes:
- * root's file, of the given mode, at a path under `/opt/qorpera-guest/` or `/opt/qorpera-folder/` whose folder
- * exists. LXD writes the file in place, and a running program's file can't be written: the caller writes beside it and
- * renames over it. Separate from the runner mocks, like the capabilities above. */
-export interface LxdInstanceProgramClient {
-	pushInstanceProgram(
-		project: string,
-		name: string,
-		path: string,
-		content: Buffer,
-		mode: number,
-		signal?: AbortSignal,
-	): Promise<void>;
-}
-
-/** A coding machine's session folders are its only devices that change after
- * creation (lxd-client replaceInstanceDevices). */
 export interface LxdExecPipeRequest {
 	/** Run as root, at most 64 arguments. */
 	readonly command: readonly string[];
@@ -296,6 +279,23 @@ export interface LxdInstanceExecPipeClient {
 	): Promise<LxdExecPipeResult>;
 }
 
+/** A program the executor writes into a coding machine (F3 5g-4: the guest agent and the folder program), as bytes:
+ * root's file, of the given mode, at a path under `/opt/qorpera-guest/` or `/opt/qorpera-folder/` whose folder
+ * exists. LXD writes the file in place, and a running program's file can't be written: the caller writes beside it and
+ * renames over it. Separate from the runner mocks, like the capabilities above. */
+export interface LxdInstanceProgramClient {
+	pushInstanceProgram(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer,
+		mode: number,
+		signal?: AbortSignal,
+	): Promise<void>;
+}
+
+/** A coding machine's session folders are its only devices that change after
+ * creation (lxd-client replaceInstanceDevices). */
 export interface LxdInstanceDeviceClient {
 	replaceInstanceDevices(
 		project: string,
@@ -732,7 +732,7 @@ function officeCodePackageMaximum(file: string, write: boolean): number {
 	if (file === "original-preparation.json") return COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
 	if (file === "trust.json") return 4096;
 	if (["base-manifest.json", "target-manifest.json", "base-installation.json"].includes(file)) return 1024 ** 2;
-	if (file === "base-mount-template") return 65536;
+	if (["base-mount-template", "base-folder-mount-template"].includes(file)) return 65536;
 	if (["bootstrap.cjs", "measure.cjs"].includes(file)) return 16 * 1024 ** 2;
 	if (COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.some((name) => file === `artifacts/${name}`)) return 32 * 1024 ** 2;
 	if (new RegExp(`^challenge-${CODE_PACKAGE_UUID}\\.json$`).test(file)) return 65536;
@@ -1470,8 +1470,8 @@ export class LxdUnixClient
 	implements
 		LxdCodeHostClient,
 		LxdInstanceExecStreamClient,
-		LxdInstanceProgramClient,
 		LxdInstanceExecPipeClient,
+		LxdInstanceProgramClient,
 		LxdInstanceDeviceClient,
 		LxdInstanceDeviceUpdateClient,
 		LxdOfficeConfigurationClient,

@@ -22,6 +22,8 @@ export function createCloudCompanyComputerSession(options: {
 	scope: CompanyComputerScope;
 	control: CompanyComputerRegistryControl;
 	endpoint: CompanyComputerCloudEndpoint;
+	/** The run's own offline commands, shared with its action review (F3 4d). */
+	offlineShells?: Set<string>;
 }): ReturnType<typeof createCompanyComputerTools> {
 	return createCompanyComputerTools({
 		...options,
@@ -32,9 +34,13 @@ export function createCloudCompanyComputerSession(options: {
 export type CloudCompanyComputerSessionFactory = (
 	run: CloudNativeToolRun,
 	operations: CloudNativeToolOperations,
+	/** offlineShells: the run's own offline commands, which the computer tools add to and its action review reads. */
+	options?: { offlineShells?: Set<string> },
 ) => Promise<
 	| (ReturnType<typeof createCloudCompanyComputerSession> & {
 			captures?: import("./cloud-native-capture-images.ts").CloudNativeCaptureImages;
+			/** The run's desktop folder reports (F3 4f-2b), for its tool results. */
+			folderReports?: import("./cloud-native-tool-boundary.ts").CloudNativeFolderReports;
 	  })
 	| undefined
 >;

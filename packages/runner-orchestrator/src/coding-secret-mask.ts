@@ -103,7 +103,8 @@ export class CodingSecretMask {
  * terminal. `push` holds back the tail that could still start a value
  * (`pending` raw bytes, less than three times the longest form), and `end`
  * lets it through. Overlapping or touching matches become one `***`, wherever
- * the chunk boundaries fall. */
+ * the chunk boundaries fall. A new stream can take over at that tail
+ * (`masked`, then `resume`), so the bytes can be pushed again later. */
 export class CodingSecretMaskStream {
 	readonly #forms: readonly Uint8Array[];
 	readonly #byFirst: ReadonlyMap<number, readonly number[]>;
@@ -125,11 +126,33 @@ export class CodingSecretMaskStream {
 		return this.#held.length;
 	}
 
+	/** Where the bytes held back (`pending`) start, for a stream that takes over there: `null` when what was returned
+	 * so far doesn't end in a `***`; else how many of those bytes are already behind that `***` (0 for none yet, when
+	 * a match that starts there still continues it). */
+	masked(): number | null {
+		if (!this.#joined) return null;
+		const first = this.#masked[0];
+		return first !== undefined && first[0] === this.#emitted ? first[1] - this.#emitted : 0;
+	}
+
+	/** Before the first push: takes over from a stream whose `masked()` this was, at the start of the bytes it held
+	 * back, which are pushed again. From there it returns what that stream would have. */
+	resume(masked: number | null): void {
+		if (this.#ended || this.#emitted > 0 || this.#held.length > 0) {
+			throw new Error("a coding secret mask stream resumes only before its first push");
+		}
+		if (masked === null) return;
+		if (!Number.isSafeInteger(masked) || masked < 0) throw new RangeError("a masked byte count is a whole number");
+		this.#joined = true;
+		this.#masked = masked > 0 ? [[0, masked]] : [];
+	}
+
 	push(chunk: Uint8Array): Uint8Array {
 		if (this.#ended) throw new Error("the coding secret mask stream has ended");
 		if (chunk.length === 0) return new Uint8Array(0);
-		if (this.#forms.length === 0 && this.#held.length === 0) {
+		if (this.#forms.length === 0 && this.#held.length === 0 && this.#masked.length === 0) {
 			this.#emitted += chunk.length;
+			this.#joined = false;
 			return Uint8Array.from(chunk);
 		}
 		const base = this.#emitted + this.#held.length;

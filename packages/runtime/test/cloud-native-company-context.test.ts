@@ -41,6 +41,14 @@ it("derives the agent, requester and company from closed cloud context, not a su
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
 });
 
+it("puts the computer's work in the company folder at /company, not on a workbench (F3 4f)", () => {
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"On the Company Computer the company folder is at /company: what you save there becomes a Company File change",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("nothing else on the computer is the Company File");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
+});
+
 it("tells agents to make folders for a category of files while a member's or assignment's folder always stands", () => {
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Create a folder only as the home for a category of files");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never create a folder on your own just to hold a single file");
@@ -1363,14 +1371,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 
 // The sha256 of each run's developer instructions and prompt, taken from master at 1e2e3f773 (after M1b compose,
 // #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
-// images replace its attachmentCount, and the protocol says how to open them). A change to either is a change to every
-// run's bytes.
+// images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
+// folder at /company replaced the workbench line). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "5808444a9818756386566c7963eeebb86821dfb27abc666f4d16aaa04610972e",
+			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
 			prompt: "d3a5be48814723d8be602def1afafd4c25c5a78c615914c9da145109c712a5c1",
 		},
 	],
@@ -1378,7 +1386,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "cc920a5cf054ca08567b09aa23c1b71543b992cc03a105bf6c2a5603f018fdda",
+			instructions: "cfa3ddb3dc778426040a4be2f55f4351786b04f237dd7f55fb5b234d4a8a2266",
 			prompt: "9cb23983db74e2dfc64b4ea036395590a03fbbad3c556f21d9a49b9bf3f615c1",
 		},
 	],
@@ -1386,7 +1394,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "5808444a9818756386566c7963eeebb86821dfb27abc666f4d16aaa04610972e",
+			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
 			prompt: "8f199493f9c81ce231ff2647695178ee3b7589da1dd80e9b0fbd9d4c97336a9c",
 		},
 	],

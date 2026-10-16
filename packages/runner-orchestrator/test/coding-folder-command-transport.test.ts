@@ -35,6 +35,12 @@ import { CodingGuestRefused, type LxdCodingGuestClient } from "../src/coding-gue
 import { CodingSecretMask } from "../src/coding-secret-mask.ts";
 import { codingMachineFixture } from "./helpers/coding-machine.ts";
 
+// The host's own link, so that a test can fail one.
+vi.mock("node:fs/promises", async (original) => {
+	const actual = await original<typeof import("node:fs/promises")>();
+	return { ...actual, link: vi.fn(actual.link) };
+});
+
 const SECRET = "s3cr3t-value";
 const UID = 200001;
 const GID = 200002;
@@ -491,6 +497,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await json(join(folder, "progress.json"))).toStrictEqual({
 			schema: "qorpera.coding-host-command-progress/v1",
 			raw: 6,
+			masked: null,
 			logBytes: 6,
 			gapBytes: 0,
 			limitReached: false,
@@ -772,8 +779,23 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		at.held.reads = "unanswered";
 		expect(await at.read(input.commandId)).toStrictEqual(partial);
 		at.guest.forget(input.commandId);
+		// The guest's end is its own word: while the boundary holds, it isn't counted, and the command shows running.
+		const boundaries = at.control.boundary.mock.calls.length;
+		expect(await at.read(input.commandId)).toStrictEqual(partial);
+		expect(at.control.boundary).toHaveBeenCalledTimes(boundaries + 1);
+		await absent(join(at.folder(input.commandId), "outcome.json"));
+		expect(await json(join(at.folder(input.commandId), "progress.json"))).toMatchObject({ gapBytes: 0, end: 13 });
 		at.held.reads = "released";
-		// The bytes the guest printed that the host saw but didn't keep are lost.
+		// A call that stops after it counted them, before it linked how the command ended, has passed over them.
+		vi.mocked(link).mockRejectedValueOnce(Object.assign(new Error("EIO: i/o error, link"), { code: "EIO" }));
+		expect(await rejected(at.read(input.commandId))).toBe("EIO: i/o error, link");
+		await absent(join(at.folder(input.commandId), "outcome.json"));
+		expect(await json(join(at.folder(input.commandId), "progress.json"))).toMatchObject({
+			raw: 13,
+			masked: null,
+			gapBytes: 5,
+		});
+		// The bytes the guest printed that the host saw but didn't keep are lost, and counted once.
 		const lost = at.receipt(input, { state: "unconfirmed", output: "partial\n", log: { gapBytes: 5 } });
 		expect(await at.read(input.commandId)).toStrictEqual(lost);
 		expect(await json(join(at.folder(input.commandId), "outcome.json"))).toMatchObject({
@@ -791,6 +813,41 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await restarted.read(at.scope, { commandId: moved.commandId }, signal)).toStrictEqual(
 			at.receipt(moved, { state: "machine_stopped", output: "x\n" }),
 		);
+	});
+
+	it("shows a command the guest doesn't have running while the boundary holds, whatever the guest said before", async () => {
+		const at = await fixture();
+		at.held.reads = "unanswered";
+		const quiet = at.input(),
+			printed = at.input(),
+			unlanded = at.input();
+		at.guest.print(printed.commandId, "x");
+		for (const input of [quiet, printed]) {
+			expect(await at.start(input)).toStrictEqual(at.receipt(input, { state: "running" }));
+			at.guest.forget(input.commandId);
+		}
+		expect(await json(join(at.folder(quiet.commandId), "progress.json"))).toMatchObject({
+			acknowledged: true,
+			end: 0,
+		});
+		expect(await json(join(at.folder(printed.commandId), "progress.json"))).toMatchObject({
+			acknowledged: true,
+			end: 1,
+		});
+		at.guest.client.run.mockRejectedValueOnce(new Error("LXD_EXEC_FAILED"));
+		expect(await rejected(at.start(unlanded))).toBe("LXD_EXEC_FAILED");
+		// The guest has none of them: while the boundary holds, each shows running and none ends.
+		for (const input of [quiet, printed, unlanded]) {
+			expect(await at.read(input.commandId)).toStrictEqual(at.receipt(input, { state: "running" }));
+			await absent(join(at.folder(input.commandId), "outcome.json"));
+		}
+		at.held.reads = "released";
+		expect(await at.read(quiet.commandId)).toStrictEqual(at.receipt(quiet, { state: "unconfirmed" }));
+		expect(await at.read(printed.commandId)).toStrictEqual(
+			at.receipt(printed, { state: "unconfirmed", log: { gapBytes: 1 } }),
+		);
+		expect(await at.read(unlanded.commandId)).toStrictEqual(at.receipt(unlanded, { state: "unconfirmed" }));
+		await absent(join(at.folder(unlanded.commandId), "outcome.json"));
 	});
 
 	it("counts what the guest's ring dropped before the host kept it as a gap, once", async () => {
@@ -1031,6 +1088,88 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await readFile(join(at.folder(next.commandId), "output.log"), "utf8")).not.toContain(SECRET);
 	});
 
+	it("keeps a match it already showed as *** masked when a later read pulls the held tail again", async () => {
+		// The value overlaps itself: once its eight bytes match, the next seven may start another match, so the mask
+		// shows `***` and holds them back for the next read.
+		const value = "aaaaaaaa";
+		const secrets = {
+			resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({
+				environment: { TOKEN: value },
+				mask: () => new CodingSecretMask([value]).stream(),
+			})),
+		};
+		const at = await fixture({ secrets });
+		const ended = at.input();
+		at.guest.print(ended.commandId, value);
+		expect(await at.start(ended)).toStrictEqual(at.receipt(ended, { state: "running", output: "***" }));
+		expect(await json(join(at.folder(ended.commandId), "progress.json"))).toMatchObject({
+			raw: 1,
+			masked: 7,
+			logBytes: 3,
+			end: 8,
+		});
+		at.guest.print(ended.commandId, "\n");
+		at.guest.end(ended.commandId, "exited", { code: 0, signal: null });
+		const reader = at.another();
+		expect(await reader.read(at.scope, { commandId: ended.commandId }, signal)).toStrictEqual(
+			at.receipt(ended, { state: "succeeded", exitCode: 0, output: "***\n" }),
+		);
+		// A match that completes on a later read, overlapping the one already shown, joins it.
+		const longer = at.input();
+		at.guest.print(longer.commandId, value);
+		expect(await at.start(longer)).toStrictEqual(at.receipt(longer, { state: "running", output: "***" }));
+		at.guest.print(longer.commandId, "a");
+		expect(await at.another().read(at.scope, { commandId: longer.commandId }, signal)).toStrictEqual(
+			at.receipt(longer, { state: "running", output: "***" }),
+		);
+		expect(await json(join(at.folder(longer.commandId), "progress.json"))).toMatchObject({ raw: 2, masked: 7 });
+		at.guest.print(longer.commandId, "aaaaaaa ok\n");
+		at.guest.end(longer.commandId, "exited", { code: 0, signal: null });
+		expect(await at.another().read(at.scope, { commandId: longer.commandId }, signal)).toStrictEqual(
+			at.receipt(longer, { state: "succeeded", exitCode: 0, output: "*** ok\n" }),
+		);
+		for (const commandId of [ended.commandId, longer.commandId]) {
+			expect(await readFile(join(at.folder(commandId), "output.log"), "utf8")).not.toContain("a");
+		}
+	});
+
+	it("keeps the bytes past a gap that the kept *** already covers behind it, and matches afresh after them", async () => {
+		const value = "aaaaaaaa";
+		const secrets = {
+			resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({
+				environment: { TOKEN: value },
+				mask: () => new CodingSecretMask([value]).stream(),
+			})),
+		};
+		const at = await fixture({ secrets });
+		const input = at.input();
+		const folder = at.folder(input.commandId);
+		at.guest.print(input.commandId, value);
+		expect(await at.start(input)).toStrictEqual(at.receipt(input, { state: "running", output: "***" }));
+		expect(await json(join(folder, "progress.json"))).toMatchObject({ raw: 1, masked: 7 });
+		// The ring drops two of the seven bytes the `***` covers; the five left stay behind it. The value that follows
+		// is a match of its own, after a byte that is not part of one.
+		at.guest.print(input.commandId, ` ${value} ok\n`);
+		at.guest.drop(input.commandId, 3);
+		at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+		const kept = { state: "succeeded", exitCode: 0, output: "*** *** ok\n", log: { gapBytes: 2 } } as const;
+		expect(await at.another().read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(
+			at.receipt(input, kept),
+		);
+		expect(at.guest.lastOutput()).toMatchObject({ offset: 1 });
+		expect(await readFile(join(folder, "output.log"), "utf8")).toBe("*** *** ok\n");
+		// A gap that ends where the `***` ends starts the mask afresh: the bytes after it are kept as they are.
+		const past = at.input();
+		at.guest.print(past.commandId, value);
+		expect(await at.start(past)).toStrictEqual(at.receipt(past, { state: "running", output: "***" }));
+		at.guest.print(past.commandId, "bbbb ok\n");
+		at.guest.drop(past.commandId, 8);
+		at.guest.end(past.commandId, "exited", { code: 0, signal: null });
+		expect(await at.read(past.commandId)).toStrictEqual(
+			at.receipt(past, { state: "succeeded", exitCode: 0, output: "***bbbb ok\n", log: { gapBytes: 7 } }),
+		);
+	});
+
 	it("refuses custody another user could change", async () => {
 		const at = await fixture();
 		const input = at.input();
@@ -1102,6 +1241,8 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		await writeFile(named("progress.json"), JSON.stringify({ ...saved, extra: 1 }));
 		expect(await rejected(at.read(input.commandId))).toBe("CODING_COMMAND_CUSTODY_INVALID");
 		await writeFile(named("progress.json"), JSON.stringify({ ...saved, logBytes: LIMIT + 1 }));
+		expect(await rejected(at.read(input.commandId))).toBe("CODING_COMMAND_CUSTODY_INVALID");
+		await writeFile(named("progress.json"), JSON.stringify({ ...saved, masked: -1 }));
 		expect(await rejected(at.read(input.commandId))).toBe("CODING_COMMAND_CUSTODY_INVALID");
 		await writeFile(named("progress.json"), progress);
 		await unlink(named("outcome.json"));

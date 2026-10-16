@@ -566,9 +566,10 @@ locked at rank 5 `FOR NO KEY UPDATE` (a run of that routine holds it `FOR KEY SH
 company row at rank 0 for the rows' foreign keys. The scheduler takes the company row `FOR
 UPDATE` (its fence) before the routine, so it and a save wait for each other at the company row
 (test 709). The member RPC (`qorpera_upsert_cloud_routine`) refuses a `folder-v2` company's
-routines with 55000, except rows from before it became `folder-v2`; the agent tools
-(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refuse on a `folder-v2` company, whose
-agents write routine files (their file writers come with F2-1b). The name index
+routines with 55000, except rows from before it became `folder-v2`; the agent tools' row writers
+(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refused on a `folder-v2` company, whose
+agents write routine files (their file writers come with F2-1b), until legacy sweep D6
+(20260930335000) dropped them. The name index
 (`qorpera_cloud_routines_agent_key`) covers file routines of either origin. Known: a save that
 carries several routines (an agent folder's delete or move) locks them in id order while the
 expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
@@ -1932,7 +1933,7 @@ and revoke its secret grants. What remains:
   (`qorpera_folder_follow_up_mark_all`, the rebuild's too), with no commit and no member: their agents never went
   through the queue, and a Co-Founder must converge before its company shows as ready. An active agent with no first
   run yet gets a kickoff its owner authors, and nobody's login pays for its turn (`last_problem` `no_hirer`).
-- **The drain** is a pg_cron step every 2 seconds, one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
+- **The drain** is a pg_cron step every 10 seconds (every 2 seconds until 20260930483000), one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
   step: `lock_timeout` 2 seconds, read committed). One step is one transaction, and holds one work row (P22a's model):
   1. plain reads: skip companies being deleted (`qorpera_company_deletions`) and paused companies (a pause is not an
      attempt, so a hire converges as soon as the company resumes; a 55000 from the pause read again under the fence is
@@ -1964,7 +1965,7 @@ and revoke its secret grants. What remains:
   updated inside a savepoint.
 
   Indexes keep an idle pass to index probes: marks by subject, work rows by due time. The cron job's own log
-  (`cron.job_run_details`, about 43,200 rows a day at 2 seconds) gets erasure's daily cleanup.
+  (`cron.job_run_details`, about 8,640 rows a day at 10 seconds) gets erasure's daily cleanup.
 
   **Kicks:** a service-role writer that just committed marks converges them at once, one subject per call (each call its
   own transaction, so no lock of one subject comes after another's clock, and the name copy never runs where an agent's
@@ -1973,12 +1974,12 @@ and revoke its secret grants. What remains:
   marked, the company's first, answering whether more remain, so the caller calls again (the object gateway's member
   commit route, P34a, Interfaces, which knows the commit but not the staff ids; recorded in the registry and asked of
   Interfaces for C4-MEMBERS §P34a). A subject another transaction holds answers `busy`, and so
-  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the 2-second
-  step: a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
+  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the
+  step, up to 10 seconds (2 until 20260930483000): a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
   does not add. The step is the safety net.
 - A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`. The kicks run
   at read committed (25000 otherwise).
-- **Throughput:** the step converges one subject every 2 seconds across all companies (about 30 a minute); kicks cover
+- **Throughput:** the step converges one subject every 10 seconds across all companies (about 6 a minute); kicks cover
   creation and members' saves at once. P24's load test measures the backlog; if it grows, more steps run side by side
   (one subject each, one company per transaction, as core §3 requires; `SKIP LOCKED` keeps them apart).
 - The job runs as the database owner with no JWT. Every helper the converge calls checks no `auth.role()`; the
@@ -2174,7 +2175,8 @@ What exists (inventory of 3 October, master 041ad1c15):
   row holds the brief (`dispatch`), the result, the decision and the runtime state (state, sequence, epoch,
   the wake, revival). Nothing writes `brief.md` or `results.md` today.
 - Every worker writer (`qorpera_manage_agent_worker`, `qorpera_report_worker_result`) goes through the
-  old actor, which refuses `folder-v2` (55000). `manage_worker` is still offered to `folder-v2` runs.
+  old actor, which refuses `folder-v2` (55000). `manage_worker` is still offered to `folder-v2` runs. (Both
+  writers were dropped in legacy sweep D6, 20260930335000.)
 - The worker drain (dispatch failures, revival) and the wake materializer skip `folder-v2` companies,
   until C4 gives `folder-v2` real runs (P28).
 - The hook knows the two kinds by path and checks their names, and nothing else: anyone who may write

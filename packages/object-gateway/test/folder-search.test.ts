@@ -195,6 +195,59 @@ describe("folder search", () => {
 		expect(asked).toEqual([]);
 	});
 
+	it("finds a link by its name only, with its target, never by its target or through it, and below protocol 4 not at all", async () => {
+		const { source, asked, tree } = stage({
+			"docs/plan-v2.md": "the plan",
+			"docs/notes.md": "plan-latest",
+			"plans/a.md": "plan a",
+		});
+		const links: [string, string, number][] = [
+			["docs/plan-latest", "plan-v2.md", 50],
+			["docs/current", "plan-v2.md", 51],
+			["docs/all-plans", "../plans", 52],
+		];
+		for (const [path, target, n] of links)
+			tree.put({ path, kind: "symlink", version: v(n), target, authority: RECEIPT });
+		const p4 = { ...source, links: true };
+		const names = await searchView(p4, request("plan", { namesOnly: true }));
+		expect(names.hits.map((h) => [h.path, h.kind, h.target])).toEqual([
+			["docs/all-plans", "symlink", "../plans"],
+			["docs/plan-latest", "symlink", "plan-v2.md"],
+			["docs/plan-v2.md", "file", undefined],
+			["plans", "folder", undefined],
+		]);
+		expect(names.hits[0]!.version).toBe(v(52));
+		expect(names.reads.map((r) => `${r.kind} ${r.path}`)).toEqual([
+			"folder docs",
+			"symlink docs/all-plans",
+			"symlink docs/plan-latest",
+			"file docs/plan-v2.md",
+			"folder plans",
+		]);
+		expect(asked).toEqual([]);
+		// Text is looked for in files only: a link's target is never read as its text, nor followed.
+		const text = await searchView(p4, request("plan"));
+		expect(text.hits.map((h) => h.path)).toEqual(["docs/notes.md", "docs/plan-v2.md", "plans/a.md"]);
+		expect(text.reads.map((r) => `${r.kind} ${r.path}`)).toEqual([
+			"folder docs",
+			"file docs/notes.md",
+			"file docs/plan-v2.md",
+			"folder plans",
+			"file plans/a.md",
+		]);
+		expect(new Set(asked.map((a) => a.slice(0, a.indexOf("@"))))).toEqual(
+			new Set(["docs/notes.md", "docs/plan-v2.md", "plans/a.md"]),
+		);
+		// Below protocol 4 a link is not there.
+		const below = await searchView(source, request("plan", { namesOnly: true }));
+		expect(below.hits.map((h) => h.path)).toEqual(["docs/plan-v2.md", "plans"]);
+		expect(below.reads.map((r) => `${r.kind} ${r.path}`)).toEqual([
+			"folder docs",
+			"file docs/plan-v2.md",
+			"folder plans",
+		]);
+	});
+
 	it("ends a page by the encoded size of its reads, so it always fits one frame", async () => {
 		const files: Record<string, string> = {};
 		const long = "d".repeat(250);

@@ -119,7 +119,8 @@ describe("the folder service's control socket", () => {
 				closed: true,
 				paths: [
 					{ path: CANARY, outcome: "saved" },
-					{ path: CANARY, outcome: "conflict", receipt: CANARY },
+					// A conflicting link carries its target (the service's protocol 4), which is not kept either.
+					{ path: CANARY, outcome: "conflict", receipt: CANARY, target: CANARY },
 					{ path: CANARY, outcome: "denied", reason: CANARY },
 					{ path: CANARY, outcome: "waiting_for_review", reason: "parked" },
 				],
@@ -242,6 +243,10 @@ describe("the folder service's control socket", () => {
 				["a kept that is not true", { ...report, paths: [{ path: CANARY, outcome: "waiting", kept: false }] }],
 				["a path entry with another key", { ...report, paths: [{ path: CANARY, outcome: "saved", at: 1 }] }],
 				["a reason that is not text", { ...report, paths: [{ path: CANARY, outcome: "denied", reason: 1 }] }],
+				[
+					"a link target that is not text",
+					{ ...report, paths: [{ path: CANARY, outcome: "conflict", target: 1 }] },
+				],
 			] satisfies [string, unknown][]
 		).map(([name, bad]): [string, unknown] => [name, boundary({ views: [{ viewId: VIEW, report: bad }] })]),
 		["a lowercase error code", boundary({ views: [{ viewId: VIEW, error: { code: CANARY, message: "" } }] })],

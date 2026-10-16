@@ -271,7 +271,6 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 			authority,
 			replication,
 			controlToken: "synthetic-cleanup",
-			verifierToken: "synthetic-verifier",
 			nativeObjects: { token, folder: authority },
 		}),
 	);

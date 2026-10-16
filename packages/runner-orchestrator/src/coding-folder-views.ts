@@ -15,8 +15,9 @@ import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-
 // shows it at the session's /company with the folder program; the view's pass goes only over the agent's stdin. When
 // the session ends, the executor asks the folder service for the view's final boundary, which saves what the view has
 // pending, and then closes it. The folder service renews a view while its program is connected; the executor never
-// does. Each view the executor holds is recorded on the node's coding storage, its pass included, from before it is
-// shown until it has ended: an executor that restarted still ends it, with its boundary and its close.
+// does. Each view the executor holds is recorded on the node's coding storage, its pass and the attachment and boot it
+// was opened under included, from before it is shown until it has ended: an executor that restarted still ends it,
+// with its boundary and its close, or attaches the session under the same attachment again.
 
 /** The core's refusals of an open, by its own words (deploy/coding-worker/control.ts keeps exactly these). */
 const OPEN_REFUSALS: ReadonlyMap<string, string> = new Map([
@@ -53,8 +54,18 @@ export interface CodingFolderViewSession {
 	/** The attachment's token (qorpera_attach_coding_session). A new attachment needs a new view. */
 	readonly attachmentToken: string;
 	readonly machine: LxdCodingMachineBinding;
+	/** The machine's boot the attachment was made on (its boot_id): the view's record names it, so an executor that
+	 * restarted knows whether the attachment it held is still the machine's. */
+	readonly bootId: string;
 	/** The session's own user in the machine; its group has the same id. */
 	readonly uid: number;
+}
+
+/** The attachment a session's view was opened under, by its record. */
+export interface CodingFolderViewHeld {
+	readonly machineId: string;
+	readonly bootId: string;
+	readonly attachmentToken: string;
 }
 
 /** How a view ended: whether its final boundary released the machine's reads and saved all the view had (a report with
@@ -95,10 +106,8 @@ export interface CodingFolderViewsOptions {
 	readonly closeMs?: number;
 }
 
-interface HeldView {
+interface HeldView extends CodingFolderViewHeld {
 	readonly workerId: string;
-	readonly machineId: string;
-	readonly attachmentToken: string;
 	readonly viewId: string;
 	readonly pass: string;
 }
@@ -157,20 +166,28 @@ export class CodingFolderViews {
 
 	/** Shows the session its view at /company: the one it has, on a later turn of the same attachment, or a new one.
 	 * Before a new view, the old one's final boundary saves what it has pending and it closes; with no old view held, a
-	 * boundary saves what the machine's views have pending. A new view is recorded before it is shown, or closed. Invalid
-	 * ids, a uid outside the sessions' range or an invalid `until` reject with CODING_FOLDER_VIEW_REQUEST_INVALID before
-	 * anything; a refused open with CodingFolderViewRefused; a guest's refusal with CodingGuestRefused, and an agent's
-	 * answer that is not one with CODING_GUEST_ANSWER_INVALID; records it can't read, write or remove with
-	 * CODING_FOLDER_VIEW_RECORD_FAILED; an open or a mount with no answer is tried again until `until`, and then rejects
-	 * with CODING_FOLDER_VIEW_UNCONFIRMED or CODING_FOLDER_MOUNT_UNANSWERED. */
-	async attach(session: CodingFolderViewSession, until: number, signal: AbortSignal): Promise<{ viewId: string }> {
+	 * boundary saves what the machine's views have pending. A new view is recorded before it is shown, or closed. Resolves
+	 * with the view shown and, when it replaced one the session held, how that one ended: the caller ends a view it means
+	 * to replace before its attachment does, so one replaced here is a view whose attachment SQL already gave up or one
+	 * the node closed. Invalid ids, a uid outside the sessions' range or an invalid `until` reject with
+	 * CODING_FOLDER_VIEW_REQUEST_INVALID before anything; a refused open with CodingFolderViewRefused; a guest's refusal
+	 * with CodingGuestRefused, and an agent's answer that is not one with CODING_GUEST_ANSWER_INVALID; records it can't
+	 * read, write or remove with CODING_FOLDER_VIEW_RECORD_FAILED; an open or a mount with no answer is tried again until
+	 * `until`, and then rejects with CODING_FOLDER_VIEW_UNCONFIRMED or CODING_FOLDER_MOUNT_UNANSWERED. */
+	async attach(
+		session: CodingFolderViewSession,
+		until: number,
+		signal: AbortSignal,
+	): Promise<{ viewId: string; replaced?: CodingFolderViewEnd }> {
 		const workerId = normalizeUuid(session.workerId);
 		const environmentId = normalizeUuid(session.environmentId);
 		const attachmentToken = normalizeUuid(session.attachmentToken);
+		const bootId = normalizeUuid(session.bootId);
 		if (
 			!workerId ||
 			!environmentId ||
 			!attachmentToken ||
+			!bootId ||
 			!Number.isSafeInteger(session.uid) ||
 			session.uid < CODING_GUEST.minUid ||
 			session.uid > CODING_GUEST.maxUid ||
@@ -181,7 +198,7 @@ export class CodingFolderViews {
 		// A whole number of milliseconds within a timer's range: `until` may be any time, a fraction of one too.
 		const left = Math.min(TIMER_MAX_MS, Math.max(1, Math.floor(until - Date.now())));
 		const deadline = AbortSignal.any([signal, AbortSignal.timeout(left)]);
-		const asked = { ...session, workerId, environmentId, attachmentToken };
+		const asked = { ...session, workerId, environmentId, attachmentToken, bootId };
 		try {
 			await this.install(session.machine, deadline);
 		} catch (error) {
@@ -192,11 +209,11 @@ export class CodingFolderViews {
 				throw stopped(signal, deadline, error, RECORD_FAILED);
 			});
 		const held = await recorded(this.#held(workerId, deadline));
-		if (held?.machineId === machineId && held.attachmentToken === attachmentToken) {
+		if (held?.machineId === machineId && held.bootId === bootId && held.attachmentToken === attachmentToken) {
 			// One the node closed since gives way to a new one.
 			if ((await this.#mount(asked, held, until, signal, deadline)) === "mounted") return { viewId: held.viewId };
 		}
-		await recorded(this.#finish(held?.machineId ?? machineId, held ? [held] : [], deadline));
+		const [replaced] = await recorded(this.#finish(held?.machineId ?? machineId, held ? [held] : [], deadline));
 		const view = await this.#open(asked, machineId, until, signal, deadline);
 		await recorded(this.#keep(view, deadline)).catch(async (error: unknown) => {
 			// Unrecorded, it would outlive a restart unended: it closes, never shown.
@@ -204,8 +221,17 @@ export class CodingFolderViews {
 			throw error;
 		});
 		// A failed mount leaves the view held: the session's end closes it, and its next attach tries it again.
-		if ((await this.#mount(asked, view, until, signal, deadline)) === "mounted") return { viewId: view.viewId };
+		if ((await this.#mount(asked, view, until, signal, deadline)) === "mounted")
+			return replaced ? { viewId: view.viewId, replaced } : { viewId: view.viewId };
 		throw new CodingFolderViewRefused("VIEW_CLOSED");
+	}
+
+	/** The attachment the session's view was opened under, by its record: an executor that restarted attaches under it
+	 * again while the machine's boot is the same. Undefined when the session holds no view; rejects like `end`. */
+	async held(workerId: string, signal: AbortSignal): Promise<CodingFolderViewHeld | undefined> {
+		const worker = normalizeUuid(workerId);
+		const view = worker ? await this.#held(worker, signal) : undefined;
+		return view && { machineId: view.machineId, bootId: view.bootId, attachmentToken: view.attachmentToken };
 	}
 
 	/** The session's view ends, once nothing of the session runs any more and before the guest unmounts it: its final
@@ -254,14 +280,16 @@ export class CodingFolderViews {
 					deadline,
 				);
 			} catch (error) {
+				// A refusal without a message the control keeps (a 42501 of another kind) is final too: UNKNOWN.
 				if (error instanceof CodingControlRefused)
-					throw new CodingFolderViewRefused(OPEN_REFUSALS.get(error.reason) ?? "UNKNOWN");
+					throw new CodingFolderViewRefused(OPEN_REFUSALS.get(error.reason ?? "") ?? "UNKNOWN");
 				// Busy or unconfirmed: a view the lost answer opened gives way to the next, which supersedes it.
 				await this.#pause(until, signal, deadline, "CODING_FOLDER_VIEW_UNCONFIRMED");
 				continue;
 			}
 			const view = readView(answer);
-			return { ...view, workerId: session.workerId, machineId, attachmentToken: session.attachmentToken };
+			const { workerId, bootId, attachmentToken } = session;
+			return { ...view, workerId, machineId, bootId, attachmentToken };
 		}
 	}
 
@@ -348,8 +376,6 @@ export class CodingFolderViews {
 		return this.#records(async (checked) => {
 			const views: HeldView[] = [];
 			for (const name of (await readdir(this.#root)).sort()) {
-				// One being written, or left half written by a crash: not a record.
-				if (name.startsWith(".write-")) continue;
 				checked.throwIfAborted();
 				const view = readHeld(await readRecord(posix.join(this.#root, name)), name.slice(0, -".json".length));
 				if (view.machineId === machineId) views.push(view);
@@ -360,9 +386,9 @@ export class CodingFolderViews {
 
 	/** Records the view, once (the session's old one is gone by now). */
 	#keep(view: HeldView, signal: AbortSignal): Promise<void> {
-		const { workerId, machineId, attachmentToken, viewId, pass } = view;
+		const { workerId, machineId, bootId, attachmentToken, viewId, pass } = view;
 		const bytes = Buffer.from(
-			JSON.stringify({ schema: RECORD_SCHEMA, workerId, machineId, attachmentToken, viewId, pass }),
+			JSON.stringify({ schema: RECORD_SCHEMA, workerId, machineId, bootId, attachmentToken, viewId, pass }),
 		);
 		return this.#records(async () => {
 			if (!(await publish(this.#root, `${workerId}.json`, bytes))) throw new Error(RECORD_FAILED);
@@ -385,8 +411,8 @@ export class CodingFolderViews {
 	}
 
 	/** One use of the records, once the last one ended: IO a hard NFS mount hangs never overlaps. The storage is checked
-	 * mounted before and after it, and the folder made if it is missing. Rejects with the caller's reason, or with
-	 * CODING_FOLDER_VIEW_RECORD_FAILED for anything else, past RECORD_MS too. */
+	 * mounted before and after it, the folder made if it is missing, and what an interrupted write left removed first.
+	 * Rejects with the caller's reason, or with CODING_FOLDER_VIEW_RECORD_FAILED for anything else, past RECORD_MS too. */
 	async #records<T>(use: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(RECORD_MS)]);
 		const work = this.#recordWork.then(async () => {
@@ -399,6 +425,17 @@ export class CodingFolderViews {
 				},
 			);
 			await checkDirectory(this.#root);
+			// A write's temporary file is gone once its use ends, unless the process died in it: half written, or a second
+			// link of the record it became, which no read takes. The folder is this executor's alone (a private rootPath,
+			// deploy/coding-worker/README.md) and its uses never overlap, so any one here now is a dead write's.
+			let swept = false;
+			for (const name of await readdir(this.#root))
+				if (name.startsWith(".write-")) {
+					checked.throwIfAborted();
+					await unlink(posix.join(this.#root, name));
+					swept = true;
+				}
+			if (swept) await syncDirectory(this.#root);
 			const result = await use(checked);
 			await this.#assert(checked);
 			return result;
@@ -527,21 +564,22 @@ function readHeld(record: { value: unknown }, workerId: string): HeldView {
 			"schema",
 			"workerId",
 			"machineId",
+			"bootId",
 			"attachmentToken",
 			"viewId",
 			"pass",
 		]);
-		const { machineId, attachmentToken, viewId, pass } = held;
+		const { machineId, bootId, attachmentToken, viewId, pass } = held;
 		if (
 			held.schema === RECORD_SCHEMA &&
 			held.workerId === workerId &&
-			[workerId, machineId, attachmentToken, viewId].every(
+			[workerId, machineId, bootId, attachmentToken, viewId].every(
 				(id) => typeof id === "string" && normalizeUuid(id) === id,
 			) &&
 			typeof pass === "string" &&
 			PASS.test(pass)
 		)
-			return { workerId, machineId, attachmentToken, viewId, pass } as HeldView;
+			return { workerId, machineId, bootId, attachmentToken, viewId, pass } as HeldView;
 	} catch {
 		// Below.
 	}

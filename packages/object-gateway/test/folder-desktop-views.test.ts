@@ -18,6 +18,7 @@ import {
 	folder,
 	hashOf,
 	OFFICE,
+	PROFILE,
 } from "./folder-service-fixtures.ts";
 
 /** Company machines on the folder (F3 step 4, slice 4a: deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md): a
@@ -85,21 +86,48 @@ async function until(done: () => boolean, ms = 3_000): Promise<void> {
 }
 
 describe("company machines' desktops", () => {
-	it("reads the view's kind and machine from an open renewal, and refuses an open one without them", () => {
-		const open = { schema: "qorpera.folder-view-renew/v1", state: "open", leaseUntil: "2026-10-06T12:02:00.000Z" };
+	it("reads the view's kind, machine and company from an open renewal, and refuses an open one without them", () => {
+		const open = {
+			schema: "qorpera.folder-view-renew/v1",
+			state: "open",
+			leaseUntil: "2026-10-06T12:02:00.000Z",
+			companyId: PROFILE,
+			codingMachineId: null,
+		};
 		expect(parseViewRenewal({ ...open, kind: "computer_desktop", machineId: ALLOCATION })).toEqual({
 			state: "open",
 			leaseUntil: open.leaseUntil,
 			kind: "computer_desktop",
 			machineId: ALLOCATION,
+			companyId: PROFILE,
+			codingMachineId: null,
 		});
 		expect(parseViewRenewal({ ...open, kind: "run_box", machineId: null })).toMatchObject({ machineId: null });
-		for (const bad of [{}, { kind: "run_box" }, { kind: "", machineId: null }, { kind: "x", machineId: "office-1" }])
-			expect(() => parseViewRenewal({ ...open, ...bad })).toThrow();
-		// A closed answer is as it was.
+		// A coding session's names its coding machine (F3 5a).
 		expect(
-			parseViewRenewal({ schema: "qorpera.folder-view-renew/v1", state: "closed", reason: "superseded" }),
-		).toEqual({ state: "closed", reason: "superseded" });
+			parseViewRenewal({ ...open, kind: "coding_session", machineId: ALLOCATION, codingMachineId: ALLOCATION }),
+		).toMatchObject({ codingMachineId: ALLOCATION });
+		for (const bad of [
+			{},
+			{ kind: "run_box" },
+			{ kind: "", machineId: null },
+			{ kind: "x", machineId: "office-1" },
+			{ kind: "run_box", machineId: null, companyId: undefined },
+			{ kind: "run_box", machineId: null, companyId: "profile-1" },
+			{ kind: "run_box", machineId: null, companyId: PROFILE.toUpperCase() },
+			{ kind: "run_box", machineId: null, codingMachineId: undefined },
+			{ kind: "coding_session", machineId: null, codingMachineId: "machine-1" },
+		])
+			expect(() => parseViewRenewal({ ...open, ...bad })).toThrow();
+		// A closed answer is as it was, and may say the service that served the view did not stop cleanly (F3 5a).
+		for (const reason of ["superseded", "service_crashed"])
+			expect(parseViewRenewal({ schema: "qorpera.folder-view-renew/v1", state: "closed", reason })).toEqual({
+				state: "closed",
+				reason,
+			});
+		expect(() =>
+			parseViewRenewal({ schema: "qorpera.folder-view-renew/v1", state: "closed", reason: "x" }),
+		).toThrow();
 	});
 
 	it("serves a desktop to its own company machine alone, and takes its writes", async () => {
@@ -127,7 +155,8 @@ describe("company machines' desktops", () => {
 		const box = await company({ kind: "run_box", machineId: null });
 		await expect(box.open()).rejects.toMatchObject({ code: "VIEW_REFUSED" });
 		expect((await box.open(AT_EXEC)).writable).toBe(false);
-		// A coding session's view (step 5), and a desktop the core names no machine for.
+		// A coding session's view the core names no coding machine for (step 5c serves one only to its own), and a desktop
+		// the core names no machine for.
 		for (const view of [{ kind: "coding_session" }, { machineId: null }]) {
 			const { open } = await company(view);
 			for (const bridge of [AT_OFFICE, AT_EXEC])
