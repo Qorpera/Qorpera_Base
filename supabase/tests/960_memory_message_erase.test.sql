@@ -181,7 +181,7 @@ begin
 
 	r := public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001', s, e7);
 	perform pg_temp.same(r - 'eraseId', jsonb_build_object('schema', 'qorpera.memory-message-erase/v1', 'state', 'pending',
-		'sessionId', s, 'eventId', e7, 'blocks', 0, 'runsPending', 0), 'A request');
+		'sessionId', s, 'eventId', e7, 'blocks', 0, 'runsPending', 0, 'copies', '[]'::jsonb), 'A request');
 	perform pg_temp.same(public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020',
 		'70000000-0000-4000-8000-000000000001', s, e7), r, 'A second request joins the first');
 	perform pg_temp.same(to_jsonb((select array_agg(x.erase_id) from public.qorpera_memory_message_erase_due(10) x)),
@@ -356,7 +356,7 @@ begin
 	-- An open erase is past step 1: a second call answers where it stands.
 	perform pg_temp.same(public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', eid), r, 'Step 1 runs once');
 	perform pg_temp.same(public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020',
-		'70000000-0000-4000-8000-000000000001', s, (pg_temp.event(s, 7)).event_id), r, 'A request joins the open erase');
+		'70000000-0000-4000-8000-000000000001', s, (pg_temp.event(s, 7)).event_id), r || '{"copies":[]}', 'A request joins the open erase');
 end $$;
 
 -- 4. Step 2: the plan, its refusals, a live write that moves it, and the rewrite --------------------------------------
@@ -541,7 +541,7 @@ begin
 	if er.done_at is null or er.last_error is not null then raise exception 'A done erase: %', to_jsonb(er); end if;
 	perform pg_temp.same(public.qorpera_memory_message_erase_scrub('70000000-0000-4000-8000-000000000020', eid), r, 'Step 4 runs once');
 	perform pg_temp.same(public.qorpera_memory_message_erase_status('70000000-0000-4000-8000-000000000020',
-		'70000000-0000-4000-8000-000000000001', eid), r, 'Its status');
+		'70000000-0000-4000-8000-000000000001', eid), r || '{"copies":[]}', 'Its status');
 end $$;
 
 -- 7. Readers: a run's context reads the erased message as (erased), its neighbour as it was ------------------------------
