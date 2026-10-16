@@ -43,12 +43,24 @@ begin
 		or l -> 'commits' -> 2 ->> 'commitId' is distinct from c3 ->> 'commitId' then raise exception 'The view''s commits: %', l; end if;
 	x := l -> 'commits' -> 0;
 	if x ->> 'seq' is distinct from c1 ->> 'seq' or x -> 'by' is distinct from '{"kind":"agent","staffAgentId":"63200000-0000-4000-8000-0000000000a1"}'
-		or x ->> 'runId' is distinct from v ->> 'runId' or x ->> 'at' is null or (x ->> 'unitCount')::integer <> 2
+		or x ->> 'runId' is distinct from v ->> 'runId' or x ->> 'at' is null
 		or x -> 'units' is distinct from c1 -> 'units' then raise exception 'A live desktop commit: %', x; end if;
-	if (select count(*) from jsonb_object_keys(x)) <> 7 then raise exception 'A commit''s fields: %', x; end if;
+	if (select count(*) from jsonb_object_keys(x)) <> 6 then raise exception 'A commit''s fields: %', x; end if;
 	x := l -> 'commits' -> 1;
 	if jsonb_typeof(x -> 'seq') is distinct from 'null' or x -> 'units' is distinct from c2 -> 'units'
 		or x -> 'units' -> 0 ->> 'path' is distinct from 'rules/vc.txt' then raise exception 'A commit that saved nothing: %', x; end if;
+
+	-- The limit counts units and never splits a commit: the first comes whole even over it (c1 has two units).
+	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', null, 1);
+	if jsonb_array_length(l -> 'commits') <> 1 or l -> 'commits' -> 0 -> 'units' is distinct from c1 -> 'units'
+		or not (l ->> 'more')::boolean then raise exception 'The first, whole: %', l; end if;
+	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', null, 2);
+	if jsonb_array_length(l -> 'commits') <> 1 or not (l ->> 'more')::boolean then raise exception 'Two units: %', l; end if;
+	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', null, 3);
+	if jsonb_array_length(l -> 'commits') <> 2 or l -> 'commits' -> 1 ->> 'commitId' is distinct from c2 ->> 'commitId'
+		or not (l ->> 'more')::boolean then raise exception 'Three units: %', l; end if;
+	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', null, 4);
+	if jsonb_array_length(l -> 'commits') <> 3 or (l ->> 'more')::boolean then raise exception 'Four units: %', l; end if;
 
 	-- The cursor: after a commit, one at a time.
 	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', (c1 ->> 'commitId')::uuid, 1);
@@ -59,16 +71,14 @@ begin
 		or (l ->> 'more')::boolean then raise exception 'After the second, one: %', l; end if;
 	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', (c3 ->> 'commitId')::uuid);
 	if l -> 'commits' is distinct from '[]'::jsonb or (l ->> 'more')::boolean then raise exception 'After the last: %', l; end if;
-	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass', null, 2);
-	if jsonb_array_length(l -> 'commits') <> 2 or not (l ->> 'more')::boolean then raise exception 'The first two: %', l; end if;
 
-	-- Refused: another view's commit or no commit as the cursor, a limit outside 1..50, a run box, a wrong pass, no view.
+	-- Refused: another view's commit or no commit as the cursor, a limit outside 1..1000, a run box, a wrong pass, no view.
 	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L, %L)', d ->> 'viewId', d ->> 'pass',
 		cb ->> 'commitId'), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L, %L)', d ->> 'viewId', d ->> 'pass',
 		extensions.gen_random_uuid()), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L, null, 0)', d ->> 'viewId', d ->> 'pass'), '22023');
-	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L, null, 51)', d ->> 'viewId', d ->> 'pass'), '22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L, null, 1001)', d ->> 'viewId', d ->> 'pass'), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L, null, null)', d ->> 'viewId', d ->> 'pass'), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L)', b ->> 'viewId', b ->> 'pass'), '22023');
 	perform pg_temp.raises(format('select public.qorpera_folder_view_commits(%L, %L)', d ->> 'viewId', 'wrong'), '42501');
@@ -92,19 +102,23 @@ begin
 	perform public.qorpera_folder_view_close((b ->> 'viewId')::uuid, b ->> 'pass');
 end $$;
 
--- A commit of more than 20 units carries the first 20 and its unit count.
+-- A commit carries all its units: a conflict and a denial after the twentieth reach the report.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); d jsonb; r jsonb; l jsonb; u jsonb;
+	a jsonb := pg_temp.stage('view-commits-later');
 begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
-	select jsonb_agg(jsonb_build_object('op','mkdir','path','shared/many-' || n) order by n) into u from generate_series(1, 21) as n;
-	r := pg_temp.vcommit(d, 'view-commits-many', u);
-	perform pg_temp.expect(r, 21, 'saved');
+	select jsonb_agg(jsonb_build_object('op','mkdir','path','shared/many-' || n) order by n) into u from generate_series(1, 20) as n;
+	r := pg_temp.vcommit(d, 'view-commits-many', u || jsonb_build_array(jsonb_build_object('op','write','path','shared/vc.txt','file',a),
+		jsonb_build_object('op','write','path','secret/many.txt','file',a)));
+	perform pg_temp.expect(r, 20, 'saved'); perform pg_temp.expect(r, 21, 'conflict', 'exists');
+	perform pg_temp.expect(r, 22, 'denied', 'denied');
 	l := public.qorpera_folder_view_commits((d ->> 'viewId')::uuid, d ->> 'pass');
-	if jsonb_array_length(l -> 'commits') <> 1 or (l -> 'commits' -> 0 ->> 'unitCount')::integer <> 21
-		or jsonb_array_length(l -> 'commits' -> 0 -> 'units') <> 20
-		or l -> 'commits' -> 0 -> 'units' is distinct from (r -> 'units') - 20 then raise exception 'A long commit: %', l; end if;
+	if jsonb_array_length(l -> 'commits') <> 1 or l -> 'commits' -> 0 -> 'units' is distinct from r -> 'units'
+		or jsonb_array_length(l -> 'commits' -> 0 -> 'units') <> 22
+		or l -> 'commits' -> 0 -> 'units' -> 20 ->> 'outcome' is distinct from 'conflict'
+		or l -> 'commits' -> 0 -> 'units' -> 21 ->> 'path' is distinct from 'secret/many.txt' then raise exception 'A long commit: %', l; end if;
 	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');
 	perform pg_temp.hold(null);
 end $$;
