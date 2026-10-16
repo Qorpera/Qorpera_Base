@@ -44,7 +44,8 @@ they belong to Orders 9, 7 and 8.
 - `supabase/migrations/20260920080000_runtime_workers_todos.sql`: tables, the
   four run-bound operations (`qorpera_manage_agent_todo`,
   `qorpera_confirm_agent_todo_publication`, `qorpera_manage_agent_worker`,
-  `qorpera_report_worker_result`), the drain, the continuation context, and
+  `qorpera_report_worker_result`; all four dropped in legacy sweep D6,
+  20260930335000), the drain, the continuation context, and
   reviewed patches to wake admission, authorization, policy, the wake envelope,
   the materializer, the continuation source and the wake work gate. Each patch
   fails the migration if the function it extends has changed.

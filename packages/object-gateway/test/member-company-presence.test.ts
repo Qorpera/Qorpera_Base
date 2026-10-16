@@ -69,7 +69,6 @@ async function server(f: Awaited<ReturnType<typeof fixture>>) {
 		store: {} as never,
 		authority: {} as never,
 		controlToken: "control",
-		verifierToken: "verifier",
 		memberPresence: { member: f.member, publisher: f.publisher },
 		memberClientOrigins: ["https://web.test"],
 	});

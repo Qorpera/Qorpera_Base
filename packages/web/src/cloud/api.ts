@@ -529,6 +529,23 @@ export class CloudApi {
 			.then(parseEvents);
 	}
 
+	/** A conversation's erasure generation (`memory_generation`, 20260928509140): an erase of one of its messages raises
+	 * it, and rewrites that event's body in place without a new sequence. Read from the session row under the same read
+	 * policy that Realtime's session hints use; undefined when the row is not readable. */
+	async readSessionMemoryGeneration(sessionId: string): Promise<number | undefined> {
+		const id = requiredUuid(sessionId, "Session id");
+		const { data, error } = await this.cloud.supabase
+			.from("qorpera_shared_sessions")
+			.select("memory_generation")
+			.eq("id", id)
+			.maybeSingle();
+		if (error) throw error;
+		const generation = (data as { memory_generation?: unknown } | null)?.memory_generation;
+		return typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 0
+			? generation
+			: undefined;
+	}
+
 	/** The newest `limit` events of a transcript, or the newest before `beforeSequence`, oldest
 	 * first as readSessionEvents returns them (migration 20260928279410; a cloud without it
 	 * answers with a missing RPC). Same authorization as the forward read, which it runs. */
