@@ -295,9 +295,9 @@ over `X` is the publish point inside the syscall, a lock's removal publishes `X`
 - the session-local files above and the alternates files platform-only in the folder;
 - §6's names under `code/` (`%`, `:` and device names allowed; NFC and no case-only siblings kept);
 - old versions of `repo.git/objects/**` kept 7 days, not forever: a version goes 7 days after a write over it, a delete
-  or a move ended it (pg_cron, each minute), and its bytes then wait for the folder's GC once nothing roots them. The
-  current objects, the refs and the worktrees keep every version. The history view shows a change set's paths under
-  `repo.git` as one line, the folder;
+  or a move ended it (pg_cron, each minute), and its bytes then wait for the folder's GC, which takes them only once
+  nothing roots them. The current objects, the refs and the worktrees keep every version. The history view shows a
+  change set's paths under `repo.git` (by key) as one line, the folder;
 - the gc job blocking new leases in `repo.git` while it runs (5e).
 
 **The cache list** (§6 "The per-session cache") moves from the session's NAS cache folder to the machine's disk: a
