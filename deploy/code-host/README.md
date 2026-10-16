@@ -78,3 +78,6 @@ The test machine's modules, sysctls, nft ruleset, links and LXD state are listed
 proof's projects, code hosts and image are deleted at the end, also when it fails. Other runs that make links on the
 test machine's bridge or add images to its default store at the same time would fail the comparison, so it runs alone
 there (not together with the coding image's proof).
+
+It passed on node 2's test machine on 16 October 2026 (run `20261016T003039-13516-550adc9e`): the image built in five
+minutes, the code hosts' part took 112 s, and the test machine's state was the same after as before.
