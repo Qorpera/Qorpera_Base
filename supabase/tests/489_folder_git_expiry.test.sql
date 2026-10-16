@@ -1,9 +1,10 @@
 -- @fixture 490_folder_git_rules.test.sql until "-- A coding session writes its own worktree"
 -- git's old objects and the history view (20260930446400; F3 step 5b, part 4: deploy/first-node/RUNTIME-FOLDER-CODING-
--- MACHINES.md, "Code areas and git"). A version under a repo.git's objects/ goes 7 days after it ended (a delete, a write
--- over it, a move away), once, in batches, and its bytes wait for the folder's GC once nothing roots them. Current
--- objects, refs and worktree files keep every version. A member's history shows a change set's repo.git paths as one
--- line. The office, code/acme/app and the helpers are 490's.
+-- MACHINES.md, "Code areas and git"). A version under a repo.git's objects/ (by key) goes 7 days after it ended (a delete,
+-- a write over it, a move away), once, in batches, and its bytes wait for the folder's GC, whose claim drops them while
+-- something roots them. Current objects, refs and worktree files keep every version. A member's history shows a change
+-- set's repo.git paths as one line. The office, code/acme/app and the helpers are 490's. The race with the upload
+-- intents' sweep is 532's.
 
 -- The history keeps every marker; the expiry is no role's and runs every minute.
 do $$
@@ -89,15 +90,16 @@ $$;
 
 -- The code host's gc, as the platform: two loose objects and a temporary pack (A); a prune of the first object, with a
 -- ref and a worktree file written over (B1); the pack moved into place (B2). Once they are 7 days old a batch of 4 ends
--- the pruned object (its write and its delete); the next ends the temporary pack's write and its leaving. The pruned
--- object's bytes wait for GC; the pack's stay rooted where they arrived. The ref, the worktree file and the current
--- objects keep every version, and a third run finds nothing.
+-- the pruned object (its write and its delete); the next ends the temporary pack's write and its leaving. The bytes of
+-- both wait for GC; the claim drops the pack's, rooted where they arrived. The ref, the worktree file and the current
+-- objects keep every version, and a third run finds nothing. A repository spelled REPO.git expires the same way.
 do $$
 declare g text := 'code/acme/app/repo.git/'; d1 text := g || 'objects/ab/' || repeat('d', 38);
 	e1 text := g || 'objects/ab/' || repeat('e', 38); tmp text := g || 'objects/pack/tmp_pack_1';
 	pack text := g || 'objects/pack/pack-' || repeat('1', 40) || '.pack'; readme text := 'code/acme/app/main/README';
 	o1 jsonb := pg_temp.stage('git-expire-one'); o2 jsonb := pg_temp.stage('git-expire-two');
 	o3 jsonb := pg_temp.stage('git-expire-pack'); f jsonb := pg_temp.stage('git-expire-file'); r jsonb;
+	upper1 text := 'code/acme/Tool/REPO.git/objects/AB/' || repeat('B', 38); o4 jsonb;
 begin
 	r := pg_temp.commit('{"kind":"platform"}', 'git-expire-a', jsonb_build_array(
 		jsonb_build_object('op','write','path',d1,'file',o1), jsonb_build_object('op','write','path',e1,'file',o2),
@@ -136,7 +138,13 @@ begin
 			or pg_temp.versions(g || 'refs/heads/main') <> 'write,write' or pg_temp.versions(readme) <> 'write,write' then
 		raise exception 'Versions left: tmp %, pack %, e1 %', pg_temp.versions(tmp), pg_temp.versions(pack),
 			pg_temp.versions(e1); end if;
-	if pg_temp.queued(o3) or pg_temp.queued(f) then raise exception 'Rooted bytes were queued'; end if;
+	if not pg_temp.queued(o3) or pg_temp.queued(f) then raise exception 'The temporary pack''s bytes wait for GC'; end if;
+	-- A day later the claim finds them rooted by the pack and drops their row: it takes nothing in use.
+	update public.qorpera_folder_object_gc set unreferenced_since = clock_timestamp() - interval '25 hours'
+	where profile_id = '63200000-0000-4000-8000-000000000010' and sha256 = o3 ->> 'manifestSha256';
+	if public.qorpera_folder_claim_object_gc(100, gen_random_uuid()) -> 'objects' @> jsonb_build_array(jsonb_build_object(
+			'sha256', o3 ->> 'manifestSha256')) or pg_temp.queued(o3) then
+		raise exception 'The claim took rooted bytes'; end if;
 
 	-- A later prune of the second object goes 7 days after it, though the expiry already passed the object's write.
 	r := pg_temp.commit('{"kind":"platform"}', 'git-expire-c', jsonb_build_array(
@@ -151,13 +159,33 @@ begin
 	if pg_temp.versions(e1) <> '' or not pg_temp.queued(o2) then
 		raise exception 'The second prune: %', pg_temp.versions(e1); end if;
 
+	-- code/acme/Tool/REPO.git is a repository by key: its pruned object goes too (the objects/AB folder stays current).
+	o4 := pg_temp.stage('git-expire-upper');
+	r := pg_temp.commit('{"kind":"platform"}', 'git-expire-d',
+		(select jsonb_agg(jsonb_build_object('op','mkdir','path',p) order by n) from unnest(array['code/acme/Tool',
+			'code/acme/Tool/REPO.git', 'code/acme/Tool/REPO.git/objects', 'code/acme/Tool/REPO.git/objects/AB'])
+			with ordinality t(p, n))
+		|| jsonb_build_array(jsonb_build_object('op','write','path',upper1,'file',o4)));
+	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	insert into expiry_seqs values ('d', (r ->> 'seq')::bigint);
+	r := pg_temp.commit('{"kind":"platform"}', 'git-expire-e', jsonb_build_array(
+		jsonb_build_object('op','delete','path',upper1,'expectedVersion',pg_temp.ver(upper1))));
+	perform pg_temp.expect(r, 1, 'saved');
+	insert into expiry_seqs values ('e', (r ->> 'seq')::bigint);
+	perform pg_temp.age('d', 170); perform pg_temp.age('e', 170);
+	perform pg_temp.expired(public.qorpera_folder_git_versions_expire(), 3, 2);
+	if pg_temp.versions(upper1) <> '' or pg_temp.versions('code/acme/Tool/REPO.git/objects/AB') <> 'mkdir'
+			or not pg_temp.queued(o4) then
+		raise exception 'REPO.git: % / %', pg_temp.versions(upper1),
+			pg_temp.versions('code/acme/Tool/REPO.git/objects/AB'); end if;
+
 	perform pg_temp.raises('select public.qorpera_folder_git_versions_expire(0)', '22023');
 	perform pg_temp.raises('select public.qorpera_folder_git_versions_expire(10001)', '22023');
 	perform pg_temp.raises('select public.qorpera_folder_git_versions_expire(null)', '22023');
 end $$;
 
--- A member's history: a change set's paths under repo.git are one line, the repository's folder at the change set's
--- first version there. The setup lists its 9 other paths and that line, with nothing more; a change set whose versions
+-- A member's history: a change set's paths under repo.git (by key) are one line, the repository's folder at the change
+-- set's first version there. The setup lists its 9 other paths and that line, with nothing more; a change set whose versions
 -- all expired is not listed.
 do $$
 declare g text := 'code/acme/app/repo.git/'; d text := 'code/acme/app/'; w1 text := pg_temp.wk(1); w2 text := pg_temp.wk(2);
@@ -191,4 +219,10 @@ begin
 			or pg_temp.item(pg_temp.seq('a')) is not null or pg_temp.item(pg_temp.seq('c')) is not null then
 		raise exception 'The gc''s change sets: % / % / % / %', pg_temp.item(pg_temp.seq('a')),
 			pg_temp.item(pg_temp.seq('b1')), pg_temp.item(pg_temp.seq('b2')), pg_temp.item(pg_temp.seq('c')); end if;
+
+	-- REPO.git folds by key, spelled as its paths spell it.
+	v_item := pg_temp.item(pg_temp.seq('d'));
+	if pg_temp.lines(v_item) is distinct from 'code/acme/Tool,code/acme/Tool/REPO.git'
+			or v_item -> 'paths' -> 1 ->> 'version' is distinct from pg_temp.ver('code/acme/Tool/REPO.git') then
+		raise exception 'REPO.git''s change set: %', v_item; end if;
 end $$;

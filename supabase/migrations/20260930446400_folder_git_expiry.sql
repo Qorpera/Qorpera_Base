@@ -1,12 +1,12 @@
 -- 20260930446400: step 5b, part 4 of 4: git's old objects and the history view (deploy/first-node/RUNTIME-FOLDER-CODING-
 -- MACHINES.md, "Code areas and git": old versions of repo.git/objects/** kept 7 days, not forever, and the history view
 -- folding git's own changes into one line per publish).
--- 1. qorpera_folder_git_versions_expire: a version under code/<owner>/<name>/repo.git/objects/ goes 7 days after it
---    ended, and the bytes nothing roots any more wait for the folder's GC, as an erasure's do. Only the platform and a
---    code host delete or move an object (part 2), so these are the code host's gc: its prunes and its repacks. pg_cron
---    runs it every minute.
--- 2. qorpera_member_folder_history: a change set's paths under a repository's repo.git are one line, the folder
---    code/<owner>/<name>/repo.git. The feed and a path's own history still list each version.
+-- 1. qorpera_folder_git_versions_expire: a version whose key is under code/<owner>/<name>/repo.git/objects/ goes 7 days
+--    after it ended, and the bytes it held wait for the folder's GC, which re-checks their roots before it takes any.
+--    Only the platform and a code host delete or move an object (part 2), so these are the code host's gc: its prunes
+--    and its repacks. pg_cron runs it every minute.
+-- 2. qorpera_member_folder_history: a change set's paths whose keys are under a repository's repo.git are one line, the
+--    folder code/<owner>/<name>/repo.git as the path spells it. The feed and a path's own history still list each version.
 -- A member never restores a single object: part 2 already refuses a member's write or delete under objects/.
 -- Every patched body names this migration (20260930446400), and every earlier marker in it stays.
 
@@ -37,14 +37,17 @@ insert into public.qorpera_folder_git_expiry default values;
 alter table public.qorpera_folder_git_expiry enable row level security;
 revoke all on table public.qorpera_folder_git_expiry from public, anon, authenticated, service_role;
 
+-- By key, as part 2's rules match (code/acme/app/REPO.git/objects/... is git's too).
 create index qorpera_folder_path_versions_git_objects on public.qorpera_folder_path_versions(created_at, version)
-	where path ~ '^code/[^/]+/[^/]+/repo\.git/objects/';
+	where public.qorpera_folder_key(path) ~ '^code/[^/]+/[^/]+/repo\.git/objects/';
 
 -- One batch, oldest first. A version ends when the next one on its key names it (a write over it, a delete, a move away);
 -- a delete and a move's leaving end themselves, since nothing comes after them on the key. 7 days after the end the
--- version goes. In a statement after the deletes, so the roots no longer count them, the bytes nothing roots wait for the
--- folder's GC where it serves the company, as an erasure's do (20260928469200). Where it does not (the company is
--- being deleted, and its deletion takes the bytes), nothing is queued.
+-- version goes. The bytes the gone versions held all wait for the folder's GC where it serves the company, rooted or
+-- not: its claim re-checks the roots under its lock 24 hours later and drops a GC row whose bytes are rooted
+-- (20260928349860). Checking here could lose them: a root another transaction removes at the same time (an upload
+-- intent's sweep, an erasure) still counts in this one, and this version still counts in that one. Where GC does not
+-- serve the company (it is being deleted, and its deletion takes the bytes), nothing is queued.
 create function public.qorpera_folder_git_versions_expire(p_limit integer default 1000)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_cutoff timestamptz := clock_timestamp() - interval '7 days'; v_cursor public.qorpera_folder_git_expiry%rowtype;
@@ -58,7 +61,7 @@ begin
 		array_agg(event.created_at order by event.created_at, event.version)
 	into v_events, v_times
 	from (select version.version, version.created_at from public.qorpera_folder_path_versions as version
-		where version.path ~ '^code/[^/]+/[^/]+/repo\.git/objects/' and version.created_at < v_cutoff
+		where public.qorpera_folder_key(version.path) ~ '^code/[^/]+/[^/]+/repo\.git/objects/' and version.created_at < v_cutoff
 			and (version.created_at, version.version) > (v_cursor.after_at, v_cursor.after_version)
 		order by version.created_at, version.version
 		limit p_limit) as event;
@@ -95,7 +98,6 @@ begin
 		where public.qorpera_folder_gc_company(hash.profile_id)
 			and exists (select 1 from public.qorpera_profile_objects as object where object.profile_id = hash.profile_id
 				and object.sha256 = hash.sha256)
-			and not public.qorpera_folder_object_rooted(hash.profile_id, hash.sha256)
 		order by hash.profile_id, hash.sha256 collate "C"
 		on conflict (profile_id, sha256) do update
 		set unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);
@@ -132,7 +134,7 @@ end $$;
 select pg_temp.s5b_patch('public.qorpera_member_folder_history(uuid,bigint,integer)', array[
 	$old$v_seen integer; v_found integer; v_cap integer; v_budget integer := 10000; v_oldest bigint;$old$,
 	$new$v_seen integer; v_found integer; v_cap integer; v_budget integer := 10000; v_oldest bigint;
-	v_repo text; v_repos text[]; -- 20260930446400$new$,
+	v_repo text; v_repos text[]; v_repo_path text; -- 20260930446400$new$,
 	$old$v_seen := 0; v_found := 0; v_paths := '[]';$old$,
 	$new$v_seen := 0; v_found := 0; v_paths := '[]'; v_repos := '{}';$new$,
 	$old$			if public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_actor, v_version.path, 'read') then
@@ -142,8 +144,9 @@ select pg_temp.s5b_patch('public.qorpera_member_folder_history(uuid,bigint,integ
 					'kind', v_version.kind, 'version', v_version.version));
 			end if;$old$,
 	$new$			-- 20260930446400 (step 5b): git's own changes, everything in a repository's repo.git, are one line: the
-			-- folder, at its first readable version in this change set.
-			v_repo := substring(v_version.path from '^(code/[^/]+/[^/]+/repo\.git)(?:/|$)');
+			-- folder, at its first readable version in this change set. Grouped by key (REPO.git is repo.git), shown as
+			-- that version's path spells the folder.
+			v_repo := substring(public.qorpera_folder_key(v_version.path) from '^(code/[^/]+/[^/]+/repo\.git)(?:/|$)');
 			if (v_repo is null or not v_repo = any(v_repos))
 					and public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_actor, v_version.path, 'read') then
 				v_found := v_found + 1;
@@ -153,8 +156,10 @@ select pg_temp.s5b_patch('public.qorpera_member_folder_history(uuid,bigint,integ
 						'kind', v_version.kind, 'version', v_version.version));
 				else
 					v_repos := v_repos || v_repo;
-					v_paths := v_paths || jsonb_build_array(jsonb_build_object('path', v_repo, 'op', 'write', 'kind', 'folder',
-						'version', v_version.version));
+					v_repo_path := array_to_string((string_to_array(v_version.path, '/'))[1:4], '/');
+					v_paths := v_paths || jsonb_build_array(jsonb_build_object('path',
+						case when public.qorpera_folder_key(v_repo_path) = v_repo then v_repo_path else v_repo end,
+						'op', 'write', 'kind', 'folder', 'version', v_version.version));
 				end if;
 			end if;$new$
 ]);
