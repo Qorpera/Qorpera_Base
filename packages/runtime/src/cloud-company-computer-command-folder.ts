@@ -95,6 +95,13 @@ export type CompanyComputerCommandInherit =
 	| { readonly inherited: true }
 	| { readonly inherited: false; readonly heldBack: string };
 
+/** An action's first take-in: how many boundaries had released when it was asked, and whether it answered as a new
+ * take-in (`ours`), as a replay of one the command does not remember (`unknown`), or not yet (`asking`). */
+interface CommandInherit {
+	readonly releases: number;
+	first: "asking" | "ours" | "unknown";
+}
+
 /**
  * `idle`: the command's view and mount are being made, and nothing runs yet. `none`: nothing ran in the folder.
  * `running`: the run request was sent. `ending`: the command ended (or the helper lost it), and its final boundary is
@@ -178,8 +185,8 @@ export class CompanyComputerCommandFolder {
 	#view?: CompanyComputerFolderView;
 	/** How many boundaries released the command's reads: a take-in covers those before it. */
 	#releases = 0;
-	/** By the effect receipt of an action that read the output for another run: `#releases` at its first take-in. */
-	readonly #inherits = new Map<string, number>();
+	/** By the effect receipt of an action that read the output for another run: its first take-in. */
+	readonly #inherits = new Map<string, CommandInherit>();
 	#run?: CompanyComputerFolderRun;
 	#event: (event: CompanyComputerCommandFolderEvent) => void = () => undefined;
 	/** The helper answered `started`. */
@@ -446,10 +453,9 @@ export class CompanyComputerCommandFolder {
 	 * The boundary before the command's output reaches the run that started it ("Before output reaches a model"): the
 	 * command's reads are released, and its changes published, first. Output up to the session's mark, taken before
 	 * this is asked, may reach the run when it answers `released`. The caller waits until `until` (performance.now());
-	 * the work goes on after that. `report: false` keeps the paths not saved for a later release (a read for another run,
-	 * before its take-in).
+	 * the work goes on after that.
 	 */
-	async release(signal: AbortSignal, until: number, report = true): Promise<CompanyComputerCommandRelease> {
+	async release(signal: AbortSignal, until: number): Promise<CompanyComputerCommandRelease> {
 		signal.throwIfAborted();
 		switch (this.#status) {
 			case "idle":
@@ -457,9 +463,9 @@ export class CompanyComputerCommandFolder {
 			case "none":
 				return { released: true, final: true };
 			case "released":
-				return { released: true, final: true, ...this.#report(report) };
+				return { released: true, final: true, ...this.#takeReport() };
 			case "held":
-				return { released: false, heldBack: this.#held ?? HELD_GONE, ...this.#report(report) };
+				return { released: false, heldBack: this.#held ?? HELD_GONE, ...this.#takeReport() };
 			case "ending": {
 				const done = this.#done ?? Promise.resolve();
 				const answer = await within(
@@ -468,8 +474,8 @@ export class CompanyComputerCommandFolder {
 					until,
 					false,
 				);
-				if (!answer) return { released: false, heldBack: this.#retry ?? HELD_SAVING, ...this.#report(report) };
-				return this.release(signal, until, report);
+				if (!answer) return { released: false, heldBack: this.#retry ?? HELD_SAVING, ...this.#takeReport() };
+				return this.release(signal, until);
 			}
 			case "running": {
 				const work = this.#queue(() =>
@@ -480,8 +486,8 @@ export class CompanyComputerCommandFolder {
 				});
 				const answer = await within(work, signal, until, { released: false, heldBack: HELD_UNANSWERED } as const);
 				// The command ended while the boundary waited its turn: the final one answers.
-				if (!answer) return this.release(signal, until, report);
-				return { ...answer, ...this.#report(report) };
+				if (!answer) return this.release(signal, until);
+				return { ...answer, ...this.#takeReport() };
 			}
 		}
 	}
@@ -491,32 +497,44 @@ export class CompanyComputerCommandFolder {
 		return this.#takeReport();
 	}
 
-	#report(take: boolean): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
-		return take ? this.#takeReport() : {};
+	/** Puts back paths not saved that a release or `takeReport` handed out but no run was shown (another run's take-in
+	 * did not answer `inherited`): in front of those noted since, under the same caps. */
+	restoreReport(report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved">): void {
+		const later = this.#takeReport();
+		for (const item of report.notSaved ?? []) this.#add(item);
+		this.#moreNotSaved += report.moreNotSaved ?? 0;
+		for (const item of later.notSaved ?? []) this.#add(item);
+		this.#moreNotSaved += later.moreNotSaved ?? 0;
 	}
 
 	/**
 	 * Before the command's released output reaches a run that did not start it ("A command that outlived its run"):
 	 * that run takes in the command's view reads, by the action that reads (`receiptId`, its effect receipt). The core
 	 * finds the run from the action, and refuses a run of another agent or member. Output released before this is asked
-	 * may reach the run when it answers `inherited`. A retry of the action replays its first take-in, so it is held back
-	 * once a boundary released more after that one. The caller waits until `until` (performance.now()); the call goes
-	 * on after that.
+	 * may reach the run when it answers `inherited`. A retry of the action replays its first take-in, so it is shown
+	 * only once that one answered here as a new take-in and no boundary released more since. The caller waits until
+	 * `until` (performance.now()); the call goes on after that.
 	 */
 	async inherit(receiptId: string, signal: AbortSignal, until: number): Promise<CompanyComputerCommandInherit> {
 		signal.throwIfAborted();
 		// Nothing ran in the company folder: there is nothing to take in.
 		if (this.#status === "idle" || this.#status === "none" || this.#environmentId === undefined)
 			return { inherited: true };
-		const releases = this.#releases;
-		const first = this.#inherits.get(receiptId);
-		if (first !== undefined && first !== releases) return { inherited: false, heldBack: HELD_REREAD };
-		if (first === undefined) {
-			this.#inherits.set(receiptId, releases);
-			if (this.#inherits.size > INHERITS_KEPT) this.#inherits.delete(this.#inherits.keys().next().value as string);
-		}
 		const remaining = Math.floor(until - performance.now());
 		if (remaining < 1) return { inherited: false, heldBack: HELD_UNANSWERED };
+		const releases = this.#releases;
+		const known = this.#inherits.get(receiptId);
+		if (known && (known.first !== "ours" || known.releases !== releases))
+			return { inherited: false, heldBack: HELD_REREAD };
+		const entry: CommandInherit = known ?? { releases, first: "asking" };
+		if (!known) {
+			this.#inherits.set(receiptId, entry);
+			if (this.#inherits.size > INHERITS_KEPT) this.#inherits.delete(this.#inherits.keys().next().value as string);
+		}
+		// A first take-in with no valid answer is forgotten: a retry asks as a new one.
+		const forget = () => {
+			if (entry.first === "asking" && this.#inherits.get(receiptId) === entry) this.#inherits.delete(receiptId);
+		};
 		const work = this.#seams.registry
 			.call(
 				"qorpera_folder_office_inherit_command_reads",
@@ -526,13 +544,17 @@ export class CompanyComputerCommandFolder {
 			.then(
 				(answer): CompanyComputerCommandInherit => {
 					const { schema, inheritId, replay } = (answer ?? {}) as Record<string, unknown>;
-					if (schema !== "qorpera.folder-inherit/v1" || inheritId !== receiptId || typeof replay !== "boolean")
+					if (schema !== "qorpera.folder-inherit/v1" || inheritId !== receiptId || typeof replay !== "boolean") {
+						forget();
 						return { inherited: false, heldBack: HELD_NOT_INHERITED };
-					// A take-in this command does not remember: what it covered is unknown.
-					if (replay && first === undefined) return { inherited: false, heldBack: HELD_REREAD };
-					return { inherited: true };
+					}
+					// The first answer decides, even past the caller's deadline. A replay of a take-in this command does not
+					// remember covered what is unknown, so neither it nor a retry is shown.
+					if (entry.first === "asking") entry.first = replay ? "unknown" : "ours";
+					return entry.first === "ours" ? { inherited: true } : { inherited: false, heldBack: HELD_REREAD };
 				},
 				(error: unknown): CompanyComputerCommandInherit => {
+					forget();
 					signal.throwIfAborted();
 					const refusal = companyComputerRegistryRefusal(error);
 					return { inherited: false, heldBack: refusal ? notInherited(refusal.reason) : HELD_UNANSWERED };
@@ -646,21 +668,25 @@ export class CompanyComputerCommandFolder {
 	#note(report: CompanyComputerFolderReport, final: boolean): void {
 		for (const entry of report.paths) {
 			if (entry.outcome === "saved" || (entry.kept && !final)) continue;
-			const item = {
+			this.#add({
 				path: head(entry.path, 300),
 				outcome: head(entry.outcome, 64),
 				...(entry.reason ? { reason: head(entry.reason, 200) } : {}),
-			};
-			const bytes = Buffer.byteLength(JSON.stringify(item));
-			if (
-				this.#moreNotSaved === 0 &&
-				this.#notSaved.length < NOT_SAVED_SHOWN &&
-				this.#notSavedBytes + bytes <= NOT_SAVED_BYTES
-			) {
-				this.#notSaved.push(item);
-				this.#notSavedBytes += bytes;
-			} else this.#moreNotSaved++;
+			});
 		}
+	}
+
+	/** One path not saved, shown if it fits and none was counted only; so those shown always come first. */
+	#add(item: CompanyComputerCommandNotSaved): void {
+		const bytes = Buffer.byteLength(JSON.stringify(item));
+		if (
+			this.#moreNotSaved === 0 &&
+			this.#notSaved.length < NOT_SAVED_SHOWN &&
+			this.#notSavedBytes + bytes <= NOT_SAVED_BYTES
+		) {
+			this.#notSaved.push(item);
+			this.#notSavedBytes += bytes;
+		} else this.#moreNotSaved++;
 	}
 
 	/** The paths not saved that no release showed yet, which come once. */

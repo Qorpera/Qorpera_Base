@@ -479,14 +479,18 @@ stops the run that read it, and a later save from that mount is rechecked agains
     another agent's or member's run and a read the run can no longer read are refused in its own words.
   - **Order.** A read by another run first has the command's boundary released, as the run that started it does
     (leaving the take-in 3 s of the reply's deadline), then the take-in; output released before the take-in is asked
-    may reach the run once it answers. The release keeps its paths not saved until then: a run the take-in refused is
-    not shown them, and the run that started the command gets them at its next read. A take-in refused or without an
-    answer holds the output back, and the tool result says why (the run ended, the pause, another agent or member, a
-    read no longer readable, or another refusal).
+    may reach the run once it answers, with the paths not saved that release reported, and only those: a path a later
+    boundary reports meanwhile (say the final one, as the command ends) may come from reads the take-in does not cover,
+    so it waits for a later read. A take-in refused or without an answer, or a release held back, shows the run none of
+    them: they go back in front of any reported since, and the next read gets them (the run that started the command,
+    or another run once its take-in answers). It holds the output back, and the tool result says why (the run ended, the
+    pause, another agent or member, a read no longer readable, or another refusal).
   - **A retry.** The office remembers, for the last 256 reading actions, how many boundaries had released the
-    command's reads at the action's first take-in. A retry once a boundary released more is held back with no call
-    (its replayed take-in does not cover the new output). The core's replay for an action the office does not
-    remember is held back too. Either way the run reads again with a new action.
+    command's reads at the action's first take-in, and how it answered. A retry is shown only once that take-in
+    answered here as a new one and no boundary released more since (a replayed take-in does not cover newer output);
+    otherwise it is held back with no call. The core's replay for an action the office does not remember (never asked
+    here, or forgotten) is held back, and so is every retry of it. A first take-in with no valid answer is forgotten,
+    so its retry asks as a new action. Held back, the run reads again with a new action.
   - **One read cursor.** The shell keeps one read position per command, as for a command outside the folder: output
     one run read does not come again to another. A read that names no run, or another run's with no action, is held
     back as before. `list` shows a folder command's output and exit only to the run that started it.

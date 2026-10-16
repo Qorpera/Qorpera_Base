@@ -601,18 +601,51 @@ describe("a command's output for a run that did not start it", () => {
 
 	it("is held back for a replay of a take-in it does not remember: it remembers the last 256 actions'", async () => {
 		const f = await running();
+		const asks = () =>
+			f.call.mock.calls.filter(([method]) => method === "qorpera_folder_office_inherit_command_reads").length;
 		f.call.mockImplementationOnce(async (_, args) => ({
 			schema: "qorpera.folder-inherit/v1",
 			inheritId: args.p_receipt_id,
 			replay: true,
 		}));
 		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		// Nor is a retry of it shown: it is held back with no call.
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(asks()).toBe(1);
 		const actions = Array.from({ length: 257 }, (_, n) => computerId(1000 + n));
 		for (const id of actions) await expect(f.inherit(id)).resolves.toEqual({ inherited: true });
 		// The oldest of them is gone, and the next oldest is kept.
 		await expect(f.inherit(actions[1])).resolves.toEqual({ inherited: true });
+		expect(f.takeIns).toHaveLength(258);
+		// After a newer release, the one it forgot replays a take-in that does not cover it, and is held back; then, with
+		// no boundary since, its retry is held back with no call.
+		f.answer("boundary", { answer: "saved", report });
+		await expect(f.release()).resolves.toEqual({ released: true });
+		await expect(f.inherit(actions[0])).resolves.toEqual({ inherited: false, heldBack: REREAD });
 		await expect(f.inherit(actions[0])).resolves.toEqual({ inherited: false, heldBack: REREAD });
 		expect(f.takeIns).toHaveLength(259);
+		expect(asks()).toBe(260);
+	});
+
+	it("forgets an action whose first take-in had no answer: a retry asks again, and is held back if the core replays it", async () => {
+		const f = await running();
+		// The core did not take it in: the retry is the first take-in.
+		f.call.mockImplementationOnce(async () => {
+			throw new Error("connection reset");
+		});
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: UNANSWERED });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		// The core took it in, but its answer was lost: what that take-in covered is unknown.
+		const lost = computerId(61);
+		f.call.mockImplementationOnce(async (_, args) => {
+			f.takeIns.push(args);
+			throw new Error("connection reset");
+		});
+		await expect(f.inherit(lost)).resolves.toEqual({ inherited: false, heldBack: UNANSWERED });
+		await expect(f.inherit(lost)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		await expect(f.inherit(lost)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(f.takeIns).toEqual([taken(action), taken(action), taken(lost), taken(lost)]);
 	});
 
 	it("is held back at the reply's deadline, without asking when it is too near, and stops with its caller", async () => {
@@ -631,28 +664,40 @@ describe("a command's output for a run that did not start it", () => {
 		stopped.abort(new Error("caller stopped"));
 		await expect(f.inherit(action, undefined, stopped.signal)).rejects.toThrow("caller stopped");
 		expect(asks()).toBe(1);
+		// A retry while its first take-in has no answer yet is held back with no call.
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(asks()).toBe(1);
 		f.call.mockImplementationOnce(() => computerDeferred<unknown>().promise);
 		const controller = new AbortController();
-		const read = f.inherit(action, undefined, controller.signal);
+		const read = f.inherit(computerId(61), undefined, controller.signal);
 		await settle();
 		controller.abort(new Error("caller stopped"));
 		await expect(read).rejects.toThrow("caller stopped");
 	});
 
-	it("keeps a release's paths not saved for the take-in after it, once", async () => {
+	it("puts paths not saved that no run was shown back in front of those reported since, under the same caps", async () => {
 		const f = await running();
-		const notSaved = (path: string) => ({
-			answer: "refused",
-			report: { ...report, paths: [{ path, outcome: "refused" }] },
-		});
-		f.answer("boundary", notSaved("a"), notSaved("b"), { answer: "saved", report });
-		const signal = new AbortController().signal;
-		await expect(f.folder.release(signal, performance.now() + 17000, false)).resolves.toEqual({ released: true });
-		expect(f.folder.takeReport()).toEqual({ notSaved: [{ path: "a", outcome: "refused" }] });
+		const refused = (path: string) => ({ path, outcome: "refused" });
+		const paths = (...names: string[]) => ({ ...report, paths: names.map(refused) });
+		f.answer("boundary", { answer: "refused", report: paths("a") });
+		await expect(f.release()).resolves.toEqual({ released: true, notSaved: [refused("a")] });
 		expect(f.folder.takeReport()).toEqual({});
-		// Not taken, they come with the next release that reports them.
-		await expect(f.folder.release(signal, performance.now() + 17000, false)).resolves.toEqual({ released: true });
-		await expect(f.release()).resolves.toEqual({ released: true, notSaved: [{ path: "b", outcome: "refused" }] });
+		// The command ends and its final boundary reports another path before the first is put back.
+		f.answer("unmount", { answer: "saved", report: paths("b"), unmounted: true });
+		f.send({ t: "ended" });
+		await vi.waitFor(() => expect(f.folder.status).toBe("released"));
+		f.folder.restoreReport({ notSaved: [refused("a")] });
+		await expect(f.release()).resolves.toEqual({
+			released: true,
+			final: true,
+			notSaved: [refused("a"), refused("b")],
+		});
+		// Behind those put back that were counted only, the ones reported since are counted only too.
+		const shown = Array.from({ length: 20 }, (_, n) => refused(`m${n}`));
+		f.folder.restoreReport({ notSaved: [refused("c")] });
+		f.folder.restoreReport({ notSaved: shown, moreNotSaved: 1 });
+		expect(f.folder.takeReport()).toEqual({ notSaved: shown, moreNotSaved: 2 });
+		expect(f.folder.takeReport()).toEqual({});
 	});
 });
 

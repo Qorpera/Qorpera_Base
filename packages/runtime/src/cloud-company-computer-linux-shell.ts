@@ -607,7 +607,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	/**
 	 * A folder command's output up to a mark reaches the run that started it once its boundary answers. Another run's
 	 * read, by an action of its own (`receiptId`), takes in the command's reads after that ("A command that outlived its
-	 * run"), and sees what was released before its take-in; the paths not saved come with it then. The shell has one
+	 * run"), and sees what was released before its take-in, with the paths not saved its boundary reported. Paths a later
+	 * boundary reports, or those of a take-in that did not answer `inherited`, wait for a later read. The shell has one
 	 * read cursor, as for a command outside the folder: output one run read does not come again to another.
 	 */
 	async #folderResult(
@@ -629,21 +630,32 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		let report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {};
 		// Nothing new since the last boundary: nothing more reaches the run, so none is asked.
 		if (!(folder.status === "running" && session.released && sameMark(before, session.released))) {
-			const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS - inheritReserve, !other);
+			const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS - inheritReserve);
 			report = {
 				...(release.notSaved ? { notSaved: release.notSaved } : {}),
 				...(release.moreNotSaved ? { moreNotSaved: release.moreNotSaved } : {}),
 			};
-			if (!release.released) return this.#held(session, release.heldBack, report);
+			if (!release.released) {
+				if (!other) return this.#held(session, release.heldBack, report);
+				folder.restoreReport(report);
+				return this.#held(session, release.heldBack);
+			}
 			// Once the mount is gone, everything the command wrote is out.
 			session.released = release.final ? mark(session) : before;
-		} else if (!other) report = folder.takeReport(); // What another run's refused take-in left.
-		// What was released before the take-in is asked: a boundary meanwhile may release more.
+		} else report = folder.takeReport(); // What a take-in that did not answer `inherited` put back.
+		// What was released before the take-in is asked: a boundary meanwhile may release more, and report more paths.
 		const shown = session.released ?? before;
 		if (other && input.receiptId !== undefined) {
-			const inherited = await folder.inherit(input.receiptId, input.signal, until - FOLDER_REPLY_RESERVE_MS);
-			if (!inherited.inherited) return this.#held(session, inherited.heldBack);
-			report = folder.takeReport();
+			const inherited = await folder
+				.inherit(input.receiptId, input.signal, until - FOLDER_REPLY_RESERVE_MS)
+				.catch((error: unknown) => {
+					folder.restoreReport(report);
+					throw error;
+				});
+			if (!inherited.inherited) {
+				folder.restoreReport(report);
+				return this.#held(session, inherited.heldBack);
+			}
 		}
 		return { ...this.#result(session, shown), ...report };
 	}
