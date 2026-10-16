@@ -45,6 +45,9 @@ export function parseCloudMachineCommandReceipt(value: unknown): CloudMachineCom
 		workerId: machineId,
 		state: input.state === "lost" ? "unconfirmed" : input.state,
 	});
+	// A machine says `lost` in its own words; the coding session's `machine_stopped` and output gap are not its own.
+	if (checked.state === "machine_stopped" || checked.log.gapBytes !== undefined)
+		throw new Error("Invalid machine command result");
 	return Object.freeze({
 		schema: "qorpera.machine-command-result/v1",
 		machineId,

@@ -353,6 +353,28 @@ it("gives the review every change in full, where the card counts the rest and cu
 	});
 });
 
+it("gives the review each link a parked new folder holds with its target, and a link's own change at its path", async () => {
+	// A view makes links (LK1): one in a new folder is listed with its target; a link's own unit, as a write's, with
+	// its path.
+	const contains = [...hireUnit.contains, { path: "agents/mira/latest", kind: "symlink", target: "notes.md" }];
+	const units = [
+		{ ...hireUnit, items: 3, contains },
+		{ unit: 2, op: "symlink", path: "docs/latest" },
+	];
+	const f = await fixture({ listed: () => page([proposal(HIRE, units)]) });
+	const card = f.apply.parseArguments({ proposalId: HIRE }) as { details: { key: string; value: string }[] };
+	expect(card.details).toContainEqual({ key: "change 2", value: "Change “Latest”" });
+	expect(f.apply.reviewContents?.(card)).toEqual({
+		proposalId: HIRE,
+		savedFrom: "computer_desktop",
+		createsAgent: true,
+		changes: [
+			{ op: "new_folder", path: "agents/mira", items: 3, contains, files: hireUnit.structured },
+			{ op: "symlink", path: "docs/latest" },
+		],
+	});
+});
+
 it("records the review of the proposal's units before its receipt, then applies it under that receipt", async () => {
 	const f = await fixture({
 		apply: () => committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "saved", version: VERSION }]),

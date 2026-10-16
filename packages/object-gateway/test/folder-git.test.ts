@@ -484,6 +484,17 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitPublishes).toEqual([]);
 	});
 
+	it("refuses a link's new name in a git directory, under its lock or not", async () => {
+		const { core, open } = await repo();
+		const first = await open("first");
+		await write(first, `${MAIN}.lock`, "3333\n", true);
+		await refused(first.symlink(`${R}/refs/heads/main.tmp`, "main"), "NOT_PERMITTED");
+		await refused(first.symlink(TOPIC, "main"), "NOT_PERMITTED");
+		await refused(first.link({ from: MAIN, to: TOPIC }), "NOT_PERMITTED");
+		await refused(first.symlink(`${R}/hooks/pre-commit`, "/bin/true"), "NOT_PERMITTED");
+		expect(core.gitPublishes).toEqual([]);
+	});
+
 	it("lets one of a view's racing creates of a lock take it, the others EEXIST, and keeps its lease", async () => {
 		const { core, open } = await repo();
 		const view = await open("first");

@@ -8,15 +8,24 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const CLOSE_GRACE_MS = 1000;
 
 export interface NodeWebSocketHandlers {
-	/** One complete text message. Binary messages are dropped. */
+	/** One complete text message. */
 	message(text: string): void;
+	/** One complete binary message. Without this handler, binary messages are dropped. */
+	binary?(payload: Buffer): void;
 	/** Called once, when the connection ends for any reason. */
 	close(reason: string): void;
 }
 
-/** A text-only WebSocket client (RFC 6455) on node:http and node:https. It needs no WebAssembly, so it runs
- * under `--jitless`, where Node's own WebSocket (Undici) does not. It answers pings, reassembles fragments and
- * refuses masked, reserved-bit or oversized frames from the server by closing. */
+export interface NodeWebSocketOptions {
+	/** Connect over this Unix socket (a `ws:` URL; its host is then only the Host header). */
+	readonly socketPath?: string;
+	/** Stops a handshake still pending: its request is destroyed and the connect rejects at once. */
+	readonly signal?: AbortSignal;
+}
+
+/** A WebSocket client (RFC 6455) on node:http and node:https. It needs no WebAssembly, so it runs under
+ * `--jitless`, where Node's own WebSocket (Undici) does not. It answers pings, reassembles fragments and refuses
+ * masked, reserved-bit or oversized frames from the server by closing. */
 export class NodeWebSocket {
 	readonly #socket: Socket;
 	readonly #handlers: NodeWebSocketHandlers;
@@ -37,16 +46,29 @@ export class NodeWebSocket {
 		socket.once("close", () => this.#end("WebSocket connection closed"));
 	}
 
-	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails or takes longer than `timeoutMs`. */
-	static connect(url: URL, handlers: NodeWebSocketHandlers, timeoutMs = 10_000): Promise<NodeWebSocket> {
+	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails, takes longer than `timeoutMs` or is
+	 * stopped by `options.signal`. */
+	static connect(
+		url: URL,
+		handlers: NodeWebSocketHandlers,
+		timeoutMs = 10_000,
+		options: NodeWebSocketOptions = {},
+	): Promise<NodeWebSocket> {
 		if (url.protocol !== "wss:" && url.protocol !== "ws:") throw new Error("WebSocket URL must use ws: or wss:");
 		const secure = url.protocol === "wss:";
+		if (options.socketPath !== undefined && secure) throw new Error("A Unix socket WebSocket URL must use ws:");
 		const key = randomBytes(16).toString("base64");
+		const { signal } = options;
 		return new Promise((resolve, reject) => {
+			if (signal?.aborted) {
+				reject(new Error("WebSocket handshake was stopped"));
+				return;
+			}
 			const request = (secure ? httpsRequest : httpRequest)({
 				protocol: secure ? "https:" : "http:",
-				hostname: url.hostname,
-				port: url.port || (secure ? 443 : 80),
+				...(options.socketPath === undefined
+					? { hostname: url.hostname, port: url.port || (secure ? 443 : 80) }
+					: { socketPath: options.socketPath, hostname: url.hostname }),
 				path: `${url.pathname}${url.search}`,
 				method: "GET",
 				headers: {
@@ -57,7 +79,14 @@ export class NodeWebSocket {
 				},
 				timeout: timeoutMs,
 			});
+			// Destroying the request closes its connection; its error event then rejects.
+			const stopped = (): void => {
+				request.destroy(new Error("WebSocket handshake was stopped"));
+			};
+			signal?.addEventListener("abort", stopped, { once: true });
+			const settled = (): void => signal?.removeEventListener("abort", stopped);
 			request.once("upgrade", (response, socket: Socket, head: Buffer) => {
+				settled();
 				const accept = createHash("sha1").update(`${key}${ACCEPT_GUID}`).digest("base64");
 				if (
 					response.statusCode !== 101 ||
@@ -73,11 +102,15 @@ export class NodeWebSocket {
 				resolve(connection);
 			});
 			request.once("response", (response) => {
+				settled();
 				response.resume();
 				reject(new Error(`WebSocket handshake was refused (${response.statusCode ?? 0})`));
 			});
 			request.once("timeout", () => request.destroy(new Error("WebSocket handshake timed out")));
-			request.once("error", reject);
+			request.once("error", (error) => {
+				settled();
+				reject(error);
+			});
 			request.end();
 		});
 	}
@@ -89,6 +122,30 @@ export class NodeWebSocket {
 	send(text: string): void {
 		if (this.#closing || this.#closed) throw new Error("WebSocket is closed");
 		this.#write(0x1, Buffer.from(text, "utf-8"));
+	}
+
+	sendBinary(payload: Buffer): void {
+		if (this.#closing || this.#closed) throw new Error("WebSocket is closed");
+		this.#write(0x2, payload);
+	}
+
+	/** Sends one binary message and resolves once the socket has taken it (its write buffer drained), so a long input
+	 * goes no faster than the server reads it. Rejects when the connection ends first. */
+	async sendBinaryDrained(payload: Buffer): Promise<void> {
+		if (this.#closing || this.#closed || this.#socket.destroyed) throw new Error("WebSocket is closed");
+		if (this.#write(0x2, payload)) return;
+		await new Promise<void>((resolveDrained, rejectDrained) => {
+			const settle = (error?: Error): void => {
+				this.#socket.off("drain", drained);
+				this.#socket.off("close", closed);
+				if (error) rejectDrained(error);
+				else resolveDrained();
+			};
+			const drained = (): void => settle();
+			const closed = (): void => settle(new Error("WebSocket is closed"));
+			this.#socket.on("drain", drained);
+			this.#socket.on("close", closed);
+		});
 	}
 
 	/** Sends a normal close and lets the connection end; the close handler runs once it has. */
@@ -104,7 +161,8 @@ export class NodeWebSocket {
 		setTimeout(() => this.#socket.destroy(), CLOSE_GRACE_MS).unref();
 	}
 
-	#write(opcode: number, payload: Buffer): void {
+	/** Writes one masked frame; false when the socket's write buffer is past its high-water mark. */
+	#write(opcode: number, payload: Buffer): boolean {
 		const length = payload.byteLength;
 		const header = Buffer.alloc(length < 126 ? 2 : length < 65_536 ? 4 : 10);
 		header[0] = 0x80 | opcode;
@@ -118,9 +176,15 @@ export class NodeWebSocket {
 			header.writeUInt32BE(length, 6);
 		}
 		const mask = randomBytes(4);
-		const masked = Buffer.allocUnsafe(length);
-		for (let index = 0; index < length; index++) masked[index] = payload[index]! ^ mask[index & 3]!;
-		this.#socket.write(Buffer.concat([header, mask, masked]));
+		// Masked four bytes at a time (a fresh buffer is 4-byte aligned): under --jitless this loop is most of what a
+		// long input costs.
+		const masked = Buffer.allocUnsafeSlow(length);
+		payload.copy(masked);
+		const words = new Uint32Array(masked.buffer, masked.byteOffset, length >>> 2);
+		const key = new Uint32Array(Uint8Array.from(mask).buffer)[0]!;
+		for (let index = 0; index < words.length; index++) words[index] = words[index]! ^ key;
+		for (let index = words.length * 4; index < length; index++) masked[index] = masked[index]! ^ mask[index & 3]!;
+		return this.#socket.write(Buffer.concat([header, mask, masked]));
 	}
 
 	#receive(chunk: Buffer): void {
@@ -194,7 +258,10 @@ export class NodeWebSocket {
 			const text = this.#fragmentOpcode === 0x1;
 			this.#fragments = [];
 			this.#fragmentBytes = 0;
-			if (!text) continue;
+			if (!text) {
+				this.#handlers.binary?.(message);
+				continue;
+			}
 			let decoded: string;
 			try {
 				decoded = new TextDecoder("utf-8", { fatal: true }).decode(message);

@@ -1,11 +1,11 @@
-//! Folder protocol v3: what a machine's folder program and its node's folder service say to each other.
+//! Folder protocol v4: what a machine's folder program and its node's folder service say to each other.
 //! The node side is `packages/object-gateway/src/folder-service/protocol.ts`; keep the two in step.
 //! Version 2 adds writes (deploy/first-node/RUNTIME-FOLDER-WRITES.md); a view the node does not let write answers
-//! the hello with `readOnly`.
+//! the hello with `readOnly`. Version 3 adds the read log, and version 4 links (deploy/first-node/RUNTIME-FOLDER-LINKS.md).
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// The folder service's vsock port on the node (the host is always CID 2 from inside a VM).
 pub const VSOCK_PORT: u32 = 5250;
 /// The largest read a machine asks for in one request.
@@ -115,6 +115,8 @@ pub struct ListRequest {
 pub enum EntryKind {
 	File,
 	Folder,
+	/// A symbolic link (protocol 4): its size is its target's length in bytes; `R` on its version reads the target.
+	Symlink,
 }
 
 /// The authority under which the service listed a path. The core rechecks it when the read is released.
@@ -184,7 +186,8 @@ pub struct Ack {
 	pub seq: u64,
 }
 
-/// One successful file open or non-root folder listing in a mount's durable, consecutive read log.
+/// One successful file open, link read, hard link's source or non-root folder listing in a mount's durable,
+/// consecutive read log.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LoggedRead {
@@ -314,6 +317,28 @@ pub struct ExecutableRequest {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub base: Option<String>,
 	pub executable: bool,
+}
+
+// ---- Links (protocol 4) -----------------------------------------------------------------------------------------
+
+/// A link's target is 1 to 4,095 bytes (the kernel's bound, which it checks before the program sees one).
+pub const MAX_TARGET: u32 = 4095;
+
+/// `Y`: a symbolic link at a path nothing holds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SymlinkRequest {
+	pub path: String,
+	pub target: String,
+}
+
+/// `J`: `fromBase` is the version the source showed; the new name gets the bytes (or the target) of that version.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkRequest {
+	pub from: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub from_base: Option<String>,
+	pub to: String,
 }
 
 /// `p`: what a boundary did with each changed path.
@@ -493,18 +518,19 @@ mod tests {
 		};
 		assert_eq!(
 			serde_json::to_string(&hello).unwrap(),
-			r#"{"protocol":3,"environmentId":"e","viewId":"v","pass":"p","role":"feed"}"#
+			r#"{"protocol":4,"environmentId":"e","viewId":"v","pass":"p","role":"feed"}"#
 		);
 		let list = ListRequest { path: "a".into(), after: None };
 		assert_eq!(serde_json::to_string(&list).unwrap(), r#"{"path":"a"}"#);
 		let listing: Listing = serde_json::from_str(
-			r#"{"entries":[{"name":"x","kind":"file","size":3,"mtimeMs":5,"executable":true,"version":"0b6c7f2e-8d3a-4c1e-9f00-1a2b3c4d5e6f","extra":1},{"name":"d","kind":"folder"}],"next":"x"}"#,
+			r#"{"entries":[{"name":"x","kind":"file","size":3,"mtimeMs":5,"executable":true,"version":"0b6c7f2e-8d3a-4c1e-9f00-1a2b3c4d5e6f","extra":1},{"name":"d","kind":"folder"},{"name":"l","kind":"symlink","size":9,"mtimeMs":5,"executable":false,"version":"v"}],"next":"x"}"#,
 		)
 		.unwrap();
 		assert_eq!(listing.entries[0].size, 3);
 		assert_eq!(listing.entries[0].version, "0b6c7f2e-8d3a-4c1e-9f00-1a2b3c4d5e6f");
 		assert!(listing.entries[0].executable);
 		assert_eq!(listing.entries[1].kind, EntryKind::Folder);
+		assert_eq!((listing.entries[2].kind, listing.entries[2].size), (EntryKind::Symlink, 9));
 		assert_eq!(listing.next.as_deref(), Some("x"));
 		let bridge = Bridge {
 			cid: 7,
@@ -541,6 +567,12 @@ mod tests {
 		assert_eq!(serde_json::to_string(&header).unwrap(), r#"{"handle":1,"index":2,"sha256":"s","bytes":3,"offset":0}"#);
 		let remove = RemoveRequest { path: "a".into(), base: Some("v".into()) };
 		assert_eq!(serde_json::to_string(&remove).unwrap(), r#"{"path":"a","base":"v"}"#);
+		let symlink = SymlinkRequest { path: "a".into(), target: "../b c".into() };
+		assert_eq!(serde_json::to_string(&symlink).unwrap(), r#"{"path":"a","target":"../b c"}"#);
+		let link = LinkRequest { from: "a".into(), from_base: Some("v".into()), to: "b".into() };
+		assert_eq!(serde_json::to_string(&link).unwrap(), r#"{"from":"a","fromBase":"v","to":"b"}"#);
+		let unbased = LinkRequest { from: "a".into(), from_base: None, to: "b".into() };
+		assert_eq!(serde_json::to_string(&unbased).unwrap(), r#"{"from":"a","to":"b"}"#);
 		let report: Report = serde_json::from_str(
 			r#"{"commitId":null,"seq":null,"paths":[{"path":"a","outcome":"denied","reason":"denied","kept":true},{"path":"b","outcome":"conflict","receipt":"r"}]}"#,
 		)

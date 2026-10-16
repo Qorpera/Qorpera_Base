@@ -53,16 +53,18 @@ table inet qorpera_agent_exit {
 	}
 
 	# A refused flow, added once and kept an hour, so the logger writes it once an hour (refusals never reach
-	# conntrack's events). TCP and UDP per port, other protocols per protocol.
+	# conntrack's events). TCP and UDP per port, other protocols per protocol; each with the mark the packet was refused
+	# with, so the logger reads which rule refused it as it was then (0x80000003 the machine's rules not known,
+	# 0x80000004 not listed, none for our networks, mail and the open bounds).
 	set refused_flows {
-		type ipv4_addr . ipv4_addr . inet_proto . inet_service
+		type ipv4_addr . ipv4_addr . inet_proto . inet_service . mark
 		flags dynamic, timeout
 		timeout 1h
 		size 65536
 	}
 
 	set refused_other {
-		type ipv4_addr . ipv4_addr . inet_proto
+		type ipv4_addr . ipv4_addr . inet_proto . mark
 		flags dynamic, timeout
 		timeout 1h
 		size 16384
@@ -121,6 +123,16 @@ table inet qorpera_agent_exit {
 		size 65536
 	}
 
+	# Where each verified machine may go (E8c): `goto open` for a company without rules or with "open" rules, `goto
+	# only_P` for a company in "only listed" mode whose resolver listens on port P. The names reconciler keeps it, with
+	# each only_P chain and its allow_P set (the addresses that company's resolver gave out for listed names); the agent
+	# plug clears a machine's element when it unplugs it. A machine with no element (company not known yet, rules not
+	# usable) is refused.
+	map reach {
+		type ipv4_addr : verdict
+		size 65536
+	}
+
 	counter refused_dns {
 	}
 
@@ -131,6 +143,12 @@ table inet qorpera_agent_exit {
 	}
 
 	counter refused_open_limit {
+	}
+
+	counter refused_rules_unknown {
+	}
+
+	counter refused_not_listed {
 	}
 
 	counter refused_unlogged {
@@ -184,6 +202,14 @@ table inet qorpera_agent_exit {
 		update @new_by_client { ip saddr counter }
 		ip daddr @internal4 counter name "refused_internal" goto refuse
 		tcp dport 25 counter name "refused_mail" goto refuse
+		ip saddr vmap @reach
+		meta mark set 0x80000003 counter name "refused_rules_unknown" goto refuse
+	}
+
+	# A flow its company's rules let out. The only_P chains (one per company in "only listed" mode, kept by the names
+	# reconciler) come here too: `tcp dport 443 ip daddr @allow_P goto open`, then `meta mark set 0x80000004 counter name
+	# "refused_not_listed" goto refuse`.
+	chain open {
 		# The per-machine bound first: a machine at its own bound never reaches the shared total's list.
 		add @open_by_client { ip saddr ct count over 16384 } counter name "refused_open_limit" goto refuse
 		ct count over 98304 counter name "refused_open_limit" goto refuse
@@ -224,10 +250,10 @@ table inet qorpera_agent_exit {
 		update @refused_by_client { ip saddr counter }
 		# Only a flow not yet kept spends the machine's share; one that still is not kept (share spent, set full) is
 		# counted as unlogged, and the logger turns that count into a gap line.
-		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport != @refused_flows update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_flows { ip saddr . ip daddr . meta l4proto . th dport }
-		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport != @refused_flows counter name "refused_unlogged"
-		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto != @refused_other update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_other { ip saddr . ip daddr . meta l4proto }
-		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto != @refused_other counter name "refused_unlogged"
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport . meta mark != @refused_flows update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_flows { ip saddr . ip daddr . meta l4proto . th dport . meta mark }
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport . meta mark != @refused_flows counter name "refused_unlogged"
+		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto . meta mark != @refused_other update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_other { ip saddr . ip daddr . meta l4proto . meta mark }
+		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto . meta mark != @refused_other counter name "refused_unlogged"
 		meta l4proto tcp reject with tcp reset
 		reject with icmpx admin-prohibited
 	}

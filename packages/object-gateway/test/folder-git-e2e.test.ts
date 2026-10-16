@@ -1,5 +1,17 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+	link,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	readlink,
+	rm,
+	stat,
+	symlink,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +35,7 @@ import {
 
 /** Git on the mount (F3 step 5d; deploy/first-node/RUNTIME-COMPANY-FOLDER.md §6 "Git on the mount"): the pinned git,
  * run by two sessions, each in its own mount of one company folder and in its own worker's worktree of one code area,
- * against the folder service and a stand-in core. Tests with links wait for LK3 and LK4. */
+ * against the folder service and a stand-in core. */
 const program = process.env.QORPERA_FOLDER_MOUNT_BIN;
 const gitBin = process.env.QORPERA_GIT_BIN;
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -421,6 +433,43 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	);
 
 	it(
+		"a link git tracks is the folder's link, and a clone copies the shared objects it cannot link",
+		async () => {
+			const at = await area();
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			await symlink("README.md", join(first.worktree, "latest"));
+			await first.git("add", "latest");
+			await first.git("commit", "-q", "-m", "link");
+			expect(await first.git("ls-files", "-s", "latest")).toMatch(/^120000 /);
+			const published = await first.publish();
+			expect(published.code, published.out).toBe(0);
+			expect(at.core.entries.get(`${AREA}/worktrees/w1/latest`)).toMatchObject({
+				kind: "symlink",
+				target: "README.md",
+			});
+
+			await at.service.poll();
+			expect(await eventually(async () => (await second.git("log", "-1", "--format=%s", "w1")) === "link\n")).toBe(
+				true,
+			);
+			await second.git("merge", "-q", "--ff-only", "w1");
+			expect(await readlink(join(second.worktree, "latest"))).toBe("README.md");
+			expect(await second.git("status", "--porcelain")).toBe("");
+
+			// A hard link out of a git object store is EXDEV (mount.rs `git_objects`), so a local clone copies instead.
+			const commit = (await second.git("rev-parse", "HEAD")).trim();
+			const object = join(second.company, R, "objects", commit.slice(0, 2), commit.slice(2));
+			await expect(link(object, join(second.worktree, "object"))).rejects.toMatchObject({ code: "EXDEV" });
+			await second.git("clone", "-q", join(second.company, R), "copy");
+			expect(await second.git("-C", "copy", "log", "--format=%s")).toBe("link\nfirst\n");
+			expect(await readlink(join(second.worktree, "copy", "latest"))).toBe("README.md");
+			expect(await second.git("-C", "copy", "fsck", "--no-progress", "--no-dangling")).toBe("");
+		},
+		TIMEOUT,
+	);
+
+	it(
 		"fetches N refs and a new commit from a remote, each ref under its own lease",
 		async () => {
 			const at = await area();
@@ -631,19 +680,24 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			await at.service.poll();
 			expect(await readdir(join(second.company, AREA, "worktrees/w1"))).not.toContain("node_modules");
 
-			// Once the index has it, it is the worktree's like any other folder: published at the next boundary. A link in
-			// it is not a file yet, and stays on the disk where it was.
+			// Once the index has it, it is the worktree's like any other folder: published at the next boundary, a link in it
+			// as the folder's link.
 			await mkdir(join(first.worktree, "node_modules", ".bin"));
 			await symlink("../pkg/index.js", join(first.worktree, "node_modules", ".bin", "tool"));
 			await first.git("add", "node_modules/pkg/index.js");
 			await first.git("commit", "-q", "-m", "vendored");
 			const again = await first.publish();
 			expect(again.code, again.out).toBe(0);
-			const files = [cached, `${cached}/.bin`, `${cached}/pkg`, `${cached}/pkg/index.js`];
+			const files = [cached, `${cached}/.bin`, `${cached}/.bin/tool`, `${cached}/pkg`, `${cached}/pkg/index.js`];
 			expect(held(at.core, cached)).toEqual(files);
+			expect(at.core.entries.get(`${cached}/.bin/tool`)).toMatchObject({
+				kind: "symlink",
+				target: "../pkg/index.js",
+			});
 			await at.service.poll();
 			const there = join(second.company, cached, "pkg/index.js");
 			expect(await eventually(async () => (await readFile(there, "utf8")) === "module.exports = 1;\n")).toBe(true);
+			expect(await readlink(join(second.company, cached, ".bin/tool"))).toBe("../pkg/index.js");
 			expect(await readlink(join(first.worktree, "node_modules", ".bin", "tool"))).toBe("../pkg/index.js");
 			expect(await readFile(join(first.worktree, "node_modules", ".bin", "tool"), "utf8")).toBe(
 				"module.exports = 1;\n",

@@ -1,8 +1,8 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Context tree W5a-1 (20260930170000): a started run that is cut off goes on from its run log. Test 924's run of Alice's
 -- holds a real native lease; it records its native start, acknowledges in her thread and begins a step. Then its runner's
--- lease runs out, as when the machine dies, and the orchestrator's reconcile ends the attempt. With the gate off (as until
--- W5a-2) that is today's path: the run fails and waits for review. With the gate on, the open step's outcome becomes
+-- lease runs out, as when the machine dies, and the orchestrator's reconcile ends the attempt. Without a run log (W5a-2's
+-- gate, 990) that is today's path: the run fails and waits for review. With a log, the open step's outcome becomes
 -- unknown, the attempt's native lease goes to history, a run_cut_off event supersedes the start, and the job is queued
 -- again. The next attempt is fenced from nothing but the old one's lease: it starts once, on the same login only, sees the
 -- step as outcome unknown, does a new step and completes. A run that never started, a run with an ambiguous step and a
@@ -41,7 +41,7 @@ create function pg_temp.rc_events(p_run uuid, p_type text) returns bigint langua
 	select count(*) from public.qorpera_execution_run_events where run_id = p_run and event_type = p_type
 $$;
 
--- 1. The resume and its gate are nobody's to call, and the gate is off.
+-- 1. The resume and its gate are nobody's to call, and a run with no log does not resume.
 do $$
 declare v_role text; v_run uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 begin
@@ -50,12 +50,12 @@ begin
 			and not has_function_privilege(v_role, 'public.qorpera_resume_run_from_log(uuid,text,boolean)', 'EXECUTE'),
 			'the resume is open to ' || v_role);
 	end loop;
-	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run) is false, 'the gate is off until W5a-2');
+	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log(v_run) is false, 'a run with no log does not resume');
 end
 $$;
 
--- 2. With the gate off, a started run that is cut off takes today's path: it fails, its open step is ambiguous, and it
---    waits for review.
+-- 2. With no log, the gate is off: a started run that is cut off takes today's path. It fails, its open step is
+--    ambiguous, and it waits for review.
 savepoint rc_gate_off;
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_receipt uuid := extensions.gen_random_uuid();
@@ -74,9 +74,13 @@ end
 $$;
 rollback to savepoint rc_gate_off;
 
--- The gate on, as W5a-2 turns it on for a run with a log (for this test only; the transaction rolls back).
-create or replace function public.qorpera_run_resumes_from_log(p_run_id uuid)
-returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
+-- The run gets a log, as its runtime's first batch indexes runs/<run>/run.toml, and the gate is on for it.
+insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
+select run.environment_id, run.id, extensions.gen_random_uuid(), 'agents/alice/runs/' || run.id, 'agents/alice/runs/' || run.id,
+	extensions.gen_random_uuid(), extensions.gen_random_uuid()
+from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+select pg_temp.base_assert(public.qorpera_run_resumes_from_log((current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid),
+	'a run with a log resumes') \g /dev/null
 
 -- 3. A run that never started is retried as before: queued for a new attempt, with no resume.
 savepoint rc_not_started;

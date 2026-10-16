@@ -9,9 +9,10 @@ import type { CoreReceipt } from "./core.ts";
 
 /** Version 2 adds writes (F3 step 3, deploy/first-node/RUNTIME-FOLDER-WRITES.md, "Protocol v2"); a machine on version
  * 1 reads only. Version 3 adds the read log (F3 4c, RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"): a core view takes
- * writes only from a machine that sends it. */
-export const PROTOCOL = 3;
-export const PROTOCOLS = [1, 2, 3] as const;
+ * writes only from a machine that sends it. Version 4 adds links (RUNTIME-FOLDER-LINKS.md, "Protocol 4"): a machine
+ * below it never sees one. */
+export const PROTOCOL = 4;
+export const PROTOCOLS = [1, 2, 3, 4] as const;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** Before a machine's hello is accepted, frames (the bridge's and the hello) are small: an unfinished large frame
  * would otherwise hold memory for any machine on the node, with no pass. */
@@ -54,6 +55,9 @@ export const Kind = {
 	// The read log (protocol 3).
 	reads: 0x49, // I: entries of the mount's read log
 	readsOk: 0x69, // i
+	// Links (protocol 4), answered with k.
+	symlink: 0x59, // Y: a symbolic link
+	link: 0x4a, // J: a hard link
 } as const;
 
 export const ErrorCode = {
@@ -154,7 +158,8 @@ export interface Hello {
 
 export interface WireEntry {
 	readonly name: string;
-	readonly kind: "file" | "folder";
+	/** A link only at protocol 4; its size is its target's length in bytes, and the listing carries no target. */
+	readonly kind: "file" | "folder" | "symlink";
 	readonly size: number;
 	readonly mtimeMs: number;
 	readonly executable: boolean;
@@ -247,8 +252,9 @@ export function parseBridge(payload: Buffer): BridgeInfo {
 export function parseHello(payload: Buffer): Hello {
 	const value = object(payload);
 	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"], ["previous", "abandon"]);
-	if (value.protocol !== 1 && value.protocol !== 2 && value.protocol !== 3)
+	if (!PROTOCOLS.includes(value.protocol as (typeof PROTOCOLS)[number]))
 		throw new ProtocolError(ErrorCode.viewRefused, "Unsupported folder protocol");
+	const protocol = value.protocol as (typeof PROTOCOLS)[number];
 	if (typeof value.environmentId !== "string" || !isUuid(value.environmentId))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad environment id");
 	const printable = (v: unknown): v is string =>
@@ -262,14 +268,14 @@ export function parseHello(payload: Buffer): Hello {
 		if (!old || typeof old !== "object" || Array.isArray(old))
 			throw new ProtocolError(ErrorCode.badRequest, "Bad previous view proof");
 		exactKeys(old, ["viewId", "pass"]);
-		if (value.protocol !== 3 || !printable(old.viewId) || !printable(old.pass) || old.viewId === value.viewId)
+		if (protocol < 3 || !printable(old.viewId) || !printable(old.pass) || old.viewId === value.viewId)
 			throw new ProtocolError(ErrorCode.badRequest, "Bad previous view proof");
 		previous = { viewId: old.viewId, pass: old.pass };
 	}
-	if (value.abandon !== undefined && (value.abandon !== true || value.protocol !== 3 || value.role !== "io"))
+	if (value.abandon !== undefined && (value.abandon !== true || protocol < 3 || value.role !== "io"))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad abandoned-program request");
 	return {
-		protocol: value.protocol,
+		protocol,
 		environmentId: value.environmentId,
 		viewId: value.viewId,
 		pass: value.pass,
@@ -620,4 +626,40 @@ export function parseReads(payload: Buffer): ReadsRequest {
 		});
 	}
 	return { log: value.log, reads, lost: value.lost === undefined ? false : flag(value.lost) };
+}
+
+// ---- Links (protocol 4) -------------------------------------------------------------------------------------------------
+
+/** A link's target: 1 to 4,095 bytes of UTF-8 (the kernel's bound), with no NUL; nothing else about it is checked. */
+export const MAX_TARGET = 4095;
+
+export function validTarget(target: unknown): target is string {
+	return (
+		typeof target === "string" &&
+		target !== "" &&
+		!target.includes("\0") &&
+		!/\p{Surrogate}/u.test(target) &&
+		Buffer.byteLength(target) <= MAX_TARGET
+	);
+}
+
+export function parseSymlink(payload: Buffer): { readonly path: string; readonly target: string } {
+	const value = object(payload);
+	exactKeys(value, ["path", "target"]);
+	if (!validTarget(value.target)) throw new ProtocolError(ErrorCode.badRequest, "Bad link target");
+	return { path: path(value.path), target: value.target };
+}
+
+/** A hard link names its source as a rename does: `fromBase` is the version the machine showed. */
+export interface LinkRequest {
+	readonly from: string;
+	readonly fromBase?: string;
+	readonly to: string;
+}
+
+export function parseLink(payload: Buffer): LinkRequest {
+	const value = object(payload);
+	exactKeys(value, ["from", "to"], ["fromBase"]);
+	const fromBase = base(value.fromBase);
+	return { from: path(value.from), ...(fromBase ? { fromBase } : {}), to: path(value.to) };
 }

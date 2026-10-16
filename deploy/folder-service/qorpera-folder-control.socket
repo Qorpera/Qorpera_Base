@@ -1,0 +1,18 @@
+[Unit]
+Description=Qorpera folder service control socket (only the coding executor may connect)
+Documentation=file:///opt/qorpera-folder-service/README.md
+
+[Socket]
+ListenStream=/run/qorpera-folder-control/control.sock
+# Connecting needs write permission on the file: the executor's alone, in a folder only root may change.
+SocketUser=qorpera-coding-executor
+SocketGroup=qorpera-coding-executor
+SocketMode=0600
+DirectoryMode=0755
+RemoveOnStop=yes
+# The service tells it from its folder socket by this name (LISTEN_FDNAMES).
+FileDescriptorName=control
+Service=qorpera-folder-service.service
+
+[Install]
+WantedBy=sockets.target

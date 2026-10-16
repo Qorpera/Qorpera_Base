@@ -68,6 +68,14 @@ drains admitted old work before moving pending state, keeps a closed desktop for
 under the successor's upload scope, and replays any unanswered commit with its original actor and operation key.
 The office helper and live activation remain separate slices of `RUNTIME-FOLDER-COMPANY-MACHINES.md`.
 
+The mount speaks protocol 4 (folder links LK4, `deploy/first-node/RUNTIME-FOLDER-LINKS.md`), so the company folder
+holds links. `readlink` reads the target with `R` at the link's version and logs it as a read, as an open is; the
+kernel caches no target (`FUSE_CACHE_SYMLINKS` stays off), so every readlink is logged. `symlink` keeps the target
+exactly as written and refuses one that is not UTF-8 (`EINVAL`). `link` (a hard link) logs a read of the source at the
+version shown and sends `J` with it; the new name is an inode of its own with one link, so the names are never joined.
+A link shows as `l` with mode `0777`; `chmod` and `touch -h` on one change nothing. `mknod`, `mkfifo` and a socket's
+bind stay `EPERM`.
+
 Git on the mount (F3 step 5d; `RUNTIME-COMPANY-FOLDER.md` §6, `RUNTIME-FOLDER-CODING-MACHINES.md`). In a code area's
 `code/<owner>/<name>/repo.git`, the session's own git files (`config`, `hooks/**`, `info/**` and each worktree's
 `config.worktree`) live on the machine's disk under `--local-dir` (default `<state-dir>/local`, `src/local.rs`): seeded
@@ -77,8 +85,8 @@ writes and publishes the copies the sessions seed theirs from.
 Cache folders in a worker's worktree (`node_modules`, `target`, `dist`, `build` and the rest of `src/git.rs`'s list)
 live there too, kept out of the company folder. The program reads the worktree's index (`src/index.rs`) each time git
 renames a new one into place; a name the index holds as a folder leaves that worktree's list for good
-(`src/cache.rs`, kept in `local/cache-left.jsonl`), and its files move into the mount as pending files (links stay on
-the disk until the folder has its own), each written as a draft: in the folder only once its close lands it. A move
+(`src/cache.rs`, kept in `local/cache-left.jsonl`), and its files move into the mount as pending files (its links as
+the folder's links), each file written as a draft: in the folder only once its close lands it. A move
 that fails is tried again every few seconds and at the worktree's next index, after a restart too; until none is left,
 `<state-dir>/caches.moving` is there and `publish` refuses. Under
 `repo.git`, objects aside, every lookup asks the node (no kernel cache), and an exclusive create of a ref's,

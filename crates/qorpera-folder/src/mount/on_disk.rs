@@ -261,8 +261,8 @@ impl Shared {
 	}
 
 	/// Each file leaves the disk once it is in the folder, and each folder once it is empty, with their names there
-	/// (`Local::moved_out`): what stays is what has not moved yet, and what cannot (links wait for the folder's own),
-	/// seen in the folder's place as a cache's are.
+	/// (`Local::moved_out`); a link moves as the folder's link. What stays is what has not moved yet, and what cannot
+	/// (a link the folder does not take, anything else not a file or a folder), seen in the folder's place as a cache's are.
 	fn move_folder(&self, local: &Local, held: &mut HashMap<String, Writer>, path: &str, disk: &Path) -> Result<(), i32> {
 		let made = |p: &str| match self.link.mkdir(p) {
 			Err(f) if f.errno() != libc::EEXIST => Err(f.errno()),
@@ -277,15 +277,30 @@ impl Shared {
 			} else if meta.is_file() {
 				self.write_in(held, &to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
 				local.moved_out(&disk.join(rel))?;
+			} else if meta.file_type().is_symlink() {
+				match self.link_in(&to, &disk.join(rel)) {
+					Ok(()) => local.moved_out(&disk.join(rel))?,
+					Err(e) => eprintln!("qorpera-folder: the link {to} stays out of the folder: errno {e}"),
+				}
 			} else {
-				eprintln!("qorpera-folder: {to} is not a file or a folder, and stays out of the folder");
+				eprintln!("qorpera-folder: {to} is not a file, a folder or a link, and stays out of the folder");
 			}
 		}
-		// Deepest first (the walk gives a folder before what is in it); one with a link left in it stays.
+		// Deepest first (the walk gives a folder before what is in it); one with something left in it stays.
 		for (rel, _) in walked.iter().rev().filter(|(_, m)| m.is_dir()) {
 			let _ = local.moved_out(&disk.join(rel));
 		}
 		let _ = local.moved_out(disk);
+		Ok(())
+	}
+
+	/// Makes the disk's link `disk` the folder's link at `path`, to the same target (protocol 4). One the folder cannot
+	/// keep (a target that is not UTF-8, a name it has already) is not made.
+	fn link_in(&self, path: &str, disk: &Path) -> Result<(), i32> {
+		let target = fs::read_link(disk).map_err(local::errno)?;
+		let target = target.to_str().ok_or(libc::EINVAL)?;
+		let version = self.link.symlink(path, target).map_err(|f| f.errno())?;
+		self.versions.lock().unwrap().saved(path, &version);
 		Ok(())
 	}
 
@@ -654,7 +669,13 @@ impl FolderFs {
 
 	pub(super) fn local_link(&self, ino: u64, to: (u64, &str), reply: ReplyEntry) -> Option<ReplyEntry> {
 		if !is_local(ino) {
-			return Some(reply);
+			// A file of the folder's, linked to a name on the machine's disk: another file system.
+			match self.s.local.as_ref().map(|local| self.s.found(local, to.0, to.1)) {
+				Some(Ok(Some(_))) => reply.error(Errno::EXDEV),
+				Some(Err(e)) => reply.error(Errno::from_i32(e)),
+				_ => return Some(reply),
+			}
+			return None;
 		}
 		let done = self.local().and_then(|local| {
 			let (_, _, area) = local.name(ino).ok_or(libc::ENOENT)?;
@@ -670,15 +691,16 @@ impl FolderFs {
 		None
 	}
 
-	/// readlink: only local files are links (the node's links come with the folder's own).
-	pub(super) fn local_readlink(&self, ino: u64, reply: ReplyData) {
+	/// readlink of a link on the machine's disk; the folder's own are the node's.
+	pub(super) fn local_readlink(&self, ino: u64, reply: ReplyData) -> Option<ReplyData> {
 		if !is_local(ino) {
-			return reply.error(Errno::EINVAL);
+			return Some(reply);
 		}
 		match self.local().and_then(|l| l.readlink(ino)) {
 			Ok(target) => reply.data(&target),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
+		None
 	}
 
 	/// The index git is about to put in place for a worktree by renaming its lock `from` (`source`) onto `to`, read

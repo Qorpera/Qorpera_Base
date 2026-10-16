@@ -207,6 +207,266 @@ describe("writes through the mount", () => {
 		expect(core.entries.has("plan.md.new")).toBe(false);
 	});
 
+	it("tries a refused save through a temporary file renamed over its target again at the version it replaced", async () => {
+		const { root, core, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const read1 = core.entries.get("plan.md")!.version;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: read1, noReplace: false });
+		core.refuse = (path) => path === "plan.md";
+		expect((await view.publish()).paths).toEqual([
+			{ path: "plan.md", outcome: "denied", reason: "denied", kept: true },
+		]);
+		expect(await read(view, "plan.md")).toBe("mine");
+		// Kept, the save still replaces the version the editor renamed over, so it saves instead of conflicting.
+		core.refuse = () => false;
+		expect((await view.publish()).paths).toEqual([{ path: "plan.md", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: read1 }),
+		]);
+		expect(core.entries.get("plan.md")?.fileSha256).toBe(hashOf("mine"));
+	});
+
+	it("keeps a save that replaced a file a conflict once another machine removed that file, never making it again", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG), await storeFile(root, "todo.md", "v1", 2, BIG)]);
+		const view = await open();
+		const plan = core.entries.get("plan.md")!.version;
+		const todo = core.entries.get("todo.md")!.version;
+		// A save through a temporary file, and a file made again, in another case, where one was removed.
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: plan, noReplace: false });
+		await view.unlink("todo.md", todo);
+		await write(view, "TODO.md", "mine");
+		// Another machine removes both before the boundary, and its change reaches the view: the saves still show.
+		core.remove("plan.md");
+		core.remove("todo.md");
+		await service.poll();
+		await service.settled();
+		expect(await read(view, "plan.md")).toBe("mine");
+		expect(await read(view, "TODO.md")).toBe("mine");
+		const report = await view.publish();
+		const units = core.commits.at(-1)!.units;
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: plan }),
+				expect.objectContaining({ op: "write", path: "TODO.md", expectedVersion: todo }),
+			]),
+		);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "TODO.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		expect(core.entries.has("TODO.md")).toBe(false);
+	});
+
+	it("keeps a save renamed only in case a conflict once another machine removed the file it replaced", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG), await storeFile(root, "todo.md", "v1", 2, BIG)]);
+		const view = await open();
+		const plan = core.entries.get("plan.md")!.version;
+		const todo = core.entries.get("todo.md")!.version;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: plan, noReplace: false });
+		await view.unlink("todo.md", todo);
+		await write(view, "TODO.md", "mine");
+		core.remove("plan.md");
+		core.remove("todo.md");
+		await service.poll();
+		await service.settled();
+		// Each renamed only in case after the change reached the view: still the next version of the file it replaced.
+		await view.rename({ from: "plan.md", to: "Plan.md", noReplace: false });
+		await view.rename({ from: "TODO.md", to: "todo.md", noReplace: false });
+		expect(await read(view, "Plan.md")).toBe("mine");
+		expect(await read(view, "todo.md")).toBe("mine");
+		const report = await view.publish();
+		const units = core.commits.at(-1)!.units;
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "Plan.md", expectedVersion: plan }),
+				expect.objectContaining({ op: "write", path: "todo.md", expectedVersion: todo }),
+			]),
+		);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "Plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+			{ path: "todo.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(core.entries.has("Plan.md")).toBe(false);
+		expect(core.entries.has("todo.md")).toBe(false);
+	});
+
+	it("makes a save renamed over the file another machine renamed only in case one replacement of that", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("plan.md")!;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: old.version, noReplace: false });
+		// Another machine renames the file only in case, and its change reaches the view.
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "Plan.md", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// The save renamed over it replaces the version the machine saw there, as one unit.
+		await view.rename({ from: "plan.md", to: "Plan.md", toBase: v(8), noReplace: false });
+		expect(await read(view, "Plan.md")).toBe("mine");
+		expect((await view.publish()).paths).toEqual([{ path: "Plan.md", outcome: "saved" }]);
+		const units = core.commits.at(-1)!.units;
+		expect(units).toEqual([expect.objectContaining({ op: "write", path: "Plan.md", expectedVersion: v(8) })]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		expect(core.entries.get("Plan.md")!.version).not.toBe(v(8));
+	});
+
+	it("publishes a save, and another renamed over the file another machine renamed only in case beside it, as two units", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("plan.md")!;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: old.version, noReplace: false });
+		// Another machine renames the file only in case, and its change reaches the view: both names show.
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "Plan.md", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// Another save renamed over the new name, at the version there: in the core a unit at the first save's path too.
+		// The first save still replaces the version it saw (a conflict, kept on the receipt): it never takes v8.
+		await write(view, "plan.md.new", "next");
+		await view.rename({ from: "plan.md.new", to: "Plan.md", toBase: v(8), noReplace: false });
+		expect(await read(view, "plan.md")).toBe("mine");
+		expect(await read(view, "Plan.md")).toBe("next");
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toHaveLength(2);
+		expect(core.commits[0]!.units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: old.version }),
+				expect.objectContaining({ op: "write", path: "Plan.md", expectedVersion: v(8) }),
+			]),
+		);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "Plan.md", outcome: "saved" },
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(core.entries.get("Plan.md")!.fileSha256).toBe(hashOf("next"));
+		expect(core.entries.has("plan.md.new")).toBe(false);
+		expect([...core.copies.values()].flat()).toEqual([expect.objectContaining({ path: "plan.md", kind: "file" })]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "plan.md", expectedVersion: v(8) });
+	});
+
+	it("keeps a save a conflict when the file another machine renamed only in case beside it is edited in place", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("plan.md")!;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: old.version, noReplace: false });
+		// Another machine renames the file only in case, and its change reaches the view: both names show.
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "Plan.md", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// An edit in place of the new name, at v8: a unit of its own, and the save still replaces the version it saw.
+		await write(view, "Plan.md", "edited", v(8));
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([
+			expect.objectContaining({ op: "write", path: "Plan.md", expectedVersion: v(8) }),
+			expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: old.version }),
+		]);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "Plan.md", outcome: "saved" },
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(core.entries.get("Plan.md")!.fileSha256).toBe(hashOf("edited"));
+		expect([...core.copies.values()].flat()).toEqual([expect.objectContaining({ path: "plan.md", kind: "file" })]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "plan.md", expectedVersion: v(8) });
+	});
+
+	it("keeps a save a conflict when the file another machine renamed only in case beside it is moved away and removed", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("plan.md")!;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: old.version, noReplace: false });
+		// Another machine renames the file only in case, and its change reaches the view: both names show.
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "Plan.md", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// The new name moved away, then removed: v8's removal is a unit of its own, and the save still replaces the
+		// version it saw (a conflict), never v8.
+		await view.rename({ from: "Plan.md", to: "moved.md", fromBase: v(8), noReplace: false });
+		await view.unlink("moved.md", v(8));
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([
+			expect.objectContaining({ op: "delete", path: "Plan.md", expectedVersion: v(8) }),
+			expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: old.version }),
+		]);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "Plan.md", outcome: "saved" },
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(core.entries.has("Plan.md")).toBe(false);
+		expect(core.entries.has("moved.md")).toBe(false);
+		expect([...core.copies.values()].flat()).toEqual([expect.objectContaining({ path: "plan.md", kind: "file" })]);
+		expect(core.entries.has("plan.md")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "plan.md", expectedVersion: v(8) });
+	});
+
+	it("keeps a save a conflict when the file it replaced, renamed to a name never published here, is removed", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "notes.SWP", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("notes.SWP")!;
+		await write(view, "notes.SWP.new", "mine");
+		await view.rename({ from: "notes.SWP.new", to: "notes.SWP", toBase: old.version, noReplace: false });
+		// Another machine renames the file only in case, to a name this machine never publishes (the member route takes
+		// it), and its change reaches the view; the machine then removes it there.
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "notes.swp", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		await view.unlink("notes.swp", v(8));
+		// The removal is a unit of its own; the save still replaces the version it saw, so it conflicts.
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([
+			expect.objectContaining({ op: "delete", path: "notes.swp", expectedVersion: v(8) }),
+			expect.objectContaining({ op: "write", path: "notes.SWP", expectedVersion: old.version }),
+		]);
+		expect(byPath(report.paths)).toEqual([
+			{ path: "notes.SWP", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+			{ path: "notes.swp", outcome: "saved" },
+		]);
+		expect([...core.copies.values()].flat()).toEqual([expect.objectContaining({ path: "notes.SWP", kind: "file" })]);
+		expect(core.entries.has("notes.SWP")).toBe(false);
+		expect(core.entries.has("notes.swp")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "notes.SWP", expectedVersion: v(8) });
+	});
+
 	it("keeps a stale save as a conflict when the service restarted between the read and the save", async () => {
 		const { root, core, open, restart } = await fixture();
 		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
