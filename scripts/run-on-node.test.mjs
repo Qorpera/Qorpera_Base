@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
 	baseCopyCompare,
 	CLOSED,
@@ -13,6 +14,7 @@ import {
 	describeProbes,
 	FRONT,
 	firstTaking,
+	growScript,
 	includeRules,
 	MACHINES,
 	parseArgs,
@@ -30,6 +32,7 @@ import {
 	shellQuote,
 	suiteCommand,
 	treeDigest,
+	WIDE_SLOTS,
 	workingTreeFiles,
 } from "./run-on-node.mjs";
 
@@ -197,6 +200,48 @@ test("--cores runs changed's steps side by side and is only for changed", () => 
 	assert.throws(() => parseArgs(["--cores"]), /--cores needs a value/);
 	assert.throws(() => parseArgs(["--cores", "4", "test"]), /--cores is for changed/);
 	assert.throws(() => parseArgs(["--cores", "4", "--", "true"]), /--cores is for changed/);
+});
+
+test("a --front --cores run takes up to three slots, one such run per machine; any other --cores run keeps its slot's cores", () => {
+	assert.equal(WIDE_SLOTS, 3);
+	const run = "20261016T001500-1-ab";
+	const base = { run, runDir: `/home/tester/runs/${run}`, treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	const wide = runScript({ ...base, front: true, cores: 6 });
+	const narrow = runScript({ ...base, cores: 6 });
+	for (const script of [wide, narrow]) {
+		assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+		// The steps read the run's cores file (planScript): one slot's cores at first, removed when the session ends.
+		assert.match(script, /\nexport QORPERA_RUN_CORES_FILE=\/run\/lock\/qorpera-test-machine-cores-20261016T001500-1-ab\n/);
+		assert.match(
+			script,
+			/\nper=\$\(\( \$\(nproc\) \/ 5 > 0 \? \$\(nproc\) \/ 5 : 1 \)\); cores_file=\/run\/lock\/qorpera-test-machine-cores-20261016T001500-1-ab; \(umask 022; echo "\$per" >"\$cores_file"\); trap 'rm -f "\$ticket" "\$cores_file"' EXIT\n/,
+		);
+		// Before the command, after the slot and the runner user.
+		assert.ok(script.indexOf("cores_file=") > script.indexOf("in slot $slot of 5"));
+		assert.ok(script.indexOf("cores_file=") < script.indexOf('sudo -n -u "$runner"'));
+		assert.doesNotMatch(script, /kill -0/);
+	}
+	// Only a front run takes the machine's wide lock, without waiting, and grows; any other keeps its one slot.
+	assert.match(
+		wide,
+		/\n\tif \{ exec 6>"\/run\/lock\/qorpera-test-machine-wide\.lock"; \} 2>\/dev\/null && flock -n 6; then echo "== run-on-node: side by side in up to \$want slots of \$per cores, taking the others as they free"; exec 4> >\(grow\)\n\telse echo "== run-on-node: another --front run holds this machine's extra slots: side by side in this one slot \(\$per cores\)"; fi\n/,
+	);
+	assert.ok(wide.includes(growScript({ allStarted: `/home/tester/runs/${run}/.run-on-node-all-started` })));
+	assert.doesNotMatch(narrow, /grow|wide\.lock|want=/);
+	// Without --cores nothing of it.
+	for (const script of [runScript({ ...base, front: true }), runScript(base)]) assert.doesNotMatch(script, /cores|grow|wide|want=/);
+	// The slots it wants: the cores asked over one slot's (vCPUs / 5), rounded up, at most WIDE_SLOTS.
+	for (const [asked, cpus, slots] of [[6, 10, 3], [4, 10, 2], [3, 10, 2], [2, 10, 1], [1, 10, 1], [16, 12, 3], [6, 6, 3]]) {
+		const lines = runScript({ ...base, front: true, cores: asked }).split("\n");
+		const per = lines.find((line) => line.startsWith("per=")).split(";")[0].replaceAll("$(nproc)", String(cpus));
+		const want = lines.find((line) => line.startsWith("want="));
+		assert.equal(spawnSync("bash", ["-c", `${per}; ${want}; echo $want`], { encoding: "utf8" }).stdout.trim(), String(slots), `${asked} of ${cpus}`);
+	}
+	// A killed run's cores file is pruned by the time in its name, like the copy markers.
+	assert.match(
+		pruneScript(),
+		/\nfor f in \/run\/lock\/qorpera-test-machine-cores-\*; do n=\$\{f#\/run\/lock\/qorpera-test-machine-cores-\}; if \[\[ "\$n" =~ \^\[0-9\]\{8\}T\[0-9\]\{6\}- && "\$\{n%%-\*\}" < "\$cutoff" \]\]; then rm -f -- "\$f"; fi; done\n/,
+	);
 });
 
 test("a --front run waits ahead of every other run in the CPU lane, front runs among themselves by arrival", () => {
@@ -538,6 +583,126 @@ test(
 		} finally {
 			for (const child of holders) child.kill("SIGKILL");
 			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+test(
+	"a wide run takes more slots as they free, after earlier front runs and before the rest, and frees them with its session",
+	{ skip: flockNoFork ? false : "no util-linux flock(1) here; the test machines have it" },
+	async () => {
+		const locks = mkdtempSync(join(tmpdir(), "run-on-node-grow-"));
+		const queue = join(locks, "qorpera-test-machine-queue");
+		const slot = (n) => join(locks, `qorpera-test-machine-slot${n}.lock`);
+		const cores = join(locks, "cores");
+		const allStarted = join(locks, "all-started");
+		const holders = new Map();
+		const sessions = [];
+		const hold = (file) =>
+			new Promise((resolvePromise, reject) => {
+				const child = spawn("flock", ["--nonblock", "--no-fork", file, "sh", "-c", "echo held; exec sleep 60"], { stdio: ["ignore", "pipe", "inherit"] });
+				holders.set(file, child);
+				child.stdout.once("data", () => resolvePromise());
+				child.once("exit", (code) => reject(new Error(`lock holder for ${file} exited ${code}`)));
+			});
+		const release = async (file) => {
+			const child = holders.get(file);
+			holders.delete(file);
+			const exited = new Promise((resolvePromise) => child.once("exit", resolvePromise));
+			child.kill("SIGKILL");
+			await exited;
+		};
+		const free = (file) => spawnSync("flock", ["--nonblock", file, "true"]).status === 0;
+		const tickets = () => readdirSync(queue).filter((name) => name.endsWith("-more"));
+		const until = async (what, check) => {
+			for (const end = Date.now() + 15_000; !check(); await sleep(100)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+		};
+		// A session as runScript leaves it for grow: its first slot locked on fd 9, one slot's cores in the file.
+		const session = (want) => {
+			const child = spawn(
+				"bash",
+				[
+					"-c",
+					[
+						"set -uo pipefail",
+						`exec 9>${shellQuote(slot(1))}; flock -n 9 || exit 3`,
+						`per=2; want=${want}; cores_file=${shellQuote(cores)}; echo "$per" >"$cores_file"`,
+						growScript({ locks, allStarted }),
+						"exec 4> >(grow)",
+						"echo started",
+						// The session lasts until the test ends its stdin.
+						"read -r _",
+					].join("\n"),
+				],
+				{ stdio: ["pipe", "pipe", "inherit"] },
+			);
+			const state = { out: "", child };
+			sessions.push(child);
+			child.stdout.on("data", (data) => {
+				state.out += data;
+			});
+			// grow shares the session's stdout, so it ends when grow too has exited.
+			state.ended = new Promise((resolvePromise) => child.stdout.once("end", resolvePromise));
+			return state;
+		};
+		try {
+			mkdirSync(queue);
+			for (const n of [2, 3, 4, 5]) await hold(slot(n));
+			// An earlier front run and an owner's run wait; a dead ticket sorts first.
+			const earlier = join(queue, `${FRONT}1000000000000000000-1`);
+			const owner = join(queue, "1760650000000000000-2");
+			const dead = join(queue, `${FRONT}0999999999999999999-3`);
+			await hold(earlier);
+			await hold(owner);
+			writeFileSync(dead, "");
+			const first = session(3);
+			await until("the session", () => first.out.includes("started"));
+			await until("grow's own front ticket", () => tickets().length === 1);
+			await until("the dead ticket dropped", () => !existsSync(dead));
+			// Slot 3 frees, but the earlier front run is ahead.
+			await release(slot(3));
+			await sleep(3_000);
+			assert.doesNotMatch(first.out, /too/);
+			assert.equal(readFileSync(cores, "utf8"), "2\n");
+			// Once it has gone, grow is first: it takes slot 3, ahead of the owner's run, never its own slot 1.
+			await release(earlier);
+			await until("slot 3", () => first.out.includes("== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
+			assert.equal(readFileSync(cores, "utf8"), "4\n");
+			assert.equal(free(slot(3)), false);
+			assert.doesNotMatch(first.out, /slot 1 too/);
+			assert.equal(tickets().length, 1);
+			// The session ends while grow still waits for a third slot: what it took is free, its ticket and the file gone.
+			first.child.stdin.end();
+			await first.ended;
+			assert.deepEqual([free(slot(1)), free(slot(3)), tickets(), existsSync(cores), existsSync(owner)], [true, true, [], false, true]);
+			// Two slots free at once: it takes both at once, stops waiting, and holds them until its session ends.
+			await release(slot(2));
+			const second = session(3);
+			await until("slots 2 and 3", () => second.out.includes("slot 3 too: 3 slots, 6 cores\n"));
+			assert.match(second.out, /== run-on-node: slot 2 too: 2 slots, 4 cores\n/);
+			assert.equal(readFileSync(cores, "utf8"), "6\n");
+			await until("its ticket gone", () => tickets().length === 0);
+			assert.deepEqual([free(slot(2)), free(slot(3))], [false, false]);
+			second.child.stdin.end();
+			await second.ended;
+			assert.deepEqual([free(slot(2)), free(slot(3)), existsSync(cores)], [true, true, false]);
+			// Once every step has started it takes no more: a slot that frees then stays free.
+			for (const n of [2, 3]) await hold(slot(n));
+			const third = session(3);
+			await until("grow's own front ticket", () => tickets().length === 1);
+			writeFileSync(allStarted, "");
+			await until("the stop", () => third.out.includes("== run-on-node: every step has started: no more slots (1 of 3)\n"));
+			assert.deepEqual(tickets(), []);
+			await release(slot(3));
+			await sleep(3_000);
+			assert.doesNotMatch(third.out, /too/);
+			assert.equal(free(slot(3)), true);
+			assert.equal(readFileSync(cores, "utf8"), "2\n");
+			third.child.stdin.end();
+			await third.ended;
+		} finally {
+			for (const child of [...holders.values(), ...sessions]) child.kill("SIGKILL");
+			rmSync(locks, { recursive: true, force: true });
 		}
 	},
 );

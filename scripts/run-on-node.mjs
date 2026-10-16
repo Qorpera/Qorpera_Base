@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
+import { ALL_STARTED, describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
 	machineLabel,
@@ -44,7 +44,9 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --front                    wait at the front of the CPU lane's queue, ahead of every run without it
                                     (pr-loop's batch runs, which test every approved head at once)
          --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
-                                    first and alone (default: one step at a time); the run still takes one slot
+                                    first and alone (default: one step at a time). With --front the run takes
+                                    up to 3 slots as they free (one such run per machine); otherwise it keeps
+                                    to its one slot's cores
          --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own,
                                     comparing file contents (for checkouts made fresh per run, such as
                                     pr-loop's merged trees)
@@ -118,6 +120,14 @@ const LANES = {
 /** The start of a --front run's queue ticket name. pr-loop's batch run tests every approved head in one `changed`,
  * so its wait delays every one of them: on 15 Oct the CPU lane's queue wait had a median of 14 minutes. */
 export const FRONT = "0-";
+/** A --front --cores run (pr-loop's batch, its steps side by side) may hold up to this many of its machine's CPU slots:
+ * it starts in one and takes the others as they free, ahead of every run that came after it. One such run per machine
+ * at a time holds WIDE; any other --cores run keeps its one slot's cores. The coordinator's decision of 16 Oct: 6 of
+ * a 10-vCPU machine's cores for the batch, the other slots for everyone else. */
+export const WIDE_SLOTS = 3;
+const WIDE = `${LOCKS}/qorpera-test-machine-wide.lock`;
+/** A --cores run's cores file (the start of its name; the run's name follows): how many cores its slots give it now. */
+const CORES = `${LOCKS}/qorpera-test-machine-cores-`;
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
@@ -298,7 +308,8 @@ export function treeDigest(root, files) {
 /** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
  * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
  * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
- * node02's disk on 2026-10-09), and hosted-db containers older than 6 hours. */
+ * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, and the cores files of --cores runs killed
+ * before they could remove them (/run/lock is a small tmpfs every lock lives on). */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -306,6 +317,7 @@ export function pruneScript() {
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
+		`for f in ${CORES}*; do n=\${f#${CORES}}; if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
@@ -322,9 +334,10 @@ export function baseCopyCompare(shared) {
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
  * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
- * for the CPU lane's; a `front` run waits ahead of every run without it. Exit codes 90 (install or build) and 91-94
- * (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false }) {
+ * for the CPU lane's; a `front` run waits ahead of every run without it. A `cores` run (changed --cores) tells its
+ * steps how many cores its slots give it in its cores file; a `front` one takes up to WIDE_SLOTS slots (growScript).
+ * Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const lane = quick ? LANES.quick : LANES.cpu;
 	const queue = `${LOCKS}/${lane.queue}`;
@@ -332,6 +345,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`cd ${runDir} || exit 91`,
 		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
 		`export VITEST_MAX_WORKERS=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 ))`,
+		...(cores ? [`export QORPERA_RUN_CORES_FILE=${CORES}${run}`] : []),
 		`echo "workers=$VITEST_MAX_WORKERS" >>${status}`,
 		"t0=$(date +%s%N)",
 		install
@@ -400,7 +414,62 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots} in the ${lane.name}${front ? " from the front of its queue" : ""} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
+		...(cores
+			? [
+					// The cores the run's slots give it, which its steps read (planScript): one slot's to start with.
+					`per=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 )); cores_file=${CORES}${run}; (umask 022; echo "$per" >"$cores_file"); trap 'rm -f "$ticket" "$cores_file"' EXIT`,
+					...(front
+						? [
+								growScript({ allStarted: `${runDir}/${ALL_STARTED}` }),
+								`want=$(( (${cores} + per - 1) / per )); [ "$want" -gt ${WIDE_SLOTS} ] && want=${WIDE_SLOTS}`,
+								// grow's stdin is a pipe only this session holds (sudo closes it for the command), so it ends with the session.
+								'if [ "$want" -gt 1 ]; then',
+								`\tif { exec 6>"${WIDE}"; } 2>/dev/null && flock -n 6; then echo "== run-on-node: side by side in up to $want slots of $per cores, taking the others as they free"; exec 4> >(grow)`,
+								`\telse echo "== run-on-node: another --front run holds this machine's extra slots: side by side in this one slot ($per cores)"; fi`,
+								"fi",
+							]
+						: []),
+				]
+			: []),
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
+	].join("\n");
+}
+
+/** The bash function `grow` of a --front --cores run: it takes up to `$want` of the CPU lane's slots in all, the
+ * session's first included, and keeps `$cores_file` at the cores they give (`$per` each). It waits like a queued run,
+ * with a front ticket of its own (fd 7) named by the time it starts, so --front runs that came earlier go first and
+ * every other run after, and it drops dead tickets as they do. It stops waiting once every step has started
+ * (`allStarted`), and keeps the slots it took until its stdin ends: run as `exec 4> >(grow)`, that pipe ends with the
+ * session's last process, so no slot outlives the run. */
+export function growScript({ locks = LOCKS, allStarted }) {
+	const queue = `${locks}/${LANES.cpu.queue}`;
+	return [
+		"grow() {",
+		// The session's own locks stay the session's: the wide lock (fd 6), the runner user (fd 8) and its first slot (fd 9).
+		"\texec 6>&- 8>&- 9>&-; umask 022",
+		`\theld=1; more=${queue}/${FRONT}$(date +%s%N)-$$-more; exec 7>"$more"; flock 7; trap 'rm -f "$more" "$cores_file" "$cores_file.tmp"' EXIT`,
+		`\twhile [ "$held" -lt "$want" ] && [ ! -e ${shellQuote(allStarted)} ]; do`,
+		`\t\tfor t in ${queue}/*; do [ "$t" != "$more" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
+		'\t\t[ -e "$more" ] || { exec 7>"$more"; flock 7; }',
+		`\t\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$more")" | cut -d: -f1)`,
+		'\t\tif [ "$position" = 1 ]; then',
+		`\t\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
+		// A new descriptor cannot lock the session's own slot either: flock locks conflict between open files.
+		`\t\t\t\t{ exec {fd}>"${locks}/${LANES.cpu.slot}$candidate.lock"; } 2>/dev/null || continue`,
+		'\t\t\t\tif flock -n "$fd"; then',
+		'\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
+		'\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
+		'\t\t\t\t\t[ "$held" -lt "$want" ] || break',
+		"\t\t\t\telse exec {fd}>&-; fi",
+		"\t\t\tdone",
+		"\t\tfi",
+		// The wait ends early when stdin does (read's status 1, a timeout's is over 128): the session is over.
+		'\t\t[ "$held" -lt "$want" ] && { read -r -t 2 _; [ $? -gt 128 ] || return 0; }',
+		"\tdone",
+		'\trm -f "$more"; exec 7>&-',
+		'\t[ "$held" -lt "$want" ] && echo "== run-on-node: every step has started: no more slots ($held of $want)"',
+		"\twhile read -r _; do :; done",
+		"}",
 	].join("\n");
 }
 
@@ -848,6 +917,7 @@ async function main() {
 			runCommand,
 			quick: options.quick,
 			front: options.front,
+			cores: options.cores,
 		}),
 	);
 	const finished = Date.now();

@@ -416,6 +416,10 @@ function narrow(step) {
 	return `export GOMAXPROCS=${width}; node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
 }
 
+/** A side-by-side run started by run-on-node.mjs makes this file in its directory once every step has started, so the
+ * run stops waiting for more slots: the steps still running need no more cores than they have. */
+export const ALL_STARTED = ".run-on-node-all-started";
+
 /** Every step runs, even after another failed; the exit code is 1 if any failed. Without `cores`, one step at a time in
  * plan order, each running its `alone` commands after its others.
  *
@@ -423,7 +427,11 @@ function narrow(step) {
  * the rest of every step, the longest (`seconds`) first, each starting once the running steps' `cores` leave room for
  * it within `cores` (one always runs), its fan-out within its own (`narrow`). A step runs its rest even when its
  * `alone` part failed, and passes only if both passed. Its output is printed whole when it ends, with its own time. A
- * step whose rest ends without a result (its worker killed, or the result not written) fails. */
+ * step whose rest ends without a result (its worker killed, or the result not written) fails.
+ *
+ * Under run-on-node.mjs, the file QORPERA_RUN_CORES_FILE holds the cores the run's slots give it, more as further
+ * slots free: the budget is the smaller of that and `cores`, read again every second. A value it cannot read keeps
+ * the budget where it was, from one core. */
 export function planScript(steps, { cores = null } = {}) {
 	const fail = [
 		// The failed step names reach the run record (and the GitHub status) through the status file.
@@ -442,6 +450,7 @@ export function planScript(steps, { cores = null } = {}) {
 			]),
 			...fail,
 		].join("\n");
+	const limit = Math.round(cores * 100);
 	const indexed = steps.map((step, i) => ({ step, i }));
 	const rest = indexed
 		.filter(({ step }) => step.commands.length)
@@ -475,12 +484,15 @@ export function planScript(steps, { cores = null } = {}) {
 		'alive() { local _pid _comm state parent; { read -r _pid _comm state parent _ <"/proc/$1/stat"; } 2>/dev/null && [ "$state" != Z ] && [ "$parent" = "$BASHPID" ]; }',
 		// The runner user's tasks count against its 512-task limit (run-on-node.mjs RUNNERS): the run reports its peak.
 		`pending="${rest.join(" ")}"; running=""; used=0; tick=0; tasks=0; least=""`,
+		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0`,
 		'while [ -n "${pending// }${running// }" ]; do',
+		`\thave=""; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && { read -r have <"$QORPERA_RUN_CORES_FILE"; } 2>/dev/null; [[ "$have" =~ ^[1-9][0-9]?$ ]] && budget=$(( have * 100 < ${limit} ? have * 100 : ${limit} )); [ "$budget" -gt "$top" ] && top=$budget`,
 		'\tleft=""',
 		"\tfor i in $pending; do",
-		`\t\tif [ -z "\${running// }" ] || [ $(( used + need[i] )) -le ${Math.round(cores * 100)} ]; then start "$i"; running="$running $i"; used=$(( used + need[i] )); else left="$left $i"; fi`,
+		'\t\tif [ -z "${running// }" ] || [ $(( used + need[i] )) -le "$budget" ]; then start "$i"; running="$running $i"; used=$(( used + need[i] )); else left="$left $i"; fi',
 		"\tdone",
-		'\tpending=$left; sleep 1; tick=$(( tick + 1 ))',
+		`\tpending=$left; [ -z "\${pending// }" ] && [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && [ ! -e ${ALL_STARTED} ] && : >${ALL_STARTED}`,
+		"\tsleep 1; tick=$(( tick + 1 ))",
 		"\tif [ $(( tick % 5 )) = 1 ]; then",
 		'\t\tn=$(ps -L -u "$(id -u)" --no-headers 2>/dev/null | wc -l); [ "$n" -gt "$tasks" ] && tasks=$n',
 		"\t\tm=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo); [ -z \"$least\" ] || [ \"$m\" -lt \"$least\" ] && least=$m",
@@ -499,7 +511,7 @@ export function planScript(steps, { cores = null } = {}) {
 		"\trunning=$still",
 		"done",
 		"wait",
-		`echo "== changed: side by side within ${cores} cores: at most $tasks tasks of the runner user, at least \${least:-?} MiB available"`,
+		`echo "== changed: side by side within ${cores} cores\${QORPERA_RUN_CORES_FILE:+ (at most $(( top / 100 )) from its slots)}: at most $tasks tasks of the runner user, at least \${least:-?} MiB available"`,
 		...fail,
 	].join("\n");
 }
