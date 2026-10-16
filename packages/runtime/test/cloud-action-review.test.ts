@@ -14,6 +14,7 @@ import {
 	parseCloudActionVerdict,
 } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
@@ -1748,6 +1749,58 @@ describe("the review step", () => {
 		// A refusal (the run is gone) is not asked again.
 		const refused = await stopped([new CloudControlRpcRefused("42501", "native tool run is unavailable"), late()]);
 		expect(refused).toHaveLength(1);
+	});
+
+	// The wait that failed in production (16:03:13.671Z) was cancelled by the statement timeout while its row lock
+	// queued on the run's budget row behind a same-run step. PostgREST answers that (57014), and a lock timeout
+	// (55P03), with a 500 and the SQLSTATE: the run's control reads both as lost answers, never as refusals.
+	it("holds through the kernel's statement and lock timeouts as PostgREST returns them", async () => {
+		const timeouts = [
+			{ code: "57014", message: "canceling statement due to statement timeout" },
+			{ code: "55P03", message: "canceling statement due to lock timeout" },
+		];
+		const methods: string[] = [];
+		const paths = new HttpCloudCompanyPathControl({
+			supabaseUrl: "https://authority.example",
+			serviceRoleKey: "synthetic-service-key",
+			fetch: vi.fn<typeof fetch>(async (input) => {
+				const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
+				methods.push(method);
+				if (method === "qorpera_begin_action_review")
+					return Response.json({ state: "pending", reviewId: "review-14", approverName: "Jonas" });
+				const timeout = timeouts.shift();
+				return timeout
+					? Response.json({ ...timeout, details: null, hint: null }, { status: 500 })
+					: Response.json({ state: "approved", answeredBy: "Jonas" });
+			}),
+		});
+		// As production wires it: the gate's control is the run's path control.
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: { call: (method, args, signal) => paths.call(method, args, signal) },
+			reviewer: { review: vi.fn<CloudActionReviewer["review"]>() },
+			request: "Email Bob at Acme that the meeting moved.",
+			holdMs: 60_000,
+			pollMs: 1,
+			connectorEffects: new Map([["gmail_send_message", "write"]]),
+		});
+		const result = instance.check(
+			{
+				tool: tool("gmail_send_message", "connector"),
+				parsed: { input: { to: "bob@acme.test", subject: "Moved" } },
+				argumentsText: ARGUMENTS,
+				argumentSha256: "a".repeat(64),
+				callId: "call_1",
+			},
+			new AbortController().signal,
+		);
+		await expect(result).resolves.toEqual({ run: true });
+		expect(methods).toEqual([
+			"qorpera_begin_action_review",
+			"qorpera_await_action_review",
+			"qorpera_await_action_review",
+			"qorpera_await_action_review",
+		]);
 	});
 
 	it("passes on the approval's id on each approving path, and none from a malformed answer", async () => {
