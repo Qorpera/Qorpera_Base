@@ -568,7 +568,7 @@ do $$
 declare
 	v_bad text;
 	v_steps constant text[] := array['public.qorpera_memory_message_erase_request(uuid,uuid,uuid,uuid)',
-		'public.qorpera_memory_message_erase_status(uuid,uuid,uuid)', 'public.qorpera_memory_message_erase_due(integer)',
+		'public.qorpera_memory_message_erase_status(uuid,uuid,uuid)', 'public.qorpera_memory_message_erase_due(integer,uuid[])',
 		'public.qorpera_memory_message_erase_open(uuid,uuid)', 'public.qorpera_memory_message_erase_plan(uuid,uuid)',
 		'public.qorpera_memory_message_erase_rewrite(uuid,uuid,text,jsonb)', 'public.qorpera_memory_message_erase_ask(uuid,uuid)',
 		'public.qorpera_memory_message_erase_scrub(uuid,uuid)'];
