@@ -224,11 +224,13 @@ Computer) hosts up to six computers.
     for the same member, and the agent is told.
   - Reads are recorded on the view, and that next run inherits them in its
     read set (the answer to C1b-3's question 4 on #432).
-- A test machine has internet. Once `/company` is mounted on it, starting a
-  command and typing into one are outside effects and pass the automatic
-  review, like a computer's shell; a worker's commands pass under its
-  agent's rules (compute amendment, item 4, ratified). Until then a machine
-  has no company folder and its commands are not reviewed.
+- A test machine has internet. Starting a command and typing into one are
+  outside effects and pass the automatic review, like a computer's shell; a
+  worker's commands pass under its agent's rules (compute amendment, item 4,
+  ratified). This holds on a boot without `/company` too (the coordinator,
+  16 Oct, F3 step 6's Q2 in RUNTIME-FOLDER-TEST-MACHINES.md): whether a boot
+  has `/company` is decided after the review, and an earlier boot's commands
+  may have left company files on the disk.
 
 ### What a crash loses (founder decision 3)
 
@@ -1080,8 +1082,8 @@ firewall blocks private and special ranges, the machine itself and the other
 computers; it is not a security boundary between agents. A test machine
 reaches the internet but no private network, the NAS, the nodes or the
 control plane. Starting a command and typing into one are outside effects
-and pass the automatic review; on a test machine, once `/company` is
-mounted.) The existing exits are connectors and the browser (both reviewed), and coding machines,
+and pass the automatic review; on a test machine, with or without
+`/company`.) The existing exits are connectors and the browser (both reviewed), and coding machines,
 whose sessions keep open network and are not reviewed.
 With the mount, company data a coding session reads can leave through that
 network. The founder accepted this on 27 September so that coding agents can
