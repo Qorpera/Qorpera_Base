@@ -210,8 +210,6 @@ export interface LxdOperationReference {
 
 export type LxdOperationState = "pending" | "succeeded" | "failed";
 
-/** A coding machine's session folders are its only devices that change after
- * creation (lxd-client replaceInstanceDevices). */
 export interface LxdExecStreamRequest {
 	/** Run as root in `/`, with LXD's default environment. */
 	readonly command: readonly string[];
@@ -277,6 +275,8 @@ export interface LxdInstanceExecPipeClient {
 	): Promise<LxdExecPipeResult>;
 }
 
+/** A coding machine's session folders are its only devices that change after
+ * creation (lxd-client replaceInstanceDevices). */
 export interface LxdInstanceDeviceClient {
 	replaceInstanceDevices(
 		project: string,
