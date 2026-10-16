@@ -14,17 +14,31 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$repo/scripts/office-image-recipe.sh"
+usage="usage: build-office-image-candidate.sh [--stage] [--office-id <N>]"
 stage_candidate=0
-if [[ $# -gt 0 ]]; then
-	[[ $# -eq 1 && "$1" == --stage ]] || fail "usage: build-office-image-candidate.sh [--stage]"
-	stage_candidate=1
-fi
+# The office account's uid and gid. A node prepares an office only as its policy's workbench account (policy.json's
+# workbench.uid, equal to its gid; the production builder reads it there). This test machine has no policy, so the
+# default is qofleet01's, and the folder remount proof sees the ids production uses.
+office_id=20048
+while (($#)); do
+	case $1 in
+	--stage)
+		stage_candidate=1
+		shift
+		;;
+	--office-id)
+		(($# >= 2)) || fail "$usage"
+		office_id=$2
+		shift 2
+		;;
+	*) fail "$usage" ;;
+	esac
+done
+[[ $office_id =~ ^[1-9][0-9]{0,9}$ ]] && ((office_id <= 2147483647)) || fail "$usage"
 recipe="$repo/deploy/lxd-company-computer-guest/office-image-dependencies.json"
 base=$(jq -er '.base.fingerprint | select(test("^[0-9a-f]{64}$"))' "$recipe")
 stages=/var/lib/qorpera-office-stage
 base_stage="$stages/${base:0:12}"
-# The office account of the last production generation (A1), so the folder remount proof sees the same ids.
-office_id=20045
 
 [[ $(id -u) == 0 ]] || fail "run through run-on-node.mjs --sudo"
 # Staged office images stay on node01's test machine.

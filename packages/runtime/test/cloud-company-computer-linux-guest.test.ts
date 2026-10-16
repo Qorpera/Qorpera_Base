@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import type { CompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
+import { CompanyComputerCommandFolders } from "@qorpera/runtime/cloud-company-computer-command-folder";
 import { CompanyComputerDesktopFolders } from "@qorpera/runtime/cloud-company-computer-desktop-folder";
 import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
 import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-company-computer-effect-control";
@@ -82,8 +83,13 @@ const shells = vi.hoisted(
 			close: ReturnType<typeof vi.fn>;
 			pause: ReturnType<typeof vi.fn>;
 			reported: ReturnType<typeof vi.fn>;
+			list: ReturnType<typeof vi.fn>;
+			/** What the guest gave the shell for its company folder commands. */
+			folder: unknown;
 		}[],
 );
+/** The options each shell's launcher was made with. */
+const shellLaunchers = vi.hoisted(() => [] as Record<string, unknown>[]);
 /** The processor time of each shell namespace, and the bytes its commands moved, as /proc would show them. */
 const shellTicks = vi.hoisted(() => new Map<number, number>());
 const shellBytes = vi.hoisted(() => new Map<number, number>());
@@ -98,8 +104,11 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) =
 					{ memoryBytes: 0, tasks: 1, cpuTicks: shellTicks.get(pid) ?? 0, ioBytes: shellBytes.get(pid) ?? 0 },
 				]),
 			),
-		createCompanyComputerLinuxShellLauncher: () => async () => {
-			throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
+		createCompanyComputerLinuxShellLauncher: (options: Record<string, unknown>) => {
+			shellLaunchers.push(options);
+			return async () => {
+				throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
+			};
 		},
 		CompanyComputerShellPressureGuard: class {
 			close() {}
@@ -140,8 +149,10 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) =
 			});
 			report = () => ({ open: [...this.open], ended: [...this.ended] });
 			known = () => true;
-			list = () => ({ commands: [], processes: 0 });
-			constructor() {
+			list = vi.fn((_runId?: string) => ({ commands: [], processes: 0 }));
+			folder: unknown;
+			constructor(_launcher: unknown, folder?: unknown) {
+				this.folder = folder;
 				shells.push(this);
 			}
 		},
@@ -170,6 +181,7 @@ const windows = {
 };
 beforeEach(() => {
 	shells.length = 0;
+	shellLaunchers.length = 0;
 	shellTicks.clear();
 	shellBytes.clear();
 	windows.pages = [];
@@ -245,7 +257,12 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 async function fixture(
-	options: { browser?: boolean; desktop?: boolean; folderHelper?: typeof askCompanyComputerFolderHelper } = {},
+	options: {
+		browser?: boolean;
+		desktop?: boolean;
+		folderHelper?: typeof askCompanyComputerFolderHelper;
+		commandFolders?: CompanyComputerCommandFolders;
+	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
@@ -357,6 +374,7 @@ async function fixture(
 		...(options.folderHelper
 			? { folders: new CompanyComputerDesktopFolders({ registry: { call }, ask: options.folderHelper }) }
 			: {}),
+		...(options.commandFolders ? { commandFolders: options.commandFolders } : {}),
 		boundary,
 		screenshots: () => ({
 			publish: async () => {
@@ -369,7 +387,7 @@ async function fixture(
 	const gate = new CompanyComputerScreenActionGate();
 	const effects = new CloudCompanyComputerEffectControl({ run, scope, control: { call } });
 	const create = () => guest.createSession({ run, descriptor, lease, gate, effects });
-	const operation = (action: { kind: string; [key: string]: string | number }) => ({
+	const operation = (action: { kind: string; [key: string]: string | number | boolean }) => ({
 		...computerOperation(),
 		tool: `computer_${action.kind}`,
 		arguments: action,
@@ -496,6 +514,45 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		const next = await f.create();
 		await next.endpoint.perform(f.operation(action), f.lease, f.effect());
 		expect(shells).toHaveLength(1);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("passes whether a start gets a network on to the shell, and the run asking on to each read and list", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		for (const network of [false, true]) {
+			const operation = f.operation({ kind: "shell", action: "start", command: "npm test", network, waitMs: 0 });
+			await session.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal);
+			await session.endpoint.perform(operation, f.lease, f.effect());
+		}
+		expect(shells[0].start.mock.calls.map(([input]) => input.network)).toEqual([false, true]);
+		// The reply's deadline goes with the read: a company folder command settles its folder before it.
+		expect(shells[0].result).toHaveBeenCalledWith(
+			expect.objectContaining({ runId: f.run.identity.runId, until: expect.any(Number) }),
+		);
+		await session.endpoint.perform(f.operation({ kind: "shell", action: "list" }), f.lease, f.effect());
+		expect(shells[0].list).toHaveBeenCalledWith(f.run.identity.runId);
+		// Without the folder helper the screen's shell has no `/company`, and no folder for its commands.
+		expect(shellLaunchers).toEqual([expect.objectContaining({ company: false })]);
+		expect(shells[0].folder).toEqual({});
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("gives the screen's shell the company folder for its commands when the office has the folder helper", async () => {
+		const commandFolders = new CompanyComputerCommandFolders({ registry: { call: vi.fn() } });
+		const f = await fixture({ commandFolders });
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "ls /company", network: false, waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		expect(shellLaunchers).toEqual([expect.objectContaining({ company: true })]);
+		expect(shells[0].folder).toEqual({
+			folders: commandFolders,
+			environmentId: f.binding.environmentId,
+			screenId: f.binding.screenId,
+		});
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 
@@ -1775,6 +1832,30 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_close:read",
 		]);
 		expect(h.ops()).toEqual(["mount", "unmount"]);
+	});
+	it("answers a drain only once the mounts of the screen's shell commands went, and fails with one still there", async () => {
+		const left = computerDeferred<void>();
+		const drain = vi.fn(() => left.promise);
+		const commandFolders = { drain } as unknown as CompanyComputerCommandFolders;
+		const f = await fixture({ commandFolders });
+		const signal = new AbortController().signal;
+		const until = performance.now() + 19000;
+		let drained = false;
+		const stopping = f.guest.stopResources(f.binding, signal, { until }).then(() => {
+			drained = true;
+		});
+		await vi.waitFor(() => expect(drain).toHaveBeenCalledWith(f.binding.screenId, signal, until));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(drained).toBe(false);
+		left.resolve();
+		await stopping;
+		drain.mockRejectedValueOnce(new Error("OFFICE_FOLDER_DRAIN_UNANSWERED"));
+		await expect(f.guest.stopResources(f.binding, signal, { until })).rejects.toThrow(
+			"OFFICE_FOLDER_DRAIN_UNANSWERED",
+		);
+		// Any other stop leaves them to their own final boundaries.
+		await f.guest.stopResources(f.binding, signal);
+		expect(drain).toHaveBeenCalledTimes(2);
 	});
 	it("holds a desktop screenshot back until the company folder released the desktop's reads, and says why", async () => {
 		const h = folderHelper();

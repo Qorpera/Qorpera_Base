@@ -791,6 +791,8 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
+	// The run's offline commands (F3 4d), which its computer tools add to and its review reads: none here.
+	expect(f.officeSession.mock.calls[0][2]).toEqual({ offlineShells: new Set() });
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
@@ -2211,6 +2213,31 @@ it("asks for the connector catalog alongside the notebook", async () => {
 	expect(overlapped).toBe(true);
 });
 
+it("hands the run-start reads, the connector catalog and the read-set check their 10 s down to the transport (16 Oct 2026)", async () => {
+	// The path control stops a call at 3 s unless its caller gives it a budget. Two TESTCO runs (62cd3036, 5ca8ded9)
+	// failed there while the database had their reads waiting up to 4 s in line for the run's job row.
+	const f = await fixture("company-secret");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const budgets = (method: CloudCompanyPathRpc) =>
+		f.pathCall.mock.calls.filter(([called]) => called === method).map(([, , , timeoutMs]) => timeoutMs);
+	expect(budgets("qorpera_describe_company_run_context")).toEqual([10_000]);
+	expect(budgets("qorpera_read_native_wake")).toEqual([10_000]);
+	expect(budgets("qorpera_list_native_connector_tools")).toEqual([10_000]);
+	// The run's own check before a model request (the synthetic fence's checks stand for SQL's, inside one call).
+	expect(budgets("qorpera_assert_company_path_reads")).toContain(10_000);
+	// Every other call keeps the transport's own stop; the fence's attempt is still the run's retry's.
+	const budgeted: readonly CloudCompanyPathRpc[] = [
+		"qorpera_describe_company_run_context",
+		"qorpera_read_native_wake",
+		"qorpera_list_native_connector_tools",
+		"qorpera_assert_company_path_reads",
+		"qorpera_fence_native_context",
+	];
+	const others = f.pathCall.mock.calls.filter(([method]) => !budgeted.includes(method));
+	expect(others.length).toBeGreaterThan(0);
+	expect(others.filter(([, , , timeoutMs]) => timeoutMs !== undefined)).toEqual([]);
+});
+
 // A catalog failure fails the run at the connector stage, before Codex starts, even when
 // something that now runs beside it fails as well; otherwise that failure keeps its stage.
 it.each([
@@ -2294,9 +2321,12 @@ it.each([
 			return original(method, args, signal);
 		});
 		await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(message);
+		// Once, with its own 10 s down to the transport.
 		expect(
-			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_provider_usage_signal"),
-		).toHaveLength(1);
+			f.pathCall.mock.calls
+				.filter(([method]) => method === "qorpera_record_provider_usage_signal")
+				.map(([, , , timeoutMs]) => timeoutMs),
+		).toEqual([10_000]);
 		expect(f.control.sendMessage).not.toHaveBeenCalled();
 	},
 );
@@ -2681,7 +2711,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
 	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
 	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
-	// supervisor, so they moved again; every other tool is as on master.
+	// supervisor, so they moved again. Since save_interface's description gives an interface.toml's form and the files'
+	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2716,9 +2747,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"3d35dedb939da8d2f811cea22a8b0a772c16601e548bf4abeb26a635c8077a46",
+		"e5a6e4334d8d273ddeee2a903049dcf545c2134a72dba7164f567615f78d1023",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"17e085ecdc998942daf5020165a61796d4bee805b7e00f327f7667778275e37e",
+		"af93a5cf6e612796c0fc8be50b0ac0d736442a474c281eb095ebb9fe05916146",
 	);
 });

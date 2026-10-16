@@ -5,10 +5,12 @@ import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	type CloudNativeTool,
+	CloudNativeToolBoundary,
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -19,8 +21,11 @@ afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 });
 
-async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
-	const f = await folderWriterFixture(seed);
+async function fixture(
+	seed: Parameters<typeof folderWriterFixture>[0] = {},
+	options: Parameters<typeof folderWriterFixture>[1] = {},
+) {
+	const f = await folderWriterFixture(seed, options);
 	runs.push(f.run);
 	const tools = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
 	const tool = (name: string) => tools.find((candidate) => candidate.name === name) as CloudNativeTool;
@@ -552,6 +557,105 @@ it("answers a stale version and a missing folder as not applied, with what to do
 	expect(orphan).toMatchObject({ state: "not_applied", outcome: "refused", reason: "parent_missing" });
 	expect(orphan.next).toContain("COMPANY_FILE_PARENT_MISSING");
 	expect(f.text("docs/plan.md")).toBe("one");
+});
+
+it("observes a change that was not saved as denied with why, a replay too, and a parked one as proposed", async () => {
+	const f = await fixture(
+		{ files: { "docs/plan.md": "one" }, folders: ["docs", "held"] },
+		{
+			hook: (path) =>
+				path === "docs/locked.md"
+					? { outcome: "denied", reason: "denied" }
+					: path === "held/plan.md"
+						? { outcome: "waiting_for_review", reason: "waiting_for_review" }
+						: path === "docs/bad.md"
+							? { outcome: "refused", reason: "too_long" }
+							: null,
+		},
+	);
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async () => {},
+	});
+	const observed = async (tools: CloudNativeTool[], value: JsonValue) => {
+		const span = observability.start("company_write");
+		const tool = tools[2] as CloudNativeTool;
+		await tool.execute(tool.parseArguments(value), { ...f.context, observation: span });
+		return { status: span.result?.status, errorCategory: span.result?.errorCategory };
+	};
+	const write = (path: string, operationKey: string, expectedVersion: string | null = null) => ({
+		path,
+		operationKey,
+		expectedVersion,
+		text: "x",
+	});
+	const orphan = write("none/plan.md", "write-orphan");
+	const denied = (errorCategory: string) => ({ status: "denied", errorCategory });
+	expect(await observed(f.tools, write("docs/new.md", "write-new"))).toEqual({
+		status: "succeeded",
+		errorCategory: null,
+	});
+	expect(await observed(f.tools, write("docs/plan.md", "write-stale", randomUUID()))).toEqual(denied("stale_version"));
+	expect(await observed(f.tools, write("docs/plan.md", "write-exists"))).toEqual(denied("stale_version"));
+	expect(await observed(f.tools, orphan)).toEqual(denied("parent_missing"));
+	expect(await observed(f.tools, write("docs/locked.md", "write-locked"))).toEqual(denied("authority_unavailable"));
+	expect(await observed(f.tools, write("docs/bad.md", "write-bad"))).toEqual(denied("invalid_arguments"));
+	expect(await observed(f.tools, write("held/plan.md", "write-held"))).toEqual({
+		status: "proposed",
+		errorCategory: "protected_path",
+	});
+	// The same refused call again, in this run and after a restart: its receipt answers, and nothing happened.
+	expect(await observed(f.tools, orphan)).toEqual(denied("parent_missing"));
+	const restarted = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
+	expect(await observed(restarted, orphan)).toEqual(denied("parent_missing"));
+	expect(f.text("docs/locked.md")).toBeNull();
+	await observability.close();
+});
+
+it("observes a refusal answered before any receipt as denied at the boundary, and the model's answer stays ok", async () => {
+	const f = await fixture({ links: { "docs/latest": "plan.md" } });
+	const rows: CloudRuntimeObservation[] = [];
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async (batch) => {
+			rows.push(...batch);
+		},
+		batchDelayMs: 0,
+	});
+	const boundary = new CloudNativeToolBoundary({
+		companyId: f.identity.companyId,
+		runId: f.identity.runId,
+		identity: f.identity,
+		tools: f.tools,
+		assertActive: async () => undefined,
+		signal: new AbortController().signal,
+		observability,
+	});
+	const write = async (callId: string, path: string, expectedVersion: string | null) => {
+		const response = await boundary.invoke(callId, "qorpera", "company_write", {
+			path,
+			operationKey: callId,
+			expectedVersion,
+			text: "x",
+		});
+		return JSON.parse(response.contentItems[0]?.text ?? "null").status;
+	};
+	expect(await write("write-link", "docs/latest", f.links.get("docs/latest")?.version as string)).toBe("ok");
+	expect(await write("write-orphan", "none/plan.md", null)).toBe("ok");
+	expect(await write("write-new", "docs/new.md", null)).toBe("ok");
+	boundary.close();
+	await observability.close();
+	expect(
+		rows
+			.filter((row) => row.phase === "finish" && row.operation === "company_write")
+			.map((row) => [row.status, row.errorCategory]),
+	).toEqual([
+		["denied", "invalid_arguments"],
+		["denied", "parent_missing"],
+		["succeeded", null],
+	]);
+	expect(f.links.has("docs/latest")).toBe(true);
+	expect(f.text("docs/new.md")).toBe("x");
 });
 
 it("keeps a changed file's media type and executable bit", async () => {

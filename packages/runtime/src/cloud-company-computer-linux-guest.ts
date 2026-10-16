@@ -24,6 +24,7 @@ import {
 	CompanyComputerBrowserLogins,
 	type CompanyComputerLoginContext,
 } from "./cloud-company-computer-browser-logins.ts";
+import type { CompanyComputerCommandFolders } from "./cloud-company-computer-command-folder.ts";
 import { prepareCompanyComputerScreenWallpaper } from "./cloud-company-computer-desktop.ts";
 import {
 	COMPANY_COMPUTER_CAPTURE_RESTARTED,
@@ -181,6 +182,8 @@ export interface CompanyComputerLinuxGuestOptions {
 	screenshots: (run: CloudNativeToolRun) => CompanyComputerScreenshotPublisher;
 	/** Each desktop's mount of the company folder (F3 4d); without the folder helper, desktops have no `/company`. */
 	folders?: CompanyComputerDesktopFolders;
+	/** Each shell command's mount of the company folder (F3 4d); without the folder helper, shells have no `/company`. */
+	commandFolders?: CompanyComputerCommandFolders;
 	onFailure(error: Error): void;
 }
 
@@ -428,18 +431,21 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	#screenShell(screen: SharedScreen): CompanyComputerLinuxShell {
 		if (screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
 		const binding = screen.binding;
+		const folders = this.#options.commandFolders;
 		screen.shell ??= new CompanyComputerLinuxShell(
 			createCompanyComputerLinuxShellLauncher({
 				...this.#options,
 				binding,
 				runtimeRoot: this.#options.displayRuntimeRoot,
 				timeZone: this.#options.desktopTimeZone,
+				company: folders !== undefined,
 				boundary: {
 					assertReady: async (exact, signal) => {
 						await this.#assertShared(exact, AbortSignal.any([signal, screen.stop.signal]));
 					},
 				},
 			}),
+			folders ? { folders, environmentId: binding.environmentId, screenId: binding.screenId } : {},
 		);
 		return screen.shell;
 	}
@@ -1134,9 +1140,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
 				},
-				settle: (action, content, requestSignal, replyBy) =>
+				settle: (action, content, requestSignal, replyBy, runId) =>
 					automation
-						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy)
+						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy, runId)
 						: Promise.resolve(content),
 			},
 		});
@@ -1369,10 +1375,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	};
 	/**
 	 * `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. A drain request
-	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary before it answers (F3 4d, "Drains
-	 * and stops"), and the drain fails when the boundary has no final answer by then. Any other stop lets the mount go
-	 * after it. A stop that cannot confirm what it closed gone (the screen's sessions, private surface, browser or shell)
-	 * fails, and the mount stays for the stop control: the browser's namespace, say, may still read it.
+	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary, and each mount of its shell's
+	 * commands its final boundary, before it answers (F3 4d, "Drains and stops"), and the drain fails when a mount is
+	 * still there by then. Any other stop lets the mount go after it. A stop that cannot confirm what it closed gone (the
+	 * screen's sessions, private surface, browser or shell) fails, and the mount stays for the stop control: the
+	 * browser's namespace, say, may still read it.
 	 */
 	async stopResources(
 		binding: CompanyComputerScreenBinding,
@@ -1448,14 +1455,22 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		if (screen) screen.closing ??= drain();
 		await cloudToolRequest(() => screen?.closing ?? drain(), signal, 30000);
-		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it.
-		if (stop.until !== undefined)
-			await this.#options.folders?.drain(
-				binding.screenId,
-				signal,
-				stop.until,
-				() => !this.#screens.has(binding.screenOrdinal),
-			);
+		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it; and
+		// the mounts of the shell's commands, which ended with it, go once their final boundaries have their answers.
+		if (stop.until !== undefined) {
+			const until = stop.until;
+			const drained = await Promise.allSettled([
+				this.#options.folders?.drain(
+					binding.screenId,
+					signal,
+					until,
+					() => !this.#screens.has(binding.screenOrdinal),
+				),
+				this.#options.commandFolders?.drain(binding.screenId, signal, until),
+			]);
+			const failed = drained.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failed) throw failed.reason;
+		}
 	}
 	close(): Promise<void> {
 		this.#stop.abort();

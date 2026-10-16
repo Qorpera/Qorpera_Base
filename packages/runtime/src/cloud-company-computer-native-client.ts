@@ -45,7 +45,6 @@ import type {
 } from "./cloud-event-hook-vault.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import { type CloudNativeToolRun, cloudToolRequest, isNativeJobHolder } from "./cloud-native-tool-authority.ts";
-import { CloudToolAuthorizeRefusal } from "./cloud-native-tool-boundary.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
 /** The vault, for a vault_fill (company accounts A1-3): HttpCloudSecretBrokerClient. */
@@ -234,10 +233,6 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	): Promise<void> {
 		this.#validate(operation, lease);
 		if (!isDeepStrictEqual(identity, this.#run.identity)) throw new Error("OFFICE_NATIVE_IDENTITY_CHANGED");
-		// Company objects carried a transfer's bytes and are gone (legacy removal, step C). The refusal is the tool's
-		// answer, in words for the model, before the database or any receipt, as the database refuses a screenshot.
-		if (operation.tool === "computer_transfer")
-			throw new CloudToolAuthorizeRefusal("File transfer is not available on this computer yet.");
 		await this.#effects.assertAuthorized({ operation, identity, lease, receipt: null }, signal);
 	}
 	async #call(
@@ -474,7 +469,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	const reaches = (companyComputerId: string) =>
 		route.companyComputerId === null || route.companyComputerId === companyComputerId;
 	if (!/^[A-Za-z0-9_-]{43}$/.test(options.token)) throw new Error("INVALID_OFFICE_NATIVE_CONFIGURATION");
-	return async (run, operations) => {
+	return async (run, operations, sessionOptions) => {
 		if (run.identity.audienceKind !== "company") return undefined;
 		const descriptor = parseCompanyComputerNativeDescriptor(
 			await options.registry.call("qorpera_native_office_descriptor", { p_binding: run.binding }, run.signal),
@@ -521,6 +516,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 			scope: descriptor.scope,
 			control: options.registry,
 			endpoint: remote,
+			...(sessionOptions?.offlineShells ? { offlineShells: sessionOptions.offlineShells } : {}),
 		});
 		return {
 			tools: session.tools,
