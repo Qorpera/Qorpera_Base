@@ -665,7 +665,8 @@ describe("the lock protocol in the folder service", () => {
 		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
 		const host = await openAs(CODE_HOST);
 		const fresh = "code/acme/fresh/repo.git";
-		for (const folder of ["code/acme/fresh", fresh, `${fresh}/refs`, `${fresh}/refs/heads`]) await host.mkdir(folder);
+		for (const folder of ["code/acme/fresh", fresh, `${fresh}/refs`, `${fresh}/refs/heads`, `${fresh}/refs/tags`])
+			await host.mkdir(folder);
 		await write(host, `${fresh}/HEAD`, "ref: refs/heads/main\n", true);
 		// The core makes only the folders below a git directory for a lease's change set (446300).
 		await write(host, `${fresh}/refs/heads/main.lock`, "5555\n", true);
@@ -674,6 +675,11 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.entries.get(`${fresh}/HEAD`)?.fileSha256).toBe(hashOf("ref: refs/heads/main\n"));
 		expect(core.entries.get(`${fresh}/refs/heads/main`)?.fileSha256).toBe(hashOf("5555\n"));
 		expect(core.gitPublishes.map((publish) => publish.published)).toEqual([true]);
+		// The view shows the ref it published, in the folders the lease's change set made, beside its own empty
+		// `refs/tags` (leased: no boundary publishes it).
+		expect(await names(host, `${fresh}/refs`)).toEqual(["heads", "tags"]);
+		const listed = (await host.list(`${fresh}/refs/heads`, undefined)).entries.find((e) => e.name === "main");
+		expect(listed?.version).toBe(core.entries.get(`${fresh}/refs/heads/main`)?.version);
 	});
 
 	it("publishes the packed-refs git pack-refs renames into place under its lock, before the loose ref it prunes", async () => {

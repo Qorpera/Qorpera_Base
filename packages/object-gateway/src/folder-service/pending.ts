@@ -1358,20 +1358,28 @@ export class PendingView {
 	}
 
 	/** After a git publish (git.ts): the view shows the live files again where `made` names the version it published,
-	 * unless the file changed or opened since. A new folder above them (an objects folder git made) shows live again
-	 * too once the core has it and nothing in it is pending: else it would hide what was published into it. */
+	 * unless the file changed or opened since. The new folders above them (an objects folder git made, `refs/heads` in a
+	 * new `repo.git`) show live again too once the core has them, all of them up to a folder the view shows live: one
+	 * left would hide what was published below it (nothing live shows in a new folder). What is still pending in them
+	 * (`refs/tags`, an object not published yet) stays, in the live folder. */
 	settlePaths(made: ReadonlyMap<string, string>): void {
 		for (const [path, version] of made) {
 			const node = this.#nodes.get(path);
 			if (node?.kind === "file" && node.version === version && node.open === 0) this.#unset(path);
 		}
-		for (const path of made.keys())
+		for (const path of made.keys()) {
+			const folders: string[] = [];
 			for (let p = parentOf(path); p !== ""; p = parentOf(p)) {
 				const node = this.#nodes.get(p);
-				if (node?.kind !== "folder" || node.origin || this.#children.has(p)) break;
-				if (this.#live().get(p)?.kind !== "folder") break;
-				this.#unset(p);
+				if (!node) break;
+				if (node.kind !== "folder" || node.origin || this.#live().get(p)?.kind !== "folder") {
+					folders.length = 0;
+					break;
+				}
+				folders.push(p);
 			}
+			for (const folder of folders) this.#unset(folder);
+		}
 	}
 
 	/** Before a git lock is taken (git.ts): what the view holds of the files the lock guards goes, so git reads them as
