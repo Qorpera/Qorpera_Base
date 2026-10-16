@@ -44,6 +44,7 @@
 
 - Added `cloud-coding-guest-agent`, the agent inside a member's coding machine (F3 step 5g-2b; nothing runs it yet). The executor pushes it to `/opt/qorpera-guest/agent.mjs` and runs one verb per LXD exec as root: one JSON request on stdin, one answer line on stdout (contracts' `cloud-coding-guest`).
   - `mount` gives a session its Linux user `qorpera-<uid>` in group `qorpera-coding` (passwd files, never deleted, explicit 65536-wide sub-id ranges), its own network namespace behind the machine's NAT (nft inside the guest only), its folder view at `/run/qorpera-folder/mounts/<worker32>` (the folder must sit in memory), and a user manager that sees the view at `/company`.
+  - The view counts as mounted once the folder program's own mount (source `qorpera-company`, type `fuse` as the program mounts directly as root, or `fuse.qorpera` through fusermount) is the top one at the session's mountpoint.
   - `run` starts each command once, as the session's user, in its own transient unit through `agent.mjs relay`. The relay writes the output into a bounded ring of files and the exit into `exit.json`. The machine's disk keeps each command's intent and outcome. The command's environment passes only through a root-only file in `/run/qorpera-guest/inputs`. systemd hands that file to the relay as stdin, and the agent removes it once the unit has started.
   - `output` reads from a byte offset, naming a gap once the ring dropped bytes, and can wait for new bytes.
   - `cancel`, `status` and `stop-session` complete the verbs. `stop-session` keeps the user and the NAT.
