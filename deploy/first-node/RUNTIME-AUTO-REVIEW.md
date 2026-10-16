@@ -47,6 +47,10 @@ An independent review of 0e5b25515 asked for changes; all fixed:
   woken agent's repeat matches and the reviewer reads the whole call.
 - A Deny (the member's or the reviewer's) stands for that exact call; a
   redundant wake after the holder already ran the action finds it done.
+  The held call's poll marks the approval it uses (`consumed_by_hold`), so the
+  woken repeat is told so however long after the wake the holder got through,
+  within the hour (20260930489000). An approval the woken repeat used itself
+  makes no other run's call "used".
 - The wake paths check what a post or message there checks: write access to
   the conversation, the cleanup fence, the queue bound, and, in an agent's
   thread, an active thread membership. An answer whose delivery failed may be
