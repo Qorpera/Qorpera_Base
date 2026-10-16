@@ -590,7 +590,7 @@ and its refusals), `cloud-company-computer-native` (the hook route and a host wi
 
 E3c comes in four PRs: **E3c-1** the database (migration `20260930344000`, SQL test 419), **E3c-2** the broker and the
 runtime, **E3c-3** the office image, and **E3c-4** the hold (migration `20260930345000`, SQL test 420). The coordinator
-agreed the design on 9 October. E3c-1, E3c-2 and E3c-4 are built (below). E3c-2, E3c-3 and E3c-4 ship together in
+agreed the design on 9 October. E3c-1 to E3c-4 are built (below). E3c-2, E3c-3 and E3c-4 ship together in
 one release; until then `manage_hook` refuses a Stripe hook (§5.7, E3b-2).
 
 **What it is for.** An agent opens a Stripe hook with `manage_hook`, adds its URL as an endpoint in Stripe, and then
@@ -828,8 +828,11 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   `vault_capture`, never after, so the office's perform is never repeated; and the redaction cuts `whsec_` secrets
   from every answer the tool boundary returns, its digest and run log included (a coding child's own shell is not
   that boundary's).
-- **E3c-3, the office image:** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
-  registry method and the perform answer's box.
+- **E3c-3, the office image (built):** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
+  registry method and the perform answer's box. The office reads where the box goes from the database
+  (`qorpera_native_office_hook_capture`), never from the native host. Every way a read ends masks the page again with a
+  reload under the cover; a page that still shows the value has its tab closed. The box is held for the call's answer
+  only once the page shows no check, so a stop answer carries none, and the gateway refuses a done read without one.
 - **E3c-4, the hold** (migration `20260930345000`, SQL test 420) is built: the verifier's finish, intake's readiness,
   the broker's capture read and `lastRefusal`'s hold (point 5 above, "As built").
 

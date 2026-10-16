@@ -40,7 +40,6 @@ async function fixture(origins: readonly string[] = [origin]) {
 			store,
 			authority: {} as ObjectGatewayAuthority,
 			controlToken: "control-fixture",
-			verifierToken: "verifier-fixture",
 			memberFolderObjects: {
 				authorizeMemberFolderObject: authorize,
 				readLegacyObject: async () => {
@@ -160,10 +159,9 @@ describe("member browser CORS", () => {
 		[`${fileRoute}/edits`, "POST", "authorization,content-type"],
 		[`${fileRoute}/edits/${id(7)}/file`, "GET", "authorization"],
 		[`${fileRoute}/uploads`, "PUT", "authorization,content-type,x-qorpera-company-upload"],
-		["/v1/read-leases/revoke", "POST", "authorization"],
 		["/v1/control/member-observations", "GET", "authorization"],
 		[`/v1/folder-objects/${id(1)}/${sha256}`, "GET", "authorization"],
-		[`/v1/profile-objects/${id(1)}/${sha256}`, "GET", "authorization"],
+		[`/v1/profile-objects/${id(1)}/${sha256}`, "DELETE", "authorization"],
 		["/readyz", "GET", "authorization"],
 	])("refuses preflight %s %s %s without I/O", async (route, method, headers) => {
 		const service = await fixture(),
@@ -232,7 +230,7 @@ describe("member browser CORS", () => {
 		const service = await fixture();
 		for (const [route, method] of [
 			[objectRoute, "POST"],
-			[`/v1/profile-objects/${id(1)}/${sha256}`, "GET"],
+			[`/v1/profile-objects/${id(1)}/${sha256}`, "DELETE"],
 		]) {
 			const response = await service.request(route, { method, headers: memberHeaders });
 			expect(response.status).toBe(403);
