@@ -81,7 +81,8 @@ const OUTCOMES: readonly string[] = [
 ];
 const REFUSALS: readonly string[] = READS.filter((reads) => reads !== "released" && reads !== "unanswered");
 const REPORT_KEYS: readonly string[] = ["closed", "commitId", "paths", "refused", "seq"];
-const ENTRY_KEYS: readonly string[] = ["kept", "outcome", "path", "reason", "receipt"];
+/** `target`: a conflicting link's target (the service's protocol 4), not kept like the rest of the entry. */
+const ENTRY_KEYS: readonly string[] = ["kept", "outcome", "path", "reason", "receipt", "target"];
 
 const INVALID = "CODING_FOLDER_CONTROL_ANSWER_INVALID";
 /** Views one boundary may name final, as the service takes them. */
@@ -250,7 +251,8 @@ function reportOf(value: unknown): { unsaved: number; refused?: string } {
 			!OUTCOMES.includes(entry.outcome as string) ||
 			!(entry.reason === undefined || typeof entry.reason === "string") ||
 			!(entry.receipt === undefined || typeof entry.receipt === "string") ||
-			!(entry.kept === undefined || entry.kept === true)
+			!(entry.kept === undefined || entry.kept === true) ||
+			!(entry.target === undefined || typeof entry.target === "string")
 		)
 			throw new Error(INVALID);
 		if (entry.outcome !== "saved") unsaved++;
