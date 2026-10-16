@@ -73,7 +73,6 @@ async function fixture() {
 			authority: objects,
 			replication,
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 			memberFiles: { member, publisher },
 		}),
 	);
