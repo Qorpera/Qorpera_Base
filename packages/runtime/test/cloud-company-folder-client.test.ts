@@ -323,6 +323,7 @@ describe("reads and listings", () => {
 			...extra,
 		});
 		const todos = [todo("b", { detailTruncated: true }), todo("a")];
+		const { cursor: _cursor, ...uncursored } = todo("a");
 		const answers: unknown[] = [];
 		const { client, calls } = fixture(() => answers.shift());
 		answers.push({ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 3, nextCursor: todos[1]?.cursor });
@@ -364,9 +365,78 @@ describe("reads and listings", () => {
 				nextCursor: null,
 			},
 			{ schema: "qorpera.folder-list/v1", todos: [], moreTodos: 0, nextCursor: null },
+			// A count and a cursor the page cannot have (the kernel todo tool's checks, legacy sweep C-P2).
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: -1, nextCursor: null },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 1, nextCursor: "not-a-cursor" },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 1, nextCursor: randomUUID() },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 0 },
+			{ schema: "qorpera.folder-agent-todos/v1", todos: [uncursored], moreTodos: 0, nextCursor: null },
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: [todo("a", { cursor: "page-2" })],
+				moreTodos: 0,
+				nextCursor: null,
+			},
 		]) {
 			answers.push(answer);
 			await expect(client.agentTodos({}, signal())).rejects.toThrow("Company folder response is invalid");
+		}
+	});
+
+	it("pages one todo's workers from the worker index, refusing a count or cursor the page cannot have", async () => {
+		const worker = (workerKey: string, extra: Record<string, unknown> = {}) => ({
+			workerKey,
+			title: `Worker ${workerKey}`,
+			state: "running",
+			sequence: 1,
+			access: "read",
+			revival: "batch",
+			outcome: null,
+			summary: null,
+			needs: null,
+			outputs: [],
+			reportedAt: null,
+			decision: null,
+			folder: `agents/nora/todos/market-scan/${workerKey}`,
+			cursor: randomUUID(),
+			...extra,
+		});
+		const workers = [worker("b"), worker("a")];
+		const { cursor: _cursor, ...uncursored } = worker("a");
+		const page = (extra: Record<string, unknown>) => ({
+			schema: "qorpera.folder-agent-workers/v1",
+			todoKey: "market-scan",
+			workers,
+			...extra,
+		});
+		const answers: unknown[] = [];
+		const { client, calls } = fixture(() => answers.shift());
+		answers.push(page({ moreWorkers: 2, nextCursor: workers[1]?.cursor }));
+		await expect(client.agentWorkers({ todoKey: "market-scan", state: "active" }, signal())).resolves.toMatchObject({
+			workers: [{ workerKey: "b", cursor: workers[0]?.cursor }, { workerKey: "a" }],
+			moreWorkers: 2,
+			nextCursor: workers[1]?.cursor,
+		});
+		expect(calls).toMatchObject([
+			{ method: "qorpera_folder_agent_workers", args: { p_request: { todoKey: "market-scan", state: "active" } } },
+		]);
+		for (const answer of [
+			page({ moreWorkers: 2, nextCursor: null }),
+			page({ moreWorkers: 0, nextCursor: workers[1]?.cursor }),
+			page({ moreWorkers: 2, nextCursor: workers[0]?.cursor }),
+			page({ moreWorkers: -1, nextCursor: null }),
+			page({ moreWorkers: 1, nextCursor: "not-a-cursor" }),
+			page({ moreWorkers: 1, nextCursor: randomUUID() }),
+			page({ moreWorkers: 0 }),
+			page({ todoKey: "other", moreWorkers: 0, nextCursor: null }),
+			page({ workers: [uncursored], moreWorkers: 0, nextCursor: null }),
+			page({ workers: [worker("a", { cursor: "page-2" })], moreWorkers: 0, nextCursor: null }),
+			page({ workers: Array.from({ length: 17 }, (_, i) => worker(`w${i}`)), moreWorkers: 0, nextCursor: null }),
+		]) {
+			answers.push(answer);
+			await expect(client.agentWorkers({ todoKey: "market-scan" }, signal())).rejects.toThrow(
+				"Company folder response is invalid",
+			);
 		}
 	});
 });
@@ -1819,11 +1889,10 @@ describe("hooks (E3a)", () => {
 			expect(eventHook).toHaveBeenCalledTimes(1);
 		}
 		const stripe = fixture(noSql, {
-			eventHook: async () =>
-				brokerRefusal("0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"),
+			eventHook: async () => brokerRefusal("22023", "A Stripe hook's secret is taken from dashboard.stripe.com"),
 		});
 		await expect(stripe.client.manageHook(GITHUB, signal())).resolves.toEqual({
-			refused: "A Stripe hook comes later: its secret is taken from Stripe's screen",
+			refused: "A Stripe hook's secret is taken from dashboard.stripe.com",
 		});
 		// A refusal the model has no words for is the database's error.
 		const malformed = fixture(noSql, { eventHook: async () => brokerRefusal("22023", "Hook request is invalid") });
@@ -1888,6 +1957,36 @@ describe("hooks (E3a)", () => {
 				"Company folder response is invalid",
 			);
 		}
+	});
+
+	it("opens a Stripe hook with no secret yet, and refuses an answer that says it has one (E3c-2)", async () => {
+		const STRIPE = {
+			...GITHUB,
+			name: "stripe-payments",
+			proof: "stripe",
+			site: "dashboard.stripe.com",
+			operationKey: "st-1",
+		} as const;
+		const opened = (f: Fixture, ready: boolean) => ({
+			...receipt(
+				f,
+				"create",
+				hook(f, {
+					name: STRIPE.name,
+					proof: "stripe",
+					signingSecret: { ...SECRET, ready },
+					address: ADDRESS,
+					path: PATH,
+				}),
+			),
+			secretSite: STRIPE.site,
+		});
+		const f: Fixture = fixture(noSql, { eventHook: async () => opened(f, false) });
+		await expect(f.client.manageHook(STRIPE, signal())).resolves.toMatchObject({
+			secretSite: "dashboard.stripe.com",
+		});
+		const ready: Fixture = fixture(noSql, { eventHook: async () => opened(ready, true) });
+		await expect(ready.client.manageHook(STRIPE, signal())).rejects.toThrow("Company folder response is invalid");
 	});
 });
 
@@ -1981,5 +2080,47 @@ describe("releases", () => {
 		await expect(client.release(randomUUID(), [{ ...named, version: "v1" }], sha("out"), signal())).rejects.toThrow(
 			"Invalid Company folder release",
 		);
+	});
+});
+
+describe("interface change notes (I10)", () => {
+	const answer = (noted: unknown) => ({ schema: "qorpera.interface-change-notes/v1", noted });
+
+	it("notes the run's changes as a run effect, asks again after a deadlock, and checks the answer", async () => {
+		let tries = 0;
+		const { client, calls, binding } = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return answer(2);
+		});
+		await expect(client.noteInterfaceChanges(signal())).resolves.toBe(2);
+		// The run's binding and an empty request, as the run effect takes them: no folder actor.
+		const call = { method: "qorpera_folder_note_interface_changes", args: { p_binding: binding, p_request: {} } };
+		expect(calls).toEqual([call, call]);
+		const none = fixture(() => answer(0));
+		await expect(none.client.noteInterfaceChanges(signal())).resolves.toBe(0);
+		for (const wrong of [
+			answer(-1),
+			answer(1.5),
+			answer("1"),
+			answer(null),
+			answer(true),
+			{ schema: "qorpera.interface-change-notes/v1" },
+			{ ...answer(1), extra: 1 },
+			{ ...answer(1), schema: "qorpera.interface-change-note/v1" },
+		]) {
+			const f = fixture(() => wrong);
+			await expect(f.client.noteInterfaceChanges(signal()), JSON.stringify(wrong)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+		// SQL's refusals as folder errors: the run stopped, or it may no longer write.
+		const stopped = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(stopped.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "stopped" });
+		const gone = fixture(() => {
+			throw sqlError("42501", "Run is unavailable");
+		});
+		await expect(gone.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "unavailable" });
 	});
 });

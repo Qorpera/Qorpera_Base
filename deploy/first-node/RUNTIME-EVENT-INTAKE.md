@@ -318,7 +318,8 @@ matching waits (a filtered listener skipping other types); never closer than a m
 so a receive still committing is never passed. W1b must therefore stamp `verified_at` with
 `clock_timestamp()` in a transaction shorter than a minute.
 
-**Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain)
+**Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain; legacy sweep F3b,
+20260930295000, dropped it, and the orchestrator's E2 step takes event wakes on folder-v2)
 takes up to 32 active cursors, oldest scan first, and for each one:
 - skips it while its hook is removed, the company is paused, or the routine is not active at that
   version; it takes the routine row without waiting (a routine save takes it first) and skips the
@@ -593,9 +594,15 @@ and receive files by mail, and a received attachment is fetched when an agent sa
   checks them against their digests, and sends them as the email's attachments. A file not in Storage yet is tried
   again later. A claim takes due emails in order while their attachments come to 28 MiB, one email's worth, and the
   sender turns each file into base64 as it reads it, so one call stays within an Edge Function's memory (256 MB) and
-  time. `mail-attachments` claims one fetch a call, for the same reason.
+  time.
 - **folder-v2.** Refused both ways (`0A000`) until the folder-v2 core adds mail attachments as a GC root (C1d). No
   production company uses folder-v2 today.
+- **Saving went with snapshot-v1.** C-P4 removed `save_attachment` from the runtime. Legacy sweep D4
+  (`20260930333000`) dropped its request (`qorpera_native_mail_attachment`, with its row in the native host's call
+  list), the request's immediate call to the worker (`qorpera_mail_attachments_kick`) and its receipt. Legacy sweep D7
+  (`20260930336000`) dropped the lane behind it: the fetch table, the worker's claim, completion and failure, the
+  minute's pg_cron job and the Edge Function `mail-attachments`. Chunks a fetch stored stay as the company's objects.
+  Sending is unchanged.
 
 **Members read mail (I5a)** (migration `20260928439980_runtime_company_mail_member_read`; shapes agreed with the
 Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, sources `mail` and `mail_addresses`).
@@ -684,6 +691,13 @@ fetch nobody serves is given up after a day. The new `mail-outbox` reads the old
    the CSV reads with `company_read`; the PDF opens on a computer. The agent answers with `send_mail` attaching a
    company file, and the reply arrives with the file intact (same digest). Then a 28 MiB attachment both ways: received
    and saved, then sent, with the functions' logs showing no resource error.
+
+Legacy sweep D7 (`20260930336000`) removes the fetch lane. Its migration unschedules step 4's job if the migration's
+role scheduled it. A job another role scheduled stays, as does the job when the migration's role may not use pg_cron
+(the migration then warns); the job's owner runs `select cron.unschedule('qorpera-mail-attachments')`. The migration
+also drops the fetch table and the worker's functions. Then delete the function with
+`supabase functions delete mail-attachments`. Until then a call finds no claim to run and fails; nothing calls it once
+the job is gone.
 
 ## Deploy (I5a)
 

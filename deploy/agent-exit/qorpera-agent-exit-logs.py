@@ -1170,8 +1170,9 @@ MONTHS = {name: number for number, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
 # dnsmasq's lines (--log-queries=extra, to a file): "Oct  6 12:03:04 dnsmasq[pid]: <serial> <client>/<port> query[A]
 # <name> from <client>", then "... reply <name> is <address>" or "... cached <name> is <address>" with the same serial
-# (a CNAME chain answers under each name in turn).
-DNS_LINE = re.compile(r"^(\w{3}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) dnsmasq\[\d+\]: (\d+) ([0-9A-Fa-f.:]+)/\d+ "
+# (a CNAME chain answers under each name in turn). The main dnsmasq and each company's resolver (E8b) write to the
+# same file, each whole lines; a serial is its own process's, so a query is known by the pid with it.
+DNS_LINE = re.compile(r"^(\w{3}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) dnsmasq\[(\d+)\]: (\d+) ([0-9A-Fa-f.:]+)/\d+ "
                       r"(query\[\w+\]|reply|cached) (\S+) (?:from|is) (\S+)")
 
 
@@ -1198,9 +1199,9 @@ def cut_time(name):
 
 
 def dns_time(m, reference):
-    """A dnsmasq line's time. dnsmasq writes its local time, and runs with TZ=UTC (qorpera-agent-exit.sh dns), so it is
-    UTC whatever the node's zone. It has no year: the year of `reference` (the file's cut, or now), or the one before
-    for a line that would then come more than a day after it."""
+    """A dnsmasq line's time. dnsmasq writes its local time, and runs with TZ=UTC (qorpera-agent-exit.sh dns and
+    resolver), so it is UTC whatever the node's zone. It has no year: the year of `reference` (the file's cut, or now),
+    or the one before for a line that would then come more than a day after it."""
     month = MONTHS.get(m.group(1))
     year = time.gmtime(reference).tm_year
     for each in (year, year - 1):
@@ -1227,13 +1228,14 @@ def resolutions(sources, clients, addresses):
                     if not any(needle in line for needle in needles):
                         continue
                     m = DNS_LINE.match(line)
-                    if not m or m.group(7) not in clients:
+                    if not m or m.group(8) not in clients:
                         continue
-                    if m.group(8).startswith("query"):
-                        asked[(m.group(7), m.group(6))] = m.group(9)
-                    elif m.group(10) in addresses and (ts := dns_time(m, reference)) is not None:
-                        name = asked.get((m.group(7), m.group(6)), m.group(9))
-                        found.setdefault((m.group(7), m.group(10)), []).append((ts, name))
+                    query = (m.group(6), m.group(8), m.group(7))
+                    if m.group(9).startswith("query"):
+                        asked[query] = m.group(10)
+                    elif m.group(11) in addresses and (ts := dns_time(m, reference)) is not None:
+                        name = asked.get(query, m.group(10))
+                        found.setdefault((m.group(8), m.group(11)), []).append((ts, name))
         except (OSError, EOFError) as error:
             unreadable.append(f"{path}: {error}")
     for answers in found.values():

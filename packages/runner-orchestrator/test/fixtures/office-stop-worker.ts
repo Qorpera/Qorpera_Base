@@ -198,11 +198,11 @@ export async function createOfficeStopWorkerFixture(
 			});
 			return { project, instanceName, operationId: id(92) };
 		});
-	const create = () =>
+	const create = (now?: () => number) =>
 		new LxdOfficeServiceStopWorker(
 			{ policy: f.policy, check: f.check },
 			{ call: registry },
-			{ client: f.client, kernelLock: f.kernelLock },
+			{ client: f.client, kernelLock: f.kernelLock, now },
 		);
 	return {
 		...f,

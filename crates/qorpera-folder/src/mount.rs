@@ -21,6 +21,7 @@ use crate::link::{Fail, Link};
 use crate::proto::{code, join, valid_name, valid_path, EntryKind, OpenRequest, RenameRequest, MAX_READ};
 use crate::tree::{Attr, Child, Inval, Tree, ROOT};
 use crate::versions::VersionMap;
+use crate::reads::ReadLog;
 use crate::writer::Writer;
 use fuser::{
 	Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
@@ -88,9 +89,15 @@ pub struct Options {
 	/// Let every account on the machine read the folder (a box's account, from step 2). Without it only the
 	/// account that mounted it can, root included only if it mounted it.
 	pub allow_other: bool,
+	/// Virtual ownership of writable files and folders; None uses the mounting account. Does not change the
+	/// daemon's identity, its private view/state files, or access through allow_other. Read-only views stay root-owned.
+	pub owner: Option<(u32, u32)>,
 	/// The folder the mount's version map is kept in (under /run/qorpera-folder/), so a program started again for the
 	/// mount bases saves on what was read before; None keeps it in memory.
 	pub state: Option<PathBuf>,
+	/// The read journal the caller already opened in `state` (the CLI does, to check the view proof). Only a writable
+	/// view logs its reads: a read-only one hands none over, so its journal would never be emptied. None opens it here.
+	pub reads: Option<Arc<ReadLog>>,
 }
 
 /// Why the program stopped.
@@ -150,7 +157,7 @@ struct Shared {
 	answered: Mutex<Answered>,
 	/// The node lets this view write.
 	writable: bool,
-	/// Who the files show as owned by: the account that mounted the folder (a read-only view shows root).
+	/// Virtual owner: the explicit owner or the mounting account (a read-only view shows root).
 	owner: (u32, u32),
 	versions: Mutex<VersionMap>,
 	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
@@ -303,6 +310,20 @@ impl Shared {
 	fn child(&self, dir: u64, name: &str) -> Result<Child, i32> {
 		let (children, _) = self.children(dir, None)?;
 		children.into_iter().find(|c| c.name == name).ok_or(libc::ENOENT)
+	}
+
+	/// Remember a version read through its inode, unless a local save or rename changed what that inode stands for.
+	/// A detached older version counts only when no newer read or save is already remembered for the path.
+	fn read_version(&self, ino: u64, path: &str, version: &str) {
+		if !self.writable {
+			return;
+		}
+		let tree = self.tree.lock().unwrap();
+		let mut versions = self.versions.lock().unwrap();
+		let its = tree.path(ino) == Some(path) && tree.last_seen(ino).is_some_and(|a| a.version == version);
+		if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(path).is_none())) {
+			versions.read(path, version);
+		}
 	}
 
 	/// Opens `ino` (at `path`, showing `attr`) for writing at the node, or joins the handles already writing it (or a
@@ -581,6 +602,18 @@ impl Filesystem for FolderFs {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		let (attr, _) = match self.s.attr(ino.0) {
+			Ok(attr) => attr,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		let path = match self.s.path_of(ino.0) {
+			Ok(path) => path,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		if let Err(e) = self.s.link.record_read(&path, None, attr.authority.as_ref()) {
+			eprintln!("qorpera-folder: could not record a directory read: {e}");
+			return reply.error(Errno::EIO);
+		}
 		let parent = self.s.tree.lock().unwrap().parent(ino.0).unwrap_or(ROOT);
 		let mut entries = Vec::with_capacity(children.len() + 2);
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
@@ -624,6 +657,10 @@ impl Filesystem for FolderFs {
 			Ok(p) => p,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		if let Err(e) = self.s.link.record_read(&path, Some(&attr.version), attr.authority.as_ref()) {
+			eprintln!("qorpera-folder: could not record a file open: {e}");
+			return reply.error(Errno::EIO);
+		}
 		if write {
 			return match self.s.open_write(ino.0, &path, &attr, flags.0 & libc::O_TRUNC != 0) {
 				Ok(open) => {
@@ -637,6 +674,12 @@ impl Filesystem for FolderFs {
 		// version's only: a newer version is another inode (tree.rs), and this program's own saves are what was written
 		// through this inode.
 		let writing = self.s.writing.lock().unwrap().contains_key(&ino.0);
+		// The kernel can answer EOF for an empty file without sending a read. Its empty content is already known at
+		// this read-only open, so remember that version before a later writer or feed change can replace it. A file
+		// being written here instead reads from its writer; its listed size may not describe those bytes.
+		if attr.size == 0 && !writing {
+			self.s.read_version(ino.0, &path, &attr.version);
+		}
 		let flags =
 			if self.s.ttl(kept).is_zero() || writing { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
 		reply.opened(self.s.handle(Handle::File { ino: ino.0, path, version: attr.version, size: attr.size }), flags);
@@ -660,7 +703,7 @@ impl Filesystem for FolderFs {
 			Err(f) => return reply.error(errno(f)),
 		};
 		let mut attr =
-			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version };
+			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version, authority: None };
 		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
 		let open = Open::new();
 		{
@@ -746,20 +789,7 @@ impl Filesystem for FolderFs {
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
 		match self.s.link.read(&path, &version, offset, len) {
 			Ok(data) => {
-				// The version map: the newest version this mount read of the path, a save's base. A read of the version the
-				// path's inode stands for, through that inode (its version, not its attributes: a change on the feed makes
-				// those unknown until the folder is listed again). A read under way while this mount saves the file read the
-				// version before the save, and is not taken. A file still open from before a newer version arrived reads an
-				// older one: taken only while the map holds nothing for the path, when it is the only version the mount read.
-				if self.s.writable {
-					let tree = self.s.tree.lock().unwrap();
-					let mut versions = self.s.versions.lock().unwrap();
-					let its = tree.path(ino) == Some(path.as_str())
-						&& tree.last_seen(ino).is_some_and(|a| a.version == version);
-					if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(&path).is_none())) {
-						versions.read(&path, &version);
-					}
-				}
+				self.s.read_version(ino, &path, &version);
 				reply.data(&data)
 			}
 			Err(f) => {
@@ -929,7 +959,7 @@ impl Filesystem for FolderFs {
 		if let Err(f) = self.s.link.mkdir(&path) {
 			return reply.error(errno(f));
 		}
-		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new() };
+		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new(), authority: None };
 		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
 		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
 	}
@@ -1066,7 +1096,8 @@ fn follow(
 			let change = match feed.next() {
 				Ok(c) => c,
 				Err(f) => {
-					if f.view_closed() {
+					s.link.feed_failed(&feed, &f);
+					if s.link.closed() {
 						let _ = stop.send(Stop::ViewClosed);
 						return;
 					}
@@ -1074,6 +1105,7 @@ fn follow(
 					break;
 				}
 			};
+			if !s.link.feed_current(&feed) { break; }
 			let (inval, raced) = {
 				let mut tree = s.tree.lock().unwrap();
 				let inval = if change.resync {
@@ -1121,7 +1153,7 @@ fn follow(
 					apply(inval, raced);
 					break f;
 				}
-				Err(f) if f.view_closed() => {
+				Err(_) if s.link.closed() => {
 					let _ = stop.send(Stop::ViewClosed);
 					return;
 				}
@@ -1191,8 +1223,9 @@ pub enum Failed {
 	Other(String),
 }
 
-/// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped.
-pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
+/// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped. The caller
+/// holds the state's daemon.lock.
+pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	let signals = block_stop_signals();
 	// Open the feed before anything is listed, so no change after the first listing can be missed. This
 	// also checks the view: a refused view never gets mounted.
@@ -1204,6 +1237,27 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		}
 	})?;
 	let writable = !ok.read_only;
+	if writable && !link.has_reads() {
+		let reads = match options.reads.take() {
+			Some(reads) => reads,
+			None => {
+				let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
+				// Open the journal before the version map creates files: only unused state can start a new read sequence.
+				Arc::new(ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?)
+			}
+		};
+		link = link.with_reads(reads);
+	}
+	if writable {
+		// The caller holds the state's daemon.lock: what an earlier program left open goes before a file is served here.
+		link.abandon_earlier().map_err(|f| {
+			if f.view_closed() {
+				Failed::View(f.to_string())
+			} else {
+				Failed::Other(format!("could not tell the node the earlier program is gone: {f}"))
+			}
+		})?;
+	}
 	eprintln!(
 		"qorpera-folder: view {} accepted at change {}, {}",
 		ok.view_id,
@@ -1216,8 +1270,12 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 			.map_err(|e| Failed::Other(format!("the version map in {}: {e}", dir.display())))?,
 		_ => VersionMap::memory(),
 	};
-	// SAFETY: geteuid and getegid have no preconditions.
-	let owner = if writable { unsafe { (libc::geteuid(), libc::getegid()) } } else { (0, 0) };
+	let owner = if writable {
+		// SAFETY: geteuid and getegid have no preconditions. This affects virtual attributes only.
+		options.owner.unwrap_or_else(|| unsafe { (libc::geteuid(), libc::getegid()) })
+	} else {
+		(0, 0)
+	};
 	let shared = Arc::new(Shared {
 		tree: Mutex::new(Tree::new()),
 		link,
@@ -1281,6 +1339,20 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		std::thread::spawn(move || chase(chaser, names));
 		std::thread::spawn(move || follow(shared, notifier, feed, stop_tx, chased));
 	}
+	let watching = Arc::new(AtomicBool::new(true));
+	let watcher = {
+		let shared = shared.clone();
+		let watching = watching.clone();
+		std::thread::spawn(move || {
+			while watching.load(Ordering::SeqCst) {
+				// A refused/malformed replacement leaves the accepted proof and fixed grace intact. Request calls
+				// report their own errors; the idle watcher retries quietly without exposing credentials.
+				let _ = shared.link.refresh();
+				shared.link.expire();
+				std::thread::sleep(Duration::from_millis(250));
+			}
+		})
+	};
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;
 	if !matches!(why, Stop::Ended(_)) {
@@ -1288,6 +1360,8 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 			eprintln!("qorpera-folder: unmount {}: {e}", options.mountpoint.display());
 		}
 	}
+	watching.store(false, Ordering::SeqCst);
+	let _ = watcher.join();
 	Ok(why)
 }
 

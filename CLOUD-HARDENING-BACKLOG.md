@@ -14,7 +14,7 @@ This backlog tracks the non-blocking findings from the PR #27 architecture revie
 
 ## Object storage, retention, and portability
 
-- [ ] `OBJECT-1` Stream-limit Edge request bodies without relying on `content-length`, and cap runner-broker object responses while reading rather than after buffering. Gate: arbitrary runner payloads.
+- [ ] `OBJECT-1` Stream-limit Edge request bodies without relying on `content-length`. (The runner broker serves no objects since `20260930334000`.) Gate: arbitrary runner payloads.
 - [ ] `OBJECT-2` Add a service repair path for content-addressed objects whose stored bytes do not match their hash path. Gate: durable customer objects.
 - [ ] `OBJECT-3` Remove successful and abandoned `cloud-company-previews/<uuid>` directories under bounded lifecycle rules. Gate: broader hosted beta.
 - [ ] `OBJECT-4` Retire completed-artifact reachability roots when they no longer protect a retained reference, without weakening GC safety. Gate: automatic retention cleanup.

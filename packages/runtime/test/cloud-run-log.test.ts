@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type {
 	CloudCompanyFolderCommitResult,
 	CloudCompanyFolderRelease,
@@ -15,6 +15,7 @@ import {
 import {
 	CLOUD_RUN_LOG_BLOCK_BYTES,
 	CLOUD_RUN_LOG_FIELD_BYTES,
+	CLOUD_RUN_LOG_PATHS,
 	CLOUD_RUN_LOG_READS_BYTES,
 	CLOUD_RUN_LOG_STEP_BYTES,
 	CloudRunLog,
@@ -22,20 +23,69 @@ import {
 	type CloudRunLogFolder,
 	CloudRunLogGone,
 	type CloudRunLogPreconditions,
+	type CloudRunLogProtection,
 	CloudRunLogUnavailable,
 	type CloudRunTreeBlock,
+	cloudRunLogPaths,
+	cloudRunLogStepPaths,
 	recordCloudRunLogRelease,
 } from "@qorpera/runtime/cloud-run-log";
+import { CloudRunLogRpcProtection } from "@qorpera/runtime/cloud-run-log-protection";
 import { memoryBlockPath, memoryBlockText } from "@qorpera/runtime/memory-tree/tree";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const companyId = randomUUID();
 const conversationId = randomUUID();
 const ROOT = `agents/scout/sessions/${conversationId}`;
-const KEYS = ["j", "tool", "call", "args", "args_bytes", "args_hash", "result", "reads", "releases", "text", "at"];
+const KEYS = [
+	"j",
+	"tool",
+	"call",
+	"args",
+	"args_bytes",
+	"args_hash",
+	"result",
+	"reads",
+	"releases",
+	"paths",
+	"text",
+	"at",
+];
 
 function sha(text: string): string {
 	return createHash("sha256").update(text).digest("hex");
+}
+
+/** Only the test platform holds this synthetic key; runtime production code holds no key. */
+function keyed(runId: string, digest: string): string {
+	return createHmac("sha256", "run-log-test-platform-key").update(`${runId}:${digest}`).digest("hex");
+}
+
+const protection: CloudRunLogProtection = {
+	narrow: async () => ({ log: false, narrow: false }),
+	hashes: async (runId, digests) => digests.map((digest) => keyed(runId, digest)),
+};
+
+function rpcProtection(runId: string, logNarrow: () => boolean = () => false): CloudRunLogRpcProtection {
+	return new CloudRunLogRpcProtection({
+		environmentId: randomUUID(),
+		jobId: randomUUID(),
+		runId,
+		call: async (method, args) => {
+			if (method === "qorpera_memory_step_hashes")
+				return (args.p_digests as string[]).map((digest) => keyed(runId, digest));
+			const paths = args.p_paths as string[];
+			// PostgreSQL rejects these JSONB strings before the classification function can ignore non-paths.
+			if (paths.some((path) => path.includes("\u0000")))
+				throw new Error("22P05: unsupported Unicode escape sequence");
+			if (paths.some((path) => !path.isWellFormed())) throw new Error("22P02: invalid input syntax for type json");
+			return {
+				log: logNarrow(),
+				machine: false,
+				restricted: paths.filter((path) => path.startsWith("restricted/")),
+			};
+		},
+	});
 }
 
 function read(path: string, version = randomUUID()): CloudCompanyFolderRelease {
@@ -236,6 +286,7 @@ function runLog(options: Partial<ConstructorParameters<typeof CloudRunLog>[0]> =
 		runId,
 		conversationId,
 		folder,
+		protection,
 		signal: abort.signal,
 		now: () => new Date("2026-10-06T09:12:03.456Z"),
 		...options,
@@ -251,6 +302,353 @@ function step(log: CloudRunLog, tool: string, args: unknown = { path: "sales/pri
 }
 
 describe("a run's work log", () => {
+	it("extracts path needles at every depth from structured values and JSON text receipts", () => {
+		const value = {
+			nested: [{ path: "/company/restricted/a.md", children: { from: "a", to: "b", paths: ["c", 7, "d"] } }],
+			note: "ordinary/path-text.md",
+			path: 4,
+		};
+		expect(new Set(cloudRunLogPaths(value))).toEqual(new Set(["/company/restricted/a.md", "a", "b", "c", "d"]));
+		expect(cloudRunLogPaths(JSON.stringify(value))).toEqual(cloudRunLogPaths(value));
+		expect(cloudRunLogPaths("ordinary/path-text.md")).toEqual([]);
+	});
+	it("walks a large result path array without spreading it into function arguments", () => {
+		expect(cloudRunLogPaths({ paths: Array(150_000).fill("restricted/a.md") })).toEqual(["restricted/a.md"]);
+	});
+	it.each(["path", "from", "to", "paths"])("classifies scalar and nested-array needles under %s", async (key) => {
+		for (const value of ["restricted/a.md", ["restricted/a.md"], [[null, "restricted/a.md"]]]) {
+			const args = { [key]: value };
+			expect(cloudRunLogPaths(args)).toEqual(["restricted/a.md"]);
+			const runId = randomUUID();
+			const f = runLog({ runId, protection: rpcProtection(runId) });
+			f.log.finish(step(f.log, "company_read", args), envelope("INVALID_ARGUMENTS"), []);
+			await f.log.flush(f.signal);
+			expect(f.folder.all()[0]).toMatchObject({ narrow: true, finished: true });
+			expect(JSON.stringify(f.folder.commits)).not.toContain("restricted/a.md");
+		}
+	});
+
+	it("keeps public earlier fills when a later pending narrow line raises SQL's log flag", async () => {
+		const runId = randomUUID();
+		let folder!: Folder;
+		const f = runLog({
+			runId,
+			protection: rpcProtection(runId, () => folder.all().some((line) => line.narrow === true)),
+		});
+		folder = f.folder;
+		const first = step(f.log, "company_write");
+		await f.log.precommit(first, f.signal);
+		f.log.finish(step(f.log, "company_read"), envelope("public earlier read"), []);
+		f.log.finish(step(f.log, "company_read", { path: "restricted/a.md" }), envelope("private read"), []);
+		const last = step(f.log, "company_write");
+		await f.log.precommit(last, f.signal);
+		expect(folder.all().map((line) => line.narrow === true)).toEqual([false, false, true, true]);
+		f.log.finish(first, envelope("public earlier receipt"), []);
+		f.log.finish(last, envelope("last receipt"), []);
+		await f.log.flush(f.signal);
+		expect(folder.all().map((line) => line.narrow === true)).toEqual([false, false, true, true]);
+		expect(JSON.stringify(folder.all()[0])).toContain("public earlier receipt");
+		expect(JSON.stringify(folder.all()[1])).toContain("public earlier read");
+		expect(f.log.steps()[2]).toMatchObject({ args: JSON.stringify({ path: "restricted/a.md" }), narrow: true });
+	});
+
+	it("requires a trusted narrow start for a flagged log and honors inherited whole-log narrow", async () => {
+		const runId = randomUUID();
+		const trusted = rpcProtection(runId, () => true);
+		const unknown = runLog({ runId, protection: trusted });
+		await expect(unknown.log.precommit(step(unknown.log, "company_write"), unknown.signal)).rejects.toMatchObject({
+			reason: "protection_narrow_start_unknown",
+		});
+		expect(unknown.folder.commits).toEqual([]);
+		const inherited = runLog({ runId, protection: trusted, narrow: true });
+		await inherited.log.precommit(step(inherited.log, "company_write"), inherited.signal);
+		expect(inherited.folder.all()[0]).toMatchObject({ narrow: true, finished: false });
+	});
+	it("requires a trusted protection port even when the folder is available", () => {
+		const folder = new Folder(randomUUID());
+		expect(
+			() =>
+				new CloudRunLog({
+					runId: folder.runId,
+					conversationId,
+					folder,
+					signal: new AbortController().signal,
+					protection: undefined as never,
+				}),
+		).toThrow("Invalid run log protection");
+	});
+
+	it("writes only the narrow shape, keeps its own full work in memory, and inherits its origin", async () => {
+		const continues = randomUUID();
+		const { runId, folder, log, signal } = runLog({ narrow: true, continues });
+		const args = { path: "restricted/PRIVATE_PATH.md", text: "PRIVATE_ARGS".repeat(1000) };
+		log.agentText("PRIVATE_AGENT_TEXT");
+		const first = step(log, "company_write", args);
+		await log.precommit(first, signal);
+		const pending = folder.all()[0]!;
+		expect(pending).toEqual({
+			j: first,
+			tool: "company_write",
+			call: `call_${calls}`,
+			at: "2026-10-06T09:12:03Z",
+			finished: false,
+			releases: [],
+			args_hash: keyed(runId, sha(JSON.stringify(args))),
+			narrow: true,
+		});
+		const releaseId = randomUUID();
+		const result = envelope("PRIVATE_RESULT");
+		log.finish(first, result, [{ releaseId, reads: [read("restricted/PRIVATE_PATH.md")] }]);
+		await log.flush(signal);
+		expect(folder.all()[0]).toEqual({
+			...pending,
+			finished: true,
+			releases: [releaseId],
+			result_hash: keyed(runId, sha(result)),
+		});
+		expect(JSON.stringify(folder.commits)).not.toContain("PRIVATE_");
+		expect(log.steps()).toEqual([
+			expect.objectContaining({
+				j: first,
+				args: JSON.stringify(args),
+				result,
+				text: "PRIVATE_AGENT_TEXT",
+				narrow: true,
+			}),
+		]);
+		expect(folder.files.get(`${folder.path}/run.toml`)?.text).toContain(
+			`continues = "${continues}"\nnarrow = true\n`,
+		);
+	});
+
+	it("classifies complete arguments and every release before fitting a public copy", async () => {
+		const releaseId = randomUUID();
+		const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async (_run, input) => ({
+			log: false,
+			narrow: input.argumentsText.includes("restricted/PRIVATE_PATH.md") || input.releases.includes(releaseId),
+		}));
+		const args = { text: "x".repeat(20_000), path: "restricted/PRIVATE_PATH.md" };
+		const first = runLog({ protection: { ...protection, narrow } });
+		first.log.finish(step(first.log, "company_write", args), envelope("Written"), []);
+		await first.log.flush(first.signal);
+		expect(narrow.mock.calls[0]![1].argumentsText).toBe(JSON.stringify(args));
+		expect(first.folder.all()[0]).toMatchObject({ narrow: true });
+		expect(JSON.stringify(first.folder.commits)).not.toContain("PRIVATE_PATH");
+
+		const second = runLog({ protection: { ...protection, narrow } });
+		const released = Array.from({ length: 400 }, (_, index) => ({
+			releaseId: randomUUID(),
+			reads: [read(`sales/${index}.md`)],
+		}));
+		released.push({ releaseId, reads: [read("restricted/PRIVATE_READ.md")] });
+		second.log.finish(step(second.log, "company_search", { query: "prices" }), envelope("PRIVATE_RESULT"), released);
+		await second.log.flush(second.signal);
+		expect(narrow.mock.calls.at(-1)![1].releases).toEqual(released.map((release) => release.releaseId));
+		expect(narrow.mock.calls.at(-1)![1].readPaths).toContain("restricted/PRIVATE_READ.md");
+		expect(second.folder.all()[0]).toMatchObject({
+			narrow: true,
+			releases: released.map((release) => release.releaseId),
+		});
+		expect(JSON.stringify(second.folder.commits)).not.toContain("PRIVATE_");
+	});
+
+	it("keys hashes per run and keeps the same arguments hash across pending, fill, and retries", async () => {
+		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) => ({
+			log: false,
+			narrow: input.result?.includes("PRIVATE_RESULT") ?? false,
+		});
+		const first = runLog({ protection: { ...protection, narrow } });
+		const second = runLog({ narrow: true });
+		const args = { path: "sales/a.md", text: "same words" };
+		const j = step(first.log, "company_write", args);
+		first.folder.throwing = 1;
+		await expect(first.log.precommit(j, first.signal)).rejects.toThrow("PRIVATE_TRANSPORT_FAILURE");
+		await first.log.precommit(j, first.signal);
+		const hash = first.folder.all()[0]!.args_hash;
+		expect(hash).toBe(keyed(first.runId, sha(JSON.stringify(args))));
+		expect(hash).not.toBe(sha(JSON.stringify(args)));
+		first.log.finish(j, envelope("PRIVATE_RESULT"), []);
+		await first.log.flush(first.signal);
+		expect(first.folder.all()[0]).toMatchObject({ args_hash: hash, narrow: true, finished: true });
+		second.log.finish(step(second.log, "company_write", args), envelope("PRIVATE_RESULT"), []);
+		await second.log.flush(second.signal);
+		expect(second.folder.all()[0]!.args_hash).not.toBe(hash);
+		expect(second.folder.all()[0]!.result_hash).not.toBe(first.folder.all()[0]!.result_hash);
+	});
+
+	it("holds later completed results until an earlier parallel effect's result is classified", async () => {
+		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) => ({
+			log: false,
+			narrow: input.result?.includes("PRIVATE_RESULT") ?? false,
+		});
+		const { folder, log, signal } = runLog({ protection: { ...protection, narrow } });
+		const first = step(log, "company_write", { path: "sales/a.md" });
+		await log.precommit(first, signal);
+		const second = step(log, "company_write", { path: "sales/b.md" });
+		await log.precommit(second, signal);
+		log.finish(second, envelope("Public receipt"), []);
+		await log.flush(signal);
+		expect(folder.all().map((line) => line.result)).toEqual([null, null]);
+		// A completed read between effects also remains pending; the third effect may still execute.
+		const reading = step(log, "company_read");
+		log.finish(reading, envelope("Public read"), []);
+		const third = step(log, "company_write", { path: "sales/c.md" });
+		await log.precommit(third, signal);
+		expect(folder.all().map((line) => line.result)).toEqual([null, null, null, null]);
+		log.finish(third, envelope("Another receipt"), []);
+		log.finish(first, envelope("PRIVATE_RESULT"), []);
+		await log.flush(signal);
+		expect(folder.all().map((line) => [line.j, line.narrow, line.finished])).toEqual([
+			[0, true, true],
+			[1, true, true],
+			[2, true, true],
+			[3, true, true],
+		]);
+		expect(log.steps().every((entry) => entry.narrow && entry.result !== null)).toBe(true);
+		expect(JSON.stringify(folder.commits)).not.toMatch(/PRIVATE_RESULT|Public receipt|Public read|Another receipt/);
+	});
+
+	it("keeps a batch's ordering fence when an earlier result arrives during protection", async () => {
+		let entered!: () => void;
+		const entering = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) => {
+			if (input.j === 1) {
+				entered();
+				await held;
+			}
+			return { log: false, narrow: input.result?.includes("PRIVATE_RESULT") ?? false };
+		};
+		const { folder, log, signal } = runLog({ protection: { ...protection, narrow } });
+		const first = step(log, "company_write");
+		await log.precommit(first, signal);
+		const readStep = step(log, "company_read");
+		log.finish(readStep, envelope("Public read"), []);
+		const next = step(log, "company_write");
+		const committing = log.precommit(next, signal);
+		await entering;
+		log.finish(first, envelope("PRIVATE_RESULT"), []);
+		release();
+		await committing;
+		expect(
+			folder
+				.all()
+				.slice(0, 2)
+				.every((line) => line.narrow === true && line.finished === true),
+		).toBe(true);
+		// The result was first written only after the preceding result's narrow decision, never broad in a prior batch.
+		expect(JSON.stringify(folder.commits)).not.toContain("Public read");
+	});
+
+	it("stages nothing when protection fails anywhere in a batch", async () => {
+		const { folder, log, signal } = runLog({
+			protection: {
+				...protection,
+				narrow: async (_run, input) => {
+					if (input.j === 1) throw new Error("classification unavailable");
+					return { log: false, narrow: false };
+				},
+			},
+		});
+		log.finish(step(log, "company_read"), envelope("public"), []);
+		log.finish(step(log, "company_read"), envelope("PRIVATE_RESULT"), []);
+		await expect(log.flush(signal)).rejects.toThrow("classification unavailable");
+		expect(folder.commits).toEqual([]);
+	});
+
+	it.each([
+		{ hashes: [] },
+		{ hashes: ["bad"] },
+		{ hashes: ["a".repeat(64), "b".repeat(64)] },
+		{ hashes: Array<string>(1) },
+	])("refuses malformed keyed-hash results %j", async ({ hashes }) => {
+		const { folder, log, signal } = runLog({ protection: { ...protection, hashes: async () => hashes } });
+		const j = step(log, "company_write");
+		await expect(log.precommit(j, signal)).rejects.toMatchObject({ reason: "protection_invalid" });
+		expect(folder.commits).toEqual([]);
+	});
+
+	it("flushes with the supplied shutdown signal after the run signal stops", async () => {
+		const signals: AbortSignal[] = [];
+		const { log, abort, folder } = runLog({
+			protection: {
+				narrow: async (_run, _step, signal) => {
+					signal.throwIfAborted();
+					signals.push(signal);
+					return { log: false, narrow: true };
+				},
+				hashes: async (runId, digests, signal) => {
+					signal.throwIfAborted();
+					signals.push(signal);
+					return protection.hashes(runId, digests, signal);
+				},
+			},
+		});
+		log.finish(step(log, "company_read"), envelope("PRIVATE_RESULT"), []);
+		abort.abort();
+		const shutdown = new AbortController().signal;
+		await log.close(shutdown);
+		expect(signals).toEqual([shutdown, shutdown]);
+		expect(folder.all()[0]).toMatchObject({ narrow: true, finished: true });
+	});
+
+	it("recognizes a narrow pending line after a lost commit response and fills it once", async () => {
+		const { folder, log, signal } = runLog({ narrow: true });
+		const commit = folder.commit.bind(folder);
+		folder.commit = async (key, units, preconditions) => {
+			folder.commit = commit;
+			await commit(key, units, preconditions);
+			throw new Error("lost pending response");
+		};
+		const j = step(log, "company_write");
+		await expect(log.precommit(j, signal)).rejects.toThrow("lost pending response");
+		log.finish(j, envelope("PRIVATE_RESULT"), []);
+		await log.flush(signal);
+		expect(folder.all()).toEqual([
+			expect.objectContaining({
+				j,
+				narrow: true,
+				finished: true,
+				result_hash: keyed(log.runId, sha(envelope("PRIVATE_RESULT"))),
+			}),
+		]);
+		expect(log.steps()[0]).toMatchObject({ narrow: true, result: envelope("PRIVATE_RESULT") });
+	});
+
+	it("keeps narrow on an erased step and never resurrects its in-memory content", async () => {
+		const { folder, log, signal } = runLog({ narrow: true });
+		const j = step(log, "company_write", { path: "PRIVATE_PATH.md" });
+		await log.precommit(j, signal);
+		folder.rewrite(folder.blocks()[0]!, (lines) =>
+			lines.map((line) => {
+				const { j, tool, call, args_hash } = JSON.parse(line) as Record<string, unknown>;
+				return JSON.stringify({ j, tool, call, args_hash, narrow: true, erased: true });
+			}),
+		);
+		log.finish(j, envelope("PRIVATE_RESULT"), []);
+		await log.flush(signal);
+		expect(log.steps()[0]).toMatchObject({ narrow: true, erased: true, args: "", text: "", result: null });
+		expect(folder.all()[0]).toMatchObject({ narrow: true, erased: true });
+		expect(JSON.stringify([...folder.files.values()])).not.toContain("PRIVATE_");
+	});
+
+	it("cancels an origin's wait when the log closes, without holding up the closing flush", async () => {
+		const { folder, log, signal } = runLog();
+		const first = step(log, "company_write");
+		await log.precommit(first, signal);
+		const dispatch = step(log, "manage_worker", { action: "dispatch" });
+		const waiting = log.precommit(dispatch, signal, { afterEarlierResults: true });
+		const refused = expect(waiting).rejects.toMatchObject({ reason: "closed" });
+		await log.close(new AbortController().signal);
+		await refused;
+		expect(folder.all().map((line) => line.j)).toEqual([first]);
+	});
+
 	it("creates the log under the conversation's tree root with its first batch", async () => {
 		const parent = { runId: randomUUID(), step: 4 };
 		const { runId, folder, log, signal } = runLog({ parent });
@@ -282,10 +680,12 @@ describe("a run's work log", () => {
 			call: `call_${calls}`,
 			args: JSON.stringify({ path: "sales/prices.md" }),
 			args_bytes: Buffer.byteLength(JSON.stringify({ path: "sales/prices.md" })),
-			args_hash: sha(JSON.stringify({ path: "sales/prices.md" })),
+			args_hash: keyed(runId, sha(JSON.stringify({ path: "sales/prices.md" }))),
 			result: JSON.parse(envelope("Prices: 12 EUR")),
 			reads: [{ path: released.path, version: released.version }],
 			releases: [expect.any(String)],
+			// Its arguments' path: a read's path stays with the reads copy.
+			paths: ["sales/prices.md"],
 			text: "Checking the prices.",
 			at: "2026-10-06T09:12:03Z",
 		});
@@ -324,7 +724,7 @@ describe("a run's work log", () => {
 	});
 
 	it("keeps only hashes of a send's, a report's and a coding question's arguments", async () => {
-		const { folder, log, signal } = runLog();
+		const { runId, folder, log, signal } = runLog();
 		const text = JSON.stringify({ text: "PRIVATE_SEND_TEXT" });
 		const hashOnly = [
 			"send_message",
@@ -343,11 +743,15 @@ describe("a run's work log", () => {
 		const lines = folder.all();
 		expect(lines.map((line) => line.tool)).toEqual([...hashOnly, "coding_run_command"]);
 		for (const line of lines.slice(0, -1))
-			expect(line).toMatchObject({ args: "", args_bytes: Buffer.byteLength(text), args_hash: sha(text) });
+			expect(line).toMatchObject({
+				args: "",
+				args_bytes: Buffer.byteLength(text),
+				args_hash: keyed(runId, sha(text)),
+			});
 		expect(lines.at(-1)).toMatchObject({
 			args: command,
 			args_bytes: Buffer.byteLength(command),
-			args_hash: sha(command),
+			args_hash: keyed(runId, sha(command)),
 		});
 		expect(log.steps().map((entry) => entry.hashOnly)).toEqual([...hashOnly.map(() => true), false]);
 		expect(log.steps().every((entry) => entry.args === (entry.hashOnly ? "" : command))).toBe(true);
@@ -383,15 +787,16 @@ describe("a run's work log", () => {
 		expect(Object.keys(small!)).toEqual(KEYS);
 	});
 
-	it("fits a step with very many release parts into 41 KiB: the copies give way, never the release ids", async () => {
+	it("fits a step with very many release parts into 49 KiB: the copies give way, never the release ids", async () => {
 		const { folder, log, signal } = runLog();
+		// Past qorpera_company_path_valid's 4,096 bytes: no company path, so the line names none.
 		const args = { path: "p".repeat(9000) };
 		const argumentsText = JSON.stringify(args);
 		const reads = Array.from({ length: 400 }, (_, index) => read(`sales/${index}.md`));
 		const parts = (count: number) =>
 			Array.from({ length: count }, (_, index) => ({ releaseId: randomUUID(), reads: index ? [] : reads }));
-		const some = parts(100);
-		const many = parts(700);
+		const some = parts(300);
+		const many = parts(1000);
 		for (const releases of [some, many]) {
 			log.agentText("t".repeat(9000));
 			log.finish(step(log, "company_search", args), envelope("r".repeat(7900)), releases);
@@ -418,6 +823,7 @@ describe("a run's work log", () => {
 			reads_cut: true,
 			text: "",
 			releases: many.map((release) => release.releaseId),
+			paths: [],
 			result: JSON.parse(envelope("r".repeat(7900))),
 		});
 		expect((second!.args as string).length).toBeGreaterThan(0);
@@ -428,6 +834,83 @@ describe("a run's work log", () => {
 			[first!.args, first!.text],
 			[second!.args, ""],
 		]);
+	});
+
+	it("names its arguments' paths on a pending line, adds its result's when finished, never its reads", async () => {
+		const { folder, log, signal } = runLog();
+		const j = step(log, "company_move", { from: "/company/sales/a.md", to: "sales/b.md", paths: ["sales/a.md", 7] });
+		await log.precommit(j, signal);
+		const pending = folder.all()[0]!;
+		expect(pending).toMatchObject({ result: null, reads: [] });
+		expect(new Set(pending.paths as string[])).toEqual(new Set(["sales/a.md", "sales/b.md"]));
+		expect(pending.paths).toHaveLength(2);
+		log.finish(
+			j,
+			envelope("Moved"),
+			[{ releaseId: randomUUID(), reads: [read("sales/read.md")] }],
+			["/company/sales/b.md", "sales/c.md"],
+		);
+		await log.flush(signal);
+		const line = folder.all()[0]!;
+		expect(line).toMatchObject({ reads: [expect.objectContaining({ path: "sales/read.md" })] });
+		expect(new Set(line.paths as string[])).toEqual(new Set(["sales/a.md", "sales/b.md", "sales/c.md"]));
+		expect(line.paths).toHaveLength(3);
+	});
+
+	it("strips /company/ from a step's paths, names each once, and leaves out strings no company path can be", () => {
+		const nul = `a${String.fromCharCode(0)}b`;
+		const lone = `a${String.fromCharCode(0xd800)}b`;
+		const args = JSON.stringify({ path: "/company/a.md", paths: ["a.md", "", "/company/", nul, "x".repeat(4097)] });
+		const paths = cloudRunLogStepPaths(args, ["b.md", "/company/a.md", lone, "é".repeat(2048)], ["c.md", "a.md"]);
+		expect(new Set(paths)).toEqual(new Set(["a.md", "b.md", "é".repeat(2048), "c.md"]));
+		expect(paths).toHaveLength(4);
+		expect(cloudRunLogStepPaths(args, [], [])).toEqual(["a.md"]);
+		expect(() => cloudRunLogStepPaths("{}", [7 as never], [])).toThrow("paths_invalid");
+	});
+
+	it("keeps up to 1,024 paths and 8 KiB of them on a public line", async () => {
+		const many = Array.from({ length: CLOUD_RUN_LOG_PATHS }, (_, index) => `p/${index}`);
+		const long = ["a".repeat(4096), "b".repeat(4089)];
+		expect(Buffer.byteLength(JSON.stringify(long))).toBe(CLOUD_RUN_LOG_FIELD_BYTES);
+		for (const [paths, narrow] of [
+			[many, false],
+			[[...many, "p/x"], true],
+			[long, false],
+			[[long[0]!, `${long[1]}b`], true],
+		] as const) {
+			const { folder, log, signal } = runLog();
+			log.finish(step(log, "company_read", {}), envelope("x"), [], paths);
+			await log.flush(signal);
+			const [line] = folder.all();
+			expect(line!.narrow === true).toBe(narrow);
+			if (!narrow) expect(line!.paths).toEqual(paths);
+		}
+	});
+
+	it.each([
+		{
+			by: "its arguments",
+			args: { paths: Array.from({ length: 1025 }, (_, index) => `OVERFLOW/${index}.md`) },
+			result: [],
+		},
+		{
+			by: "its result",
+			args: { path: "sales/a.md" },
+			result: [`OVERFLOW/${"a".repeat(4087)}`, `OVERFLOW/${"b".repeat(4087)}`],
+		},
+	])("writes a step narrow when $by name too many paths, and every step after it", async ({ args, result }) => {
+		const { folder, log, signal } = runLog();
+		log.finish(step(log, "company_read"), envelope("before"), []);
+		await log.flush(signal);
+		const j = step(log, "company_write", args);
+		await log.precommit(j, signal);
+		// A pending line names only its arguments' paths: one whose result overflows is public until it is finished.
+		expect(folder.all()[1]!.narrow === true).toBe(result.length === 0);
+		log.finish(j, envelope("Written"), [], result);
+		log.finish(step(log, "company_list", { path: "sales" }), envelope("AFTER"), []);
+		await log.flush(signal);
+		expect(folder.all().map((line) => line.narrow === true)).toEqual([false, true, true]);
+		expect(JSON.stringify(folder.commits)).not.toMatch(/OVERFLOW|Written|AFTER/);
 	});
 
 	it("starts a new block at 16 steps, and before a block passes 64 KiB", async () => {
@@ -665,14 +1148,11 @@ describe("a run's work log", () => {
 		log.finish(first, envelope("written"), []);
 		log.finish(step(log, "company_read"), envelope("three"), []);
 		await log.flush(signal);
-		// Step 2 is still pending: the steps are listed, not a range.
+		// Step 2 is still pending: step 3 cannot become immutable until its predecessor is classified.
 		expect(batches.at(-1)).toEqual({
 			runId,
-			steps: [1, 3],
-			blocks: [
-				{ path: blockPath(0), version: folder.files.get(blockPath(0))!.version },
-				{ path: blockPath(2), version: folder.files.get(blockPath(2))!.version },
-			],
+			steps: [1],
+			blocks: [{ path: blockPath(0), version: folder.files.get(blockPath(0))!.version }],
 			generation: 3,
 		});
 		stop();
@@ -716,11 +1196,13 @@ describe("a run's work log", () => {
 	it("rejects a malformed run log", () => {
 		const folder = new Folder(randomUUID());
 		const signal = new AbortController().signal;
-		expect(() => new CloudRunLog({ runId: "run", conversationId, folder, signal })).toThrow("Invalid run log");
-		expect(() => new CloudRunLog({ runId: folder.runId, conversationId, folder, signal, firstStep: -1 })).toThrow(
+		expect(() => new CloudRunLog({ runId: "run", conversationId, folder, signal, protection })).toThrow(
 			"Invalid run log",
 		);
-		const log = new CloudRunLog({ runId: folder.runId, conversationId, folder, signal });
+		expect(
+			() => new CloudRunLog({ runId: folder.runId, conversationId, folder, signal, protection, firstStep: -1 }),
+		).toThrow("Invalid run log");
+		const log = new CloudRunLog({ runId: folder.runId, conversationId, folder, signal, protection });
 		expect(() => log.step({ call: "c", tool: "company_read", argumentsText: "{}", argumentSha256: "x" })).toThrow(
 			"Invalid run log step",
 		);
@@ -1106,16 +1588,17 @@ describe("the tool boundary with a work log", () => {
 			release?: () => Promise<void>;
 			/** The automatic review every call passes before it runs. */
 			review?: CloudNativeActionReview;
+			parseRead?: CloudNativeTool["parseArguments"];
 		} = {},
 	) {
-		const { runId, folder, log, signal } = runLog(options.log);
+		const { runId, folder, log, signal, abort } = runLog(options.log);
 		const order: string[] = [];
 		const readTool: CloudNativeTool = {
 			name: "company_read",
 			description: "Read a file.",
 			source: "company_file",
 			inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false },
-			parseArguments: (value) => value,
+			parseArguments: options.parseRead ?? ((value) => value),
 			execute: vi.fn(async () => {
 				order.push("read");
 				recordCloudRunLogRelease("70700000-0000-4000-8000-0000000000a1", [read("sales/prices.md")]);
@@ -1148,10 +1631,22 @@ describe("the tool boundary with a work log", () => {
 				return "Closed.";
 			}),
 		};
+		const workerTool: CloudNativeTool = {
+			name: "manage_worker",
+			description: "Dispatch a worker.",
+			source: "runtime",
+			inputSchema: { type: "object", properties: { action: { type: "string" } }, additionalProperties: false },
+			parseArguments: (value) => value,
+			execute: vi.fn(async () => {
+				order.push("worker");
+				expect(folder.all().at(-1)).toMatchObject({ tool: "manage_worker", narrow: true, finished: false });
+				return { kind: "text", value: "Worker started" } as const;
+			}),
+		};
 		const boundary = new CloudNativeToolBoundary({
 			companyId,
 			runId,
-			tools: [readTool, writeTool],
+			tools: [readTool, writeTool, workerTool],
 			assertActive: async () => undefined,
 			signal,
 			runLog: log,
@@ -1168,8 +1663,75 @@ describe("the tool boundary with a work log", () => {
 				result: JSON.parse(response.contentItems[0].text) as CloudToolResult,
 			};
 		};
-		return { folder, log, signal, boundary, call, readTool, writeTool, order };
+		return { folder, log, signal, abort, boundary, call, readTool, writeTool, workerTool, order };
 	}
+
+	it.each(["arguments", "result"])(
+		"a non-path oversized string in %s does not block later effects",
+		async (source) => {
+			const runId = randomUUID();
+			const f = fixture({
+				log: { runId, protection: rpcProtection(runId) },
+				...(source === "arguments"
+					? {
+							parseRead: () => {
+								throw new Error("invalid path");
+							},
+						}
+					: {}),
+			});
+			const long = "x".repeat(5000);
+			if (source === "result")
+				vi.mocked(f.readTool.execute).mockResolvedValueOnce({ kind: "json", value: { path: long } });
+			const reading = await f.call("long_path", "company_read", {
+				path: source === "arguments" ? long : "sales/a.md",
+			});
+			expect(reading.result.status).toBe(source === "arguments" ? "denied" : "ok");
+			const writing = await f.call("later_effect", "company_write", { path: "sales/b.md", text: "written" });
+			expect(writing.result.status).toBe("ok");
+			expect(f.writeTool.execute).toHaveBeenCalledOnce();
+			await f.log.close(f.signal);
+			expect(f.folder.all().map((line) => line.j)).toEqual([0, 1]);
+			expect(f.folder.all().every((line) => line.result !== null)).toBe(true);
+		},
+	);
+
+	it.each([
+		{ source: "arguments", path: "a\u0000b", kind: "NUL" },
+		{ source: "arguments", path: "a\ud800b", kind: "lone high surrogate" },
+		{ source: "arguments", path: "a\udc00b", kind: "lone low surrogate" },
+		{ source: "JSON text result", path: "a\u0000b", kind: "NUL" },
+		{ source: "JSON text result", path: "a\ud800b", kind: "lone high surrogate" },
+		{ source: "JSON text result", path: "a\udc00b", kind: "lone low surrogate" },
+	])("a $kind needle in $source does not block a later write or closing the log", async ({ source, path }) => {
+		const runId = randomUUID();
+		const f = fixture({
+			log: { runId, protection: rpcProtection(runId) },
+			...(source === "arguments"
+				? {
+						parseRead: () => {
+							throw new Error("invalid path");
+						},
+					}
+				: {}),
+		});
+		if (source === "JSON text result")
+			vi.mocked(f.readTool.execute).mockResolvedValueOnce({ kind: "text", value: JSON.stringify({ path }) });
+		const reading = await f.call("invalid_unicode", "company_read", {
+			path: source === "arguments" ? path : "sales/a.md",
+		});
+		expect(reading.result.status).toBe(source === "arguments" ? "denied" : "ok");
+		const writing = await f.call("later_effect", "company_write", { path: "sales/b.md", text: "written" });
+		expect(writing.result.status).toBe("ok");
+		expect(f.writeTool.execute).toHaveBeenCalledOnce();
+		await f.log.close(f.signal);
+		expect(f.folder.all().map((line) => [line.j, line.result])).toEqual([
+			[0, reading.result],
+			[1, writing.result],
+		]);
+		if (source === "arguments") expect(f.folder.all()[0]!.args).toBe(JSON.stringify({ path }));
+		else expect(reading.result.content.text).toBe(JSON.stringify({ path }));
+	});
 
 	it("logs every call with the envelope it got and every release it made", async () => {
 		const f = fixture();
@@ -1194,13 +1756,36 @@ describe("the tool boundary with a work log", () => {
 			}),
 			expect.objectContaining({ j: 1, call: "call_w1", result: JSON.parse(writing.text), releases: [] }),
 		]);
-		// `args_hash` is the call's digest, as receipts have it.
-		expect(lines[0]!.args_hash).toBe(
-			sha(JSON.stringify(["qorpera", "company_read", JSON.stringify({ path: "sales/prices.md" })])),
-		);
+		// The log keys the complete argument text's digest, not the boundary's namespace/tool digest.
+		expect(lines[0]!.args_hash).toBe(keyed(f.log.runId, sha(JSON.stringify({ path: "sales/prices.md" }))));
 		// A release outside a logged call is not recorded anywhere.
 		recordCloudRunLogRelease(randomUUID(), [read("sales/other.md")]);
 	});
+
+	it.each(["json", "text"] as const)(
+		"classifies the complete %s result's paths beyond the envelope cut",
+		async (kind) => {
+			const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async (_run, input) => ({
+				log: false,
+				narrow: input.resultPaths.includes("restricted/PRIVATE_PATH.md"),
+			}));
+			const f = fixture({ log: { protection: { ...protection, narrow } } });
+			const value = { a: "PRIVATE_CONTENT".repeat(1500), z: { path: "restricted/PRIVATE_PATH.md" } };
+			vi.mocked(f.readTool.execute).mockResolvedValueOnce(
+				kind === "json" ? { kind: "json", value } : { kind: "text", value: JSON.stringify(value) },
+			);
+			const response = await f.call("raw_paths", "company_read", { path: "sales/index.md" });
+			expect(response.result.content.truncated).toBe(true);
+			expect(response.text).not.toContain("PRIVATE_PATH");
+			await f.log.flush(f.signal);
+			expect(narrow.mock.calls[0]![1].resultPaths).toEqual(["restricted/PRIVATE_PATH.md"]);
+			expect(f.folder.all()[0]).toMatchObject({ narrow: true, finished: true });
+			expect(JSON.stringify(f.folder.commits)).not.toContain("PRIVATE_");
+			// The own-work view still gets only the delivered envelope, never the larger raw tool result.
+			expect(f.log.steps()[0]!.result).toBe(response.text);
+			expect(f.log.steps()[0]!.result).not.toContain("PRIVATE_PATH");
+		},
+	);
 
 	it("does not run an acting call whose pre-commit cannot land", async () => {
 		const f = fixture();
@@ -1230,6 +1815,95 @@ describe("the tool boundary with a work log", () => {
 			["call_w2", "denied"],
 			["call_w3", "ok"],
 		]);
+	});
+
+	it("runs no effect when the trusted classification or keyed-hash service is unavailable", async () => {
+		for (const failed of ["narrow", "hashes"] as const) {
+			const f = fixture({
+				log: {
+					protection: {
+						...protection,
+						[failed]: async () => {
+							throw new Error("PRIVATE_PROTECTION_FAILURE");
+						},
+					},
+				},
+			});
+			const refused = await f.call("call_w1", "company_write", { path: "a.md", text: "PRIVATE_ARGS" });
+			expect(refused.result.content.text).toMatch(/^WORK_LOG_UNAVAILABLE:/);
+			expect(f.writeTool.execute).not.toHaveBeenCalled();
+			expect(f.folder.commits).toEqual([]);
+			expect(refused.text).not.toContain("PRIVATE_PROTECTION_FAILURE");
+		}
+	});
+
+	it.each(["dispatch", "followup"])(
+		"waits for earlier narrow results before executing a worker %s",
+		async (action) => {
+			let release!: () => void;
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let checks = 0;
+			const f = fixture({
+				release: () => (++checks === 1 ? held : Promise.resolve()),
+				log: {
+					protection: {
+						...protection,
+						narrow: async (_run, input) => ({
+							log: false,
+							narrow: input.result?.includes("PRIVATE_RESULT") ?? false,
+						}),
+					},
+				},
+			});
+			vi.mocked(f.writeTool.execute).mockImplementationOnce(async () => {
+				f.order.push("first");
+				return { kind: "text", value: "PRIVATE_RESULT" };
+			});
+			const earlier = f.call("first", "company_write", { path: "a.md", text: "a" });
+			await vi.waitFor(() => expect(checks).toBe(1));
+			// Execution is ordered by the boundary, but an ordinary effect need not wait for the earlier release.
+			expect((await f.call("ordinary", "company_write", { path: "b.md", text: "b" })).result.status).toBe("ok");
+			expect(f.order).toEqual(["first", "write"]);
+			const precommit = vi.spyOn(f.log, "precommit");
+			const dispatch = f.call("worker", "manage_worker", { action });
+			await vi.waitFor(() =>
+				expect(precommit).toHaveBeenCalledWith(2, expect.any(AbortSignal), { afterEarlierResults: true }),
+			);
+			expect(f.workerTool.execute).not.toHaveBeenCalled();
+			expect(f.folder.all().map((line) => line.j)).toEqual([0, 1]);
+			release();
+			await earlier;
+			expect((await dispatch).result.status).toBe("ok");
+			expect(f.workerTool.execute).toHaveBeenCalledOnce();
+			expect(f.folder.all().at(-1)).toMatchObject({ narrow: true, finished: false });
+			await f.log.flush(f.signal);
+			expect(f.folder.all().every((line) => line.narrow === true)).toBe(true);
+		},
+	);
+
+	it.each(["abort", "boundary-close"])("never executes an origin whose wait ends by %s", async (stop) => {
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let checks = 0;
+		const f = fixture({ release: () => (++checks === 1 ? held : Promise.resolve()) });
+		const earlier = f.call("first", "company_write", { path: "a.md", text: "a" });
+		await vi.waitFor(() => expect(checks).toBe(1));
+		const precommit = vi.spyOn(f.log, "precommit");
+		const dispatch = f.call("worker", "manage_worker", { action: "dispatch" });
+		await vi.waitFor(() =>
+			expect(precommit).toHaveBeenCalledWith(1, expect.any(AbortSignal), { afterEarlierResults: true }),
+		);
+		if (stop === "abort") f.abort.abort();
+		else f.boundary.close();
+		const results = await Promise.all([earlier, dispatch]);
+		release();
+		expect(results[1]!.result.status).toBe("denied");
+		expect(f.workerTool.execute).not.toHaveBeenCalled();
+		expect(f.folder.all().map((line) => line.j)).toEqual([0]);
 	});
 
 	it("runs no call of a run whose log is gone", async () => {
@@ -1308,13 +1982,13 @@ describe("the tool boundary with a work log", () => {
 		expect(lines[0]).toMatchObject({ args_bytes: Buffer.byteLength(JSON.stringify(big)), args_hash: null });
 		expect(Buffer.byteLength(JSON.stringify(lines[0]!.args))).toBe(CLOUD_RUN_LOG_FIELD_BYTES);
 		expect(JSON.stringify(big).startsWith(lines[0]!.args as string)).toBe(true);
-		expect(lines[1]!.args_hash).toBe(
-			sha(JSON.stringify(["qorpera", "company_publish", JSON.stringify({ path: "a.md" })])),
-		);
+		expect(lines[1]!.args_hash).toBe(keyed(f.log.runId, sha(JSON.stringify({ path: "a.md" }))));
 	});
 
 	it("keeps the denial a call got when its answer was held back, never the answer", async () => {
+		const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async () => ({ log: false, narrow: false }));
 		const f = fixture({
+			log: { protection: { ...protection, narrow } },
 			// The run lost what it read after the call ran, before its answer goes back to the model.
 			release: async () => {
 				throw new Error("PRIVATE_UNREADABLE");
@@ -1322,7 +1996,10 @@ describe("the tool boundary with a work log", () => {
 		});
 		vi.mocked(f.readTool.execute).mockImplementationOnce(async () => {
 			recordCloudRunLogRelease(randomUUID(), [read("sales/PRIVATE_WITHHELD.md")]);
-			return { kind: "text", value: "PRIVATE_WITHHELD_PRICES" } as const;
+			return {
+				kind: "json",
+				value: { path: "restricted/PRIVATE_WITHHELD.md", text: "PRIVATE_WITHHELD_PRICES" },
+			} as const;
 		});
 		const denied = await f.call("call_r1", "company_read", { path: "sales/prices.md" });
 		expect(denied.result).toMatchObject({ status: "denied", content: { text: "AUTHORITY_UNAVAILABLE" } });
@@ -1333,6 +2010,7 @@ describe("the tool boundary with a work log", () => {
 		]);
 		expect(JSON.stringify([...f.folder.files.values()])).not.toContain("PRIVATE_WITHHELD");
 		expect(f.log.steps()).toEqual([expect.objectContaining({ j: 0, result: denied.text })]);
+		expect(narrow.mock.calls[0]![1]).toMatchObject({ readPaths: [], resultPaths: [], releases: [] });
 	});
 
 	it("keeps a call that threw as unconfirmed, as its turn ended", async () => {

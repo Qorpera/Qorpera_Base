@@ -36,6 +36,7 @@ describe("human and publisher transport separation", () => {
 		[500, "40P01", 409],
 		[500, "55P03", 409],
 		[500, "55000", 423],
+		[500, "54000", 413],
 		[500, "57014", 503],
 		[500, "XX000", 500],
 		[409, "QRC01", 409],
@@ -52,6 +53,22 @@ describe("human and publisher transport separation", () => {
 			.catch((failure: unknown) => failure);
 		expect(error).toBeInstanceOf(ObjectDependencyError);
 		expect(error).toMatchObject({ status: expectedStatus });
+	});
+
+	it("refuses one request on a company's limit and leaves the circuit closed", async () => {
+		let calls = 0;
+		const authority = new SupabaseMemberCompanyAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "public",
+			secretKey: "secret",
+			fetch: async () => {
+				calls++;
+				return calls === 1 ? Response.json({ code: "54000" }, { status: 500 }) : Response.json({ ok: true });
+			},
+		});
+		const begin = () => authority.member("qorpera_room_image_begin", token, {}, new AbortController().signal);
+		await expect(begin()).rejects.toMatchObject({ status: 413 });
+		await expect(begin()).resolves.toEqual({ ok: true });
 	});
 
 	it("preserves a denial without waiting for its body", async () => {

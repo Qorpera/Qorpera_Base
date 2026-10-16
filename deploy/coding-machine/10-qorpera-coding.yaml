@@ -1,0 +1,15 @@
+# /etc/netplan/10-qorpera-coding.yaml: the coding machine's one card, a port of the
+# agents' bridge (agentPlugCard). IPv4 by DHCP from the agent exit, which leases by
+# MAC, and no IPv6. The image runs no cloud-init: LXD's data source is /dev/lxd,
+# which coding machines do not have (security.devlxd=false).
+network:
+  version: 2
+  ethernets:
+    card:
+      match:
+        name: "en*"
+      dhcp4: true
+      dhcp-identifier: mac
+      dhcp6: false
+      accept-ra: false
+      link-local: []

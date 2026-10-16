@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -273,7 +273,7 @@ it("loads the exact host-generated AGENTS.md bytes without enabling ambient inst
 	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["capture-image", "response-first"])(
+it.each(["capture-image", "missing-capture-image"])(
 	"requires the image capability and transports a capture above the text-message budget: %s",
 	async (mode) => {
 		const pixels = Buffer.alloc(2 * 1024 * 1024);
@@ -316,7 +316,7 @@ it.each(["capture-image", "response-first"])(
 			prompt: "Capture fixture",
 			signal,
 		});
-		if (mode === "response-first") {
+		if (mode === "missing-capture-image") {
 			await expect(result).rejects.toThrow("requires capture image support");
 			expect(execute).not.toHaveBeenCalled();
 		} else {
@@ -1130,6 +1130,13 @@ it("keeps the agent's own words, never its reasoning, with the next step of its 
 		runId,
 		conversationId: randomUUID(),
 		signal: new AbortController().signal,
+		protection: {
+			narrow: async () => ({ log: false, narrow: false }),
+			hashes: async (run, digests) =>
+				digests.map((digest) =>
+					createHmac("sha256", "codex-session-test-platform-key").update(`${run}:${digest}`).digest("hex"),
+				),
+		},
 		folder: {
 			locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
 			read: async (path) => (files.has(path) ? { version: path, text: files.get(path)! } : null),

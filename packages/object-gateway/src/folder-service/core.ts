@@ -116,6 +116,15 @@ export interface FolderCore {
 	): Promise<CommitAnswer>;
 	/** The files one commit kept as conflict copies on its receipt (P17), by unit and file. */
 	conflictCopies(environmentId: string, commitId: string, signal?: AbortSignal): Promise<readonly ConflictCopy[]>;
+	/** Releases a view's reads (core §6, at most 10,000): the core files them in the view's read set, and in its run's
+	 * when it acts for one. The same id with the same reads replays; with other reads it is refused. */
+	releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+		signal?: AbortSignal,
+	): Promise<ReleaseAnswer>;
 }
 
 /** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
@@ -163,6 +172,10 @@ export interface CommitAnswer {
 }
 
 const OUTCOMES = new Set(["saved", "conflict", "refused", "denied", "waiting_for_review"]);
+
+/** The output hash a view's release names: none (the core wants 64 hex digits; a run's release names the text it
+ * showed). */
+const NO_OUTPUT = "0".repeat(64);
 
 function hashOf(value: unknown, what: string): string {
 	if (typeof value !== "string" || !SHA256_HEX_PATTERN.test(value)) invalidAnswer(what);
@@ -278,17 +291,59 @@ export function parseViewRenewal(value: unknown): ViewRenewal {
 	invalidAnswer("view renewal");
 }
 
-/** The core refused: `denied` (42501, the actor may not read this any more), `stopped` (55000, the company is paused
- * or being deleted), `invalid` (the request or the company does not fit: 22023, 0A000, P0002). The database
- * answered, so the dependency circuit stays closed. */
+/** The core refused: `denied` (42501, the actor may not read this any more), `unreadable` (42501, a read being
+ * released is no longer readable: the view's saves wait until its reads are released, which never happens now),
+ * `run_ended` (42501, the run the view acts for has ended), `stopped` (55000, the company is paused or being deleted),
+ * `invalid` (the request or the company does not fit: 22023, 0A000, P0002). `said` keeps the core's message. The
+ * database answered, so the dependency circuit stays closed. */
 export class CoreRefusal extends ObjectDependencyError {
-	readonly reason: "denied" | "stopped" | "invalid";
-	constructor(reason: "denied" | "stopped" | "invalid") {
-		super(reason === "denied" ? 403 : reason === "stopped" ? 423 : 400);
+	readonly reason: "denied" | "unreadable" | "run_ended" | "stopped" | "invalid";
+	readonly said: string | undefined;
+	constructor(reason: CoreRefusal["reason"], said?: string) {
+		super(reason === "stopped" ? 423 : reason === "invalid" ? 400 : 403);
 		this.name = "CoreRefusal";
 		this.message = `Folder core refused: ${reason}`;
 		this.reason = reason;
+		this.said = said;
 	}
+
+	/** 42501, for whichever reason: the actor may not do this (any more). */
+	get forbidden(): boolean {
+		return this.status === 403;
+	}
+}
+
+/** The core's refusal of a member-held view's release (20260928259230): such a view records no reads. */
+export const MEMBER_HELD_READS = "A member-held view records no reads";
+
+/** The core's refusal of a command view's save after its command ended (20260930183000): only the final one saves
+ * now, so the view waits for it. */
+export const COMMAND_ENDED = "Folder view command has ended";
+
+/** One read a view releases, as `qorpera_folder_record_release` takes it: the path, the version read (null for a
+ * folder's listing), and the receipt it was read under. */
+export interface ReleasedRead {
+	readonly path: string;
+	readonly version: string | null;
+	readonly authority: CoreReceipt;
+}
+
+export interface ReleaseAnswer {
+	readonly releaseId: string;
+	/** True when the core had filed this release already (the same id and reads). */
+	readonly replay: boolean;
+}
+
+export function parseReleaseAnswer(value: unknown, releaseId: string, reads: number): ReleaseAnswer {
+	const answer = answerRecord(value, "release");
+	if (
+		answer.schema !== "qorpera.folder-release/v1" ||
+		answer.releaseId !== releaseId ||
+		answer.reads !== reads ||
+		typeof answer.replay !== "boolean"
+	)
+		invalidAnswer("release");
+	return { releaseId, replay: answer.replay };
 }
 
 /** The core's answer did not have the shape this service knows. Counted as an unavailable dependency. */
@@ -673,6 +728,30 @@ export class SupabaseFolderCore implements FolderCore {
 		);
 	}
 
+	async releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+		signal?: AbortSignal,
+	) {
+		return parseReleaseAnswer(
+			await this.#rpc(
+				"qorpera_folder_record_release",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_release_id: releaseId,
+					p_reads: reads,
+					p_output_sha256: NO_OUTPUT,
+				},
+				signal,
+			),
+			releaseId,
+			reads.length,
+		);
+	}
+
 	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal);
 	}
@@ -697,10 +776,20 @@ export class SupabaseFolderCore implements FolderCore {
 			}
 			if (response.status < 200 || response.status > 299) {
 				// PostgREST's error code: the core's refusals are one company's state, not the database's health.
-				const code = value && typeof value === "object" && "code" in value ? value.code : undefined;
-				if (code === "42501") throw new CoreRefusal("denied");
-				if (code === "55000") throw new CoreRefusal("stopped");
-				if (code === "22023" || code === "0A000" || code === "P0002") throw new CoreRefusal("invalid");
+				const error = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+				const said = typeof error.message === "string" ? error.message : undefined;
+				if (error.code === "42501")
+					throw new CoreRefusal(
+						said === "A released read is no longer readable"
+							? "unreadable"
+							: said === "Run is unavailable"
+								? "run_ended"
+								: "denied",
+						said,
+					);
+				if (error.code === "55000") throw new CoreRefusal("stopped", said);
+				if (error.code === "22023" || error.code === "0A000" || error.code === "P0002")
+					throw new CoreRefusal("invalid", said);
 				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}
 			if (value === undefined) invalidAnswer("JSON");

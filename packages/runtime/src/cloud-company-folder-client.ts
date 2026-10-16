@@ -69,6 +69,7 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_archive_coding_worker",
+	"qorpera_folder_note_interface_changes",
 ]);
 /** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
  * session has a new turn (`qorpera_coding_question_stale`). */
@@ -95,7 +96,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "Only a signed hook names the site its secret is typed into"],
 			["22023", "An HMAC hook names the site its secret is typed into"],
 			["22023", "A site is a host name such as github.com"],
-			["0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"],
+			["22023", "A Stripe hook's secret is taken from dashboard.stripe.com"],
 			["22023", "A mailbox name is 1 to 64 lowercase letters, digits, dots, hyphens and underscores"],
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
@@ -1226,7 +1227,8 @@ export class CloudCompanyFolderClient {
 	 * deadlock is asked again. SQL's refusals come back as `refused`, unless an earlier call with the key ended without
 	 * a checked answer: that call may have changed the hook, so the outcome is unknown. A signed hook's creation goes
 	 * through the secret broker, which makes its secret and opens it under the same key (E3b-2); its answer names the
-	 * site the secret may be typed into, and the hook's secret is there. */
+	 * site the secret may be typed into, and the hook's secret is there. A Stripe hook's secret is Stripe's: it opens
+	 * with none, and the vault reads it off dashboard.stripe.com later (E3c-2). */
 	async manageHook(
 		request: CloudCompanyFolderHookRequest,
 		signal: AbortSignal,
@@ -1264,7 +1266,8 @@ export class CloudCompanyFolderClient {
 				hook.environmentId !== this.#identity.environmentId ||
 				hook.status !== HOOK_STATUS[request.action] ||
 				// A signed hook's creation names the site its secret may be typed into, and the secret is the hook's own and
-				// there; an unsigned creation has none. A change to a hook already open may find either.
+				// there; a Stripe hook's is not yet, until the vault reads it off Stripe's page (E3c). An unsigned creation
+				// has none. A change to a hook already open may find either.
 				(signed
 					? input.secretSite !== signed.site ||
 						!signingSecret ||
@@ -1273,7 +1276,7 @@ export class CloudCompanyFolderClient {
 						Object.keys(signingSecret).length !== 3 ||
 						(signingSecret as Record<string, unknown>).connectorId !== "event_hook" ||
 						(signingSecret as Record<string, unknown>).secretName !== `h${String(hook.id).replaceAll("-", "")}` ||
-						(signingSecret as Record<string, unknown>).ready !== true
+						(signingSecret as Record<string, unknown>).ready !== (signed.proof !== "stripe")
 					: request.action === "create" && signingSecret !== undefined) ||
 				(request.action !== "create"
 					? hook.name !== request.hook || address !== undefined
@@ -1681,6 +1684,27 @@ export class CloudCompanyFolderClient {
 		return input.status as (typeof PROPOSAL_STATUSES)[number];
 	}
 
+	/** Notes the run's changes under interfaces/ and tables/ in its conversation (I10,
+	 * `qorpera_folder_note_interface_changes`, a run effect): each of the run's commits there that has no note gets one,
+	 * which the web draws with Undo, whatever tool or machine saved it. Answers how many it made: 0 when the run has no
+	 * open conversation, or every such commit has its note. */
+	async noteInterfaceChanges(signal: AbortSignal): Promise<number> {
+		const value = await this.#retried(
+			"qorpera_folder_note_interface_changes",
+			{ p_binding: this.#binding, p_request: {} },
+			RECORD_RETRY,
+			signal,
+		);
+		const input = record(value, ["schema", "noted"]);
+		if (
+			input.schema !== "qorpera.interface-change-notes/v1" ||
+			!Number.isSafeInteger(input.noted) ||
+			(input.noted as number) < 0
+		)
+			invalid();
+		return input.noted as number;
+	}
+
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
 	 * `maxBytes`, or bytes that are not UTF-8 text are not text here. */
 	async readText(
@@ -1862,8 +1886,37 @@ export class CloudCompanyFolderClient {
 		);
 	}
 
+	/** The platform's own run-log or run-tree batch (memory W1c-3). Staging and the structured parser are the ordinary
+	 * folder path; this entry point adds the log's current location and, for derived tree blocks, their generations.
+	 * It carries no model-call receipt or review. SQL decides the run's own-log exception and all file rules. */
+	async memoryCommitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		preconditions: {
+			readonly runLog: { readonly run: string; readonly path: string };
+			readonly runGenerations?: readonly { readonly runId: string; readonly generation: number }[];
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		if (preconditions.runLog.run !== this.#actor.runId) throw new Error("Run log belongs to another run");
+		const runLog = { run: preconditions.runLog.run, path: parseCloudCompanyPath(preconditions.runLog.path) };
+		const runGenerations = preconditions.runGenerations?.map(({ runId, generation }) => {
+			if (!UUID.test(runId) || !Number.isSafeInteger(generation) || generation < 0)
+				throw new Error("Invalid run log generation");
+			return { runId, generation };
+		});
+		return this.#commitStaged(
+			"qorpera_folder_memory_commit",
+			{ p_preconditions: { runLog, ...(runGenerations === undefined ? {} : { runGenerations }) } },
+			operationKey,
+			changeSet,
+			{},
+			signal,
+		);
+	}
+
 	async #commitStaged(
-		method: "qorpera_folder_commit" | "qorpera_folder_worker_commit",
+		method: "qorpera_folder_commit" | "qorpera_folder_worker_commit" | "qorpera_folder_memory_commit",
 		extra: Record<string, unknown>,
 		operationKey: string,
 		changeSet: CloudCompanyFolderStagedChangeSet,

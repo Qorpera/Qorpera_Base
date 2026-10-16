@@ -310,9 +310,10 @@ declare v_missing text;
 begin
 	if (select prosrc from pg_proc where proname = 'qorpera_terminalize_runner_attempt') !~* 'from public\.qorpera_runner_jobs where id = p_job_id for update' then
 		raise exception 'Terminalize must take the job FOR UPDATE'; end if;
-	-- The functions that end a lease themselves (the design review's list of the live job writers).
+	-- The functions that end a lease themselves (the design review's list of the live job writers). Since legacy sweep
+	-- F1d (20260930247000) the runner's completion (v6) only calls the folder core's, which takes the job.
 	select string_agg(f, ', ') into v_missing from unnest(array['qorpera_terminalize_runner_attempt_before_native_start',
-		'qorpera_complete_runner_job_v6','qorpera_complete_runner_job_before_path_runtime','qorpera_complete_runner_job',
+		'qorpera_folder_complete_run_job','qorpera_complete_runner_job',
 		'qorpera_fail_runner_job','qorpera_revoke_runner','qorpera_reissue_runner_activation',
 		'qorpera_resolve_failed_execution_run','qorpera_retry_room_delivery','qorpera_claim_runner_job',
 		'qorpera_reconcile_runner_orchestrator_without_sponsored_turns']) f

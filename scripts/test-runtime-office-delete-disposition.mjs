@@ -93,7 +93,7 @@ try {
 	const load = async (name) => import(pathToFileURL(join(bundleRoot, `${name}.mjs`)).href);
 	const { LxdOfficeStartControl, lxdOfficeProviderBindingSha256 } = await load("control");
 	const { LxdOfficeProviderControl } = await load("provider");
-	// The newest bundle activation is held back: the cases apply it mid-test as "a newer bundle than the office was built for".
+	// The newest bundle activation is held back: the cases apply its bundle switch mid-test as "a newer bundle than the office was built for".
 	const names = migrationNames();
 	const future = newestBundleActivation(names);
 	assert.ok(future);

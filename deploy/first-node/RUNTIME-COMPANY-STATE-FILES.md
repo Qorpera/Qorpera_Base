@@ -513,7 +513,9 @@ an email to a mailbox) wakes the agent, with up to 20 deliveries a wake; with `o
   offered again at the new one. The file's trigger id is always `file`. Instants are canonical,
   so re-spelling `starts` changes nothing.
 - The commit never inserts a wake. The tick starts a dynamic routine's next run
-  (`qorpera_restore_dynamic_routine_runs`), so no admission fence is taken after the clock.
+  (`qorpera_restore_dynamic_routine_runs`; on folder-v2 `qorpera_folder_restore_dynamic_routine_run`
+  since C1c-3e, and the legacy tick went in the legacy sweep's F3b, 20260930295000), so no admission
+  fence is taken after the clock.
 
 **Status:**
 - The file's status is the saver's word when the save changes it, and when it restores the file.
@@ -2344,7 +2346,8 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      subtransactions.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
-  - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
+  - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used (legacy sweep
+    F3b, 20260930295000, dropped it).
 - `qorpera_folder_workers_due(after, limit)` lists, a page at a time, the folder-v2 environments with a due worker
   (`qorpera_folder_worker_due`, the same predicate the drain uses, so it leaves out companies the drain would only
   answer `idle` for), leaving out paused companies and those being deleted.
@@ -2429,8 +2432,8 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
   fields, the request's), and the dispatch's answer names the session's phase.
 - **C3c (migration 20260930107500, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
   349850's quiet check-ins on folder-v2. After 1, 3 and 7 quiet days, the agent that started a coding session is asked
-  once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) still skips folder-v2
-  (026000) and stays for the executor's scan.
+  once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) skipped folder-v2
+  (026000) and went in the legacy sweep's F3a (20260930294000).
   - **Due** (`qorpera_folder_coding_checkin_due`, 349850's rule): an open session whose worker is not active and has
     no report on its way, with a steering run, a mark reached and not asked in this quiet period, and an executor to
     archive it. The due list and the step leave out erased and retired workers (`qorpera_coding_worker_retired`), and
@@ -2668,10 +2671,12 @@ companies the creation path must not also run the old chain (`qorpera_seed_compa
 snapshot bootstrap). If it runs first, its database-only Co-Founder makes the creation commit's
 Co-Founder unit refused; if it runs after, it finds the recorded one. Either way the old chain
 queues its own first run and leaves the company half on the old core (C2; #444 comment 5872662909).
+Legacy sweep D1 (20260930330000) dropped the old chain.
 
 Found while building F2-1, for F1 (C1c): `qorpera_put_profile_staff` and
 `qorpera_delete_profile_staff` still write folder-v2 roster rows directly, since their guards look
 at snapshot-v1 columns, and `qorpera_ensure_default_agent_read_grants` (the roster's default-grant
 trigger) inserts grants outside the authority journal and the rank-6 lock of C1b-2. A folder-v2
-index row should change only through its file.
+index row should change only through its file. (C1c guarded both writers; legacy sweep D1,
+20260930330000, dropped them.)
 

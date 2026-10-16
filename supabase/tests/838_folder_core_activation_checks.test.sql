@@ -58,10 +58,9 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_company_path_actor', 'legacy', 'Refuses 55000 on a missing path_gateway_version before the fence (both checked below).'),
 	('qorpera_enable_company_path_gateway', 'legacy', 'Operator only; takes the fence, then the files check refuses a folder-v2 row.'),
 	('qorpera_promote_company_file_graph_to_supabase', 'legacy', 'Old Company File graph; no folder-v2 caller.'),
-	('qorpera_verify_company_path_tree', 'legacy', 'Old tree proof; its callers refuse folder-v2 first: finalize_company_bootstrap (C1c-1) and the old path lane''s routes.'),
+	('qorpera_verify_company_path_tree', 'legacy', 'Old tree proof; its caller, the old path lane''s routes, refuses folder-v2 first (finalize_company_bootstrap went with legacy sweep D1, 20260930330000).'),
 	('qorpera_wake_path_authorized', 'legacy', 'Old file wake check; folder-v2 callers dispatch to folder bodies first, and manage_agent_worker refuses at company_path_actor.'),
 	('qorpera_sync_company_file_listener', 'legacy', 'Takes the fence only for an old file-wake cursor; folder-v2 file wakes use the P29 listener.'),
-	('qorpera_serialize_wake_admission', 'legacy', 'Old wake admission; every caller tests the core first: the drains filter folder-v2, P28a took the old materializers out of reconcile, and the quiet coding check-ins skip folder-v2 (20260930026000).'),
 	('qorpera_register_governed_company_computer', 'legacy', 'Old logical computers (C1C §13); no caller.'),
 	('qorpera_register_legacy_company_computer_teardown', 'legacy', 'Old logical computers (C1C §13); no caller.'),
 	-- Artifacts: every path that makes an artifact, and every member function that would take the fence over one,
@@ -116,8 +115,7 @@ begin
 		raise exception 'qorpera_company_path_actor no longer refuses a missing path gateway before the fence'; end if;
 	-- The artifact entries rest on these refusals (20260930041000): each comes before any write, row lock, fence or job.
 	select string_agg(n, ', ' order by n) into v_list from unnest(array['qorpera_register_artifact', 'qorpera_register_artifact_v2',
-		'qorpera_runner_broker_authorize_output_object', 'qorpera_runner_broker_confirm_output_object',
-		'qorpera_runner_broker_register_artifact', 'qorpera_create_artifact_index', 'qorpera_create_artifact_retention_hold',
+		'qorpera_create_artifact_index', 'qorpera_create_artifact_retention_hold',
 		'qorpera_complete_object_reachability_graph', 'qorpera_cancel_artifact_gc_plan']) n
 	where not exists (select 1 from p13_code c where c.name = n
 		and position('Artifacts do not serve folder-v2 companies' in c.src) between 1 and coalesce((select min(nullif(position(m[1] in c.src), 0))
@@ -156,12 +154,10 @@ end $$;
 
 do $$
 declare
-	-- The transcript append, receipt begin, the runner's file object check and the reservation (C1C §5.2), with the
-	-- folder-v2 bodies and the folder run entry that takes the mutex for every folder-v2 tool call.
+	-- The transcript append and the reservation (C1C §5.2), with the folder-v2 transcript append and receipt begin, and
+	-- the folder run entry that takes the mutex for every folder-v2 tool call.
 	c_mutex constant text[] := array['qorpera_append_runner_transcript_event', 'qorpera_folder_append_transcript_event',
-		'qorpera_begin_run_operation_receipt', 'qorpera_folder_begin_run_receipt',
-		'qorpera_runner_broker_authorize_company_file_object', 'qorpera_reserve_execution_sponsor_authority',
-		'qorpera_folder_tool_run'];
+		'qorpera_folder_begin_run_receipt', 'qorpera_reserve_execution_sponsor_authority', 'qorpera_folder_tool_run'];
 	v_list text;
 begin
 	select string_agg(name, ', ' order by name) into v_list from p13_code
@@ -190,9 +186,9 @@ begin
 			< least(coalesce(nullif(position('qorpera_execution_run_budgets' in c.src), 0), 1000000),
 				coalesce(nullif(position('public.qorpera_folder_append_transcript_event(' in c.src), 0), 1000000)));
 	if v_list is not null then raise exception 'These folder-v2 functions use the run mutex without taking it first: %', v_list; end if;
-	-- The old mutex functions take the job before the budget row, so they refuse folder-v2 (0A000) before the job.
+	-- The old mutex function takes the job before the budget row, so it refuses folder-v2 (0A000) before the job.
 	select string_agg(n, ', ' order by n) into v_list
-	from unnest(array['qorpera_append_runner_transcript_event', 'qorpera_begin_run_operation_receipt']) n
+	from unnest(array['qorpera_append_runner_transcript_event']) n
 	where not exists (select 1 from p13_code c where c.name = n
 		and position('if public.qorpera_job_is_folder_v2(p_job_id) then raise exception' in c.src)
 			between 1 and position('public.qorpera_runner_broker_locked_job(' in c.src));

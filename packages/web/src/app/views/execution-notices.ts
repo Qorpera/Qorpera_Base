@@ -89,6 +89,22 @@ function sentence(
 						payer: (subject.payerUserId && memberName?.(subject.payerUserId)) || t("another member"),
 					});
 		}
+		case "qorpera.member-notification.interface-supervision-ended/v1": {
+			// An area's supervisor no longer supervises its agents, who act for no one until someone does (20260930371000).
+			const member = memberName?.(subject.supervisorUserId) || t("A member");
+			const name = subject.key
+				?.map((value) => (Array.isArray(value) ? value.join(", ") : value === null ? "" : String(value)))
+				.filter((value) => value !== "")
+				.join(", ");
+			const area = name ? t("the area {name}", { name }) : t("an area");
+			if (subject.reason === "withdrawn")
+				return t("{member} stopped supervising the agents in {area}.", { member, area });
+			if (subject.reason === "released")
+				return t("{member} no longer supervises the agents in {area}.", { member, area });
+			if (subject.reason === "gone")
+				return t("{member} no longer supervises the agents in {area}: the area is gone.", { member, area });
+			return t("{member} left the company, so the agents in {area} have no supervisor.", { member, area });
+		}
 		case "qorpera.member-notification.run-no-progress/v1":
 			return t("{agent} has made no progress for {minutes} minutes.", {
 				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
