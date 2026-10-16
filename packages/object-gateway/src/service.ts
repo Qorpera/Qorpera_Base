@@ -9,6 +9,7 @@ import { serveMemberCompanyPresence } from "./member-company-presence.ts";
 import { createMemberCors } from "./member-cors.ts";
 import { serveMemberFolderCommit } from "./member-folder-commits.ts";
 import { type MemberFolderObjectAuthority, serveMemberFolderObject } from "./member-folder-objects.ts";
+import { serveMemberMessageErase } from "./member-message-erases.ts";
 import {
 	MEMBER_OBSERVATIONS_PATH,
 	type MemberCompanyObservations,
@@ -214,6 +215,11 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						replication: options.replication,
 						readFallback: (profileId, sha256) => options.authority.readLegacyObject(profileId, sha256),
 					});
+					return;
+				}
+				if (request.url?.startsWith("/v1/member-message-erases/")) {
+					if (!options.memberFiles) throw new HttpError(404, "Not found");
+					await serveMemberMessageErase(request, response, { authority: options.memberFiles });
 					return;
 				}
 				if (request.url?.startsWith("/v1/member-folder-objects/")) {

@@ -71,6 +71,31 @@ describe("human and publisher transport separation", () => {
 		await expect(begin()).resolves.toEqual({ ok: true });
 	});
 
+	it("answers the erase route's missing message as 404, and another RPC's P0002 as a failure", async () => {
+		let calls = 0;
+		const authority = new SupabaseMemberCompanyAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "public",
+			secretKey: "secret",
+			fetch: async () => {
+				calls++;
+				return calls < 3 ? Response.json({ code: "P0002" }, { status: 500 }) : Response.json({ ok: true });
+			},
+		});
+		const signal = new AbortController().signal;
+		await expect(authority.publisher("qorpera_memory_message_erase_request", {}, signal)).rejects.toMatchObject({
+			status: 404,
+		});
+		await expect(authority.publisher("qorpera_memory_message_erase_status", {}, signal)).rejects.toMatchObject({
+			status: 404,
+		});
+		await expect(authority.publisher("qorpera_memory_message_erase_status", {}, signal)).resolves.toEqual({
+			ok: true,
+		});
+		calls = 0;
+		await expect(authority.publisher("qorpera_folder_commit", {}, signal)).rejects.toMatchObject({ status: 500 });
+	});
+
 	it("preserves a denial without waiting for its body", async () => {
 		const authority = new SupabaseMemberCompanyAuthority({
 			projectUrl: "https://cloud.test",

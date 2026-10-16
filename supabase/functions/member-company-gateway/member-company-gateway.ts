@@ -4,6 +4,8 @@ const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64
 /** A member's change set to a folder-v2 company (folder core C4, P34a). */
 const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
+/** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
+const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
 const MAX_BYTES = 8 * 1024 * 1024;
 
 export interface MemberCompanyGatewayOptions {
@@ -18,6 +20,8 @@ function route(path: string): { method: string; headers: string[] } | undefined 
 	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"] };
 	if (FOLDER_COMMIT.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
 	if (PRESENCE.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
+	const erase = ERASE.exec(path);
+	if (erase) return { method: erase[1] ? "POST" : "GET", headers: ["authorization"] };
 	return undefined;
 }
 
