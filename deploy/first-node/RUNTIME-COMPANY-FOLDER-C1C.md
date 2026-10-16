@@ -65,7 +65,8 @@ test. A caller left alone stays refused. Paths that never went through the actor
   - the dead v1 execution start (`begin_native_company_execution`);
   - row writers of company state (contract 5.6): `manage_agent_routine`, `manage_agent_todo`, `manage_agent_sidebar`
     → routine, todo and section files (F2); `manage_agent_worker` and `report_worker_result` until C3 and F2-5b make
-    worker briefs and results files.
+    worker briefs and results files. All five, with `confirm_agent_todo_publication` and `decide_agent_routine`, were
+    dropped in legacy sweep D6 (20260930335000).
 - **Branches (12), in C1c-2:**
   - the send and model-request checks: the context-send trigger (`enforce_company_context_send`), which today
     returns early for `folder-v2`; `assert_company_path_reads`; `record_native_context_view` (bound to release ids
@@ -113,8 +114,9 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   their functions and the seed.
 - **The legacy pause** refuses: `folder-v2` companies stop through `qorpera_folder_pause`, which drains effects.
 - **Old row writers:** `put_profile_staff`, `delete_profile_staff`, `put_staff_provider_model`,
-  `confirm_agent_todo_publication`. The binding check reads the run's job, and reads the job id as the run lookup
-  does (any spelling uuid input accepts). Legacy sweep D1 (20260930330000) dropped the two staff writers.
+  `confirm_agent_todo_publication` (dropped in legacy sweep D6, 20260930335000). The binding check reads the run's job,
+  and reads the job id as the run lookup does (any spelling uuid input accepts). Legacy sweep D1 (20260930330000)
+  dropped the two staff writers.
 - **Left as they are, on purpose:**
   - `upsert_cloud_routine`: F2-6 (#523) decides its `folder-v2` rule. It refuses new routines, but still accepts saves
     of routines that existed as rows before the company became `folder-v2` (test 708);
@@ -1244,8 +1246,9 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   snapshot-v1 company still waits for a
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
   row `KEY SHARE`, and 824 H reversed 3h's line before 3f's (no digests since 3 October; legacy sweep A, #829).
-- **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
-  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
+- **Inert until C3:** `manage_agent_worker` (dropped in legacy sweep D6, 20260930335000) refuses `folder-v2` (the path
+  actor), so no `folder-v2` coding session can be created yet. 3i brings the turn's admission (`begin_coding_turn`)
+  and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
@@ -2244,11 +2247,12 @@ folder companies (`!context.folder`); offering it is the next PR (TypeScript, a 
 
 ## 7. Traps for C1c-2 and C1c-3
 
-- `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
+- `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is. (Both were
+  dropped in legacy sweep D6, 20260930335000.)
 - The v149 activation markers pin text in `record_native_context_view`, `add_agent_review_rule`,
-  `manage_agent_routine`, `check_company_path_mutation`, `pin_wake_occurrence`, `guard_founder_departure` and
-  `authorize_coding_machine_run`. An edit that drops a marker, or adds the gc fence to the functions it must stay out
-  of, fails the next cut.
+  `manage_agent_routine` (until legacy sweep D6 dropped it), `check_company_path_mutation`, `pin_wake_occurrence`,
+  `guard_founder_departure` and `authorize_coding_machine_run`. An edit that drops a marker, or adds the gc fence to
+  the functions it must stay out of, fails the next cut.
 - The coding lane goes through the actor (`begin_native_coding_execution`, `record_coding_context_view`), so coding
   turns, and C1b-3a's coding views with a live turn, refuse on `folder-v2` until C1c-2.
 - Runner-broker model requests do no Company File recheck at all today.

@@ -1180,12 +1180,9 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
-	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_manage_agent_routine");
+	// The host refused the early final and the save of its own routine, and showed the model why (below).
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
-	// The decision goes to the routine's file (the next test), never to the kernel's own decision.
-	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_decide_agent_routine");
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("decide_routine");
@@ -1214,8 +1211,7 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
-	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_decide_agent_routine");
+	// The decision went to the routine's file: no file there, so nothing is owed.
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
@@ -2564,7 +2560,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
 	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
 	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
-	// says it shows an image, so they moved again; every other tool is as on master.
+	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
+	// supervisor, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2599,9 +2596,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"43ca11add1902a27e7f15194922534b5a422e6f81f2d961a8f2a47ab9e6ab68c",
+		"287dd53d97b9f89410b84e1865521952a6f97622b9fb56532ce8fee51f3ae662",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"1b1036d3736db2576328e736525ac302632916430ab1965aacda66ed6e2d8866",
+		"924b2d0ace3497116e54999a5a8eccc1149cec06b03101d222dbeaa78be34faf",
 	);
 });
