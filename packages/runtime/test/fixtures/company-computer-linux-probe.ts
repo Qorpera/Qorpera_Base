@@ -51,7 +51,7 @@ const input = {
 	program: "/bin/bash",
 	args: [] as string[],
 	environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-	workingDirectory: layout.workbenchRoot,
+	workingDirectory: "/home/qorpera",
 	timeoutMs: 5000,
 	maxOutputBytes: 16384,
 	signal: new AbortController().signal,
@@ -94,16 +94,20 @@ try {
 	await writeFile("/srv/profiles/credential-canary", "SYNTHETIC_PROFILE_SECRET");
 	process.env.QORPERA_SYNTHETIC_SECRET = "SYNTHETIC_SERVICE_SECRET";
 	assert.equal(
-		await shell("printf 'persistent-workbench' > result; printf 'desktop-state' > \"$HOME/state\"; cat result"),
+		await shell(
+			"printf 'persistent-workbench' > /srv/workbench/result; printf 'desktop-state' > \"$HOME/state\"; cat /srv/workbench/result",
+		),
 		"persistent-workbench",
 	);
 	assert.equal(await readFile("/srv/desktop/state", "utf8"), "desktop-state");
-	assert.equal(await shell("cat result"), "persistent-workbench");
+	assert.equal(await shell("cat /srv/workbench/result"), "persistent-workbench");
 	const namespace = await readlink("/proc/self/ns/net");
 	assert.equal(
 		await shell(`set -eu
 test -z "\${QORPERA_SYNTHETIC_SECRET-}"
 test "$HOME" = /home/qorpera
+# A command starts in its home, never in the workbench (F3 4f-1b).
+test "$(pwd)" = /home/qorpera
 test ! -e /srv/profiles/credential-canary
 test ! -e /proc/1/root/srv/profiles/credential-canary
 test ! -e /run/office-captures
@@ -231,7 +235,7 @@ printf isolated`),
 	});
 	try {
 		await assert.rejects(
-			staleMount.run({ ...input, args: ["-c", "touch must-not-exist"] }),
+			staleMount.run({ ...input, args: ["-c", "touch /srv/workbench/must-not-exist"] }),
 			/OFFICE_WORKBENCH_MOUNT_CHANGED/,
 		);
 	} finally {
@@ -246,7 +250,7 @@ printf isolated`),
 		const undersized = new CompanyComputerLinuxCommands({ ...options, limits: { ...limits, ...changed } });
 		try {
 			await assert.rejects(
-				undersized.run({ ...input, args: ["-c", "touch must-not-exist"] }),
+				undersized.run({ ...input, args: ["-c", "touch /srv/workbench/must-not-exist"] }),
 				/OFFICE_COMMAND_LIMITS_UNAVAILABLE/,
 			);
 		} finally {
@@ -265,7 +269,10 @@ printf isolated`),
 	});
 	try {
 		await assert.rejects(
-			lostAuthority.run({ ...input, args: ["-c", "touch effect-before-revocation; echo result-must-not-escape"] }),
+			lostAuthority.run({
+				...input,
+				args: ["-c", "touch /srv/workbench/effect-before-revocation; echo result-must-not-escape"],
+			}),
 			/FIXTURE_BOUNDARY_REVOKED/,
 		);
 	} finally {
@@ -275,7 +282,10 @@ printf isolated`),
 	const revoked = new CompanyComputerLinuxCommands(options);
 	ready = false;
 	try {
-		await assert.rejects(revoked.run({ ...input, args: ["-c", "touch must-not-exist"] }), /FIXTURE_BOUNDARY_REVOKED/);
+		await assert.rejects(
+			revoked.run({ ...input, args: ["-c", "touch /srv/workbench/must-not-exist"] }),
+			/FIXTURE_BOUNDARY_REVOKED/,
+		);
 	} finally {
 		await revoked.close();
 	}
