@@ -50,6 +50,24 @@ The image must never update itself. Before it installs anything, `--apply` masks
 
 Application verifies the actual units, creates only the declared empty local custody paths, reloads systemd and leaves the office service disabled; preparation and the private mount also remain inactive. It cannot prepare an already configured guest as a new image. An identical unconfigured reinstall preserves installed inodes and the preparation lock. Image creation/sealing, cold-boot validation, dependency acquisition, LXD/KVM/Secure Boot acceptance and signing remain separate steps. Do not infer those from an installer receipt.
 
+## The company folder
+
+A package built with `--folder-program <built qorpera-folder>` carries the company folder (F3 4e-2): the folder
+program, the root helper that mounts the folder for each desktop and command
+(`qorpera-company-computer-folder-helper.mjs`), its socket and service, and the mount template
+`qorpera-office-folder-mount@.service.in`. The packager takes only the program that
+[`folder-program-linux-x64.json`](../folder-service/folder-program-linux-x64.json) pins; build it with
+`scripts/build-folder-program.mjs`. The installer admits the five files all together or not at all
+(`OFFICE_IMAGE_PACKAGE_INCOMPLETE`). The program goes to `/opt/qorpera-folder/qorpera-folder` (`0555`), the helper to
+`/opt/qorpera-office` and the units to `/etc/systemd/system`. The mount template is rendered with the office account's
+ids, like the private mount. The folder's units must be stopped and unmodified, like the office units. They have no
+`[Install]`: the office service wants the helper's socket, and the helper starts one mount per computer.
+
+The helper is root code, so it changes only with a new image. A code package never adds, changes or removes the
+folder's files. A code package for a base that carries them is therefore also built with `--folder-program`, and its
+provision is prepared with `--folder-mount-template <the base's template>`. The verifier renders that template and
+refuses it unless the base carries exactly those bytes.
+
 ## Repeatable local acceptance
 
 Run `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=<prepared-local-image-digest> node scripts/test-office-image-installation-systemd.mjs`. `scripts/fixtures/systemd-test-image.Dockerfile` builds the image (`deploy/test-machine/README.md`). The command packages the checkout and uses a disposable systemd container with private cgroups, no external network, no host cgroup bind and no production paths. Test dependency pins are measured only for that synthetic fixture. It checks exact installation and custody, unchanged reinstall, altered dependency pins, identity conflicts, inherited lock requirements, active mounts, unconfigured startup refusal, configured/company-state preservation and mount overrides. It also invokes the real preparation systemd manager to verify that the installed unit/reference contract is usable. The container runs without AppArmor, so run it on the operator test machine (`deploy/test-machine/README.md`) or a developer's Docker, never on a node that hosts companies.

@@ -13,6 +13,8 @@ export interface LxdOfficeCodePackageLaneDocument {
 	readonly artifactRoot: string;
 	readonly baseInstallationReceiptPath: string;
 	readonly baseMountTemplatePath: string;
+	/** Only for a base whose package carries the company folder's mount template (F3 4e-2). */
+	readonly baseFolderMountTemplatePath?: string;
 	readonly bootstrapToolPath: string;
 	readonly measurementToolPath: string;
 	readonly trust: {
@@ -26,6 +28,10 @@ export interface LxdOfficeCodePackageLaneDocument {
 }
 export function parseLxdOfficeCodePackageLaneDocument(value: unknown): Readonly<LxdOfficeCodePackageLaneDocument> {
 	try {
+		const optional =
+			value && typeof value === "object" && "baseFolderMountTemplatePath" in value
+				? (["baseFolderMountTemplatePath"] as const)
+				: [];
 		const r = officeRecord(value, [
 			"schema",
 			"envelopePath",
@@ -39,6 +45,7 @@ export function parseLxdOfficeCodePackageLaneDocument(value: unknown): Readonly<
 			"measurementToolPath",
 			"trust",
 			"providerCapabilityCredential",
+			...optional,
 		]);
 		if (r.schema !== "qorpera.lxd-office-code-package-lane/v1") throw new Error("schema");
 		const trust = officeRecord(r.trust, [
@@ -59,6 +66,7 @@ export function parseLxdOfficeCodePackageLaneDocument(value: unknown): Readonly<
 			artifactRoot: officePhysicalPath(r.artifactRoot),
 			baseInstallationReceiptPath: officePhysicalPath(r.baseInstallationReceiptPath),
 			baseMountTemplatePath: officePhysicalPath(r.baseMountTemplatePath),
+			...(optional.length ? { baseFolderMountTemplatePath: officePhysicalPath(r.baseFolderMountTemplatePath) } : {}),
 			bootstrapToolPath: officePhysicalPath(r.bootstrapToolPath),
 			measurementToolPath: officePhysicalPath(r.measurementToolPath),
 			trust: Object.freeze({

@@ -419,14 +419,10 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_folder_presence_routes(%L, %L, false)',
 		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']),
 		'42501', 'Company File authority is unavailable');
-	-- A member's shared exports: no company fence, and nothing listed yet.
-	perform pg_temp.path_claims('authenticated', c_member);
-	s := public.qorpera_list_member_file_exports(c_env);
-	if s -> 'items' <> '[]'::jsonb then raise exception 'Member exports: %', s; end if;
-	perform pg_temp.raises_like(format('select public.qorpera_member_file_export_source(%L, %L)', c_env,
-		jsonb_build_object('realm','object_storage','assetId',extensions.gen_random_uuid(),'sha256',repeat('a',64))), '42501',
-		'Completed shared export required');
-	perform pg_temp.path_claims('service_role');
+	-- A member's shared exports are gone (legacy sweep E3, 20260930450000); the member actor is in 6.
+	if to_regprocedure('public.qorpera_list_member_file_exports(uuid,uuid,integer)') is not null
+		or to_regprocedure('public.qorpera_member_file_export_source(uuid,jsonb)') is not null then
+		raise exception 'A member''s shared export functions must be gone'; end if;
 end $$;
 
 -- 8. The run context: the company name from the folder index and F2's agent folders (F2-1b, 20260929440000), whose
