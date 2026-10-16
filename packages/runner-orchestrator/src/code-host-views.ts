@@ -111,15 +111,16 @@ export interface CodeHostJobsOptions {
 	client: LxdInstanceExecPipeClient;
 	control: CodeHostControl;
 	log?: (event: CodeHostViewEvent) => void;
-	/** How long the folder program may take to mount the view. Default 40 s. */
+	/** How long writing the view file, starting the folder program and its mount of the view may take, each command in
+	 * them included. Default 40 s. */
 	mountWaitMs?: number;
-	/** How long a publish is asked again while it gets no answer. Default 60 s. */
+	/** How long a publish may take, asked again while the node's paths wait. Default 60 s. */
 	publishWaitMs?: number;
 	/** How long a clean, and each core call, may take. Default 60 s and 10 s. */
 	cleanMs?: number;
 	callMs?: number;
-	/** How often the mount is looked at while it comes up; a publish without an answer is asked again after 5 times
-	 * this. Default 200 ms. */
+	/** How often the mount is looked at while it comes up; a publish whose paths wait is asked again after 5 times this.
+	 * Default 200 ms. */
 	pollMs?: number;
 }
 
@@ -131,7 +132,7 @@ interface View {
 
 export type CodeHostPublishAnswer =
 	| { answer: "saved" }
-	| { answer: "refused"; detail: string }
+	| { answer: "refused" | "waiting"; detail: string }
 	| { answer: "closed" | "unanswered" };
 
 /** The exec a job runs in its company's code host. */
@@ -246,19 +247,17 @@ export class CodeHostJobs {
 		const view = await this.#open(environmentId, signal);
 		let failure: { error: unknown } | undefined, result: T | undefined;
 		try {
-			await this.#ok(
-				shell,
-				["/usr/bin/sh", "-c", CODE_HOST_VIEW_WRITE],
-				signal,
-				Buffer.from(JSON.stringify({ environmentId: view.environmentId, viewId: view.viewId, pass: view.pass })),
-			);
-			await this.#ok(shell, CODE_HOST_FOLDER_START, signal);
-			await this.#mounted(shell, signal);
+			await this.#mount(shell, view, signal);
 			result = await job({ shell, layout: CODE_HOST_LAYOUT, signal }, this.#gcBlock(view));
 			const published = await this.#publish(shell, signal);
 			if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
 			if (published.answer === "refused")
 				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
+			if (published.answer === "waiting")
+				throw new CodeHostJobFailure(
+					"CODE_HOST_PUBLISH_UNANSWERED",
+					published.detail || "the node did not prove the publish complete",
+				);
 			if (published.answer === "unanswered")
 				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
 		} catch (error) {
@@ -323,44 +322,63 @@ export class CodeHostJobs {
 		};
 	}
 
-	/** Until the folder program has the view mounted, or says the node closed or refused it. */
-	async #mounted(shell: CodeHostShell, signal: AbortSignal): Promise<void> {
-		const until = Date.now() + this.#mountWaitMs;
-		for (;;) {
-			const state = await this.#ok(shell, ["/usr/bin/sh", "-c", CODE_HOST_FOLDER_STATE], signal);
-			const fields = new Map(
-				state.stdout
-					.toString("utf8")
-					.split("\n")
-					.filter((line) => line.includes("="))
-					.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)] as const),
+	/** Writes the view file, starts the folder program and waits until it has the view mounted, or says the node closed
+	 * or refused it, all within `mountWaitMs` (`CODE_HOST_FOLDER_UNAVAILABLE`), a command that never ends included. */
+	async #mount(shell: CodeHostShell, view: View, signal: AbortSignal): Promise<void> {
+		const deadline = AbortSignal.timeout(this.#mountWaitMs),
+			bounded = AbortSignal.any([signal, deadline]);
+		const unavailable = () =>
+			new CodeHostJobFailure("CODE_HOST_FOLDER_UNAVAILABLE", "the folder program did not mount the view");
+		try {
+			await this.#ok(
+				shell,
+				["/usr/bin/sh", "-c", CODE_HOST_VIEW_WRITE],
+				bounded,
+				Buffer.from(JSON.stringify({ environmentId: view.environmentId, viewId: view.viewId, pass: view.pass })),
 			);
-			const active = fields.get("ActiveState");
-			if (
-				active === "active" &&
-				["fuse qorpera-company", "fuse.qorpera qorpera-company"].includes(fields.get("Mount") ?? "")
-			)
-				return;
-			if (
-				active === "failed" &&
-				fields.get("Result") === "exit-code" &&
-				fields.get("ExecMainCode") === "1" &&
-				fields.get("ExecMainStatus") === "3"
-			)
-				throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the node closed or refused the view");
-			if (active === "failed" || active === "inactive")
-				throw new CodeHostJobFailure("CODE_HOST_FOLDER_FAILED", "the folder program stopped before it mounted");
-			if (Date.now() >= until)
-				throw new CodeHostJobFailure("CODE_HOST_FOLDER_UNAVAILABLE", "the folder program did not mount the view");
-			await delay(this.#pollMs, undefined, { signal });
+			await this.#ok(shell, CODE_HOST_FOLDER_START, bounded);
+			for (;;) {
+				const state = await this.#ok(shell, ["/usr/bin/sh", "-c", CODE_HOST_FOLDER_STATE], bounded);
+				const fields = new Map(
+					state.stdout
+						.toString("utf8")
+						.split("\n")
+						.filter((line) => line.includes("="))
+						.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)] as const),
+				);
+				const active = fields.get("ActiveState");
+				if (
+					active === "active" &&
+					["fuse qorpera-company", "fuse.qorpera qorpera-company"].includes(fields.get("Mount") ?? "")
+				)
+					return;
+				if (
+					active === "failed" &&
+					fields.get("Result") === "exit-code" &&
+					fields.get("ExecMainCode") === "1" &&
+					fields.get("ExecMainStatus") === "3"
+				)
+					throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the node closed or refused the view");
+				if (active === "failed" || active === "inactive")
+					throw new CodeHostJobFailure("CODE_HOST_FOLDER_FAILED", "the folder program stopped before it mounted");
+				if (deadline.aborted) throw unavailable();
+				await delay(this.#pollMs, undefined, { signal: bounded });
+			}
+		} catch (error) {
+			signal.throwIfAborted();
+			if (deadline.aborted && !(error instanceof CodeHostJobFailure)) throw unavailable();
+			throw error;
 		}
 	}
 
-	/** The view's pending changes, published until an answer or `publishWaitMs` (see `codeHostPublishAnswer`). */
+	/** The view's pending changes, published within `publishWaitMs` (see `codeHostPublishAnswer`). Only a whole report
+	 * whose paths wait is asked again. A publish whose answer is lost (no report, a lost or oversized exec, the deadline)
+	 * is not: its boundary may have run and settled a conflict, which a second publish would not report, since it
+	 * publishes only what is still pending (`crates/qorpera-folder/src/link.rs`, `publish_final`). */
 	async #publish(shell: CodeHostShell, signal: AbortSignal): Promise<CodeHostPublishAnswer> {
 		const until = Date.now() + this.#publishWaitMs;
 		for (;;) {
-			let answer: CodeHostPublishAnswer = { answer: "unanswered" };
+			let answer: CodeHostPublishAnswer;
 			try {
 				const result = await shell.run(
 					{ argv: CODE_HOST_FOLDER_PUBLISH, env: ENV, cwd: "/", maximumOutputBytes: PUBLISH_OUTPUT_BYTES },
@@ -368,10 +386,10 @@ export class CodeHostJobs {
 				);
 				answer = codeHostPublishAnswer(result.status, result.stdout);
 			} catch {
-				// A lost or oversized publish: asked again.
+				signal.throwIfAborted();
+				return { answer: "unanswered" };
 			}
-			signal.throwIfAborted();
-			if (answer.answer !== "unanswered" || Date.now() + this.#pollMs * 5 >= until) return answer;
+			if (answer.answer !== "waiting" || Date.now() + this.#pollMs * 5 >= until) return answer;
 			await delay(this.#pollMs * 5, undefined, { signal });
 		}
 	}
@@ -413,9 +431,10 @@ export class CodeHostJobs {
 }
 
 /** `qorpera-folder publish --json`: 0 every path saved, 4 a path not saved or the boundary refused, 3 the view closed,
- * anything else no answer. Exit 1 can still print the node's answered report (its release check failed after it):
- * one with a path that will not be saved is refused, since publishing again would find nothing pending and exit 0.
- * A report that contradicts its exit code is no answer. */
+ * anything else no answer. Exit 1 can still print the node's whole report (its release check failed after it): one
+ * with a path that will not be saved is refused, since publishing again would find nothing pending and exit 0; one
+ * whose other paths all wait is `waiting`, and a later publish may still save them. A report that contradicts its exit
+ * code is no answer. */
 export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostPublishAnswer {
 	if (status === 3) return { answer: "closed" };
 	let report: unknown;
@@ -444,8 +463,11 @@ export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostP
 	if (status === 0 && refused === undefined && unsaved.length === 0) return { answer: "saved" };
 	if (status === 4 && (refused !== undefined || unsaved.length > 0)) return { answer: "refused", detail: detail() };
 	// `waiting` is the only outcome a later publish can still turn into saved.
-	if (status === 1 && (refused !== undefined || unsaved.some((entry) => entry.outcome !== "waiting")))
-		return { answer: "refused", detail: detail() };
+	if (status === 1)
+		return {
+			answer: refused !== undefined || unsaved.some((entry) => entry.outcome !== "waiting") ? "refused" : "waiting",
+			detail: detail(),
+		};
 	return { answer: "unanswered" };
 }
 
