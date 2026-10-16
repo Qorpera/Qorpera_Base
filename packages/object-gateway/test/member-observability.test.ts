@@ -89,7 +89,7 @@ describe("bounded human request observations", () => {
 		first.effect("none");
 		first.finish(403);
 		first.finish(200);
-		const second = observer.start("command_review");
+		const second = observer.start("command_submit");
 		second.update({ commandId });
 		second.effect("unconfirmed");
 		second.fail(503);
@@ -103,12 +103,12 @@ describe("bounded human request observations", () => {
 
 	it.each(["proposed", "replayed", "rejected"] as const)("keeps %s distinct from fresh application", (outcome) => {
 		const observer = new MemberCompanyObservations();
-		const span = observer.start("file_request");
-		span.operation("command_review");
+		const span = observer.start("object_read");
+		span.operation("command_submit");
 		span.effect(outcome);
 		span.finish(200);
 		expect(observer.snapshot({ limit: 1 }).observations[0]).toMatchObject({
-			operation: "command_review",
+			operation: "command_submit",
 			effectOutcome: outcome,
 			responseOutcome: "succeeded",
 		});
@@ -138,14 +138,14 @@ describe("bounded human request observations", () => {
 		});
 		const evicted = observer.start("object_read");
 		monotonic = 1;
-		observer.start("command_submit").update({ commandId });
+		observer.start("object_read").update({ commandId });
 		monotonic = 2;
-		observer.start("command_review").update({ commandId });
+		observer.start("command_submit").update({ commandId });
 		evicted.update({ actorUserId });
 		evicted.finish(200);
 		const result = observer.snapshot({ limit: 1 });
 		expect(result).toMatchObject({ evicted: 1, retained: 2, matched: 2, more: true });
-		expect(result.observations[0]?.operation).toBe("command_review");
+		expect(result.observations[0]?.operation).toBe("command_submit");
 		expect(observer.snapshot({ limit: 2, actorUserId }).observations).toEqual([]);
 		monotonic = 102;
 		expect(observer.snapshot({ limit: 2 })).toMatchObject({ evicted: 3, retained: 0, matched: 0, more: false });
@@ -202,9 +202,11 @@ describe("bounded human request observations", () => {
 			}),
 		);
 		span.operation("PRIVATE_OPERATION" as MemberObservationOperation);
+		// A snapshot-v1 operation is no longer an operation.
+		span.operation("command_review" as MemberObservationOperation);
 		const result = observer.snapshot({ limit: 1 });
 		expect(result).toMatchObject({
-			dropped: 7,
+			dropped: 8,
 			observations: [{ actorUserId, companyId: null, resourceId: null, logicalObjectReadBytes: null }],
 		});
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_");
@@ -223,7 +225,7 @@ describe("bounded human request observations", () => {
 		[undefined, "unknown"],
 	] as const)("exports only fixed category for %s", (status, category) => {
 		const observer = new MemberCompanyObservations();
-		const span = observer.start("file_request");
+		const span = observer.start("object_read");
 		span.fail(status);
 		span.finish(status ?? 503);
 		expect(observer.snapshot({ limit: 1 }).observations[0]?.errorCategory).toBe(category);
@@ -273,6 +275,8 @@ describe("strict operator query", () => {
 		"?offset=0",
 		"?companyId=invalid",
 		"?operation=execute",
+		"?operation=file_request",
+		"?operation=proposal_review",
 		"?outcome=applied",
 		"?path=secret",
 		"?companyId=%31",

@@ -1,0 +1,43 @@
+[Unit]
+Description=The company folder at /company (started by the machine's guest helper with the boot's view)
+After=local-fs.target
+# The guest helper writes the boot's view here, in memory and root's only, from the pass it read on exec stdin.
+ConditionPathExists=/run/qorpera-folder/view.json
+# Started again after every exit while the view is open; never refused for starting often.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=root
+Group=root
+# Beside the commands' slice, like the watchdog: the program's own work (renewing its view) never keeps the machine
+# busy, and stopping the commands never stops it.
+Slice=qorpera-control.slice
+# One mount for the whole machine, in PID 1's namespace: every command, what a command leaves running and every
+# container sees the same /company. Commands run as root (allow_other). The helper made the state folder empty.
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --allow-other yes
+# A program killed hard leaves its mount behind; take it away.
+ExecStopPost=-/usr/bin/umount -l /company
+# Any exit (a crash, a kill, root's unmount) starts it again, with the version map and read log its state folder
+# keeps; 3 (the node closed or refused the view) does not: starting again would only be refused again.
+Restart=always
+RestartSec=2s
+RestartPreventExitStatus=3
+KillMode=mixed
+TimeoutStopSec=20s
+LimitCORE=0
+# The mount must appear in PID 1's mount namespace, so no option here makes a namespace of its own (ProtectSystem,
+# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups). No Environment: the
+# pass is only in the view file.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/fuse rw
+RestrictAddressFamilies=AF_UNIX AF_VSOCK
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+MemoryMax=512M
+MemorySwapMax=0
