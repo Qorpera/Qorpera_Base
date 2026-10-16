@@ -53,6 +53,25 @@ create function pg_temp.w4_wake_sequence(p_run jsonb, p_sequence integer) return
 	select pg_temp.fx(format('update public.qorpera_wake_occurrences set payload = %L where run_id = %L',
 		jsonb_build_object('sequence', p_sequence), p_run -> 'actor' ->> 'runId'))
 $$;
+-- A step of a run's log (W1b) as the index keeps it, made by hand: the log's row when the run has none, and the step's
+-- row, pending unless told otherwise. A dispatch or a follow-up names such a step as its parent (W4a-2, test 995).
+create function pg_temp.w4_step(p_run jsonb, p_j integer, p_call text, p_tool text default 'manage_worker',
+	p_finished boolean default false, p_erased boolean default false, p_narrow boolean default false,
+	p_tree text default 'agents/ada/memory/thread') returns void
+language plpgsql as $$
+declare
+	env uuid := '63400000-0000-4000-8000-000000000020'; r uuid := (p_run -> 'actor' ->> 'runId')::uuid;
+	k text := p_tree || '/runs/' || r; b text := format('%s/log/%s.jsonl', k, lpad((p_j / 16 * 16)::text, 8, '0'));
+begin
+	insert into public.qorpera_memory_run_logs(environment_id, run_id, session_id, run_path, run_key, toml_path_version, commit_id)
+	select env, r, run.session_id, k, k, extensions.gen_random_uuid(), extensions.gen_random_uuid()
+	from public.qorpera_execution_runs run where run.id = r
+	on conflict (environment_id, run_id) do nothing;
+	insert into public.qorpera_memory_run_steps(environment_id, run_id, j, tool, call_id, narrow, erased, finished, line_sha256,
+		fixed_sha256, block_path, block_key, block_path_version, commit_id)
+	values (env, r, p_j, p_tool, p_call, p_narrow, p_erased, p_finished, repeat('a', 64), repeat('b', 64), b, b,
+		extensions.gen_random_uuid(), extensions.gen_random_uuid());
+end $$;
 
 -- 0. Ada's conversation with a summary tree: two blocks saved by one platform commit ------------------------------------
 do $$
@@ -255,10 +274,13 @@ declare
 	v jsonb := pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(1), pg_temp.w4_block(2)));
 	f text := 'agents/ada/todos/plan-the-trip/scout'; b jsonb := pg_temp.brief('99300000-0000-4000-8000-000000000001');
 	u jsonb := pg_temp.dispatch_units(p, f, b); q jsonb; r jsonb; w public.qorpera_runtime_worker_parents%rowtype; x jsonb;
-	stale jsonb; i integer := 0;
+	stale jsonb; i integer := 0; c jsonb := '{"parentCall":"w4-call-0001"}';
 begin
 	if jsonb_array_length(u) <> 2 then raise exception 'The todo''s folder is made with the first dispatch'; end if;
-	r := pg_temp.wc(p, 'w4-dispatch-0001', u, pg_temp.dispatch_request(f, b) || jsonb_build_object('parentStep', 3, 'view', v),
+	-- Each step a dispatch names is its call's, pending in Ada's log (W4a-2).
+	perform pg_temp.w4_step(ada, 0, 'w4-call-0002'); perform pg_temp.w4_step(ada, 1, 'w4-unreviewed-0001');
+	perform pg_temp.w4_step(ada, 3, 'w4-call-0001');
+	r := pg_temp.wc(p, 'w4-dispatch-0001', u, pg_temp.dispatch_request(f, b) || c || jsonb_build_object('parentStep', 3, 'view', v),
 		pg_temp.reviewed(ada, 'w4-call-0001', u));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000001', 1);
@@ -271,7 +293,8 @@ begin
 	-- A step alone; neither (no row); a stale reference (a block gone) is kept: the worker composes fresh from it.
 	f := 'agents/ada/todos/plan-the-trip/second'; b := pg_temp.brief('99300000-0000-4000-8000-000000000002');
 	u := pg_temp.dispatch_units(p, f, b);
-	perform pg_temp.expect(pg_temp.wc(p, 'w4-dispatch-0002', u, pg_temp.dispatch_request(f, b) || '{"parentStep":0}'::jsonb,
+	perform pg_temp.expect(pg_temp.wc(p, 'w4-dispatch-0002', u, pg_temp.dispatch_request(f, b)
+		|| '{"parentStep":0,"parentCall":"w4-call-0002"}'::jsonb,
 		pg_temp.reviewed(ada, 'w4-call-0002', u)), 1, 'saved');
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000002', 1);
 	if w.parent_run_id is distinct from (p ->> 'runId')::uuid or w.parent_step is distinct from 0 or w.parent_view is not null then
@@ -295,15 +318,15 @@ begin
 	f := 'agents/ada/todos/plan-the-trip/unreviewed'; b := pg_temp.brief('99300000-0000-4000-8000-000000000005');
 	u := pg_temp.dispatch_units(p, f, b);
 	perform pg_temp.expect(pg_temp.wc(p, 'w4-unreviewed-0001', u, pg_temp.dispatch_request(f, b)
-		|| jsonb_build_object('parentStep', 1, 'view', v)), 1, 'denied', 'review_required');
+		|| jsonb_build_object('parentStep', 1, 'parentCall', 'w4-unreviewed-0001', 'view', v)), 1, 'denied', 'review_required');
 	if exists (select 1 from public.qorpera_runtime_worker_parents where worker_id = '99300000-0000-4000-8000-000000000005') then
 		raise exception 'A denied dispatch kept a parent'; end if;
 	-- The request: a step is an integer from 0 (9 digits at most), a view has the shape and stands in the folder; only a
-	-- dispatch or a follow-up names either.
+	-- dispatch or a follow-up names either. (A step comes with its call id, W4a-2; test 995 checks the pair.)
 	q := pg_temp.dispatch_request(f, b);
 	foreach x in array array[
-		q || '{"parentStep":-1}'::jsonb, q || '{"parentStep":1.5}'::jsonb, q || '{"parentStep":"3"}'::jsonb,
-		q || '{"parentStep":1234567890}'::jsonb, q || '{"parentStep":null}'::jsonb, q || '{"parentStep":[3]}'::jsonb,
+		q || '{"parentStep":-1}'::jsonb || c, q || '{"parentStep":1.5}'::jsonb || c, q || '{"parentStep":"3"}'::jsonb || c,
+		q || '{"parentStep":1234567890}'::jsonb || c, q || '{"parentStep":null}'::jsonb || c, q || '{"parentStep":[3]}'::jsonb || c,
 		q || '{"view":[]}'::jsonb, q || '{"view":null}'::jsonb, q || jsonb_build_object('view', v - 'asOfSeq'),
 		q || jsonb_build_object('view', pg_temp.w4_view(n, 0, '[]', extensions.gen_random_uuid())),
 		q || jsonb_build_object('view', pg_temp.w4_view(n + 100, 0, '[]')),
@@ -311,7 +334,7 @@ begin
 			pg_temp.w4_block(2) ->> 'path')))),
 		q || '{"parentSessionId":"63400000-0000-4000-8000-000000000020"}'::jsonb,
 		jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/price-check','text','More.',
-			'resultsVersion',null,'parentStep',-1),
+			'resultsVersion',null,'parentStep',-1,'parentCall','w4-call-0001'),
 		jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/price-check','text','More.',
 			'resultsVersion',null,'view','{}'::jsonb),
 		jsonb_build_object('action','decide','folder','agents/ada/todos/call-the-bank/price-check','decision','accepted','note',null,
@@ -379,13 +402,14 @@ begin
 	ada2 := pg_temp.agent_run('84000000-0000-4000-8000-0000000000e1');
 	if (select session_id from public.qorpera_execution_runs where id = (ada2 -> 'actor' ->> 'runId')::uuid) is distinct from s then
 		raise exception 'Ada''s next run is in another conversation'; end if;
-	base := (select pv.structured -> 'parse' from public.qorpera_folder_path_versions pv where pv.version = pg_temp.f2_version(f || '/brief.md'));
+	perform pg_temp.w4_step(ada2, 7, 'w4-call-0010'); perform pg_temp.w4_step(ada2, 9, 'w4-call-0011');
+	base :=(select pv.structured -> 'parse' from public.qorpera_folder_path_versions pv where pv.version = pg_temp.f2_version(f || '/brief.md'));
 	next := base || jsonb_build_object('followUps', 1, 'followedUpAt', to_char(clock_timestamp() at time zone 'UTC',
 		'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Look again.');
 	u := jsonb_build_array(pg_temp.f2_write(ada2 -> 'actor', f || '/brief.md', next),
 		jsonb_build_object('op','delete','path',f || '/results.md','expectedVersion',pg_temp.f2_version(f || '/results.md')));
 	q := jsonb_build_object('action','followup','folder',f,'text','Look again.','resultsVersion',pg_temp.f2_version(f || '/results.md'),
-		'parentStep',7,'view',v);
+		'parentStep',7,'parentCall','w4-call-0010','view',v);
 	r := pg_temp.wc(ada2 -> 'actor', 'w4-followup-0001', u, q, pg_temp.reviewed(ada2, 'w4-call-0010', u));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000001', 2);
@@ -416,7 +440,7 @@ begin
 	u := jsonb_build_array(pg_temp.f2_write(ada2 -> 'actor', f || '/brief.md', next),
 		jsonb_build_object('op','delete','path',f || '/results.md','expectedVersion',pg_temp.f2_version(f || '/results.md')));
 	q := jsonb_build_object('action','followup','folder',f,'text','Once more.','resultsVersion',pg_temp.f2_version(f || '/results.md'),
-		'parentStep',9);
+		'parentStep',9,'parentCall','w4-call-0011');
 	perform pg_temp.expect(pg_temp.wc(ada2 -> 'actor', 'w4-followup-0002', u, q, pg_temp.reviewed(ada2, 'w4-call-0011', u)), 1, 'saved');
 	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000001', 2147483647);
 	if w.parent_run_id is distinct from (ada2 -> 'actor' ->> 'runId')::uuid or w.parent_step is distinct from 9 or w.parent_view is not null
