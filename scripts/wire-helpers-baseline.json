@@ -1,12 +1,12 @@
 {
 	"cloud-client": {
-		"uuidPatterns": 20,
+		"uuidPatterns": 19,
 		"recordHelpers": 15,
 		"uuidHelpers": 9,
 		"sha256Helpers": 1
 	},
 	"company": {
-		"uuidPatterns": 2,
+		"uuidPatterns": 0,
 		"recordHelpers": 0,
 		"uuidHelpers": 0,
 		"sha256Helpers": 0
@@ -24,7 +24,7 @@
 		"sha256Helpers": 0
 	},
 	"object-gateway": {
-		"uuidPatterns": 11,
+		"uuidPatterns": 10,
 		"recordHelpers": 3,
 		"uuidHelpers": 0,
 		"sha256Helpers": 0
@@ -39,7 +39,7 @@
 		"uuidPatterns": 60,
 		"recordHelpers": 31,
 		"uuidHelpers": 12,
-		"sha256Helpers": 4
+		"sha256Helpers": 3
 	},
 	"web": {
 		"uuidPatterns": 7,

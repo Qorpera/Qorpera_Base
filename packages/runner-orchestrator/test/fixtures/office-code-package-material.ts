@@ -15,9 +15,11 @@ export function officeCodePackageMaterialFixture(
 		configure?: (fixture: ReturnType<typeof officeCodePackageSignedFixture>) => void;
 		policy?: LxdOfficePhysicalPolicy;
 		binding?: LxdOfficeGuestBinding;
+		/** A base that carries the company folder (F3 4e-2). */
+		folder?: boolean;
 	} = {},
 ) {
-	const f = officeCodePackageSignedFixture(),
+	const f = officeCodePackageSignedFixture({ folder: options.folder }),
 		files = new Map<string, Buffer>(),
 		readBuffers: Buffer[] = [],
 		reads: string[] = [];
@@ -59,6 +61,7 @@ export function officeCodePackageMaterialFixture(
 		targetManifestPath: "/protected/target.json",
 		baseInstallationReceiptPath: "/protected/installation.json",
 		baseMountTemplatePath: "/protected/mount.in",
+		...(options.folder ? { baseFolderMountTemplatePath: "/protected/folder-mount.in" } : {}),
 		artifactRoot: "/protected/artifacts",
 		bootstrapToolPath: "/protected/bootstrap.cjs",
 		measurementToolPath: "/protected/measure.cjs",
@@ -75,6 +78,8 @@ export function officeCodePackageMaterialFixture(
 		[document.providerCapabilityCredential.path, Buffer.from(capability)],
 	] as const)
 		files.set(path, b);
+	if (document.baseFolderMountTemplatePath)
+		files.set(document.baseFolderMountTemplatePath, signed.manifests.baseFolderMountTemplate!);
 	const read = async (path: string, maximum = 1024 ** 2) => {
 		reads.push(path);
 		const b = files.get(path);

@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +12,7 @@ import {
 	LxdUnixClient,
 } from "../src/lxd-client.ts";
 import { HttpLxdGuestTransport } from "../src/lxd-provider.ts";
+import { serverFrame } from "./helpers/realtime-fake.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -38,13 +41,14 @@ async function unixServer(
 		const chunks: Buffer[] = [];
 		request.on("data", (chunk: Buffer) => chunks.push(chunk));
 		request.on("end", () => {
-			const encoded = Buffer.concat(chunks).toString("utf-8");
+			const raw = Buffer.concat(chunks);
+			const encoded = raw.toString("utf-8");
 			const body =
 				request.headers["content-type"] === "application/json"
 					? encoded
 						? (JSON.parse(encoded) as unknown)
 						: null
-					: Buffer.from(encoded, "utf-8");
+					: raw;
 			const result = handle(request.method ?? "", request.url ?? "", body, request.headers);
 			response.writeHead(result.status ?? 200, { "content-type": "application/json", ...result.headers });
 			response.end(JSON.stringify(result.body));
@@ -588,6 +592,44 @@ describe("LXD Unix client", () => {
 		expect(requests).toEqual([`DELETE ${path}`, `DELETE ${path}`, `DELETE ${path}`]);
 	});
 
+	it("creates and deletes a project, whose answers are synchronous with null or empty metadata", async () => {
+		const project = "qorpera-codehost-0123456789abcdef0123456789abcdef";
+		const path = `/1.0/projects/${project}`;
+		// LXD 6.9: a project's create answers with null metadata, its delete with an empty object.
+		const created = { body: { type: "sync", status: "Success", status_code: 200, metadata: null } };
+		const deleted = { body: { type: "sync", status: "Success", status_code: 200, metadata: {} } };
+		let answer: { status?: number; body: unknown } = created;
+		const requests: string[] = [];
+		const posted: unknown[] = [];
+		const socket = await unixServer((method, url, body) => {
+			requests.push(`${method} ${url}`);
+			if (method === "POST" && url === "/1.0/projects") {
+				posted.push(body);
+				return answer;
+			}
+			if (method === "DELETE" && url === path) return answer;
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		await expect(client.createProject(project, { "features.images": "true" })).resolves.toBeUndefined();
+		answer = { status: 409, body: { type: "error", error_code: 409, error: "The project already exists" } };
+		await expect(client.createProject(project, {})).rejects.toThrow("LXD: The project already exists");
+		answer = deleted;
+		await expect(client.deleteProject(project)).resolves.toBe(true);
+		answer = created;
+		await expect(client.deleteProject(project)).resolves.toBe(true);
+		answer = { status: 404, body: { type: "error", error_code: 404, error: "Project not found" } };
+		await expect(client.deleteProject(project)).resolves.toBe(false);
+		answer = { status: 400, body: { type: "error", error_code: 400, error: "Only empty projects can be removed" } };
+		await expect(client.deleteProject(project)).rejects.toThrow("LXD: Only empty projects can be removed");
+		// No operation is waited for.
+		expect(requests).toEqual([...Array(2).fill("POST /1.0/projects"), ...Array(4).fill(`DELETE ${path}`)]);
+		expect(posted).toEqual([
+			{ name: project, description: "", config: { "features.images": "true" } },
+			{ name: project, description: "", config: {} },
+		]);
+	});
+
 	describe("an exec operation that fails", () => {
 		const name = "qorpera-20000000000040008000000000000001";
 		const agentOffline = "LXD VM agent is not currently running";
@@ -800,5 +842,429 @@ describe("LXD Unix client", () => {
 				group: 0,
 			},
 		});
+	});
+
+	it("waits longer for one command only when asked, within 600 seconds", async () => {
+		const waits: string[] = [];
+		const socket = await unixServer((method, url) => {
+			if (method === "POST" && url.includes("/exec?project="))
+				return {
+					body: {
+						type: "async",
+						status: "Operation created",
+						status_code: 100,
+						operation: `/1.0/operations/operation-${waits.length}`,
+						metadata: {},
+					},
+				};
+			if (method === "GET" && url.includes("/wait?timeout=")) {
+				waits.push(url);
+				return {
+					body: {
+						type: "sync",
+						status: "Success",
+						status_code: 200,
+						metadata: { status: "Success", status_code: 200, err: "", metadata: { return: 0 } },
+					},
+				};
+			}
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, 600);
+		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"]);
+		expect(waits).toEqual([
+			"/1.0/operations/operation-0/wait?timeout=600",
+			"/1.0/operations/operation-1/wait?timeout=30",
+		]);
+		for (const wait of [0, 601, 1.5])
+			await expect(
+				client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, wait),
+			).rejects.toThrow(/^LXD instance command is invalid$/);
+		expect(waits).toHaveLength(2);
+	});
+
+	it("pushes a guest program's bytes as root's file, only into the guest's program folders", async () => {
+		const requests: Array<{ url: string; body: unknown; headers: IncomingHttpHeaders }> = [];
+		const socket = await unixServer((method, url, body, headers) => {
+			requests.push({ url, body, headers });
+			if (method === "POST" && url.includes("/files?path=")) {
+				return { body: { type: "sync", status: "Success", status_code: 200, metadata: {} } };
+			}
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		const name = "qorpera-coding-machine-20000000000040008000000000000001";
+		// Past the 256 KiB text file's bound, and not UTF-8.
+		const program = Buffer.alloc(300 * 1024, 0xff);
+
+		await client.pushInstanceProgram(
+			"qorpera-coding",
+			name,
+			"/opt/qorpera-folder/qorpera-folder.1d7e0a9c.new",
+			program,
+			0o555,
+		);
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).toMatchObject({
+			url: `/1.0/instances/${name}/files?path=%2Fopt%2Fqorpera-folder%2Fqorpera-folder.1d7e0a9c.new&project=qorpera-coding`,
+			headers: {
+				"content-type": "application/octet-stream",
+				"x-lxd-type": "file",
+				"x-lxd-uid": "0",
+				"x-lxd-gid": "0",
+				"x-lxd-mode": "0555",
+				"x-lxd-modify-perm": "uid,gid,mode",
+			},
+		});
+		expect(Buffer.compare(requests[0]?.body as Buffer, program)).toBe(0);
+
+		const push = (path: string, content: Buffer = program, mode = 0o444) =>
+			client.pushInstanceProgram("qorpera-coding", name, path, content, mode);
+		await push("/opt/qorpera-guest/agent.mjs.3c2b.new");
+		expect(requests).toHaveLength(2);
+		for (const path of [
+			"/opt/qorpera-guest",
+			"/opt/qorpera-guest/",
+			"/opt/qorpera-guest/.agent.mjs",
+			"/opt/qorpera-guest/sub/agent.mjs",
+			"/opt/qorpera-guest/../../etc/passwd",
+			"/opt/qorpera-other/agent.mjs",
+			"/etc/qorpera-guest/agent.mjs",
+			"/opt/qorpera-guest/agent.mjs\n",
+		])
+			await expect(push(path)).rejects.toThrow("LXD instance program path is invalid");
+		await expect(push("/opt/qorpera-guest/agent.mjs", program, 0o1777)).rejects.toThrow(
+			"LXD instance program mode is invalid",
+		);
+		await expect(push("/opt/qorpera-guest/agent.mjs", Buffer.alloc(0))).rejects.toThrow(
+			"LXD instance program exceeds the supported size",
+		);
+		await expect(push("/opt/qorpera-guest/agent.mjs", Buffer.alloc(16 * 1024 * 1024 + 1))).rejects.toThrow(
+			"LXD instance program exceeds the supported size",
+		);
+		expect(requests).toHaveLength(2);
+	});
+});
+
+const EXEC_OPERATION = "/1.0/operations/3f0b8f8e-4c1d-4e2a-9b7c-0d1e2f3a4b5c";
+const EXEC_SECRETS = { "0": "a".repeat(64), "1": "b".repeat(64), "2": "c".repeat(64), control: "d".repeat(64) };
+
+interface ExecStreamCommand {
+	stdout?: Buffer[];
+	stderr?: Buffer[];
+	exitCode?: number;
+	/** Keeps running after its output until LXD kills it (its stdout websocket closed early). */
+	hold?: boolean;
+	/** Closes its stdout websocket without the end message. */
+	dropStdout?: boolean;
+}
+
+/** LXD's non-interactive exec with `wait-for-websocket` on a Unix socket: it starts the command once fds 0, 1 and 2
+ * are connected, hands it stdin up to the text message that ends it, sends its output as binary messages with an
+ * empty text message at each stream's end, and kills it (137) when its stdout websocket closes while it runs. */
+class FakeExecStream {
+	readonly posts: unknown[] = [];
+	readonly upgrades: string[] = [];
+	stdin = Buffer.alloc(0);
+	stdinEnded = false;
+	killed = false;
+	socket = "";
+	/** The fd whose upgrade it never answers, as an LXD that stalls the handshake. */
+	withhold?: string;
+	withheldSeen = false;
+	withheldClosed = false;
+	readonly #sockets = new Set<Socket>();
+	readonly #connected = new Map<string, Socket>();
+	#ended?: number;
+	readonly #waiters: Array<(exitCode: number) => void> = [];
+	readonly #command: (stdin: Buffer) => ExecStreamCommand;
+
+	constructor(command: (stdin: Buffer) => ExecStreamCommand) {
+		this.#command = command;
+	}
+
+	async start(): Promise<string> {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-exec-"));
+		roots.push(root);
+		this.socket = join(root, "lxd.socket");
+		const server = createServer((request, response) => {
+			const chunks: Buffer[] = [];
+			request.on("data", (chunk: Buffer) => chunks.push(chunk));
+			request.on("end", () => {
+				const reply = (status: number, body: unknown) =>
+					response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+				if (request.method === "POST" && request.url?.startsWith("/1.0/instances/coding-vm/exec?project=coding")) {
+					this.posts.push(JSON.parse(Buffer.concat(chunks).toString("utf-8")));
+					reply(202, {
+						type: "async",
+						status: "Operation created",
+						status_code: 100,
+						operation: EXEC_OPERATION,
+						metadata: { id: EXEC_OPERATION.slice(16), class: "websocket", metadata: { fds: EXEC_SECRETS } },
+					});
+				} else if (request.method === "GET" && request.url === `${EXEC_OPERATION}/wait?timeout=30`) {
+					const answer = (exitCode: number) =>
+						reply(200, {
+							type: "sync",
+							status: "Success",
+							status_code: 200,
+							metadata: { status: "Success", status_code: 200, err: "", metadata: { return: exitCode } },
+						});
+					if (this.#ended === undefined) this.#waiters.push(answer);
+					else answer(this.#ended);
+				} else reply(404, { type: "error", error_code: 404, error: "not found" });
+			});
+		});
+		server.on("upgrade", (request: IncomingMessage, socket: Socket) => this.#upgrade(request, socket));
+		servers.push(server);
+		await new Promise<void>((resolveListen) => server.listen(this.socket, () => resolveListen()));
+		return this.socket;
+	}
+
+	close(): void {
+		for (const socket of this.#sockets) socket.destroy();
+	}
+
+	#upgrade(request: IncomingMessage, socket: Socket): void {
+		this.#sockets.add(socket);
+		const url = new URL(request.url ?? "/", "http://lxd");
+		const fd = Object.entries(EXEC_SECRETS).find(([, secret]) => secret === url.searchParams.get("secret"))?.[0];
+		const key = request.headers["sec-websocket-key"];
+		if (url.pathname !== `${EXEC_OPERATION}/websocket` || !fd || fd === "control" || typeof key !== "string") {
+			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+			return;
+		}
+		if (fd === this.withhold) {
+			this.withheldSeen = true;
+			// Reads on, so the client's end of the connection is seen; the server keeps its sockets half open.
+			const closed = (): void => {
+				this.withheldClosed = true;
+				socket.destroy();
+			};
+			socket.once("end", closed);
+			socket.once("error", closed);
+			socket.once("close", closed);
+			socket.resume();
+			return;
+		}
+		this.upgrades.push(fd);
+		const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+		socket.write(
+			`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+		);
+		this.#connected.set(fd, socket);
+		let buffer = Buffer.alloc(0);
+		socket.on("data", (chunk: Buffer) => {
+			buffer = Buffer.concat([buffer, chunk]);
+			for (;;) {
+				if (buffer.byteLength < 2) return;
+				const opcode = buffer[0]! & 0x0f;
+				let length = buffer[1]! & 0x7f;
+				let offset = 2;
+				if (length === 126) {
+					length = buffer.readUInt16BE(2);
+					offset = 4;
+				} else if (length === 127) {
+					length = buffer.readUInt32BE(6);
+					offset = 10;
+				}
+				if (buffer.byteLength < offset + 4 + length) return;
+				const mask = buffer.subarray(offset, offset + 4);
+				const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
+				for (let index = 0; index < payload.byteLength; index++)
+					payload[index] = payload[index]! ^ mask[index & 3]!;
+				buffer = buffer.subarray(offset + 4 + length);
+				if (opcode === 0x8) {
+					socket.end(serverFrame(0x8, payload));
+					this.#closedEarly(fd);
+					return;
+				}
+				if (fd !== "0" || this.stdinEnded) continue;
+				if (opcode === 0x2) this.stdin = Buffer.concat([this.stdin, payload]);
+				else if (opcode === 0x1) {
+					this.stdinEnded = true;
+					this.#run();
+				}
+			}
+		});
+		socket.on("close", () => this.#closedEarly(fd));
+	}
+
+	#closedEarly(fd: string): void {
+		if (fd !== "1" || this.#ended !== undefined) return;
+		this.killed = true;
+		this.#end(137);
+	}
+
+	#run(): void {
+		if (!["0", "1", "2"].every((fd) => this.#connected.has(fd))) throw new Error("the command started early");
+		const command = this.#command(this.stdin);
+		const stdout = this.#connected.get("1")!;
+		const stderr = this.#connected.get("2")!;
+		for (const chunk of command.stdout ?? []) stdout.write(serverFrame(0x2, chunk));
+		for (const chunk of command.stderr ?? []) stderr.write(serverFrame(0x2, chunk));
+		if (command.hold) return;
+		if (command.dropStdout) {
+			this.#end(command.exitCode ?? 0);
+			stdout.destroy();
+		} else {
+			stdout.write(serverFrame(0x1, Buffer.alloc(0)));
+			stderr.write(serverFrame(0x1, Buffer.alloc(0)));
+			this.#end(command.exitCode ?? 0);
+		}
+	}
+
+	#end(exitCode: number): void {
+		if (this.#ended !== undefined) return;
+		this.#ended = exitCode;
+		for (const waiter of this.#waiters.splice(0)) waiter(exitCode);
+	}
+}
+
+describe("LXD exec stream", () => {
+	const fakes: FakeExecStream[] = [];
+	afterEach(() => {
+		for (const fake of fakes.splice(0)) fake.close();
+	});
+	async function fake(command: (stdin: Buffer) => ExecStreamCommand): Promise<FakeExecStream> {
+		const exec = new FakeExecStream(command);
+		fakes.push(exec);
+		await exec.start();
+		return exec;
+	}
+	const request = {
+		command: ["/usr/bin/node", "/opt/qorpera-guest/agent.mjs", "status"],
+		stdin: Buffer.from('{"pass":"p"}'),
+		maxStdoutBytes: 64,
+		maxStderrBytes: 16,
+		timeoutMs: 10_000,
+	};
+
+	it("hands the command its stdin and reads its output off the stream, with nothing recorded on the host", async () => {
+		const exec = await fake((stdin) => ({
+			stdout: [Buffer.from("echo:"), stdin],
+			stderr: [Buffer.from("note")],
+			exitCode: 3,
+		}));
+		const result = await new LxdUnixClient(exec.socket, 30).execInstanceStream("coding", "coding-vm", request);
+		expect(result).toEqual({
+			exitCode: 3,
+			stdout: Buffer.from('echo:{"pass":"p"}'),
+			stderr: Buffer.from("note"),
+		});
+		expect(exec.posts).toEqual([
+			{
+				command: request.command,
+				interactive: false,
+				"wait-for-websocket": true,
+				"record-output": false,
+				user: 0,
+				group: 0,
+				cwd: "/",
+				environment: {},
+			},
+		]);
+		// stdin is in no request body; the control websocket stays unconnected.
+		expect(JSON.stringify(exec.posts)).not.toContain("pass");
+		expect(exec.upgrades.sort()).toEqual(["0", "1", "2"]);
+		expect(exec.stdinEnded).toBe(true);
+		expect(exec.killed).toBe(false);
+	});
+
+	it("closes stdin at once when there is none", async () => {
+		const exec = await fake(() => ({ stdout: [Buffer.from("ok")] }));
+		const result = await new LxdUnixClient(exec.socket, 30).execInstanceStream("coding", "coding-vm", {
+			...request,
+			stdin: Buffer.alloc(0),
+		});
+		expect(result.stdout.toString()).toBe("ok");
+		expect(exec.stdin.byteLength).toBe(0);
+		expect(exec.stdinEnded).toBe(true);
+	});
+
+	it("kills a command whose output passes its bound and fails", async () => {
+		const exec = await fake(() => ({ stdout: [Buffer.alloc(40), Buffer.alloc(40)], hold: true }));
+		await expect(
+			new LxdUnixClient(exec.socket, 30).execInstanceStream("coding", "coding-vm", request),
+		).rejects.toThrow("LXD exec stream output exceeded its bound");
+		await vi.waitFor(() => expect(exec.killed).toBe(true));
+	});
+
+	it("kills a command still running at its deadline or when its signal stops it", async () => {
+		const timed = await fake(() => ({ stdout: [Buffer.from("partial")], hold: true }));
+		await expect(
+			new LxdUnixClient(timed.socket, 30).execInstanceStream("coding", "coding-vm", { ...request, timeoutMs: 300 }),
+		).rejects.toThrow("LXD exec stream was stopped");
+		await vi.waitFor(() => expect(timed.killed).toBe(true));
+		const stopped = await fake(() => ({ hold: true }));
+		const controller = new AbortController();
+		const call = new LxdUnixClient(stopped.socket, 30).execInstanceStream(
+			"coding",
+			"coding-vm",
+			request,
+			controller.signal,
+		);
+		await vi.waitFor(() => expect(stopped.stdinEnded).toBe(true));
+		controller.abort();
+		await expect(call).rejects.toThrow("LXD exec stream was stopped");
+		await vi.waitFor(() => expect(stopped.killed).toBe(true));
+	});
+
+	it("stops a handshake LXD never answers at the deadline or on the signal, well before its own timeout", async () => {
+		const timed = await fake(() => ({ hold: true }));
+		timed.withhold = "2";
+		const started = Date.now();
+		await expect(
+			new LxdUnixClient(timed.socket, 30).execInstanceStream("coding", "coding-vm", { ...request, timeoutMs: 300 }),
+		).rejects.toThrow("LXD exec stream was stopped");
+		// The handshake's own timeout is 10 s.
+		expect(Date.now() - started).toBeLessThan(3_000);
+		await vi.waitFor(() => expect(timed.withheldClosed).toBe(true));
+		// The stdout websocket already connected is closed too.
+		expect(timed.upgrades).toEqual(["1"]);
+		await vi.waitFor(() => expect(timed.killed).toBe(true));
+		const stopped = await fake(() => ({ hold: true }));
+		stopped.withhold = "1";
+		const controller = new AbortController();
+		const call = new LxdUnixClient(stopped.socket, 30).execInstanceStream(
+			"coding",
+			"coding-vm",
+			request,
+			controller.signal,
+		);
+		await vi.waitFor(() => expect(stopped.withheldSeen).toBe(true));
+		const abortedAt = Date.now();
+		controller.abort();
+		await expect(call).rejects.toThrow("LXD exec stream was stopped");
+		expect(Date.now() - abortedAt).toBeLessThan(1_000);
+		await vi.waitFor(() => expect(stopped.withheldClosed).toBe(true));
+		expect(stopped.upgrades).toEqual([]);
+		expect(stopped.stdinEnded).toBe(false);
+	});
+
+	it("fails when a stream ends without its end message", async () => {
+		const exec = await fake(() => ({ stdout: [Buffer.from("cut")], dropStdout: true }));
+		await expect(
+			new LxdUnixClient(exec.socket, 30).execInstanceStream("coding", "coding-vm", request),
+		).rejects.toThrow("LXD exec stream ended before its output");
+	});
+
+	it("refuses an invalid command, input or bound before asking LXD", async () => {
+		const exec = await fake(() => ({}));
+		const client = new LxdUnixClient(exec.socket, 30);
+		for (const invalid of [
+			{ ...request, command: [] },
+			{ ...request, command: ["/usr/bin/node", "a\nb"] },
+			{ ...request, stdin: Buffer.alloc(64 * 1024 + 1) },
+			{ ...request, maxStdoutBytes: 8 * 1024 * 1024 + 1 },
+			{ ...request, maxStderrBytes: -1 },
+			{ ...request, timeoutMs: 0 },
+			{ ...request, timeoutMs: 30_001 },
+		])
+			await expect(client.execInstanceStream("coding", "coding-vm", invalid)).rejects.toThrow(
+				"LXD instance command is invalid",
+			);
+		expect(exec.posts).toEqual([]);
 	});
 });

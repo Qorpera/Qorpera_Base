@@ -74,10 +74,12 @@ function fixture(tools: readonly CloudNativeTool[] = []) {
 		}
 		throw new Error("Unexpected fixture RPC");
 	};
-	const call = vi.fn(async (method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal) => {
-		signal.throwIfAborted();
-		return overrides.has(method) ? overrides.get(method)!(args) : defaultCall(method, args);
-	});
+	const call = vi.fn(
+		async (method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal, _timeoutMs?: number) => {
+			signal.throwIfAborted();
+			return overrides.has(method) ? overrides.get(method)!(args) : defaultCall(method, args);
+		},
+	);
 	const control: CloudCompanyPathControl = { call };
 	const gateway = new CloudCompanyPathGateway({ binding, identity, control });
 	const signal = new AbortController().signal;
@@ -225,12 +227,43 @@ describe("cloud Company File path gateway", () => {
 		await expect(f.gateway.fenceContextView(frame("request-4"), [], f.signal)).resolves.toBeUndefined();
 		await expect(f.gateway.fenceContextView(frame("request-5"), [], f.signal)).resolves.toBeUndefined();
 		expect(missing).toHaveBeenCalledOnce();
-		// The separate calls still check the run's read set, naming no path.
+		// The separate calls still check the run's read set, naming no path, and with no budget of the caller's the
+		// transport keeps its own stop.
 		await f.gateway.assertReadableContext(f.signal);
 		expect(f.call.mock.calls.at(-1)).toEqual([
 			"qorpera_assert_company_path_reads",
 			expect.objectContaining({ p_paths: [] }),
 			expect.any(AbortSignal),
+			undefined,
+		]);
+	});
+
+	it("hands the caller's budget for the read-set check down to the transport (16 Oct 2026)", async () => {
+		// The check before each model request locks the run's job row alongside the run's admission read, so the
+		// run gives it the pair's 10 s; the transport's own 3 s stop would cut it first.
+		const f = fixture();
+		let answer: () => void = () => undefined;
+		f.overrides.set("qorpera_assert_company_path_reads", async () => {
+			await new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+			return null;
+		});
+		vi.useFakeTimers();
+		try {
+			const checked = f.gateway.assertReadableContext(f.signal, 10_000);
+			// Past the gateway's own 5 s default: the caller's budget is the only one.
+			await vi.advanceTimersByTimeAsync(6000);
+			answer();
+			await expect(checked).resolves.toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(f.call.mock.calls.at(-1)).toEqual([
+			"qorpera_assert_company_path_reads",
+			expect.objectContaining({ p_paths: [] }),
+			expect.any(AbortSignal),
+			10_000,
 		]);
 	});
 
@@ -392,6 +425,67 @@ describe("cloud Company File path gateway", () => {
 					],
 				});
 				expect(JSON.stringify(views)).not.toContain("data:image");
+			}
+		},
+	);
+
+	it.each(["valid", "hash", "kind", "tool", "read", "status"])(
+		"records a folder image company_read showed only when its released answer names it: %s",
+		async (fault) => {
+			const f = fixture();
+			const readId = randomUUID();
+			const image = "e".repeat(64);
+			const text = JSON.stringify({
+				path: "photos/red.png",
+				kind: fault === "kind" ? "file" : "image",
+				imageSha256: image,
+			});
+			f.released.set(readId, "b".repeat(64));
+			const output = JSON.stringify({
+				status: fault === "status" ? "unconfirmed" : "ok",
+				provenance: {
+					companyId: f.identity.companyId,
+					runId: f.identity.runId,
+					tool: fault === "tool" ? "company_list" : "company_read",
+					...(fault === "read" ? {} : { companyReadId: readId }),
+				},
+				content: { sha256: "b".repeat(64), text, includedBytes: Buffer.byteLength(text) },
+			});
+			const request = f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: "image-context",
+					threadId: "thread",
+					turnId: "turn",
+					purpose: "turn",
+					outputs: [],
+				},
+				[
+					{
+						kind: "function_call_output",
+						callId: "image-call",
+						output,
+						imageSha256: fault === "hash" ? "a".repeat(64) : image,
+					},
+				],
+				f.signal,
+			);
+			if (fault !== "valid") await expect(request).rejects.toThrow("Native capture provenance changed");
+			else {
+				await request;
+				const views = f.call.mock.calls.filter(([method]) => method === "qorpera_record_native_context_view");
+				expect(views).toHaveLength(1);
+				expect(views[0][1].p_view).toMatchObject({
+					outputs: [
+						{
+							sha256: createHash("sha256").update(output).digest("hex"),
+							readId,
+							readSha256: "b".repeat(64),
+							includedSha256: createHash("sha256").update(text).digest("hex"),
+						},
+					],
+				});
+				expect(views[0][1].p_view).not.toHaveProperty("outputs.0.capture");
 			}
 		},
 	);

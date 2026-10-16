@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /**
  * The folder core's load test (C1e, deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md §9): one folder-v2 company
@@ -132,10 +133,26 @@ function run(command, commandArgs, input) {
 		throw new Error(`${command} ${commandArgs.slice(0, 4).join(" ")} failed:\n${result.stderr.slice(-4000)}`);
 	return result.stdout;
 }
-const psql = (sql) =>
+/** `options` are the sessions' settings (PGOPTIONS), for every session the psql process opens. */
+const psql = (sql, { options } = {}) =>
 	run(
 		"docker",
-		["exec", "-i", containerName, "psql", "-q", "-U", "postgres", "-d", database, "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-At"],
+		[
+			"exec",
+			"-i",
+			...(options ? ["--env", `PGOPTIONS=${options}`] : []),
+			containerName,
+			"psql",
+			"-q",
+			"-U",
+			"postgres",
+			"-d",
+			database,
+			"--no-psqlrc",
+			"-v",
+			"ON_ERROR_STOP=1",
+			"-At",
+		],
 		sql,
 	);
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -181,7 +198,8 @@ let logLinesBeforeLoad = 0;
 let end = 0;
 const running = () => performance.now() < end;
 
-/** One RPC as PostgREST runs it: one transaction on a pooled connection, request.path and claims set. */
+/** One RPC as PostgREST runs it: one transaction on a pooled connection, request.path and claims set. A null kind
+ * records nothing: the caller records the call as part of a larger one (an upload's). */
 async function call(kind, rpc, sql, params, deadlineMs, { rollback = false, expected = [] } = {}) {
 	if (options.rtt) await sleep(options.rtt);
 	const started = performance.now();
@@ -215,7 +233,7 @@ async function call(kind, rpc, sql, params, deadlineMs, { rollback = false, expe
 		gaveUp: ended - started + options.rtt > deadlineMs,
 		failure: failure && expected.includes(failure.name) ? { ...failure, expected: true } : failure,
 	};
-	record(kind, sample);
+	if (kind) record(kind, sample);
 	return { value, failure, sample };
 }
 
@@ -258,16 +276,58 @@ const commit = (kind, runRow, key, units, receipt = null) =>
 		PATH_DEADLINE,
 		{ expected: ["paused", "busy"] },
 	);
-// The upload's kind says what it carried: new bytes, bytes the company has (reused), or a subtree's file.
-const seal = (runRow, text, kind = "write-upload") =>
-	call(
-		kind,
-		"qorpera_folder_seal_upload",
-		"select loadfolder.seal($1::jsonb, $2) as value",
-		[runRow.actor, text],
-		PATH_DEADLINE,
-		{ expected: ["paused", "busy"] },
+/**
+ * The gateway's upload as the run, one call each as the gateway makes them: open the intent, confirm each object the
+ * open did not find present (the gateway has stored it), seal. (In one transaction, a confirm that inserts an object
+ * would hold the company's storage usage row until the seal, so a GC finish deleting the object the next confirm waits
+ * on would deadlock with it.) The upload's kind says what it carried: new bytes, bytes the company has (reused), or a
+ * subtree's file. Its sample is the whole upload, each call with its round trip, as a tool waits for it; a failed call
+ * ends it. The manifest is loadfolder.manifest's, which also names GC's texts.
+ */
+async function seal(runRow, text, kind = "write-upload") {
+	const calls = [];
+	const step = async (rpc, sql, params) => {
+		const result = await call(null, rpc, sql, params, PATH_DEADLINE, { expected: ["paused", "busy"] });
+		calls.push(result);
+		return result;
+	};
+	const upload = () => {
+		const samples = calls.map((result) => result.sample);
+		const sample = {
+			startedAt: samples[0].startedAt,
+			endedAt: samples.at(-1).endedAt,
+			totalMs: samples.reduce((sum, each) => sum + each.totalMs, 0),
+			queueMs: samples.reduce((sum, each) => sum + each.queueMs, 0),
+			queriedAt: samples[0].queriedAt,
+			gaveUp: samples.some((each) => each.gaveUp),
+			failure: samples.at(-1).failure,
+		};
+		record(kind, sample);
+		return { value: calls.at(-1).value, failure: calls.at(-1).failure, sample };
+	};
+	const opened = await step(
+		"qorpera_folder_open_upload",
+		"select jsonb_build_object('manifest', m, 'open', public.qorpera_folder_open_upload($1::uuid, $2::jsonb, m)) as value from loadfolder.manifest($3) m",
+		[ENVIRONMENT, runRow.actor, text],
 	);
+	if (opened.failure) return upload();
+	const { manifest, open } = opened.value;
+	const objects = [...JSON.parse(manifest).chunks, { sha256: sha256(manifest), bytes: Buffer.byteLength(manifest, "utf8") }];
+	for (const object of objects.filter((each) => !open.present.includes(each.sha256))) {
+		const confirmed = await step(
+			"qorpera_folder_confirm_object",
+			"select public.qorpera_folder_confirm_object($1::uuid, $2::jsonb, $3::uuid, $4, $5::bigint) as value",
+			[ENVIRONMENT, runRow.actor, open.intentId, object.sha256, object.bytes],
+		);
+		if (confirmed.failure) return upload();
+	}
+	await step(
+		"qorpera_folder_seal_upload",
+		"select public.qorpera_folder_seal_upload($1::uuid, $2::jsonb, $3::uuid) as value",
+		[ENVIRONMENT, runRow.actor, open.intentId],
+	);
+	return upload();
+}
 
 // Who held a grant on load/restricted when: per agent, its grants as [granted (committed), revokeBegan, revoked].
 const grants = new Map();
@@ -807,11 +867,21 @@ try {
 	}
 	const disk = run("docker", ["exec", containerName, "sh", "-c", "df -PT /var/lib/postgresql/data | tail -1"]).trim();
 	if (/tmpfs/.test(disk)) throw new Error(`The data directory is on tmpfs, not a real disk: ${disk}`);
-	psql(readFileSync(join(repositoryRoot, "supabase", "tests", "bootstrap.sql"), "utf-8"));
 	const migrations = sortMigrationNames(readdirSync(join(repositoryRoot, "supabase", "migrations")));
 	for (const name of options.skipped) if (!migrations.includes(name)) throw new Error(`No migration ${name} to skip`);
-	for (const migration of migrations.filter((name) => !options.skipped.has(name)))
-		psql(readFileSync(join(repositoryRoot, "supabase", "migrations", migration), "utf-8"));
+	// One psql process applies the test bootstrap and every migration, each file in a fresh session as one psql run
+	// per file did, without a docker exec and a psql start per file (test-hosted-db-cluster.mjs replays them the same way).
+	// Its sessions don't wait for each commit to reach the disk; fsync stays on, and the setup and the load below commit
+	// as the server does by default.
+	const migrateStarted = performance.now();
+	run("docker", ["exec", containerName, "mkdir", "-p", "/qorpera"]);
+	run("docker", ["cp", join(repositoryRoot, "supabase", "migrations"), `${containerName}:/qorpera/migrations`]);
+	run("docker", ["cp", join(repositoryRoot, "supabase", "tests", "bootstrap.sql"), `${containerName}:/qorpera/bootstrap.sql`]);
+	const files = ["bootstrap.sql", ...migrations.filter((name) => !options.skipped.has(name)).map((name) => `migrations/${name}`)];
+	psql(`\\o /dev/null\n${sessionPerFile(database, files.map((file) => `/qorpera/${file}`))}`, {
+		options: "-c synchronous_commit=off",
+	});
+	const migrateSeconds = (performance.now() - migrateStarted) / 1000;
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
 	const fixture = expandTestFixture("load-folder-core.sql", (name) =>
 		name === "load-folder-core.sql"
@@ -1016,7 +1086,7 @@ try {
 	const bigFailed = all.filter((sample) => sample.kind.startsWith("big-fence") && sample.failure && sample.failure.name !== "paused").length;
 
 	process.stdout.write(
-		`Folder core load ${seconds.toFixed(0)} s on one company: ${loadRuns.length} runs${bigRow ? ` + the big run (${options.bigPaths} released paths)` : ""}${options.probeOnly ? " (probe only: no load)" : ""}, stop every ${options.stopEvery} s, ACL, wakes, GC, 2 foreign-key writers; pool ${options.pool}, round trip ${options.rtt} ms, statement_timeout 8s, lock_timeout 8s; real disk (${disk.split(/\s+/)[1]}); setup ${setupSeconds.toFixed(0)} s${options.skipped.size ? `; without ${[...options.skipped].join(", ")}` : ""}\n`,
+		`Folder core load ${seconds.toFixed(0)} s on one company: ${loadRuns.length} runs${bigRow ? ` + the big run (${options.bigPaths} released paths)` : ""}${options.probeOnly ? " (probe only: no load)" : ""}, stop every ${options.stopEvery} s, ACL, wakes, GC, 2 foreign-key writers; pool ${options.pool}, round trip ${options.rtt} ms, statement_timeout 8s, lock_timeout 8s; real disk (${disk.split(/\s+/)[1]}); ${files.length - 1} migrations ${migrateSeconds.toFixed(0)} s, setup ${setupSeconds.toFixed(0)} s${options.skipped.size ? `; without ${[...options.skipped].join(", ")}` : ""}\n`,
 	);
 	process.stdout.write(`${table.join("\n")}\n`);
 	process.stdout.write(

@@ -10,14 +10,8 @@ import {
 } from "./dependency.ts";
 import type { FolderGcAuthority } from "./folder-gc.ts";
 import type { FolderActor, FolderObjectAuthority } from "./folder-objects.ts";
-import type {
-	AuthorizedMemberCompanyObject,
-	MemberCompanyObjectAuthority,
-	MemberCompanyObjectIdentity,
-} from "./member-company-objects.ts";
 import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
-import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
@@ -28,19 +22,9 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 export type ObjectBackend = "nas-object-gateway" | "supabase-storage";
 
-export interface AuthorizedObject {
-	backend: ObjectBackend;
-	bytes: number;
-	readLease?: ObjectReadLease;
-}
-
 export type ObjectDeletionAuthorization = { state: "authorized"; authorizationId: string } | { state: "completed" };
 
 export interface ObjectGatewayAuthority {
-	authorizeUpload(userToken: string, profileId: string, sha256: string, bytes: number): Promise<void>;
-	authorizeDownload(userToken: string, profileId: string, sha256: string): Promise<AuthorizedObject>;
-	authorizeServiceDownload(profileId: string, sha256: string): Promise<AuthorizedObject>;
-	confirmUpload(profileId: string, sha256: string, bytes: number): Promise<void>;
 	authorizeDelete(
 		profileId: string,
 		sha256: string,
@@ -69,7 +53,6 @@ interface SupabaseObjectAuthorityOptions {
 	fetch?: typeof fetch;
 	requestTimeoutMs?: number;
 	circuitCooldownMs?: number;
-	readLeaseSeconds?: number;
 	now?: () => number;
 }
 
@@ -103,12 +86,7 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 }
 
 export class SupabaseObjectAuthority
-	implements
-		ObjectGatewayAuthority,
-		FolderObjectAuthority,
-		FolderGcAuthority,
-		MemberCompanyObjectAuthority,
-		MemberFolderObjectAuthority
+	implements ObjectGatewayAuthority, FolderObjectAuthority, FolderGcAuthority, MemberFolderObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -117,7 +95,6 @@ export class SupabaseObjectAuthority
 	readonly #api: ObjectDependency;
 	readonly #storage: ObjectDependency;
 	readonly #auth: ObjectDependency;
-	readonly #readLeaseSeconds: number;
 	readonly #failedProbes = new Set<"api" | "storage" | "auth">();
 
 	constructor(options: SupabaseObjectAuthorityOptions) {
@@ -151,10 +128,6 @@ export class SupabaseObjectAuthority
 		this.#api = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
 		this.#storage = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
 		this.#auth = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
-		this.#readLeaseSeconds = options.readLeaseSeconds ?? 0;
-		if (!Number.isSafeInteger(this.#readLeaseSeconds) || this.#readLeaseSeconds < 0 || this.#readLeaseSeconds > 60) {
-			throw new Error("Object read delegation must be disabled or between 1 and 60 seconds");
-		}
 	}
 
 	health() {
@@ -195,123 +168,6 @@ export class SupabaseObjectAuthority
 			if (probes[index]?.status === "fulfilled") this.#failedProbes.delete(dependency);
 			else this.#failedProbes.add(dependency);
 		}
-	}
-
-	async authorizeUpload(userToken: string, profileId: string, sha256: string, bytes: number): Promise<void> {
-		await this.#rpc(
-			"qorpera_authorize_profile_object_upload",
-			{ p_profile_id: profileId, p_sha256: sha256, p_bytes: bytes },
-			userToken,
-			this.#publishableKey,
-		);
-	}
-
-	async authorizeDownload(userToken: string, profileId: string, sha256: string): Promise<AuthorizedObject> {
-		return this.#authorizedObject(
-			await this.#rpc(
-				this.#readLeaseSeconds > 0
-					? "qorpera_issue_profile_object_read_lease"
-					: "qorpera_authorize_profile_object_download",
-				{
-					p_profile_id: profileId,
-					p_sha256: sha256,
-					...(this.#readLeaseSeconds > 0 ? { p_lease_seconds: this.#readLeaseSeconds } : {}),
-				},
-				userToken,
-				this.#publishableKey,
-			),
-		);
-	}
-
-	async authorizeServiceDownload(profileId: string, sha256: string): Promise<AuthorizedObject> {
-		return this.#authorizedObject(
-			await this.#rpc(
-				"qorpera_authorize_profile_object_download",
-				{ p_profile_id: profileId, p_sha256: sha256 },
-				undefined,
-				this.#secretKey,
-			),
-		);
-	}
-
-	async authorizeMemberCompanyObject(
-		userToken: string,
-		identity: MemberCompanyObjectIdentity,
-		mode?: "snapshot",
-	): Promise<AuthorizedMemberCompanyObject> {
-		const value = record(
-			await this.#rpc(
-				mode === "snapshot"
-					? "qorpera_authorize_member_company_snapshot_object"
-					: "qorpera_authorize_member_company_path_object",
-				{
-					p_environment_id: identity.environmentId,
-					p_path: identity.path,
-					...(mode === "snapshot" ? { p_snapshot_id: identity.version } : { p_version: identity.version }),
-					p_sha256: identity.sha256,
-				},
-				userToken,
-				this.#publishableKey,
-				true,
-			),
-			"member Company File authority",
-		);
-		const keys = [
-			"schema",
-			"companyId",
-			"environmentId",
-			"path",
-			"version",
-			"sha256",
-			"bytes",
-			"backend",
-			"actorUserId",
-			"resourceId",
-			"resourceVersion",
-		];
-		if (
-			Object.keys(value).length !== keys.length ||
-			Object.keys(value).some((key) => !keys.includes(key)) ||
-			value.schema !== "qorpera.member-company-object/v2" ||
-			typeof value.companyId !== "string" ||
-			!UUID_PATTERN.test(value.companyId) ||
-			["actorUserId", "resourceId", "resourceVersion"].some(
-				(key) => typeof value[key] !== "string" || !UUID_PATTERN.test(value[key]),
-			) ||
-			Object.entries(identity).some(([key, expected]) => value[key] !== expected) ||
-			!Number.isSafeInteger(value.bytes) ||
-			(value.bytes as number) < 0 ||
-			(value.bytes as number) > 8 * 1024 * 1024 ||
-			(value.backend !== "nas-object-gateway" && value.backend !== "supabase-storage")
-		)
-			throw new ObjectDependencyError(503);
-		return {
-			schema: "qorpera.member-company-object/v2",
-			companyId: value.companyId,
-			actorUserId: value.actorUserId as string,
-			resourceId: value.resourceId as string,
-			resourceVersion: value.resourceVersion as string,
-			...identity,
-			bytes: value.bytes as number,
-			backend: value.backend,
-		};
-	}
-
-	#authorizedObject(value: unknown): AuthorizedObject {
-		const object = record(value, "object download authority");
-		if (
-			(object.backend !== "nas-object-gateway" && object.backend !== "supabase-storage") ||
-			!Number.isSafeInteger(object.bytes) ||
-			(object.bytes as number) < 0 ||
-			(object.bytes as number) > 8 * 1024 * 1024
-		) {
-			throw new Error("Invalid object download authority");
-		}
-		return {
-			backend: object.backend,
-			bytes: object.bytes as number,
-			...(object.read_lease !== undefined ? { readLease: parseObjectReadLease(object.read_lease) } : {}),
-		};
 	}
 
 	async confirmUpload(profileId: string, sha256: string, bytes: number): Promise<void> {
@@ -712,9 +568,9 @@ export class SupabaseObjectAuthority
 	/** `companyState`: the RPC acts for one company, so its 500s are read with `companyStateFailure` (409, 423);
 	 * `"folder"`, a folder core byte RPC, also reads its 400s, with `folderStateFailure` (and 413). Profile,
 	 * replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication reconciler
-	 * blocks an object on any other refusal, and a profile read drops its member's read leases on one), so theirs
-	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone.
-	 * `"replication"` is read the same way, and also reads folder GC's conflict as a lock conflict. */
+	 * blocks an object on any other refusal), so theirs are read with `unavailableStateFailure`: a lock conflict is
+	 * still 503 but leaves the circuit alone. `"replication"` is read the same way, and also reads folder GC's
+	 * conflict as a lock conflict. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,

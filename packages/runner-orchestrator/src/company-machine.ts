@@ -184,6 +184,9 @@ export function lxdCompanyMachinePlan(
 				"boot.autostart": "false",
 				"limits.cpu": String(binding.cpus),
 				"limits.memory": String(binding.memoryBytes),
+				// /dev/lxd offers the guest nothing: no LXD API, no config, no metadata. The host starts every stream
+				// into the machine; no pass or secret is ever in its config.
+				"security.devlxd": "false",
 				"user.qorpera.schema": binding.schema,
 				"user.qorpera.machine_id": binding.machineId,
 				"user.qorpera.placement_id": binding.placementId,

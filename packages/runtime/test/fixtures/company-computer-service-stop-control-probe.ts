@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, chown, lstat, mkdir, open, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import {
 	parseCompanyComputerServiceStopCompletion,
 	parseCompanyComputerServiceStopInspection,
 } from "@qorpera/contracts";
 import { controlCompanyComputerServiceStop } from "../../src/cloud-company-computer-service-stop-control.ts";
+import { publishCompanyComputerFoldersLeft } from "../../src/cloud-company-computer-service-stop-folders.ts";
 import { readCompanyComputerStopHistory } from "../../src/cloud-company-computer-stop-history.ts";
 
 const root = "/run/qorpera-office-preparation",
@@ -63,6 +65,13 @@ if (mode === "--stop" || mode === "--inspect") {
 		},
 		scenario === "cancelled" ? AbortSignal.abort() : AbortSignal.timeout(15000),
 		mode === "--inspect" ? (scenario === "same-nonce" ? command.commandId : id(90)) : undefined,
+		async (signal, until) => {
+			await save(`${root}/fixture-folders-count.json`, (await load(`${root}/fixture-folders-count.json`)) + 1);
+			await save(`${root}/fixture-folders-left.json`, until - performance.now());
+			// This image has no folder helper: the step asks nothing.
+			await publishCompanyComputerFoldersLeft(signal, until);
+			if (scenario === "folders-unanswered") throw new Error("must-not-leak");
+		},
 	);
 } else {
 	assert.equal(mode, "--parent");
@@ -74,6 +83,7 @@ if (mode === "--stop" || mode === "--inspect") {
 		"lost-reply",
 		"failed-stop",
 		"descendant",
+		"folders-unanswered",
 		"cancelled",
 		"no-lock",
 		"wrong-boot",
@@ -143,6 +153,7 @@ if (mode === "--stop" || mode === "--inspect") {
 		await save(stage, request, 0o400);
 		await save(`${root}/fixture-stop-command.json`, command);
 		await save(`${root}/fixture-stop-count.json`, 0);
+		await save(`${root}/fixture-folders-count.json`, 0);
 		const service = await load(`${root}/fixture-office-unit.json`);
 		if (scenario === "auto-restart") {
 			service.invocationId = "c".repeat(32);
@@ -189,6 +200,19 @@ if (mode === "--stop" || mode === "--inspect") {
 				`${scenario}: ${first.stderr}`,
 			);
 			assert(!first.stderr.includes("must-not-leak"));
+			// The mounts left are published once the service is stopped, by every run without a completion.
+			const published = () => load(`${root}/fixture-folders-count.json`);
+			assert.equal(
+				await published(),
+				["normal", "auto-restart", "folders-unanswered"].includes(scenario) || scenario.startsWith("archive-")
+					? 1
+					: 0,
+				`${scenario}: mounts left published`,
+			);
+			if (scenario === "normal") {
+				const left = await load(`${root}/fixture-folders-left.json`);
+				assert(left > 85000 && left <= 95000, `the mounts left were given ${left} ms`);
+			}
 			if (scenario.startsWith("archive-")) {
 				const historyRoot = `/etc/qorpera-office/history/${command.bootId}/${prior.activationId}`;
 				const count = await load(`${root}/fixture-stop-count.json`);
@@ -197,7 +221,10 @@ if (mode === "--stop" || mode === "--inspect") {
 					const claim = await lstat(`${historyRoot}/claim.json`);
 					assert.equal(run("--stop", "normal").status, 0);
 					assert.equal((await lstat(`${historyRoot}/claim.json`)).ino, claim.ino);
+					// The crash came before the completion: the replay asked again.
+					assert.equal(await published(), 2);
 				}
+				const folders = await published();
 				const history = await readCompanyComputerStopHistory(command.bootId, prior.activationId);
 				const manifest = await lstat(`${historyRoot}/manifest.json`);
 				assert(
@@ -244,16 +271,29 @@ if (mode === "--stop" || mode === "--inspect") {
 						assert.equal(run("--stop", "normal").status, 1);
 					}
 					assert.equal(await load(`${root}/fixture-stop-count.json`), count);
+					assert.equal(await published(), folders, "an archived completion published the mounts left again");
 				}
 				console.log(`PASS protected stop ${scenario}`);
 				continue;
 			}
-			const recoverable = ["normal", "auto-restart", "crash-after-stop", "lost-reply"].includes(scenario);
+			if (scenario === "folders-unanswered") {
+				await assert.rejects(readFile(`${root}/service-stop-completion.json`), { code: "ENOENT" });
+				assert.equal(await load(`${root}/fixture-stop-count.json`), 1);
+			}
+			const recoverable = [
+				"normal",
+				"auto-restart",
+				"crash-after-stop",
+				"lost-reply",
+				"folders-unanswered",
+			].includes(scenario);
 			if (recoverable || ["crash-before-stop", "failed-stop", "descendant"].includes(scenario)) {
 				const count = await load(`${root}/fixture-stop-count.json`);
 				const replay = run("--stop", "normal");
 				assert.equal(replay.status, recoverable ? 0 : 1, `${scenario}: ${replay.stderr}`);
 				assert.equal(await load(`${root}/fixture-stop-count.json`), count, "repeated unknown stop");
+				const folders = recoverable ? (scenario === "folders-unanswered" ? 2 : 1) : 0;
+				assert.equal(await published(), folders, `${scenario}: replay's mounts left`);
 				// Start and stop share the same kernel lock and retained claim fence.
 				const restart = spawnSync(
 					"/usr/bin/flock",
@@ -284,6 +324,7 @@ if (mode === "--stop" || mode === "--inspect") {
 					assert.equal(run("--inspect").status, 1, "stale stop accepted live process");
 					assert.equal(await load(`${root}/fixture-stop-count.json`), count);
 					assert.deepEqual(await load(`${root}/service-stop-inspection-${id(90)}.json`), inspection);
+					assert.equal(await published(), folders, "an inspection published the mounts left");
 				}
 			}
 			console.log(`PASS protected stop ${scenario}`);

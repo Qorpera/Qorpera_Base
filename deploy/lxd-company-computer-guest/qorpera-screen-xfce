@@ -191,4 +191,29 @@ if [[ -d ${dock_launchers} && ! -L ${dock_launchers} ]] && command -v xprop >/de
 		watch_dock
 	) >/dev/null 2>&1 &
 fi
+# What the company folder did with this desktop's changes: the office service
+# leaves each notice whole (written aside, then renamed) in its session
+# directory, bound here, and keeps only the last few. Each is shown once in the
+# desktop's notification area and removed. Nothing here answers the service.
+notices=/run/qorpera
+watch_notices() {
+	local session=$1 file body
+	while kill -0 "${session}" 2>/dev/null; do
+		for file in "${notices}"/folder-notice.*; do
+			[[ -f ${file} && ! -L ${file} ]] || continue
+			body=$(head -c 512 -- "${file}" 2>/dev/null) || body=""
+			rm -f -- "${file}"
+			[[ -n ${body} ]] || continue
+			notify-send --app-name="Company folder" -- "Company folder" "${body}" || true
+		done
+		sleep 1
+	done
+}
+if [[ -d ${notices} && ! -L ${notices} ]] && command -v notify-send >/dev/null 2>&1; then
+	(
+		set +e
+		# The shell's own id is the session's once it is replaced below.
+		watch_notices "$$"
+	) </dev/null >/dev/null 2>&1 &
+fi
 exec xfce4-session

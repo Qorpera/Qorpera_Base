@@ -12,7 +12,6 @@ import { MemberCompanyObservations } from "./member-observability.ts";
 import { MemoryMessageEraser } from "./memory-message-eraser.ts";
 import { migrateLegacyObjects } from "./migration.ts";
 import { FileSystemObjectStore } from "./object-store.ts";
-import { ObjectReadLeases } from "./read-lease.ts";
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
 import { SupabaseObjectAuthority } from "./supabase-authority.ts";
@@ -31,18 +30,15 @@ function port(environment: NodeJS.ProcessEnv): number {
 	return value;
 }
 
-const readLeaseSeconds = Number(process.env.QORPERA_OBJECT_READ_LEASE_SECONDS ?? "0");
 const authority = new SupabaseObjectAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
-	readLeaseSeconds,
 });
 const store = new FileSystemObjectStore(resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")));
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const replication = new ObjectGatewayReplication(journal, store, authority);
 const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
-const readLeases = readLeaseSeconds > 0 ? new ObjectReadLeases(journal) : undefined;
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -115,10 +111,8 @@ const handler = createObjectGatewayHandler({
 	store,
 	authority,
 	controlToken: required(process.env, "QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN"),
-	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 	replication,
 	folderGc,
-	memberObjects: authority,
 	memberFolderObjects: authority,
 	// Members' folder commits (P34a) on their own database client, as the platform's writers: a slow commit never
 	// opens the circuit members' reads and file requests share.
@@ -155,9 +149,6 @@ const handler = createObjectGatewayHandler({
 				},
 			}
 		: {}),
-	...(readLeases
-		? { readLeases, revocationToken: required(process.env, "QORPERA_OBJECT_GATEWAY_REVOCATION_TOKEN") }
-		: {}),
 });
 if (process.argv[2] === "migrate") {
 	const migrated = await migrateLegacyObjects(authority, store);
@@ -178,7 +169,6 @@ if (process.argv[2] === "migrate") {
 					.probe()
 					.then(() => folderGc.recover())
 					.then(() => replication.reconcile()),
-				readLeases?.prune(),
 			]);
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");

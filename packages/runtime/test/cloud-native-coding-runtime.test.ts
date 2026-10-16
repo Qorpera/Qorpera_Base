@@ -504,7 +504,7 @@ describe("the coding composition of a native turn", () => {
 					new CloudNativeToolOperations(run, f.control),
 					run,
 				);
-				const context = JSON.parse(options.prompt) as Record<string, unknown>;
+				const context = JSON.parse(options.prompt ?? "") as Record<string, unknown>;
 				prompts.push(context);
 				const [, , , finish, ask] = adapters.tools;
 				const current = context.input as { text: string | null; answers: { options: string[] } | null } | undefined;
@@ -577,6 +577,7 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("a turn marked shortened had its long texts cut to fit");
 		expect(instructions).toContain("When no reply decides it");
 		expect(instructions).toContain("call coding_ask again");
+		expect(instructions).toContain("MACHINE_STOPPED: the machine stopped from outside");
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",
@@ -689,6 +690,26 @@ describe("the coding composition of a native turn", () => {
 		]);
 		expect(context.earlierTurns[1].outcome?.needs).toBe("Keep 250 ms, or raise to 500 ms?");
 	});
+	it("takes a command the machine's stop from outside ended, and refuses a reason it does not know", () => {
+		const workerId = randomUUID(),
+			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
+		const stopped = { commandId: randomUUID(), turn: 1, command: "npm run dev", reason: "MACHINE_STOPPED" };
+		const context = (reason: string) => ({
+			schema: "qorpera.coding-turn-context/v2",
+			workerId,
+			sequence: 2,
+			input: { from: "agent", text: "Go on.", answers: null },
+			earlierTurns: [],
+			omittedEarlierTurns: 1,
+			commands: { running: [], stopped: [{ ...stopped, reason }], omitted: 0 },
+		});
+		expect(
+			parseCloudCodingTurnContext(context("MACHINE_STOPPED"), { workerId, sequence: 2 }, repository).commands,
+		).toEqual({ running: [], stopped: [stopped], omitted: 0 });
+		expect(() => parseCloudCodingTurnContext(context("UNPLUGGED"), { workerId, sequence: 2 }, repository)).toThrow(
+			/^CODING_TURN_CONTEXT_INVALID$/,
+		);
+	});
 	it("keeps the newest earlier turns when the whole history does not fit the prompt", async () => {
 		const f = fixture();
 		// Turn 43: the kernel already left turns 1-3 out of its answer; 4-42 still exceed the prompt.
@@ -706,7 +727,7 @@ describe("the coding composition of a native turn", () => {
 		f.turnContext.omittedEarlierTurns = 3;
 		let prompt = "";
 		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
-			prompt = options.prompt;
+			prompt = options.prompt ?? "";
 			throw new Error("stop after composing");
 		});
 		await expect(
@@ -752,7 +773,7 @@ describe("the coding composition of a native turn", () => {
 		f.turnContext.input = { from: "member", text: "Yes", answers: { question, options: ["Yes", "No"] } };
 		let prompt = "";
 		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
-			prompt = options.prompt;
+			prompt = options.prompt ?? "";
 			throw new Error("stop after composing");
 		});
 		await expect(

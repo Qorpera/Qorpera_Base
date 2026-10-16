@@ -12,7 +12,7 @@ lane's migration) in a disposable PostgreSQL, not from the live node.
 | `qorpera_validate_native_provider_execution_lease` | jobs[J] FOR UPDATE -> profiles[P] FOR UPDATE + wake_admission_fences[P] FOR UPDATE (`qorpera_lock_profile_gc_fence`) -> compute_identities[I] FOR SHARE -> runs/jobs/leases FOR SHARE |
 | `qorpera_reserve_runtime_machine` | jobs[J] FOR UPDATE -> fence[P] -> runs[R] FOR SHARE -> runners[N] FOR SHARE -> allocations FOR UPDATE |
 | `qorpera_assign_runner_job` | claims[C] FOR UPDATE -> jobs[J] FOR UPDATE -> runners[N] UPDATE / FOR UPDATE |
-| `qorpera_claim_runner_job_for_orchestrator` | reconcile (below) -> queued jobs FOR UPDATE SKIP LOCKED |
+| `qorpera_claim_runner_job_for_orchestrator` | orchestrators[O] FOR NO KEY UPDATE SKIP LOCKED (heartbeat, only when 5 s old; no reconcile since 20260930482000) -> queued jobs FOR UPDATE SKIP LOCKED |
 | `qorpera_reconcile_runner_orchestrator_without_sponsored_turns` | bulk UPDATE queued jobs (3 statements, join order decides row order) -> leased jobs FOR UPDATE SKIP LOCKED + `qorpera_terminalize_runner_attempt` (jobs[J] FOR UPDATE) -> stale runners FOR UPDATE SKIP LOCKED (this lane) -> bulk UPDATE assignments, claims |
 | `qorpera_renew_runner_job` | jobs[J] FOR UPDATE |
 | `qorpera_complete_runner_job_v6` | jobs[J] FOR UPDATE -> ... -> `qorpera_complete_runner_job_v4` (job/runner updates) |

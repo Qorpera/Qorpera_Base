@@ -35,8 +35,11 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 
 A node that already runs the exit from an earlier release takes E3 alone instead: `README.md`, "Adding E3 to a node
 that runs the exit" (its steps, check and undo). One that runs E3 already takes E7 alone: "Adding E7 to a node that
-runs the exit", and one that runs E7 takes E8b alone: "Adding E8b to a node that runs the exit". A fresh node gets E7
-with this step, its brake off (step 4c), and the rules reader, off until its login is placed (step 8).
+runs the exit", and one that runs E7 takes E8b alone: "Adding E8b to a node that runs the exit", then E8b-2 (step 9).
+One that runs E8b takes step 9 alone, and one that runs E8b-2 takes step 10 alone. A fresh node gets E7 with this
+step, its brake off (step 4c), the rules reader, off until its login is placed (step 8), and the names reconciler of
+E8b-2 and E8c-1, which gives each company with rules its own resolver once the reader runs and holds a company in
+"only listed" mode to its list (step 10 says when that company's resolver restarts).
 
 First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", written to
 `/etc/systemd/system/srv-qorpera-agent\x2dexit\x2dlogs.mount`, then:
@@ -64,21 +67,30 @@ getent group qorpera-agent-plug || groupadd --system qorpera-agent-plug
 node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
-	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer
-systemctl start qorpera-agent-exit-ship.service
+	qorpera-agent-plug.service qorpera-agent-exit-names.service qorpera-agent-exit-health.timer \
+	qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer
+systemctl start qorpera-agent-exit-logs.service qorpera-agent-exit-ship.service
 ```
 
 The logs' and the shipper's timers are part of the exit, not optional: one keeps the exit's logs within their cap on
 the node's root disk (`README.md`, "The logs on the node"), the other gets them onto the NAS ("The logs on the NAS"),
-and `verify` fails without either. The shipper's first pass runs at once, so `verify` need not wait 5 minutes for it.
+and `verify` fails without either. The tender's and the shipper's first passes run at once (the tender's timer may
+start its own up to 30 seconds late, the shipper's a minute after the start), so `verify` need not wait for them.
+
+Until the node's rules reader runs, `verify` fails with two `names:` lines (E8b-2): no rules file yet, and the rules
+reader not running. A machine would have no DNS, so the node takes none before then: the reader's login (step 8) comes
+right after step 2, for both nodes in one go, and the checks below that say healthy are read after it.
 
 Check, within 30 seconds:
-- `X verify` prints `qorpera-agent-exit: healthy`;
+- `X verify` prints two lines and no other: `qorpera-agent-exit: not healthy: names: the rules reader is not running
+  (no status)` and `qorpera-agent-exit: not healthy: names: no rules file yet: …`; after step 8 it prints
+  `qorpera-agent-exit: healthy`;
 - `cat /run/qorpera-agent-exit/logs.json` shows `"problems":[]`, a `capBytes` of 2147483648 and the disk's
   `freePercent`;
 - `cat /run/qorpera-agent-exit/ship.json` shows `"problems":[]` and `"errors":[]`, and
   `cat /srv/qorpera/agent-exit-logs/$(hostname)/status.json` shows this node's `host` and a `through` of the pass;
-- `cat /run/qorpera-agent-exit/health.json` shows `"healthy": true` and a `checkedAt` under 20 seconds old (the check runs every 10 seconds);
+- `cat /run/qorpera-agent-exit/health.json` shows a `checkedAt` under 20 seconds old (the check runs every 10 seconds),
+  and `"healthy": true` after step 8;
 - `X status` lists `br0 10.210.0.1/16` and `up0 10.209.255.2/30`, no ports on `qagent0` and an empty client map;
 - `/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh verify` still exits 0 (the guard and the exit
   coexist).
@@ -86,8 +98,10 @@ Check, within 30 seconds:
 Undo (nothing is plugged in yet):
 
 ```bash
-systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
+systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service qorpera-agent-exit-names.service
 ```
+
+The exit's stop stops its name, log, plug and names units and the companies' resolvers itself.
 
 The mount and the `QORPERA_AGENT_EXIT_NAS_DIR` line may stay: nothing writes to the NAS without the shipper, and what
 is there stays.
@@ -95,6 +109,7 @@ is there stays.
 ## Step 2: the exit on node 2
 
 The same as step 1, on node 2, with the same checks and the same undo. The share's marker is there already (step 1).
+Then step 8 at once (the readers' login, both nodes), before step 3.
 
 ## Step 3: migration 20260930089000 (inert)
 
@@ -145,6 +160,19 @@ Then on node 1 (root), with the file copied to the node:
 
 ```bash
 install -o root -g root -m 0444 observer-v173.cjs /opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs
+cd / && runuser -u qn25-phql-observer -- /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/node --jitless \
+	--disable-proto=throw --disallow-code-generation-from-strings \
+	/opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs --health-probe
+sha256sum /opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs
+```
+
+The probe is the node health loop's child, run by hand the way the observer runs it (from v180 the loop runs its own
+file this way; before, it ran the first installation's `/opt/qorpera/node-observer/qorpera-node-observer.cjs`, which
+these observers do not use, so every sample was `COLLECTION_UNCONFIRMED`). It takes about a second and prints one
+JSON line with a `bootId`, `"errors":[]` and `observerPackageSha256` equal to the `sha256sum`. If it prints
+`NODE_HEALTH_COLLECTION_UNCONFIRMED` and a code instead, stop here: nothing has changed yet. Then:
+
+```bash
 cat > /etc/systemd/system/qorpera-native25-phql-observer.service.d/zzzzzzzzz-observer-v173-a1.conf <<'EOF'
 [Service]
 ExecStart=
@@ -167,7 +195,10 @@ Check, per node, within 30 seconds of the restart:
   `{"event":"node_agent_exit","state":"healthy"}` (and `node_inventory` still `ready`);
 - `select healthy, problem_count, now() - observed_at as age, now() - checked_at as check_age from public.qorpera_runtime_node_agent_exit where node_id = '<node id>';`
   shows `true`, `0` and both ages under 20 seconds (the observer posts every 5 seconds, the exit checks every 10);
-- `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`.
+- `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`;
+- the node's health (`node_health` in the log says `reported` for an unconfirmed sample too, so read the row):
+  `select now() - h.observed_at as age, h.observation->>'bootId' is not null as measured, h.observation->'errors' as errors, h.observation->>'observerPackageSha256' as software from public.qorpera_runtime_node_health_latest l join public.qorpera_runtime_node_health_receipts h using (node_id, observation_id) where l.node_id = '<node id>';`
+  shows an age under 20 seconds, `true`, `[]` and the `sha256sum` above.
 
 Undo (back to the untouched `observer-nodeNN-v145.cjs`; nothing reads the health yet):
 
@@ -286,6 +317,10 @@ The demand's refusal list keeps `NODE_AGENT_EXIT_UNHEALTHY`; nothing writes it o
   candidate is left). Repair: `systemctl reload qorpera-agent-exit.service` (`README.md`, "Health and failure").
 - The Company Computer's second card comes with E6 and the next office image (step 7); until then its browser keeps
   its own network.
+- "Only listed" (E8c-1): when a company switches mode or narrows its list, its resolver restarts (about a second
+  without names) and, unless it is now "open", its machines' connections end. A wider list only reloads it. The
+  exit's reload empties the only-listed sets: until a machine asks for a name again, its new connections to that
+  name's address are refused.
 
 ## Step 7 (E6): the Company Computer's agent card, with the next office image
 
@@ -321,8 +356,10 @@ is deleted.
 ## Step 8 (E8b): the rules reader's login
 
 After steps 1 and 2 (both nodes have the reader installed, off) and migration 20260930230000 (E8a: the role
-`qorpera_agent_exit` and `public.qorpera_agent_exit_network_rules`). It may come before or after steps 3–7: nothing
-reads the reader's rules yet (E8b-2's per-company resolvers will). On the Mac, from a checkout of what the nodes run:
+`qorpera_agent_exit` and `public.qorpera_agent_exit_network_rules`). It comes right after steps 1 and 2, before step 3:
+the names reconciler (E8b-2) reads the reader's rules, and a node's `verify` fails until its reader runs (step 4's
+observer would post the node unhealthy, and after step 6 the node would take no machine). On the Mac, from a checkout
+of what the nodes run:
 
 ```bash
 python3 deploy/agent-exit/rules-reader-login.py --check
@@ -337,7 +374,87 @@ Check, per node:
 - the script's last line is `ok`;
 - `systemctl is-active qorpera-agent-exit-rules.service` is `active`;
 - `cat /run/qorpera-agent-exit-rules/status.json` shows `"ok":true` and a `readAt` under 10 seconds old;
-- `X verify` still prints `qorpera-agent-exit: healthy`.
+- `X verify` prints `qorpera-agent-exit: healthy` within 10 seconds (on a node that ran the exit before step 1, after
+  step 9), and steps 1 and 2's checks that wait for this one hold.
 
 Undo: on each node `systemctl disable --now qorpera-agent-exit-rules.service && rm /etc/qorpera-agent-exit/database-url`,
 then as the database owner `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'alter role qorpera_agent_exit with nologin password null'`.
+Without the reader, `verify` fails again ("the rules reader is not running"), the rules last read staying in force.
+
+## Step 9 (E8b-2): each company's resolver, on a node that ran the exit before step 1
+
+A fresh node has it from step 1 (its names reconciler) and step 8 (its rules); this step is for a node that took
+step 1 as "Adding E8b to a node that runs the exit" (or an earlier one). Per node, node 1 then node 2, right after
+step 8 (each node's reader runs: `"ok":true` and a fresh `readAt`; without it every machine on the node loses its
+DNS). As root, from the checkout of steps 1 and 8 with the reader's package built, in one go (`README.md`, "Adding
+E8b-2 to a node that runs the exit", says why this order):
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl enable --now qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+From a release with E8c-1 this brings it too: the reload's rules send each machine on by the map `reach`, so a company
+in "only listed" mode reaches its listed names only, over TCP 443 (README.md, "Where a company's machines may go").
+
+Check, within 30 seconds:
+- `X verify` prints `qorpera-agent-exit: healthy`;
+- `cat /run/qorpera-agent-exit/names.json` shows `"problems": []`, a resolver (port) for each plugged company with
+  rules and each verified machine in `mapped` (its company's port, or 53 for a company without rules);
+- `systemctl list-units 'qorpera-agent-exit-resolver@*'` lists those resolvers `active`;
+- `X status` lists the exit's map `dns_port` with the same addresses and ports;
+- with E8c-1, `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each verified machine.
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service`, `systemctl disable --now qorpera-agent-exit-names.service`,
+`systemctl stop 'qorpera-agent-exit-resolver@*.service'`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (E8c-1's; so a later step 9
+restarts the "only listed" resolvers again) and
+`systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`: every machine's DNS goes to the main
+dnsmasq again, and every machine goes out as before.
+
+## Step 10 (E8c-1): "only listed" by address, on a node that runs E8b-2
+
+For a node that took step 9 from a release before E8c-1; one that takes step 9 from a release with E8c-1 has it
+already. Per node, node 1 then node 2. Only while the node's rules reader runs (`"ok":true` and a fresh `readAt`):
+without rules a machine reaches nothing outside. No kernel module is loaded. As root, from the checkout of the release
+head with the reader's package built, in one go (`README.md`, "Adding E8c-1 to a node that runs the exit"):
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+What the companies see:
+- a company in "only listed" mode has its resolver restarted once, when the names reconciler restarts: about a second
+  in which its machines get no names, and from then on every name not listed is "no such name". Once the reload is
+  done its machines' connections end, and they reach the addresses of their listed names over TCP 443 only;
+- later, the same restart (about a second without names) happens whenever a company switches mode either way, or
+  narrows its "only listed" list. Its machines' connections end too, unless it switched to "open". A wider list only
+  reloads the resolver, with no gap and no connection ended;
+- every later reload of the exit (`systemctl reload qorpera-agent-exit.service`, `up`) empties the only-listed sets: a
+  machine's new connections to a listed name's address are refused until it asks for that name again (the reconciler
+  reloads the resolvers, which empties their caches, within seconds);
+- companies in "open" mode and without rules see nothing new.
+
+Check, within 30 seconds:
+- `X verify` prints `qorpera-agent-exit: healthy`;
+- `cat /run/qorpera-agent-exit/names.json` shows `"problems": []`;
+- `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each verified machine: `goto
+  open`, or `goto only_<port>` for a company in "only listed" mode (its port in `names.json`'s `resolvers`);
+- for each such company, `cat /run/qorpera-agent-exit/names/<port>.mode` says `only-listed` and no `<port>.owed` is
+  left in that folder.
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` (its rules let every machine out as before),
+`systemctl restart qorpera-agent-exit-names.service`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (so a later step 10 restarts the
+"only listed" resolvers again), `systemctl stop 'qorpera-agent-exit-resolver@*.service'` (the names reconciler starts
+each again on its port, as the previous release runs it) and
+`systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`. An "only listed" company then has its
+block list enforced and every other name answered again.

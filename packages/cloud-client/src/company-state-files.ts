@@ -23,6 +23,16 @@ import {
 	type TableFile,
 	type TableRowsFile,
 } from "./interfaces.ts";
+import {
+	type MemoryRunFile,
+	type MemoryRunFileKind,
+	type MemoryTreeFile,
+	type MemoryTreeFileKind,
+	memoryRunFilePath,
+	memoryTreeFilePath,
+	parseMemoryRunFile,
+	parseMemoryTreeFile,
+} from "./memory-run-files.ts";
 import { NETWORK_RULES_PATH, type NetworkRulesFile, parseNetworkRulesFile } from "./network-rules.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
@@ -47,7 +57,11 @@ export type CompanyStateFileKind =
 	| "table"
 	| "table-rows"
 	/** The company's network rules, `rules/network.toml` (./network-rules.ts, RUNTIME-AGENT-EXIT.md §10). */
-	| "network-rules";
+	| "network-rules"
+	/** Run metadata, step blocks and run summary blocks (W1b, ./memory-run-files.ts). */
+	| MemoryRunFileKind
+	/** A conversation's summary tree: its tree.toml and blocks (M1a, ./memory-run-files.ts). */
+	| MemoryTreeFileKind;
 
 /** One reason a file cannot be saved. Lines count from 1 over the whole file. */
 export interface CompanyStateProblem {
@@ -407,7 +421,9 @@ export type CompanyStateFile =
 	| InterfaceOrderFile
 	| TableFile
 	| TableRowsFile
-	| NetworkRulesFile;
+	| NetworkRulesFile
+	| MemoryRunFile
+	| MemoryTreeFile;
 
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
@@ -436,6 +452,10 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	const none = { agent: null, group: null, name: null, todo: null, worker: null };
 	const stem = (part: string | undefined) => (part?.endsWith(".md") ? part.slice(0, -3) : null);
 	const [a, b, c, d, e, f] = parts;
+	const memory = memoryRunFilePath(path);
+	if (memory) return { ...none, kind: memory.kind, agent: memory.agent, group: memory.group };
+	const tree = memoryTreeFilePath(path);
+	if (tree) return { ...none, kind: tree.kind, agent: tree.agent, group: tree.group };
 	if (parts.length === 2 && a === "vision" && b === "vision.md") return { kind: "vision", ...none };
 	if (parts.length === 2 && a === "agents" && b === "sections.md") return { kind: "sections", ...none };
 	if (parts.length === 2 && a === "connections" && stem(b) !== null) {
@@ -1484,7 +1504,7 @@ export const WORKER_BRIEF_SECTIONS = Object.freeze([
 ] as const);
 /** A worker's results' body sections after the summary, in their order (F2-5b). */
 export const WORKER_RESULTS_SECTIONS = Object.freeze(["Needs", "Files"] as const);
-/** Today's bounds of the worker tools' texts (qorpera_manage_agent_worker, report_work), kept. */
+/** The worker tools' text bounds (manage_worker, report_work), kept from the row writer legacy sweep D6 dropped. */
 export const WORKER_TEXT_MAX_BYTES = Object.freeze({
 	goal: 4000,
 	doneWhen: 2000,
@@ -2050,7 +2070,7 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 	} else {
 		const where = companyStatePath(path);
 		if (!where) return [];
-		if (where.kind === "group") named.push([written[2], "a group chat's folder"]);
+		if (where.group !== null) named.push([written[2], "a group chat's folder"]);
 		else if (where.agent !== null) named.push([written[1], "an agent's folder"]);
 		else if (where.kind === "interface") named.push([written[1], "an interface's folder"]);
 		else if (where.kind === "table" || where.kind === "table-rows") named.push([written[1], "a table's folder"]);
@@ -2095,7 +2115,12 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		kind === "interface-order" ||
 		kind === "table" ||
 		kind === "table-rows" ||
-		kind === "network-rules";
+		kind === "network-rules" ||
+		kind === "memory-run" ||
+		kind === "memory-steps" ||
+		kind === "memory-run-block" ||
+		kind === "memory-tree" ||
+		kind === "memory-block";
 	if (kind && kind !== "vision" && kind !== "sections" && !fixedName && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
 	else if (!problems.list.length && path !== companyPathKey(path))
@@ -2113,6 +2138,22 @@ export const COMPANY_STATE_MAX_PROBLEMS = 50;
 export function parseCompanyStateFile(path: string, text: string): CompanyStateFileResult | null {
 	const where = companyStatePath(path);
 	if (!where) return null;
+	if (where.kind === "memory-run" || where.kind === "memory-steps" || where.kind === "memory-run-block") {
+		const placed = companyStatePathProblems(path);
+		if (placed.length) return { ok: false, path: where, problems: placed };
+		const parsed = parseMemoryRunFile(where.kind, path, text);
+		return parsed.ok
+			? { ok: true, path: where, file: parsed.file }
+			: { ok: false, path: where, problems: parsed.problems };
+	}
+	if (where.kind === "memory-tree" || where.kind === "memory-block") {
+		const placed = companyStatePathProblems(path);
+		if (placed.length) return { ok: false, path: where, problems: placed };
+		const parsed = parseMemoryTreeFile(where.kind, path, text);
+		return parsed.ok
+			? { ok: true, path: where, file: parsed.file }
+			: { ok: false, path: where, problems: parsed.problems };
+	}
 	// Interfaces and tables have their own parser and fixtures (./interfaces.ts, RUNTIME-INTERFACES.md §6.1).
 	if (
 		where.kind === "interface" ||
@@ -2467,8 +2508,8 @@ function workerPathItems(section: string, paths: readonly string[], maxBytes: nu
 	return paths.map((path) => `- ${path}`).join("\n");
 }
 
-/** The platform's standing texts of a brief (contract 13), as `qorpera_manage_agent_worker` writes
- * them today; the database checks a brief's against its own copy. */
+/** The platform's standing texts of a brief (contract 13), as `qorpera_company_state_worker_standing` has
+ * them; the database checks a brief's against that copy. */
 export function workerStandingTexts(worker: {
 	readonly species: "in-house" | "coding";
 	readonly access: "read" | "write";

@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import type { CompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { CompanyComputerDrainSupervisor } from "@qorpera/runtime/cloud-company-computer-drain";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import { describe, expect, it, vi } from "vitest";
@@ -13,7 +15,9 @@ import {
 function fixture() {
 	const gate = new CompanyComputerScreenActionGate();
 	const challenge = { state: "draining" as const, drainId: computerId(40), epoch: 2, binding: computerBinding() };
-	const stopResources = vi.fn<() => Promise<void>>(async () => undefined);
+	const stopResources = vi.fn<
+		(binding: CompanyComputerScreenBinding, signal: AbortSignal, until: number) => Promise<void>
+	>(async () => undefined);
 	const call = vi.fn(async () => ({ state: "drained", drainId: challenge.drainId, epoch: challenge.epoch }));
 	const supervisor = new CompanyComputerDrainSupervisor({
 		scope: computerScope(),
@@ -76,6 +80,32 @@ describe("physical office drain acknowledgement", () => {
 		).rejects.toThrow();
 		expect(f.stopResources).toHaveBeenCalledTimes(1);
 		expect(f.call).not.toHaveBeenCalled();
+	});
+	it("gives the stop, its folder boundary included, until a second before its 20 seconds, and never acknowledges a stop that ran out", async () => {
+		const f = fixture();
+		const called = computerDeferred<void>();
+		f.stopResources.mockImplementation(() => {
+			called.resolve();
+			return new Promise<void>(() => undefined);
+		});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const drained = f.supervisor.drain(f.challenge, f.signal);
+			drained.catch(() => undefined);
+			await called.promise;
+			const [binding, signal, until] = f.stopResources.mock.calls[0];
+			expect(binding).toEqual(computerBinding());
+			expect(until - performance.now()).toBeGreaterThan(18000);
+			expect(until - performance.now()).toBeLessThanOrEqual(19000);
+			await vi.advanceTimersByTimeAsync(19999);
+			expect(signal.aborted).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(drained).rejects.toThrow("COMPUTER_REQUEST_STOPPED");
+			expect(signal.aborted).toBe(true);
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it("rejects stale acknowledgements and does not replay an uncertain ack", async () => {
 		const f = fixture();

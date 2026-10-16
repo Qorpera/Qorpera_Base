@@ -1,0 +1,612 @@
+{
+  "schema": "qorpera.native-codex-node-proof/v1",
+  "artifactManifest": {
+    "path": "deploy/first-node/native-codex/linux-x64-artifact.json",
+    "sha256": "a73a38b9fe095245f0faed872b083100cb65de4ffc7b9ad18d37b4d3cb996f3f"
+  },
+  "artifact": {
+    "schema": "qorpera.native-codex-artifact/v1",
+    "source": {
+      "schema": "qorpera.native-codex-source/v1",
+      "repository": "https://github.com/openai/codex.git",
+      "tag": "rust-v0.155.1",
+      "tagObject": "4e21628f9ec9ee656650cd2b62ef92225725b5ac",
+      "commit": "be2951ea34f0d295ed0becf97079f92fa5f6950e",
+      "version": "0.155.1",
+      "rustToolchain": "1.95.0",
+      "protocol": "qorpera.native-result-fence/v1",
+      "capabilities": [
+        "qorpera.native-result-fence/v1",
+        "qorpera.native-direct-tools/v1",
+        "qorpera.native-capture-images/v1",
+        "qorpera.native-message-composition/v1",
+        "qorpera.native-context-composition/v1",
+        "qorpera.native-prompt-cache-key/v1"
+      ],
+      "patchSha256": "1148d8eced8187ab6063d3d442c6fac6e851702e3e0cdccad90aa9e4b608bfab",
+      "cargoLock": {
+        "upstreamSha256": "81eb29f6276d5b3d1b39f1588a26059dadfbba717952247efeb8a575f271f569",
+        "normalizedSha256": "df88a71b82843c6f092610fb07589f7a40032ddc25f50718354546ca541eb9b7",
+        "pathPackages": 152
+      }
+    },
+    "artifact": {
+      "file": "codex",
+      "bytes": 318891312,
+      "sha256": "1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+      "processing": {
+        "tool": "rust-llvm-objcopy",
+        "toolchain": "1.95.0",
+        "operation": "strip-debug",
+        "inputSha256": "f76e53d0c08d13ce753f6147052c534f710da29def5196828cfacb11a282fbb7",
+        "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
+      }
+    },
+    "cloudAcceptance": "not_performed"
+  },
+  "verification": {
+    "platform": "linux-x64",
+    "machine": "qorpera-testvm-node02",
+    "operatingSystem": "Ubuntu 26.04.1 LTS",
+    "kernel": "7.0.0-30-generic",
+    "node": "24.21.0",
+    "binaryPath": "/opt/qorpera-codex-fence/codex",
+    "binarySha256CheckedInRun": "1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c",
+    "binaryOrigin": "Copied on 15 Oct 2026 from node 2's ~/cut-v55-a1/native-company-fence-m896/codex (the 8 Oct rebuild of the pinned source and patch); the sha256 was checked before and after the copy.",
+    "realNativeExecutable": true,
+    "scriptedLoopbackProvider": true,
+    "providerCredential": "not-a-provider-credential",
+    "login": false,
+    "network": false,
+    "realModel": false,
+    "deployed": false,
+    "sourceCommit": "0d926073b4d9c6293b66d9e4642a68ef6c7b7a0b",
+    "sourceDirty": false,
+    "run": "20261016T021604-96957-33ee781a",
+    "startedAt": "2026-10-16T02:16:05.572Z",
+    "command": [
+      "sh",
+      "-c",
+      "sha256sum /opt/qorpera-codex-fence/codex && node node_modules/vitest/dist/cli.js --root packages/runtime --run --reporter=verbose test/patched-codex-live-halves.test.ts test/patched-codex-boundary.test.ts test/native-codex-compaction.test.ts test/native-codex-capture-images.test.ts test/official-codex-boundary.test.ts && echo \"== entry official\" && node packages/runtime/test/fixtures/run-official-codex-boundary-probe.ts /opt/qorpera-codex-fence/codex && echo \"== entry composition\" && node packages/runtime/test/fixtures/run-native-codex-composition-probe.ts /opt/qorpera-codex-fence/codex && echo \"== entry capture-images\" && node packages/runtime/test/fixtures/run-native-codex-capture-images-probe.ts /opt/qorpera-codex-fence/codex"
+    ],
+    "executedSourceRoots": [
+      "packages/runtime/test/fixtures/run-native-codex-capture-images-probe.ts",
+      "packages/runtime/test/fixtures/run-native-codex-composition-probe.ts",
+      "packages/runtime/test/fixtures/run-official-codex-boundary-probe.ts",
+      "packages/runtime/test/native-codex-capture-images.test.ts",
+      "packages/runtime/test/native-codex-compaction.test.ts",
+      "packages/runtime/test/official-codex-boundary.test.ts",
+      "packages/runtime/test/patched-codex-boundary.test.ts",
+      "packages/runtime/test/patched-codex-live-halves.test.ts"
+    ],
+    "executedSourceMethod": "Every file reachable by static and literal dynamic imports from the roots, at sourceCommit, with @qorpera/<package> resolved to packages/<package>/src as Vitest and native-probe-source-loader.ts do. The manifest is the sha256 of the sorted \"sha256  path\" lines.",
+    "executedSourceManifestSha256": "2a4279989869013a1ea921836af3b831cfb98ec134b542c7780bbfc84ba1c25f",
+    "executedSourceCount": 149,
+    "executedSources": {
+      "packages/cloud-client/src/cloud-agent-folder.ts": "f9d19cbf0bdc6fede0c0a43661617d53b20dfaab7efc2f9e5720430e4cd45674",
+      "packages/cloud-client/src/cloud-company-computer-contract.ts": "3fb82232e19473e2b92382a569be962afa1a89a270425d48817f95942a0b2521",
+      "packages/cloud-client/src/cloud-file-transfer.ts": "c84f17c70ec9f44958d8f14a8db04f7fb3626c14e706761d913a022911168f3c",
+      "packages/cloud-client/src/cloud-request.ts": "be95cc11728483eac4bc82e2b1c536d66451a6f8cf502e163d698a5bf37986f1",
+      "packages/cloud-client/src/cloud-skill-file.ts": "407ede938b61df4f8e298da469c006404cb5bdbbaf69ba0fae4314fd0774016e",
+      "packages/cloud-client/src/company-path-presence.ts": "53949c02a6ac4b1b30c076600c18fc1680d38c1632c9da6b6944920918e89ba5",
+      "packages/cloud-client/src/company-path-schema.ts": "722569aa9fa8a1e7b8554bf5460f5461772f049d60f4ce4fbace9b957e68cb5a",
+      "packages/cloud-client/src/company-state-files.ts": "c5c20801bc6b54262a8e8b3556e4eab800019bd879f0aff2d3b3f552da17e82c",
+      "packages/cloud-client/src/company-state-shared.ts": "d2edc771a8c6ed4e571cfc440e40cf08f84f914ef8428094be2c25534a3849a0",
+      "packages/cloud-client/src/interface-library.ts": "3c9d4c9c0a54a01b7d6a5d00036a05002faa62e3e7e364b05a255702154438a9",
+      "packages/cloud-client/src/interfaces.ts": "0f4759a920f8f69cfee16540d64eb32d65d9ac5451362283c7a87ffdb33709bd",
+      "packages/cloud-client/src/memory-run-files.ts": "a793280a375bd9e7bcac2abefbbeeb412eb459cb73a9a013ab273f680a8f6c7c",
+      "packages/cloud-client/src/native-account-refresh.ts": "36f83d493b380c0392baa8388d390f910386b51d3cf9c4be73ead8ce6d52104f",
+      "packages/cloud-client/src/network-rules.ts": "5d39e3d94823e048ff55d4d58cc06ad183eb2cf7a4871c3761696159a06d2973",
+      "packages/cloud-client/src/node/cloud-object-store.ts": "47b37f7bb7a06460c4c468d7167df0e0feb22b44c1f9b656f9be7ce0802a793a",
+      "packages/cloud-client/src/node/cloud-runner-protocol.ts": "17ebc2a61707b4dc36fbabf81456c0aa8d951bce208fc5fd074fe50ddc7adb36",
+      "packages/cloud-client/src/staff-characters.ts": "f7aa051e5ac53e353bc956e83e17a4c96f43c3cf0fd4763398fcaee95778785e",
+      "packages/cloud-client/src/staff-template-ids.ts": "d20c8238a569ba49f0ae22a28140ef9319bfa196e41474c39e8f73aec02bdc05",
+      "packages/cloud-client/src/toml-subset.ts": "25a1dcda708424ce5dda3f98265f260a6eabbc236203374c5c19800e2fc7c48f",
+      "packages/contracts/src/cloud-coding-command.ts": "daceab25273781939184acb4f5fcf2d09a44df25bbd48088e792cb2bed739aa1",
+      "packages/contracts/src/cloud-coding-session.ts": "e57ed51706e86fd461e282a7b7da85f4326a78d1535cdfacf927df194e34bbf7",
+      "packages/contracts/src/cloud-coding-storage.ts": "c54edbe01dab05b0cc11dabd264d9b830fb1f390cecd59c228238d4ad048d13d",
+      "packages/contracts/src/cloud-coding.ts": "6d5ee89157502e3a0e0a2da1a355fbc38b59d74f770d50b89a575ee4720d4694",
+      "packages/contracts/src/cloud-machine.ts": "1e3c3f2335b51bba166e1c252ea9deb44f96ee6ed88f51f0ede1798e820b24a0",
+      "packages/contracts/src/company-computer-activation.ts": "708a518a3388da74b920ade382d5f8878adf08e2618caf109b686fcd22eb0795",
+      "packages/contracts/src/company-computer-adoption.ts": "050cbae48116a5902e88dbb366b7650e15c53f5a4b87800c9c0e8b420216207b",
+      "packages/contracts/src/company-computer-boot-adoption.ts": "c5f90f4f6d854148a978a7804bd57ba8771f8d3783f8e29b08244054ff205599",
+      "packages/contracts/src/company-computer-boot-configuration.ts": "2e5ebc379bc3aa04df33f35c603750a9d084f3dc03588e6cf74bb940aa9be302",
+      "packages/contracts/src/company-computer-boot-intent.ts": "c8ea7d5421505790bc2558ddec9008431765cc600a176ca10b080747947233a9",
+      "packages/contracts/src/company-computer-boot-service-restart.ts": "866e671183006eed3068cb7fa6112fdbcc52189c3a54f2af869c48c36fafc51f",
+      "packages/contracts/src/company-computer-boot-service-start.ts": "47bd754a66e3b0e1db2a88959377a9f6da61a175f294566863e02216823bbc10",
+      "packages/contracts/src/company-computer-boot-successor.ts": "9c03cb57aa9ff98f06341b9e15609a2b6b5ccdd994bc11c1cb22e10341fbb1b3",
+      "packages/contracts/src/company-computer-code-package-provision.ts": "809b8de6a8d15970f61da2456fb469f71b6aa3d3732f72abc048c9993a1ceb6a",
+      "packages/contracts/src/company-computer-configuration.ts": "bdbe7af8de3a02d35bc8de1b3454fbc2c7945145e6419f3482080e9a5c2ddc7e",
+      "packages/contracts/src/company-computer-delete-disposition.ts": "0188b90d9eee9dbabd84770a630db7d13fb52293dd1b488afed09f639304e01d",
+      "packages/contracts/src/company-computer-lifecycle.ts": "147e00a86c7a9f6ded54ec2d0c151e0c70e2a7c58cc31384f02ba8fa1351da20",
+      "packages/contracts/src/company-computer-native-endpoint.ts": "4afa880343badb57cb3f0c4c61c9b8be1adc087541eab2c30aae76eabf2d0101",
+      "packages/contracts/src/company-computer-preparation.ts": "c91a305ee3b8710433f380b0887540cdd71d7c6a179ac9f032683fde822ce389",
+      "packages/contracts/src/company-computer-reset-custody.ts": "02515de9e92303e342f8064ac8c0638cdc0ba1855e2bff672b7df625a4b57d71",
+      "packages/contracts/src/company-computer-reset-service-restart.ts": "52f2326845655c1c2ea9afa1bb8296538994a11b561dac1e4fc5da40ec79c70b",
+      "packages/contracts/src/company-computer-reset-successor.ts": "ff9cf974271fd79c8e202be3d41faed1b10a7334af097b96895de7639e07364d",
+      "packages/contracts/src/company-computer-reset.ts": "313c99521dd34fa55c0769737baa997f493e8ae1ddcf56e72076863ed1c20439",
+      "packages/contracts/src/company-computer-service-restart.ts": "9bd61cfce306f9ee172658387919eaa0704e901318625ad32fce77d0bfd0a845",
+      "packages/contracts/src/company-computer-service-software-measurement.ts": "b4fbf4bab8453539820492aa2c586be6741b0c31a89548eb06033d1d5574cec9",
+      "packages/contracts/src/company-computer-service-software.ts": "b7d500bdff3ce1fd4f5f3cf8da70b726dd47a65cdb30e4417aae4656718ce88a",
+      "packages/contracts/src/company-computer-service-start.ts": "0b424271ed67bc212ffbdc6a05c2299153cc786a15ff49757902707ae34e6d78",
+      "packages/contracts/src/company-computer-service-stop.ts": "1722d251378a126208abc84428b0bcbd558bd62470058d77190d0493acca346e",
+      "packages/contracts/src/company-computer-service-successor.ts": "c0fffb850d939e9c017d058d1b064892e3a5b98f8b6b084743c77ea3fb3d77d8",
+      "packages/contracts/src/company-computer-stop-acknowledgement.ts": "5e6e1d81c4d7bf92f2300fcd3800422c6298d3172034027e41c202526e6c3c31",
+      "packages/contracts/src/company-computer-stop-history.ts": "a626bcaea89571b9b91d59afdb5658f63ae5d7758a352e4cc4769a8665e82026",
+      "packages/contracts/src/idle-rule.ts": "bf776510e33dec46e8f2197f20885d45bb8ee706cac7b4ea1e793d3c026cd4b7",
+      "packages/contracts/src/index.ts": "c5c758448f80a8698f7154ca81d5aa2a6d418beaf439b13dc8a3f31dcc2fd028",
+      "packages/contracts/src/wire-values.ts": "d8862a3fe052e4727321e4d0a9bc0b2a8cecbe392ce3c143bc96e1ee18ba6ba1",
+      "packages/runtime/src/cloud-action-review.ts": "ab8d60f8ae6b886cf9b3ee40c0c2842a5a5b8ab8fb1c73813bc86278654ba093",
+      "packages/runtime/src/cloud-agent-head.ts": "b867af7f5cce6e0bc1463377bc1fbe5d598e3619f883673e62b868dc03e75658",
+      "packages/runtime/src/cloud-agent-mouth.ts": "9829fe7422a810a4001dde5c50973ff640fa59e2db15f9bfe88035ca4c7dc20a",
+      "packages/runtime/src/cloud-chatgpt-plan-sign-in.ts": "e0362c3bc6fe19e98f6aa1aafe6d2f4c0460ffa7833b8e78b0a24e2fe5c0e2da",
+      "packages/runtime/src/cloud-chatgpt-plan.ts": "b8ccff33ea3f5bad1cdcd0f30df5f1431f54dd4c676c46934805940144423803",
+      "packages/runtime/src/cloud-codex-tool-session.ts": "53b675d38076b20e327f0291552ad77ca605633274b0eef58aa45086556016cb",
+      "packages/runtime/src/cloud-company-account-fill-box.ts": "fef1b14fa2b57952dd3b272f9297c96f8a922d944c69df6fc4052acfc00da81e",
+      "packages/runtime/src/cloud-company-account-vault.ts": "7bf0d749b8be7f7ea9e5e3b9c1455c8d7c563b2bbbcaca919d4d722c6d329ff9",
+      "packages/runtime/src/cloud-company-accounts.ts": "fc701b94a2a3873d3ef415d657092531a6eccf55ed8983589fefb639e3bd640e",
+      "packages/runtime/src/cloud-company-computer-account-fill.ts": "00326d7b3f2db1cac7f67e55e70e4b5c5cf2ff03fe3631334258e8fc4432e64c",
+      "packages/runtime/src/cloud-company-computer-browser-control.ts": "3b637d07039ce67e7dea1f7937afd1adc15ae50a88227c418f5bcf8f12ccab7b",
+      "packages/runtime/src/cloud-company-computer-effect-control.ts": "92713b71df6a9b89518bd037d64f421cdb414bd38987358dd5eb0e4198233631",
+      "packages/runtime/src/cloud-company-computer-endpoint.ts": "3fb161482390b9f1364f9d6245ae0b7d1c4d2bb49908818fed7dea1fa97f35a9",
+      "packages/runtime/src/cloud-company-computer-guest.ts": "e939bb1e378c5071c4370a1f4132c41a19adf0a0fa462dfd04b8c7b379c6c74f",
+      "packages/runtime/src/cloud-company-computer-hook-capture.ts": "0dbee9d0d1d77f8773faa86c62d9980e301221a41f69b5cd0fd004346607cffa",
+      "packages/runtime/src/cloud-company-computer-layout.ts": "10c6da367c1e766d149a24fcb114f2ea1010b43721717cbcda651328c90d0a4d",
+      "packages/runtime/src/cloud-company-computer-leases.ts": "eda0c64ed0258071a0a681bfc64dbacf68476063fa48940d1711eccf3be7401c",
+      "packages/runtime/src/cloud-company-computer-private-fields.ts": "3cb1caeae54e966e03799fa8dadc8240430f6f1435d81ac7dd98fd2c9374f16a",
+      "packages/runtime/src/cloud-company-computer-registry-http.ts": "653c1e241a3bc620cf953c29eaa343f44b48fe6a44346740b1319f438980befc",
+      "packages/runtime/src/cloud-company-computer-screens.ts": "355839a501bd0d552507c5bd42dbe37d0b752e4864eddde79efe0b5e6906ff54",
+      "packages/runtime/src/cloud-company-computer-screenshots.ts": "10efae9326bf245adffcd3804c4ec69601556e99bc0b448ef42974525251f404",
+      "packages/runtime/src/cloud-company-computer-site-stops.ts": "163f8c3b5b8382c019de97fd5619548d39ba236493b3f8df21a0599cee3d1537",
+      "packages/runtime/src/cloud-company-computer-state.ts": "8dfa1b86329b01dab17a206170beba209a1ec3e6441b43f10b2209c447c55b2c",
+      "packages/runtime/src/cloud-company-computer-tools.ts": "7ed7e3b6b179208b6b2c1d281d7bbc4e1f6d37d57eb01465f6998b84a387607f",
+      "packages/runtime/src/cloud-company-folder-client.ts": "7f00f8735d59ac431fc9cd40329056de452987d060e1c4f409cebe86950813b3",
+      "packages/runtime/src/cloud-company-path-gateway.ts": "564790b79c6e4c9f4bf270fd7a423be2809ed7303212f5640c84570ab3d57ce8",
+      "packages/runtime/src/cloud-company-path-refusal.ts": "7eac9c48badb02cb2754583a7c7ffcde8482fd932e2928a9d69027d244484765",
+      "packages/runtime/src/cloud-connector-adapter.ts": "ef194cf4e28d0581ca639dc11f69eefde3695c8da56775aecfa62714c1949e09",
+      "packages/runtime/src/cloud-connector-catalog.ts": "4686166e0eae9e8213a650d0ad7b7e19a36a94c24b2118995c8eeae198316a74",
+      "packages/runtime/src/cloud-connector-github.ts": "eb42ebf8e63cc51f4e7abaae38890661bad73c574fdbb0fd26ce83b64c330645",
+      "packages/runtime/src/cloud-connector-google.ts": "05e2e2711aaf76dc6907742bfa28781c7dd7555a1caf7f43bb64d5c39e5b9ad9",
+      "packages/runtime/src/cloud-connector-http.ts": "44ea1d77cb28a1f216fc80fd6da445f6377d3371972902bf9ac8fdecc73fe1ab",
+      "packages/runtime/src/cloud-connector-token-revocation.ts": "347dbc7f9611e29f35447c8257530002252b32b6885808efb0f7310e7b915370",
+      "packages/runtime/src/cloud-control-errors.ts": "2f90b04a89a5aa9737fba4dae2caa8c3771b2c4d70bd7f12cfff9271689eea60",
+      "packages/runtime/src/cloud-event-hook-capture-box.ts": "9a3201674df00b174cae1993a07e071b78dec4361f548994d3544120bfd1295d",
+      "packages/runtime/src/cloud-event-hook-vault.ts": "b56ea2a69c460ea9cfbb6791a7450abf840357c113b114e0f83af2adfdfe989a",
+      "packages/runtime/src/cloud-event-verification.ts": "ce1fa259cceede4d14beab1fbeae78d1b576f23703f5e53a6d65e66c6b088524",
+      "packages/runtime/src/cloud-folder-hiring.ts": "631415bc651b09c2fb7a5704e32faff7857e828978f0239e89940cffdbdf2748",
+      "packages/runtime/src/cloud-folder-notebooks.ts": "474b51e898140c481d07a1b9c0c036ab2f27e96f4bcc21f8b98b5174b81ef1dc",
+      "packages/runtime/src/cloud-folder-todos.ts": "99e8f73f4b44e71d432514fd8e74f705be0202785861fb5884100569fde234b1",
+      "packages/runtime/src/cloud-folder-workers.ts": "000c8f6e57ff338cd51b051b42cdae0cfd4ce702a65807664e5f529a22d0e65d",
+      "packages/runtime/src/cloud-memory-tools.ts": "cf3577447e9d1d332292147b06f8236546ee895a2faae3146c70d714a2dd2f5d",
+      "packages/runtime/src/cloud-model-login-sign-in.ts": "1987c44b3aa253310e7a331a13a7d03758d437daceb6c45d91c72c24f69df57d",
+      "packages/runtime/src/cloud-model-login-vault-sign-in.ts": "2fa0f9e4a4dfcf4d98cf708fe80534188fcbc96477c2e4b38b8ac24f68b25b7d",
+      "packages/runtime/src/cloud-model-login-vault-usage.ts": "fe4a4a237239bb7c1a5e4f5719eb7b03419d700da53b81ae4118f329b41181c8",
+      "packages/runtime/src/cloud-model-login-vault.ts": "4871c9601b1d9c2d92e609780ed87b09f025c4326e2049edd554c3ec96f7d982",
+      "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
+      "packages/runtime/src/cloud-native-company-context.ts": "a71a5bc342d7e8b245b366e5abbc26e87e51737a40859af65c55a47e61621f1f",
+      "packages/runtime/src/cloud-native-context-composition.ts": "7d40f9bc757301aa8b62ed18c5e53f246a3b1e8480b5415fdfe3a56ef5f2fedf",
+      "packages/runtime/src/cloud-native-egress.ts": "a6df7f3e08d434745bcd86720c26185ecf18f6c05c35fe722b8ad49a23e4e9d9",
+      "packages/runtime/src/cloud-native-failure.ts": "5eac78f30726671846ae8c92ed8c4f462f9419f871580300f2cca4055aad661c",
+      "packages/runtime/src/cloud-native-isolation.ts": "60ffe72984357e38c8a5c1c4b4834f16d25d05c0fd4e2ada90d51d2a95c21d0c",
+      "packages/runtime/src/cloud-native-provider-host.ts": "51d7db534000315f4edc0ddaa177566f8ad2155ce2c5a62bed3a29683551d5f4",
+      "packages/runtime/src/cloud-native-result-fence.ts": "1bddce503148d29fe43a3fefce8bd3b24f283ee5748a813be1380f43b427e729",
+      "packages/runtime/src/cloud-native-tool-authority.ts": "20ee8fc2916dacdfb56707a629db768477e06d09f1bfddc501f7a1ca28fee408",
+      "packages/runtime/src/cloud-native-tool-boundary.ts": "cdaba7155336a1f49503e4ca7e0cd80201327675bf50c36193f0c6f826fc5ed1",
+      "packages/runtime/src/cloud-native-tool-operations.ts": "c45e8ff97389a5d7bfc036679347a0f83a3ea868fae4d6b7d4c6d6e2ad025856",
+      "packages/runtime/src/cloud-run-log.ts": "b91c5bcc25db8f072f43ee5296ec97988d2a39a288824ad39ba80c9081999903",
+      "packages/runtime/src/cloud-runner-broker.ts": "366f8ef03974d7c724ec0e70c9ab0c0bb49cb0dc7275b5b46781bc372a060b0e",
+      "packages/runtime/src/cloud-runtime-constitution.ts": "04d703539097db9d1a309c3ba9fb9e2a6f14a7f8617e7b1eb786f2c17e5be4d7",
+      "packages/runtime/src/cloud-runtime-hire-overlays.ts": "4eed82afe8c7191c7802fe51b0586d8a7bcad9aaa65a25d7ee664fce2f13995b",
+      "packages/runtime/src/cloud-runtime-observability.ts": "fadfe20df9b1f120a254ba3dfc678676a2c3a376bc087ef20e2feec650ac6e59",
+      "packages/runtime/src/cloud-runtime-policy.ts": "b4cc19130f49fc161d80e1e52a3240973088221989bf410376b63300a4a55f53",
+      "packages/runtime/src/cloud-secret-broker.ts": "cc903ddcff012feb87f056df7454ecc345d433dd2b9463a677cf92fc6db8e64c",
+      "packages/runtime/src/cloud-secret-crypto.ts": "a5dc9e4c64e763b0ec1cd0afff3ee23301823169e569c9b2b741cd22fff5f9ff",
+      "packages/runtime/src/cloud-secret-tools.ts": "e643b4aebb00b31943b18f07a97e60284e6814a75eb76ddd782310bc9bb6dc3e",
+      "packages/runtime/src/cloud-skill-tools.ts": "1c93e4b8a6c9b5a06f1eefca0f904e8933b8ab173dffbc232da5d239167b2f2c",
+      "packages/runtime/src/cloud-thread-interactions.ts": "6585aeb0675db4be64f547be46875a9d233046f3ef834ee61b63b4e4fd16cf67",
+      "packages/runtime/src/cloud-wake-bus.ts": "683aeb22293040ed0ddfeb5b3f5294870d42c3d912538eeb26ca323528ce6474",
+      "packages/runtime/src/cloud-worker-tools.ts": "13d828807c1e6990d525566acb2b00c7cab877870a4d7228ef295c7771915c41",
+      "packages/runtime/src/memory-tree/branches.ts": "b88fdb1c304710d2c121d3e12d4c68957d13af399397f1190569ccc7d83501ea",
+      "packages/runtime/src/memory-tree/compact.ts": "c4ddad2cb509e39ae3e3f0e6fe5c92e175c8ff40d9abdd87f7e40515a79274ad",
+      "packages/runtime/src/memory-tree/compose.ts": "d231d9793f8b2062c84bc939836c79881f5d2f17e5db80fe08f65552051bcfc2",
+      "packages/runtime/src/memory-tree/fold.ts": "365e0a918b0a7caa2130153e94085a0f788d26625cf173053e144d9382d57f43",
+      "packages/runtime/src/memory-tree/run-work.ts": "3bc1dbda25c0aff52ef6f0c34b124495f20d21c6b1179f369579c72621e568e2",
+      "packages/runtime/src/memory-tree/tree.ts": "7ddd50abdf6140e397e2213cb613abc152452767fa5f36d15eecdc62cab792d0",
+      "packages/runtime/src/memory-tree/view.ts": "52963de5e004f5a9073cb465a590395b91ef1aab42aa6ce7cb5c9575eb39004e",
+      "packages/runtime/src/memory-tree/zoom.ts": "3955329002c04bb54a3db670508745d7a3004eb34fd74fc9b680b44bfef596f4",
+      "packages/runtime/src/native-provider-account.ts": "1bab05c1f06759927ed4696d4310eb17319570d567446043582cd150e94f60d2",
+      "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
+      "packages/runtime/test/fixtures/native-codex-compaction-probe.ts": "7c4ab6be09c86fcc678770c2341c30b0185732912af35f15e19cf9ac465ea1d1",
+      "packages/runtime/test/fixtures/native-codex-composition-probe.ts": "3e6aabd91ab2b8777aa8d8b90831f2b0d281654172048f43ccc9975dc298cad5",
+      "packages/runtime/test/fixtures/native-codex-fence-failure-probe.ts": "11af8e9f034057ae5250c8fe6f1549e67925efeaae4d088b83a0deee3dfec6e4",
+      "packages/runtime/test/fixtures/native-codex-fixture-command.ts": "4cffc188d12efe3d908686763caa765ae03d2b8e9449729db6f2bde54d3b58a8",
+      "packages/runtime/test/fixtures/native-codex-live-halves-probe.ts": "921e7f8d0962d1a784360dbd1c712350279602b7902c3f154c844b917e54dee0",
+      "packages/runtime/test/fixtures/native-codex-usage-limit-probe.ts": "198729b7b3bd0b7bc772a164927da35dc1691b508d143f7b3d34a2e5d3e7c85a",
+      "packages/runtime/test/fixtures/native-probe-source-loader.ts": "ca48034509a1367957667530e298624f574af6a9836cd4e68b155e7e54cd135e",
+      "packages/runtime/test/fixtures/official-codex-boundary-probe.ts": "c19ed9bc9c6421b5a868b772307b59f8d92de362bbdb79dc932c20ba3f97cb25",
+      "packages/runtime/test/fixtures/run-native-codex-capture-images-probe.ts": "1c12033756734a8b1bd9e1f1d32de2f8c81ae8811fa1b7cfe933594766f397d8",
+      "packages/runtime/test/fixtures/run-native-codex-composition-probe.ts": "711810a2a7b3003cbb2399c8a61932b1b956c980629c56b8c4c4fbdb96c43c86",
+      "packages/runtime/test/fixtures/run-official-codex-boundary-probe.ts": "f75444d7a5aa8fe483b58fd23c61dc63e01868f58393bd1dfa7092f3031d61b0",
+      "packages/runtime/test/native-codex-capture-images.test.ts": "b3f1f918811d5b16d90008e08a143f749820b0c443946bdbd8be30dd9c3853d7",
+      "packages/runtime/test/native-codex-compaction.test.ts": "fd84f454c8d2fdce78a9dc41aa0ad35ee5d8f10f6f23515287ac6ecd49275459",
+      "packages/runtime/test/official-codex-boundary.test.ts": "a8316b8fb0d93da13c51ea213958a747096b7720b5dc66676a3a6d9c5c2f9094",
+      "packages/runtime/test/patched-codex-boundary.test.ts": "2cf9307880c596029222fdf8ac9ddac3f05019f7b01497ef76ae828e1a665dbf",
+      "packages/runtime/test/patched-codex-live-halves.test.ts": "24524e32d5e177c5731fc02163bb765dc9867c3d1ed7c1e1a27b8c494475aa45"
+    }
+  },
+  "suite": {
+    "filesPassed": 5,
+    "testsPassed": 34,
+    "skipped": 0,
+    "failed": 0,
+    "tests": {
+      "test/native-codex-capture-images.test.ts": 9,
+      "test/native-codex-compaction.test.ts": 4,
+      "test/official-codex-boundary.test.ts": 4,
+      "test/patched-codex-boundary.test.ts": 8,
+      "test/patched-codex-live-halves.test.ts": 9
+    }
+  },
+  "liveHalves": {
+    "file": "packages/runtime/test/patched-codex-live-halves.test.ts",
+    "cases": [
+      "D1 sends Codex's own context unchanged under the run's 51-character cache key",
+      "D1 leaves out the reasoning the composer drops",
+      "D1 sends a folded step as the run's work message where the step was",
+      "D1 puts a resumed run's earlier steps before its first raw step",
+      "D1 refuses a work message in another key order before it reaches the provider",
+      "D1 refuses a work message with unescaped markup",
+      "D2 runs the run's compactor in the real app-server, without tools or the run's key",
+      "D3 records one usage row per provider request from Codex's six counters",
+      "D4 sends the next request after a result fence slower than 8 s"
+    ],
+    "proves": {
+      "D1": "Context composition (#896, #903) and the cache key (#912, #956, #980): every agent request carries the run's 51-character prompt_cache_key; the instructions, tools and every item before the prompt are identical in all three requests; unchanged, reasoning-dropped, folded and resumed inputs reach the provider in the composer's shape; a work message in another key order or with a raw tag is refused with \"Cloud context composition unavailable\" before it reaches the provider.",
+      "D2": "The run's compactor in the real app-server (#1002, #923): two compactor requests, each with effort low, no qorpera.* tool, its own window and not the run's key; the replies come back with their usage.",
+      "D3": "Usage rows (#878): Codex reports the six usage counters, including cacheWriteInputTokens; one model_request row per provider request under the model_turn attempt; the turn totals add up (170 input, 98 cached, 12 output, 1 reasoning, 182 total).",
+      "D4": "A result fence slower than 8 s (#839, #914, the native half): r2's fence is held 9 s; the session still completes with 3 requests and 2 effects, r2 arrives at least 9 s after the hold began, and the held check is not c1's release check."
+    }
+  },
+  "boundary": {
+    "platform": "linux",
+    "codexVersion": "0.155.1",
+    "providerModel": "gpt-6-astra",
+    "toolInventory": [
+      "qorpera.read_document",
+      "qorpera.send_message"
+    ],
+    "forcedBypassesDenied": 22,
+    "canonicalBytesUnchanged": true,
+    "unbrokeredRequests": 0,
+    "syntheticSecretExcluded": true,
+    "controlledResultsFenced": 8,
+    "nativeResultsFenced": 23,
+    "unfencedNativeResults": 0,
+    "publicMessages": 2,
+    "immediateDelivery": true,
+    "retryDeduplicated": true,
+    "privateOutputExcluded": true,
+    "allNativeResultsFenced": true,
+    "solBoundaryProof": {
+      "platform": "linux",
+      "codexVersion": "0.155.1",
+      "providerModel": "gpt-5.6-sol",
+      "toolInventory": [
+        "qorpera.read_document",
+        "qorpera.send_message"
+      ],
+      "forcedBypassesDenied": 22,
+      "canonicalBytesUnchanged": true,
+      "unbrokeredRequests": 0,
+      "syntheticSecretExcluded": true,
+      "controlledResultsFenced": 8,
+      "nativeResultsFenced": 23,
+      "unfencedNativeResults": 0,
+      "publicMessages": 2,
+      "immediateDelivery": true,
+      "retryDeduplicated": true,
+      "privateOutputExcluded": true,
+      "allNativeResultsFenced": true
+    },
+    "failureChecks": [
+      {
+        "fault": "revoked",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      },
+      {
+        "fault": "stalled",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      }
+    ],
+    "compactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ],
+    "providerDefaultCompactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ]
+  },
+  "composition": {
+    "schema": "qorpera.native-message-composition-proof/v1",
+    "checks": [
+      {
+        "mode": "delivery",
+        "model": "offline-probe",
+        "modelRequests": 2,
+        "sends": 1,
+        "heldBeforeCompleteArgumentsMs": 2201,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": true,
+        "cancelledCompositionClosed": false,
+        "metadataOnly": true
+      },
+      {
+        "mode": "cancelled",
+        "model": "offline-probe",
+        "modelRequests": 1,
+        "sends": 0,
+        "heldBeforeCompleteArgumentsMs": 2200,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": false,
+        "cancelledCompositionClosed": true,
+        "metadataOnly": true
+      },
+      {
+        "mode": "delivery",
+        "model": "provider-default",
+        "modelRequests": 2,
+        "sends": 1,
+        "heldBeforeCompleteArgumentsMs": 2201,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": true,
+        "cancelledCompositionClosed": false,
+        "metadataOnly": true
+      },
+      {
+        "mode": "cancelled",
+        "model": "provider-default",
+        "modelRequests": 1,
+        "sends": 0,
+        "heldBeforeCompleteArgumentsMs": 2200,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": false,
+        "cancelledCompositionClosed": true,
+        "metadataOnly": true
+      }
+    ]
+  },
+  "capture": {
+    "platform": "linux",
+    "checks": [
+      {
+        "model": "offline-probe",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      }
+    ],
+    "unissuedMediaChecks": [
+      {
+        "fault": "message_image",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 0,
+        "blocked": true
+      }
+    ]
+  },
+  "limits": [
+    "Scripted loopback provider on a node test VM; no login, no network, no real model or account acceptance",
+    "Remote compaction v1 is gone from Codex 0.155.1; only local and remote-v2 compaction are checked",
+    "Not proven here and left to production rows: real cache hits, the real composer's own drop and fold choices, the quality of real compact lines, billing-exact usage, and the database half of the slow fence",
+    "No guest package, signed runner image or production deployment was built or accepted in this run"
+  ],
+  "earlierRuns": [
+    {
+      "run": "20261015T233647-68507-50c445e2",
+      "sourceCommit": "da1adc4f6",
+      "result": "The four boundary test files: 25 of 25"
+    },
+    {
+      "run": "20261015T234256-79978-b1306f89",
+      "sourceCommit": "da1adc4f6",
+      "result": "The official boundary and capture-images entrypoints passed; the composition entrypoint failed on a test timer that fired 1 ms early (fixed by #1161)"
+    },
+    {
+      "run": "20261015T235221-1768-d9e0c162",
+      "sourceCommit": "da1adc4f6 with #1161",
+      "result": "The composition checks 20 of 20 and its entrypoint"
+    },
+    {
+      "run": "20261016T004812-60089-1d69d24a",
+      "sourceCommit": "da1adc4f6 with #1172",
+      "result": "D1-D4: 9 of 9"
+    },
+    {
+      "run": "20261016T010833-92994-b95af355",
+      "sourceCommit": "420b27d99 (#1172 head)",
+      "result": "The native suite with D1-D4: 34 of 34"
+    },
+    {
+      "run": "20261016T014153-42536-033f1c04",
+      "sourceCommit": "#1172 merged locally with e097244e6",
+      "result": "The native suite with D1-D4: 34 of 34, and the composition entrypoint"
+    }
+  ]
+}

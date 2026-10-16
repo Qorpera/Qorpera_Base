@@ -470,8 +470,9 @@ begin
 end $$;
 
 -- F. What a tool call holds: this company's row KEY SHARE (a company-row FOR UPDATE waits, FOR NO KEY UPDATE does not),
--- and a caller's rank 6 target KEY SHARE. The lease check the runtime calls directly and a member's export source take
--- no company lock, so neither waits for the tool call.
+-- and a caller's rank 6 target KEY SHARE. The lease check the runtime calls directly and a member's actor (the entry
+-- point without a binding; a member's export source took it until legacy sweep E3) take no company lock, so neither
+-- waits for the tool call.
 do $$
 declare v_state text;
 begin
@@ -521,12 +522,11 @@ begin
 	v_state := pg_temp.outcome('fence_four');
 	if v_state <> 'ok' then raise exception 'The direct lease check beside a tool call: %', v_state; end if;
 	perform dblink_exec('fence_four', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000002"}'$q$);
-	perform dblink_send_query('fence_four', format('select public.qorpera_member_file_export_source(%L, %L)::text',
-		'64800000-0000-4000-8000-000000000020', jsonb_build_object('realm','object_storage','assetId',extensions.gen_random_uuid(),
-			'sha256',repeat('a',64))));
-	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'A member''s export source must not lock the company row'; end if;
+	perform dblink_send_query('fence_four', format('select public.qorpera_company_run_actor(%L, null)::text',
+		'64800000-0000-4000-8000-000000000020'));
+	if not pg_temp.finishes_unblocked('fence_four', 'fence_one') then raise exception 'A member''s actor must not lock the company row'; end if;
 	v_state := pg_temp.outcome('fence_four');
-	if v_state not like '42501 %Completed shared export required%' then raise exception 'The export source: %', v_state; end if;
+	if v_state <> 'ok' then raise exception 'A member''s actor beside a tool call: %', v_state; end if;
 	perform dblink_exec('fence_four', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');

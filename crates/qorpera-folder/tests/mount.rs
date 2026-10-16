@@ -6,11 +6,13 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
+use qorpera_folder::proto::LinkRequest;
 use qorpera_folder::reads::ReadLog;
 use std::ffi::CString;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,6 +50,16 @@ fn mounted(path: &Path) -> bool {
 	std::fs::read_to_string("/proc/self/mountinfo").unwrap().lines().any(|l| l.split(' ').nth(4) == Some(path.to_str().unwrap()))
 }
 
+/// Takes down a mount a stopped program left behind. The program tries its unmount once; under load the kernel can
+/// still count a descriptor on the mount for a moment (EBUSY, #1021's merge test), and the mount stays. Unmounts it
+/// here, again while it is busy, so the next program mounts at an empty mountpoint and not over this one.
+fn unmounted(path: &Path) {
+	let c = c_path(path);
+	// SAFETY: a path from CString, and no flags.
+	let gone = eventually(Duration::from_secs(10), || !mounted(path) || unsafe { libc::umount2(c.as_ptr(), 0) } == 0);
+	assert!(gone && !mounted(path), "{} stayed mounted", path.display());
+}
+
 fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 	start_with(node, None)
 }
@@ -57,6 +69,8 @@ fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread:
 	let state = Some(state.unwrap_or_else(|| node.dir.join("state")));
 	let mountpoint = node.dir.join("company");
 	std::fs::create_dir_all(&mountpoint).unwrap();
+	// Below, "mounted" must mean this program's mount, not one left here before.
+	assert!(!mounted(&mountpoint), "{} is still mounted from before", mountpoint.display());
 	let link = Link::new(
 		node.addr.clone(),
 		View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() },
@@ -278,14 +292,187 @@ fn writes_files_and_folders_through_a_writable_mount() {
 	assert_eq!(node.content("big.bin").unwrap(), &expected[..10]);
 	assert_eq!(std::fs::metadata(company.join("big.bin")).unwrap().len(), 10);
 
-	// What the folder does not hold.
-	assert_eq!(std::os::unix::fs::symlink("x", company.join("link")).unwrap_err().raw_os_error(), Some(libc::EPERM));
+	// What the folder does not hold: a named pipe, a device, a socket.
+	// SAFETY: paths from CString, and a plain mkfifo and mknod.
+	assert_eq!(unsafe { libc::mkfifo(c_path(&company.join("pipe")).as_ptr(), 0o644) }, -1);
+	assert_eq!(last_errno(), Some(libc::EPERM));
+	// SAFETY: as above.
+	assert_eq!(unsafe { libc::mknod(c_path(&company.join("null")).as_ptr(), libc::S_IFCHR | 0o644, libc::makedev(1, 3)) }, -1);
+	assert_eq!(last_errno(), Some(libc::EPERM));
+	assert_eq!(std::os::unix::net::UnixListener::bind(company.join("sock")).unwrap_err().raw_os_error(), Some(libc::EPERM));
+	assert!(!node.exists("pipe") && !node.exists("null") && !node.exists("sock"));
 
 	// The machine asks for a boundary.
 	let link = Link::new(node.addr.clone(), View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() }, 1);
 	link.publish().unwrap();
 	assert_eq!(node.publishes(), 1);
 
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+/// A read as the node takes it from the machine's read log.
+fn read(path: &str, version: &str) -> (String, Option<String>) {
+	(path.to_string(), Some(version.to_string()))
+}
+
+#[test]
+fn a_read_only_mount_shows_links_and_makes_none() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::start();
+	node.put("docs/plan.md", "the plan", false);
+	node.put_link("docs/latest", "plan.md");
+	let (company, runner) = start(&node);
+	let latest = company.join("docs/latest");
+	let meta = std::fs::symlink_metadata(&latest).unwrap();
+	assert!(meta.file_type().is_symlink());
+	assert_eq!(meta.len(), 7);
+	assert_eq!(std::fs::read_link(&latest).unwrap(), Path::new("plan.md"));
+	assert_eq!(std::fs::read_to_string(&latest).unwrap(), "the plan");
+	let refused = |e: std::io::Error| e.raw_os_error();
+	assert_eq!(std::os::unix::fs::symlink("plan.md", company.join("docs/other")).map_err(refused), Err(Some(libc::EROFS)));
+	assert_eq!(std::fs::hard_link(company.join("docs/plan.md"), company.join("docs/copy.md")).map_err(refused), Err(Some(libc::EROFS)));
+	// SAFETY: a path from CString, and a plain mkfifo.
+	assert_eq!(unsafe { libc::mkfifo(c_path(&company.join("docs/pipe")).as_ptr(), 0o644) }, -1);
+	assert_eq!(last_errno(), Some(libc::EROFS));
+	// A link changed on the node shows its new target at once; one to a path the view does not hold finds nothing.
+	node.put_link("docs/latest", "../private/plan.md");
+	assert!(eventually(Duration::from_secs(2), || std::fs::read_link(&latest).ok().as_deref()
+		== Some(Path::new("../private/plan.md"))));
+	assert_eq!(std::fs::read_to_string(&latest).unwrap_err().kind(), ErrorKind::NotFound);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn makes_reads_moves_and_copies_links_through_a_writable_mount() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("docs/plan.md", "the plan", false);
+	node.put_link("docs/old", "plan.md");
+	let (company, runner) = start(&node);
+	let docs = company.join("docs");
+	let outside = node.dir.join("outside.txt");
+	std::fs::write(&outside, "the machine's own file").unwrap();
+
+	// `ln -s`, relative and absolute: kept as written, and followed by the kernel.
+	std::os::unix::fs::symlink("plan.md", docs.join("rel")).unwrap();
+	std::os::unix::fs::symlink(&outside, docs.join("abs")).unwrap();
+	std::os::unix::fs::symlink("../secret/keys.md", docs.join("nowhere")).unwrap();
+	assert_eq!(node.target("docs/rel").as_deref(), Some("plan.md"));
+	assert_eq!(node.target("docs/abs").as_deref(), outside.to_str());
+	assert_eq!(std::fs::read_link(docs.join("rel")).unwrap(), Path::new("plan.md"));
+	assert_eq!(std::fs::read_to_string(docs.join("rel")).unwrap(), "the plan");
+	// A machine file outside the folder is the machine's; a path the view does not hold is not there.
+	assert_eq!(std::fs::read_to_string(docs.join("abs")).unwrap(), "the machine's own file");
+	assert_eq!(std::fs::read_to_string(docs.join("nowhere")).unwrap_err().kind(), ErrorKind::NotFound);
+	let meta = std::fs::symlink_metadata(docs.join("rel")).unwrap();
+	assert!(meta.file_type().is_symlink());
+	assert_eq!((meta.len(), meta.permissions().mode() & 0o777, meta.nlink()), (7, 0o777, 1));
+	let ls = String::from_utf8(Command::new("ls").arg("-l").arg(&docs).output().unwrap().stdout).unwrap();
+	assert!(ls.lines().any(|l| l.starts_with("lrwxrwxrwx") && l.ends_with(" rel -> plan.md")), "{ls}");
+	// A link's times are not kept, and setting them is no error.
+	assert!(Command::new("touch").arg("-h").arg(docs.join("rel")).status().unwrap().success());
+
+	// `ln -sf` over a link the machine read: a new link renamed over it, based on the version read.
+	assert_eq!(std::fs::read_link(docs.join("old")).unwrap(), Path::new("plan.md"));
+	assert!(Command::new("ln").arg("-sf").arg("rel").arg(docs.join("old")).status().unwrap().success());
+	// Each readlink was a read of the link at its version, handed over before that change.
+	let logged = node.logged();
+	assert!(logged.contains(&read("docs/rel", "v1")) && logged.contains(&read("docs/old", "v1")), "{logged:?}");
+	assert_eq!(node.target("docs/old").as_deref(), Some("rel"));
+	let replaced = node.renames().last().unwrap().clone();
+	assert_eq!((replaced.to.as_str(), replaced.to_base.as_deref()), ("docs/old", Some("v1")));
+	assert_eq!(std::fs::read_to_string(docs.join("old")).unwrap(), "the plan");
+	assert_eq!(names(&docs), ["abs", "nowhere", "old", "plan.md", "rel"]);
+
+	// `mv` and `rm` of a link move or remove the link, never what it names.
+	std::fs::rename(docs.join("rel"), company.join("moved")).unwrap();
+	assert_eq!(node.target("moved").as_deref(), Some("plan.md"));
+	assert!(!node.exists("docs/rel"));
+	assert_eq!(std::fs::read_to_string(company.join("moved")).unwrap_err().kind(), ErrorKind::NotFound);
+	std::fs::remove_file(company.join("moved")).unwrap();
+	std::fs::remove_file(docs.join("old")).unwrap();
+	assert!(!node.exists("moved") && !node.exists("docs/old"));
+	assert_eq!(node.content("docs/plan.md").unwrap(), b"the plan");
+
+	// `cp -a` and `tar` keep a folder's links as links.
+	std::fs::create_dir(company.join("src")).unwrap();
+	std::fs::write(company.join("src/f.txt"), "f").unwrap();
+	std::os::unix::fs::symlink("f.txt", company.join("src/l")).unwrap();
+	let copied = Command::new("cp").arg("-a").arg(company.join("src")).arg(company.join("copy")).output().unwrap();
+	assert!(copied.status.success(), "{}", String::from_utf8_lossy(&copied.stderr));
+	assert_eq!(node.target("copy/l").as_deref(), Some("f.txt"));
+	assert_eq!(node.content("copy/f.txt").unwrap(), b"f");
+	let archive = node.dir.join("src.tar");
+	let packed = Command::new("tar").arg("-cf").arg(&archive).arg("-C").arg(&company).arg("src").output().unwrap();
+	assert!(packed.status.success(), "{}", String::from_utf8_lossy(&packed.stderr));
+	let listed = String::from_utf8(Command::new("tar").arg("-tvf").arg(&archive).output().unwrap().stdout).unwrap();
+	assert!(listed.lines().any(|l| l.starts_with('l') && l.ends_with("src/l -> f.txt")), "{listed}");
+	std::fs::create_dir(company.join("untar")).unwrap();
+	let unpacked = Command::new("tar").arg("-xf").arg(&archive).arg("-C").arg(company.join("untar")).output().unwrap();
+	assert!(unpacked.status.success(), "{}", String::from_utf8_lossy(&unpacked.stderr));
+	assert_eq!(node.target("untar/src/l").as_deref(), Some("f.txt"));
+	assert_eq!(std::fs::read_to_string(company.join("untar/src/l")).unwrap(), "f");
+
+	// The folder keeps text: a target that is not UTF-8 is refused.
+	let latin1 = std::ffi::OsStr::from_bytes(b"caf\xe9");
+	assert_eq!(std::os::unix::fs::symlink(latin1, docs.join("cafe")).unwrap_err().raw_os_error(), Some(libc::EINVAL));
+	assert!(!node.exists("docs/cafe"));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_hard_link_is_a_file_of_its_own_and_a_read_of_its_source() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("a.md", "alpha", false);
+	let (company, runner) = start(&node);
+	let (a, b) = (company.join("a.md"), company.join("b.md"));
+
+	// `ln a b`: the node copies a at the version shown, and the copy is logged as a read of a.
+	assert!(Command::new("ln").arg(&a).arg(&b).status().unwrap().success());
+	assert_eq!(node.links(), [LinkRequest { from: "a.md".into(), from_base: Some("v1".into()), to: "b.md".into() }]);
+	assert_eq!(node.content("b.md").unwrap(), b"alpha");
+	assert_eq!(node.logged(), [read("a.md", "v1")]);
+	assert_eq!(std::fs::read_to_string(&b).unwrap(), "alpha");
+
+	// Two files with one link each: a save to a never shows through b.
+	let (ma, mb) = (std::fs::metadata(&a).unwrap(), std::fs::metadata(&b).unwrap());
+	assert_eq!((ma.nlink(), mb.nlink()), (1, 1));
+	assert_ne!(ma.ino(), mb.ino());
+	std::fs::write(&a, "alpha two").unwrap();
+	assert_eq!(node.content("a.md").unwrap(), b"alpha two");
+	assert_eq!(node.content("b.md").unwrap(), b"alpha");
+	assert_eq!(std::fs::read_to_string(&b).unwrap(), "alpha");
+	std::fs::remove_file(&b).unwrap();
+	assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha two");
+
+	// A version the node no longer serves is not linked at a newer one. Linked through an open file's name in /proc, so
+	// the kernel links the inode it holds: a lookup of `a.md` first would show the newer version, and link that.
+	let held = std::fs::File::open(&a).unwrap();
+	node.put_quietly("a.md", "theirs");
+	let (source, to) = (c_path(Path::new(&format!("/proc/self/fd/{}", held.as_raw_fd()))), c_path(&company.join("c.md")));
+	// SAFETY: paths from CString, and a plain linkat.
+	assert_eq!(unsafe { libc::linkat(libc::AT_FDCWD, source.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::AT_SYMLINK_FOLLOW) }, -1);
+	assert_eq!(last_errno(), Some(libc::ESTALE));
+	drop(held);
+	assert!(!node.exists("c.md"));
+
+	// A link's hard link is a link with the same target (`ln` does not follow it); a folder has none.
+	std::os::unix::fs::symlink("a.md", company.join("l")).unwrap();
+	std::fs::hard_link(company.join("l"), company.join("l2")).unwrap();
+	assert_eq!(node.target("l2").as_deref(), Some("a.md"));
+	assert!(std::fs::symlink_metadata(company.join("l2")).unwrap().file_type().is_symlink());
+	std::fs::create_dir(company.join("d")).unwrap();
+	assert_eq!(std::fs::hard_link(company.join("d"), company.join("d2")).unwrap_err().raw_os_error(), Some(libc::EPERM));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }
@@ -307,6 +494,7 @@ fn the_version_map_and_unreleased_read_log_outlive_the_program() {
 	assert_eq!(before.reads[0].version.as_deref(), Some("v1"));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+	unmounted(&company);
 	// Another machine saves while the program is down; the program starts again with the same map.
 	node.reopen_view();
 	node.put("notes.md", "theirs", false);
