@@ -48,6 +48,14 @@ export const RUST_IMAGE =
  * program built there runs here. */
 export const NODE_IMAGE = "node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6";
 const FUSE = "--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined";
+/** The pinned git, for the folder program's runs with real git on the mount (F3 step 5d): built in NODE_IMAGE once per
+ * test machine into a named volume, relocatable, and without what the runs do not use (http, Perl, Python,
+ * translations). A run that loses the race to build it drops its own copy. */
+const GIT_VERSION = "2.56.0";
+const GIT_SHA256 = "26c56c296b38c0695b26fa95f475f1d01704d2d38e73465ca30b0b2f5dc789d3";
+const GIT_VOLUME = `qorpera-git-${GIT_VERSION}`;
+const GIT_MAKE = `make -C git-${GIT_VERSION} -j$(nproc) prefix=/opt/git RUNTIME_PREFIX=YesPlease NO_TCLTK=YesPlease NO_RUST=YesPlease NO_PERL=YesPlease NO_PYTHON=YesPlease NO_GETTEXT=YesPlease NO_CURL=YesPlease NO_EXPAT=YesPlease NO_OPENSSL=YesPlease`;
+const GIT_BUILD = `docker volume create ${GIT_VOLUME} >/dev/null && ( docker run --rm -v ${GIT_VOLUME}:/git ${NODE_IMAGE} test -x /git/${GIT_VERSION}/bin/git || docker run --rm -v ${GIT_VOLUME}:/git ${NODE_IMAGE} sh -ec 'apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc make libc6-dev zlib1g-dev curl ca-certificates xz-utils >/dev/null && cd /tmp && curl -fsSLo git.tar.xz https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz && echo "${GIT_SHA256}  git.tar.xz" | sha256sum -c - && tar xf git.tar.xz && ${GIT_MAKE} all >/dev/null && s=/git/.stage-$$ && ${GIT_MAKE} DESTDIR=$s install >/dev/null && { mv -T $s/opt/git /git/${GIT_VERSION} || true; } && rm -rf $s' )`;
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
@@ -236,7 +244,8 @@ export const STEPS = [
 		// Crates are cached in a named volume between runs; the built program passes between the two containers in
 		// a volume of this run's own, removed at the end.
 		commands: [
-			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
+			GIT_BUILD,
+			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -e QORPERA_GIT_BIN=/git/${GIT_VERSION}/bin/git -v "$v:/out:ro" -v ${GIT_VOLUME}:/git:ro -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
 		],
 	},
 	{

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { COMPANY_STATE_SEEDED_PATHS } from "@qorpera/cloud-client/company-state-files";
+import { gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
 import { byteOrder, nameOf, parentOf, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
 
@@ -75,6 +76,17 @@ interface Gone {
 
 type Node = PendingFile | PendingFolder | Gone;
 
+/** Where a draft's close lands it, and the view's own file there that its open holds unpublished, if any (the
+ * draft's file carries what else the open saw: the live file at the open's base, or none). */
+interface Draft {
+	readonly path: string;
+	readonly held?: PendingFile;
+	/** The live file this view took away there (removed or moved it), before the draft's open or since, until a
+	 * boundary publishes that. If the boundary lets it go (the move fails, the removal is refused), so the path shows
+	 * that file again, the draft lands against it (`settle`). */
+	took?: LiveRef;
+}
+
 /** What a path shows in this view: a pending node, or a live entry (inside a moved folder, through its origin). */
 export type Resolved =
 	| {
@@ -110,9 +122,10 @@ export function neverPublished(name: string): boolean {
 	);
 }
 
-/** A path in a place never published: a lock, swap, backup or trash name, or inside a trash folder. */
+/** A path in a place never published: a lock, swap, backup or trash name, or inside a trash folder; in a git
+ * directory, what git has not finished, and its shared files, which only their lease publishes (git.ts). */
 export function unpublished(path: string): boolean {
-	return path.split("/").some(neverPublished);
+	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path);
 }
 
 const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
@@ -145,13 +158,14 @@ function fail(code: ErrorCode, message: string): never {
 }
 
 /** A new name the folder accepts: the Company File's path rules (`EINVAL`), and not a reserved path (`EPERM`). */
-function checkNewPath(path: string): void {
+function checkNewPath(path: string, codeHost: boolean): void {
 	try {
 		parseCloudCompanyPath(path);
 	} catch {
 		fail(ErrorCode.badRequest, "The folder does not accept this name");
 	}
 	if (reserved(folderKey(path))) fail(ErrorCode.notPermitted, "This name is reserved");
+	if (gitRefused(path, codeHost)) fail(ErrorCode.notPermitted, "Git keeps this file on the machine, or refuses it");
 }
 
 /** Seeded paths, a lone `agent.md` or `group.md`, and agent and group folders may not go, or go elsewhere (§2,
@@ -192,19 +206,22 @@ export class PendingView {
 	readonly #children = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
-	/** Open handles, and the file each writes. */
-	readonly #handles = new Map<number, { readonly node: PendingFile }>();
+	/** Open handles, and the file each writes; a draft's is in the view only once its close lands it (`openWrite`). */
+	readonly #handles = new Map<number, { readonly node: PendingFile; readonly draft?: Draft }>();
 	/** Files with chunks written, through any handle, since their state was last fixed. */
 	readonly #unfixed = new WeakSet<PendingFile>();
 	/** Each file open for writing as its last close (or its open, a truncate included) fixed it: what an abandoned
 	 * handle goes back to. Writes no close fixed are not in it. */
 	readonly #fixed = new WeakMap<PendingFile, Pick<PendingFile, "content" | "version" | "staged" | "executable">>();
 	#nextHandle = 1;
+	readonly #codeHost: boolean;
 
-	constructor(live: () => ViewTree, seq: () => number, now: () => number = Date.now) {
+	/** `codeHost`: the code host's view, which writes git's session-local files too (git.ts `gitRefused`). */
+	constructor(live: () => ViewTree, seq: () => number, now: () => number = Date.now, codeHost = false) {
 		this.#live = live;
 		this.#seq = seq;
 		this.#now = now;
+		this.#codeHost = codeHost;
 	}
 
 	/** The service atomically moves this overlay, including open handles, onto a successor desktop's live tree. */
@@ -222,6 +239,11 @@ export class PendingView {
 			const fixed = this.#fixed.get(node);
 			if (fixed) this.#fixed.set(node, { ...fixed, staged: undefined });
 		}
+	}
+
+	/** The files open drafts write, which are at no path until their close lands them. */
+	drafts(): PendingFile[] {
+		return [...this.#handles.values()].flatMap((open) => (open.draft ? [open.node] : []));
 	}
 
 	/** No pending change at all. */
@@ -418,32 +440,15 @@ export class PendingView {
 			readonly exclusive: boolean;
 			readonly truncate: boolean;
 			readonly base?: string;
+			readonly draft?: boolean;
 		},
 	): { handle: number; size: number; version: string } {
-		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
-		const r = this.resolve(path);
-		let node: PendingFile;
-		if (!r) {
-			if (!options.create) fail(ErrorCode.notFound, "No such file");
-			this.#newName(path);
-			node = this.#newFile();
-			this.#set(path, node);
-		} else {
-			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
-			if (r.kind === "live") {
-				if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
-				node = this.#fromLive(r.entry, r.source, options.base);
-				this.#set(path, node);
-			} else {
-				if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
-				if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
-				node = r.node;
-			}
-			if (options.truncate && (node.content === undefined || node.content.size > 0)) {
-				node.content = { chunks: [], size: 0 };
-				this.#changed(node);
-				this.#fix(node);
-			}
+		if (options.draft) return this.#openDraft(path, options);
+		const node = this.#writable(path, options);
+		if (options.truncate && (node.content === undefined || node.content.size > 0)) {
+			node.content = { chunks: [], size: 0 };
+			this.#changed(node);
+			this.#fix(node);
 		}
 		if (node.open === 0) this.#fix(node);
 		node.open++;
@@ -457,6 +462,89 @@ export class PendingView {
 	}
 
 	/** The file a handle writes. */
+	/** The file a write at `path` goes to: a new one, the live one's change at the writer's base, or the pending one. */
+	#writable(
+		path: string,
+		options: { readonly create: boolean; readonly exclusive: boolean; readonly base?: string },
+	): PendingFile {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
+		const r = this.resolve(path);
+		if (!r) {
+			if (!options.create) fail(ErrorCode.notFound, "No such file");
+			this.#newName(path);
+			const node = this.#newFile();
+			this.#set(path, node);
+			return node;
+		}
+		if (options.exclusive) fail(ErrorCode.exists, "The file exists");
+		if (r.kind === "live") {
+			if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+			const node = this.#fromLive(r.entry, r.source, options.base);
+			this.#set(path, node);
+			return node;
+		}
+		if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+		if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
+		return r.node;
+	}
+
+	/** A write that is in the view only once it closes (a cache folder's file moving in: `crates/qorpera-folder`,
+	 * `mount/on_disk.rs`). It is checked as an open of the path is, and its file is the change that open would make,
+	 * against what it saw: a new file, or the live file's at the open's base. The view's own file there is held as an
+	 * open one is, never published, so the close lands on it. Given up (`discard`) or abandoned, a draft leaves
+	 * nothing. */
+	#openDraft(
+		path: string,
+		options: { readonly create: boolean; readonly exclusive: boolean; readonly base?: string },
+	): { handle: number; size: number; version: string } {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
+		const r = this.resolve(path);
+		if (!r) {
+			if (!options.create) fail(ErrorCode.notFound, "No such file");
+			this.#newName(path);
+		} else {
+			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
+			if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") fail(ErrorCode.notAFile, "Not a file");
+		}
+		const held = r?.kind === "node" && r.node.kind === "file" ? r.node : undefined;
+		if (held && this.#moved(path, held)) throw new PublishFirst("a change to a file this view moved");
+		const node = r?.kind === "live" ? this.#fromLive(r.entry, r.source, options.base) : this.#newFile();
+		node.content = { chunks: [], size: 0 };
+		this.#changed(node);
+		node.open++;
+		if (held) {
+			if (held.open === 0) this.#fix(held);
+			held.open++;
+		}
+		const handle = this.#nextHandle++;
+		// Over nothing or the view's own file there, the live file the view took away from the path, if it did.
+		const took = r?.kind === "live" ? undefined : this.#tookAway(path);
+		this.#handles.set(handle, { node, draft: { path, ...(held ? { held } : {}), ...(took ? { took } : {}) } });
+		return { handle, size: 0, version: node.version };
+	}
+
+	/** Whether a move of this view's still takes the live entry at `path` away (moves it or a folder above it). */
+	#movesAway(path: string): boolean {
+		for (const [at, node] of this.#nodes)
+			if (node.kind !== "gone" && node.origin && node.origin.path !== at && within(path, node.origin.path))
+				return true;
+		return false;
+	}
+
+	/** The live file at `path` this view removed or moved away, if it did. */
+	#tookAway(path: string): LiveRef | undefined {
+		const removed = this.#removed.get(path);
+		if (removed) return removed.kind === "file" ? removed : undefined;
+		for (const [at, node] of this.#nodes)
+			if (at !== path && node.kind === "file" && node.origin?.path === path) return node.origin;
+		return undefined;
+	}
+
+	/** Whether the handle is still open (a draft whose close could not land it is given up). */
+	isOpen(handle: number): boolean {
+		return this.#handles.has(handle);
+	}
+
 	file(handle: number): PendingFile {
 		const open = this.#handles.get(handle);
 		if (!open) fail(ErrorCode.badRequest, "No such handle");
@@ -516,6 +604,14 @@ export class PendingView {
 			if (this.#unfixed.has(node) || before.size !== size || before.chunks.length !== chunks.length)
 				this.#changed(node);
 		}
+		if (open.draft)
+			try {
+				return this.#land(handle, open.draft, node);
+			} catch (error) {
+				// Refused for good (its path is a folder now, say): the draft is given up and leaves nothing.
+				if (!(error instanceof PublishFirst)) this.abandon(handle);
+				throw error;
+			}
 		this.#handles.delete(handle);
 		node.open--;
 		this.#fix(node);
@@ -523,19 +619,62 @@ export class PendingView {
 		return node;
 	}
 
+	/** A draft's close: on the view's own file at its path (the one its open held, or one written since), its bytes
+	 * are that file's next save. Otherwise its file lands there as the change its open would have made: a file another
+	 * machine created or changed there since is a conflict when it is published, not overwritten; a path this view
+	 * removed or moved the file away from takes it as a new file, as a create there would (if that move then fails,
+	 * the new file meets the file it left: a conflict, both kept). It takes the executable bit of what it lands over
+	 * (none for a new file), whether or not a boundary came between. */
+	#land(handle: number, draft: Draft, written: PendingFile): PendingFile {
+		const path = draft.path;
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
+		const r = this.resolve(path);
+		let node: PendingFile;
+		if (r?.kind === "node") {
+			if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+			if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
+			node = r.node;
+			node.content = written.content;
+			this.#changed(node);
+		} else {
+			if (r?.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+			if (!r) this.#newName(path);
+			written.executable = r?.entry.executable ?? false;
+			node = written;
+			node.open--;
+			this.#set(path, node);
+		}
+		this.#handles.delete(handle);
+		this.#unfixed.delete(written);
+		if (draft.held === node) node.open--;
+		else if (draft.held) this.#letGo(draft.held);
+		// Writes share the file: a handle still open on it goes back to these bytes if it is abandoned.
+		this.#fix(node);
+		if (node.open === 0) this.#fixed.delete(node);
+		return node;
+	}
+
 	/** A still-open handle is abandoned: what was written and no close fixed is lost (founder
 	 * decision 3). Writes share the file, as in a page cache: while another handle is still open, its close will fix
-	 * them; when this was the last, the file goes back to how the last close (or open) left it. */
+	 * them; when this was the last, the file goes back to how the last close (or open) left it. A draft leaves nothing. */
 	abandon(handle: number): void {
 		const open = this.#handles.get(handle);
 		if (!open) return;
 		this.#handles.delete(handle);
-		open.node.open--;
-		if (open.node.open > 0) return;
-		const fixed = this.#fixed.get(open.node);
-		if (fixed) Object.assign(open.node, fixed);
-		this.#fixed.delete(open.node);
-		this.#unfixed.delete(open.node);
+		if (open.draft) {
+			this.#unfixed.delete(open.node);
+			if (open.draft.held) this.#letGo(open.draft.held);
+		} else this.#letGo(open.node);
+	}
+
+	/** A handle on the file, or a draft's hold of it, ends without a close. */
+	#letGo(node: PendingFile): void {
+		node.open--;
+		if (node.open > 0) return;
+		const fixed = this.#fixed.get(node);
+		if (fixed) Object.assign(node, fixed);
+		this.#fixed.delete(node);
+		this.#unfixed.delete(node);
 	}
 
 	#fix(node: PendingFile): void {
@@ -644,6 +783,11 @@ export class PendingView {
 				version: source.entry.version,
 				mtimeMs: source.entry.mtimeMs,
 			};
+		if (source.kind === "live") this.#forget(source.source);
+		else {
+			this.#forget(from);
+			if (source.node.origin) this.#forget(source.node.origin.path, source.node.origin);
+		}
 		if (target) this.#remove(target, options.toBase, true);
 		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
 		const moved: [string, Node][] = [];
@@ -697,7 +841,7 @@ export class PendingView {
 		if (!parent) fail(ErrorCode.notFound, "No such folder");
 		if ((parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
 			fail(ErrorCode.notAFolder, "Not a folder");
-		checkNewPath(path);
+		checkNewPath(path, this.#codeHost);
 		const key = folderKey(nameOf(path));
 		const names = new Set<string>(this.#children.get(parentOf(path)) ?? []);
 		if (parent.source !== null) for (const name of this.#live().names(parent.source)) names.add(name);
@@ -755,6 +899,7 @@ export class PendingView {
 				version: base ?? r.entry.version,
 				...(r.entry.kind === "folder" ? { asOfSeq: this.#seq() } : { entry: r.entry }),
 			});
+			this.#forget(r.source);
 		} else {
 			const origin = r.node.origin;
 			// A changed file whose live version moved on since its base is not removed with it: the change goes, and the
@@ -767,10 +912,27 @@ export class PendingView {
 				if (this.#nodes.get(origin.path)?.kind === "gone") this.#unset(origin.path);
 				return;
 			}
-			if (origin)
+			// What the view had at the path goes: a draft open there lands over that, as a new file.
+			this.#forget(r.path);
+			if (origin) {
 				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+				this.#forget(origin.path, origin);
+			}
 		}
 		this.#hide(r.path);
+	}
+
+	/** This view took the live entry at `path` away (removed or moved it; `ref`, under the view's own file there): a
+	 * draft opened over it, or over a file in it, lands as a new file, over what the view did there, not against the
+	 * version its open saw, unless the view's change never happens. */
+	#forget(path: string, ref?: LiveRef): void {
+		for (const { node, draft } of this.#handles.values()) {
+			if (!draft) continue;
+			if (node.origin && within(node.origin.path, path)) {
+				draft.took = node.origin;
+				node.origin = undefined;
+			} else if (!node.origin && ref && draft.path === ref.path) draft.took = ref;
+		}
 	}
 
 	/** The live version now at a live path (the planner checks a removal it would fold into its folder's). */
@@ -819,6 +981,15 @@ export class PendingView {
 		return this.#fixed.get(node);
 	}
 
+	/** After a boundary: this view's own save or move gave `path` the live version `version`. A draft open there lands
+	 * over it, as over the view's file before the boundary; a change another machine makes after it is a conflict. */
+	publishedAt(path: string, version: string): void {
+		const entry = this.#live().get(path);
+		for (const { node, draft } of this.#handles.values())
+			if (draft?.path === path)
+				node.origin = { path, kind: "file", version, ...(entry?.version === version ? { entry } : {}) };
+	}
+
 	/** Live entries the view removed, by live path. */
 	removed(): ReadonlyMap<string, LiveRef> {
 		return this.#removed;
@@ -830,6 +1001,43 @@ export class PendingView {
 	settle(keep: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
 		this.#removed.clear();
+		// Where a removal or move of the view's failed, the path shows the file it would have taken away: a draft open
+		// there lands against that file, as one opened over it does (a change another machine makes after is a conflict).
+		// A move the boundary kept (one waiting on another) still takes it away.
+		for (const { node, draft } of this.#handles.values()) {
+			if (!draft?.took || this.#movesAway(draft.took.path)) continue;
+			const live = this.#live().get(draft.took.path);
+			if (!node.origin && live?.kind === "file" && live.version === draft.took.version)
+				node.origin = { path: draft.took.path, kind: "file", version: live.version, entry: live };
+			draft.took = undefined;
+		}
+	}
+
+	/** After a git publish (git.ts): the view shows the live files again where `made` names the version it published,
+	 * unless the file changed or opened since. A new folder above them (an objects folder git made) shows live again
+	 * too once the core has it and nothing in it is pending: else it would hide what was published into it. */
+	settlePaths(made: ReadonlyMap<string, string>): void {
+		for (const [path, version] of made) {
+			const node = this.#nodes.get(path);
+			if (node?.kind === "file" && node.version === version && node.open === 0) this.#unset(path);
+		}
+		for (const path of made.keys())
+			for (let p = parentOf(path); p !== ""; p = parentOf(p)) {
+				const node = this.#nodes.get(p);
+				if (node?.kind !== "folder" || node.origin || this.#children.has(p)) break;
+				if (this.#live().get(p)?.kind !== "folder") break;
+				this.#unset(p);
+			}
+	}
+
+	/** Before a git lock is taken (git.ts): what the view holds of the files the lock guards goes, so git reads them as
+	 * the core has them. A file still open stays. */
+	drop(paths: readonly string[]): void {
+		for (const path of paths) {
+			const node = this.#nodes.get(path);
+			if (node?.kind === "gone" || (node?.kind === "file" && node.open === 0)) this.#unset(path);
+			if (node?.kind !== "file" || node.open === 0) this.#removed.delete(path);
+		}
 	}
 
 	/** Forgets everything (the view closed). Open handles stay valid but detached. */

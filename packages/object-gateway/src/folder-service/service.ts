@@ -10,10 +10,25 @@ import {
 	type FeedCursor,
 	type FolderActor,
 	type FolderCore,
+	type GitLease,
+	type GitPublish,
+	type GitVersions,
 	MEMBER_HELD_READS,
 	READ_UNREADABLE,
 	type ReleasedRead,
 } from "./core.ts";
+import {
+	type GitUnit,
+	gitBatches,
+	gitDir,
+	gitFolders,
+	gitGuarded,
+	gitLockTarget,
+	gitPublishedObject,
+	gitReflog,
+	gitRefused,
+	gitSharedPath,
+} from "./git.ts";
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
@@ -228,6 +243,23 @@ interface Settlement {
 	readonly saved: ReadonlySet<string>;
 }
 
+/** A git lock a view holds (git.ts, §6): the core's lease on the shared file it guards, the versions the lease found,
+ * the guarded files git removed under it (`git branch -D`), and those it replaced by a rename (`git reflog expire`
+ * renames the log's own lock onto the log), which go when the lock does. */
+interface GitLock {
+	readonly leaseId: string;
+	readonly versions: GitVersions;
+	readonly deleted: Set<string>;
+	readonly replaced: Set<string>;
+}
+
+/** Rounds of the feed a view reads for a git lease's versions before the machine hears EEXIST (git tries again). */
+const GIT_CATCH_UP_ROUNDS = 3;
+/** Tries of a git publish with no answer, under one operation key. */
+const GIT_PUBLISH_TRIES = 3;
+/** The core's word (42501) for a lease that is not this view's any more: it ended, so its units cannot land. */
+const GIT_LEASE_GONE = "Folder git lease is unavailable";
+
 /** The report of a boundary that published and settled nothing: every path it planned stays pending, what it would
  * drop included (the next boundary that settles drops it). */
 function held(
@@ -376,6 +408,10 @@ class View {
 	 * holds after it; or, for a file this view moved there, the one it had before) and the version the change set gave
 	 * the path. */
 	readonly published = new Map<string, { readonly made: string; readonly live: string }[]>();
+	/** The time each file this view saved or moved showed while pending, with the version the change set gave it
+	 * (RUNTIME-COMPANY-FOLDER.md §6 "File times"): the view shows that time until another version arrives, so a
+	 * publish does not make git's index see the file changed. */
+	readonly times = new Map<string, { readonly version: string; readonly mtimeMs: number }>();
 	readonly uploads = new Map<string, ChunkUpload>();
 	/** The intents that root the bytes of its pending files, by id. */
 	readonly intents = new Map<string, HeldIntent>();
@@ -383,6 +419,16 @@ class View {
 	 * handle. Protocol 3 preserves them across disconnects until authenticated abandonment or view expiry;
 	 * legacy connections abandon them when the view's last connection ends. */
 	readonly handles = new Set<number>();
+	/** The git locks it holds (git.ts), by the shared file each guards. */
+	readonly gitLeases = new Map<string, GitLock>();
+	/** The shared files whose lock a create is taking now: one at a time, so a second create can never hand back the
+	 * lease the first took. */
+	readonly gitTaking = new Set<string>();
+	/** The core may hold a git lease of this view's that `gitLeases` does not list (a take or a release whose answer
+	 * never came): the next final boundary drops the view's leases all the same. */
+	gitUnsure = false;
+	/** What git publishes made that the feed had not brought back when they were answered: settled at `seq`. */
+	readonly gitUnsettled: { readonly seq: number; readonly made: ReadonlyMap<string, string> }[] = [];
 	/** The reads its machine logged (protocol 3, F3 4c), by log. They are kept with the view only: after it connects
 	 * again a machine sends every read it has not heard released, so a view dropped, or a service restarted, may have
 	 * some released twice, which files nothing new. */
@@ -446,6 +492,9 @@ export interface ViewHandle {
 	readonly core: boolean;
 	/** Only a core desktop can retain and transfer its overlay to a successor. */
 	readonly switchable?: boolean;
+	/** A company's code host: it publishes git's session-local files (git.ts `gitRefused`), so its program keeps
+	 * none on the machine. */
+	readonly codeHost?: boolean;
 	list(path: string, after: string | undefined): Promise<{ entries: readonly WireEntry[]; next: string | null }>;
 	read(request: ReadRequest): Promise<Buffer>;
 	/** One page of a search over the view (F3 `company_search`). */
@@ -457,6 +506,8 @@ export interface ViewHandle {
 	chunk(part: ChunkPart): Promise<void>;
 	getChunk(handle: number, index: number): Promise<Buffer>;
 	close(handle: number, size: number): Promise<{ version: string }>;
+	/** Gives a handle up, as its connection's end does: what it wrote is dropped (a draft leaves nothing). */
+	discard(handle: number): Promise<void>;
 	mkdir(path: string): Promise<void>;
 	unlink(path: string, base: string | undefined): Promise<void>;
 	rmdir(path: string, base: string | undefined): Promise<void>;
@@ -840,6 +891,7 @@ export class FolderService {
 			writable: view.pending !== undefined,
 			core: view.core,
 			switchable: view.identity?.kind === "computer_desktop",
+			codeHost: view.identity?.kind === "code_host",
 			list: async (path, after) => this.#list(view, path, after),
 			read: async (request) => this.#read(view, request),
 			search: async (request) => this.#search(view, request),
@@ -855,16 +907,28 @@ export class FolderService {
 			open: async (request) => {
 				// What the path showed before the open: an open of a file is a read of it, as a machine's program logs one.
 				let shown: TreeEntry | undefined;
-				const opened = await this.#change(view, (pending) => {
-					const base = this.#base(view, request.path, request.base);
-					shown = pending.get(request.path);
-					return pending.openWrite(request.path, {
-						create: request.create,
-						exclusive: request.exclusive,
-						truncate: request.truncate,
-						...(base ? { base } : {}),
+				const open = () =>
+					this.#change(view, (pending) => {
+						const base = this.#base(view, request.path, request.base);
+						shown = pending.get(request.path);
+						return pending.openWrite(request.path, {
+							create: request.create,
+							exclusive: request.exclusive,
+							truncate: request.truncate,
+							...(base ? { base } : {}),
+							...(request.draft ? { draft: true } : {}),
+						});
 					});
-				});
+				// Creating a git lock file takes the lock (git.ts); a shared git file changes only under its lock.
+				const target = gitLockTarget(request.path);
+				if (target !== null && request.draft)
+					throw new ProtocolError(ErrorCode.badRequest, "A git lock file is taken by creating it, not by a draft");
+				// Another create of the lock while one takes it fails as on a disk, and git tries again.
+				if (target !== null && request.create && view.gitTaking.has(target))
+					throw new ProtocolError(ErrorCode.exists, "Another git command is taking this lock");
+				const take = target !== null && request.create && !view.gitLeases.has(target);
+				if (!take) this.#gitGuard(view, request.path);
+				const opened = take ? await this.#gitLock(view, target, open) : await open();
 				view.handles.add(opened.handle);
 				if (shown?.kind === "file")
 					this.#served(view, { path: request.path, version: shown.version, authority: shown.authority });
@@ -884,20 +948,39 @@ export class FolderService {
 				// with no chunk sent. Its bytes become its own from the origin's chunks first, and the close cuts them.
 				const origin = view.pending?.originToCopy(handle);
 				if (origin && size !== origin.bytes) await this.#beginFromOrigin(view, handle, origin);
-				const node = await this.#change(view, (pending) => pending.close(handle, size));
+				const node = await this.#change(view, (pending) => pending.close(handle, size)).catch((error: unknown) => {
+					// A draft its close could not land was given up: it leaves nothing, as a discard.
+					if (view.pending && !view.pending.isOpen(handle)) this.#giveUp(view, handle);
+					throw error;
+				});
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
 				if (path !== undefined) await this.#stage(view, node, path).catch(() => undefined);
 				return { version: node.version };
 			},
+			discard: async (handle) => {
+				if (!view.handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
+				this.#giveUp(view, handle);
+			},
 			mkdir: async (path) => this.#change(view, (pending) => pending.mkdir(path)),
-			unlink: async (path, base) =>
-				this.#change(view, (pending) => pending.unlink(path, this.#base(view, path, base))),
+			unlink: async (path, base) => {
+				const target = gitLockTarget(path);
+				const lock = target === null ? undefined : view.gitLeases.get(target);
+				if (target !== null && lock) return this.#gitUnlock(view, path, target, lock);
+				const guard = this.#gitGuard(view, path);
+				await this.#change(view, (pending) => pending.unlink(path, this.#base(view, path, base)));
+				guard?.deleted.add(path);
+			},
 			rmdir: async (path, base) =>
 				this.#change(view, (pending) => pending.rmdir(path, this.#base(view, path, base))),
-			rename: async (request) =>
-				this.#change(view, (pending) => {
+			rename: async (request) => {
+				const target = gitLockTarget(request.from);
+				const lock = target === null ? undefined : view.gitLeases.get(target);
+				if (lock && target === request.to) return this.#gitPublish(view, request.from, request.to, lock);
+				this.#gitGuard(view, request.from);
+				const guard = this.#gitGuard(view, request.to);
+				await this.#change(view, (pending) => {
 					const fromBase = this.#base(view, request.from, request.fromBase);
 					const toBase = this.#base(view, request.to, request.toBase);
 					pending.rename(request.from, request.to, {
@@ -905,7 +988,9 @@ export class FolderService {
 						...(fromBase ? { fromBase } : {}),
 						...(toBase ? { toBase } : {}),
 					});
-				}),
+				});
+				guard?.replaced.add(request.to);
+			},
 			setExecutable: async (path, executable, base) =>
 				this.#change(view, (pending) => {
 					pending.setExecutable(path, executable, this.#base(view, path, base));
@@ -949,6 +1034,7 @@ export class FolderService {
 			chunk: (...args) => serve(() => handle.chunk(...args)),
 			getChunk: (...args) => serve(() => handle.getChunk(...args)),
 			close: (...args) => serve(() => handle.close(...args)),
+			discard: (...args) => serve(() => handle.discard(...args)),
 			mkdir: (...args) => serve(() => handle.mkdir(...args)),
 			unlink: (...args) => serve(() => handle.unlink(...args)),
 			rmdir: (...args) => serve(() => handle.rmdir(...args)),
@@ -1027,12 +1113,19 @@ export class FolderService {
 				if (entry?.kind === "file" && target.tree?.get(path)?.version !== entry.version) this.#keep(target, entry);
 			}
 			for (const [key, value] of old.published) target.published.set(key, value);
+			for (const [key, value] of old.times) target.times.set(key, value);
 			for (const [key, value] of old.uploads) target.uploads.set(key, value);
 			for (const [key, value] of old.intents) target.intents.set(key, value);
 			for (const [key, value] of old.logs) target.logs.set(key, value);
 			for (const handle of old.handles) target.handles.add(handle);
+			// Git locks are the old view's leases, which end with it: their lock files go too (git.ts).
+			const guarded = [...old.gitLeases.keys()].flatMap((lock) => gitGuarded(lock));
+			if (guarded.length > 0) pending.drop(guarded);
+			old.gitLeases.clear();
+			target.gitUnsettled.push(...old.gitUnsettled.splice(0));
 			old.superseded.clear();
 			old.published.clear();
+			old.times.clear();
 			old.uploads.clear();
 			old.intents.clear();
 			old.logs.clear();
@@ -1300,6 +1393,7 @@ export class FolderService {
 					() => view.tree ?? new ViewTree(),
 					() => view.seq,
 					this.#now,
+					view.identity?.kind === "code_host",
 				);
 			this.#log(`folder-service: ${view.key} listed: ${tree.size} paths at change ${seq}`);
 		} catch (error) {
@@ -1363,6 +1457,7 @@ export class FolderService {
 			}
 		} finally {
 			view.pending?.liveChanged(changed);
+			this.#gitSettle(view);
 			if (!told) this.#push(view, changed);
 		}
 	}
@@ -1417,6 +1512,7 @@ export class FolderService {
 		for (const path of view.superseded.keys()) if (!tree.get(path)) view.superseded.delete(path);
 		const changed = [...alreadyChanged, ...ViewTree.diff(before, tree)];
 		view.pending?.liveChanged(changed);
+		this.#gitSettle(view);
 		this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
 		this.#push(view, changed);
 	}
@@ -1456,7 +1552,19 @@ export class FolderService {
 		if (result === "not_a_folder") throw new ProtocolError(ErrorCode.notAFolder, "Not a folder");
 		// The root's listing is no read, as a machine's log has none (a logged path is never empty).
 		if (path !== "") this.#served(view, { path, version: null, authority: tree.get(path)?.authority });
-		return result;
+		if (view.times.size === 0) return result;
+		return { ...result, entries: result.entries.map((entry) => this.#timed(view, path, entry)) };
+	}
+
+	/** `entry`, in the folder `folder`, with the time it showed while this view's save or move was pending, while it
+	 * still has the version that published; a time whose version another replaced is forgotten. */
+	#timed(view: View, folder: string, entry: WireEntry): WireEntry {
+		const path = folder === "" ? entry.name : `${folder}/${entry.name}`;
+		const time = view.times.get(path);
+		if (time === undefined) return entry;
+		if (time.version === entry.version) return { ...entry, mtimeMs: time.mtimeMs };
+		view.times.delete(path);
+		return entry;
 	}
 
 	async #read(view: View, request: ReadRequest): Promise<Buffer> {
@@ -1557,6 +1665,322 @@ export class FolderService {
 				this.#log(`folder-service: ${view.key}: search failed: ${(error as Error).message}`);
 			throw new ProtocolError(ErrorCode.unavailable, "The folder could not be searched now; try again");
 		}
+	}
+
+	// ---- Git on the mount (F3 step 5d, git.ts) ---------------------------------------------------------------------
+
+	/** The lock a change to `path` needs, if it is a shared git file (git.ts): the lock on X guards X, its log and the
+	 * locks git writes them through. A shared file changes only under its lock, which another session may hold
+	 * (NOT_PERMITTED); a folder is made or removed freely (git makes a ref's folders before it locks it). A
+	 * session-local file (but by the code host) or an alternates file is never changed here (git.ts). */
+	#gitGuard(view: View, path: string): GitLock | undefined {
+		if (gitRefused(path, view.identity?.kind === "code_host"))
+			throw new ProtocolError(ErrorCode.notPermitted, "Git keeps this file on the machine, or refuses it");
+		if (!gitSharedPath(path)) return undefined;
+		for (const [target, lock] of view.gitLeases) if (gitGuarded(target).includes(path)) return lock;
+		if (view.pending?.get(path)?.kind === "folder") return undefined;
+		throw new ProtocolError(ErrorCode.notPermitted, "Git changes this file only under its lock");
+	}
+
+	/** The view a git lease is taken as: only a machine's view takes one. */
+	#gitActor(view: View): Extract<FolderActor, { kind: "view" }> {
+		const actor = view.actor;
+		if (actor.kind !== "view")
+			throw new ProtocolError(ErrorCode.notPermitted, "Only a machine's view takes git locks");
+		return actor;
+	}
+
+	/** A git lease call that failed, as the machine hears it. */
+	#gitError(error: unknown): ProtocolError {
+		if (error instanceof ProtocolError) return error;
+		if (error instanceof CoreRefusal) return new ProtocolError(ErrorCode.denied, "The core refused the git lock");
+		return new ProtocolError(ErrorCode.unavailable, "The git lock could not be reached now");
+	}
+
+	/** Takes the lock on the shared file `target` for an exclusive create of its lock file (§6): the core's lease on it,
+	 * which one view holds at a time (EEXIST meanwhile, so git waits and tries again). What the view holds of the files
+	 * the lease guards goes, and the view reads the feed up to the versions the lease found, so git updates them from
+	 * those. */
+	async #gitLock<T>(view: View, target: string, create: () => Promise<T>): Promise<T> {
+		const actor = this.#gitActor(view);
+		view.gitTaking.add(target);
+		try {
+			return await this.#gitTake(view, actor, target, create);
+		} finally {
+			view.gitTaking.delete(target);
+		}
+	}
+
+	async #gitTake<T>(
+		view: View,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		target: string,
+		create: () => Promise<T>,
+	): Promise<T> {
+		let lease: GitLease;
+		try {
+			lease = await this.#core.gitLeaseTake(view.environmentId, actor, target);
+		} catch (error) {
+			if (!(error instanceof CoreRefusal)) view.gitUnsure = true;
+			throw this.#gitError(error);
+		}
+		if (lease.state === "busy") throw new ProtocolError(ErrorCode.exists, "Another session holds this git lock");
+		if (lease.state === "refused")
+			throw new ProtocolError(ErrorCode.notPermitted, `The core refuses this git lock (${lease.reason})`);
+		const lock: GitLock = {
+			leaseId: lease.leaseId,
+			versions: lease.versions,
+			deleted: new Set(),
+			replaced: new Set(),
+		};
+		view.gitLeases.set(target, lock);
+		try {
+			const packedRefs = `${gitDir(target)}/packed-refs`;
+			const drop = [target, gitReflog(target)];
+			if (!view.gitLeases.has(packedRefs)) drop.push(packedRefs);
+			view.pending?.drop(drop);
+			this.#push(view, drop);
+			await this.#gitCatchUp(view, [
+				[target, lock.versions.file],
+				[gitReflog(target), lock.versions.reflog],
+				[packedRefs, lock.versions.packedRefs],
+			]);
+			return await create();
+		} catch (error) {
+			view.gitLeases.delete(target);
+			await this.#core.gitLeaseRelease(view.environmentId, actor, lock.leaseId, null).catch(() => {
+				view.gitUnsure = true;
+			});
+			throw error;
+		}
+	}
+
+	/** Reads the feed until the view shows each path at its version (null: no file), a few rounds; EEXIST if it does
+	 * not then, so git tries the lock again. */
+	async #gitCatchUp(view: View, want: readonly (readonly [string, string | null])[]): Promise<void> {
+		for (let round = 0; ; round++) {
+			if (want.every(([path, version]) => (view.tree?.get(path)?.version ?? null) === version)) return;
+			if (round === GIT_CATCH_UP_ROUNDS)
+				throw new ProtocolError(ErrorCode.exists, "The view has not caught up with this git lock yet");
+			this.#queue(view, () => this.#advance(view));
+			await view.work;
+		}
+	}
+
+	/** Publishes a git lock (§6): renaming `X.lock` onto X saves X over the version the lease found, with the log git
+	 * appended for it and every object the view wrote in that git directory (a ref names only objects published with
+	 * it or before), in one change set, which ends the lease. A version changed since fails the rename (BUSY) and keeps
+	 * the lease: git then removes its lock (#gitUnlock). */
+	async #gitPublish(view: View, from: string, target: string, lock: GitLock): Promise<void> {
+		await this.#quiet(view);
+		const pending = view.pending;
+		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
+		await this.#inTurn(view, async () => {
+			const answer = await this.#gitPublishNow(view, pending, from, target, lock);
+			return { commitId: answer.commitId, seq: answer.seq, paths: [] };
+		});
+	}
+
+	async #gitPublishNow(
+		view: View,
+		pending: PendingView,
+		from: string,
+		target: string,
+		lock: GitLock,
+	): Promise<GitPublish> {
+		const actor = this.#gitActor(view);
+		const node = pending.nodes().get(from);
+		if (node?.kind !== "file") throw new ProtocolError(ErrorCode.notFound, "The git lock is gone");
+		if (node.open > 0) throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
+		const reflog = gitReflog(target);
+		const log = pending.nodes().get(reflog);
+		if (log?.kind === "file" && log.open > 0) throw new ProtocolError(ErrorCode.busy, "The git log is still open");
+		// Each unit with the node it publishes and the path that node is at.
+		const objects = `${gitDir(target)}/objects/`;
+		const files: { path: string; at: string; node: PendingFile; expectedVersion?: string | null }[] = [];
+		for (const [path, n] of pending.nodes())
+			if (n.kind === "file" && n.open === 0 && path.startsWith(objects) && gitPublishedObject(path))
+				files.push({ path, at: path, node: n });
+		files.push({ path: target, at: from, node, expectedVersion: lock.versions.file });
+		if (log?.kind === "file" && log.content !== undefined)
+			files.push({ path: reflog, at: reflog, node: log, expectedVersion: lock.versions.reflog });
+		const units: GitUnit[] = [];
+		const made: { path: string; at: string; version: string }[] = [];
+		for (const file of files) {
+			const version = file.node.version;
+			const staged = await this.#stage(view, file.node, file.path);
+			if (!staged) {
+				if (file.expectedVersion === undefined) continue;
+				throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
+			}
+			units.push(
+				file.expectedVersion === undefined
+					? { op: "write", path: file.path, file: staged }
+					: { op: "write", path: file.path, file: staged, expectedVersion: file.expectedVersion },
+			);
+			made.push({ path: file.path, at: file.at, version });
+		}
+		await this.#gitReadGate(view);
+		// What a change set saved: the live versions of the files made, which show again once the feed has it.
+		const saved = (outcomes: CommitAnswer["units"], files: typeof made): Map<string, string> => {
+			const settled = new Map<string, string>();
+			outcomes.forEach((outcome, i) => {
+				const unit = files[i];
+				if (!unit || outcome.outcome !== "saved" || !outcome.version) return;
+				this.#alias(view, unit.path, unit.version, outcome.version);
+				settled.set(unit.at, unit.version);
+			});
+			return settled;
+		};
+		// A change set takes at most GIT_UNITS units, the folders made for them among them. A publish that would take more
+		// saves its objects first, in plain change sets of the view's (objects take no lease), and carries the ref alone.
+		let first = 0;
+		if (gitBatches(units).length > 1) {
+			first = units.findIndex((unit) => unit.op === "write" && unit.expectedVersion !== undefined);
+			let at = 0;
+			for (const batch of gitBatches(units.slice(0, first))) {
+				const folders = [...new Set(batch.flatMap((unit) => gitFolders(unit.path)))];
+				const writes = batch.flatMap((unit): CommitUnit[] =>
+					unit.op === "write" ? [{ op: "write", path: unit.path, file: unit.file }] : [],
+				);
+				const mkdirs = folders.map((path): CommitUnit => ({ op: "mkdir", path }));
+				const objects = await this.#commit(view, actor, `folder-view:${view.key}:git:${randomUUID()}`, [
+					...mkdirs,
+					...writes,
+				]);
+				if (!objects) throw new ProtocolError(ErrorCode.unavailable, "The git objects could not be saved now");
+				if (objects.units.some((outcome) => outcome.outcome !== "saved"))
+					throw new ProtocolError(ErrorCode.denied, "The core refused the git objects");
+				const settled = saved(objects.units.slice(folders.length), made.slice(at, at + batch.length));
+				if (objects.seq !== null) view.gitUnsettled.push({ seq: objects.seq, made: settled });
+				at += batch.length;
+			}
+		}
+		const key = `folder-view:${view.key}:git:${randomUUID()}`;
+		let answer: GitPublish | undefined;
+		for (let attempt = 1; !answer; attempt++)
+			try {
+				answer = await this.#core.gitPublish(view.environmentId, actor, lock.leaseId, key, units.slice(first));
+			} catch (error) {
+				if (error instanceof CoreRefusal || attempt === GIT_PUBLISH_TRIES) throw this.#gitError(error);
+			}
+		if (!answer.published) throw new ProtocolError(ErrorCode.busy, "A git file changed since its lock was taken");
+		view.gitLeases.delete(target);
+		const settled = saved(answer.units, made.slice(first));
+		// The lock file is gone at once (git renamed it); what it published shows as the feed brings it. `from` stays in
+		// the later settling: a folder made for the ref (`refs/heads/feature/` for `feature/foo`) is live only then.
+		pending.settlePaths(new Map([[from, node.version]]));
+		this.#push(view, [from]);
+		if (answer.seq !== null) {
+			view.gitUnsettled.push({ seq: answer.seq, made: settled });
+			await this.#gitCatchUpTo(view, answer.seq);
+		}
+		return answer;
+	}
+
+	/** A boundary's read gate, before a git change is published: a view whose machine lost its read log publishes
+	 * nothing more, and the machine's reads reach the read sets before anything made from them (the log's rule 1). */
+	async #gitReadGate(view: View): Promise<void> {
+		if (view.unproven)
+			throw new ProtocolError(ErrorCode.denied, "The machine lost its read log, so nothing it makes is published");
+		const release = await this.#releaseReads(view);
+		if (release === "unanswered")
+			throw new ProtocolError(ErrorCode.busy, "The machine's reads have not got through yet");
+		if (release !== "released")
+			throw new ProtocolError(ErrorCode.denied, `The core refused the machine's reads (${release})`);
+	}
+
+	/** Reads the feed a few rounds until the view has change set `seq`. */
+	async #gitCatchUpTo(view: View, seq: number): Promise<void> {
+		for (let round = 0; round < GIT_CATCH_UP_ROUNDS && view.seq < seq; round++) {
+			this.#queue(view, () => this.#advance(view));
+			await view.work;
+		}
+	}
+
+	/** Settles the git publishes whose change sets the view has now: it shows the live files again. */
+	#gitSettle(view: View): void {
+		const due = view.gitUnsettled.filter((unsettled) => unsettled.seq <= view.seq);
+		if (due.length === 0) return;
+		view.gitUnsettled.splice(0, view.gitUnsettled.length, ...view.gitUnsettled.filter((u) => u.seq > view.seq));
+		for (const unsettled of due) view.pending?.settlePaths(unsettled.made);
+	}
+
+	/** Removes a git lock (§6): the lease ends, publishing the guarded files git removed under it (`git branch -D`) and
+	 * the log it replaced (`git reflog expire`), or nothing (an update git rolled back, whose line in the log goes too, or
+	 * a lock a killed git left). A change that no longer matches the versions the lease found is not published: the
+	 * machine hears BUSY, and shows the live files again. */
+	async #gitUnlock(view: View, path: string, target: string, lock: GitLock): Promise<void> {
+		await this.#quiet(view);
+		const pending = view.pending;
+		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
+		const node = pending.nodes().get(path);
+		if (node?.kind === "file" && node.open > 0)
+			throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
+		let published = true;
+		await this.#inTurn(view, async () => {
+			const actor = this.#gitActor(view);
+			const units: GitUnit[] = [];
+			const removed: [string, string | null][] = [
+				[target, lock.versions.file],
+				[gitReflog(target), lock.versions.reflog],
+			];
+			for (const [file, version] of removed)
+				if (version !== null && lock.deleted.has(file) && pending.nodes().get(file)?.kind !== "file")
+					units.push({ op: "delete", path: file, expectedVersion: version });
+			const reflog = gitReflog(target);
+			const log = pending.nodes().get(reflog);
+			let made: string | undefined;
+			if (lock.replaced.has(reflog) && log?.kind === "file" && log.content !== undefined) {
+				if (log.open > 0) throw new ProtocolError(ErrorCode.busy, "The git log is still open");
+				made = log.version;
+				const staged = await this.#stage(view, log, reflog);
+				if (!staged) throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
+				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
+			}
+			if (units.length > 0) await this.#gitReadGate(view);
+			let answer: GitPublish | null = null;
+			try {
+				answer = await this.#core.gitLeaseRelease(
+					view.environmentId,
+					actor,
+					lock.leaseId,
+					units.length > 0 ? units : null,
+				);
+			} catch (error) {
+				// A lease the core no longer holds (the view's leases were dropped) is gone here too, and what was to land
+				// under it did not. Any other refusal (units the core does not take) leaves the lease held.
+				if (!(error instanceof CoreRefusal && error.said === GIT_LEASE_GONE)) throw this.#gitError(error);
+			}
+			view.gitLeases.delete(target);
+			published = units.length === 0 || answer?.published === true;
+			const written = answer?.published ? answer.units.at(-1) : undefined;
+			if (made !== undefined && written?.outcome === "saved" && written.version)
+				this.#alias(view, reflog, made, written.version);
+			if (answer?.published && answer.seq !== null) await this.#gitCatchUpTo(view, answer.seq);
+			const guarded = gitGuarded(target);
+			pending.drop(guarded);
+			this.#push(view, guarded);
+			return { commitId: answer?.commitId ?? null, seq: answer?.seq ?? null, paths: [] };
+		});
+		if (!published) throw new ProtocolError(ErrorCode.busy, "A git file changed since its lock was taken");
+	}
+
+	/** At a final boundary the view lets go of its git locks: a lock a killed git left goes, with its lease, so other
+	 * sessions may take it. (The core drops them when the view ends, too.) */
+	async #gitSweep(view: View): Promise<void> {
+		if (view.gitLeases.size === 0 && !view.gitUnsure) return;
+		try {
+			await this.#core.gitLeasesDrop(view.environmentId, this.#gitActor(view));
+		} catch (error) {
+			this.#log(`folder-service: ${view.key}: its git locks could not be let go now: ${(error as Error).message}`);
+			return;
+		}
+		view.gitUnsure = false;
+		const guarded = [...view.gitLeases.keys()].flatMap((target) => gitGuarded(target));
+		view.gitLeases.clear();
+		view.pending?.drop(guarded);
+		this.#push(view, guarded);
 	}
 
 	// ---- Writes (F3 step 3, RUNTIME-FOLDER-WRITES.md) --------------------------------------------------------------
@@ -1684,6 +2108,14 @@ export class FolderService {
 		} catch (error) {
 			this.#log(`folder-service: ${view.key}: publish failed: ${(error as Error).message}`);
 		}
+	}
+
+	/** A handle given up (a discard): the file a draft held unpublished, if any, is no longer open, and the quiet period
+	 * publishes it. */
+	#giveUp(view: View, handle: number): void {
+		this.#abandon(view, handle);
+		view.handles.delete(handle);
+		this.#resumeQuiet(view);
 	}
 
 	#abandon(view: View, handle: number): void {
@@ -1931,6 +2363,7 @@ export class FolderService {
 	 * 1). `view.heard` keeps what it heard. */
 	async #boundaryOf(view: View, pending: PendingView, final: boolean, last: boolean): Promise<Report> {
 		const entries: ReportEntry[] = [];
+		if (final) await this.#gitSweep(view);
 		// An answered boundary the feed has not brought back yet settles first; nothing else is decided until it has.
 		if (view.unsettled) {
 			await this.#trySettle(view);
@@ -2504,12 +2937,28 @@ export class FolderService {
 	): void {
 		view.unsettled = undefined;
 		this.#notePublished(view, settlement, written, moved);
+		for (const [path, version] of written) view.pending?.publishedAt(path, version);
+		for (const [path, { version }] of moved) view.pending?.publishedAt(path, version);
 		this.#settleNodes(
 			view,
 			settlement.keep,
 			settlement.plan.units.flatMap((u) => u.paths),
 			settlement.saved,
 		);
+	}
+
+	/** Keeps the time the pending file at `path` shows for the version `live` its publish gave it (`times`). */
+	#keepTime(view: View, path: string, live: string): void {
+		const node = view.pending?.nodes().get(path);
+		if (node?.kind === "file") view.times.set(path, { version: live, mtimeMs: node.mtimeMs });
+	}
+
+	/** Notes that the version `made` the machine was shown at `path` while pending was published as `live` (#base). */
+	#alias(view: View, path: string, made: string, live: string): void {
+		const aliases = (view.published.get(path) ?? []).filter((p) => p.made !== made);
+		aliases.push({ made, live });
+		if (aliases.length > SUPERSEDED_PER_PATH + 1) aliases.shift();
+		view.published.set(path, aliases);
 	}
 
 	/** The versions this boundary's saves published, for bases and reads naming the versions they made; and the versions
@@ -2525,16 +2974,15 @@ export class FolderService {
 	): void {
 		// One per version named at a path: a file moved away and back brings its save's version along again, and the
 		// version it has now replaces the one it had when it left.
-		const alias = (path: string, made: string, live: string): void => {
-			const aliases = (view.published.get(path) ?? []).filter((p) => p.made !== made);
-			aliases.push({ made, live });
-			if (aliases.length > SUPERSEDED_PER_PATH + 1) aliases.shift();
-			view.published.set(path, aliases);
-		};
+		const alias = (path: string, made: string, live: string): void => this.#alias(view, path, made, live);
 		for (const [path, made] of settlement.made) {
 			const live = settlement.saved.has(path) ? written.get(path) : undefined;
-			if (live) alias(path, made, live);
+			if (live) {
+				alias(path, made, live);
+				this.#keepTime(view, path, live);
+			}
 		}
+		for (const [path, { version }] of moved) this.#keepTime(view, path, version);
 		if (moved.size === 0) return;
 		// The versions this view's saves made, by the version they published (at any path, before the moves).
 		const madeOf = new Map<string, string[]>();
@@ -2568,7 +3016,7 @@ export class FolderService {
 			}
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
-		if (pending.empty) view.intents.clear();
+		if (pending.empty && pending.drafts().length === 0) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.
 		if (!pending.unsaved) view.unsavedSince = undefined;
@@ -2621,12 +3069,12 @@ export class FolderService {
 	}
 
 	/** The chunks and staged files (by manifest) the view's pending bytes still need: each pending file's as it is and as
-	 * an abandoned handle would restore it, chunks on their way to the gateway, and the files of a boundary that has not
-	 * settled (asked again, or waiting for the feed). */
+	 * an abandoned handle would restore it, an open draft's, chunks on their way to the gateway, and the files of a
+	 * boundary that has not settled (asked again, or waiting for the feed). */
 	#neededBytes(view: View, pending: PendingView): { chunks: Set<string>; files: Set<string> } {
 		const chunks = new Set<string>();
 		const files = new Set<string>();
-		for (const node of pending.nodes().values()) {
+		for (const node of [...pending.nodes().values(), ...pending.drafts()]) {
 			if (node.kind !== "file") continue;
 			for (const state of [node, pending.fixedState(node)]) {
 				for (const c of state?.content?.chunks ?? []) chunks.add(c.sha256);

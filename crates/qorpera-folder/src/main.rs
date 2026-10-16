@@ -1,14 +1,14 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, cache, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 const USAGE: &str = "Usage:
-  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--owner-uid <uid> --owner-gid <gid>] [--state-dir /run/qorpera-folder/<viewId>]
+  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--owner-uid <uid> --owner-gid <gid>] [--state-dir /run/qorpera-folder/<viewId>] [--local-dir <dir>]
   qorpera-folder publish --view-file <file> [--state-dir /run/qorpera-folder/<viewId>] [--final] [--json] [--connect vsock:2:5250]
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
@@ -20,6 +20,9 @@ view write, else read-only. A writable mount keeps its version map in <state-dir
 on what was read before. --owner-uid and --owner-gid together set the virtual owner of writable files and folders;
 by default they belong to the mounting account. Another account also needs --allow-other yes. These options do not
 change the daemon account or ownership of its private view file and state directory. Read-only views stay root-owned.
+A writable mount keeps the session's own git settings and hooks, and the caches in code worktrees (node_modules,
+target, ...), in --local-dir (default <state-dir>/local; give one on the machine's disk): never published, and kept
+for the next view, git settings excepted.
 Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.
 
 publish: hands over the mount's durable read log from <state-dir> before publishing its pending changes, even after
@@ -97,7 +100,7 @@ fn number<T: std::str::FromStr>(o: &std::collections::HashMap<String, String>, k
 }
 
 fn mount(args: &[String]) -> Result<ExitCode, Usage> {
-	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other", "state-dir", "owner-uid", "owner-gid"])?;
+	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other", "state-dir", "local-dir", "owner-uid", "owner-gid"])?;
 	let view_file = o.get("view-file").ok_or_else(|| Usage("--view-file is required".into()))?;
 	let mountpoint = PathBuf::from(o.get("mountpoint").ok_or_else(|| Usage("--mountpoint is required".into()))?);
 	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
@@ -144,7 +147,7 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 	};
 	// The journal goes to the mount, which logs reads only once the node says the view can write.
 	let link = link::Link::new(addr, view, threads).with_view_file(store, true, false);
-	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, owner, state: Some(state), reads: Some(reads) };
+	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, owner, state: Some(state), reads: Some(reads), local: o.get("local-dir").map(PathBuf::from) };
 	match mount::run(link, options) {
 		Ok(mount::Stop::ViewClosed) => {
 			eprintln!("qorpera-folder: the node closed the view; unmounted");
@@ -237,6 +240,12 @@ fn publish(args: &[String]) -> Result<ExitCode, Usage> {
 			return Ok(print_report(&report, o.contains_key("json")));
 		}
 	};
+	if state.join(cache::MOVING).try_exists().unwrap_or(true) {
+		// The mount has cache folders git came to track still to move into the folder (cache.rs): a boundary now would
+		// leave their files out.
+		eprintln!("qorpera-folder: cache folders git now tracks are still moving into the folder; publish again shortly");
+		return Ok(ExitCode::FAILURE);
+	}
 	let report = match link::Link::new(addr, view, 1).with_reads(reads.clone()).with_view_file(store, false, abandon).publish_final(o.contains_key("final")) {
 		Ok(r) => r,
 		Err(f) if f.report.is_some() => {

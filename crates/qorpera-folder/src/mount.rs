@@ -1,7 +1,7 @@
 //! The folder at a mount point inside a machine. Names and attributes come from folder listings the node sends on
 //! demand; bytes come from the node as programs read them. The node's feed tells the program what changed, and the
-//! kernel is told to drop exactly that. The kernel's page cache and this program's memory are the only caches: nothing
-//! is written to the machine's disk.
+//! kernel is told to drop exactly that. The kernel's page cache and this program's memory are the only caches of the
+//! node's files: a writable view's own files on the machine's disk are never the node's (below).
 //!
 //! While the feed is down nothing is cached at all (every lookup asks the node), so a machine never
 //! shows a version older than the node's.
@@ -16,8 +16,16 @@
 //! chunk being written in memory (`writer.rs`), and the mount's version map (`versions.rs`) gives each save its base.
 //! The kernel makes, moves and drops its own names for the changes it asks for, so a change made here only brings this
 //! program's tree in step; the kernel is never told from inside a request (it holds the folder's lock then).
+//!
+//! Git works in a writable view's code areas (`git.rs`; deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md §6). The
+//! session's own git settings and hooks, and the caches in its worktrees (`node_modules`, `target`, ...), are files
+//! on the machine's disk that the node never sees (`local.rs`, `on_disk.rs`); git's shared files are asked for again
+//! each time, and a lock git takes on one is the node's lease on it.
+
+mod on_disk;
 
 use crate::link::{Fail, Link};
+use crate::local::{self, Local};
 use crate::proto::{code, join, valid_name, valid_path, EntryKind, OpenRequest, RenameRequest, MAX_READ};
 use crate::tree::{Attr, Child, Inval, Tree, ROOT};
 use crate::versions::VersionMap;
@@ -98,6 +106,9 @@ pub struct Options {
 	/// The read journal the caller already opened in `state` (the CLI does, to check the view proof). Only a writable
 	/// view logs its reads: a read-only one hands none over, so its journal would never be emptied. None opens it here.
 	pub reads: Option<Arc<ReadLog>>,
+	/// Where a writable view keeps the session's own git files and its caches (`local.rs`); None uses `local/` in
+	/// `state`. It should be on the machine's disk: caches grow large, and outlive the view.
+	pub local: Option<PathBuf>,
 }
 
 /// Why the program stopped.
@@ -163,6 +174,11 @@ struct Shared {
 	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
 	/// waited for (the order is a file's lock, then this map).
 	writing: Mutex<HashMap<u64, Arc<Mutex<Open>>>>,
+	/// A writable view's own git files and caches on the machine's disk (`on_disk.rs`); None for a read-only view,
+	/// which shows the node's copy of every path.
+	local: Option<Local>,
+	/// The company's code host (`HelloOk::code_host`): git's session-local files are the node's, published like any.
+	code_host: bool,
 }
 
 impl Shared {
@@ -346,7 +362,7 @@ impl Shared {
 				return Ok(open);
 			}
 			let base = self.versions.lock().unwrap().base(path);
-			let request = OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate };
+			let request = OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate, draft: false };
 			let opened = match self.link.open_write(&request) {
 				Ok(opened) => opened,
 				Err(f) => {
@@ -394,7 +410,7 @@ impl Shared {
 			let base = self.versions.lock().unwrap().base(&path);
 			let opened = self
 				.link
-				.open_write(&OpenRequest { path, base, create: false, exclusive: false, truncate: false })
+				.open_write(&OpenRequest { path, base, create: false, exclusive: false, truncate: false, draft: false })
 				.map_err(|f| f.errno())?;
 			open.writer = Some(match open.closed.take() {
 				Some((version, w)) if version == opened.version && w.size() == opened.size => w.reopened(opened.handle),
@@ -526,12 +542,16 @@ fn errno(f: Fail) -> Errno {
 }
 
 impl FolderFs {
-	/// A name this program changes: its folder's path and its own, or EROFS when the view does not write.
+	/// A name this program changes: its folder's path and its own, or EROFS when the view does not write. A local
+	/// folder has no path at the node (its `local_*` hook answers for every name in it).
 	fn place(&self, parent: INodeNo, name: &OsStr) -> Result<(String, String), Errno> {
 		if !self.s.writable {
 			return Err(Errno::EROFS);
 		}
 		let name = name_of(name)?;
+		if local::is_local(parent.0) {
+			return Ok((String::new(), name.to_string()));
+		}
 		let dir = self.s.path_of(parent.0).map_err(Errno::from_i32)?;
 		Ok((join(&dir, name), name.to_string()))
 	}
@@ -540,7 +560,8 @@ impl FolderFs {
 		match self.s.attr(ino) {
 			Ok((a, kept)) => {
 				let a = self.s.shown(ino, a);
-				reply.attr(&self.s.ttl(kept), &self.s.file_attr(ino, &a))
+				let ttl = if self.s.fresh(ino) { Duration::ZERO } else { self.s.ttl(kept) };
+				reply.attr(&ttl, &self.s.file_attr(ino, &a))
 			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
@@ -577,13 +598,19 @@ impl Filesystem for FolderFs {
 
 	fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
 		let Some(name) = name.to_str().filter(|n| valid_name(n)) else { return reply.error(Errno::ENOENT) };
+		let Some(reply) = self.local_lookup(parent.0, name, reply) else { return };
 		match self.s.children(parent.0, Some(name)) {
 			Ok((children, kept)) => match children.iter().find(|c| c.name == name) {
 				Some(c) => {
 					let a = self.s.shown(c.ino, c.attr.clone());
-					reply.entry(&self.s.ttl(kept), &self.s.file_attr(c.ino, &a), Generation(0))
+					let ttl = if self.s.fresh(c.ino) { Duration::ZERO } else { self.s.ttl(kept) };
+					reply.entry(&ttl, &self.s.file_attr(c.ino, &a), Generation(0))
 				}
-				None => reply.error(Errno::ENOENT),
+				None => {
+					if let Some(reply) = self.cache_lookup(parent.0, name, reply) {
+						reply.error(Errno::ENOENT)
+					}
+				}
 			},
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
@@ -594,10 +621,12 @@ impl Filesystem for FolderFs {
 	}
 
 	fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+		let Some(reply) = self.local_getattr(ino.0, reply) else { return };
 		self.reply_attr(ino.0, reply);
 	}
 
 	fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+		let Some(reply) = self.local_opendir(ino.0, reply) else { return };
 		let (children, _) = match self.s.children(ino.0, None) {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -619,6 +648,9 @@ impl Filesystem for FolderFs {
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
 		entries.push((parent, FileType::Directory, "..".to_string()));
 		entries.extend(children.into_iter().map(|c| (c.ino, file_type(c.attr.kind), c.name)));
+		if let Err(e) = self.merge_local(&path, &mut entries) {
+			return reply.error(Errno::from_i32(e));
+		}
 		// No kernel listing cache (FOPEN_CACHE_DIR): the kernel keeps it while the folder's time is unchanged, and a
 		// folder's time does not change when a file inside it does. The listing is in this program's memory anyway.
 		reply.opened(self.s.handle(Handle::Dir(entries)), FopenFlags::empty());
@@ -646,6 +678,7 @@ impl Filesystem for FolderFs {
 		if write && !self.s.writable {
 			return reply.error(Errno::EROFS);
 		}
+		let Some(reply) = self.local_open(ino.0, flags.0, write, reply) else { return };
 		let (attr, kept) = match self.s.attr(ino.0) {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -680,8 +713,8 @@ impl Filesystem for FolderFs {
 		if attr.size == 0 && !writing {
 			self.s.read_version(ino.0, &path, &attr.version);
 		}
-		let flags =
-			if self.s.ttl(kept).is_zero() || writing { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
+		let fresh = self.s.ttl(kept).is_zero() || self.s.fresh(ino.0);
+		let flags = if fresh || writing { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
 		reply.opened(self.s.handle(Handle::File { ino: ino.0, path, version: attr.version, size: attr.size }), flags);
 	}
 
@@ -690,6 +723,7 @@ impl Filesystem for FolderFs {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
 		};
+		let Some(reply) = self.local_create(parent.0, &name, mode & !umask, flags, reply) else { return };
 		let base = self.s.versions.lock().unwrap().base(&path);
 		let request = OpenRequest {
 			path: path.clone(),
@@ -697,6 +731,7 @@ impl Filesystem for FolderFs {
 			create: true,
 			exclusive: flags & libc::O_EXCL != 0,
 			truncate: flags & libc::O_TRUNC != 0,
+			draft: false,
 		};
 		let opened = match self.s.link.open_write(&request) {
 			Ok(o) => o,
@@ -704,7 +739,13 @@ impl Filesystem for FolderFs {
 		};
 		let mut attr =
 			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version, authority: None };
-		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		let ino = {
+			let mut tree = self.s.tree.lock().unwrap();
+			if request.exclusive {
+				on_disk::locked(&mut tree, &path);
+			}
+			tree.add_local(parent.0, &name, attr.clone())
+		};
 		let open = Open::new();
 		{
 			let mut o = open.lock().unwrap();
@@ -744,6 +785,7 @@ impl Filesystem for FolderFs {
 		_lock_owner: Option<LockOwner>,
 		reply: ReplyData,
 	) {
+		let Some(reply) = self.local_read(fh.0, offset, size, reply) else { return };
 		let (ino, file, written) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::File { ino, path, version, size }) => (*ino, Some((path.clone(), version.clone(), *size)), None),
 			Some(Handle::Write { ino, open, .. }) => (*ino, None, Some(open.clone())),
@@ -817,6 +859,7 @@ impl Filesystem for FolderFs {
 		_lock_owner: Option<LockOwner>,
 		reply: ReplyWrite,
 	) {
+		let Some(reply) = self.local_write(fh.0, offset, data, reply) else { return };
 		let (ino, open) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::Write { ino, open, .. }) => (*ino, open.clone()),
 			_ => return reply.error(Errno::EBADF),
@@ -841,6 +884,7 @@ impl Filesystem for FolderFs {
 	/// leaves it all to the opener's close, or to the release: children closing one by one would each close the file at
 	/// the node, and stage it there.
 	fn flush(&self, req: &Request, _ino: INodeNo, fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
+		let Some(reply) = self.local_handle(fh.0, false, false, reply) else { return };
 		let (ino, open, opener) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::Write { ino, open, opener }) => (*ino, open.clone(), *opener),
 			_ => return reply.ok(),
@@ -862,6 +906,7 @@ impl Filesystem for FolderFs {
 
 	/// What was written goes to the node; the file stays open (nothing is published until a boundary).
 	fn fsync(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+		let Some(reply) = self.local_handle(fh.0, true, false, reply) else { return };
 		let open = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::Write { open, .. }) => open.clone(),
 			_ => return reply.ok(),
@@ -883,6 +928,7 @@ impl Filesystem for FolderFs {
 		_flush: bool,
 		reply: ReplyEmpty,
 	) {
+		let Some(reply) = self.local_handle(fh.0, false, true, reply) else { return };
 		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
 		if let Some(Handle::Write { ino, open, .. }) = handle {
 			self.s.leave(ino, open);
@@ -899,8 +945,8 @@ impl Filesystem for FolderFs {
 		uid: Option<u32>,
 		gid: Option<u32>,
 		size: Option<u64>,
-		_atime: Option<TimeOrNow>,
-		_mtime: Option<TimeOrNow>,
+		atime: Option<TimeOrNow>,
+		mtime: Option<TimeOrNow>,
 		_ctime: Option<SystemTime>,
 		_fh: Option<FileHandle>,
 		_crtime: Option<SystemTime>,
@@ -916,6 +962,7 @@ impl Filesystem for FolderFs {
 		if uid.is_some_and(|u| u != self.s.owner.0) || gid.is_some_and(|g| g != self.s.owner.1) {
 			return reply.error(Errno::EPERM);
 		}
+		let Some(reply) = self.local_setattr(ino.0, mode, size, atime, mtime, reply) else { return };
 		let attr = match self.s.attr(ino.0) {
 			Ok((a, _)) => a,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -951,11 +998,12 @@ impl Filesystem for FolderFs {
 		self.reply_attr(ino.0, reply);
 	}
 
-	fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, reply: ReplyEntry) {
+	fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
 		let (path, name) = match self.place(parent, name) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
 		};
+		let Some(reply) = self.local_mkdir(parent.0, &name, mode & !umask, reply) else { return };
 		if let Err(f) = self.s.link.mkdir(&path) {
 			return reply.error(errno(f));
 		}
@@ -982,14 +1030,17 @@ impl Filesystem for FolderFs {
 		flags: RenameFlags,
 		reply: ReplyEmpty,
 	) {
+		let ((from, from_name), (to, to_name)) = match (self.place(parent, name), self.place(newparent, newname)) {
+			(Ok(a), Ok(b)) => (a, b),
+			(Err(e), _) | (_, Err(e)) => return reply.error(e),
+		};
+		let Some(reply) = self.local_rename((parent.0, &from_name), (newparent.0, &to_name), flags, reply) else {
+			return;
+		};
 		// Exchanging two names has no unit of its own.
 		if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT) {
 			return reply.error(Errno::EINVAL);
 		}
-		let ((from, from_name), (to, _)) = match (self.place(parent, name), self.place(newparent, newname)) {
-			(Ok(a), Ok(b)) => (a, b),
-			(Err(e), _) | (_, Err(e)) => return reply.error(e),
-		};
 		// A move's base is the version the name showed; a file renamed over is a save of the target, based on the
 		// version the mount holds for it.
 		let source = match self.s.child(parent.0, &from_name) {
@@ -1006,11 +1057,13 @@ impl Filesystem for FolderFs {
 			to_base,
 			no_replace: flags.contains(RenameFlags::RENAME_NOREPLACE),
 		};
+		let index = self.index_before(&from, &to, &source);
 		if let Err(f) = self.s.link.rename(&request) {
 			return reply.error(errno(f));
 		}
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
 		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
+		self.index_after(&to, index);
 		reply.ok();
 	}
 
@@ -1019,12 +1072,26 @@ impl Filesystem for FolderFs {
 		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
 	}
 
-	fn symlink(&self, _req: &Request, _parent: INodeNo, _link_name: &OsStr, _target: &Path, reply: ReplyEntry) {
-		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
+	fn symlink(&self, _req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
+		let name = match self.place(parent, link_name) {
+			Ok((_, name)) => name,
+			Err(e) => return reply.error(e),
+		};
+		let Some(reply) = self.local_symlink(parent.0, &name, target, reply) else { return };
+		reply.error(Errno::EPERM);
 	}
 
-	fn link(&self, _req: &Request, _ino: INodeNo, _newparent: INodeNo, _newname: &OsStr, reply: ReplyEntry) {
-		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
+	fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+		self.local_readlink(ino.0, reply);
+	}
+
+	fn link(&self, _req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
+		let name = match self.place(newparent, newname) {
+			Ok((_, name)) => name,
+			Err(e) => return reply.error(e),
+		};
+		let Some(reply) = self.local_link(ino.0, (newparent.0, &name), reply) else { return };
+		reply.error(Errno::EPERM);
 	}
 
 	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
@@ -1043,6 +1110,7 @@ impl FolderFs {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
 		};
+		let Some(reply) = self.local_remove(parent.0, &name, folder, reply) else { return };
 		let base = match self.s.child(parent.0, &name) {
 			Ok(c) if folder && c.attr.kind != EntryKind::Folder => return reply.error(Errno::ENOTDIR),
 			Ok(c) if !folder && c.attr.kind == EntryKind::Folder => return reply.error(Errno::EISDIR),
@@ -1276,6 +1344,13 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	} else {
 		(0, 0)
 	};
+	let local = match (options.local.take().or_else(|| options.state.as_ref().map(|s| s.join("local"))), writable) {
+		(Some(dir), true) => Some(
+			Local::open(&dir, &ok.view_id, owner, options.state.as_ref().map(|s| s.join(crate::cache::MOVING)))
+				.map_err(|e| Failed::Other(format!("the local folder {}: {e}", dir.display())))?,
+		),
+		_ => None,
+	};
 	let shared = Arc::new(Shared {
 		tree: Mutex::new(Tree::new()),
 		link,
@@ -1290,6 +1365,8 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		owner,
 		versions: Mutex::new(versions),
 		writing: Mutex::new(HashMap::new()),
+		local,
+		code_host: ok.code_host,
 	});
 	let mut config = Config::default();
 	config.mount_options = vec![
@@ -1353,6 +1430,19 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 			}
 		})
 	};
+	if shared.local.is_some() {
+		// Cache folders git came to track whose move into the folder did not finish (`mount/on_disk.rs`).
+		let shared = shared.clone();
+		let watching = watching.clone();
+		std::thread::spawn(move || {
+			while watching.load(Ordering::SeqCst) {
+				std::thread::sleep(Duration::from_secs(5));
+				if let Some(local) = shared.local.as_ref() {
+					shared.move_caches(local, None);
+				}
+			}
+		});
+	}
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;
 	if !matches!(why, Stop::Ended(_)) {

@@ -3,8 +3,12 @@
 //! `packages/object-gateway/src/folder-service/`.
 
 pub mod bridge;
+pub mod cache;
 pub mod frame;
+pub mod git;
+pub mod index;
 pub mod link;
+pub mod local;
 pub mod lxd;
 pub mod mount;
 pub mod proto;

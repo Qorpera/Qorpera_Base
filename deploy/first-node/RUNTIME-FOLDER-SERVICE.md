@@ -56,10 +56,10 @@ feed takes acknowledgements alone). A machine on protocol 1 reads only. On a wri
 
 | Type | Request | Answer |
 | --- | --- | --- |
-| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `o` `{handle, size, version}` |
+| `O` | open for writing `{path, base?, create, exclusive, truncate, draft?}`: `draft` (with `truncate`) keeps the file out of the view until its close | `o` `{handle, size, version}` |
 | `K` | one part of a chunk: `[u32 header length][{handle, index, sha256, bytes, offset}][≤ 1 MiB]`, in order from offset 0 | `k` once stored (the last part) |
 | `G` | `{handle, index, offset, length ≤ 1 MiB}`: part of a pending chunk back | `d` the bytes |
-| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks | `k` `{version}` |
+| `C` | close `{handle, size, discard?}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks; `discard` gives the handle up instead | `k` `{version}`; `k` `{}` for a discard |
 | `M` | mkdir `{path}` | `k` |
 | `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
@@ -73,6 +73,19 @@ the connection that opened it (the folder program pools its connections); a file
 connection ends is abandoned, and what it held at its last close stays pending. A protocol-3 core view's handles
 outlive its connections instead: they are abandoned only when a program holding the mount's `daemon.lock` says the
 program before it is gone (a restarted mount, or a publisher), or when the view ends (Step 4c-3).
+
+A draft's file joins the view only when its close lands it there (step 5d): until then the view keeps what it had at
+the path, so no boundary publishes the draft half written. It lands as the view's newest change at the path: over what
+this view itself did there since the open (a save, a removal or a move, published or not), and against what another
+machine did there since, which is a conflict when it is published, not overwritten. Where the view's move of the
+path's file away is still pending at the close, the draft lands as a new file there, as a create would; if the boundary
+then lets that move go, the new file meets the file the move left and is a conflict (both are kept). A removal or move
+the boundary lets go before the close leaves the draft landing against the file it would have taken away, as one opened
+over that file. The draft takes the executable bit of what it lands over (none as a new file). Over the view's own unsaved file,
+the draft holds that file unpublished, as an open handle does, and its close is the file's next save. A discard gives a
+handle up as the end of its connection does; a draft's leaves nothing, and the quiet period then publishes a file it held.
+A close that cannot land the draft (a folder is at its path now, say) gives it up the same way.
+The mount writes a cache it moves into the folder as drafts, so a move it gives up leaves no file behind.
 
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
