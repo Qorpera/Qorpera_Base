@@ -564,7 +564,12 @@ function contextOrigin(value: unknown, identity: CloudNativeToolIdentity): Cloud
 			Buffer.byteLength(item) <= 16384 &&
 			Buffer.from(item).toString("utf8") === item &&
 			!item.includes("\0"));
-	if (!Array.isArray(origin.inputs) || origin.inputs.length > 32 || !text(origin.routineIntent) || !text(origin.message))
+	if (
+		!Array.isArray(origin.inputs) ||
+		origin.inputs.length > 32 ||
+		!text(origin.routineIntent) ||
+		!text(origin.message)
+	)
 		throw new Error("Invalid cloud context origin");
 	const runId = uuid(origin.runId);
 	const inputs = origin.inputs.map(contextSource);

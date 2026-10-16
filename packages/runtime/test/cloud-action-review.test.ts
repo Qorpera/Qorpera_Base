@@ -1140,7 +1140,12 @@ describe("what the reviewer reads as the request", () => {
 				origin: { runId: randomUUID(), inputs: [], routineIntent: null, message: null, ...origin },
 			}) as CloudNativeCompanyContext;
 		// The TESTCO chain: a routine's run dispatched a worker, and its report's run corrects that worker.
-		expect(cloudActionReviewRequest(originOf({ routineIntent: "Keep the price list current." }), own("worker-completion"))).toBe(
+		expect(
+			cloudActionReviewRequest(
+				originOf({ routineIntent: "Keep the price list current." }),
+				own("worker-completion"),
+			),
+		).toBe(
 			"(This run carries on the agent's own earlier work: its workers reported. The request that started it:)\n\nRoutine: Keep the price list current.",
 		);
 		// Each kind in plain words.
@@ -1181,13 +1186,18 @@ describe("what the reviewer reads as the request", () => {
 		// A run's own request comes first: the origin is only for a run that names none.
 		expect(
 			cloudActionReviewRequest(
-				{ ...originOf({ routineIntent: "Keep it." }), currentInputs: [source("a", "current_human_request", "Stop.")] } as never,
+				{
+					...originOf({ routineIntent: "Keep it." }),
+					currentInputs: [source("a", "current_human_request", "Stop.")],
+				} as never,
 				own("worker-completion"),
 			),
 		).toBe("Stop.");
 		// The whole request stays within its bound.
 		expect(
-			Buffer.byteLength(cloudActionReviewRequest(originOf({ routineIntent: "ø".repeat(4000) }), own("machine-event"))),
+			Buffer.byteLength(
+				cloudActionReviewRequest(originOf({ routineIntent: "ø".repeat(4000) }), own("machine-event")),
+			),
 		).toBeLessThanOrEqual(4096);
 		// The reviewer reads steering its own work as requested when the request covers that work.
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
