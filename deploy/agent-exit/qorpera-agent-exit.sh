@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qorpera agent exit (E1, E2, E3): builds, checks or removes the exit on one node. Run as root.
+# Qorpera agent exit (E1, E2, E3, E8b): builds, checks or removes the exit on one node. Run as root.
 #
 #   qorpera-agent-exit.sh check     parse the three rule files against the kernel; change nothing
 #   qorpera-agent-exit.sh up        create or repair, in place: rules first, then namespace links, addresses, routes
@@ -7,6 +7,8 @@
 #   qorpera-agent-exit.sh dns       run dnsmasq in the exit, in the foreground (the dns unit)
 #   qorpera-agent-exit.sh log       run the connection logger in the foreground (the log unit)
 #   qorpera-agent-exit.sh plug      run the agent plug's reconciler in the foreground (the plug unit)
+#   qorpera-agent-exit.sh names     run the names reconciler in the foreground (the names unit, E8b)
+#   qorpera-agent-exit.sh resolver PORT   run one company's resolver in the exit, in the foreground (its unit, E8b)
 #   qorpera-agent-exit.sh logs      tend the logs on the node once: seal, compress, count, keep under the cap (timer)
 #   qorpera-agent-exit.sh ship      copy the sealed logs to the NAS once, each read back and compared (timer)
 #   qorpera-agent-exit.sh verify    exit 0 only when every part is up, the logger is alive and the client map is true
@@ -35,6 +37,7 @@ bridge_rules=${QORPERA_AGENT_EXIT_BRIDGE_RULES:-$here/qorpera-agent-exit-bridge.
 logger=${QORPERA_AGENT_EXIT_LOGGER:-$here/qorpera-agent-exit-log.py}
 plug_tool=${QORPERA_AGENT_EXIT_PLUG:-$here/qorpera-agent-plug.py}
 logs_tool=${QORPERA_AGENT_EXIT_LOGS:-$here/qorpera-agent-exit-logs.py}
+names_tool=${QORPERA_AGENT_EXIT_NAMES:-$here/qorpera-agent-exit-names.py}
 upstreams=${QORPERA_AGENT_EXIT_UPSTREAMS:-9.9.9.9 1.1.1.1}
 run_dir=${QORPERA_AGENT_EXIT_RUN_DIR:-/run/qorpera-agent-exit}
 state_dir=${QORPERA_AGENT_EXIT_STATE_DIR:-/var/lib/qorpera-agent-exit}
@@ -43,6 +46,8 @@ log_dir=${QORPERA_AGENT_EXIT_LOG_DIR:-/var/log/qorpera-agent-exit}
 login_dir=${QORPERA_AGENT_EXIT_LOGIN_DIR:-/etc/qorpera-agent-exit}
 rules_unit=qorpera-agent-exit-rules.service
 rules_status=${QORPERA_AGENT_EXIT_RULES_STATUS:-/run/qorpera-agent-exit-rules/status.json}
+# The companies' network rules as the rules reader writes them (root's alone; the names reconciler reads them).
+network_rules=${QORPERA_AGENT_EXIT_NETWORK_RULES:-$state_dir/rules/rules.json}
 # The logs may hold at most this many bytes of the node's disk, and leave at least this share of it free. A node may
 # set its own in /etc/default/qorpera-agent-exit, its NAS folder (E3) and the brake's levels (E7): KEY=number lines for
 # the numbers, KEY=/absolute/path for the folder, and the levels as written (the logger says what is wrong with one);
@@ -87,7 +92,7 @@ LEASE=10m
 PLUG_GROUP=qorpera-agent-plug
 
 usage() {
-	sed -n '4,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+	sed -n '4,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit 64
 }
 
@@ -121,9 +126,18 @@ bridge_batch() {
 	[[ -z $elements ]] || printf '%s\n' "$elements"
 }
 
+# The exit's rules likewise come with the names map filled (E8b): a reload never takes a machine's DNS away.
+exit_batch() {
+	local elements
+	elements=$(python3 "$names_tool" elements --state-dir "$state_dir" --run-dir "$run_dir" --rules "$network_rules") ||
+		die "cannot read the names map"
+	table_batch "$EXIT_TABLE" "$exit_rules"
+	[[ -z $elements ]] || printf '%s\n' "$elements"
+}
+
 load_tables() {
 	local exit_text host_text bridge_text
-	exit_text=$(table_batch "$EXIT_TABLE" "$exit_rules")
+	exit_text=$(exit_batch)
 	host_text=$(table_batch "$HOST_TABLE" "$host_rules")
 	bridge_text=$(bridge_batch)
 	in_exit nft -c -f /dev/stdin <<<"$exit_text"
@@ -211,18 +225,30 @@ up() {
 	in_exit ip link set up0 up
 	in_exit ip route replace default via "$UP_NODE" dev up0
 	if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
-		# The name service lives in the namespace it started in. If that is not this one (a rebuild now, or one an
-		# earlier, interrupted up made), it restarts into this one. The logger checks its own reader (it exits when
-		# its reader watches an old namespace, and its unit restarts it).
-		local ns dns_ns
+		# The name service and the companies' resolvers live in the namespace they started in. If that is not this one
+		# (a rebuild now, or one an earlier, interrupted up made), they restart into this one. The logger checks its own
+		# reader (it exits when its reader watches an old namespace, and its unit restarts it).
+		local ns dns_ns unit
 		ns=$(stat -L -c %i "/run/netns/$NS")
 		dns_ns=$(unit_netns qorpera-agent-exit-dns.service)
 		if ((rebuilt)) || [[ -n $dns_ns && $dns_ns != "$ns" ]]; then
 			systemctl try-restart --no-block qorpera-agent-exit-dns.service || true
 		fi
+		for unit in $(resolver_units); do
+			dns_ns=$(unit_netns "$unit")
+			if ((rebuilt)) || [[ -n $dns_ns && $dns_ns != "$ns" ]]; then
+				systemctl try-restart --no-block "$unit" || true
+			fi
+		done
 		((rebuilt)) && { systemctl try-restart --no-block qorpera-agent-exit-log.service || true; }
 	fi
 	echo "qorpera-agent-exit: up"
+}
+
+# The companies' resolver units systemd has loaded (E8b).
+resolver_units() {
+	systemctl list-units --all --plain --no-legend --full 'qorpera-agent-exit-resolver@*.service' 2>/dev/null |
+		grep -o 'qorpera-agent-exit-resolver@[0-9]*\.service' || true
 }
 
 plugged() { ip -o link show master "$BRIDGE" 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -vx qx-br || true; }
@@ -238,7 +264,7 @@ down() {
 	fi
 	if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
 		systemctl stop --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service \
-			2>/dev/null || true
+			qorpera-agent-exit-names.service 'qorpera-agent-exit-resolver@*.service' 2>/dev/null || true
 	fi
 	if has_ns; then
 		for pid in $(ip netns pids "$NS"); do kill "$pid" 2>/dev/null || true; done
@@ -280,6 +306,35 @@ dns() {
 	if inside_exit; then exec "${command[@]}"; else exec ip netns exec "$NS" "${command[@]}"; fi
 }
 
+# One company's resolver (E8b): answers "no such name" for its blocked names (the servers file the names reconciler
+# writes) and asks the upstreams for every other. No DHCP, no leases: the main dnsmasq keeps those. It logs to the same
+# file as the main one (each writes whole lines, appending). Without its servers file it does not start: dnsmasq would
+# run with no list at all. In "only listed" mode (E8c, the mode file says so) the servers file names the upstreams for
+# each allowed name and answers every other itself, so it gets no upstreams of its own, and it puts each address it
+# gives out for an allowed name in the company's set allow_<port>, which its machines' chain only_<port> lets through.
+resolver() {
+	local port=$1 args=() server servers mode=open
+	[[ $port =~ ^[1-9][0-9]{4}$ ]] && ((port >= 10001 && port <= 19999)) || die "resolver: not a resolver port: $port"
+	has_ns || die "the exit is not up"
+	servers="$run_dir/names/$port.servers"
+	[[ -f $servers && ! -L $servers ]] || die "resolver: no servers file $servers"
+	if [[ -e $run_dir/names/$port.mode ]]; then
+		[[ -f $run_dir/names/$port.mode && ! -L $run_dir/names/$port.mode ]] || die "resolver: bad mode file"
+		mode=$(<"$run_dir/names/$port.mode")
+	fi
+	case $mode in
+	open) for server in $upstreams; do args+=("--server=$server"); done ;;
+	only-listed) args+=("--nftset=/#/4#inet#qorpera_agent_exit#allow_$port") ;;
+	*) die "resolver: bad mode in $run_dir/names/$port.mode" ;;
+	esac
+	local command=(dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file=
+		--no-resolv --no-hosts --no-poll --bind-interfaces --listen-address="$GATEWAY" --port="$port"
+		"${args[@]}" --servers-file="$servers"
+		--log-queries=extra --log-facility="$log_dir/dns.log" --log-async=50)
+	export TZ=UTC
+	if inside_exit; then exec "${command[@]}"; else exec ip netns exec "$NS" "${command[@]}"; fi
+}
+
 log() {
 	has_ns || die "the exit is not up"
 	install -d -m 0750 "$log_dir"
@@ -311,8 +366,15 @@ plug() {
 	exec python3 "$plug_tool" reconcile --netns "$NS" --state-dir "$state_dir" --run-dir "$run_dir" --log-dir "$log_dir"
 }
 
+names() {
+	state_dirs
+	install -d -m 0755 "$state_dir/names" "$run_dir/names"
+	exec python3 "$names_tool" reconcile --netns "$NS" --state-dir "$state_dir" --run-dir "$run_dir" \
+		--rules "$network_rules" --rules-status "$rules_status" --upstreams "$upstreams"
+}
+
 verify() {
-	local problems=() heartbeat age setting ns
+	local problems=() heartbeat age setting ns listing
 	has_ns || problems+=("no namespace $NS")
 	has_link "$BRIDGE" || problems+=("no bridge $BRIDGE")
 	if has_link "$BRIDGE"; then
@@ -329,11 +391,17 @@ verify() {
 		[[ $(cat "/sys/class/net/$BRIDGE/bridge/stp_state") == 0 ]] || problems+=("$BRIDGE runs STP")
 	fi
 	if has_ns; then
-		in_exit ip -o -4 addr show dev br0 2>/dev/null | grep -q " $GATEWAY/16 " || problems+=("br0 lacks $GATEWAY/16")
-		in_exit ip -o -4 addr show dev up0 2>/dev/null | grep -q " $UP_EXIT/30 " || problems+=("up0 lacks $UP_EXIT/30")
-		in_exit ip route show default 2>/dev/null | grep -q "via $UP_NODE" || problems+=("no default route via $UP_NODE")
+		# Each listing is read whole before it is searched: piped into grep -q, a command still writing after the match
+		# dies of SIGPIPE, and pipefail would report the line missing (ss lists every company's resolver too).
+		listing=$(in_exit ip -o -4 addr show dev br0 2>/dev/null || true)
+		[[ $listing == *" $GATEWAY/16 "* ]] || problems+=("br0 lacks $GATEWAY/16")
+		listing=$(in_exit ip -o -4 addr show dev up0 2>/dev/null || true)
+		[[ $listing == *" $UP_EXIT/30 "* ]] || problems+=("up0 lacks $UP_EXIT/30")
+		listing=$(in_exit ip route show default 2>/dev/null || true)
+		[[ $listing == *"via $UP_NODE "* ]] || problems+=("no default route via $UP_NODE")
 		in_exit nft list table $EXIT_TABLE >/dev/null 2>&1 || problems+=("exit rules not loaded")
-		in_exit ss -lnu 2>/dev/null | grep -q "$GATEWAY:53 " || problems+=("no DNS on $GATEWAY:53")
+		listing=$(in_exit ss -lnu 2>/dev/null || true)
+		[[ $listing == *"$GATEWAY:53 "* ]] || problems+=("no DNS on $GATEWAY:53")
 		ns=$(stat -L -c %i "/run/netns/$NS")
 		[[ -z $(unit_netns qorpera-agent-exit-dns.service) || $(unit_netns qorpera-agent-exit-dns.service) == "$ns" ]] ||
 			problems+=("the name service runs in an old namespace")
@@ -399,6 +467,19 @@ verify() {
 	else
 		problems+=("the agent plug's reconciler not running")
 	fi
+	# The names reconciler (E8b): alive, the rules reader alive and not failing long, every company's rules usable,
+	# every resolver answering and the DNS map as the client map and the rules say (qorpera-agent-exit-names.py).
+	local names_status="$run_dir/names.json"
+	if [[ -e $names_status ]]; then
+		age=$(($(date +%s) - $(stat -c %Y "$names_status")))
+		((age < 30)) || problems+=("the names reconciler silent for ${age}s")
+		while IFS= read -r problem; do
+			[[ -z $problem ]] || problems+=("names: $problem")
+		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
+			"$names_status" 2>/dev/null || echo "cannot read $names_status")
+	else
+		problems+=("the names reconciler not running")
+	fi
 	if ((${#problems[@]} > 0)); then
 		printf 'qorpera-agent-exit: not healthy: %s\n' "${problems[@]}" >&2
 		return 1
@@ -442,6 +523,8 @@ status() {
 	in_exit nft list map $EXIT_TABLE braked
 	in_exit nft list set $EXIT_TABLE dropped
 	[[ ! -e $run_dir/brake.json ]] || cat "$run_dir/brake.json"
+	# Each company's names (E8b): which resolver port each machine's DNS goes to.
+	in_exit nft list map $EXIT_TABLE dns_port
 }
 
 # The exit's database login (E8b), from stdin. Only the rollout script (rules-reader-login.py) runs this, through ssh
@@ -514,7 +597,7 @@ check)
 	table_batch "$HOST_TABLE" "$host_rules" | nft -c -f /dev/stdin
 	table_batch "$BRIDGE_TABLE" "$bridge_rules" | nft -c -f /dev/stdin
 	python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$logger" "$plug_tool" \
-		"$logs_tool" || die "the logger, the plug tool or the logs' tender does not parse"
+		"$logs_tool" "$names_tool" || die "the logger, the plug tool, the logs' tender or the names tool does not parse"
 	for tool in dnsmasq conntrack python3; do command -v "$tool" >/dev/null || die "missing $tool (packages: dnsmasq-base, conntrack, python3)"; done
 	echo "qorpera-agent-exit: rules parse; tools present; $(has_ns && echo up || echo down)"
 	;;
@@ -523,6 +606,8 @@ down) down ;;
 dns) dns ;;
 log) log ;;
 plug) plug ;;
+names) names ;;
+resolver) resolver "${2:-}" ;;
 logs) logs ;;
 ship) ship ;;
 counts) exec python3 "$logs_tool" report --log-dir "$log_dir" "${@:2}" ;;

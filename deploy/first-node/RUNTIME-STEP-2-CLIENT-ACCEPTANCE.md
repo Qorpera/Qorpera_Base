@@ -97,7 +97,10 @@ rejects:
 Unenrolled companies and their current computers are unchanged. The migrations
 do not stop, delete, detach, or claim to mediate any running desktop. Physical
 unmount/teardown evidence is required before the cloud may register the exact
-attestation; the retained legacy row then becomes immutable.
+attestation; the retained legacy row then becomes immutable. Legacy sweep D16
+(20260930415000) dropped the attestation and the governed Company Computer with
+their tables: on `folder-v2` only the office's own binding admits a company
+computer, and company computer work is refused.
 
 At the original checkpoint, the disposable database proof passed all 89 then
 current migrations and SQL suite 297, and a production-schema compatibility

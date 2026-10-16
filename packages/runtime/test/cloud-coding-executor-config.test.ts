@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import { codingHostWatchdogProject } from "../../../deploy/coding-worker/host-watchdog.ts";
 
 function fixture() {
 	return {
@@ -118,6 +119,29 @@ describe("coding executor service configuration", () => {
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
 	});
+	it("makes code hosts only with the node inventory policy's code host block", () => {
+		const codeHost = {
+			imageFingerprint: "e".repeat(64),
+			storagePool: "qorpera-vm",
+			cpus: 2,
+			memoryBytes: 4 * 1024 ** 3,
+			rootDiskBytes: 20 * 1024 ** 3,
+			running: 2,
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).codeHost).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), codeHost }).codeHost).toEqual(codeHost);
+		for (const bad of [
+			null,
+			{},
+			{ ...codeHost, extra: true },
+			{ ...codeHost, imageFingerprint: "x" },
+			{ ...codeHost, memoryBytes: 4 * 1024 ** 3 + 1 },
+			{ ...codeHost, running: 0 },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), codeHost: bad })).toThrow(
+				"CODING_EXECUTOR_CONFIG_INVALID",
+			);
+	});
 	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
 		const config = fixture();
 		for (const origin of [
@@ -157,6 +181,24 @@ describe("coding executor service configuration", () => {
 				repositories: [{ repository: config.repositories[0].repository, credential: null }],
 			}),
 		).toThrow("CONFIG_INVALID");
+	});
+	it("gives the host watchdog the executor's own LXD project, and no project the executor refuses", () => {
+		const config = fixture();
+		expect(codingHostWatchdogProject(config)).toBe(parseCodingExecutorConfiguration(config).vmPolicy.project);
+		expect(codingHostWatchdogProject({ ...config, broker })).toBe("coding");
+		for (const refused of [
+			{ ...config, schema: "qorpera.coding-executor-service/v6" },
+			{ ...config, vmPolicy: { ...config.vmPolicy, project: "Coding" } },
+			{ ...config, vmPolicy: { ...config.vmPolicy, project: "coding_" } },
+			{ ...config, vmPolicy: { ...config.vmPolicy, project: 7 } },
+			{ ...config, vmPolicy: [config.vmPolicy] },
+			{ ...config, vmPolicy: undefined },
+			[config],
+			null,
+		]) {
+			expect(() => parseCodingExecutorConfiguration(refused)).toThrow();
+			expect(() => codingHostWatchdogProject(refused)).toThrow("CODING_EXECUTOR_CONFIG_INVALID");
+		}
 	});
 	it("accepts trusted peer identities and rejects ambiguous routes or credential reuse", () => {
 		const peer = {

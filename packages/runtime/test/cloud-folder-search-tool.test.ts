@@ -66,7 +66,9 @@ async function node(answer: Answer) {
 					buffer = buffer.subarray(4 + length);
 					if (kind === 0x48) {
 						hellos.push(body);
-						socket.write(frame(0x68, { protocol: 1, viewId: body.viewId, asOfSeq: 1, readOnly: true }));
+						socket.write(
+							frame(0x68, { protocol: body.protocol, viewId: body.viewId, asOfSeq: 1, readOnly: true }),
+						);
 					} else {
 						searches.push(body);
 						const reply = answer(body, hellos.length);
@@ -128,6 +130,7 @@ const hit = (path: string, line: number, text: string, offset = 0, kind: "file" 
 	version: VERSION,
 	offset,
 });
+const link = (path: string, target: string) => ({ ...hit(path, 0, ""), kind: "symlink" as const, target });
 const read = (path: string, authority: unknown = RECEIPT) => ({ path, kind: "file", version: VERSION, authority });
 
 describe("company_search", () => {
@@ -155,7 +158,7 @@ describe("company_search", () => {
 		expect(content.value).toBe(
 			"docs/plan.md:3: the plan\nplans/\n\n2 files searched, 1 binary passed over. Nothing more.",
 		);
-		expect(n.hellos).toEqual([{ protocol: 1, environmentId: ENV, viewId: VIEW, pass: PASS, role: "io" }]);
+		expect(n.hellos).toEqual([{ protocol: 4, environmentId: ENV, viewId: VIEW, pass: PASS, role: "io" }]);
 		expect(n.searches[0]).toEqual({
 			query: "plan",
 			path: "",
@@ -198,6 +201,76 @@ describe("company_search", () => {
 		expect(none.value).toBe("No matches here.\n\n0 files searched. Nothing more.");
 		expect(none.companyReadId).toBeUndefined();
 		expect(quiet.releases).toEqual([]);
+	});
+
+	it("shows a link found by its name with what it names, exactly, and releases the link's read with the page", async () => {
+		const n = await node(() =>
+			found({
+				hits: [
+					link("docs/latest", "../reports/q3 final.csv"),
+					link("docs/latest-odd", "two\nlines "),
+					hit("docs/latest.md", 0, ""),
+				],
+				reads: [
+					{ path: "docs", kind: "folder", version: VERSION, authority: RECEIPT },
+					{ path: "docs/latest", kind: "symlink", version: VERSION, authority: RECEIPT },
+					{ path: "docs/latest-odd", kind: "symlink", version: VERSION },
+					read("docs/latest.md"),
+				],
+			}),
+		);
+		const f = folder();
+		const search = tool(n.path, f.client);
+		const content = await search.execute(search.parseArguments({ query: "latest", names_only: true }), context());
+		// The target as the core keeps it: quoted, so its spaces and line breaks show, on the link's one line.
+		expect(content.value).toBe(
+			'docs/latest -> "../reports/q3 final.csv"\ndocs/latest-odd -> "two\\nlines "\ndocs/latest.md\n\n' +
+				"0 files searched. Nothing more.",
+		);
+		expect(n.searches[0]).toMatchObject({ query: "latest", namesOnly: true });
+		expect(f.releases).toHaveLength(1);
+		expect(f.releases[0]!.sha).toBe(
+			createHash("sha256")
+				.update(content.value as string)
+				.digest("hex"),
+		);
+		expect(f.releases[0]!.reads).toEqual([
+			{ path: "docs", version: VERSION, authority: RECEIPT },
+			{ path: "docs/latest", version: VERSION, authority: RECEIPT },
+			{
+				path: "docs/latest-odd",
+				version: VERSION,
+				authority: {
+					resourceId: "00000000-0000-0000-0000-000000000000",
+					resourceRevision: 0,
+					grantId: null,
+					grantRevision: null,
+				},
+			},
+			{ path: "docs/latest.md", version: VERSION, authority: RECEIPT },
+		]);
+		expect(content.companyReadId).toBe(f.releases[0]!.id);
+
+		// A target of 4,095 bytes is the longest a link has.
+		const longest = `${"é".repeat(2047)}x`;
+		const ok = await node(() => found({ hits: [link("a", longest)], reads: [read("a")] }));
+		const shown = await tool(ok.path, folder().client).execute(search.parseArguments({ query: "a" }), context());
+		expect(shown.value).toBe(`a -> "${longest}"\n\n0 files searched. Nothing more.`);
+		// Anything else is not the node's answer, and nothing is shown or released.
+		for (const odd of [
+			{ ...link("a", "x"), target: undefined },
+			{ ...link("a", "x"), target: "" },
+			{ ...link("a", "x"), target: "é".repeat(2048) },
+			{ ...link("a", "x"), line: 1, text: "x" },
+			{ ...hit("a", 1, "x"), target: "x" },
+		]) {
+			const bad = await node(() => found({ hits: [odd], reads: [read("a")] }));
+			const g = folder();
+			await expect(
+				tool(bad.path, g.client).execute(search.parseArguments({ query: "a" }), context()),
+			).rejects.toThrow(/^COMPANY_FOLDER_UNAVAILABLE/);
+			expect(g.releases).toEqual([]);
+		}
 	});
 
 	it("gives an opaque cursor to go on with, and passes back where the node said, never a path the model sent", async () => {
@@ -262,6 +335,20 @@ describe("company_search", () => {
 		);
 		expect(fitsOneResult(long)).toBe(true);
 		expect(long.startsWith("<<<<")).toBe(true);
+		expect(sealed.at(-1)).toMatchObject({ path: "next.md" });
+		// So is a link whose target is too long for it: the target is cut, and says so.
+		const far = folderSearchText(
+			{
+				hits: [link(`${"<".repeat(300)}/l`, "&".repeat(4095)), hit("next.md", 1, "x")],
+				searched: 0,
+				binary: 0,
+				reads: [],
+				next: null,
+			},
+			seal,
+		);
+		expect(fitsOneResult(far)).toBe(true);
+		expect(far).toMatch(/^<{300}\/l -> "&+"… \(target cut\)\n/);
 		expect(sealed.at(-1)).toMatchObject({ path: "next.md" });
 	});
 

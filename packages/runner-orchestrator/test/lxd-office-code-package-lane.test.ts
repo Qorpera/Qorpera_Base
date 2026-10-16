@@ -50,6 +50,7 @@ describe("protected code package lane configuration", () => {
 		"targetManifestPath",
 		"baseInstallationReceiptPath",
 		"baseMountTemplatePath",
+		"baseFolderMountTemplatePath",
 		"artifactRoot",
 		"bootstrapToolPath",
 		"measurementToolPath",
@@ -57,6 +58,16 @@ describe("protected code package lane configuration", () => {
 		expect(() => parseLxdOfficeCodePackageLaneDocument({ ...document(), [key]: "../outside" })).toThrow(
 			"INVALID_OFFICE_CODE_PACKAGE_LANE",
 		);
+	});
+	it("takes the company folder's mount template path only when the document names one", () => {
+		expect(parseLxdOfficeCodePackageLaneDocument(document())).not.toHaveProperty("baseFolderMountTemplatePath");
+		const folder = { ...document(), baseFolderMountTemplatePath: "/protected/folder-mount@.service.in" };
+		expect(parseLxdOfficeCodePackageLaneDocument(folder).baseFolderMountTemplatePath).toBe(
+			"/protected/folder-mount@.service.in",
+		);
+		expect(() =>
+			parseLxdOfficeCodePackageLaneDocument({ ...document(), baseFolderMountTemplatePath: undefined }),
+		).toThrow("INVALID_OFFICE_CODE_PACKAGE_LANE");
 	});
 	it.each(["size", "digest", "encoding"])("clears rejected %s capability without exposing content", async (fault) => {
 		const bytes = Buffer.from(

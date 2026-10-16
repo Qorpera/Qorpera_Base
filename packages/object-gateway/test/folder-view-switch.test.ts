@@ -301,6 +301,12 @@ describe("atomic company-desktop view handoff", () => {
 		const hello = { protocol: 3, environmentId: ENV, viewId: NEXT, pass: PASS, role: "io" };
 		const parse = (extra: object) => parseHello(Buffer.from(JSON.stringify({ ...hello, ...extra })));
 		expect(parse({ previous: { viewId: OLD, pass: PASS }, abandon: true }).abandon).toBe(true);
+		// Protocol 4 (links) keeps both fields.
+		expect(parse({ protocol: 4, previous: { viewId: OLD, pass: PASS }, abandon: true })).toMatchObject({
+			protocol: 4,
+			previous: { viewId: OLD, pass: PASS },
+			abandon: true,
+		});
 		for (const extra of [
 			{ previous: null },
 			{ previous: { viewId: NEXT, pass: PASS } },

@@ -4,6 +4,9 @@ import {
 	assertOfficeImageResetCapability,
 	OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES,
 	OFFICE_IMAGE_EXECUTABLES,
+	OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
+	OFFICE_IMAGE_FOLDER_PACKAGE_FILES,
+	OFFICE_IMAGE_FOLDER_PROGRAM,
 	OFFICE_IMAGE_MOUNT_UNIT,
 	OFFICE_IMAGE_NETWORK_PACKAGE_FILES,
 	OFFICE_IMAGE_PACKAGE_FILES,
@@ -197,6 +200,37 @@ describe("office image installation contract", () => {
 		for (const frame of ["qorpera-screen-brain-24.png", "qorpera-screen-brain-7.png", "qorpera-screen-Brain.png"])
 			expect(() => officeImageDestination(`wallpapers/${frame}`)).toThrow("OFFICE_IMAGE_PACKAGE_PATH_INVALID");
 	});
+	it("admits the company folder's program, helper and units together, where the helper's units run them", () => {
+		expect(OFFICE_IMAGE_FOLDER_PACKAGE_FILES.map((file) => officeImageDestination(file))).toEqual([
+			{ path: "/opt/qorpera-office/qorpera-company-computer-folder-helper.mjs", mode: 0o444 },
+			{ path: "/etc/systemd/system/qorpera-office-folder-helper.service", mode: 0o644 },
+			{ path: "/etc/systemd/system/qorpera-office-folder-helper.socket", mode: 0o644 },
+			{ path: `/etc/systemd/system/${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}`, mode: 0o644 },
+			{ path: OFFICE_IMAGE_FOLDER_PROGRAM, mode: 0o555 },
+		]);
+		const folder = OFFICE_IMAGE_FOLDER_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha }));
+		expect(() =>
+			parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...folder] }),
+		).not.toThrow();
+		for (const missing of OFFICE_IMAGE_FOLDER_PACKAGE_FILES)
+			expect(() =>
+				parseOfficeImagePackage({
+					...manifest,
+					artifacts: [...manifest.artifacts, ...folder.filter((a) => a.file !== missing)],
+				}),
+			).toThrow("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
+		// The helper's units name the installed paths.
+		const deploy = new URL("../../../deploy/lxd-company-computer-guest/", import.meta.url);
+		expect(readFileSync(new URL("qorpera-office-folder-helper.service", deploy), "utf8")).toContain(
+			`ExecStart=/usr/bin/node /opt/qorpera-office/${OFFICE_IMAGE_FOLDER_PACKAGE_FILES[0]}\n`,
+		);
+		expect(readFileSync(new URL("qorpera-office-folder-mount@.service.in", deploy), "utf8")).toContain(
+			`ExecStart=${OFFICE_IMAGE_FOLDER_PROGRAM} mount `,
+		);
+		// The helper is image code: the office's own code never lists it.
+		expect(OFFICE_IMAGE_PACKAGE_FILES as readonly string[]).not.toContain(OFFICE_IMAGE_FOLDER_PACKAGE_FILES[0]);
+		expect(OFFICE_IMAGE_EXECUTABLES as readonly string[]).not.toContain(OFFICE_IMAGE_FOLDER_PROGRAM);
+	});
 	it("rejects arbitrary paths, traversal and duplicated or missing artifacts", () => {
 		for (const path of [
 			"/etc/passwd",
@@ -243,5 +277,15 @@ describe("office image installation contract", () => {
 		expect(unit).not.toContain("WantedBy=");
 		expect(() => renderOfficeImageMount(template, 0, 1100)).toThrow();
 		expect(() => renderOfficeImageMount(template.replace("@OFFICE_UID@", "0"), 1100, 1100)).toThrow();
+	});
+	it("renders the office account's ids into the folder mount template once each", () => {
+		const template = readFileSync(
+			new URL("../../../deploy/lxd-company-computer-guest/qorpera-office-folder-mount@.service.in", import.meta.url),
+			"utf8",
+		);
+		const unit = renderOfficeImageMount(template, 1100, 1101);
+		expect(unit).toContain("--owner-uid 1100 --owner-gid 1101");
+		expect(unit).not.toContain("@OFFICE_");
+		expect(unit).not.toContain("WantedBy=");
 	});
 });

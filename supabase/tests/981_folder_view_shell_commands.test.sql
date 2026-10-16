@@ -1,7 +1,7 @@
 -- @fixture 639_folder_core_views.test.sql until "-- A run box: opened by its run"
 -- Shell command views (20260930183000; F3 step 4, slice 4b: deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md), which
--- build C1b-3b (RUNTIME-COMPANY-FOLDER-C1B.md "C1b-3: views" §8): an offline command's own view, opened by the platform
--- while the command's run holds the screen. It acts through the run while the run's job is leased, then as the agent,
+-- build C1b-3b (RUNTIME-COMPANY-FOLDER-C1B.md "C1b-3: views" §8): a command's own view, opened by the platform while
+-- the command's run holds the screen, for a networked command as for an offline one (20260930342000, slice 4b-2). It acts through the run while the run's job is leased, then as the agent,
 -- company-wide as a desktop; it stands through the command's end for one final publish, which closes it. Command rows
 -- are built by hand, as the native operation's begin makes them (870 and 910 test that). The office, screen and
 -- helpers are 639's.
@@ -64,8 +64,8 @@ create function pg_temp.view_row(p_view jsonb) returns public.qorpera_folder_vie
 $$;
 
 
--- The migration's marker is in every function it patches and in the new one; the starting check is internal and the
--- open is still the service's alone. A command's row is keyed by its start's receipt.
+-- The migration's marker is in every function it patches and in the new one, and 20260930342000's in the open; the
+-- starting check is internal and the open is still the service's alone. A command's row is keyed by its start's receipt.
 do $$
 declare f regprocedure; r name;
 	v_starting text := 'public.qorpera_office_shell_command_starting(public.qorpera_runtime_office_shell_commands,timestamptz)';
@@ -78,6 +78,8 @@ begin
 		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)']::regprocedure[] loop
 		if strpos(pg_get_functiondef(f), '20260930183000') = 0 then raise exception '% has no marker 20260930183000', f; end if;
 	end loop;
+	if strpos(pg_get_functiondef('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure), '20260930342000') = 0 then
+		raise exception 'view open has no marker 20260930342000'; end if;
 	foreach r in array array['anon','authenticated','service_role','qorpera_secret_broker']::name[] loop
 		if has_function_privilege(r, v_starting, 'EXECUTE') then raise exception '% may run the starting check', r; end if;
 	end loop;
@@ -93,12 +95,12 @@ begin
 end $$;
 
 
--- The open: the platform's, for an offline command that has not ended, while its run holds the screen in the
--- screen's and the office's generation the command started in, privacy is shared and the command has no view yet.
+-- The open: the platform's, for a command that has not ended, offline or networked, while its run holds the screen in
+-- the screen's and the office's generation the command started in, privacy is shared and the command has no view yet.
 -- The anchor is the command's row and nothing else.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
-	c uuid; c2 uuid; s jsonb; s2 jsonb; d jsonb; w public.qorpera_folder_views%rowtype; f text;
+	c uuid; c2 uuid; s jsonb; s2 jsonb; d jsonb; w public.qorpera_folder_views%rowtype; f text; n boolean;
 begin
 	perform pg_temp.hold(v);
 	c := pg_temp.command(v);
@@ -109,9 +111,10 @@ begin
 		upper(c::text))), '22023', 'Folder view anchor is invalid');
 	perform pg_temp.refused(format('select pg_temp.open(%L, %L, %L)', 'computer_shell_command', jsonb_build_object('shellCommandId', c), v),
 		'22023', 'Folder view opener is invalid');
-	-- Not current: an unknown command; then each of the row's fields in turn (restored after each).
+	-- Not current: an unknown command; a row as the office's report makes it (networked, no screen generation); then
+	-- each of the row's fields in turn (restored after each).
 	perform pg_temp.not_current(extensions.gen_random_uuid());
-	foreach f in array array['network = true', 'ended_at = clock_timestamp(), end_reason = ''exited''', 'screen_generation = 2',
+	foreach f in array array['network = true, screen_generation = null', 'ended_at = clock_timestamp(), end_reason = ''exited''', 'screen_generation = 2',
 		'computer_generation = 2', 'staff_agent_id = ''63200000-0000-4000-8000-0000000000a2''', format('run_id = %L', v2 ->> 'runId')] loop
 		perform pg_temp.fx(format('update public.qorpera_runtime_office_shell_commands set %s where id = %L', f, c));
 		perform pg_temp.not_current(c);
@@ -149,39 +152,45 @@ begin
 	perform pg_temp.fx('update public.qorpera_runtime_office_activations set superseded_at = null
 		where activation_id = ''63900000-0000-4000-8000-0000000000e3''');
 
-	-- It opens: the command's row, no screen of its own, the screen generation and activation it started under, the
-	-- run's agent, member and worker access. Every check here is null-safe (`is distinct from`).
-	s := pg_temp.open_command(c);
-	if (select count(*) from jsonb_object_keys(s)) <> 4 or s ->> 'schema' is distinct from 'qorpera.folder-view/v1'
-		or length(s ->> 'pass') is distinct from 43 or s ->> 'leaseUntil' is null then
-		raise exception 'Command view open: %', s; end if;
-	w := pg_temp.view_row(s);
-	if w.kind is distinct from 'computer_shell_command' or w.shell_command_id is distinct from c or w.screen_id is not null
-		or w.screen_generation is distinct from 1 or w.activation_id is distinct from '63900000-0000-4000-8000-0000000000e3'
-		or w.machine_id is distinct from '63900000-0000-4000-8000-0000000000e1' or w.node_id is distinct from '63900000-0000-4000-8000-0000000000e2'
-		or w.staff_agent_id is distinct from '63200000-0000-4000-8000-0000000000a1'
-		or w.member_user_id is distinct from '63200000-0000-4000-8000-000000000002'
-		or w.worker_access is distinct from (public.qorpera_run_worker((v ->> 'runId')::uuid)).access
-		or w.holder_run_id is not null or w.holder_user_id is not null or w.run_id is not null or w.state is distinct from 'open' then
-		raise exception 'Command view row: %', to_jsonb(w); end if;
-	-- One view per command, open or closed.
-	perform pg_temp.not_current(c);
-	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
-	perform pg_temp.not_current(c);
+	-- It opens, for the offline command and then for one that uses the network (20260930342000): the command's row, no
+	-- screen of its own, the screen generation and activation it started under, the run's agent, member and worker
+	-- access. Every check here is null-safe (`is distinct from`).
+	foreach n in array array[false, true] loop
+		if n then c := pg_temp.command(v, true); end if;
+		if (select x.network from public.qorpera_runtime_office_shell_commands x where x.id = c) is distinct from n then
+			raise exception 'The command''s network is not %', n; end if;
+		s := pg_temp.open_command(c);
+		if (select count(*) from jsonb_object_keys(s)) <> 4 or s ->> 'schema' is distinct from 'qorpera.folder-view/v1'
+			or length(s ->> 'pass') is distinct from 43 or s ->> 'leaseUntil' is null then
+			raise exception 'Command view open (network %): %', n, s; end if;
+		w := pg_temp.view_row(s);
+		if w.kind is distinct from 'computer_shell_command' or w.shell_command_id is distinct from c or w.screen_id is not null
+			or w.screen_generation is distinct from 1 or w.activation_id is distinct from '63900000-0000-4000-8000-0000000000e3'
+			or w.machine_id is distinct from '63900000-0000-4000-8000-0000000000e1' or w.node_id is distinct from '63900000-0000-4000-8000-0000000000e2'
+			or w.staff_agent_id is distinct from '63200000-0000-4000-8000-0000000000a1'
+			or w.member_user_id is distinct from '63200000-0000-4000-8000-000000000002'
+			or w.worker_access is distinct from (public.qorpera_run_worker((v ->> 'runId')::uuid)).access
+			or w.holder_run_id is not null or w.holder_user_id is not null or w.run_id is not null or w.state is distinct from 'open' then
+			raise exception 'Command view row (network %): %', n, to_jsonb(w); end if;
+		-- One view per command, open or closed.
+		perform pg_temp.not_current(c);
+		perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
+		perform pg_temp.not_current(c);
+	end loop;
 	-- The screen's desktop view and a command's view stand together: neither supersedes the other.
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	c2 := pg_temp.command(v);
 	s2 := pg_temp.open_command(c2);
 	if (pg_temp.view_row(d)).state is distinct from 'open' or (pg_temp.view_row(s2)).state is distinct from 'open' then
 		raise exception 'A desktop view and a command view stand together'; end if;
-	-- The table's rules: a command view has no screen; only a command view names a command; the kinds built so far;
-	-- one view per command.
+	-- The table's rules: a command view has no screen; only a command view names a command; a test machine view names
+	-- its machine (20260930420000); one view per command.
 	perform pg_temp.violates(format('update public.qorpera_folder_views set screen_id = %L where id = %L',
 		'63900000-0000-4000-8000-0000000000e4', s2 ->> 'viewId'), 'qorpera_folder_views_shell_command');
 	perform pg_temp.violates(format('update public.qorpera_folder_views set shell_command_id = %L where id = %L', c2, d ->> 'viewId'),
 		'qorpera_folder_views_shell_command_kind');
 	perform pg_temp.violates(format('update public.qorpera_folder_views set kind = %L where id = %L', 'test_machine', d ->> 'viewId'),
-		'qorpera_folder_views_built_kind');
+		'qorpera_folder_views_test_machine');
 	perform pg_temp.violates(format('update public.qorpera_folder_views set shell_command_id = %L where id = %L', c, s2 ->> 'viewId'),
 		'qorpera_folder_views_one_per_command');
 	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');
@@ -282,7 +291,7 @@ begin
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	perform pg_temp.refused(format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		pg_temp.vactor(d) || '{"final":true}', 'desk-final', '[{"op":"mkdir","path":"refused"}]'), '22023',
-		'Only a command view publishes a final change set');
+		'Only a command or test machine view publishes a final change set');
 	perform pg_temp.refused(format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		v || '{"final":true}', 'run-final', '[{"op":"mkdir","path":"refused"}]'), '22023', 'Folder actor is invalid');
 	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');

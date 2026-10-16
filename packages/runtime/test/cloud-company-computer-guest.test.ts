@@ -360,8 +360,11 @@ function fakePage() {
 		getByRole: vi.fn(() => locator),
 		keyboard: { press: vi.fn(async () => undefined) },
 		screenshot: vi.fn(async () => captureBytes()),
-		// The values of the page's private boxes (password, code, card).
-		evaluate: vi.fn(async (): Promise<string[]> => []),
+		// The values of the page's private boxes (password, code, card); asked with the private attribute, the text it
+		// shows (a picture's check for a filled value or a hook's secret, E3c-3).
+		evaluate: vi.fn(
+			async (_script: unknown, arg?: unknown): Promise<string[] | string> => (typeof arg === "string" ? "" : []),
+		),
 		// One frame: the page's own document.
 		frames: vi.fn((): unknown[] => [page]),
 		isDetached: vi.fn(() => false),
@@ -405,8 +408,6 @@ function automationFixture(
 	const commands: CompanyComputerGuestCommands = {
 		run: vi.fn(async () => ({ code: 0, stdout: "ok", stderr: "" })),
 		capturePng: vi.fn(async () => captureBytes()),
-		readFile: vi.fn(async () => new Uint8Array([0, 255, 10])),
-		writeFile: vi.fn(async () => undefined),
 	};
 	const screenshots: CompanyComputerScreenshotPublisher = {
 		publish: vi.fn(async (bytes: Uint8Array) => ({
@@ -560,34 +561,6 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(f.context.close).toHaveBeenCalledOnce();
 	});
 
-	// The office carries no file import or export (legacy removal, step C); the tool stays in the catalog.
-	it.each<[string, CompanyComputerAction]>([
-		[
-			"OFFICE_FILE_EXPORT_UNAVAILABLE",
-			{
-				kind: "transfer",
-				action: "export",
-				source: { realm: "company_computer", path: "reports/$(literal); 'file'.bin" },
-				destination: { realm: "object_storage" },
-				mediaType: "application/octet-stream",
-			},
-		],
-		[
-			"OFFICE_FILE_IMPORT_UNAVAILABLE",
-			{
-				kind: "transfer",
-				action: "import",
-				source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-				destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
-			},
-		],
-	])("answers a file transfer with %s and reads, writes or runs nothing", async (code, action) => {
-		const f = automationFixture(false);
-		await expect(f.perform(action)).rejects.toThrow(code);
-		expect(f.commands.readFile).not.toHaveBeenCalled();
-		expect(f.commands.writeFile).not.toHaveBeenCalled();
-		expect(f.commands.run).not.toHaveBeenCalled();
-	});
 	it.each(["target", "tab"] as const)(
 		"keeps the real profile session usable after a pre-effect %s ambiguity",
 		async (ambiguity) => {
@@ -1160,8 +1133,9 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			expect.objectContaining({ type: "png", mask: [fixture.locator] }),
 		);
 		expect(fixture.page.locator).toHaveBeenCalledWith(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR);
-		// Every frame is masked: card boxes often sit in iframes.
-		expect(fixture.page.frames).toHaveBeenCalledOnce();
+		// Every frame is masked: card boxes often sit in iframes. Every frame's text is read too, before and after the
+		// picture (E3c-3).
+		expect(fixture.page.frames).toHaveBeenCalledTimes(3);
 		fixture.screenshots.publish = vi.fn(async (bytes: Uint8Array) => ({
 			assetId: computerId(50),
 			sha256: "0".repeat(64),
@@ -1190,7 +1164,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		fixture.page.evaluate.mockResolvedValueOnce(["hunter2"]);
 		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
 		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
-		fixture.page.evaluate.mockResolvedValueOnce([]).mockResolvedValueOnce(["hunter2"]);
+		// Before the capture: no private value, and text that shows nothing hidden; after it, a value.
+		fixture.page.evaluate.mockResolvedValueOnce([]).mockResolvedValueOnce("").mockResolvedValueOnce(["hunter2"]);
 		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
 		expect(fixture.commands.capturePng).toHaveBeenCalledOnce();
 		expect(fixture.screenshots.publish).not.toHaveBeenCalled();

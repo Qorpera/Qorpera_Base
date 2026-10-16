@@ -6,20 +6,25 @@ import { type ChildProcess, spawn } from "node:child_process";
 import {
 	appendFile,
 	chmod,
+	link as hardLink,
+	lstat,
 	mkdir,
 	mkdtemp,
 	open,
 	readdir,
 	readFile,
+	readlink,
 	rename,
 	rm,
 	stat,
+	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { CoreEntry } from "../src/folder-service/core.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { encodeFrame, encodeJson, FrameReader, Kind, parseHello } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
@@ -35,6 +40,7 @@ import {
 	folder,
 	grants,
 	hashOf,
+	link,
 	OFFICE,
 	PASS,
 	storeFile,
@@ -406,7 +412,8 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 				.flatMap((commit) => commit.units)
 				.find((unit) => unit.op === "write" && unit.path === path);
 			expect(unit?.op).toBe("write");
-			if (unit?.op === "write") expect(copy?.manifestSha256).toBe(unit.file.manifestSha256);
+			if (unit?.op === "write")
+				expect(copy).toMatchObject({ kind: "file", manifestSha256: unit.file.manifestSha256 });
 		}
 		expect(
 			await eventually(async () => (await readFile(join(company, "docs/plan.md"), "utf8")) === "plan theirs", 5_000),
@@ -421,7 +428,7 @@ describe.skipIf(!program)("folder program against the folder service", () => {
  * models a link losing an acknowledgement after the service took the log; no mount internals are called. */
 const CORE_PASS = "readpass_0123456789-abcdefghijklmnopqrstuvw";
 
-async function loggedMount(kind = "computer_shell_command") {
+async function loggedMount(kind = "computer_shell_command", seeded: CoreEntry[] = []) {
 	const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-log-e2e-"));
 	cleanup.push(() => rm(dir, { recursive: true, force: true }));
 	const root = join(dir, "share");
@@ -430,6 +437,7 @@ async function loggedMount(kind = "computer_shell_command") {
 		folder("docs"),
 		await storeFile(root, "docs/plan.md", "the plan", 1),
 		await storeFile(root, "docs/empty.md", "", 1),
+		...seeded,
 	]);
 	const viewId = v(700);
 	const receipt = { resourceId: v(60), resourceRevision: 9, grantId: v(61), grantRevision: 2 };
@@ -662,6 +670,51 @@ function abandons(requests: { kind: number; body: unknown }[]): string[] {
 	});
 }
 
+/** Runs a tool in the mounted folder, as an agent's shell does. A shell changes into the folder after it starts: Node's
+ * spawn holds this process until the child is in its folder, and a lookup the mount asks the service for (in this
+ * process) would then wait until the program's request times out. */
+function run(
+	command: string,
+	args: string[],
+	cwd: string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn("sh", ["-c", 'cd "$0" && exec "$@"', cwd, command, ...args], {
+			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (data: Buffer) => {
+			stdout += data.toString();
+		});
+		child.stderr.on("data", (data: Buffer) => {
+			stderr += data.toString();
+		});
+		child.on("error", (error) => resolve({ code: null, stdout, stderr: String(error) }));
+		child.on("exit", (code) => resolve({ code, stdout, stderr }));
+	});
+}
+
+/** Git as an agent runs it: no global settings, a name to commit with, and the folder's owner trusted. */
+function git(cwd: string, ...args: string[]) {
+	return run(
+		"git",
+		[
+			"-c",
+			"safe.directory=*",
+			"-c",
+			"user.name=Agent",
+			"-c",
+			"user.email=agent@example.com",
+			"-c",
+			"init.defaultBranch=main",
+			...args,
+		],
+		cwd,
+	);
+}
+
 describe.skipIf(!program)("durable read proof through a real FUSE mount", () => {
 	it("refuses a nonexistent publisher state directory locally without poisoning the healthy mount", async () => {
 		const m = await loggedMount();
@@ -866,6 +919,143 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 		const missing = await m.publish(false, join(m.state, "missing"));
 		expect(missing).toMatchObject({ code: 1, stdout: "" });
 	}, 15_000);
+});
+
+describe.skipIf(!program)("links through a real FUSE mount", () => {
+	it("clones by copying the objects, fails a --local clone with git's own error, checks out a link, and makes links from Python and Node, each hard link a read of its source", async () => {
+		// A repository goes under `code/`: elsewhere the folder takes no `.git`.
+		const m = await loggedMount("computer_shell_command", [folder("code")]);
+		const docs = join(m.company, "docs");
+		const code = join(m.company, "code");
+		const repo = join(code, "repo");
+		const ok = async (ran: Promise<{ code: number | null; stderr: string }>) => {
+			const done = await ran;
+			expect(done.code, done.stderr + m.output()).toBe(0);
+		};
+		await ok(git(code, "init", "-q", "--template=", "repo"));
+		// Git's probe link worked, so it keeps links as links.
+		expect((await git(repo, "config", "core.symlinks")).stdout).not.toContain("false");
+		await writeFile(join(repo, "plan.md"), "the plan");
+		await ok(git(repo, "add", "plan.md"));
+		// Each object git writes is a link from its temporary name, which answers EXDEV in an object store: git renames.
+		await ok(git(repo, "commit", "-q", "-m", "plan"));
+		await symlink("plan.md", join(repo, "latest")); // Node's fs.symlink
+		await ok(git(repo, "add", "latest"));
+		await ok(git(repo, "commit", "-q", "-m", "latest"));
+		expect((await git(repo, "ls-tree", "HEAD", "latest")).stdout).toMatch(/^120000 blob [0-9a-f]{40}\tlatest\n$/);
+		const objects = (await readdir(join(repo, ".git/objects"), { recursive: true })).filter((name) =>
+			/^[0-9a-f]{2}\/[0-9a-f]{38}$/.test(name),
+		);
+		expect(objects).toHaveLength(6); // Two commits, two trees, the file and the link.
+
+		// A clone from a path tries to hard-link the objects. The first link answers EXDEV, so git copies them all; with
+		// --local it fails instead, with git's own error, and removes what it made.
+		await ok(git(code, "clone", "-q", "--template=", "repo", "copy"));
+		const local = await git(code, "clone", "-q", "--local", "--template=", "repo", "local");
+		expect(local.code, local.stderr).toBe(128);
+		expect(local.stderr).toMatch(/fatal: failed to create link '.*': Invalid cross-device link/);
+		await expect(lstat(join(code, "local"))).rejects.toMatchObject({ code: "ENOENT" });
+		// The clone checked out the commit holding a mode-120000 entry as a link; a checkout before it removes the link
+		// and one back makes it again.
+		const copy = join(code, "copy");
+		expect(await readlink(join(copy, "latest"))).toBe("plan.md");
+		expect(await readFile(join(copy, "latest"), "utf8")).toBe("the plan");
+		expect(await git(copy, "status", "--porcelain")).toMatchObject({ code: 0, stdout: "" });
+		await ok(git(copy, "checkout", "-q", "HEAD~1"));
+		await expect(lstat(join(copy, "latest"))).rejects.toMatchObject({ code: "ENOENT" });
+		await ok(git(copy, "checkout", "-q", "main"));
+		expect(await readlink(join(copy, "latest"))).toBe("plan.md");
+
+		const python = await run(
+			"python3",
+			[
+				"-c",
+				"import os; os.symlink('plan.md', 'py-link'); os.link('plan.md', 'py-copy'); print(os.readlink('py-link'))",
+			],
+			docs,
+		);
+		expect(python).toMatchObject({ code: 0, stdout: "plan.md\n" });
+		await hardLink(join(docs, "plan.md"), join(docs, "node-copy")); // Node's fs.link
+		expect(await readFile(join(docs, "py-copy"), "utf8")).toBe("the plan");
+		expect(await readFile(join(docs, "node-copy"), "utf8")).toBe("the plan");
+		expect((await lstat(join(docs, "node-copy"))).nlink).toBe(1);
+		expect((await lstat(join(docs, "plan.md"))).nlink).toBe(1);
+
+		// Only the links outside an object store reached the node.
+		const hardLinks = () =>
+			m.requests.flatMap((request) =>
+				request.kind === Kind.link ? [request.body as { from: string; fromBase?: string; to: string }] : [],
+			);
+		expect(
+			hardLinks()
+				.map((made) => made.to)
+				.sort(),
+		).toEqual(["docs/node-copy", "docs/py-copy"]);
+		const reads = (await m.journal()).flatMap((line) => (line.read ? [line.read] : []));
+		// Each hard link is a read of its source at the version it showed, and each readlink a read of the link.
+		for (const made of hardLinks())
+			expect(reads).toContainEqual(expect.objectContaining({ path: made.from, version: made.fromBase }));
+		expect(reads.filter((read) => read.path === "docs/plan.md")).toMatchObject([
+			{ version: v(1), authority: m.receipt },
+			{ version: v(1), authority: m.receipt },
+		]);
+		expect(reads.map((read) => read.path)).toEqual(expect.arrayContaining(["code/copy/latest", "docs/py-link"]));
+		m.core.commitHook = async () => {
+			expect(m.core.readSets.get(m.viewId)?.get("docs/plan.md")).toEqual({
+				path: "docs/plan.md",
+				version: v(1),
+				authority: m.receipt,
+			});
+		};
+		const report = await m.publish();
+		expect(report, m.output()).toMatchObject({ code: 0, stderr: "" });
+		for (const path of ["code/repo/latest", "code/copy/latest", "docs/py-link"])
+			expect(m.core.entries.get(path), path).toMatchObject({ kind: "symlink", target: "plan.md" });
+		for (const path of ["docs/py-copy", "docs/node-copy"])
+			expect(m.core.entries.get(path), path).toMatchObject({ kind: "file", fileSha256: hashOf("the plan") });
+		for (const name of objects)
+			expect(m.core.entries.get(`code/copy/.git/objects/${name}`)?.fileSha256, name).toBe(
+				m.core.entries.get(`code/repo/.git/objects/${name}`)?.fileSha256,
+			);
+	}, 60_000);
+
+	it("logs each readlink as a read of the link's version, releases it before the next save, and logs it again after a switch", async () => {
+		const m = await loggedMount("computer_desktop", [link("docs/latest", "plan.md")]);
+		const reads = async () => (await m.journal()).flatMap((line) => (line.read ? [line.read] : []));
+		expect(await readlink(join(m.company, "docs/latest"))).toBe("plan.md");
+		expect(await readFile(join(m.company, "docs/latest"), "utf8")).toBe("the plan");
+		const read = { path: "docs/latest", version: v(1), authority: m.receipt };
+		expect(await reads()).toMatchObject([
+			{ seq: 1, ...read },
+			{ seq: 2, ...read },
+			{ seq: 3, path: "docs/plan.md", version: v(1), authority: m.receipt },
+		]);
+		m.core.commitHook = async () => {
+			expect(m.core.readSets.get(m.viewId)?.get("docs/latest")).toEqual(read);
+		};
+		await symlink("latest", join(m.company, "docs/newest")); // Saved when the desktop is quiet.
+		expect(await eventually(async () => m.core.entries.has("docs/newest"), 5_000), m.output()).toBe(true);
+		expect(m.core.entries.get("docs/newest")).toMatchObject({ kind: "symlink", target: "latest" });
+		m.core.commitHook = undefined;
+
+		await m.replace(v(701));
+		expect(
+			await eventually(
+				async () => JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId === v(701),
+				10_000,
+			),
+			m.output(),
+		).toBe(true);
+		const before = await reads();
+		expect(await readlink(join(m.company, "docs/latest"))).toBe("plan.md");
+		const again = (await reads()).at(-1);
+		expect(again).toMatchObject(read);
+		expect(again!.seq).toBeGreaterThan(Math.max(...before.map((earlier) => earlier.seq)));
+		const answer = await m.publish();
+		expect(answer, m.output()).toMatchObject({ code: 0, stderr: "" });
+		expect(m.core.readSets.get(v(701))?.get("docs/latest")).toEqual(read);
+		expect((await m.journal()).some((line) => line.t === "released" && (line.seq ?? 0) >= again!.seq)).toBe(true);
+	}, 30_000);
 });
 
 describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
