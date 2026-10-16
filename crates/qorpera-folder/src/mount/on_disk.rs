@@ -26,13 +26,19 @@ pub(super) fn alternates(path: &str) -> bool {
 }
 
 /// After a lock git took on a shared file `path` (`X.lock`) was made, the node gave the folder service the file, its
-/// reflog and `packed-refs` as they are now: the mount forgets what it knew of them, so git reads those.
+/// reflog and `packed-refs` as they are now: the mount forgets what it knew of them, so git reads those. Under
+/// `packed-refs`' lock git walks the loose refs too (`git pack-refs`), and the node read the feed before the create
+/// returned: the mount forgets its listings of `refs/` and the folders below it, so git lists what the node shows now,
+/// not a loose ref another session deleted that the feed has not told the mount of yet.
 pub(super) fn locked(tree: &mut Tree, path: &str) {
 	if let Place::Git { area, rest } = git::place(path) {
 		if let Some(target) = git::locked(rest) {
 			let paths = git::refreshed(area, target);
 			// The kernel keeps none of them (`fresh`), so it needs no word.
 			drop(tree.invalidate(paths.iter().map(String::as_str)));
+			if target == "packed-refs" {
+				tree.drop_listings(&git::refs(area));
+			}
 		}
 	}
 }
@@ -763,5 +769,29 @@ mod tests {
 		assert!(!in_cache("code/o/n/worktrees/w/src/node_modules", w, "node_modules"));
 		assert!(!in_cache("code/o/n/worktrees/w2/node_modules/x.js", w, "node_modules"));
 		assert!(!in_cache("code/o/n/worktrees/w/src/x.js", w, "node_modules"));
+	}
+
+	#[test]
+	fn packed_refs_lock_forgets_the_listings_of_the_loose_refs() {
+		let entry = |name: &str, kind| Entry { name: name.into(), kind, size: 0, mtime_ms: 1, executable: false, version: "1".into(), authority: None };
+		let mut tree = Tree::new();
+		// code/o/n/repo.git/refs/heads, each folder held by the kernel.
+		let mut dirs = vec![ROOT];
+		for name in ["code", "o", "n", "repo.git", "refs", "heads"] {
+			let (kids, _) = tree.install(*dirs.last().unwrap(), vec![entry(name, EntryKind::Folder)], tree.changes(), true, None);
+			tree.hold(kids[0].ino);
+			dirs.push(kids[0].ino);
+		}
+		let (refs, heads) = (dirs[5], dirs[6]);
+		let topic = || vec![entry("main", EntryKind::File), entry("topic", EntryKind::File)];
+		tree.install(heads, topic(), tree.changes(), true, None);
+		// A ref's lock forgets the ref's folder's listing, not the others.
+		locked(&mut tree, "code/o/n/repo.git/refs/heads/main.lock");
+		assert!(tree.listing(heads).is_none() && tree.listing(refs).is_some());
+		tree.install(heads, topic(), tree.changes(), true, None);
+		// packed-refs' lock forgets every listing git walks for the loose refs.
+		locked(&mut tree, "code/o/n/repo.git/packed-refs.lock");
+		assert!(tree.listing(refs).is_none() && tree.listing(heads).is_none());
+		assert!(tree.listing(dirs[3]).is_some(), "the repository's folder keeps its listing");
 	}
 }

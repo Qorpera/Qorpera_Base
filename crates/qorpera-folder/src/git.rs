@@ -108,6 +108,11 @@ pub fn refreshed(area: &str, target: &str) -> [String; 3] {
 	]
 }
 
+/// The folder of `area`'s loose refs, which `git pack-refs` walks under `packed-refs`' lock.
+pub fn refs(area: &str) -> String {
+	format!("{area}/repo.git/refs")
+}
+
 /// A worktree's path (`code/<owner>/<name>/worktrees/<worker>`) and its index's
 /// (`code/<owner>/<name>/repo.git/worktrees/<worker>/index`).
 pub fn worktree(area: &str, worker: &str) -> (String, String) {

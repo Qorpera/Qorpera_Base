@@ -311,6 +311,24 @@ impl Tree {
 		out
 	}
 
+	/// Forget the listing of the folder `path` and of each folder below it: the next lookup or listing in one asks the
+	/// node. Nodes the kernel holds keep their inodes and attributes; one only a dropped listing named goes. A listing
+	/// fetched across this is passed on but not kept. The kernel is told nothing: the caller's folders are ones it keeps
+	/// no names in (`fresh`).
+	pub fn drop_listings(&mut self, path: &str) {
+		self.changes += 1;
+		let below = format!("{path}/");
+		let dirs: Vec<u64> = self
+			.by_path
+			.iter()
+			.filter(|&(p, ino)| (p.as_str() == path || p.starts_with(&below)) && self.dirs.contains_key(ino))
+			.map(|(_, &ino)| ino)
+			.collect();
+		for dir in dirs {
+			self.drop_listing(dir);
+		}
+	}
+
 	/// Forget every listing and current attribute. Inode numbers the kernel holds stay valid; detached
 	/// versions keep their frozen attributes.
 	pub fn resync(&mut self) -> Vec<Inval> {
@@ -593,6 +611,29 @@ mod tests {
 		assert!(!t.by_path.contains_key("docs/b.md"));
 		// a.md is held by the kernel, so its inode stays.
 		assert_eq!(t.path(a), Some("docs/a.md"));
+	}
+
+	#[test]
+	fn dropping_the_listings_below_a_folder_keeps_what_the_kernel_holds() {
+		let mut t = Tree::new();
+		let (root, _) = t.install(ROOT, vec![folder("refs"), folder("logs")], t.changes(), true, None);
+		let (refs, logs) = (ino_of(&root, "refs"), ino_of(&root, "logs"));
+		t.hold(refs);
+		t.hold(logs);
+		let (kids, _) = t.install(refs, vec![folder("heads"), folder("tags")], t.changes(), true, None);
+		let heads = ino_of(&kids, "heads");
+		t.hold(heads);
+		t.install(heads, vec![file("main", 41, "1"), file("topic", 41, "1")], t.changes(), true, None);
+		t.install(logs, vec![folder("refs")], t.changes(), true, None);
+		let started = t.changes();
+		t.drop_listings("refs");
+		assert!(t.listing(refs).is_none() && t.listing(heads).is_none(), "the folder's and those below it go");
+		assert!(t.listing(logs).is_some() && t.listing(ROOT).is_some(), "other listings stay");
+		assert_eq!(t.path(heads), Some("refs/heads"), "a folder the kernel holds keeps its inode");
+		assert!(!t.by_path.contains_key("refs/heads/topic"), "an entry only a dropped listing named goes");
+		let (kids, kept) = t.install(heads, vec![file("main", 41, "1")], started, true, None);
+		assert!(!kept, "a listing fetched across the drop is not kept");
+		assert_eq!(kids.len(), 1);
 	}
 
 	#[test]

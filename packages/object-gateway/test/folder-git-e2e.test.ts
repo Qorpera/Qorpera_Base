@@ -521,6 +521,58 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	);
 
 	it(
+		"packs refs right after another session deleted one its machine still lists: git lists them anew, not packing it back",
+		async () => {
+			const at = await area();
+			// The changes a view reads of the feed reach its machine only when let go, as on a busy machine.
+			const waiting: (() => void)[] = [];
+			let holding = false;
+			const open = at.service.open.bind(at.service);
+			at.service.open = async (hello, bridge) => {
+				const handle = await open(hello, bridge);
+				const subscribe = handle.subscribe.bind(handle);
+				handle.subscribe = (sink) =>
+					subscribe({
+						...sink,
+						change: (message) => {
+							if (holding) waiting.push(() => sink.change(message));
+							else sink.change(message);
+						},
+					});
+				return handle;
+			};
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			await first.git("branch", "topic", "main");
+			await at.service.poll();
+			// second's machine lists the loose refs, topic among them.
+			expect(await eventually(async () => (await refs(second, "refs/heads/topic")).length === 1)).toBe(true);
+
+			holding = true;
+			await first.git("branch", "-D", "topic");
+			expect(held(at.core, `${R}/refs/heads/topic`)).toEqual([]);
+			// The take of packed-refs' lock reads the feed (second's view drops topic), and the machine forgets its
+			// listings of the loose refs, so git lists them from the view, not from what it was told before.
+			await second.git("pack-refs", "--all");
+			const packed = await readFile(join(second.company, R, "packed-refs"), "utf8");
+			expect(packed).toContain(" refs/heads/main\n");
+			expect(packed).not.toContain("refs/heads/topic");
+			expect(at.core.entries.get(`${R}/packed-refs`)?.fileSha256).toBe(hashOf(packed));
+			expect(held(at.core, `${R}/refs/heads/topic`)).toEqual([]);
+			expect(at.core.gitLeases.size).toBe(0);
+
+			holding = false;
+			for (const send of waiting.splice(0)) send();
+			await at.service.poll();
+			for (const session of [first, second]) {
+				expect(await refs(session, "refs/heads/topic")).toEqual([]);
+				expect(await refs(session, "refs/heads/main")).toEqual(["refs/heads/main"]);
+			}
+		},
+		TIMEOUT,
+	);
+
+	it(
 		"a git killed with a ref locked holds the lease until its command's last boundary",
 		async () => {
 			const at = await area();
