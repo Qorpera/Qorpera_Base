@@ -121,7 +121,8 @@ const NOT_WEB_ONLY = Symbol("not web-only");
  * that need the tree to themselves, run after `commands` one step at a time, but first in a side-by-side run
  * (planScript). `cores`: the step's mean busy cores at 2 vitest workers, its PostgreSQL containers included (node01,
  * 16 Oct), which a side-by-side run packs by (default 1). `seconds`: its median in pr-loop's full runs (15 Oct), so a side-by-side run starts the longest
- * first. `workers`: a side-by-side run's vitest workers for the step (default: the slot's, 2 on a test machine). */
+ * first. `workers`: a side-by-side run's vitest workers for the step (default: the slot's, 2 on a test machine).
+ * `width`: a side-by-side run's `node --test` files at once for the step (narrow; default: its cores, rounded up). */
 export const STEPS = [
 	{
 		name: "lint",
@@ -218,6 +219,10 @@ export const STEPS = [
 		seconds: 31,
 		paths: NOT_WEB_ONLY,
 		build: true,
+		// Mostly waits on the programs its tests start. One file at a time (cores 1) it took 128 s for 56 CPU seconds;
+		// four at a time, 36-42 s for 53-63 CPU seconds, about 1.5 cores (node02, 16 Oct, 5 of 5 slots busy).
+		cores: 1.5,
+		width: 4,
 		commands: ["node --test scripts/*.test.mjs"],
 	},
 	{
@@ -394,6 +399,7 @@ function planned(step) {
 		cores: step.cores ?? 1,
 		seconds: step.seconds ?? 0,
 		workers: step.workers ?? null,
+		width: step.width ?? null,
 		build: step.build ?? false,
 	};
 }
@@ -433,14 +439,14 @@ function sample(files) {
 	return files.length > 3 ? `${files.slice(0, 3).join(", ")} and ${files.length - 3} more` : files.join(", ");
 }
 
-/** Keeps a side-by-side step's fan-out within its cores, rounded up: its `node --test` runs that many test files at
- * once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code on that many
- * threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs RUNNERS), and the
- * steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that npm or a script
- * starts keeps node's default. A step with `workers` runs its vitests with that many workers, not the slot's, unless
- * the run set its own (`stepWorkers` false). */
+/** Keeps a side-by-side step's fan-out within its `width`, or else its cores rounded up: its `node --test` runs that
+ * many test files at once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code
+ * on that many threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs
+ * RUNNERS), and the steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that
+ * npm or a script starts keeps node's default. A step with `workers` runs its vitests with that many workers, not the
+ * slot's, unless the run set its own (`stepWorkers` false). */
 function narrow(step, stepWorkers) {
-	const width = Math.max(1, Math.ceil(step.cores ?? 1));
+	const width = step.width ?? Math.max(1, Math.ceil(step.cores ?? 1));
 	return `export GOMAXPROCS=${width}; ${step.workers && stepWorkers ? `export VITEST_MAX_WORKERS=${step.workers}; ` : ""}node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
 }
 
