@@ -35,11 +35,28 @@ const READS: readonly string[] = [
 ];
 
 /** A coding machine's boundary: each open view of the machine, and each view named final, with the code of the error
- * it had instead of a report. The reports are 5g-4's, which opens and closes the views. */
+ * it had instead of a report, or what its report says of the save. The reports are 5g-4's, which opens and closes the
+ * views. */
 export interface CodingFolderBoundary {
 	readonly machine: string;
 	readonly reads: CodingFolderReads;
-	readonly views: readonly { readonly viewId: string; readonly error?: string }[];
+	readonly views: readonly CodingFolderBoundaryView[];
+}
+
+/** One view at a boundary: the code of the error it had instead of a report; or, from its report, how many of its
+ * changed paths are not saved (`unsaved`: a commit with no answer yet, waiting on an open file, refused, denied, a
+ * conflict, parked for review; a final boundary keeps none of them pending), and why the core refused the change set
+ * whole (`refused`). */
+export interface CodingFolderBoundaryView {
+	readonly viewId: string;
+	readonly error?: string;
+	readonly unsaved?: number;
+	readonly refused?: string;
+}
+
+/** Whether a view's boundary saved all it had: a report, with every changed path saved and nothing refused whole. */
+export function codingFolderViewSaved(view: CodingFolderBoundaryView | undefined): boolean {
+	return view !== undefined && view.error === undefined && view.unsaved === 0 && view.refused === undefined;
 }
 
 /** The service answered with an error, such as VIEW_REFUSED (this uid may not connect), UNAVAILABLE or BAD_REQUEST.
@@ -51,6 +68,20 @@ export class CodingFolderControlRefused extends Error {
 		this.code = code;
 	}
 }
+
+/** A path's outcome in a report (the service's ReportEntry), and why the core may refuse a change set whole. */
+const OUTCOMES: readonly string[] = [
+	"saved",
+	"conflict",
+	"refused",
+	"denied",
+	"waiting_for_review",
+	"not_applied",
+	"waiting",
+];
+const REFUSALS: readonly string[] = READS.filter((reads) => reads !== "released" && reads !== "unanswered");
+const REPORT_KEYS: readonly string[] = ["closed", "commitId", "paths", "refused", "seq"];
+const ENTRY_KEYS: readonly string[] = ["kept", "outcome", "path", "reason", "receipt"];
 
 const INVALID = "CODING_FOLDER_CONTROL_ANSWER_INVALID";
 /** Views one boundary may name final, as the service takes them. */
@@ -108,7 +139,7 @@ export class CodingFolderControl {
 			const view = objectOf(value);
 			const keys = view ? Object.keys(view).sort().join() : "";
 			if (!view || !isUuid(view.viewId)) throw new Error(INVALID);
-			if (keys === "report,viewId" && objectOf(view.report)) return Object.freeze({ viewId: view.viewId });
+			if (keys === "report,viewId") return Object.freeze({ viewId: view.viewId, ...reportOf(view.report) });
 			if (keys !== "error,viewId") throw new Error(INVALID);
 			return Object.freeze({ viewId: view.viewId, error: errorCode(view.error) });
 		});
@@ -193,6 +224,38 @@ function errorCode(value: unknown): string {
 	)
 		throw new Error(INVALID);
 	return error.code;
+}
+
+/** What a view's report (the service's Report) says of the save: how many paths are not saved, and a whole refusal.
+ * Its paths, reasons and receipts are checked for shape and not kept. */
+function reportOf(value: unknown): { unsaved: number; refused?: string } {
+	const report = objectOf(value);
+	if (
+		!report ||
+		!Object.keys(report).every((key) => REPORT_KEYS.includes(key)) ||
+		!(report.commitId === null || typeof report.commitId === "string") ||
+		!(report.seq === null || (Number.isSafeInteger(report.seq) && (report.seq as number) >= 0)) ||
+		!(report.closed === undefined || report.closed === true) ||
+		!(report.refused === undefined || REFUSALS.includes(report.refused as string)) ||
+		!Array.isArray(report.paths)
+	)
+		throw new Error(INVALID);
+	let unsaved = 0;
+	for (const value of report.paths) {
+		const entry = objectOf(value);
+		if (
+			!entry ||
+			!Object.keys(entry).every((key) => ENTRY_KEYS.includes(key)) ||
+			typeof entry.path !== "string" ||
+			!OUTCOMES.includes(entry.outcome as string) ||
+			!(entry.reason === undefined || typeof entry.reason === "string") ||
+			!(entry.receipt === undefined || typeof entry.receipt === "string") ||
+			!(entry.kept === undefined || entry.kept === true)
+		)
+			throw new Error(INVALID);
+		if (entry.outcome !== "saved") unsaved++;
+	}
+	return report.refused === undefined ? { unsaved } : { unsaved, refused: report.refused as string };
 }
 
 function objectOf(value: unknown): Record<string, unknown> | undefined {

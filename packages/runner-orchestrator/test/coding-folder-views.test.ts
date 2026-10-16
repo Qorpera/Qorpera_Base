@@ -49,7 +49,7 @@ type Boundary = (machine: string, final: readonly string[]) => CodingFolderBound
 const released: Boundary = (machine, final) => ({
 	machine,
 	reads: "released",
-	views: final.map((viewId) => ({ viewId })),
+	views: final.map((viewId) => ({ viewId, unsaved: 0 })),
 });
 const live = () => new AbortController().signal;
 const later = () => Date.now() + 60_000;
@@ -641,9 +641,29 @@ describe("CodingFolderViews", () => {
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [] });
 		});
 
-		it("reports the view unsaved without a released boundary and its clean report, and still closes it", async () => {
+		it("reports the view unsaved without a released boundary and a report that saved all of it, and still closes it", async () => {
 			const boundaries: [string, Boundary][] = [
 				["unproven reads", (machine, final) => ({ ...released(machine, final), reads: "unproven" })],
+				[
+					"released reads, but paths not saved (a save with no answer yet, a denial)",
+					(machine, final) => ({
+						machine,
+						reads: "released",
+						views: final.map((viewId) => ({ viewId, unsaved: 2 })),
+					}),
+				],
+				[
+					"released reads, but a change set refused whole",
+					(machine, final) => ({
+						machine,
+						reads: "released",
+						views: final.map((viewId) => ({ viewId, unsaved: 0, refused: "denied" })),
+					}),
+				],
+				[
+					"released reads, but a view with neither a report nor an error",
+					(machine, final) => ({ machine, reads: "released", views: final.map((viewId) => ({ viewId })) }),
+				],
 				[
 					"an error instead of a report",
 					(machine, final) => ({
@@ -736,7 +756,9 @@ describe("CodingFolderViews", () => {
 			at.script.boundary = (machine, final) => ({
 				machine,
 				reads: "released",
-				views: final.map((viewId) => (viewId === VIEWS[1] ? { viewId, error: "VIEW_CLOSED" } : { viewId })),
+				views: final.map((viewId) =>
+					viewId === VIEWS[1] ? { viewId, error: "VIEW_CLOSED" } : { viewId, unsaved: 0 },
+				),
 			});
 			await expect(at.views.endMachine(MACHINE.toUpperCase(), live())).resolves.toEqual([
 				{ workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
