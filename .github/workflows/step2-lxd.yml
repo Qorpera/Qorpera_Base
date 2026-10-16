@@ -27,10 +27,8 @@ on:
       - 'packages/runtime/src/cloud-native-provider*.ts'
       - 'packages/runtime/src/cloud-runner-*.ts'
       - 'packages/cloud-client/src/node/cloud-object-store.ts'
-      - 'packages/cloud-client/src/node/cloud-company-snapshot.ts'
       - 'packages/runtime/test/cloud-native-provider*.test.ts'
       - 'packages/runtime/test/cloud-runner-*.test.ts'
-      - 'packages/runtime/test/cloud-company-file-contract.test.ts'
       - 'packages/runtime/test/lxd-runner-*.test.ts'
       - 'packages/runtime/test/fixtures/**'
       - 'packages/runtime/src/cloud-connector-*.ts'
@@ -204,7 +202,6 @@ jobs:
           test/cloud-runner-assignment-inbox.test.ts
           test/cloud-runner-service.test.ts
           test/cloud-runner-worker.test.ts
-          test/cloud-company-file-contract.test.ts
           test/lxd-runner-bootstrap.test.ts
 
       - name: Test cloud connectors and the secret broker

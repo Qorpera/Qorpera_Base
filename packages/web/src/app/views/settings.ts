@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebEventHooks } from "../../cloud/event-hooks.ts";
@@ -19,6 +20,7 @@ import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
+import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { HooksView } from "./settings-hooks.ts";
 import { RulesView } from "./settings-rules.ts";
@@ -67,14 +69,14 @@ const TABS = [
 		label: phrase("My connections"),
 		icon: "key",
 		keywords:
-			"model accounts providers subscriptions sign in openai chatgpt codex anthropic claude usage mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
+			"model accounts providers subscriptions sign in openai chatgpt codex anthropic claude usage environment variables mine forbindelser modelkonti udbydere abonnementer log ind forbrug miljøvariabler",
 	},
 	{
 		id: "company-connections",
 		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"services accounts gmail google drive github token secrets agents webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter postkasser hændelser",
+			"services accounts gmail google drive github token secrets agents environment variables webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter miljøvariabler postkasser hændelser",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -121,7 +123,11 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	/** The member's own coding environment variables, on My connections. */
+	#memberEnvironment: CodingEnvironmentView | undefined;
 	#services: ServicesView | undefined;
+	/** The company's coding environment variables, on Company connections. */
+	#companyEnvironment: CodingEnvironmentView | undefined;
 	#hooks: HooksView | undefined;
 	#rules: RulesView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
@@ -319,7 +325,9 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#memberEnvironment?.dispose();
 		this.#services?.dispose();
+		this.#companyEnvironment?.dispose();
 		this.#hooks?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
@@ -371,6 +379,10 @@ export class SettingsView {
 			const company = this.#company;
 			const memberId = this.#auth.userId!;
 			const signal = () => AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			const environment = {
+				profileId: company.profile.profileId,
+				environmentId: company.profile.environmentId,
+			};
 			if (tab === "my-connections" && !this.#connections) {
 				const lifetime = signal();
 				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
@@ -399,6 +411,12 @@ export class SettingsView {
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
 				);
+				// The member's own coding environment variables: anyone who may write sets their own.
+				this.#memberEnvironment = new CodingEnvironmentView(
+					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
+					lifetime,
+					{ owner: "member", access: { canManage: () => company.store.get().team?.capabilities.write === true } },
+				);
 				this.#panels.set(
 					tab,
 					connectionsPage(
@@ -407,18 +425,15 @@ export class SettingsView {
 							"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.",
 						),
 						this.#connections.el,
+						this.#memberEnvironment.el,
 					),
 				);
 			} else if (tab === "company-connections" && !this.#services) {
-				// Step 7 connectors, then the company's webhooks and mailboxes. Company first:
-				// owners and admins manage them, everyone sees them.
+				// Step 7 connectors, the company's coding environment variables, then its webhooks and
+				// mailboxes. Company first: owners and admins manage them, everyone sees them.
 				const canManage = () => {
 					const role = company.store.get().team?.role;
 					return role === "owner" || role === "admin";
-				};
-				const environment = {
-					profileId: company.profile.profileId,
-					environmentId: company.profile.environmentId,
 				};
 				this.#services = new ServicesView(createWebConnectors(this.#api.cloud, environment), signal(), {
 					access: {
@@ -428,6 +443,13 @@ export class SettingsView {
 							undefined,
 					},
 				});
+				// Where a company variable is given decides where a member's own of that name is used, so My
+				// connections reads its list again after each change here (opened later, it reads one anyway).
+				this.#companyEnvironment = new CodingEnvironmentView(
+					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
+					signal(),
+					{ owner: "company", access: { canManage }, onChange: () => this.#memberEnvironment?.reload() },
+				);
 				this.#hooks = new HooksView(createWebEventHooks(this.#api.cloud, environment), signal(), {
 					access: { canManage },
 				});
@@ -439,6 +461,7 @@ export class SettingsView {
 							"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
 						),
 						this.#services.el,
+						this.#companyEnvironment.el,
 						this.#hooks.el,
 					),
 				);
@@ -570,8 +593,12 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#memberEnvironment?.dispose();
+		this.#memberEnvironment = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
+		this.#companyEnvironment?.dispose();
+		this.#companyEnvironment = undefined;
 		this.#hooks?.dispose();
 		this.#hooks = undefined;
 		this.#rules?.dispose();
@@ -594,7 +621,9 @@ export class SettingsView {
 					this.#close();
 					return;
 				}
+				this.#memberEnvironment?.update();
 				this.#services?.update();
+				this.#companyEnvironment?.update();
 				this.#hooks?.update();
 				this.#rules?.update();
 				this.#drawCompany();
