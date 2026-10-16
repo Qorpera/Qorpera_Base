@@ -13,6 +13,7 @@ import { SupabaseObjectAuthority } from "../src/supabase-authority.ts";
 
 const profileId = "44100000-0000-4000-8000-000000000010";
 const environmentId = "44100000-0000-4000-8000-000000000020";
+const otherEnvironmentId = "44100000-0000-4000-8000-000000000021";
 const userId = "44100000-0000-4000-8000-000000000030";
 const sessionId = "44100000-0000-4000-8000-000000000040";
 const eventId = "44100000-0000-4000-8000-000000000050";
@@ -32,8 +33,9 @@ const answer = (state = "pending") => ({
 	blocks: 2,
 	runsPending: 1,
 	copies: [
-		{ path: "Zeta/notes.md", live: false },
-		{ path: "reports/r2.md", live: true },
+		{ environmentId, path: "Zeta/notes.md", live: false },
+		{ environmentId, path: "reports/r2.md", live: true },
+		{ environmentId: otherEnvironmentId, path: "reports/r2.md", live: false },
 	],
 });
 
@@ -181,12 +183,17 @@ describe("a member's erase of one message", () => {
 		["a fractional count", { ...answer(), runsPending: 0.5 }],
 		["an id that is no UUID", { ...answer(), eraseId: "erase" }],
 		["no copies", { ...answer(), copies: null }],
-		["a copy without a path", { ...answer(), copies: [{ live: true }] }],
-		["a copy with an empty path", { ...answer(), copies: [{ path: "", live: true }] }],
-		["a copy that is not live or gone", { ...answer(), copies: [{ path: "reports/r2.md", live: "yes" }] }],
+		["a copy without an environment", { ...answer(), copies: [{ path: "reports/r2.md", live: true }] }],
+		[
+			"a copy whose environment is no UUID",
+			{ ...answer(), copies: [{ environmentId: "env", path: "r2.md", live: true }] },
+		],
+		["a copy without a path", { ...answer(), copies: [{ environmentId, live: true }] }],
+		["a copy with an empty path", { ...answer(), copies: [{ environmentId, path: "", live: true }] }],
+		["a copy that is not live or gone", { ...answer(), copies: [{ environmentId, path: "r2.md", live: "yes" }] }],
 		[
 			"a copy with one more key",
-			{ ...answer(), copies: [{ environmentId: eventId, path: "reports/r2.md", live: true }] },
+			{ ...answer(), copies: [{ environmentId, path: "r2.md", live: true, kind: "block" }] },
 		],
 	])("answers 503 for a request whose answer has %s", async (_name, reply) => {
 		const service = await fixture();
