@@ -103,13 +103,13 @@ end $$;
 
 -- The lease on X, a shared file in a repo.git (p_path is X, not X.lock). Held: the lease, with the versions git reads
 -- under it (X, its reflog logs/X, packed-refs; null when no file is there). Busy: another valid view holds X, or a
--- code host's gc blocks the repository's new leases ('maintenance'). Refused: a git rule. Taking a lease the view holds
--- answers it again, under a gc block too.
+-- code host's gc blocks the repository's new leases ('maintenance'). Refused: a git rule, or 'denied' when the view
+-- may not write X. Taking a lease the view holds answers it again, under a gc block too.
 create function public.qorpera_folder_git_lease_take(p_environment_id uuid, p_actor jsonb, p_path text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_view public.qorpera_folder_views%rowtype; v_holder public.qorpera_folder_views%rowtype;
-	v_lease public.qorpera_folder_git_leases%rowtype; v_key text; v_repository text; v_reason text;
+	v_lease public.qorpera_folder_git_leases%rowtype; v_key text; v_repository text; v_reason text; v_profile uuid;
 begin
 	v_view := public.qorpera_folder_git_view(p_environment_id, p_actor);
 	if p_path is null or not public.qorpera_company_path_valid(p_path) then
@@ -126,6 +126,12 @@ begin
 	end if;
 	v_repository := public.qorpera_folder_git_shared_repository(v_key);
 	if v_repository is null then raise exception 'Folder git lease path is not a shared file' using errcode = '22023'; end if;
+	-- X is the view's to write, as the commit's authority decides it: a repository it may not write gets no lease and no
+	-- versions.
+	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id and core = 'folder-v2';
+	if not public.qorpera_folder_actor_allowed(p_environment_id, v_profile,
+		public.qorpera_folder_view_resolve(p_environment_id, v_profile, p_actor) - 'lockTargets' - 'attribution', p_path, 'write') then
+		return jsonb_build_object('schema','qorpera.folder-git-lease/v1','state','refused','reason','denied'); end if;
 
 	perform public.qorpera_folder_git_repository_lock(p_environment_id, v_repository, false);
 	select h.* into v_holder from public.qorpera_folder_git_leases l join public.qorpera_folder_views h on h.id = l.view_id
@@ -268,6 +274,11 @@ $old$,
 		-- 20260930446300 (step 5b): X and logs/X land together. If either one's version moved, both are 'version_changed'.
 		if v_ok and v_git_moved and v_key = any(v_git_group) then
 			v_ok := false; v_reason := 'version_changed'; end if;
+		-- They land only on all of the publish's objects, which come first (qorpera_folder_git_land): if a unit before
+		-- them was not saved, both are 'git_objects_unsaved'. The objects that were saved stay.
+		if v_git_group is not null and v_ok and v_key = any(v_git_group) and exists (select 1 from jsonb_array_elements(v_outcomes) o
+			where o ->> 'outcome' <> 'saved' and public.qorpera_folder_key(o ->> 'path') <> all(v_git_group)) then
+			v_ok := false; v_reason := 'git_objects_unsaved'; end if;
 $new$,
 	$old$	-- Steps 7-8. Decide each unit from the locked rows, in order, and apply each clean one before the next is$old$,
 	$new$	-- 20260930446300 (step 5b): a git publish's X and logs/X, checked on the locked rows before any unit is decided.
@@ -284,42 +295,59 @@ $new$,
 -- 5. Publish and release. ----------------------------------------------------------------------------------------------
 
 -- One commit under a lease: the folders above the caller's units, below repo.git, that are missing (each made, or saved
--- as it stands when there: 20260930446200), then the caller's units, with qorpera.folder_git naming the lease for the
--- commit. A publish's units are objects of the lease's repository, written, and X written, with logs/X if git wrote it;
--- a release's are X's and logs/X's, written or deleted. The answer is the commit's with the caller's units only, and
--- published: X's and logs/X's units all saved. A publish that saves them ends the lease; a release always does.
--- One saved without the other (a refusal that is not a version's) raises, and nothing lands.
+-- as it stands when there: 20260930446200), then the caller's objects, then X's and logs/X's units, with
+-- qorpera.folder_git naming the lease for the commit. A publish's units are objects of the lease's repository, written,
+-- and X written, with logs/X if git wrote it; a release's are X's and logs/X's, written or deleted. The answer is the
+-- commit's with the caller's units only, in the caller's order, and published: X's and logs/X's units all saved. A
+-- publish that saves them ends the lease; a release always does. One saved without the other (a refusal that is not
+-- a version's or an object's) raises, and nothing lands.
 create function public.qorpera_folder_git_land(p_environment_id uuid, p_actor jsonb, p_lease_id uuid, p_operation_key text,
 	p_units jsonb, p_release boolean)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
-	v_view public.qorpera_folder_views%rowtype; v_lease public.qorpera_folder_git_leases%rowtype;
-	v_key text; v_group text[]; v_dirs jsonb; v_n integer; v_result jsonb; v_units jsonb; v_saved integer; v_ref_units integer;
+	v_view public.qorpera_folder_views%rowtype; v_lease public.qorpera_folder_git_leases%rowtype; v_replay boolean := false;
+	v_key text; v_group text[]; v_dirs jsonb; v_n integer; v_sorted jsonb; v_order integer[]; v_result jsonb; v_units jsonb;
+	v_saved integer; v_ref_units integer;
 begin
-	v_view := public.qorpera_folder_git_view(p_environment_id, p_actor);
+	-- A replay answers as the first time, also once the view has ended, the company is paused or the lease is gone: as
+	-- at the commit's step 0, the view's pass and the operation key find it before anything live is checked.
+	if auth.role() = 'service_role' and jsonb_typeof(p_actor) = 'object' and p_actor ->> 'kind' = 'view' then
+		v_replay := exists (select 1 from public.qorpera_folder_views v join public.qorpera_folder_operation_keys k
+				on k.environment_id = v.environment_id and k.scope_id = v.id and k.operation_key = p_operation_key
+			where v.id = (p_actor ->> 'viewId')::uuid and v.environment_id = p_environment_id
+				and v.pass_sha256 = extensions.digest(coalesce(p_actor ->> 'pass', ''), 'sha256'));
+	end if;
+	if not v_replay then v_view := public.qorpera_folder_git_view(p_environment_id, p_actor); end if;
 	if p_lease_id is null or jsonb_typeof(p_units) is distinct from 'array' or jsonb_array_length(p_units) = 0
 		or exists (select 1 from jsonb_array_elements(p_units) u where jsonb_typeof(u) <> 'object'
 			or jsonb_typeof(u -> 'path') is distinct from 'string' or not public.qorpera_company_path_valid(u ->> 'path')) then
 		raise exception 'Folder git units are invalid' using errcode = '22023'; end if;
 	if coalesce(current_setting('qorpera.folder_git', true), '') <> '' then
 		raise exception 'A git request is already set in this transaction' using errcode = '55000'; end if;
-	select * into v_lease from public.qorpera_folder_git_leases where id = p_lease_id and environment_id = p_environment_id for update;
-	if found and (v_lease.view_id <> v_view.id or v_lease.kind <> 'file') then
-		raise exception 'Folder git lease is unavailable' using errcode = '42501'; end if;
-	-- With no lease row the commit decides: a replay, or 42501.
-	if found then
-		v_key := public.qorpera_folder_key(v_lease.path);
-		v_group := array[v_key, public.qorpera_folder_git_reflog_key(v_key)];
-		if exists (select 1 from jsonb_array_elements(p_units) u where not (
-				(public.qorpera_folder_key(u ->> 'path') = any(v_group) and (u ->> 'op' = 'write' or (p_release and u ->> 'op' = 'delete')))
-				or (not p_release and u ->> 'op' = 'write' and public.qorpera_folder_git_object(public.qorpera_folder_key(u ->> 'path'))
-					and public.qorpera_folder_key(u ->> 'path') like v_lease.repository_key || '/repo.git/objects/%')))
-			or (select count(distinct public.qorpera_folder_key(u ->> 'path')) from jsonb_array_elements(p_units) u)
-				<> jsonb_array_length(p_units)
-			or (not p_release and not exists (select 1 from jsonb_array_elements(p_units) u
-				where public.qorpera_folder_key(u ->> 'path') = v_key)) then
-			raise exception 'Folder git units are invalid' using errcode = '22023'; end if;
+	if not v_replay then
+		select * into v_lease from public.qorpera_folder_git_leases where id = p_lease_id and environment_id = p_environment_id for update;
+		if found and (v_lease.view_id <> v_view.id or v_lease.kind <> 'file') then
+			raise exception 'Folder git lease is unavailable' using errcode = '42501'; end if;
+		-- With no lease row the commit decides: a replay, or 42501.
+		if found then
+			v_key := public.qorpera_folder_key(v_lease.path);
+			v_group := array[v_key, public.qorpera_folder_git_reflog_key(v_key)];
+			-- The lease's repository is matched literally: '_' and '%' are valid in its name.
+			if exists (select 1 from jsonb_array_elements(p_units) u where not (
+					(public.qorpera_folder_key(u ->> 'path') = any(v_group) and (u ->> 'op' = 'write' or (p_release and u ->> 'op' = 'delete')))
+					or (not p_release and u ->> 'op' = 'write' and public.qorpera_folder_git_object(public.qorpera_folder_key(u ->> 'path'))
+						and starts_with(public.qorpera_folder_key(u ->> 'path'), v_lease.repository_key || '/repo.git/objects/'))))
+				or (select count(distinct public.qorpera_folder_key(u ->> 'path')) from jsonb_array_elements(p_units) u)
+					<> jsonb_array_length(p_units)
+				or (not p_release and not exists (select 1 from jsonb_array_elements(p_units) u
+					where public.qorpera_folder_key(u ->> 'path') = v_key)) then
+				raise exception 'Folder git units are invalid' using errcode = '22023'; end if;
+		end if;
 	end if;
+	-- The objects go first, so X and logs/X are decided on their outcomes; v_order maps the commit's units back.
+	select coalesce(jsonb_agg(u.value order by public.qorpera_folder_git_object(public.qorpera_folder_key(u.value ->> 'path')) is not true, u.n), '[]'),
+		array_agg(u.n::integer order by public.qorpera_folder_git_object(public.qorpera_folder_key(u.value ->> 'path')) is not true, u.n)
+	into v_sorted, v_order from jsonb_array_elements(p_units) with ordinality u(value, n);
 	select coalesce(jsonb_agg(jsonb_build_object('op','mkdir','path',d.path) order by d.key collate "C"), '[]') into v_dirs
 	from (select distinct on (public.qorpera_folder_key(a.path)) public.qorpera_folder_key(a.path) as key, a.path
 		from jsonb_array_elements(p_units) u,
@@ -328,12 +356,15 @@ begin
 		order by public.qorpera_folder_key(a.path), a.path collate "C") d;
 	v_n := jsonb_array_length(v_dirs);
 
-	perform set_config('qorpera.folder_git', jsonb_build_object('environmentId', p_environment_id::text,
-		'operationKey', p_operation_key, 'leaseId', p_lease_id::text)::text, true);
-	v_result := public.qorpera_folder_commit(p_environment_id, p_actor, p_operation_key, v_dirs || p_units, null, null);
+	if not v_replay then
+		perform set_config('qorpera.folder_git', jsonb_build_object('environmentId', p_environment_id::text,
+			'operationKey', p_operation_key, 'leaseId', p_lease_id::text)::text, true);
+	end if;
+	v_result := public.qorpera_folder_commit(p_environment_id, p_actor, p_operation_key, v_dirs || v_sorted, null, null);
 	perform set_config('qorpera.folder_git', '', true);
 
-	select coalesce(jsonb_agg(o || jsonb_build_object('unit', (o ->> 'unit')::integer - v_n) order by (o ->> 'unit')::integer), '[]')
+	select coalesce(jsonb_agg(o || jsonb_build_object('unit', v_order[(o ->> 'unit')::integer - v_n])
+		order by v_order[(o ->> 'unit')::integer - v_n]), '[]')
 	into v_units from jsonb_array_elements(v_result -> 'units') o where (o ->> 'unit')::integer > v_n;
 	-- X's and logs/X's units: the caller's units that are not objects.
 	select count(*) filter (where o ->> 'outcome' = 'saved'), count(*) into v_saved, v_ref_units
@@ -342,7 +373,7 @@ begin
 	if v_saved > 0 and v_saved < v_ref_units then
 		raise exception 'Folder git publish would land a ref without its reflog' using errcode = '22023'; end if;
 	if p_release or (v_ref_units > 0 and v_saved = v_ref_units) then
-		delete from public.qorpera_folder_git_leases where id = p_lease_id and view_id = v_view.id;
+		delete from public.qorpera_folder_git_leases where id = p_lease_id and view_id = (p_actor ->> 'viewId')::uuid;
 	end if;
 	return v_result || jsonb_build_object('units', v_units, 'published', v_ref_units > 0 and v_saved = v_ref_units);
 end $$;

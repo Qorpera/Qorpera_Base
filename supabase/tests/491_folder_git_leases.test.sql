@@ -1,9 +1,9 @@
 -- @fixture 490_folder_git_rules.test.sql until "-- A coding session writes its own worktree"
 -- git's leases (20260930446300; F3 step 5b, part 3: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas and
 -- git"). A coding session or a code host takes the lease on a shared file X of a repo.git (refs/**, packed-refs, shallow).
--- Another valid view's lease answers busy, a git rule answers refused, and a lease lives as long as its view. A code
--- host's gc block answers new takes busy ('maintenance'). Publish and release are 492's. The office, code/acme/app and
--- the helpers are 490's.
+-- Another valid view's lease answers busy, a git rule answers refused, a repository the view may not write answers
+-- refused ('denied'), and a lease lives as long as its view. A code host's gc block answers new takes busy
+-- ('maintenance'). Publish and release are 492's. The office, code/acme/app and the helpers are 490's.
 
 -- The commit keeps every marker. The calls are the service role's alone; the helpers and the leases are no role's.
 do $$
@@ -99,6 +99,30 @@ begin
 	if r ->> 'state' is distinct from 'held' then raise exception 'Code host: %', r; end if;
 	r := pg_temp.take(pg_temp.cv(2), g || 'refs/heads/qorpera/coding/' || pg_temp.wk(2));
 	if r ->> 'state' is distinct from 'busy' then raise exception 'Behind the code host: %', r; end if;
+	perform pg_temp.drop_all(h);
+end $$;
+
+-- A take is the view's only where its commits may write X: in a repository its agent holds no grant on, a session is
+-- 'denied', with no lease and no versions. Granted, it takes the lease. A code host writes every repository.
+do $$
+declare g text := 'code/acme/locked/repo.git/'; h jsonb := pg_temp.open('code_host', '{}'); v_resource uuid; r jsonb;
+	v_leases bigint := (select count(*) from public.qorpera_folder_git_leases);
+begin
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'git-locked-setup', '[{"op":"mkdir","path":"code/acme/locked"}]'),
+		1, 'saved');
+	v_resource := public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'code/acme/locked',
+		'subtree', 'company_shared', 'normal') ->> 'resourceId';
+	r := pg_temp.take(pg_temp.cv(1), g || 'refs/heads/main');
+	if r is distinct from '{"schema":"qorpera.folder-git-lease/v1","state":"refused","reason":"denied"}'::jsonb
+		or (select count(*) from public.qorpera_folder_git_leases) <> v_leases then raise exception 'Denied: %', r; end if;
+	perform public.qorpera_folder_grant('63200000-0000-4000-8000-000000000020', pg_temp.member(1), v_resource, 'staff_agent',
+		'63200000-0000-4000-8000-0000000000a1', array['read','write']);
+	r := pg_temp.take(pg_temp.cv(1), g || 'refs/heads/main');
+	if r ->> 'state' is distinct from 'held' then raise exception 'Granted: %', r; end if;
+	perform public.qorpera_folder_git_lease_release('63200000-0000-4000-8000-000000000020', pg_temp.vactor(pg_temp.cv(1)),
+		(r ->> 'leaseId')::uuid);
+	r := pg_temp.take(h, g || 'refs/heads/main');
+	if r ->> 'state' is distinct from 'held' then raise exception 'Code host: %', r; end if;
 	perform pg_temp.drop_all(h);
 end $$;
 

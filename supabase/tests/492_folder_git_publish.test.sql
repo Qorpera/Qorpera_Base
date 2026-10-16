@@ -2,7 +2,8 @@
 -- git's publish and release under a lease (20260930446300; F3 step 5b, part 3: deploy/first-node/RUNTIME-FOLDER-CODING-
 -- MACHINES.md, "Code areas and git"). A publish is one commit: the folders above its units that are missing, the
 -- session's objects, then X and logs/X, which land together or not at all. If either one's version moved, both are
--- conflicts and the lease stays; a publish that lands them ends it. A release ends the lease, landing what it names.
+-- conflicts and the lease stays; if an object was not saved, both are refused. A publish that lands them ends the lease.
+-- A release ends the lease, landing what it names. A replay answers as the first time, also after its view has ended.
 -- Leases are 491's; the office, code/acme/app and the helpers are 490's.
 
 create function pg_temp.take(p_view jsonb, p_path text) returns jsonb language sql as $$
@@ -105,6 +106,31 @@ begin
 	if pg_temp.leased(l) then raise exception 'The lease stayed after its publish'; end if;
 end $$;
 
+-- An object that is not saved (here its bytes are unverified) keeps X and logs/X from landing: both are
+-- 'git_objects_unsaved' and the lease stays. The objects are decided first wherever the caller names them, the answer
+-- keeps the caller's order, and the objects that were saved stay. Once every object is saved, the publish lands.
+do $$
+declare g text := 'code/acme/app/repo.git/'; x text := 'code/acme/app/repo.git/refs/heads/main';
+	lx text := 'code/acme/app/repo.git/logs/refs/heads/main'; l jsonb := pg_temp.take(pg_temp.cv(1), x);
+	bad text := g || 'objects/cd/' || repeat('1', 38); good text := g || 'objects/cd/' || repeat('2', 38);
+	v_x text := pg_temp.ver(x); v_log text := pg_temp.ver(lx); r jsonb;
+begin
+	r := pg_temp.publish(pg_temp.cv(1), l, 'git-unsaved-1', jsonb_build_array(pg_temp.w(x, pg_temp.stage('git-ref-u'), v_x),
+		pg_temp.w(bad, jsonb_build_object('manifestSha256', repeat('a', 64), 'fileSha256', repeat('b', 64), 'bytes', 1,
+			'mediaType', 'text/plain', 'executable', false)),
+		pg_temp.w(good, pg_temp.stage('git-object-g')), pg_temp.w(lx, pg_temp.stage('git-log-u'), v_log)));
+	perform pg_temp.landed(r, array['refused','refused','saved','refused'], false);
+	if r -> 'units' -> 0 ->> 'reason' is distinct from 'git_objects_unsaved' or r -> 'units' -> 0 ->> 'path' is distinct from x
+		or r -> 'units' -> 1 ->> 'reason' is distinct from 'bytes_unverified'
+		or r -> 'units' -> 3 ->> 'reason' is distinct from 'git_objects_unsaved' or not pg_temp.leased(l)
+		or pg_temp.ver(x) is distinct from v_x or pg_temp.ver(lx) is distinct from v_log or pg_temp.ver(bad) is not null
+		or pg_temp.ver(good) is null then raise exception 'An object unsaved: %', r; end if;
+	r := pg_temp.publish(pg_temp.cv(1), l, 'git-unsaved-2', jsonb_build_array(pg_temp.w(x, pg_temp.stage('git-ref-u'), v_x),
+		pg_temp.w(bad, pg_temp.stage('git-object-u')), pg_temp.w(good, pg_temp.stage('git-object-g')),
+		pg_temp.w(lx, pg_temp.stage('git-log-u'), v_log)));
+	perform pg_temp.landed(r, array['saved','saved','saved','saved'], true);
+end $$;
+
 -- Outside a publish a session still saves no ref (490), and the commit takes a git request only for its own commit
 -- and its own view's lease.
 do $$
@@ -157,12 +183,48 @@ begin
 	perform pg_temp.release(pg_temp.cv(2), l);
 end $$;
 
+-- A publish or a release with units answers as the first time again once its view may do no new work: while the
+-- company is paused, and after the view has closed (its leases gone). New work then raises.
+create function pg_temp.replayed(p_first jsonb, p_again jsonb) returns boolean language sql as $$
+	select (p_again ->> 'replay')::boolean is true and p_again ->> 'seq' = p_first ->> 'seq' and p_again -> 'units' = p_first -> 'units'
+		and p_again -> 'published' = p_first -> 'published'
+$$;
+do $$
+declare g text := 'code/acme/app/repo.git/'; x text := 'code/acme/app/repo.git/refs/heads/topic/b';
+	lx text := 'code/acme/app/repo.git/logs/refs/heads/topic/b'; v jsonb := pg_temp.cv(1); l jsonb; l2 jsonb; l3 jsonb;
+	u jsonb; u2 jsonb; u3 jsonb; r jsonb; r2 jsonb;
+begin
+	l := pg_temp.take(v, x);
+	l3 := pg_temp.take(v, g || 'refs/heads/topic/c');
+	u := jsonb_build_array(pg_temp.w(x, pg_temp.stage('git-ref-b')), pg_temp.w(lx, pg_temp.stage('git-log-b')));
+	r := pg_temp.publish(v, l, 'git-replay-1', u);
+	perform pg_temp.landed(r, array['saved','saved'], true);
+	l2 := pg_temp.take(v, x);
+	u2 := jsonb_build_array(pg_temp.del(x), pg_temp.del(lx));
+	r2 := pg_temp.release(v, l2, u2);
+	perform pg_temp.landed(r2, array['saved','saved'], true);
+	u3 := jsonb_build_array(pg_temp.w(g || 'refs/heads/topic/c', pg_temp.stage('git-ref-c')));
+	perform pg_temp.fx(format('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values (%L, %L, %L)',
+		'63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000001', 'test'));
+	if not pg_temp.replayed(r, pg_temp.publish(v, l, 'git-replay-1', u)) or not pg_temp.replayed(r2, pg_temp.release(v, l2, u2)) then
+		raise exception 'Paused replay: %', pg_temp.publish(v, l, 'git-replay-1', u); end if;
+	perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', v, l3, 'git-replay-2', u3), '55000');
+	perform pg_temp.fx('delete from public.qorpera_company_execution_pauses where profile_id = ''63200000-0000-4000-8000-000000000010''');
+	perform public.qorpera_folder_view_close((v ->> 'viewId')::uuid, v ->> 'pass');
+	if not pg_temp.replayed(r, pg_temp.publish(v, l, 'git-replay-1', u)) or not pg_temp.replayed(r2, pg_temp.release(v, l2, u2)) then
+		raise exception 'Closed replay: %', pg_temp.publish(v, l, 'git-replay-1', u); end if;
+	perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', v, l3, 'git-replay-3', u3), '42501');
+	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', v, l3, u3), '42501');
+	raise exception 'Undo' using errcode = 'QTF80';
+exception when sqlstate 'QTF80' then null;
+end $$;
+
 -- A publish's units are the lease's X (written), its logs/X, and objects of its repository written; a release's are X's
 -- and logs/X's. Anything else, a key twice, or a publish without X lands nothing.
 do $$
 declare g text := 'code/acme/app/repo.git/'; x text := 'code/acme/app/repo.git/refs/heads/main'; l jsonb := pg_temp.take(pg_temp.cv(1), x);
 	o jsonb := pg_temp.w(g || 'objects/ab/' || repeat('9', 38), pg_temp.stage('git-object-9')); xw jsonb;
-	bad jsonb;
+	bad jsonb; h jsonb := pg_temp.open('code_host', '{}'); pair text[];
 begin
 	xw := pg_temp.w(x, pg_temp.stage('git-ref-4'), pg_temp.ver(x));
 	foreach bad in array array['null'::jsonb, '[]', '{"op":"write"}', jsonb_build_array(xw, 1), jsonb_build_array(o),
@@ -179,6 +241,15 @@ begin
 		'22023');
 	if not pg_temp.leased(l) then raise exception 'A bad publish ended the lease'; end if;
 	perform pg_temp.release(pg_temp.cv(1), l);
+	-- The lease's repository is matched as named: '_' and '%' (valid under code/) stand for no other character.
+	foreach pair slice 1 in array array[['code/acme/app_1', 'code/acme/appx1'], ['code/acme/a%b', 'code/acme/a-x-b']] loop
+		l := pg_temp.take(h, pair[1] || '/repo.git/refs/heads/main');
+		perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', h, l, 'git-bad-3', jsonb_build_array(
+			pg_temp.w(pair[1] || '/repo.git/refs/heads/main', pg_temp.stage('git-ref-4')),
+			pg_temp.w(pair[2] || '/repo.git/objects/ab/' || repeat('9', 38), pg_temp.stage('git-object-9')))), '22023');
+		if not pg_temp.leased(l) then raise exception 'Another repository''s object: %', pair; end if;
+	end loop;
+	perform public.qorpera_folder_git_leases_drop('63200000-0000-4000-8000-000000000020', pg_temp.vactor(h));
 end $$;
 
 -- A publish that would land X without logs/X (here packed-refs, whose logs/ name is the platform's) lands nothing.
