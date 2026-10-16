@@ -123,7 +123,7 @@ end $$;
 --    a view (undone after).
 do $$
 declare v_old public.qorpera_company_machine_placements; v_new public.qorpera_company_machine_placements; v_first jsonb;
-	v_entry jsonb; v_boot uuid := extensions.gen_random_uuid(); v_since timestamptz;
+	v_entry jsonb; v_boot uuid := extensions.gen_random_uuid(); v_since timestamptz; v_view jsonb;
 begin
 	begin
 		v_since := clock_timestamp();
@@ -161,9 +161,9 @@ begin
 				->> 'reason' = 'MACHINE_NOT_RUNNING',
 			'A repeat answers the same; the old disk gets no new boot and no command');
 		perform pg_temp.refused(format('select pg_temp.open_at(%L)', v_old.id), '42501', 'Folder view machine is not current');
-		perform pg_temp.base_assert(pg_temp.mc_custody_at(v_old, 'stop') ->> 'state' is distinct from 'refused'
-			and (select stop_authorized_at from public.qorpera_company_machine_placements where id = v_old.id) is not null,
-			'Its stop is authorized');
+		perform pg_temp.base_assert(pg_temp.mc_custody_at(v_old, 'stop') ->> 'intent' = 'stop', 'Its stop is authorized');
+		perform pg_temp.base_assert((select stop_authorized_at from public.qorpera_company_machine_placements where id = v_old.id)
+			is not null, 'Its stop is recorded');
 		perform pg_temp.mc_observe_a();
 		perform pg_temp.base_assert(public.qorpera_admit_executor_machines('mx-a', repeat('c', 64))
 			= jsonb_build_array((pg_temp.mc_machine('build-a')).id), 'Admission starts the machine on a new disk');
@@ -173,9 +173,11 @@ begin
 			and pg_temp.mc_running('build-a', v_boot) #>> '{machine,state}' = 'running',
 			'The new disk is clean, and it runs');
 		perform pg_temp.restore_agent(v_since);
-		perform pg_temp.base_assert(pg_temp.reads_root() and exists (select 1 from public.qorpera_folder_views
-				where id = (pg_temp.open_build_a() ->> 'viewId')::uuid and placement_id = v_new.id and boot_id = v_boot),
-			'The open makes the new disk''s view');
+		perform pg_temp.base_assert(pg_temp.reads_root(), 'With its grants back the agent reads the root');
+		v_view := pg_temp.open_build_a();
+		perform pg_temp.base_assert(exists (select 1 from public.qorpera_folder_views
+				where id = (v_view ->> 'viewId')::uuid and placement_id = v_new.id and boot_id = v_boot),
+			'The open makes the new disk''s view: ' || v_view::text);
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;
