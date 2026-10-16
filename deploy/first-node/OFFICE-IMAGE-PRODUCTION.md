@@ -98,7 +98,9 @@ sudo bash scripts/accept-office-image.sh --hostname <node01's hostname> \
    - the office, preparation, private-mount and folder helper units loaded, unmodified and never started, the office
      service disabled, and no folder mount;
    - every file of the installation receipt, and its measured dependencies;
-   - empty custody directories and boot credentials, and no identity path;
+   - empty custody directories and boot credentials, and no identity path. Every custody directory must exist (the
+     image's tmpfiles fragments make them at boot), and so must the preparation lock
+     `/run/qorpera-office-preparation/control.lock`: empty, `0600`, root's. A missing one is a broken image;
    - the apt units masked;
    - no JWT- or Supabase-secret-shaped string in any regular file outside `/proc`, `/sys` and `/dev`. A hit names its
      path and kind, never the value;
@@ -111,7 +113,9 @@ sudo bash scripts/accept-office-image.sh --hostname <node01's hostname> \
 
 The evidence (`qorpera.office-image-acceptance/v1`, `0444`) and the screenshot (`<evidence>.png`) are written only on
 success. A secret-shaped hit fails the run and lists the paths. A person decides from them: a real secret means a fixed
-recipe and a new build; a published example (an npm package's README) is a question for 9f.
+recipe and a new build; a published example (an npm package's README) is a question for 9f. The scan stays
+fail-closed with no allow-list. If a hit is harmless, the narrowest exception is the only kind to add: the exact path,
+that file's sha256 and a reason, so a changed file fails again. Never allow by directory, pattern or kind.
 
 ### 4. Sign
 
@@ -153,6 +157,9 @@ the new image only after nothing names it.
 ## What it does not cover
 
 - The workbench account of `qofleet01`'s policy (A1: 20048) is the host's; the image's office account is 20045 inside
-  the guest, as in A1.
+  the guest, as in A1 (the P2 candidate, the remount harness and the image's rendered mount unit were proven with
+  20045). The cold-boot acceptance attaches no workbench disk, but production mounts the host's `workbenchSource` at
+  `/var/lib/qorpera-office` with no shift (`lxd-office-guest.ts`, `devices.workbench`). So the first office start on
+  node01 is the first check of that pair: watch that start.
 - The build evidence's sha256 is printed by the signer, not signed; the statement signs the acceptance's.
 - node02, and any image but the office's.

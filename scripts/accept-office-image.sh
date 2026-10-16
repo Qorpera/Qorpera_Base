@@ -318,10 +318,11 @@ def custody():
         need(p.resolve() == p and stat.S_ISDIR(s.st_mode) and s.st_uid == 0 and not s.st_mode & 0o6022,
              'custody ownership ' + name)
         need(set(x.name for x in p.iterdir()) <= names, 'nonempty custody ' + name)
+    # tmpfiles makes the lock at every boot and the preparation wrapper never repairs a missing one: it must be there.
     lock = P('/run/qorpera-office-preparation/control.lock')
-    if lock.exists():
-        b, s = safe_bytes(str(lock), 1)
-        need(not b and stat.S_IMODE(s.st_mode) == 0o600, 'control lock')
+    need(os.path.lexists(str(lock)), 'control lock missing')
+    b, s = safe_bytes(str(lock), 1)
+    need(not b and stat.S_IMODE(s.st_mode) == 0o600, 'control lock')
     for leaf in ['private', 'display', 'browser', 'captures']:
         p = P('/run/qorpera-office') / leaf
         s = p.lstat()
