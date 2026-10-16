@@ -389,6 +389,52 @@ describe("a command's output before it reaches the run", () => {
 		},
 	);
 
+	it("lists once the paths a boundary settled without saving them, but not those it keeps for a later one", async () => {
+		const f = await running();
+		f.answer(
+			"boundary",
+			{
+				answer: "refused",
+				report: {
+					commitId: null,
+					seq: null,
+					paths: [
+						{ path: "docs/a.md", outcome: "conflict", receipt: "r-1" },
+						{ path: "docs/b.md", outcome: "saved" },
+						{ path: "docs/c.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+					],
+				},
+			},
+			{
+				answer: "refused",
+				report: {
+					commitId: null,
+					seq: null,
+					refused: "denied",
+					paths: [
+						{ path: "docs/d.md", outcome: "refused", reason: "it changed meanwhile" },
+						{ path: "docs/c.md", outcome: "refused", reason: "denied", kept: true },
+					],
+				},
+			},
+			{ answer: "saved", report },
+		);
+		await expect(f.release()).resolves.toEqual({
+			released: true,
+			notSaved: [{ path: "docs/a.md", outcome: "conflict" }],
+		});
+		await expect(f.release()).resolves.toEqual({
+			released: false,
+			heldBack: REFUSED,
+			notSaved: [{ path: "docs/d.md", outcome: "refused", reason: "it changed meanwhile" }],
+		});
+		await expect(f.release()).resolves.toEqual({ released: true });
+		// The final's report is empty: what the boundaries settled came with their releases.
+		f.answer("unmount", { answer: "saved", report: { ...report, closed: true }, unmounted: true });
+		f.send({ t: "ended" });
+		await expect(f.release()).resolves.toEqual({ released: true, final: true });
+	});
+
 	it("is held back without asking when the reply's deadline is too near", async () => {
 		const f = await running();
 		await expect(f.release(performance.now() + 1500)).resolves.toEqual({ released: false, heldBack: UNANSWERED });
@@ -512,6 +558,107 @@ describe("a command's end", () => {
 		expect(f.closed).toHaveLength(1);
 	});
 
+	it("asks the final boundary again while the core has not answered it or a change still waits, and the view stays open", async () => {
+		const f = await running();
+		const notYet = {
+			path: "docs/end.md",
+			outcome: "not_applied",
+			reason: "the save did not get through yet",
+			kept: true,
+		};
+		f.answer(
+			"unmount",
+			// The core did not answer the final's change set, but the settling of an earlier one did.
+			{
+				answer: "refused",
+				report: {
+					commitId: null,
+					seq: null,
+					paths: [{ path: "docs/old.md", outcome: "conflict", receipt: "r-1" }, notYet],
+				},
+				unmounted: false,
+			},
+			{
+				answer: "refused",
+				report: {
+					commitId: null,
+					seq: null,
+					paths: [
+						{ path: "docs/big.bin", outcome: "waiting", reason: "it is still being written", kept: true },
+						{ ...notYet, reason: "the final waits until every change can go" },
+					],
+				},
+				unmounted: false,
+			},
+			{
+				answer: "refused",
+				report: {
+					commitId: "commit-2",
+					seq: 8,
+					paths: [
+						{ path: "docs/end.md", outcome: "saved" },
+						{ path: "docs/big.bin", outcome: "conflict", receipt: "r-2" },
+					],
+					closed: true,
+				},
+				unmounted: false,
+			},
+		);
+		f.answer("drop", { answer: "dropped" });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		f.send({ t: "ended" });
+		await settle();
+		const held = f.release(performance.now());
+		await vi.advanceTimersByTimeAsync(0);
+		await expect(held).resolves.toEqual({
+			released: false,
+			heldBack: SAVING,
+			notSaved: [{ path: "docs/old.md", outcome: "conflict" }],
+		});
+		expect(f.closed).toEqual([]);
+		// Asked at 0, 5 and 15 s.
+		await vi.advanceTimersByTimeAsync(16000);
+		await settle();
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount", "drop"]);
+		expect(f.logged).toEqual([
+			`office-folder: command ${name}: final boundary asked again (refused)`,
+			`office-folder: command ${name}: final boundary asked again (refused)`,
+		]);
+		expect(f.folder.status).toBe("released");
+		expect(f.closed).toHaveLength(1);
+		await expect(f.release()).resolves.toEqual({
+			released: true,
+			final: true,
+			notSaved: [{ path: "docs/big.bin", outcome: "conflict" }],
+		});
+	});
+
+	it.each([
+		["its view closed", { answer: "closed" }, STOPPED],
+		["its view unreadable", refusal("unreadable"), STOPPED],
+		["its view unproven", refusal("unproven"), STOPPED],
+		["its mount unknown to the helper", { answer: "unknown" }, GONE],
+	])(
+		"drops the mount without a final boundary when a boundary in flight as the command ended found %s",
+		async (_, answer, heldBack) => {
+			const f = await running();
+			const pending = computerDeferred<unknown>();
+			f.answer("boundary", () => pending.promise);
+			f.answer("drop", { answer: "dropped" });
+			const read = f.release();
+			await settle();
+			f.send({ t: "ended" });
+			expect(f.folder.status).toBe("ending");
+			pending.resolve(answer);
+			await expect(read).resolves.toEqual({ released: false, heldBack });
+			await settle();
+			expect(f.ops()).toEqual(["mount", "boundary", "drop"]);
+			expect(f.closed).toHaveLength(1);
+			expect(f.folder.status).toBe("held");
+			await expect(f.release()).resolves.toEqual({ released: false, heldBack });
+		},
+	);
+
 	it("holds output back for good when the final boundary was not taken, and drops the mount it left", async () => {
 		const f = await running();
 		f.answer("unmount", {
@@ -560,7 +707,7 @@ describe("a command's end", () => {
 			outcome: "refused",
 			reason: "r".repeat(300),
 		}));
-		g.answer("unmount", { answer: "refused", report: { ...report, paths: long }, unmounted: true });
+		g.answer("unmount", { answer: "refused", report: { ...report, paths: long, closed: true }, unmounted: true });
 		g.send({ t: "ended" });
 		const cut = await g.release();
 		// 300 characters of path and 200 of reason each: 14 of them fit in 8 KiB.
@@ -676,6 +823,39 @@ describe("a screen's drain", () => {
 		expect(f.folder.status).toBe("released");
 		expect(f.closed).toHaveLength(1);
 	});
+
+	it.each([
+		[
+			"saved",
+			{ answer: "saved", report, unmounted: true },
+			'{"answer":"saved","unmounted":true,"refused":null,"commitId":"commit-1","seq":7,"outcomes":{}}',
+			{ released: true, final: true },
+		],
+		[
+			"the pause's refusal",
+			{ ...refusal("stopped"), unmounted: true },
+			'{"answer":"refused","unmounted":true,"refused":"stopped","commitId":null,"seq":null,"outcomes":{}}',
+			{ released: false, heldBack: NOT_TAKEN },
+		],
+	])(
+		"takes as its own the answer of a final boundary asked before it began: %s",
+		async (_, answer, logged, released) => {
+			const f = await running();
+			const late = computerDeferred<unknown>();
+			f.answer("unmount", () => late.promise);
+			f.send({ t: "ended" });
+			await settle();
+			expect(f.ops()).toEqual(["mount", "unmount"]);
+			const draining = f.drain();
+			await settle();
+			late.resolve(answer);
+			await draining;
+			expect(f.ops()).toEqual(["mount", "unmount"]);
+			expect(f.logged).toEqual([`office-folder: drain ${name}: ${logged}`]);
+			expect(f.closed).toHaveLength(1);
+			await expect(f.release()).resolves.toEqual(released);
+		},
+	);
 
 	it("fails once its deadline passes with no final answer, and the command's own final boundary goes on", async () => {
 		const f = await running();
