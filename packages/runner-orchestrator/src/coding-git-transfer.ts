@@ -13,7 +13,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA = /^[0-9a-f]{64}$/;
 const HELPER = "/opt/qorpera-coding/cloud-coding-git-guest.mjs";
 const CHUNK = 32768,
-	LIMIT = 64 * 1024 ** 2;
+	LIMIT = 64 * 1024 ** 2,
+	// A seed chunk's base64 is exactly LXD's largest file push (256 KiB).
+	SEED_CHUNK = 196608,
+	SEED_LIMIT = 256 * 1024 ** 2,
+	// The guest imports a whole seed in one command.
+	SEED_WAIT_SECONDS = 600;
 type Client = Pick<LxdInspectableClient, "getInstance" | "readInstanceFile" | "pushInstanceFile" | "execInstance">;
 interface Request {
 	schema: "qorpera.coding-git-transfer/v1";
@@ -117,9 +122,14 @@ export class LxdCodingGitTransfer {
 			throw new Error("CODING_GIT_TRANSFER_UNPROTECTED");
 		return file.content;
 	}
-	async #push(request: Request, path: string, text: string, signal: AbortSignal): Promise<void> {
+	/** Unread: a seed chunk is larger than a file read. The guest takes only a
+	 * root-owned 0444 chunk of the exact size and checks the whole digest. */
+	async #stage(request: Request, path: string, text: string, signal: AbortSignal): Promise<void> {
 		await this.#gate(request, signal);
 		await this.#options.client.pushInstanceFile(this.#project, this.#name, path, text, 0o444, signal);
+	}
+	async #push(request: Request, path: string, text: string, signal: AbortSignal): Promise<void> {
+		await this.#stage(request, path, text, signal);
 		if (!(await this.#read(request, path, Buffer.byteLength(text), signal)).equals(Buffer.from(text)))
 			throw new Error("CODING_GIT_TRANSFER_STAGING_CHANGED");
 	}
@@ -130,9 +140,11 @@ export class LxdCodingGitTransfer {
 			this.#name,
 			["/usr/bin/node", HELPER, action, request.workerId, request.transferId],
 			signal,
+			action === "seed" ? SEED_WAIT_SECONDS : undefined,
 		);
 	}
 	async #receipt(request: Request, signal: AbortSignal): Promise<CodingGitTransferReceipt> {
+		const [chunk, limit] = request.action === "seed" ? [SEED_CHUNK, SEED_LIMIT] : [CHUNK, LIMIT];
 		const value = JSON.parse(
 			(await this.#read(request, `${this.#custody}/git/${request.transferId}/receipt.json`, 8192, signal)).toString(
 				"utf8",
@@ -154,8 +166,8 @@ export class LxdCodingGitTransfer {
 			!SHA.test(value.bundleSha256) ||
 			!Number.isSafeInteger(value.bundleBytes) ||
 			value.bundleBytes < 1 ||
-			value.bundleBytes > LIMIT ||
-			value.chunkCount !== Math.ceil(value.bundleBytes / CHUNK) ||
+			value.bundleBytes > limit ||
+			value.chunkCount !== Math.ceil(value.bundleBytes / chunk) ||
 			(request.action === "seed" &&
 				(value.bundleSha256 !== request.bundleSha256 || value.bundleBytes !== request.bundleBytes))
 		)
@@ -167,7 +179,7 @@ export class LxdCodingGitTransfer {
 			!UUID.test(transferId) ||
 			!/^[0-9a-f]{40}$/.test(headSha) ||
 			(bundle !== undefined &&
-				(!(bundle instanceof Uint8Array) || bundle.byteLength < 1 || bundle.byteLength > LIMIT))
+				(!(bundle instanceof Uint8Array) || bundle.byteLength < 1 || bundle.byteLength > SEED_LIMIT))
 		)
 			throw new Error("INVALID_CODING_GIT_TRANSFER");
 		return {
@@ -192,11 +204,11 @@ export class LxdCodingGitTransfer {
 			bundle = Buffer.from(value);
 		await this.#push(request, `${this.#custody}/inbox/${transferId}.git.json`, JSON.stringify(request), signal);
 		await this.#invoke(request, "prepare", signal);
-		for (let index = 0; index < Math.ceil(bundle.length / CHUNK); index++)
-			await this.#push(
+		for (let index = 0; index < Math.ceil(bundle.length / SEED_CHUNK); index++)
+			await this.#stage(
 				request,
 				`${this.#custody}/git/${transferId}/${String(index).padStart(6, "0")}.base64`,
-				bundle.subarray(index * CHUNK, (index + 1) * CHUNK).toString("base64"),
+				bundle.subarray(index * SEED_CHUNK, (index + 1) * SEED_CHUNK).toString("base64"),
 				signal,
 			);
 		await this.#invoke(request, "seed", signal);
