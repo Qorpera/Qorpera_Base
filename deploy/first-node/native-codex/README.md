@@ -282,6 +282,13 @@ hashes. These are scripted loopback checks with no login, no real model and no
 deployment; real cache hits, compact-line quality and billing-exact usage are
 read from production rows.
 
+The [0.155.1 cloud acceptance](linux-x64-0.155.1-cloud-acceptance.md) records the
+first production run on this executable: v179's runtime bundle pins it, and run
+`e2183782-fd2e-4a7a-bd01-04ad4ee4b524` on the Live Test company completed with
+a real model on 16 Oct 2026, with per-request usage rows, a 0.956 cached share
+within the run and every slow result fence finished. `linux-x64-artifact.json`
+keeps `cloudAcceptance: not_performed`, because it is a bundle input.
+
 The native checks also caught the namespace description exceeding the pinned
 app-server's 1,024-character bound. Its catalog summary is now compact, while
 the complete result-handling instructions remain unchanged in the trusted
