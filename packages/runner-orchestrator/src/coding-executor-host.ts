@@ -1097,10 +1097,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_HOST_BASE_CHANGED");
 		return { root, baseSha };
 	}
-	/** A turn on the folder model (5g-6a): the machine runs and its LXD agent answers, the session is attached in SQL
-	 * and its view mounted at /company under that attachment, and then its repositories are made ready on the mount.
-	 * Nothing is hot-plugged, installed or seeded, and no guest lease is taken: the session's view is held under its
-	 * attachment, which the keeper renews. */
+	/** A turn on the folder model (5g-6a): the machine runs and its LXD agent answers, the session's repositories are
+	 * made ready in the company folder and published there, and then the session is attached in SQL and its view mounted
+	 * at /company under that attachment, so a view mounted now lists the session's worktree from its first listing.
+	 * Nothing is hot-plugged, installed or seeded in the machine, and no guest lease is taken: the session's view is held
+	 * under its attachment, which the keeper renews. */
 	async #prepareFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1136,12 +1137,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const { root, baseSha } = await this.#base(claim, turn, authorize, signal);
 		const scope = codingTurnScope(claim.workerId, machine.machineId, claim.sequence);
 		if (scope.requestId !== turn.turnId) throw new Error("CODING_HOST_TURN_ID_DIFFERS");
-		const guest = { bootId, guestConfigSha256: this.#folderSessionSha(claim.workerId, machine.machineId, bootId) };
-		await this.#attachSession(claim, machine, storage, { ...guest, folder: { uid } }, scope, signal);
 		const { cwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
 			this.#repositorySession(claim, machine, storage, uid, baseSha, root),
 			signal,
 		);
+		const guest = { bootId, guestConfigSha256: this.#folderSessionSha(claim.workerId, machine.machineId, bootId) };
+		await this.#attachSession(claim, machine, storage, { ...guest, folder: { uid } }, scope, signal);
 		const ready: Prepared = {
 			claim,
 			machine,

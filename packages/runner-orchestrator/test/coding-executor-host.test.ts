@@ -2376,12 +2376,12 @@ describe("a coding session on the folder model", () => {
 		expect(f.onMount.mock.calls).toEqual([
 			[{ workerId: f.claim.workerId, machineId: f.machine.machineId, viewId: f.viewId }],
 		]);
-		// Attached in SQL, then mounted, then the session's repositories made ready on the mount.
+		// The session's repositories made ready first, then attached in SQL, then mounted: the new view lists the worktree.
 		const attached = f.call.mock.calls.findIndex((call) => call[0] === "qorpera_attach_coding_session");
-		expect(f.call.mock.invocationCallOrder[attached]).toBeLessThan(f.views.attach.mock.invocationCallOrder[0]!);
-		expect(f.views.attach.mock.invocationCallOrder[0]).toBeLessThan(
-			f.repositories.prepare.mock.invocationCallOrder[0]!,
+		expect(f.repositories.prepare.mock.invocationCallOrder[0]).toBeLessThan(
+			f.call.mock.invocationCallOrder[attached]!,
 		);
+		expect(f.call.mock.invocationCallOrder[attached]).toBeLessThan(f.views.attach.mock.invocationCallOrder[0]!);
 		expect(f.repositories.prepare.mock.calls[0]?.[0]).toMatchObject({
 			claim: f.claim,
 			machine: f.machine,
@@ -2434,6 +2434,15 @@ describe("a coding session on the folder model", () => {
 		);
 		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
 		expect(f.views.attach).not.toHaveBeenCalled();
+	});
+	it("attaches and mounts nothing when the session's repositories are not made ready", async () => {
+		const f = await folderFixture();
+		f.repositories.prepare.mockRejectedValueOnce(new Error("CODE_HOST_SEED_BASE_GONE"));
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("CODE_HOST_SEED_BASE_GONE");
+		expect(f.repositories.prepare).toHaveBeenCalledTimes(1);
+		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
+		expect(f.views.attach).not.toHaveBeenCalled();
+		expect(f.onMount).not.toHaveBeenCalled();
 	});
 	it("keeps the attachment's generation for a later turn on the same boot, and takes a new one after a restart", async () => {
 		const f = await folderFixture();

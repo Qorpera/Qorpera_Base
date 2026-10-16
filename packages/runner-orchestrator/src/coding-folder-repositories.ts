@@ -6,9 +6,11 @@ import type { LxdCodingMachineBinding } from "./coding-machine.ts";
 // Where a coding session's repository lives on the folder model (F3 step 5g-6a; the plan's "Repositories"). On the
 // NAS model the executor seeds a checkout into the session's own volume and exports a bundle from it; on the folder
 // model the repository is part of the company folder, and the session works in its own worktree there. This is the
-// seam between the executor and that code (5g-6b): on each turn the executor calls `prepare` once the session's view is
-// mounted and before its first command, and `export` when the turn finishes (after the machine's boundary has saved
-// what the session wrote), and it pushes and publishes the bundle itself, as on the NAS model.
+// seam between the executor and that code (5g-6b): on each turn the executor calls `prepare` before it attaches the
+// session and mounts its view, so a view mounted after it lists the session's worktree from its first listing, and
+// `export` when the turn finishes (after the machine's boundary has saved what the session wrote), and it pushes and
+// publishes the bundle itself, as on the NAS model. A later turn of the same attachment keeps the session's view: what
+// its `prepare` puts back in a worktree that is already there reaches that view when the view's feed brings the change.
 
 /** The session as the executor prepared it for this turn, with the authority each repository step needs. */
 export interface CodingFolderRepositorySession {
