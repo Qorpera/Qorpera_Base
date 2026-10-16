@@ -45,17 +45,20 @@ const physical = vi.hoisted(() => ({
 	drain: vi.fn(),
 	browserRequest: vi.fn(),
 	browserLaunch: vi.fn(),
+	notify: vi.fn(),
 }));
 vi.mock("../src/cloud-company-computer-desktop.ts", () => ({
 	prepareCompanyComputerScreenWallpaper: physical.prepare,
 }));
 vi.mock("../src/cloud-company-computer-linux-desktop.ts", () => ({
+	COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT: 4,
 	CompanyComputerLinuxDesktopLauncher: class {
 		launch = physical.launch;
 		close = physical.close;
 		drain = physical.drain;
 		connectRfb = physical.connect;
 		takeBrowserRequest = physical.browserRequest;
+		notify = physical.notify;
 		xSocket() {
 			return "/run/office-screens/fixture/X1";
 		}
@@ -204,6 +207,8 @@ beforeEach(() => {
 	// Reset, not only cleared: a queued "once" request must never leak into the next test.
 	physical.browserRequest.mockReset();
 	physical.browserRequest.mockResolvedValue(false);
+	physical.notify.mockReset();
+	physical.notify.mockResolvedValue(undefined);
 	physical.browserLaunch.mockImplementation(
 		async (
 			_directory: string,
@@ -1714,6 +1719,39 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_open:read",
 		]);
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("leaves the company folder's notices for the screen's desktop, oldest first, once it is ready", async () => {
+		const listen = vi.spyOn(CompanyComputerDesktopFolders.prototype, "listen");
+		try {
+			const h = folderHelper();
+			const f = await fixture({ folderHelper: h.ask });
+			expect(listen).toHaveBeenCalledOnce();
+			const tell = listen.mock.calls[0][0];
+			// Kept until the desktop is ready: at most four, and another screen's are not this desktop's.
+			for (const n of [1, 2, 3, 4, 5]) tell(f.binding.screenId, `${n} changes saved to the company folder.`);
+			tell(computerId(99), "Another screen's notice.");
+			// The launcher's desktop was not ready for the first try, and refuses one notice.
+			physical.notify
+				.mockRejectedValueOnce(new Error("OFFICE_DESKTOP_NOT_READY"))
+				.mockResolvedValueOnce(undefined)
+				.mockRejectedValueOnce(new Error("INVALID_OFFICE_DESKTOP_NOTICE"));
+			const session = await f.create();
+			h.answer("mount", { answer: "mounted" });
+			await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+			await vi.waitFor(() => expect(physical.notify).toHaveBeenCalledTimes(5), { timeout: 3000 });
+			expect(
+				physical.notify.mock.calls.map((call) => [
+					(call[0] as { screenId: string }).screenId === f.binding.screenId,
+					call[1],
+				]),
+			).toEqual([2, 2, 3, 4, 5].map((n) => [true, `${n} changes saved to the company folder.`]));
+			// Each is left once.
+			await new Promise((resolve) => setTimeout(resolve, 1200));
+			expect(physical.notify).toHaveBeenCalledTimes(5);
+			expect(f.failure).not.toHaveBeenCalled();
+		} finally {
+			listen.mockRestore();
+		}
 	});
 	it("gives a run's screen back, with no desktop, when its mount cannot be made", async () => {
 		const h = folderHelper();

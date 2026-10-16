@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, mkdir, mkdtemp, open, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, mkdtemp, open, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import {
@@ -49,6 +49,9 @@ interface Desktop {
 	rfbSocket?: string;
 	sessionDirectory?: string;
 	connections: Set<Socket>;
+	/** The names of the last notices left for the desktop's watcher, oldest first. */
+	notices: string[];
+	noticed: number;
 }
 
 async function privateChild(parent: FileHandle, name: string): Promise<FileHandle> {
@@ -100,6 +103,51 @@ export async function takeCompanyComputerBrowserRequest(
 		() => false,
 	);
 	return removed && info.isFile();
+}
+
+/** Name prefix of the notices the service leaves in the session directory; the desktop's own watcher shows and removes
+ * them (`qorpera-screen-xfce`). */
+export const COMPANY_COMPUTER_DESKTOP_NOTICE_PREFIX = "folder-notice.";
+/** Notices left and not yet taken that a desktop keeps; an older one is removed unseen. */
+export const COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT = 4;
+const DESKTOP_NOTICE_BYTES = 512;
+
+function assertDesktopNotice(text: string): void {
+	if (
+		typeof text !== "string" ||
+		!text ||
+		Buffer.byteLength(text) > DESKTOP_NOTICE_BYTES ||
+		/[\x00-\x09\x0b-\x1f\x7f<>&]/.test(text)
+	)
+		throw new Error("INVALID_OFFICE_DESKTOP_NOTICE");
+}
+
+/**
+ * Leave a notice in a desktop's session directory for its own watcher (`qorpera-screen-xfce`), which shows it with
+ * `notify-send` in the desktop's session and removes it, so the service never enters the desktop. The desktop can
+ * write the directory, so nothing there is read and nothing is opened through a link: the text is written whole under
+ * a fresh hidden name (`wx`) and renamed into place, so the watcher never takes half of one, and only the newest
+ * `COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT` the service left (`left`, the desktop's) are kept, an older one removed by
+ * its name. A hostile desktop can only lose its own notices. Plain text of one line or more, without markup.
+ */
+export async function leaveCompanyComputerDesktopNotice(
+	sessionDirectory: string,
+	left: { notices: string[]; noticed: number },
+	text: string,
+): Promise<void> {
+	assertDesktopNotice(text);
+	const name = `${COMPANY_COMPUTER_DESKTOP_NOTICE_PREFIX}${String(++left.noticed).padStart(12, "0")}.${randomUUID()}`;
+	left.notices.push(name);
+	const older = left.notices.splice(0, Math.max(0, left.notices.length - COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT));
+	await Promise.all(older.map((old) => unlink(join(sessionDirectory, old)).catch(() => undefined)));
+	const written = join(sessionDirectory, `.${COMPANY_COMPUTER_DESKTOP_NOTICE_PREFIX}${randomUUID()}`);
+	try {
+		await writeFile(written, text, { mode: 0o600, flag: "wx" });
+		await rename(written, join(sessionDirectory, name));
+	} catch (error) {
+		await unlink(written).catch(() => undefined);
+		throw error;
+	}
 }
 
 /** Real persistent desktop launcher. Only the admitted supervisor supplies
@@ -196,6 +244,8 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 			stop: new AbortController(),
 			ready: false,
 			connections: new Set(),
+			notices: [],
+			noticed: 0,
 		};
 		this.#desktops.set(binding.screenOrdinal, desktop);
 		desktop.pending = this.#launch(desktop, signal, options.company);
@@ -479,6 +529,13 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 	/** True once per dock-launcher request on this ready desktop; see `takeCompanyComputerBrowserRequest`. */
 	async takeBrowserRequest(binding: CompanyComputerScreenBinding): Promise<boolean> {
 		return takeCompanyComputerBrowserRequest(this.#live(binding).sessionDirectory!);
+	}
+
+	/** Leave a notice for whoever looks at this ready desktop (`leaveCompanyComputerDesktopNotice`). */
+	async notify(binding: CompanyComputerScreenBinding, text: string): Promise<void> {
+		assertDesktopNotice(text);
+		const desktop = this.#live(binding);
+		await leaveCompanyComputerDesktopNotice(desktop.sessionDirectory!, desktop, text);
 	}
 
 	/** Private raw RFB transport. The caller still applies the existing viewer

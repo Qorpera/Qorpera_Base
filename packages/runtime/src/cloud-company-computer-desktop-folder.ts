@@ -34,6 +34,9 @@ export type CompanyComputerScreenHolder =
 	| { readonly kind: "run"; readonly runId: string }
 	| { readonly kind: "member"; readonly userId: string };
 
+/** Told what each desktop is to be told of its folder, by screen ("Notifications"): plain text, a sentence a line. */
+export type CompanyComputerDesktopFolderListener = (screenId: string, text: string) => void;
+
 /**
  * What the company folder did with a run's desktop changes since the report the run was last shown
  * (RUNTIME-FOLDER-COMPANY-MACHINES.md, "How 4f-2 carries the report"). An erased path is "".
@@ -75,7 +78,8 @@ const BOUNDARY_RETRY_MS = 1000;
 /** The least time a drain's boundary is still asked with: the helper takes at least a second. */
 const DRAIN_LAST_ASK_MS = 2000;
 /** A run's report ("How 4f-2 carries the report") reads the core at most once a second, a page of this many units a
- * view, and only while fewer than `REPORT_KEPT` of its items wait to be shown. */
+ * view, into the report only while fewer than `REPORT_KEPT` of its items wait to be shown: past that a read only tells
+ * the desktop, and the report reads the same again once it has room. */
 const REPORT_READ_MS = 1000;
 const REPORT_READ_UNITS = 64;
 const REPORT_KEPT = 64;
@@ -87,6 +91,10 @@ const NOTICES_WAIT_MS = 15000;
 /** The folder service keeps a closed view a minute: its notices are asked at most this long after the view's commits
  * were read to their end. */
 const NOTICES_AFTER_CLOSE_MS = 90000;
+/** A desktop's views are read for its notifications ("Notifications") at least this often while nothing asks for a
+ * report; a quiet refusal told is told again (the same reason and paths) only after `NOTIFY_SAME_MS`. */
+const NOTIFY_READ_MS = 5000;
+const NOTIFY_SAME_MS = 60000;
 
 /** Why a drain's boundary did not take the desktop's last changes, for the report of the run that held it. */
 const REPORT_PAUSED = "the company is paused, so the company folder did not take this desktop's last changes";
@@ -256,6 +264,7 @@ export async function openCompanyComputerFolderParent(
 }
 
 interface Folder {
+	readonly screenId: string;
 	readonly name: string;
 	/** The holder whose view the mount has, and that view. A view outlives its mount until it is closed. */
 	holder?: CompanyComputerScreenHolder;
@@ -287,19 +296,27 @@ type ReportItem = { readonly n: number } & (
 	| { readonly quiet: QuietRefusal }
 );
 
-/** A desktop view opened for a run, as its report reads it. */
+/** A desktop view opened for a run, as its report reads it, or for a member, read for its desktop's notifications. */
 interface ReportView {
 	readonly view: CompanyComputerFolderView;
+	/** The screen whose desktop is told of what is read. */
+	readonly screenId: string;
+	/** The quiet refusals told in the last `NOTIFY_SAME_MS`, by reason and paths, and when (performance.now()). */
+	readonly told: Map<string, number>;
 	/** The core's commits: read after the last one read (`after`), until the view is closed and read to its end. */
 	after?: string;
+	/** The last commit the desktop was told of by a read past the report's (`REPORT_KEPT`), while the report has not
+	 * read it yet. */
+	ahead?: string;
 	more: boolean;
 	done: boolean;
 	/** The folder service's notices ("Refusals come from the folder service"): asked after the last one (`after`, in
 	 * the series `nonce`), one ask at a time, until the service no longer holds the view once its commits are done, or
-	 * `until` (performance.now()) passed. */
+	 * `until` (performance.now()) passed. `ahead` is where a read past the report's told the desktop to. */
 	readonly notices: {
 		after: number;
 		nonce: string | null;
+		ahead?: { after: number; nonce: string };
 		more: boolean;
 		done: boolean;
 		until: number;
@@ -307,10 +324,13 @@ interface ReportView {
 	};
 }
 
-/** A run's report until the run is shown it, kept while one of the run's sessions lives. */
+/** A run's report until the run is shown it, kept while one of the run's sessions lives. A member's view has one too,
+ * never shown to anybody: its reads only tell the desktop. */
 interface RunReport {
 	/** Names the record in its marks: a mark of the run's earlier record drops nothing. */
 	readonly id: string;
+	/** False for a member's view: what its reads keep is dropped after each. */
+	readonly reported: boolean;
 	/** The desktop views opened for the run. */
 	views: ReportView[];
 	items: ReportItem[];
@@ -336,6 +356,9 @@ export class CompanyComputerDesktopFolders {
 	readonly #log: (line: string) => void;
 	readonly #folders = new Map<string, Folder>();
 	readonly #runs = new Map<string, RunReport>();
+	/** A member's views, by view id, read until each is read to its end. */
+	readonly #members = new Map<string, RunReport>();
+	readonly #listeners = new Set<CompanyComputerDesktopFolderListener>();
 
 	constructor(options: {
 		registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
@@ -350,6 +373,22 @@ export class CompanyComputerDesktopFolders {
 		this.#ask = options.ask ?? askCompanyComputerFolderHelper;
 		this.#socket = options.socket;
 		this.#log = options.log ?? ((line) => console.error(line));
+	}
+
+	/** Tell `listener` what each desktop is to be told of its folder ("Notifications"), until the answer is called. */
+	listen(listener: CompanyComputerDesktopFolderListener): () => void {
+		this.#listeners.add(listener);
+		return () => this.#listeners.delete(listener);
+	}
+
+	#tell(screenId: string, text: string | undefined): void {
+		if (!text) return;
+		for (const listener of this.#listeners)
+			try {
+				listener(screenId, text);
+			} catch {
+				// A listener's failure is its own.
+			}
 	}
 
 	#helper<Request extends Exclude<CompanyComputerFolderRequest, { op: "run" }>>(
@@ -368,6 +407,7 @@ export class CompanyComputerDesktopFolders {
 		let folder = this.#folders.get(screenId);
 		if (!folder) {
 			folder = {
+				screenId,
 				name: companyComputerFolderName("desktop", screenId),
 				mounted: false,
 				epoch: 0,
@@ -426,7 +466,7 @@ export class CompanyComputerDesktopFolders {
 				listed?.answer !== "list" ||
 				(mount?.viewId === folder.view.viewId && (mount.program === "running" || mount.program === "restarting"))
 			) {
-				this.#opened(holder, folder.view);
+				this.#opened(holder, folder.view, folder.screenId);
 				return { name: folder.name, epoch: folder.epoch };
 			}
 			if (!(await this.#unmount(folder))) return UNAVAILABLE;
@@ -452,7 +492,7 @@ export class CompanyComputerDesktopFolders {
 					// A mount this record did not know of (`held` below) is new to every desktop.
 					if (!folder.mounted) folder.epoch++;
 					Object.assign(folder, { mounted: true, view, holder });
-					this.#opened(holder, view);
+					this.#opened(holder, view, folder.screenId);
 					return { name: folder.name, epoch: folder.epoch };
 				}
 				if (answer === "closed" && !(await this.#unmount(folder))) break;
@@ -465,7 +505,7 @@ export class CompanyComputerDesktopFolders {
 			if (answer === "mounted") {
 				folder.epoch++;
 				Object.assign(folder, { mounted: true, view, holder });
-				this.#opened(holder, view);
+				this.#opened(holder, view, folder.screenId);
 				return { name: folder.name, epoch: folder.epoch };
 			}
 			if (answer !== "held") break;
@@ -597,7 +637,7 @@ export class CompanyComputerDesktopFolders {
 				this.#log(
 					`office-folder: drain ${folder.name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
 				);
-				this.#drained(holder, answer);
+				this.#drained(holder, answer, folder.screenId);
 				if (answer.answer === "unknown" || answer.unmounted) {
 					folder.mounted = false;
 					break;
@@ -730,16 +770,7 @@ export class CompanyComputerDesktopFolders {
 		if (signal.aborted) return;
 		let record = this.#runs.get(runId);
 		if (!record) {
-			record = {
-				id: randomUUID(),
-				views: [],
-				items: [],
-				next: 0,
-				given: 0,
-				signals: new Set(),
-				readAt: Number.NEGATIVE_INFINITY,
-				stop: new AbortController(),
-			};
+			record = this.#record(true);
 			this.#runs.set(runId, record);
 		}
 		if (record.signals.has(signal)) return;
@@ -779,10 +810,37 @@ export class CompanyComputerDesktopFolders {
 			const last = Number(mark[2]);
 			record.items = record.items.filter((item) => item.n > last);
 		}
+		const reading = this.#readNow(record);
+		// A full report's read only tells the desktop: nothing to wait for.
+		if (reading && !full(record)) await within(reading, signal, until, undefined);
+		return reportOf(record);
+	}
+
+	/** A record whose views are read at least every `NOTIFY_READ_MS` until it stops, for their desktops' notifications. */
+	#record(reported: boolean): RunReport {
+		const record: RunReport = {
+			id: randomUUID(),
+			reported,
+			views: [],
+			items: [],
+			next: 0,
+			given: 0,
+			signals: new Set(),
+			readAt: Number.NEGATIVE_INFINITY,
+			stop: new AbortController(),
+		};
+		const pump = setInterval(() => void this.#readNow(record), NOTIFY_READ_MS);
+		pump.unref?.();
+		record.stop.signal.addEventListener("abort", () => clearInterval(pump), { once: true });
+		return record;
+	}
+
+	/** The record's read now, unless one runs, none is due (at most once a second), or its views are read to their end. */
+	#readNow(record: RunReport): Promise<void> | undefined {
 		if (
 			!record.reading &&
+			!record.stop.signal.aborted &&
 			record.views.some((entry) => !entry.done || !entry.notices.done) &&
-			record.items.length < REPORT_KEPT &&
 			performance.now() - record.readAt >= REPORT_READ_MS
 		)
 			record.reading = this.#read(record)
@@ -790,23 +848,28 @@ export class CompanyComputerDesktopFolders {
 				.finally(() => {
 					record.reading = undefined;
 					record.readAt = performance.now();
+					if (record.reported) return;
+					// A member's view: nobody is shown the items, and one read to its end stops.
+					record.items = [];
+					if (record.views.every((entry) => entry.done && entry.notices.done)) record.stop.abort();
 				});
-		if (record.reading) await within(record.reading, signal, until, undefined);
-		return reportOf(record);
+		return record.reading;
 	}
 
-	/** A page of each view's commits since the last one read, and of its notices, into the run's report. */
+	/** A page of each view's commits since the last one read, and of its notices, into the run's report; for a report
+	 * that holds `REPORT_KEPT` items not shown, a page since the last one told, for the desktop only. */
 	async #read(record: RunReport): Promise<void> {
 		for (const entry of record.views) {
 			if (record.stop.signal.aborted) return;
-			if (!entry.done) await this.#commits(record, entry);
-			if (!entry.notices.done) await this.#notices(record, entry);
+			if (!entry.done) await this.#commits(record, entry, full(record));
+			if (!entry.notices.done) await this.#notices(record, entry, full(record));
 		}
 	}
 
 	/** A refusal, or an answer that is not a page, ends a view's reads; a call with no answer is made again at the next
-	 * read. */
-	async #commits(record: RunReport, entry: ReportView): Promise<void> {
+	 * read. A read `ahead` of the report's tells the desktop only and keeps nothing; the report's read tells only the
+	 * commits after the last one it told. */
+	async #commits(record: RunReport, entry: ReportView, ahead: boolean): Promise<void> {
 		const ended = (): void => {
 			Object.assign(entry, { more: false, done: true });
 			entry.notices.until = performance.now() + NOTICES_AFTER_CLOSE_MS;
@@ -818,7 +881,7 @@ export class CompanyComputerDesktopFolders {
 				{
 					p_view_id: entry.view.viewId,
 					p_pass: entry.view.pass,
-					p_after_commit_id: entry.after ?? null,
+					p_after_commit_id: (ahead ? (entry.ahead ?? entry.after) : entry.after) ?? null,
 					p_limit: REPORT_READ_UNITS,
 				},
 				AbortSignal.any([record.stop.signal, AbortSignal.timeout(LIST_WAIT_MS)]),
@@ -829,13 +892,28 @@ export class CompanyComputerDesktopFolders {
 		}
 		const page = viewCommits(answer, entry.view.viewId);
 		if (!page) return ended();
+		const told: string[] = [];
 		for (const commit of page.commits) {
-			const saved = commit.units.filter((unit) => unit.outcome === "saved").length;
-			if (saved > 0) record.items.push({ n: ++record.next, saved });
+			const outcomes = commit.units.map((unit) => unit.outcome);
+			if (ahead) {
+				told.push(...outcomes);
+				entry.ahead = commit.commitId;
+				continue;
+			}
+			const saved = outcomes.filter((outcome) => outcome === "saved").length;
+			const last = record.items.at(-1);
+			// Saves follow each other on one item that no report was given yet.
+			if (saved > 0 && last && "saved" in last && last.n > record.given)
+				record.items[record.items.length - 1] = { n: last.n, saved: last.saved + saved };
+			else if (saved > 0) record.items.push({ n: ++record.next, saved });
 			for (const unit of commit.units)
 				if (unit.outcome !== "saved") record.items.push({ n: ++record.next, notSaved: reportNotSaved(unit) });
 			entry.after = commit.commitId;
+			if (entry.ahead === undefined) told.push(...outcomes);
+			else if (entry.ahead === commit.commitId) entry.ahead = undefined;
 		}
+		this.#tell(entry.screenId, folderNotice(told));
+		if (ahead) return;
 		entry.more = page.more;
 		if (page.closed && !page.more) ended();
 	}
@@ -843,22 +921,36 @@ export class CompanyComputerDesktopFolders {
 	/**
 	 * One ask of a view's notices after the last one, into the run's report: each change set the folder service refused
 	 * whole at a boundary no machine asked for (a commit's paths come with the view's commits). No answer is asked again
-	 * at the next read. Asks of a view go one at a time.
+	 * at the next read. Asks of a view go one at a time. An ask `ahead` of the report's, after the last one told, tells
+	 * the desktop only; the report's ask tells only the notices after that.
 	 */
-	#notices(record: RunReport, entry: ReportView): Promise<void> {
+	#notices(record: RunReport, entry: ReportView, ahead = false): Promise<void> {
 		const notices = entry.notices;
 		notices.asking = notices.asking
 			.then(async () => {
 				if (notices.done || record.stop.signal.aborted) return;
+				const from = ahead ? (notices.ahead ?? notices) : notices;
 				const answer = await this.#helper(
-					{ op: "notices", view: entry.view, after: notices.after, nonce: notices.nonce },
+					{ op: "notices", view: entry.view, after: from.after, nonce: from.nonce },
 					NOTICES_WAIT_MS,
 					record.stop.signal,
 				);
 				const page = answer?.answer === "notices" ? answer : undefined;
+				if (ahead) {
+					if (!page?.nonce) return;
+					for (const notice of page.notices) if ("refused" in notice) this.#toldQuiet(entry, notice);
+					notices.ahead = { after: page.last, nonce: page.nonce };
+					return;
+				}
 				if (page?.nonce) {
+					// Told already up to `told`, unless the service began a new series.
+					const told = notices.ahead?.nonce === page.nonce ? notices.ahead.after : undefined;
 					for (const notice of page.notices)
-						if ("refused" in notice) this.#quiet(record, entry.view.viewId, notice);
+						if ("refused" in notice) {
+							this.#quiet(record, entry.view.viewId, notice);
+							if (told === undefined || notice.n > told) this.#toldQuiet(entry, notice);
+						}
+					if (told === undefined || page.last >= told) notices.ahead = undefined;
 					Object.assign(notices, { after: page.last, nonce: page.nonce, more: page.more });
 				} else notices.more = false;
 				// The service let the view go once it closed, or has kept it past the minute.
@@ -896,8 +988,32 @@ export class CompanyComputerDesktopFolders {
 			});
 	}
 
+	/** The desktop is told of a quiet refusal once: the same one again (the same reason and paths) only after
+	 * `NOTIFY_SAME_MS`, whatever was told between. */
+	#toldQuiet(entry: ReportView, notice: Extract<CompanyComputerFolderNotice, { refused: string }>): void {
+		const key = JSON.stringify([notice.refused, notice.pathCount, notice.paths]);
+		const now = performance.now();
+		for (const [told, at] of entry.told) if (now - at >= NOTIFY_SAME_MS) entry.told.delete(told);
+		if (entry.told.has(key)) return;
+		entry.told.set(key, now);
+		const { viewId } = entry.view;
+		this.#tell(
+			entry.screenId,
+			sentence(
+				quietRefusal({
+					viewId,
+					reason: notice.refused,
+					paths: notice.paths,
+					pathCount: notice.pathCount,
+					times: 1,
+				}),
+			),
+		);
+	}
+
 	/** The holder no longer has the view (the mount moved to a newer one, or went): its notices are asked once more,
-	 * while the folder service still keeps them, so the run's report has them whenever it is asked for. */
+	 * while the folder service still keeps them, so the run's report has them whenever it is asked for. (A member's
+	 * view is read on by its own record.) */
 	#lastNotices(holder: CompanyComputerScreenHolder | undefined, view: CompanyComputerFolderView | undefined): void {
 		const record = holder?.kind === "run" ? this.#runs.get(holder.runId) : undefined;
 		const entry = record?.views.find((entry) => entry.view.viewId === view?.viewId);
@@ -905,12 +1021,27 @@ export class CompanyComputerDesktopFolders {
 	}
 
 	/** A view the run now holds: its commits go into the run's report. A view it held before keeps its place, read or
-	 * done, so no commit is reported twice. */
-	#opened(holder: CompanyComputerScreenHolder, view: CompanyComputerFolderView): void {
-		const record = holder.kind === "run" ? this.#runs.get(holder.runId) : undefined;
+	 * done, so no commit is reported twice. A member's view gets a record of its own, read until it is read to its end,
+	 * so the desktop is told of it too. */
+	#opened(holder: CompanyComputerScreenHolder, view: CompanyComputerFolderView, screenId: string): void {
+		let record = holder.kind === "run" ? this.#runs.get(holder.runId) : this.#members.get(view.viewId);
+		if (!record && holder.kind === "member") {
+			const member = this.#record(false);
+			member.stop.signal.addEventListener(
+				"abort",
+				() => {
+					if (this.#members.get(view.viewId) === member) this.#members.delete(view.viewId);
+				},
+				{ once: true },
+			);
+			this.#members.set(view.viewId, member);
+			record = member;
+		}
 		if (record && !record.views.some((entry) => entry.view.viewId === view.viewId))
 			record.views.push({
 				view,
+				screenId,
+				told: new Map(),
 				more: false,
 				done: false,
 				notices: {
@@ -924,9 +1055,18 @@ export class CompanyComputerDesktopFolders {
 			});
 	}
 
-	/** A drain's final answer, for the report of the run that held the desktop: why its last changes were not taken,
-	 * and the paths of a change set that made no commit (a commit's paths come with its units). */
-	#drained(holder: CompanyComputerScreenHolder | undefined, answer: CompanyComputerFolderAnswer<"unmount">): void {
+	/** A drain's final answer, for the desktop and the report of the run that held it: why its last changes were not
+	 * taken, and the paths of a change set that made no commit (a commit's paths come with its units). */
+	#drained(
+		holder: CompanyComputerScreenHolder | undefined,
+		answer: CompanyComputerFolderAnswer<"unmount">,
+		screenId: string,
+	): void {
+		if (answer.answer === "closed") this.#tell(screenId, sentence(REPORT_CLOSED));
+		else if (answer.answer === "refused" && answer.report.refused !== undefined)
+			this.#tell(screenId, sentence(reportRefusal(answer.report.refused)));
+		else if (answer.answer === "refused" && answer.report.commitId === null)
+			this.#tell(screenId, folderNotice(answer.report.paths.map((entry) => entry.outcome)));
 		const record = holder?.kind === "run" ? this.#runs.get(holder.runId) : undefined;
 		if (!record) return;
 		if (answer.answer === "closed") record.items.push({ n: ++record.next, refused: REPORT_CLOSED });
@@ -937,6 +1077,11 @@ export class CompanyComputerDesktopFolders {
 			for (const entry of report.paths)
 				if (entry.outcome !== "saved") record.items.push({ n: ++record.next, notSaved: reportNotSaved(entry) });
 	}
+}
+
+/** A run's report that holds `REPORT_KEPT` items not shown: its reads only tell the desktops until it has room. */
+function full(record: RunReport): boolean {
+	return record.reported && record.items.length >= REPORT_KEPT;
 }
 
 /** The report from a run's items not yet shown, with the mark of the last item it holds (from then on given). */
@@ -1055,6 +1200,30 @@ function quietRefusal({ reason, pathCount, times }: QuietRefusal): string {
 					? `the company folder refused ${changes}: the desktop's reads could not be shown complete`
 					: `the company folder refused ${changes}`;
 	return times > 1 ? `${text} (${times} times)` : text;
+}
+
+/** What a desktop is told of its changes the company folder settled ("Notifications"), a line an outcome, or nothing. */
+function folderNotice(outcomes: readonly string[]): string | undefined {
+	const saved = outcomes.filter((outcome) => outcome === "saved").length;
+	const waiting = outcomes.filter((outcome) => outcome === "waiting_for_review").length;
+	const conflict = outcomes.filter((outcome) => outcome === "conflict").length;
+	const other = outcomes.length - saved - waiting - conflict;
+	const lines = [
+		...(saved > 0 ? [`${changes(saved)} saved to the company folder.`] : []),
+		...(waiting > 0 ? [`${changes(waiting)} waiting for a member's approval.`] : []),
+		...(conflict > 0 ? [`${changes(conflict)} not saved: the company folder had a newer version.`] : []),
+		...(other > 0 ? [`${changes(other)} not saved.`] : []),
+	];
+	return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+function changes(count: number): string {
+	return count === 1 ? "1 change" : `${count} changes`;
+}
+
+/** A report's words as a desktop's notice: a sentence. */
+function sentence(text: string): string {
+	return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
 
 /** A text's bytes in a tool result, whose JSON writes `<`, `>`, `&`, U+2028 and U+2029 as escapes (counted at six

@@ -1169,6 +1169,277 @@ describe("a run's report of its desktop changes", () => {
 		await expect(report(f)).resolves.toMatchObject({ report: { saved: 0, refused: words } });
 	});
 
+	it("tells the screen's desktop what each read finds, and the same quiet refusal again only after a minute", async () => {
+		const t = clock();
+		const f = await followed();
+		const told: [string, string][] = [];
+		const unlisten = f.folders.listen((screenId, text) => told.push([screenId, text]));
+		f.folders.listen(() => {
+			throw new Error("a listener's own failure");
+		});
+		f.pages.push(
+			page(1, [
+				{
+					id: 60,
+					units: [
+						{ path: "docs/a.md", outcome: "saved" },
+						{ path: "docs/b.md", outcome: "saved" },
+						{ path: "docs/c.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" },
+						{ path: "docs/d.md", outcome: "waiting_for_review" },
+						{ path: "docs/e.md", outcome: "denied" },
+					],
+				},
+			]),
+		);
+		f.answer("notices", noticed(1, [{ reason: "refused", paths: ["docs/f.md"] }]));
+		await report(f);
+		expect(told).toEqual([
+			[
+				binding.screenId,
+				"2 changes saved to the company folder.\n1 change waiting for a member's approval.\n" +
+					"1 change not saved: the company folder had a newer version.\n1 change not saved.",
+			],
+			[binding.screenId, "The company folder refused a change on this desktop."],
+		]);
+		// The same refusal within the minute is counted on the report, not told again; another one is.
+		t.skip();
+		f.answer(
+			"notices",
+			noticed(3, [
+				{ reason: "refused", paths: ["docs/f.md"] },
+				{ reason: "stopped", paths: [], pathCount: 3 },
+			]),
+		);
+		await report(f);
+		expect(told.slice(2)).toEqual([
+			[binding.screenId, "The company is paused, so the company folder did not take 3 changes on this desktop."],
+		]);
+		t.skip(60000);
+		f.answer("notices", noticed(6, [{ reason: "stopped", paths: [], pathCount: 3 }]));
+		await report(f);
+		expect(told.slice(3)).toEqual([
+			[binding.screenId, "The company is paused, so the company folder did not take 3 changes on this desktop."],
+		]);
+		// No longer told once the listener goes.
+		unlisten();
+		t.skip(60000);
+		f.answer("notices", noticed(8, [{ reason: "refused", paths: ["docs/g.md"] }]));
+		await report(f);
+		expect(told).toHaveLength(4);
+	});
+
+	it("tells a quiet refusal again only after a minute, whatever was told between", async () => {
+		const t = clock();
+		const f = await followed();
+		const told: string[] = [];
+		f.folders.listen((_screenId, text) => told.push(text));
+		// An editor's lock file comes and goes while the company is paused.
+		const one = { reason: "refused", paths: ["docs/a.md"] };
+		const two = { reason: "refused", paths: ["docs/a.md", "docs/a.md~lock"] };
+		for (const { n, refused, skip } of [
+			{ n: 1, refused: one, skip: 0 },
+			{ n: 3, refused: two, skip: 1000 },
+			{ n: 5, refused: one, skip: 1000 },
+			{ n: 7, refused: two, skip: 1000 },
+			{ n: 9, refused: one, skip: 60000 },
+		]) {
+			t.skip(skip);
+			f.pages.push(page(1, []));
+			f.answer("notices", noticed(n, [refused]));
+			await report(f);
+		}
+		expect(asks(f)).toHaveLength(5);
+		expect(told).toEqual([
+			"The company folder refused a change on this desktop.",
+			"The company folder refused 2 changes on this desktop.",
+			"The company folder refused a change on this desktop.",
+		]);
+	});
+
+	it("tells the desktop why a drain did not take its last changes, whoever held it", async () => {
+		const f = await followed();
+		const told: string[] = [];
+		f.folders.listen((screenId, text) => told.push(`${screenId === binding.screenId}: ${text}`));
+		f.answer("unmount", {
+			answer: "refused",
+			report: {
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: "docs/a.md", outcome: "not_applied", reason: "the save did not get through" },
+					{ path: "docs/b.md", outcome: "saved" },
+				],
+				refused: "stopped",
+			},
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		// A boundary that made no commit and has no refusal of its own: what became of the paths.
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(run);
+		f.answer("unmount", {
+			answer: "refused",
+			report: {
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: "docs/c.md", outcome: "conflict" },
+					{ path: "docs/d.md", outcome: "conflict" },
+				],
+			},
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		// A boundary that made a commit: the desktop is told of it when the view's commits are read.
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(run);
+		f.answer("unmount", {
+			answer: "refused",
+			report: { commitId: computerId(60), seq: 7, paths: [{ path: "docs/e.md", outcome: "conflict" }] },
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		// A member's desktop is told too.
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(member);
+		f.answer("unmount", { answer: "closed", unmounted: true });
+		await drain(f);
+		expect(told).toEqual([
+			"true: The company is paused, so the company folder did not take this desktop's last changes.",
+			"true: 2 changes not saved: the company folder had a newer version.",
+			"true: The company folder had closed this desktop's view, so it did not take its last changes.",
+		]);
+	});
+
+	it("reads a member's view for their desktop every five seconds until it is read to its end", async () => {
+		/** The reads' answers, which the fake timers do not wait for. */
+		const settle = async () => {
+			for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+		};
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const t = clock();
+			const f = fixture();
+			const told: string[] = [];
+			f.folders.listen((_screenId, text) => told.push(text));
+			f.answer("mount", { answer: "mounted" });
+			await f.hold(member);
+			expect(f.commits).toEqual([]);
+			f.pages.push(page(1, [{ id: 60, units: [{ path: "docs/a.md", outcome: "saved" }] }]));
+			f.answer("notices", noticed(1, [{ reason: "unproven", paths: ["docs/b.md", "docs/c.md"] }]));
+			await vi.advanceTimersByTimeAsync(5000);
+			await settle();
+			expect(f.commits).toEqual([
+				{ p_view_id: computerId(101), p_pass: "pass-1", p_after_commit_id: null, p_limit: 64 },
+			]);
+			expect(told).toEqual([
+				"1 change saved to the company folder.",
+				"The company folder refused 2 changes on this desktop: the desktop's reads could not be shown complete.",
+			]);
+			// The view closed and was read to its end, and the folder service no longer keeps it: the reads stop.
+			t.skip();
+			f.answer("notices", { answer: "notices", nonce: null, notices: [], last: 0, more: false });
+			await vi.advanceTimersByTimeAsync(5000);
+			await settle();
+			expect(f.commits).toHaveLength(2);
+			expect(asks(f)).toHaveLength(2);
+			t.skip(60000);
+			await vi.advanceTimersByTimeAsync(30000);
+			await settle();
+			expect(f.commits).toHaveLength(2);
+			expect(asks(f)).toHaveLength(2);
+			expect(told).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("tells a run's desktop on the five-second reads alone, and past a full report reads ahead of it, telling nothing twice", async () => {
+		/** The reads' answers, which the fake timers do not wait for. */
+		const settle = async () => {
+			for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+		};
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const t = clock();
+			const f = await followed();
+			const told: string[] = [];
+			f.folders.listen((_screenId, text) => told.push(text));
+			const refused = { reason: "refused", paths: ["docs/f.md"] };
+			const unproven = { reason: "unproven", paths: ["docs/b.md", "docs/c.md"] };
+			const paused = { reason: "stopped", paths: [], pathCount: 3 };
+			// No report is asked for: the reads every five seconds tell the desktop. One page fills the report.
+			const conflicts = Array.from({ length: 64 }, (_, n) => ({ path: `docs/${n}.md`, outcome: "conflict" }));
+			f.pages.push(page(1, [{ id: 60, units: conflicts }], { more: true }));
+			f.answer("notices", noticed(1, [refused]));
+			await vi.advanceTimersByTimeAsync(5000);
+			await settle();
+			expect(told).toEqual([
+				"64 changes not saved: the company folder had a newer version.",
+				"The company folder refused a change on this desktop.",
+			]);
+			// The report holds 64 items not shown: the reads go on from where the desktop was told, for it alone.
+			t.skip();
+			f.pages.push(page(1, [{ id: 61, units: [{ path: "docs/a.md", outcome: "saved" }] }]));
+			f.answer("notices", noticed(3, [unproven]));
+			await vi.advanceTimersByTimeAsync(5000);
+			await settle();
+			expect(told.slice(2)).toEqual([
+				"1 change saved to the company folder.",
+				"The company folder refused 2 changes on this desktop: the desktop's reads could not be shown complete.",
+			]);
+			expect(f.commits.map((args) => args.p_after_commit_id)).toEqual([null, computerId(60)]);
+			expect(asks(f).slice(1)).toEqual([{ op: "notices", view: f.view(1), after: 2, nonce: NONCE }]);
+			// Once the report has room it reads the same again from its own place, and the desktop is told only what is
+			// new, a minute later too.
+			const first = await report(f);
+			expect(first?.report).toEqual({ saved: 0, notSaved: conflicts.slice(0, 20), more: true });
+			t.skip(60000);
+			f.pages.push(
+				page(1, [
+					{ id: 61, units: [{ path: "docs/a.md", outcome: "saved" }] },
+					{
+						id: 62,
+						units: [
+							{ path: "docs/d.md", outcome: "saved" },
+							{ path: "docs/e.md", outcome: "saved" },
+						],
+					},
+				]),
+			);
+			f.answer("notices", {
+				...noticed(5, [paused]),
+				notices: [noticed(1, [refused]), noticed(3, [unproven]), noticed(5, [paused])].flatMap(
+					(answer) => answer.notices,
+				),
+			});
+			const second = await report(f, first!.mark);
+			expect(second?.report).toEqual({ saved: 0, notSaved: conflicts.slice(20, 40), more: true });
+			expect(f.commits.map((args) => args.p_after_commit_id)).toEqual([null, computerId(60), computerId(60)]);
+			expect(asks(f)[2]).toEqual({ op: "notices", view: f.view(1), after: 0, nonce: null });
+			expect(told.slice(4)).toEqual([
+				"2 changes saved to the company folder.",
+				"The company is paused, so the company folder did not take 3 changes on this desktop.",
+			]);
+			// The report has every save and refusal all the same; saves in a row are one item.
+			const third = await report(f, second!.mark);
+			expect(third?.report).toEqual({ saved: 0, notSaved: conflicts.slice(40, 60), more: true });
+			const fourth = await report(f, third!.mark);
+			expect(fourth?.report).toMatchObject({
+				saved: 3,
+				refused: "the company folder refused a change on this desktop",
+				more: true,
+			});
+			expect(fourth?.report.notSaved).toHaveLength(5);
+			expect(told).toHaveLength(6);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("keeps the report while one of the run's sessions lives, and reports no commit twice when a view is held again", async () => {
 		const t = clock();
 		const one = new AbortController();

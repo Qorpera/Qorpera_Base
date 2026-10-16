@@ -49,7 +49,10 @@ import {
 } from "./cloud-company-computer-leases.ts";
 import { createCompanyComputerLinuxBrowserLaunch } from "./cloud-company-computer-linux-browser.ts";
 import { CompanyComputerLinuxCommands } from "./cloud-company-computer-linux-commands.ts";
-import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-linux-desktop.ts";
+import {
+	COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT,
+	CompanyComputerLinuxDesktopLauncher,
+} from "./cloud-company-computer-linux-desktop.ts";
 import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linux-host.ts";
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
 import {
@@ -193,6 +196,8 @@ const SHELL_REPORT_ATTEMPTS = 10;
 const SHELL_REPORT_ITEMS = 64;
 /** How long a run's folder report waits for its read of the core: a tool result waits for its report. */
 const FOLDER_REPORT_WAIT_MS = 800;
+/** A desktop's notice not shown this long (its desktop was not ready) is dropped: it would come too late to help. */
+const DESKTOP_NOTICE_KEPT_MS = 120000;
 
 /** One screen's shell in a report: whole when its lists name every command it has, open and ended. */
 export interface CompanyComputerShellReportScreen {
@@ -282,6 +287,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #shellActivity: ReturnType<typeof setInterval>;
 	/** Ends the heaviest shell before the machine runs out of memory or tasks. */
 	readonly #shellPressure: CompanyComputerShellPressureGuard;
+	/** Each screen's notices from the company folder not yet left for its desktop, oldest first. */
+	readonly #desktopNotices = new Map<string, { text: string; at: number }[]>();
+	readonly #unlisten?: () => void;
 
 	constructor(options: CompanyComputerLinuxGuestOptions) {
 		assertCompanyComputerScope(options.scope, options.scope);
@@ -319,6 +327,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		});
 		this.#shellActivity = setInterval(() => void this.#reportShellActivity(), 30000);
 		this.#shellActivity.unref?.();
+		this.#unlisten = options.folders?.listen((screenId, text) => this.#desktopNotice(screenId, text));
 		this.#shellPressure = new CompanyComputerShellPressureGuard({
 			shells: () => [...this.#screens.values()].flatMap((screen) => (screen.shell ? [screen.shell] : [])),
 		});
@@ -752,7 +761,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const poll = (): void => {
 			if (screen.closing || screen.stop.signal.aborted || this.#closing || this.#stop.signal.aborted) return;
 			screen.requests = setTimeout(() => {
-				void Promise.resolve()
+				void this.#deliverDesktopNotices(screen)
 					.then(() => this.#desktop.takeBrowserRequest(screen.binding))
 					.then(async (requested) => {
 						if (!requested || screen.closing || screen.stop.signal.aborted) return;
@@ -767,6 +776,37 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			}, 500);
 		};
 		poll();
+	}
+
+	/** What the company folder did with a desktop's changes ("Notifications"), kept for its desktop: at most
+	 * `COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT` a screen, for `DESKTOP_NOTICE_KEPT_MS`. */
+	#desktopNotice(screenId: string, text: string): void {
+		const now = performance.now();
+		for (const [id, queued] of this.#desktopNotices)
+			if (queued.every((notice) => now - notice.at >= DESKTOP_NOTICE_KEPT_MS)) this.#desktopNotices.delete(id);
+		const queued = this.#desktopNotices.get(screenId) ?? [];
+		queued.push({ text, at: now });
+		queued.splice(0, Math.max(0, queued.length - COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT));
+		this.#desktopNotices.set(screenId, queued);
+	}
+
+	/** The screen's kept notices, oldest first, left for its desktop's watcher with each poll. One the launcher refuses
+	 * is dropped; any other failure (the desktop is not ready) leaves the rest for the next poll. Never fails. */
+	async #deliverDesktopNotices(screen: SharedScreen): Promise<void> {
+		const queued = this.#desktopNotices.get(screen.binding.screenId);
+		while (queued?.length) {
+			const notice = queued[0];
+			if (performance.now() - notice.at < DESKTOP_NOTICE_KEPT_MS)
+				try {
+					await this.#desktop.notify(screen.binding, notice.text);
+				} catch (error) {
+					if (!(error instanceof Error && error.message === "INVALID_OFFICE_DESKTOP_NOTICE")) return;
+				}
+			const at = queued.indexOf(notice);
+			if (at >= 0) queued.splice(at, 1);
+		}
+		if (queued && this.#desktopNotices.get(screen.binding.screenId) === queued)
+			this.#desktopNotices.delete(screen.binding.screenId);
 	}
 
 	/**
@@ -1494,6 +1534,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	close(): Promise<void> {
 		this.#stop.abort();
 		clearInterval(this.#shellActivity);
+		this.#unlisten?.();
 		this.#shellPressure.close();
 		this.#closing ??= Promise.resolve().then(() =>
 			cloudToolRequest(
