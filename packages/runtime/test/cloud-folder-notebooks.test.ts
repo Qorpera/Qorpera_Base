@@ -149,6 +149,31 @@ it("composes the notebook and the skill catalog through the folder, and releases
 	).rejects.toThrow("inside a tool call");
 });
 
+it("never follows a link: reading one is not text, a listing leaves it out, and a SKILL.md that is one is not loaded", async () => {
+	const f = await fixture({
+		files: { "skills/invoices/SKILL.md": "---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n" },
+		links: {
+			"skills/latest": "invoices",
+			"skills/invoices/NOTES.md": "SKILL.md",
+			"skills/reports/SKILL.md": "../invoices/SKILL.md",
+		},
+	});
+	const signal = new AbortController().signal;
+	const { composition } = f.notebooks;
+	const link = composition.readTrusted("skills/invoices/NOTES.md", signal);
+	await expect(link).rejects.toThrow("Company folder path is a link");
+	expect((await composition.listTrusted("skills", signal)).map((entry) => entry.path)).toEqual([
+		"skills/invoices",
+		"skills/reports",
+	]);
+	// The catalog names a skill whose SKILL.md is a link as one it cannot read, never the file the link names.
+	const skills = await composeCloudAgentSkills(composition, f.identity, signal, PLACE);
+	expect(skills.company.skills).toEqual([
+		{ name: "invoices", description: "How to send an invoice" },
+		{ name: "reports", problem: "unreadable" },
+	]);
+});
+
 it("creates, reads and deletes the agent's own skill through the folder core; the deletion records its review", async () => {
 	const f = await fixture({ folders: ["agents/nora/skills"] });
 	const path = "agents/nora/skills/call-the-bank/SKILL.md";
@@ -264,4 +289,158 @@ it("refuses a skill deletion with no approval before taking a receipt", async ()
 	expect(deleted).toMatchObject({ state: "denied", saved: false });
 	expect(f.operationControl.beginToolOperation.mock.calls.length).toBe(begun);
 	expect(f.files.has(path)).toBe(true);
+});
+
+it("says nothing was saved, rather than an unknown outcome, when the notebook file keeps changing", async () => {
+	const f = await fixture({ files: { [LOG]: "- (2026-10-01) First\n" }, folders: ["agents/nora/memory"] });
+	const original = CloudCompanyFolderClient.prototype.commit;
+	let writers = 0;
+	vi.spyOn(CloudCompanyFolderClient.prototype, "commit").mockImplementation(async function (
+		this: CloudCompanyFolderClient,
+		...args
+	) {
+		// Another writer saves the month between each read of this write and its commit.
+		if (args[1].some((unit) => unit.op === "write" && unit.path === LOG))
+			f.seed(LOG, `${f.text(LOG)}- (2026-10-02) Other run ${++writers}\n`);
+		return original.apply(this, args);
+	});
+	const answer = parse(await f.call("update_memory", { action: "write", fact: "Mine" }));
+	expect(answer).toMatchObject({ state: "conflict", saved: false });
+	expect(answer.hint).toMatch(/try again/i);
+	expect(writers).toBe(3);
+	expect(f.commits).toHaveLength(3);
+	expect(f.text(LOG)).not.toContain("Mine");
+});
+
+it("treats a notebook month that is not text as a named gap, and refuses only a write into it", async () => {
+	const months = "agents/nora/memory/log";
+	const f = await fixture({
+		files: {
+			[`${months}/2026-07.md`]: "- (2026-07-01) Bills go out monthly\n",
+			// An import or a member left months that are not notebook text: too large, and not UTF-8.
+			[`${months}/2026-06.md`]: "a".repeat(40 * 1024),
+			[`${months}/2026-05.md`]: "abc",
+		},
+		folders: ["agents/nora/memory"],
+	});
+	const range = CloudCompanyFolderClient.prototype.readRange;
+	vi.spyOn(CloudCompanyFolderClient.prototype, "readRange").mockImplementation(async function (
+		this: CloudCompanyFolderClient,
+		...args
+	) {
+		return args[0].path === `${months}/2026-05.md` ? Uint8Array.from([0xff, 0xfe, 0x00]) : range.apply(this, args);
+	});
+	expect(parse(await f.call("update_memory", { action: "write", fact: "Fresh fact" }))).toMatchObject({
+		state: "written",
+		path: LOG,
+	});
+	const unreadable = [`${months}/2026-06.md`, `${months}/2026-05.md`];
+	const recalled = parse(await f.call("recall_memory", { query: "Bills monthly" }));
+	expect(recalled.facts).toEqual([{ date: "2026-07-01", tier: "log", fact: "Bills go out monthly" }]);
+	expect(recalled.searched).toEqual({ logMonths: 4, oldestMonth: "2026-05", unreadable });
+	// Forget removes what it can reach and never claims every copy is gone.
+	expect(parse(await f.call("update_memory", { action: "forget", fact: "Bills go out monthly" }))).toMatchObject({
+		state: "partial",
+		removed: 1,
+		searched: { unreadable },
+	});
+	expect(f.text(`${months}/2026-07.md`)).toBe("");
+	// Only a write into the unreadable file itself is refused, and it says so.
+	f.seed(LOG, "b".repeat(40 * 1024));
+	expect(parse(await f.call("update_memory", { action: "write", fact: "Another fact" }))).toMatchObject({
+		state: "unreadable",
+		saved: false,
+		path: LOG,
+	});
+});
+
+it("does not append a fact to a month another run created with it after the listing", async () => {
+	const f = await fixture({ folders: ["agents/nora/memory", "agents/nora/memory/log"] });
+	const read = CloudCompanyFolderClient.prototype.read;
+	let raced = false;
+	vi.spyOn(CloudCompanyFolderClient.prototype, "read").mockImplementation(async function (
+		this: CloudCompanyFolderClient,
+		...args
+	) {
+		// Another run saves the same fact into this month just before this write reads it.
+		if (args[0] === LOG && !raced) {
+			raced = true;
+			f.seed(LOG, "- (2026-10-03) Mine\n");
+		}
+		return read.apply(this, args);
+	});
+	expect(parse(await f.call("update_memory", { action: "write", fact: "Mine" }))).toMatchObject({
+		state: "duplicate",
+		path: LOG,
+	});
+	expect(raced).toBe(true);
+	expect(f.text(LOG)).toBe("- (2026-10-03) Mine\n");
+	expect(f.commits).toHaveLength(0);
+});
+
+it("composes around a recent month that is not notebook text and names it, but not around an unreadable profile", async () => {
+	const profile = "agents/nora/memory/profile.md";
+	const f = await fixture({
+		files: {
+			[LOG]: "- (2026-10-02) Current fact\n",
+			"agents/nora/memory/log/2026-09.md": "a".repeat(40 * 1024),
+			[profile]: "- (2026-01-01) I keep the books\n",
+		},
+	});
+	const signal = new AbortController().signal;
+	expect(await composeCloudAgentMemory(f.notebooks.composition, "agents/nora", NOW, signal)).toMatchObject({
+		available: true,
+		profile: { facts: [{ fact: "I keep the books" }] },
+		recentLog: { facts: [{ fact: "Current fact" }], unreadable: ["agents/nora/memory/log/2026-09.md"] },
+	});
+	// An unreadable profile cannot be composed whole, so the block degrades with a named reason.
+	f.seed(profile, "b".repeat(40 * 1024));
+	await expect(composeCloudAgentMemory(f.notebooks.composition, "agents/nora", NOW, signal)).rejects.toMatchObject({
+		category: "invalid_response",
+	});
+});
+
+it("never answers not found or an empty recall when the notebook could not be listed", async () => {
+	const kept = "agents/nora/memory/log/2026-08.md";
+	const f = await fixture({ files: { [kept]: "- (2026-08-01) Kept fact\n" }, folders: ["agents/nora/memory"] });
+	vi.spyOn(CloudCompanyFolderClient.prototype, "listAll").mockRejectedValue(new Error("PRIVATE_OUTAGE"));
+	const calls: [string, JsonValue][] = [
+		["recall_memory", { query: "Kept fact" }],
+		["update_memory", { action: "forget", fact: "Kept fact" }],
+		["update_memory", { action: "write", fact: "Kept fact" }],
+	];
+	for (const [tool, value] of calls) await expect(f.call(tool, value)).rejects.toThrow("PRIVATE_OUTAGE");
+	expect(f.text(kept)).toBe("- (2026-08-01) Kept fact\n");
+	expect(f.commits).toHaveLength(0);
+});
+
+it("searches and forgets across every month, past one listing page", async () => {
+	const log = "agents/nora/memory/log";
+	const files: Record<string, string> = {};
+	// 205 monthly files: more than the two-year horizon and more than one 200-entry listing page.
+	for (let index = 0; index < 205; index++) {
+		const month = new Date(Date.UTC(2009, index, 1)).toISOString().slice(0, 7);
+		const fact = index === 0 ? "Ancient archive needle." : `Routine note ${index}.`;
+		files[`${log}/${month}.md`] = `- (${month}-01) ${fact}\n`;
+	}
+	// The same fact again this month, written before notebook-wide dedupe existed.
+	files[LOG] = "- (2026-10-02) ancient archive  needle.\n";
+	const f = await fixture({ files, folders: ["agents/nora/memory"] });
+	const pages = vi.spyOn(CloudCompanyFolderClient.prototype, "list");
+	const recalled = parse(await f.call("recall_memory", { query: "Ancient archive needle" }));
+	expect(pages.mock.calls.filter(([parent]) => parent === log).length).toBeGreaterThan(1);
+	expect(recalled.facts).toEqual([
+		{ date: "2026-10-02", tier: "log", fact: "ancient archive  needle." },
+		{ date: "2009-01-01", tier: "log", fact: "Ancient archive needle." },
+	]);
+	expect(recalled.searched).toEqual({ logMonths: 206, oldestMonth: "2009-01" });
+	const forgotten = parse(await f.call("update_memory", { action: "forget", fact: "Ancient archive needle." }));
+	expect(forgotten).toMatchObject({ state: "forgotten", removed: 2 });
+	expect(forgotten.changes.map((change: { path: string }) => change.path)).toEqual([LOG, `${log}/2009-01.md`]);
+	expect(f.text(`${log}/2009-01.md`)).toBe("");
+	expect(parse(await f.call("recall_memory", { query: "Ancient archive needle" })).facts).toEqual([]);
+	expect(parse(await f.call("update_memory", { action: "forget", fact: "Ancient archive needle." }))).toMatchObject({
+		state: "not_found",
+		searched: { logMonths: 206, oldestMonth: "2009-01" },
+	});
 });

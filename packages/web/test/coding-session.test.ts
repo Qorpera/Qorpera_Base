@@ -843,6 +843,27 @@ describe("the element in the thread", () => {
 					},
 					"executor",
 				),
+				// The machine stopped from outside, with commands running in this session and without.
+				event(
+					8,
+					"step",
+					{
+						text: "The machine stopped; 2 commands were stopped",
+						reason: "MACHINE_STOPPED",
+						stopped: [
+							{ commandId: id(80), turn: 2, command: "npm run dev" },
+							{ commandId: id(81), turn: 2, command: "npm test -- --watch" },
+						],
+						moreStopped: 0,
+					},
+					"executor",
+				),
+				event(
+					9,
+					"step",
+					{ text: "The machine stopped", reason: "MACHINE_STOPPED", stopped: [], moreStopped: 0 },
+					"executor",
+				),
 			],
 		});
 		await settle();
@@ -853,6 +874,8 @@ describe("the element in the thread", () => {
 			"Reopened",
 			"The session lost its machine · 35 commands stopped",
 			"Quiet for 3 days · asked Mark whether it can be archived",
+			"The machine stopped · 2 commands stopped",
+			"The machine stopped",
 		]);
 		// The working step stays the harness's.
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");

@@ -1,4 +1,4 @@
-/** Browser-safe run-log files (W1b, 20260930231000_memory_run_logs.sql) and conversation
+/** Browser-safe run-log files (W1b, 20260928549100_memory_run_logs.sql) and conversation
  * summary trees (M1a, 20260928509150_memory_tree_files.sql). The database checks ownership,
  * append-only history, narrowing, generations and each level-0 line's message. These parsers
  * check the bytes and placement alone. Stored structured parses are deliberately only {kind}. */

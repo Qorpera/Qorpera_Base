@@ -38,6 +38,50 @@ refer to.
 > writing side (C1–C3) and the reset. This holds in section 19, the
 > checkpoint, section 20 and launch acceptance.
 
+## Decided on 14 October 2026 (the folder as the machine's own disk)
+
+The contract's "2026-10-14 amendment: machines work in the folder as on their
+own disk" governs wherever this design differs from it. In this document that
+includes:
+- the 2 October section's "Folder work runs offline";
+- section 2's [When changes are published](#when-changes-are-published), for
+  a command that keeps running, and its "Never published" list, for
+  dependencies and builds;
+- section 3's [What the mount shows](#what-the-mount-shows), for links;
+- section 6's git settings (`core.symlinks`) and section 8's "Paths".
+
+In short:
+- **The folder is part of every machine.** On a machine that carries the
+  folder, the shell and every program it starts work in `/company` as on the
+  machine's own disk. Every machine has the same toolbox: bash and the usual
+  Unix tools, git, Node.js 24 (it runs TypeScript files directly) with `tsc`
+  and `tsx`, Python 3 with pip and uv, a C and C++ toolchain, mise for any
+  other language, ripgrep, fd, jq, sqlite3, curl, zip, unzip and LibreOffice.
+- **Networked commands keep the folder.** They stay outside effects: they pass
+  the company's review rules and leave through the agent exit. Where commands
+  run as root, every command has the folder and the network and is reviewed.
+- **Programs that keep running** (MCP servers, scripts that pull live data,
+  dev servers, watchers) publish about two seconds after their last change.
+- **Symbolic links** are entries of their own, and the folder never follows
+  them. **Hard links** make a copy that shares the stored bytes; the two
+  names keep their own versions. Devices, FIFOs and sockets stay refused.
+- **Dependencies and builds** stay in each machine's own cache, as on coding
+  machines.
+- **Coding machines match a cloud coding machine** (contract item 11): any
+  language, root and Docker inside the member's machine, a setup file in the
+  repository (Cursor's and dev containers' files work too), ready snapshots,
+  running apps with previews and a browser the agent drives, vault secrets as
+  masked environment variables, and another machine when one is full.
+
+What it changes in the build:
+[RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md) (a
+follow-up to 4b for networked commands' views and quiet publishing, 4d, and
+4e's toolbox), and new slices for links: the core's link entries, the write
+protocol, the folder program and service, and the server-side tools
+([RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)), and for the caches in
+the folder program
+([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)).
+
 ## Decided on 2 October 2026 (light threads)
 
 The contract's "2026-10-02 amendment: light threads" governs wherever this
@@ -73,6 +117,9 @@ In short:
   network, and need no review of outside effects. A command that needs the
   network passes the company's review rules. Coding sessions keep their open
   network. How the rule holds on machines where commands run as root is open.
+  (Amended 14 October 2026: a command that needs the network keeps the
+  folder, and where commands run as root every command has the folder and
+  the network and is reviewed.)
 - **Reads on a company machine go to the run.** Each shell command has a
   folder mount of its own, owned by the run that started it. Its folder
   program logs what the command reads (a read log), so the reads go to that
@@ -231,6 +278,8 @@ live before the next:
 
 Step 3's plan, its slices and its live proof: [RUNTIME-FOLDER-WRITES.md](RUNTIME-FOLDER-WRITES.md).
 Step 4's: [RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md).
+Step 5's: [RUNTIME-FOLDER-CODING-MACHINES.md](RUNTIME-FOLDER-CODING-MACHINES.md).
+Step 6's: [RUNTIME-FOLDER-TEST-MACHINES.md](RUNTIME-FOLDER-TEST-MACHINES.md).
 
 Steps 4, 5 and 6 do not depend on each other. Milestone M3 of the Rebuild Map
 is reached when two machines on two nodes edit the same folder live and
@@ -395,6 +444,9 @@ desktop-terminal command. `computer_shell` sessions follow the run-box rule.
 (Amended 2026-09-28: each `computer_shell` command has its own mount and
 publishes when it ends and each time its output is read; it may outlive its
 run, and its last publish comes when its processes end; section 5.)
+(Amended 2026-10-14: a command that keeps running also publishes about two
+seconds after its last change, so an MCP server's or a live-data script's
+files land while it runs; contract amendment item 3.)
 
 **On a test machine**, the view's pending changes publish the same way: when
 a command ends, and each time a running command's output is read (amended
@@ -407,7 +459,10 @@ machine's starter.
   boundary);
 - lock, swap, backup and trash names: `.~lock.*#`, `~$*`, `*.swp`, `*.swo`,
   `.#*`, `*~`, `.Trash-*`;
-- a file that is created and removed between two boundaries.
+- a file that is created and removed between two boundaries;
+- a project's installed dependencies and build output (amended 2026-10-14,
+  contract amendment item 8): they stay in the machine's own cache
+  ([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)).
 
 ### How pending bytes are handled
 
@@ -535,8 +590,13 @@ Only conflicts, proposals and review outcomes wait for the boundary report.
 
 - Exactly the paths the authority may read. Others do not exist (`ENOENT`),
   as in today's listings.
-- Only files and folders:
-  - symlinks, hard links, devices, FIFOs and sockets are refused (`EPERM`);
+- Files, folders and symbolic links (amended 2026-10-14, contract amendment
+  items 4 to 6):
+  - a symbolic link keeps its target exactly as written; the kernel follows
+    it on the machine, and the folder never does;
+  - `ln` without `-s` makes a copy that shares the stored bytes, and the two
+    names keep their own versions;
+  - devices, FIFOs and sockets are refused (`EPERM`);
   - `chmod +x` sets the executable flag, and other mode bits are not kept;
   - everything is owned by the box's user;
   - a file's modification time is the time of its current version;
@@ -875,7 +935,7 @@ unit, which outranks the repository's own config:
 | `core.filesRefLockTimeout=10000` and `core.packedRefsTimeout=10000` (ms) | git waits on a held ref or `packed-refs` lease rather than failing at once; other locks never retry in git |
 | `gc.auto=0` and `maintenance.auto=false` | no automatic cleanup from a session |
 | `gc.worktreePruneExpire=never` | `git gc` in a session never prunes a worktree; worktree locks also cover `git worktree prune` |
-| `core.symlinks=false` | the Company File has no symlinks |
+| `core.symlinks=true` | the folder keeps symbolic links (amended 2026-10-14; it was `false` while the folder had none) |
 | `core.checkStat=minimal` and `core.trustctime=false` | git's index does not re-hash files because of how the mount reports file times |
 | `core.splitIndex=false` and `index.sparse=false` | the index file always lists every path, so the folder service can read it (it also reads index version 4, which `feature.manyFiles` turns on) |
 
@@ -904,29 +964,36 @@ job's host all run the same pinned git.
 
 ### The per-session cache
 
+(Amended 2026-10-14, contract amendment item 8. The plan is
+[RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md), and it
+governs where this section differs. The cache lives on the machine's disk,
+not in a NAS cache folder, and outlives the session. The folder program keeps
+the list and reads the index, not the folder service. Outside worktrees,
+dependency folders anywhere and build folders in a project are caches too.
+In a worktree, what git ignores is a cache too, unless git tracks it.)
+
 Dependencies and build output are caches, not company files. Each worktree
 has a cache list:
 
 - It starts from a fixed set of folder names: `node_modules`, `.venv`,
   `venv`, `target`, `dist`, `build`, `.next`, `.nuxt`, `__pycache__`,
   `.gradle`, `.cache`, `.turbo`, `.pytest_cache`, `coverage`.
-- It drops any name under which the worktree's own index has entries. At each
-  command end where that index changed, the folder service reads its paths
-  (git's documented index format). A name that now has tracked files leaves
-  the list, and the files at that name are published at the same boundary.
-  This covers a worker that `git add`s files under `build/` on its own
-  branch. A name that has left a worktree's list stays off it, so files that
-  are already published never fall back into a cache.
+- It drops any name under which the worktree's own index has entries. When
+  that index changes, the folder program reads its paths (git's documented
+  index format). A name that now has tracked files leaves the list, and the
+  files at that name are published at the next boundary. This covers a worker
+  that `git add`s files under `build/` on its own branch. A name that has left
+  a worktree's list stays off it, so files that are already published never
+  fall back into a cache.
 
-Inside a worktree, a folder whose name is on the list lives in the session's
-own NAS cache folder:
+Inside a worktree, a folder whose name is on the list, and a file or folder
+that git ignores, lives on the machine's disk:
 - It is never published.
 - Other views and machines see nothing at that path.
 - It can be rebuilt at any time.
 
-Everything else in a worktree, including untracked output such as `out/` or
-reports, is company data that members see. There is no ignore-pattern
-matching in the folder service; `.gitignore` decides only what git commits.
+Everything else in a worktree, including untracked output that git does not
+ignore, such as reports, is company data that members see.
 
 ### Names
 
@@ -1019,8 +1086,9 @@ network. The founder accepted this on 27 September so that coding agents can
 work over company data; every read is still recorded, and every write still
 passes the gateway.
 
-**Paths.** The kernel resolves `..`, there are no symlinks, and the service
-validates every path.
+**Paths.** The kernel resolves `..` and follows symbolic links on the
+machine. The service never follows a link, and it validates every path
+(amended 2026-10-14: before then the folder had no symbolic links).
 
 ## 9. Build order
 

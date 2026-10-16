@@ -41,12 +41,21 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
          --machine NAME             run on this machine only (node02, node01)
+         --front                    wait at the front of the CPU lane's queue, ahead of every run without it
+                                    (pr-loop's batch runs, which test every approved head at once)
+         --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
+                                    first and alone (default: one step at a time); the run still takes one slot
+         --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own,
+                                    comparing file contents (for checkouts made fresh per run, such as
+                                    pr-loop's merged trees)
          --no-status                do not post the result as a GitHub status on the commit
          --dry-run                  print what would run and where, change nothing
 
 Machines: node02 (tester@10.201.0.2 via company41-node-02), node01 (tester@10.201.0.3 via company41-node-01).
 A run asks each how many runs it holds and takes the one with the most free slots (ties: this order). If that
 machine fails before the suite starts (unreachable, copy failed), the run moves to the next one.
+hosted-db -- --only <tests> takes the quick lane: one slot and queue of its own, so it never waits behind long runs.
+A --front run takes the machine with the fewest runs ahead of it: those in its slots and other --front runs.
 
 A named suite run on a clean, pushed commit posts its result as the commit status qorpera-ci/<suite>
 (pending while it runs), so the PR shows it as a check. Uncommitted changes or ad-hoc commands post none.
@@ -89,10 +98,26 @@ const SIGNAL_TURN_MS = 100;
  * at 512 tasks, which every concurrent run under one shared user exhausted together. */
 export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).padStart(2, "0")}`);
 /** At most this many runs execute at once, each with (vCPUs / CPU_SLOTS) vitest workers, so the slots
- * together use the machine's vCPUs: 2 each on 6 vCPUs, 4 each on 12. Measured 2026-09-29: a full npm test
+ * together use the machine's vCPUs: 2 each on 10 or 12 vCPUs. Measured 2026-09-29: a full npm test
  * is ~881 CPU-seconds; two full runs plus other sessions drove 6 vCPUs to load 22 and timing-bound tests
- * failed. Later runs wait in arrival order. */
-export const CPU_SLOTS = 3;
+ * failed. Measured 2026-10-14 with 3 slots: both 10-vCPU machines had all 3 busy and 3-4 runs waiting at
+ * load 4-6, ~12 GiB of 15.5 available, no memory pressure and no OOM kill. Measured 2026-10-15 with 4 slots:
+ * all 4 busy and 11-15 runs waiting on each machine, load 6-8, the vCPUs 26-34% busy on node02 and 36-83%
+ * (about 55% on average) on node01 over a minute, iowait at most 4%, ~11.5 GiB available. A fifth run keeps
+ * 2 workers each. Later runs wait in arrival order. */
+export const CPU_SLOTS = 5;
+/** A hosted-db run narrowed with --only (a few SQL tests, about 15 s of work) takes one of QUICK_SLOTS slots of
+ * its own, with its own arrival-ordered queue: on 14 Oct such runs waited 5-20 minutes behind the CPU slots'
+ * 20-minute changed runs. */
+export const QUICK_SLOTS = 1;
+/** Each lane's slot count, slot lock files and queue directory under LOCKS. */
+const LANES = {
+	cpu: { name: "CPU lane", slots: CPU_SLOTS, slot: "qorpera-test-machine-slot", queue: "qorpera-test-machine-queue" },
+	quick: { name: "quick lane", slots: QUICK_SLOTS, slot: "qorpera-test-machine-quick-slot", queue: "qorpera-test-machine-quick-queue" },
+};
+/** The start of a --front run's queue ticket name. pr-loop's batch run tests every approved head in one `changed`,
+ * so its wait delays every one of them: on 15 Oct the CPU lane's queue wait had a median of 14 minutes. */
+export const FRONT = "0-";
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
@@ -109,6 +134,9 @@ export function parseArgs(argv) {
 		dryRun: false,
 		base: "origin/master",
 		machine: null,
+		tree: null,
+		front: false,
+		cores: null,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -122,10 +150,20 @@ export function parseArgs(argv) {
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
-		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine") {
+		else if (flag === "--front") options.front = true;
+		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine" || flag === "--tree" || flag === "--cores") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--cores") {
+				if (!/^[1-9][0-9]?$/.test(value)) throw new Error(`Invalid --cores ${value}`);
+				options.cores = Number(value);
+			}
+			else if (flag === "--tree") {
+				// Never NAME.lock: that is the lock file of the base copy NAME.
+				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) || value.endsWith(".lock")) throw new Error(`Invalid --tree ${value}`);
+				options.tree = value;
+			}
 			else if (flag === "--machine") {
 				if (!MACHINES.some((machine) => machine.name === value))
 					throw new Error(`Unknown machine ${value} (${MACHINES.map((machine) => machine.name).join(", ")})`);
@@ -145,6 +183,7 @@ export function parseArgs(argv) {
 	let suite = null;
 	let command;
 	let extra = [];
+	if (options.cores && rest[0] !== "changed") throw new Error("--cores is for changed");
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -156,7 +195,7 @@ export function parseArgs(argv) {
 		if (suite === "changed") {
 			if (extra.length) throw new Error("changed takes no suite arguments");
 			// The plan, and with it the command and the build, is made from git in main().
-			return { ...options, install: options.install ?? true, build: options.build, suite, command: [], plain: plain(options, suite, extra) };
+			return { ...options, install: options.install ?? true, build: options.build, suite, command: [], quick: false, plain: plain(options, suite, extra) };
 		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
@@ -165,7 +204,9 @@ export function parseArgs(argv) {
 	const build = options.build ?? (suite === "test" && options.install !== false);
 	const install = options.install ?? (suite !== "hosted-db" || build);
 	if (build && !install) throw new Error("--build needs --install");
-	return { ...options, install, build, suite, command, plain: plain(options, suite, extra) };
+	const quick = suite === "hosted-db" && extra.some((arg) => arg === "--only" || arg.startsWith("--only="));
+	if (quick && options.front) throw new Error("--front is for the CPU lane; a hosted-db --only run has the quick lane");
+	return { ...options, install, build, suite, command, quick, plain: plain(options, suite, extra) };
 }
 
 /** The suite exactly as named: no suite arguments, environment, sudo or install/build override. Only such a
@@ -256,7 +297,8 @@ export function treeDigest(root, files) {
 
 /** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
  * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
- * worktree copies unused for 14 days, and hosted-db containers older than 6 hours. */
+ * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
+ * node02's disk on 2026-10-09), and hosted-db containers older than 6 hours. */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -264,19 +306,28 @@ export function pruneScript() {
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
-		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +14 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
+		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
 }
 
+/** How rsync tells a file equal to the base copy's. A checkout's own base copy holds only its earlier files,
+ * so rsync's quick check (size and mtime) is enough. A shared one (--tree) holds other checkouts' files, where
+ * an equal size and mtime proves nothing (fresh checkouts made in the same second), so it compares contents. */
+export function baseCopyCompare(shared) {
+	return shared ? ["--checksum"] : [];
+}
+
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
- * carries the runner user and times back to the record. Exit codes 90 (install or build) and 91-94
- * (harness: cd, runner user, chown, CPU slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
+ * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
+ * for the CPU lane's; a `front` run waits ahead of every run without it. Exit codes 90 (install or build) and 91-94
+ * (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false }) {
 	const status = `${runDir}/.run-on-node-status`;
-	const queue = "/run/lock/qorpera-test-machine-queue";
+	const lane = quick ? LANES.quick : LANES.cpu;
+	const queue = `${LOCKS}/${lane.queue}`;
 	const inner = [
 		`cd ${runDir} || exit 91`,
 		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
@@ -298,14 +349,16 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 	return [
 		"set -uo pipefail",
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
-		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
-		// Arrival-ordered queue for the CPU slots: a ticket per waiting run, its name sorting by arrival.
+		`flock -w 60 ${treeDir}.lock ${["rsync", "-a", "--delete", ...baseCopyCompare(shared), `${runDir}/`, `${treeDir}/`].join(" ")} || echo "== run-on-node: base copy refresh skipped"`,
+		// Arrival-ordered queue for the lane's slots: a ticket per waiting run, its name sorting by arrival.
 		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
 		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
 		// free slot. The slot lock stays on fd 9 until this session ends.
 		`mkdir -p ${queue}`,
 		// Only a probe or another run's cleanup can hold this new ticket, and only for an instant: wait it out.
-		`ticket=${queue}/$(date +%s%N)-$$; exec 7>"$ticket"; flock 7; trap 'rm -f "$ticket"' EXIT`,
+		// Other tickets' names start with the time in nanoseconds (1...), so a front run's 0- sorts ahead of all of
+		// them, front runs among themselves by arrival; older clients' scripts sort and wait the same way.
+		`ticket=${queue}/${front ? FRONT : ""}$(date +%s%N)-$$; exec 7>"$ticket"; flock 7; trap 'rm -f "$ticket"' EXIT`,
 		// Queued now: probes count the ticket instead of the copy marker.
 		`rm -f ${ARRIVING}/${run}`,
 		'slot=""; queued=$(date +%s); shown=""',
@@ -314,13 +367,13 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock 7; }',
 		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
 		'\tif [ "$position" = 1 ]; then',
-		`\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
-		'\t\t\t{ exec 9>"/run/lock/qorpera-test-machine-slot$candidate.lock"; } 2>/dev/null || continue',
+		`\t\tfor candidate in $(seq 1 ${lane.slots}); do`,
+		`\t\t\t{ exec 9>"${LOCKS}/${lane.slot}$candidate.lock"; } 2>/dev/null || continue`,
 		'\t\t\tif flock -n 9; then slot=$candidate; break; fi',
 		"\t\tdone",
 		"\tfi",
 		'\tif [ -z "$slot" ]; then',
-		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot (${CPU_SLOTS} runs at a time), queue position $position" && shown=$position`,
+		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${lane.slots} run${lane.slots === 1 ? "" : "s"} at a time), queue position $position" && shown=$position`,
 		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
 		"\t\tsleep 2",
 		"\tfi",
@@ -346,7 +399,7 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		// run. The pattern is anchored on node: this script's own shell carries the words in its command line.
 		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
-		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
+		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots} in the ${lane.name}${front ? " from the front of its queue" : ""} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
 	].join("\n");
 }
@@ -381,24 +434,32 @@ export function candidateMachines(machine, env) {
 	return machine ? MACHINES.filter((candidate) => candidate.name === machine) : MACHINES;
 }
 
-/** Read-only: how many of the machine's CPU slots runs hold, how many runs wait in its queue for one, how many
- * are still being copied there, and whether it is closed. A lock is opened for reading (never created) and tried
- * once: a held one counts, a free one is held for an instant only (a run taking a slot right then tries the next
- * and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that died. A copy marker
- * counts for 10 minutes; a killed copy's marker ages out. */
+/** Read-only: how many of each lane's slots on the machine runs hold, how many runs wait in each lane's queue for
+ * one, how many are still being copied there, and whether it is closed. A lock is opened for reading (never
+ * created) and tried once: a held one counts, a free one is held for an instant only (a run taking a slot right
+ * then tries the next and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that
+ * died. A copy marker counts for 10 minutes; a killed copy's marker ages out. */
 export function probeScript({ locks, closed, setUp, arriving }) {
+	const count = (lane, busy, waiting) => [
+		`for i in $(seq 1 ${lane.slots}); do { flock -n 5 || ${busy}=$((${busy} + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/${lane.slot}`)}"$i.lock"; done`,
+		`for t in ${shellQuote(`${locks}/${lane.queue}`)}/*; do { flock -n 5 || ${waiting}=$((${waiting} + 1)); } 2>/dev/null 5<"$t"; done`,
+	];
 	return [
-		`busy=0; waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
-		`for i in $(seq 1 ${CPU_SLOTS}); do { flock -n 5 || busy=$((busy + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/qorpera-test-machine-slot`)}"$i.lock"; done`,
-		`for t in ${shellQuote(`${locks}/qorpera-test-machine-queue`)}/*; do { flock -n 5 || waiting=$((waiting + 1)); } 2>/dev/null 5<"$t"; done`,
+		`busy=0; waiting=0; quick_busy=0; quick_waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
+		...count(LANES.cpu, "busy", "waiting"),
+		...count(LANES.quick, "quick_busy", "quick_waiting"),
+		// The CPU lane's waiting front runs, counted in `waiting` too. With none, the unmatched pattern opens no file.
+		`front_waiting=0; for t in ${shellQuote(`${locks}/${LANES.cpu.queue}/${FRONT}`)}*; do { flock -n 5 || front_waiting=$((front_waiting + 1)); } 2>/dev/null 5<"$t"; done`,
 		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
-		'echo "busy=$busy waiting=$waiting arriving=$arriving closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
 	].join("\n");
 }
 
-/** Free slots after running, queued and arriving runs; negative when runs wait. */
-function free(probe) {
-	return CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
+/** Free slots in the run's lane after running and queued runs, and in the CPU lane after arriving ones too;
+ * negative when runs wait. A front run counts only running runs and the front runs it would queue behind. */
+function free(probe, quick, front = false) {
+	if (quick) return QUICK_SLOTS - probe.quickBusy - probe.quickWaiting;
+	return front ? CPU_SLOTS - probe.busy - probe.frontWaiting : CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
 }
 
 /** Open to the automatic choice: answered, not closed by an operator, and set up. */
@@ -406,27 +467,28 @@ function open(probe) {
 	return probe.unreachable === undefined && !probe.closed && probe.setUp;
 }
 
-/** Machines that answered their probe, best first: the most free slots, then list order. Unreachable machines
- * are left out, and closed ones unless the run named its machine. */
-export function rankMachines(probes, pinned) {
+/** Machines that answered their probe, best first: the most free slots in the run's lane, then list order.
+ * Unreachable machines are left out, and closed ones unless the run named its machine. */
+export function rankMachines(probes, pinned, quick, front = false) {
 	return probes
 		.map((probe, index) => ({ probe, index }))
 		.filter(({ probe }) => probe.unreachable === undefined && (pinned || open(probe)))
-		.sort((a, b) => free(b.probe) - free(a.probe) || a.index - b.index)
+		.sort((a, b) => free(b.probe, quick, front) - free(a.probe, quick, front) || a.index - b.index)
 		.map(({ probe }) => probe);
 }
 
 /** The order a run tries machines in: those that answered, best first. Only when none of them can take the run
  * are the machines that did not answer tried, in list order (a probe has a short budget; the copy's own
  * connection may still get through). A closed machine is never tried unless the run named it. */
-export function runOrder(probes, pinned) {
-	const answered = rankMachines(probes, pinned).map((probe) => probe.name);
+export function runOrder(probes, pinned, quick, front = false) {
+	const answered = rankMachines(probes, pinned, quick, front).map((probe) => probe.name);
 	return answered.length ? answered : probes.filter((probe) => probe.unreachable !== undefined).map((probe) => probe.name);
 }
 
 /** Asks every machine at once with `ask(machine, signal)`, which settles when asked to stop. Once one machine has
- * answered with a free slot the others get `graceMs` more; `timeoutMs` ends every probe. */
-export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
+ * answered with a free slot (in the quick lane for a `quick` run, ahead of the queue for a `front` one) the others
+ * get `graceMs` more; `timeoutMs` ends every probe. */
+export async function probeAll(machines, ask, { graceMs, timeoutMs, quick, front = false }) {
 	const stop = new AbortController();
 	const timeout = setTimeout(() => stop.abort(new Error(`no answer in ${timeoutMs / 1000} s`)), timeoutMs);
 	let grace = null;
@@ -434,7 +496,7 @@ export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
 		return await Promise.all(
 			machines.map((machine) =>
 				ask(machine, stop.signal).then((answer) => {
-					if (!grace && open(answer) && free(answer) > 0)
+					if (!grace && open(answer) && free(answer, quick, front) > 0)
 						grace = setTimeout(
 							() => stop.abort(new Error(`no answer within ${graceMs / 1000} s of ${answer.name}'s`)),
 							graceMs,
@@ -476,12 +538,12 @@ function signalTurn() {
 	return new Promise((resolveTurn) => setTimeout(resolveTurn, SIGNAL_TURN_MS));
 }
 
-/** One line for the log: each machine's slots and queue, or why it did not answer. */
+/** One line for the log: each machine's slots and queues, or why it did not answer. */
 export function describeProbes(probes) {
 	return probes
 		.map((probe) =>
 			probe.unreachable === undefined
-				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.arriving ? `, ${probe.arriving} arriving` : ""}`
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}`
 				: `${probe.name} unreachable (${probe.unreachable})`,
 		)
 		.join("; ");
@@ -551,13 +613,16 @@ function probeOverSsh(machine, key, signal) {
 		child.on("error", (error) => unreachable(error.message));
 		child.on("close", (code) => {
 			const answer = parseStatus(out);
-			const counts = ["busy", "waiting", "arriving"].map((name) => answer[name] ?? "");
+			const counts = ["busy", "waiting", "quick_busy", "quick_waiting", "arriving", "front_waiting"].map((name) => answer[name] ?? "");
 			if (code === 0 && counts.every((count) => /^\d+$/.test(count)))
 				settle({
 					name: machine.name,
 					busy: Number(answer.busy),
 					waiting: Number(answer.waiting),
+					quickBusy: Number(answer.quick_busy),
+					quickWaiting: Number(answer.quick_waiting),
 					arriving: Number(answer.arriving),
+					frontWaiting: Number(answer.front_waiting),
 					closed: answer.closed === "1",
 					setUp: answer.setup === "1",
 					cpus: Number(answer.cpus) || null,
@@ -638,11 +703,15 @@ async function main() {
 			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
-		options.command = ["bash", "-c", planScript(plan.steps)];
+		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores })];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
-	const tree = createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
+	// The base copy unchanged files are taken from on the machine: one per checkout, so a run copies only what
+	// changed since its checkout's last run. A checkout made fresh for each run (pr-loop's merged trees, a new
+	// path every time) would find none and send all ~70 MB, 4-6 minutes per run on 14 Oct; --tree names a
+	// shared one instead.
+	const tree = options.tree ? `named-${options.tree}` : createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
 	const run = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 	const runDir = `${HOME}/runs/${run}`;
 	const treeDir = `${HOME}/trees/${tree}`;
@@ -660,9 +729,11 @@ async function main() {
 	const probes = await probeAll(machines, (machine, signal) => probeOverSsh(machine, key, signal), {
 		graceMs: PROBE_GRACE_MS,
 		timeoutMs: PROBE_TIMEOUT_MS,
+		quick: options.quick,
+		front: options.front,
 	});
 	const probeSeconds = (Date.now() - probeStarted) / 1000;
-	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env)).map((name) => {
+	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env), options.quick, options.front).map((name) => {
 		const machine = machines.find((candidate) => candidate.name === name);
 		return { ...machine, ssh: sshArgs(machine, key) };
 	});
@@ -692,6 +763,7 @@ async function main() {
 	console.error(`== run-on-node: ${describeProbes(probes)}`);
 	const pending = (machine) => `running on ${machineLabel(machine.name)} (waits while ${CPU_SLOTS} runs are busy)`;
 	let copyStarted = Date.now();
+	let pruned = copyStarted;
 
 	try {
 		if (!ranked.length) throw new Error(`No open test machine: ${describeProbes(probes)}`);
@@ -707,6 +779,7 @@ async function main() {
 	function copyTree(t) {
 		copyStarted = Date.now();
 		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${run}\n${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
+		pruned = Date.now();
 		const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
 		const rules = join(rulesDir, "rules");
 		writeFileSync(rules, rulesText);
@@ -716,6 +789,7 @@ async function main() {
 				"-a",
 				"--prune-empty-dirs",
 				`--filter=merge ${rules}`,
+				...baseCopyCompare(Boolean(options.tree)),
 				`--copy-dest=${treeDir}/`,
 				// The base copy is read under a shared lock; its refresh below takes the exclusive one.
 				`--rsync-path=flock -s ${treeDir}.lock rsync`,
@@ -766,11 +840,14 @@ async function main() {
 			run,
 			runDir,
 			treeDir,
+			shared: Boolean(options.tree),
 			files: files.length,
 			copySeconds: (synced - copyStarted) / 1000,
 			install: options.install,
 			build: options.build,
 			runCommand,
+			quick: options.quick,
+			front: options.front,
 		}),
 	);
 	const finished = Date.now();
@@ -810,6 +887,9 @@ async function main() {
 		build: options.build,
 		run: options.keep ? runDir : run,
 		runner: status.runner ?? null,
+		lane: options.quick ? "quick" : "cpu",
+		...(options.front ? { front: true } : {}),
+		...(options.cores ? { cores: options.cores } : {}),
 		cpuSlot: status.slot ? Number(status.slot) : null,
 		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
 		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
@@ -818,6 +898,10 @@ async function main() {
 		...(changedPlan ? { changed: changedPlan } : {}),
 		startedAt: new Date(started).toISOString(),
 		copySeconds: (synced - copyStarted) / 1000,
+		// The copy's two parts: the ssh call that marks the run arriving, prunes old runs and makes the run directory;
+		// then rsync.
+		pruneSeconds: (pruned - copyStarted) / 1000,
+		rsyncSeconds: (synced - pruned) / 1000,
 		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
 		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 		elapsedSeconds: (finished - started) / 1000,

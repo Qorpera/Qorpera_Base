@@ -8,11 +8,7 @@ import {
 	type CloudCompanyFolderUnit,
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
-import {
-	type CloudCompanyPathGateway,
-	CloudCompanyPathNotText,
-	type CloudCompanyPathResult,
-} from "./cloud-company-path-gateway.ts";
+import { CloudCompanyPathNotText, type CloudCompanyPathResult } from "./cloud-company-path-gateway.ts";
 import {
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathToolRefusal,
@@ -26,7 +22,7 @@ import {
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
-import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
+import { CloudRuntimeDiagnosticError, type CloudRuntimeObservationSpan } from "./cloud-runtime-observability.ts";
 
 /*
  * Memory and skills on folder-v2 (folder core slice P20, core C3): the trusted reads and writes the notebook and skill
@@ -43,7 +39,26 @@ import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
  *   refused before anything is written.
  */
 
-export type CloudFolderNotebookGateway = Pick<CloudCompanyPathGateway, "readTrusted" | "listTrusted" | "mutate">;
+/** What the notebook and skill tools read and change their files through; CloudFolderNotebooks serves it. */
+export interface CloudFolderNotebookGateway {
+	readTrusted(
+		pathValue: string,
+		signal: AbortSignal,
+	): Promise<
+		| { path: string; version: string; kind: "file" | "directory"; text: string; fileSha256: string | null }
+		| { path: string; version: string | null; kind: "absent"; text: ""; fileSha256: null }
+	>;
+	listTrusted(
+		pathValue: string,
+		signal: AbortSignal,
+	): Promise<{ path: string; version: string; kind: "file" | "directory"; bytes: number | null }[]>;
+	mutate(
+		operation: "write" | "mkdir" | "delete",
+		input: { path: string; operationKey: string; expectedVersion: string | null; text?: string },
+		signal: AbortSignal,
+		observation?: CloudRuntimeObservationSpan,
+	): Promise<CloudCompanyPathResult>;
+}
 
 /** As the legacy trusted read: a notebook or skill file is at most 32 KiB of text. */
 const MAX_TEXT_BYTES = 32 * 1024;
@@ -104,6 +119,8 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			remember(entry);
 			if (entry.kind === "folder")
 				return { path, version: entry.version, kind: "directory", text: "", fileSha256: null };
+			// A link is not followed: no text here, as a notebook or a skill sees bytes that are not text.
+			if (entry.kind === "symlink") throw new CloudCompanyPathNotText("Company folder path is a link");
 			if (entry.file.bytes > MAX_TEXT_BYTES)
 				throw new CloudCompanyPathNotText("Company folder file exceeds its bound", entry.file.bytes);
 			const bytes = await folder.readRange(entry, 0, entry.file.bytes, signal);
@@ -118,8 +135,10 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 		async listTrusted(pathValue, signal) {
 			const path = parseCloudCompanyPath(pathValue, true);
 			const { entries } = await folder.listAll(path, { maxEntries: MAX_LISTED }, signal);
-			for (const entry of entries) remember(entry);
-			return entries.map((entry) => ({
+			// A notebook or a skill is a file or a folder; a link names neither, so the listing leaves it out.
+			const shown = entries.filter((entry) => entry.kind !== "symlink");
+			for (const entry of shown) remember(entry);
+			return shown.map((entry) => ({
 				path: entry.path,
 				version: entry.version,
 				kind: entry.kind === "file" ? ("file" as const) : ("directory" as const),
@@ -130,7 +149,6 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			if (!changes) throw new Error("A folder change runs inside a tool call");
 			// A commit no one can complete would fence this run's later operations: refuse before writing anything.
 			if (!changes.operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
-			if (input.source !== undefined) throw new Error("A notebook or skill change writes text only");
 			const path = parseCloudCompanyPath(input.path);
 			let unit: CloudCompanyFolderUnit;
 			if (operation === "write") {

@@ -100,20 +100,25 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  let stopped,ackNonce=stopNonce;
  if(controls){
   // The real provider adapter: lost committed acknowledgement reply, then exact status recovery.
-  const methods=[];let lose=true;
-  const control=new controls.LxdOfficeResetControl(plan,planSha256,{call:async(method,args,signal)=>{signal.throwIfAborted();methods.push(method);
+  const methods=[];let lose=true,sent,returned;
+  const control=new controls.LxdOfficeResetControl(plan,planSha256,{call:async(method,args,signal)=>{signal.throwIfAborted();methods.push(method);sent=performance.now();
    const sql=method==='qorpera_begin_runtime_office_reset'?begin(args.p_plan,args.p_plan_sha256):method==='qorpera_runtime_office_reset_status'?status(args.p_plan)
     :method==='qorpera_prepare_runtime_office_reset_phase'?prepare(args.p_phase,args.p_challenge_id,args.p_evidence_sha256,args.p_plan)
     :method==='qorpera_check_runtime_office_reset_phase'?check(args.p_challenge_id,args.p_plan):ack(args.p_challenge_id,args.p_evidence,args.p_plan);
-   const value=call(sql);
+   const value=call(sql);returned=performance.now();
    if(method==='qorpera_ack_runtime_office_reset_phase'&&lose){lose=false;throw new Error('Lost committed acknowledgement reply');}
    return value;}});
   const signal=new AbortController().signal;
   assert.deepEqual(await control.begin(signal),begun);
+  // A window ends no later than SQL's remaining validity counted from when its request was sent (so never past the
+  // challenge's expiry) and leaves out the reply's latency. Two calls' windows are not ordered: each deducts its own
+  // round trip, so a check that reaches SQL sooner than the prepare did keeps more; SQL's remaining validity only shrinks.
+  const within=w=>{assert(w.validForMs>0&&w.validForMs<=5000);assert(w.deadline<=sent+w.challenge.validForMs);assert(w.validForMs<=w.deadline-returned);};
   ackNonce=fresh();
   const window=await control.preparePhase('stopped',ackNonce,stopSha,signal);
-  assert(window.validForMs>0&&window.validForMs<=5000);assert.equal(window.challenge.phase,'stopped');
-  assert((await control.checkPhase('stopped',ackNonce,stopSha,signal)).validForMs<=window.validForMs);
+  within(window);assert.equal(window.challenge.phase,'stopped');
+  const checked=await control.checkPhase('stopped',ackNonce,stopSha,signal);
+  within(checked);assert(checked.challenge.validForMs<=window.challenge.validForMs);
   await assert.rejects(control.preparePhase('stopped',ackNonce,'2'.repeat(64),signal),/UNCONFIRMED/);
   await assert.rejects(control.ackPhase(ackNonce,stopEvidence,window.deadline,signal),/UNCONFIRMED/);
   stopped=await control.status(signal);assert.equal(stopped.phase,'stopped');
@@ -222,7 +227,13 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  const founderStepsDown=`insert into auth.users(id,email) values ('92400000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test');insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) select profile_id,'92400000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test','Co-founder','owner' from public.qorpera_profile_members where user_id='${document.operator.principalId}' and role='owner';update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`;
  await refuse(`begin;reset role;${founderStepsDown}${owner}${dispose()}rollback;`,/Disposition requires company owner or admin/,owner);
  const futureName=readdirSync(new URL('../supabase/migrations/',import.meta.url)).filter(name=>/runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l,r)=>Number(/_v(\d+)\.sql$/.exec(l)[1])-Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
- const futureBundle=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
+ // Its bundle switch only: the migration guards before it are the rollout's, and a later migration may rewrite a body an
+ // older activation's guard reads (legacy sweep F2c puts the coding machines on the folder fence, which v177's guard on
+ // 20260925123000 reads).
+ const futureActivation=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
+ const switchAt=futureActivation.indexOf('-- Keep the predecessor check, insertion and pointer update in one atomic statement.');
+ assert.ok(switchAt>0,'The newest activation has no bundle switch');
+ const futureBundle=futureActivation.slice(switchAt);
  await refuse(`begin;reset role;${futureBundle}${owner}${dispose()}rollback;`,/bundle/,owner);
  assert.equal(auditCount(),0);assert.equal(snapshot(),preservedAdmin);
  console.log('PASS: provider/ordinary session/helper/table/null/identity/phase/digest/revision/privacy/pause/package/membership refusals preserve all rows');

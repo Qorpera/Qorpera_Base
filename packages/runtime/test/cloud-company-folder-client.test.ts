@@ -201,6 +201,39 @@ describe("reads and listings", () => {
 		await expect(client.read("istanbul.md", signal())).resolves.toMatchObject({ entry: { path: "İstanbul.md" } });
 	});
 
+	it("parses a link with the target it holds, and refuses a target out of the core's bounds or on another kind", async () => {
+		const link = (target?: unknown) => ({ ...folderEntry("docs/latest"), kind: "symlink", target });
+		const answers = [
+			link("../reports/q3 plan.md"),
+			link("x".repeat(4095)),
+			link(""),
+			link("é".repeat(2048)),
+			link(7),
+			link(),
+			{ ...folderEntry("docs"), target: "plan.md" },
+			{ ...folderEntry("docs/plan.md", stagedFile("hi")), target: "plan.md" },
+		].map((entry) => ({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: true, entry }));
+		const { client } = fixture(() => answers.shift());
+		await expect(client.read("docs/latest", signal())).resolves.toEqual({
+			asOfSeq: 9,
+			entry: {
+				path: "docs/latest",
+				kind: "symlink",
+				version: expect.any(String),
+				seq: 7,
+				updatedAt: "2026-09-29T12:00:00.123456+00:00",
+				authority: RECEIPT,
+				target: "../reports/q3 plan.md",
+			},
+		});
+		const longest = await client.read("docs/latest", signal());
+		expect(longest.entry).toMatchObject({ kind: "symlink", target: "x".repeat(4095) });
+		// An empty target, one of 4,096 bytes, one that is not text, a link without one, and a target on a folder or a
+		// file are not answers.
+		for (let i = 0; i < 6; i++)
+			await expect(client.read("docs/latest", signal())).rejects.toThrow("Company folder response is invalid");
+	});
+
 	it("reads a file's text, checked against its entry", async () => {
 		const text = "Første linje\n";
 		const file = stagedFile(text);
@@ -209,6 +242,7 @@ describe("reads and listings", () => {
 			"big.md": folderEntry("big.md", { ...file, bytes: 10_000 }),
 			folder: folderEntry("folder"),
 			"binary.bin": folderEntry("binary.bin", stagedFile("\u0000", "application/octet-stream")),
+			latest: { ...folderEntry("latest"), kind: "symlink", target: "a.md" },
 		};
 		const { client, stored } = fixture((_method, args) => {
 			const entry = entries[args.p_path as string];
@@ -218,6 +252,10 @@ describe("reads and listings", () => {
 		await expect(client.readText("a.md", 1024, signal())).resolves.toMatchObject({ text, entry: { path: "a.md" } });
 		await expect(client.readText("missing.md", 1024, signal())).resolves.toBeNull();
 		await expect(client.readText("folder", 1024, signal())).rejects.toBeInstanceOf(CloudCompanyPathNotText);
+		// A link is not followed: no text, whatever it names.
+		await expect(client.readText("latest", 1024, signal())).rejects.toThrow(
+			new CloudCompanyPathNotText("Company folder path is a link"),
+		);
 		await expect(client.readText("big.md", 1024, signal())).rejects.toBeInstanceOf(CloudCompanyPathNotText);
 		// Bytes that are not the entry's are refused, whatever they say.
 		stored.set(sha("\u0000"), Uint8Array.of(0xff));
@@ -323,6 +361,7 @@ describe("reads and listings", () => {
 			...extra,
 		});
 		const todos = [todo("b", { detailTruncated: true }), todo("a")];
+		const { cursor: _cursor, ...uncursored } = todo("a");
 		const answers: unknown[] = [];
 		const { client, calls } = fixture(() => answers.shift());
 		answers.push({ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 3, nextCursor: todos[1]?.cursor });
@@ -364,9 +403,78 @@ describe("reads and listings", () => {
 				nextCursor: null,
 			},
 			{ schema: "qorpera.folder-list/v1", todos: [], moreTodos: 0, nextCursor: null },
+			// A count and a cursor the page cannot have (the kernel todo tool's checks, legacy sweep C-P2).
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: -1, nextCursor: null },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 1, nextCursor: "not-a-cursor" },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 1, nextCursor: randomUUID() },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 0 },
+			{ schema: "qorpera.folder-agent-todos/v1", todos: [uncursored], moreTodos: 0, nextCursor: null },
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: [todo("a", { cursor: "page-2" })],
+				moreTodos: 0,
+				nextCursor: null,
+			},
 		]) {
 			answers.push(answer);
 			await expect(client.agentTodos({}, signal())).rejects.toThrow("Company folder response is invalid");
+		}
+	});
+
+	it("pages one todo's workers from the worker index, refusing a count or cursor the page cannot have", async () => {
+		const worker = (workerKey: string, extra: Record<string, unknown> = {}) => ({
+			workerKey,
+			title: `Worker ${workerKey}`,
+			state: "running",
+			sequence: 1,
+			access: "read",
+			revival: "batch",
+			outcome: null,
+			summary: null,
+			needs: null,
+			outputs: [],
+			reportedAt: null,
+			decision: null,
+			folder: `agents/nora/todos/market-scan/${workerKey}`,
+			cursor: randomUUID(),
+			...extra,
+		});
+		const workers = [worker("b"), worker("a")];
+		const { cursor: _cursor, ...uncursored } = worker("a");
+		const page = (extra: Record<string, unknown>) => ({
+			schema: "qorpera.folder-agent-workers/v1",
+			todoKey: "market-scan",
+			workers,
+			...extra,
+		});
+		const answers: unknown[] = [];
+		const { client, calls } = fixture(() => answers.shift());
+		answers.push(page({ moreWorkers: 2, nextCursor: workers[1]?.cursor }));
+		await expect(client.agentWorkers({ todoKey: "market-scan", state: "active" }, signal())).resolves.toMatchObject({
+			workers: [{ workerKey: "b", cursor: workers[0]?.cursor }, { workerKey: "a" }],
+			moreWorkers: 2,
+			nextCursor: workers[1]?.cursor,
+		});
+		expect(calls).toMatchObject([
+			{ method: "qorpera_folder_agent_workers", args: { p_request: { todoKey: "market-scan", state: "active" } } },
+		]);
+		for (const answer of [
+			page({ moreWorkers: 2, nextCursor: null }),
+			page({ moreWorkers: 0, nextCursor: workers[1]?.cursor }),
+			page({ moreWorkers: 2, nextCursor: workers[0]?.cursor }),
+			page({ moreWorkers: -1, nextCursor: null }),
+			page({ moreWorkers: 1, nextCursor: "not-a-cursor" }),
+			page({ moreWorkers: 1, nextCursor: randomUUID() }),
+			page({ moreWorkers: 0 }),
+			page({ todoKey: "other", moreWorkers: 0, nextCursor: null }),
+			page({ workers: [uncursored], moreWorkers: 0, nextCursor: null }),
+			page({ workers: [worker("a", { cursor: "page-2" })], moreWorkers: 0, nextCursor: null }),
+			page({ workers: Array.from({ length: 17 }, (_, i) => worker(`w${i}`)), moreWorkers: 0, nextCursor: null }),
+		]) {
+			answers.push(answer);
+			await expect(client.agentWorkers({ todoKey: "market-scan" }, signal())).rejects.toThrow(
+				"Company folder response is invalid",
+			);
 		}
 	});
 });
@@ -1204,6 +1312,37 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		}
 	});
 
+	it("lists a view's links: a new folder's link with its target, and a link's own unit at its path", async () => {
+		const contains = [
+			{ path: "agents/nora/agent.md", kind: "file" },
+			{ path: "agents/nora/latest", kind: "symlink", target: "../../docs/b.md" },
+		];
+		const linked = [
+			{ ...units[0], items: 2, contains },
+			{ unit: 2, op: "symlink", path: "docs/latest" },
+		];
+		const answers: unknown[] = [page({ proposals: [proposal({ units: linked, unitCount: 2, moreUnits: 0 })] })];
+		const { client } = fixture(() => answers.shift());
+		const { proposals } = await client.agentProposals({}, signal());
+		expect(proposals[0]?.units).toEqual([
+			{ ...units[0], items: 2, contains, to: null },
+			{ unit: 2, op: "symlink", path: "docs/latest", to: null, items: null, contains: [], structured: [] },
+		]);
+		const withItem = (item: Record<string, unknown>) =>
+			page({ proposals: [proposal({ units: [{ ...units[0], contains: [item] }, units[1]] })] });
+		for (const bad of [
+			// A link's item carries its target, of 1 to 4,095 bytes; no other item has one.
+			withItem({ path: "agents/nora/latest", kind: "symlink" }),
+			withItem({ path: "agents/nora/latest", kind: "symlink", target: "" }),
+			withItem({ path: "agents/nora/latest", kind: "symlink", target: "x".repeat(4096) }),
+			withItem({ path: "agents/nora/agent.md", kind: "file", target: "x" }),
+			withItem({ path: "agents/nora/docs", kind: "folder", target: "x" }),
+		]) {
+			answers.push(bad);
+			await expect(client.agentProposals({}, signal()), JSON.stringify(bad)).rejects.toThrow(/invalid/);
+		}
+	});
+
 	it("records the approval as the review of the proposal's own units, and says when it is no longer open", async () => {
 		const actionReviewId = randomUUID();
 		const reviewId = randomUUID();
@@ -1819,11 +1958,10 @@ describe("hooks (E3a)", () => {
 			expect(eventHook).toHaveBeenCalledTimes(1);
 		}
 		const stripe = fixture(noSql, {
-			eventHook: async () =>
-				brokerRefusal("0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"),
+			eventHook: async () => brokerRefusal("22023", "A Stripe hook's secret is taken from dashboard.stripe.com"),
 		});
 		await expect(stripe.client.manageHook(GITHUB, signal())).resolves.toEqual({
-			refused: "A Stripe hook comes later: its secret is taken from Stripe's screen",
+			refused: "A Stripe hook's secret is taken from dashboard.stripe.com",
 		});
 		// A refusal the model has no words for is the database's error.
 		const malformed = fixture(noSql, { eventHook: async () => brokerRefusal("22023", "Hook request is invalid") });
@@ -1888,6 +2026,36 @@ describe("hooks (E3a)", () => {
 				"Company folder response is invalid",
 			);
 		}
+	});
+
+	it("opens a Stripe hook with no secret yet, and refuses an answer that says it has one (E3c-2)", async () => {
+		const STRIPE = {
+			...GITHUB,
+			name: "stripe-payments",
+			proof: "stripe",
+			site: "dashboard.stripe.com",
+			operationKey: "st-1",
+		} as const;
+		const opened = (f: Fixture, ready: boolean) => ({
+			...receipt(
+				f,
+				"create",
+				hook(f, {
+					name: STRIPE.name,
+					proof: "stripe",
+					signingSecret: { ...SECRET, ready },
+					address: ADDRESS,
+					path: PATH,
+				}),
+			),
+			secretSite: STRIPE.site,
+		});
+		const f: Fixture = fixture(noSql, { eventHook: async () => opened(f, false) });
+		await expect(f.client.manageHook(STRIPE, signal())).resolves.toMatchObject({
+			secretSite: "dashboard.stripe.com",
+		});
+		const ready: Fixture = fixture(noSql, { eventHook: async () => opened(ready, true) });
+		await expect(ready.client.manageHook(STRIPE, signal())).rejects.toThrow("Company folder response is invalid");
 	});
 });
 
@@ -1981,5 +2149,47 @@ describe("releases", () => {
 		await expect(client.release(randomUUID(), [{ ...named, version: "v1" }], sha("out"), signal())).rejects.toThrow(
 			"Invalid Company folder release",
 		);
+	});
+});
+
+describe("interface change notes (I10)", () => {
+	const answer = (noted: unknown) => ({ schema: "qorpera.interface-change-notes/v1", noted });
+
+	it("notes the run's changes as a run effect, asks again after a deadlock, and checks the answer", async () => {
+		let tries = 0;
+		const { client, calls, binding } = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return answer(2);
+		});
+		await expect(client.noteInterfaceChanges(signal())).resolves.toBe(2);
+		// The run's binding and an empty request, as the run effect takes them: no folder actor.
+		const call = { method: "qorpera_folder_note_interface_changes", args: { p_binding: binding, p_request: {} } };
+		expect(calls).toEqual([call, call]);
+		const none = fixture(() => answer(0));
+		await expect(none.client.noteInterfaceChanges(signal())).resolves.toBe(0);
+		for (const wrong of [
+			answer(-1),
+			answer(1.5),
+			answer("1"),
+			answer(null),
+			answer(true),
+			{ schema: "qorpera.interface-change-notes/v1" },
+			{ ...answer(1), extra: 1 },
+			{ ...answer(1), schema: "qorpera.interface-change-note/v1" },
+		]) {
+			const f = fixture(() => wrong);
+			await expect(f.client.noteInterfaceChanges(signal()), JSON.stringify(wrong)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+		// SQL's refusals as folder errors: the run stopped, or it may no longer write.
+		const stopped = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(stopped.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "stopped" });
+		const gone = fixture(() => {
+			throw sqlError("42501", "Run is unavailable");
+		});
+		await expect(gone.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "unavailable" });
 	});
 });

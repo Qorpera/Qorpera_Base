@@ -453,8 +453,7 @@ begin
 	if exists (select 1 from unnest(array['public.qorpera_lock_coding_worker(uuid)', 'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
 			'public.qorpera_claim_coding_session(text,integer)', 'public.qorpera_delegate_coding_session(uuid,uuid)',
 			'public.qorpera_answer_coding_session(uuid,text,uuid)', 'public.qorpera_archive_coding_session(uuid,uuid)',
-			'public.qorpera_archive_quiet_coding_sessions(text)', 'public.qorpera_ask_quiet_coding_sessions(text)',
-			'public.qorpera_lock_coding_workers(uuid[])']) f
+			'public.qorpera_archive_quiet_coding_sessions(text)', 'public.qorpera_lock_coding_workers(uuid[])']) f
 		where position('20260930026000' in pg_get_functiondef(f::regprocedure)) = 0) then
 		raise exception 'G: a patched body lacks its marker'; end if;
 end $$;

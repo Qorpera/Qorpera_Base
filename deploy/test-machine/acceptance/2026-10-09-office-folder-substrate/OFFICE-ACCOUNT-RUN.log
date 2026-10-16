@@ -1,0 +1,1033 @@
+== run-on-node: copying 5 untracked file(s) too
+== run-on-node: node01 2/3 slots busy, 0 waiting
+== run-on-node: qorpera-testvm-node01 20261009T131030-53082-28d87d18 as ci01 in slot 1 of 3 (3687 files, copy 1.5 s, queued 0 s)
+Project qfs-499f1bca created
+Storage pool qfs-499f1bca created
+Image copied successfully!
+Creating qorpera-substrate-499f1bca
+
+The instance you are starting does not have any network attached to it.
+  To create a new network, use: lxc network create
+  To attach a network to an instance, use: lxc network attach
+
+Get:1 http://archive.ubuntu.com/ubuntu resolute-updates/main amd64 bubblewrap amd64 0.11.1-1ubuntu0.3 [51.0 kB]
+Fetched 51.0 kB in 0s (575 kB/s)
+W: Download is performed unsandboxed as root as file '/tmp/qorpera-substrate.o8d7bBfv/push/debs/bubblewrap_0.11.1-1ubuntu0.3_amd64.deb' couldn't be accessed by user '_apt'. - pkgAcquire::Run (13: Permission denied)
+Selecting previously unselected package bubblewrap.
+(Reading database ... 91484 files and directories currently installed.)
+Preparing to unpack .../bubblewrap_0.11.1-1ubuntu0.3_amd64.deb ...
+Unpacking bubblewrap (0.11.1-1ubuntu0.3) ...
+Setting up bubblewrap (0.11.1-1ubuntu0.3) ...
+Processing triggers for man-db (2.13.1-1build1) ...
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded autocfg v1.5.1
+  Downloaded crypto-common v0.1.7
+  Downloaded cfg-if v1.0.5
+  Downloaded cfg_aliases v0.2.2
+  Downloaded bitflags v2.13.2
+  Downloaded rustversion v1.0.23
+  Downloaded smallvec v1.16.2
+  Downloaded block-buffer v0.10.4
+  Downloaded equivalent v1.0.2
+  Downloaded digest v0.10.7
+  Downloaded cpufeatures v0.2.17
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded zmij v1.0.23
+  Downloaded memoffset v0.9.1
+  Downloaded ref-cast v1.0.27
+  Downloaded ref-cast-impl v1.0.27
+  Downloaded scopeguard v1.2.0
+  Downloaded pkg-config v0.3.34
+  Downloaded num_enum v0.7.6
+  Downloaded parking_lot v0.12.5
+  Downloaded page_size v0.6.0
+  Downloaded version_check v0.9.5
+  Downloaded generic-array v0.14.7
+  Downloaded quote v1.0.47
+  Downloaded proc-macro-crate v3.5.0
+  Downloaded vsock v0.5.4
+  Downloaded itoa v1.0.18
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded serde_core v1.0.229
+  Downloaded sha2 v0.10.9
+  Downloaded unicode-ident v1.0.26
+  Downloaded num_enum_derive v0.7.6
+  Downloaded log v0.4.34
+  Downloaded parking_lot_core v0.9.12
+  Downloaded proc-macro2 v1.0.107
+  Downloaded serde_derive v1.0.229
+  Downloaded lock_api v0.4.14
+  Downloaded toml_edit v0.25.15+spec-1.1.0
+  Downloaded serde v1.0.229
+  Downloaded typenum v1.20.1
+  Downloaded zerocopy-derive v0.8.59
+  Downloaded serde_json v1.0.151
+  Downloaded indexmap v2.14.2
+  Downloaded memchr v2.8.3
+  Downloaded winnow v1.0.4
+  Downloaded fuser v0.18.0
+  Downloaded hashbrown v0.17.1
+  Downloaded zerocopy v0.8.59
+  Downloaded syn v3.0.6
+  Downloaded syn v2.0.119
+  Downloaded nix v0.31.3
+  Downloaded libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling version_check v0.9.5
+   Compiling cfg-if v1.0.5
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling winnow v1.0.4
+   Compiling autocfg v1.5.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling typenum v1.20.1
+   Compiling cfg_aliases v0.2.2
+   Compiling nix v0.31.3
+   Compiling serde_core v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling generic-array v0.14.7
+   Compiling memoffset v0.9.1
+   Compiling parking_lot_core v0.9.12
+   Compiling bitflags v2.13.2
+   Compiling indexmap v2.14.2
+   Compiling zmij v1.0.23
+   Compiling smallvec v1.16.2
+   Compiling zerocopy v0.8.59
+   Compiling pkg-config v0.3.34
+   Compiling ref-cast v1.0.27
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling memchr v2.8.3
+   Compiling fuser v0.18.0
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling cpufeatures v0.2.17
+   Compiling toml_edit v0.25.15+spec-1.1.0
+   Compiling digest v0.10.7
+   Compiling page_size v0.6.0
+   Compiling log v0.4.34
+   Compiling itoa v1.0.18
+   Compiling sha2 v0.10.9
+   Compiling parking_lot v0.12.5
+   Compiling proc-macro-crate v3.5.0
+   Compiling ref-cast-impl v1.0.27
+   Compiling serde_derive v1.0.229
+   Compiling vsock v0.5.4
+   Compiling zerocopy-derive v0.8.59
+   Compiling num_enum_derive v0.7.6
+   Compiling num_enum v0.7.6
+   Compiling qorpera-folder v0.1.0 (/src)
+    Finished `release` profile [optimized] target(s) in 17.59s
+Nested candidate VM: qfs-499f1bca/qorpera-substrate-499f1bca UUID=23e92732-4975-49c3-9ebd-71bde3d63e55 image=fca42260aab1da12d0e0cf4cdd96ae36487daa94da0aec601d2cfe1275c1ca2e folder=3256df4f65338b7c89f620d1beba1a3edb06d1af8d9c8f39f69ea7a92a60232a
+{
+  "schema": "qorpera.office-folder-substrate/v1",
+  "scope": "candidate propagation and helper primitives; synthetic folder service; copied office confinement",
+  "imageKind": "prepared-substrate",
+  "ownerMode": "office-account",
+  "officeIntegrationAccepted": false,
+  "project": "qfs-499f1bca",
+  "vm": "qorpera-substrate-499f1bca",
+  "uuid": "23e92732-4975-49c3-9ebd-71bde3d63e55",
+  "image": "fca42260aab1da12d0e0cf4cdd96ae36487daa94da0aec601d2cfe1275c1ca2e",
+  "folderSha256": "3256df4f65338b7c89f620d1beba1a3edb06d1af8d9c8f39f69ea7a92a60232a",
+  "fixtureSha256": "97b525ae025839fb48bfa1190b4b38f879560d92e72d45f8729c05cbabc5a961",
+  "officeUnitSha256": "af2f6a4063d5d71bff80ffddbed995bc36d389b5d1cd60c1993e8409c23af80f",
+  "guestBoot": "d12ec120-0ce7-45ad-9602-dc6692915105",
+  "executed": true,
+  "result": "failed",
+  "daemonUid": 0,
+  "daemonGid": 0,
+  "requestedOwner": {
+    "uid": 999,
+    "gid": 986
+  },
+  "mountOwners": [
+    {
+      "uid": 999,
+      "gid": 986,
+      "permissions": "0o755"
+    },
+    {
+      "uid": 999,
+      "gid": 986,
+      "permissions": "0o755"
+    }
+  ],
+  "limitations": [
+    "Synthetic Unix-socket folder service, no database or vsock identity proof",
+    "Copied office confinement, not a running office application or desktop",
+    "Candidate parent-bind alias, not implemented office integration",
+    "Offline helper primitive only; no production request authorization or command mount attachment",
+    "Existing descriptors do not migrate to a new FUSE connection"
+  ],
+  "confinementProperties": [
+    "--property",
+    "User=qorpera-office",
+    "--property",
+    "Group=qorpera-office",
+    "--property",
+    "UMask=0077",
+    "--property",
+    "LimitCORE=0",
+    "--property",
+    "PrivateTmp=yes",
+    "--property",
+    "PrivateDevices=yes",
+    "--property",
+    "ProtectSystem=strict",
+    "--property",
+    "InaccessiblePaths=/etc/qorpera-office/credentials -/etc/qorpera-office/boots/%b/credentials -/var/lib/qorpera/identity -/qorpera/company-live",
+    "--property",
+    "ProtectHome=yes",
+    "--property",
+    "ProtectProc=invisible",
+    "--property",
+    "ProcSubset=all",
+    "--property",
+    "ProtectHostname=private",
+    "--property",
+    "ProtectClock=yes",
+    "--property",
+    "ProtectKernelTunables=no",
+    "--property",
+    "ProtectKernelLogs=no",
+    "--property",
+    "ProtectKernelModules=yes",
+    "--property",
+    "ProtectControlGroups=yes",
+    "--property",
+    "NoNewPrivileges=yes",
+    "--property",
+    "CapabilityBoundingSet=",
+    "--property",
+    "AmbientCapabilities=",
+    "--property",
+    "RestrictNamespaces=user mnt pid net ipc uts cgroup",
+    "--property",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+    "--property",
+    "RestrictSUIDSGID=yes",
+    "--property",
+    "LockPersonality=yes",
+    "--property",
+    "MemoryMax=4G",
+    "--property",
+    "MemorySwapMax=0",
+    "--property",
+    "TasksMax=512",
+    "--property",
+    "CPUQuota=200%",
+    "--property",
+    "ReadWritePaths=/run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55",
+    "--property",
+    "RuntimeMaxSec=120",
+    "--property",
+    "KillMode=control-group"
+  ],
+  "directBefore": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532573]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true
+  },
+  "propagatedBefore": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532690]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true
+  },
+  "direct": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532573]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true,
+    "afterErrno": 107,
+    "writableAfter": false,
+    "afterWriteErrno": 107,
+    "oldDescriptor": "before",
+    "oldDescriptorCloseErrno": 107,
+    "mountinfo": [
+      "654 544 0:58 / /company rw,nosuid,nodev,noatime - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+    ]
+  },
+  "propagated": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532690]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true,
+    "after": "after remount",
+    "writableAfter": true,
+    "oldDescriptor": "before",
+    "oldDescriptorCloseErrno": 107,
+    "mountinfo": [
+      "657 522 0:29 /qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent /folder-parent rw,nosuid,nodev master:441 - tmpfs tmpfs rw,size=786612k,nr_inodes=819200,mode=755,inode64",
+      "373 657 0:67 / /folder-parent/company rw,nosuid,nodev,noatime master:380 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+    ]
+  },
+  "checks": {
+    "mountOwnershipApplied": true,
+    "directBindNegativeControl": true,
+    "runningNamespaceRecovered": true,
+    "officeCanWrite": true,
+    "officeCanWriteAfterRemount": true
+  },
+  "error": "RuntimeError('offline ended before ready: {\\'error\\': \"PermissionError(1, \\'Operation not permitted\\')\", \\'beforeUnshare\\': {\\'Name\\': \\'python3\\', \\'Umask\\': \\'0077\\', \\'State\\': \\'R (running)\\', \\'Tgid\\': \\'3\\', \\'Ngid\\': \\'0\\', \\'Pid\\': \\'3\\', \\'PPid\\': \\'2\\', \\'TracerPid\\': \\'0\\', \\'Uid\\': \\'999\\\\t999\\\\t999\\\\t999\\', \\'Gid\\': \\'986\\\\t986\\\\t986\\\\t986\\', \\'FDSize\\': \\'64\\', \\'Groups\\': \\'986\\', \\'NStgid\\': \\'3\\', \\'NSpid\\': \\'3\\', \\'NSpgid\\': \\'1\\', \\'NSsid\\': \\'1\\', \\'Kthread\\': \\'0\\', \\'VmPeak\\': \\'33236 kB\\', \\'VmSize\\': \\'33236 kB\\', \\'VmLck\\': \\'0 kB\\', \\'VmPin\\': \\'0 kB\\', \\'VmHWM\\': \\'13868 kB\\', \\'VmRSS\\': \\'13868 kB\\', \\'RssAnon\\': \\'9644 kB\\', \\'RssFile\\': \\'4224 kB\\', \\'RssShmem\\': \\'0 kB\\', \\'VmData\\': \\'11476 kB\\', \\'VmStk\\': \\'132 kB\\', \\'VmExe\\': \\'3608 kB\\', \\'VmLib\\': \\'7448 kB\\', \\'VmPTE\\': \\'88 kB\\', \\'VmSwap\\': \\'0 kB\\', \\'HugetlbPages\\': \\'0 kB\\', \\'CoreDumping\\': \\'0\\', \\'THP_enabled\\': \\'1\\', \\'untag_mask\\': \\'0xffffffffffffffff\\', \\'Threads\\': \\'1\\', \\'SigQ\\': \\'0/11364\\', \\'SigPnd\\': \\'0000000000000000\\', \\'ShdPnd\\': \\'0000000000000000\\', \\'SigBlk\\': \\'0000000000000000\\', \\'SigIgn\\': \\'0000000001001000\\', \\'SigCgt\\': \\'0000000000000002\\', \\'CapInh\\': \\'0000000000200000\\', \\'CapPrm\\': \\'0000000000200000\\', \\'CapEff\\': \\'0000000000200000\\', \\'CapBnd\\': \\'0000000000200000\\', \\'CapAmb\\': \\'0000000000200000\\', \\'NoNewPrivs\\': \\'1\\', \\'Seccomp\\': \\'2\\', \\'Seccomp_filters\\': \\'20\\', \\'Speculation_Store_Bypass\\': \\'thread vulnerable\\', \\'SpeculationIndirectBranch\\': \\'conditional enabled\\', \\'Cpus_allowed\\': \\'3ff\\', \\'Cpus_allowed_list\\': \\'0-9\\', \\'Mems_allowed\\': \\'00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\\', \\'Mems_allowed_list\\': \\'0\\', \\'voluntary_ctxt_switches\\': \\'0\\', \\'nonvoluntary_ctxt_switches\\': \\'0\\', \\'x86_Thread_features\\': \\'\\', \\'x86_Thread_features_locked\\': \\'\\'}, \\'status\\': {\\'Name\\': \\'python3\\', \\'Umask\\': \\'0077\\', \\'State\\': \\'R (running)\\', \\'Tgid\\': \\'3\\', \\'Ngid\\': \\'0\\', \\'Pid\\': \\'3\\', \\'PPid\\': \\'2\\', \\'TracerPid\\': \\'0\\', \\'Uid\\': \\'999\\\\t999\\\\t999\\\\t999\\', \\'Gid\\': \\'986\\\\t986\\\\t986\\\\t986\\', \\'FDSize\\': \\'64\\', \\'Groups\\': \\'986\\', \\'NStgid\\': \\'3\\', \\'NSpid\\': \\'3\\', \\'NSpgid\\': \\'1\\', \\'NSsid\\': \\'1\\', \\'Kthread\\': \\'0\\', \\'VmPeak\\': \\'33236 kB\\', \\'VmSize\\': \\'33236 kB\\', \\'VmLck\\': \\'0 kB\\', \\'VmPin\\': \\'0 kB\\', \\'VmHWM\\': \\'14936 kB\\', \\'VmRSS\\': \\'14936 kB\\', \\'RssAnon\\': \\'9652 kB\\', \\'RssFile\\': \\'5284 kB\\', \\'RssShmem\\': \\'0 kB\\', \\'VmData\\': \\'11476 kB\\', \\'VmStk\\': \\'132 kB\\', \\'VmExe\\': \\'3608 kB\\', \\'VmLib\\': \\'7448 kB\\', \\'VmPTE\\': \\'88 kB\\', \\'VmSwap\\': \\'0 kB\\', \\'HugetlbPages\\': \\'0 kB\\', \\'CoreDumping\\': \\'0\\', \\'THP_enabled\\': \\'1\\', \\'untag_mask\\': \\'0xffffffffffffffff\\', \\'Threads\\': \\'1\\', \\'SigQ\\': \\'0/11364\\', \\'SigPnd\\': \\'0000000000000000\\', \\'ShdPnd\\': \\'0000000000000000\\', \\'SigBlk\\': \\'0000000000000000\\', \\'SigIgn\\': \\'0000000001001000\\', \\'SigCgt\\': \\'0000000000000002\\', \\'CapInh\\': \\'0000000000200000\\', \\'CapPrm\\': \\'0000000000200000\\', \\'CapEff\\': \\'0000000000200000\\', \\'CapBnd\\': \\'0000000000200000\\', \\'CapAmb\\': \\'0000000000200000\\', \\'NoNewPrivs\\': \\'1\\', \\'Seccomp\\': \\'2\\', \\'Seccomp_filters\\': \\'20\\', \\'Speculation_Store_Bypass\\': \\'thread vulnerable\\', \\'SpeculationIndirectBranch\\': \\'conditional enabled\\', \\'Cpus_allowed\\': \\'3ff\\', \\'Cpus_allowed_list\\': \\'0-9\\', \\'Mems_allowed\\': \\'00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\\', \\'Mems_allowed_list\\': \\'0\\', \\'voluntary_ctxt_switches\\': \\'0\\', \\'nonvoluntary_ctxt_switches\\': \\'0\\', \\'x86_Thread_features\\': \\'\\', \\'x86_Thread_features_locked\\': \\'\\'}}')",
+  "protocolErrors": [],
+  "controlRecords": {
+    "direct-done.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532573]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true,
+      "afterErrno": 107,
+      "writableAfter": false,
+      "afterWriteErrno": 107,
+      "oldDescriptor": "before",
+      "oldDescriptorCloseErrno": 107,
+      "mountinfo": [
+        "654 544 0:58 / /company rw,nosuid,nodev,noatime - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+      ]
+    },
+    "propagated-done.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532690]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true,
+      "after": "after remount",
+      "writableAfter": true,
+      "oldDescriptor": "before",
+      "oldDescriptorCloseErrno": 107,
+      "mountinfo": [
+        "657 522 0:29 /qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent /folder-parent rw,nosuid,nodev master:441 - tmpfs tmpfs rw,size=786612k,nr_inodes=819200,mode=755,inode64",
+        "373 657 0:67 / /folder-parent/company rw,nosuid,nodev,noatime master:380 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+      ]
+    },
+    "offline-done.json": {
+      "error": "PermissionError(1, 'Operation not permitted')",
+      "beforeUnshare": {
+        "Name": "python3",
+        "Umask": "0077",
+        "State": "R (running)",
+        "Tgid": "3",
+        "Ngid": "0",
+        "Pid": "3",
+        "PPid": "2",
+        "TracerPid": "0",
+        "Uid": "999\t999\t999\t999",
+        "Gid": "986\t986\t986\t986",
+        "FDSize": "64",
+        "Groups": "986",
+        "NStgid": "3",
+        "NSpid": "3",
+        "NSpgid": "1",
+        "NSsid": "1",
+        "Kthread": "0",
+        "VmPeak": "33236 kB",
+        "VmSize": "33236 kB",
+        "VmLck": "0 kB",
+        "VmPin": "0 kB",
+        "VmHWM": "13868 kB",
+        "VmRSS": "13868 kB",
+        "RssAnon": "9644 kB",
+        "RssFile": "4224 kB",
+        "RssShmem": "0 kB",
+        "VmData": "11476 kB",
+        "VmStk": "132 kB",
+        "VmExe": "3608 kB",
+        "VmLib": "7448 kB",
+        "VmPTE": "88 kB",
+        "VmSwap": "0 kB",
+        "HugetlbPages": "0 kB",
+        "CoreDumping": "0",
+        "THP_enabled": "1",
+        "untag_mask": "0xffffffffffffffff",
+        "Threads": "1",
+        "SigQ": "0/11364",
+        "SigPnd": "0000000000000000",
+        "ShdPnd": "0000000000000000",
+        "SigBlk": "0000000000000000",
+        "SigIgn": "0000000001001000",
+        "SigCgt": "0000000000000002",
+        "CapInh": "0000000000200000",
+        "CapPrm": "0000000000200000",
+        "CapEff": "0000000000200000",
+        "CapBnd": "0000000000200000",
+        "CapAmb": "0000000000200000",
+        "NoNewPrivs": "1",
+        "Seccomp": "2",
+        "Seccomp_filters": "20",
+        "Speculation_Store_Bypass": "thread vulnerable",
+        "SpeculationIndirectBranch": "conditional enabled",
+        "Cpus_allowed": "3ff",
+        "Cpus_allowed_list": "0-9",
+        "Mems_allowed": "00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+        "Mems_allowed_list": "0",
+        "voluntary_ctxt_switches": "0",
+        "nonvoluntary_ctxt_switches": "0",
+        "x86_Thread_features": "",
+        "x86_Thread_features_locked": ""
+      },
+      "status": {
+        "Name": "python3",
+        "Umask": "0077",
+        "State": "R (running)",
+        "Tgid": "3",
+        "Ngid": "0",
+        "Pid": "3",
+        "PPid": "2",
+        "TracerPid": "0",
+        "Uid": "999\t999\t999\t999",
+        "Gid": "986\t986\t986\t986",
+        "FDSize": "64",
+        "Groups": "986",
+        "NStgid": "3",
+        "NSpid": "3",
+        "NSpgid": "1",
+        "NSsid": "1",
+        "Kthread": "0",
+        "VmPeak": "33236 kB",
+        "VmSize": "33236 kB",
+        "VmLck": "0 kB",
+        "VmPin": "0 kB",
+        "VmHWM": "14936 kB",
+        "VmRSS": "14936 kB",
+        "RssAnon": "9652 kB",
+        "RssFile": "5284 kB",
+        "RssShmem": "0 kB",
+        "VmData": "11476 kB",
+        "VmStk": "132 kB",
+        "VmExe": "3608 kB",
+        "VmLib": "7448 kB",
+        "VmPTE": "88 kB",
+        "VmSwap": "0 kB",
+        "HugetlbPages": "0 kB",
+        "CoreDumping": "0",
+        "THP_enabled": "1",
+        "untag_mask": "0xffffffffffffffff",
+        "Threads": "1",
+        "SigQ": "0/11364",
+        "SigPnd": "0000000000000000",
+        "ShdPnd": "0000000000000000",
+        "SigBlk": "0000000000000000",
+        "SigIgn": "0000000001001000",
+        "SigCgt": "0000000000000002",
+        "CapInh": "0000000000200000",
+        "CapPrm": "0000000000200000",
+        "CapEff": "0000000000200000",
+        "CapBnd": "0000000000200000",
+        "CapAmb": "0000000000200000",
+        "NoNewPrivs": "1",
+        "Seccomp": "2",
+        "Seccomp_filters": "20",
+        "Speculation_Store_Bypass": "thread vulnerable",
+        "SpeculationIndirectBranch": "conditional enabled",
+        "Cpus_allowed": "3ff",
+        "Cpus_allowed_list": "0-9",
+        "Mems_allowed": "00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+        "Mems_allowed_list": "0",
+        "voluntary_ctxt_switches": "0",
+        "nonvoluntary_ctxt_switches": "0",
+        "x86_Thread_features": "",
+        "x86_Thread_features_locked": ""
+      }
+    },
+    "offline-start.json": {
+      "status": {
+        "Name": "python3",
+        "Umask": "0077",
+        "State": "R (running)",
+        "Tgid": "2",
+        "Ngid": "0",
+        "Pid": "2",
+        "PPid": "1",
+        "TracerPid": "0",
+        "Uid": "999\t999\t999\t999",
+        "Gid": "986\t986\t986\t986",
+        "FDSize": "64",
+        "Groups": "986",
+        "NStgid": "2",
+        "NSpid": "2",
+        "NSpgid": "1",
+        "NSsid": "1",
+        "Kthread": "0",
+        "VmPeak": "33020 kB",
+        "VmSize": "33020 kB",
+        "VmLck": "0 kB",
+        "VmPin": "0 kB",
+        "VmHWM": "22176 kB",
+        "VmRSS": "22176 kB",
+        "RssAnon": "9628 kB",
+        "RssFile": "12548 kB",
+        "RssShmem": "0 kB",
+        "VmData": "11260 kB",
+        "VmStk": "132 kB",
+        "VmExe": "3608 kB",
+        "VmLib": "7448 kB",
+        "VmPTE": "100 kB",
+        "VmSwap": "0 kB",
+        "HugetlbPages": "0 kB",
+        "CoreDumping": "0",
+        "THP_enabled": "1",
+        "untag_mask": "0xffffffffffffffff",
+        "Threads": "1",
+        "SigQ": "0/11364",
+        "SigPnd": "0000000000000000",
+        "ShdPnd": "0000000000000000",
+        "SigBlk": "0000000000000000",
+        "SigIgn": "0000000001001000",
+        "SigCgt": "0000000000000002",
+        "CapInh": "0000000000200000",
+        "CapPrm": "0000000000200000",
+        "CapEff": "0000000000200000",
+        "CapBnd": "0000000000200000",
+        "CapAmb": "0000000000200000",
+        "NoNewPrivs": "1",
+        "Seccomp": "2",
+        "Seccomp_filters": "20",
+        "Speculation_Store_Bypass": "thread vulnerable",
+        "SpeculationIndirectBranch": "conditional enabled",
+        "Cpus_allowed": "3ff",
+        "Cpus_allowed_list": "0-9",
+        "Mems_allowed": "00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+        "Mems_allowed_list": "0",
+        "voluntary_ctxt_switches": "1",
+        "nonvoluntary_ctxt_switches": "11",
+        "x86_Thread_features": "",
+        "x86_Thread_features_locked": ""
+      },
+      "user": "user:[4026532809]",
+      "mount": "mnt:[4026532750]",
+      "net": "net:[4026532755]",
+      "uid": 999,
+      "securityLabel": "bwrap//&unpriv_bwrap (enforce)"
+    },
+    "propagated-ready.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532690]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true
+    },
+    "direct-ready.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532573]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true
+    }
+  },
+  "mountLogs": [
+    "qorpera-folder: view synthetic accepted at change 0, read-write\nqorpera-folder: kernel FUSE ABI Version(7, 45)\nqorpera-folder: mounted at /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent/company with 16 threads\n",
+    "qorpera-folder: view synthetic accepted at change 0, read-write\nqorpera-folder: kernel FUSE ABI Version(7, 45)\nqorpera-folder: mounted at /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent/company with 16 threads\n"
+  ],
+  "kernelDenials": [
+    "Oct 09 13:13:51 qorpera-substrate-499f1bca kernel: audit: type=1400 audit(1791551631.600:188): apparmor=\"DENIED\" operation=\"capable\" class=\"cap\" profile=\"unpriv_bwrap\" pid=1609 comm=\"python3\" capability=21  capname=\"sys_admin\""
+  ],
+  "units": {
+    "direct": "Oct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: Started qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-direct.service - [systemd-run] /usr/bin/bwrap --unshare-user --unshare-pid --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup --disable-userns --assert-userns-disabled --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/control /control --ro-bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/probe.py /probe.py --setenv PATH /usr/bin:/bin --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent/company /company --remount-ro / -- python3 /probe.py client /control direct.\nOct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-direct.service: Deactivated successfully.",
+    "propagated": "Oct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: Started qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-propagated.service - [systemd-run] /usr/bin/bwrap --unshare-user --unshare-pid --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup --disable-userns --assert-userns-disabled --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/control /control --ro-bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/probe.py /probe.py --setenv PATH /usr/bin:/bin --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent /folder-parent --symlink /folder-parent/company /company --remount-ro / -- python3 /probe.py client /control propagated.\nOct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-propagated.service: Deactivated successfully.",
+    "offline": "Oct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: Started qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-offline.service - [systemd-run] /usr/bin/bwrap --unshare-user --unshare-pid --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup --disable-userns --assert-userns-disabled --die-with-parent --new-session --cap-drop ALL --cap-add CAP_SYS_ADMIN --clearenv --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/control /control --ro-bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/probe.py /probe.py --setenv PATH /usr/bin:/bin --remount-ro / -- python3 /probe.py shell /control.\nOct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-offline.service: Deactivated successfully."
+  }
+}
+
+Project qfs-499f1bca deleted
+Storage pool qfs-499f1bca deleted
+OFFICE_FOLDER_SUBSTRATE_EVIDENCE_BEGIN
+{
+  "schema": "qorpera.office-folder-substrate/v1",
+  "scope": "candidate propagation and helper primitives; synthetic folder service; copied office confinement",
+  "imageKind": "prepared-substrate",
+  "ownerMode": "office-account",
+  "officeIntegrationAccepted": false,
+  "project": "qfs-499f1bca",
+  "vm": "qorpera-substrate-499f1bca",
+  "uuid": "23e92732-4975-49c3-9ebd-71bde3d63e55",
+  "image": "fca42260aab1da12d0e0cf4cdd96ae36487daa94da0aec601d2cfe1275c1ca2e",
+  "folderSha256": "3256df4f65338b7c89f620d1beba1a3edb06d1af8d9c8f39f69ea7a92a60232a",
+  "fixtureSha256": "97b525ae025839fb48bfa1190b4b38f879560d92e72d45f8729c05cbabc5a961",
+  "officeUnitSha256": "af2f6a4063d5d71bff80ffddbed995bc36d389b5d1cd60c1993e8409c23af80f",
+  "guestBoot": "d12ec120-0ce7-45ad-9602-dc6692915105",
+  "executed": true,
+  "result": "failed",
+  "daemonUid": 0,
+  "daemonGid": 0,
+  "requestedOwner": {
+    "uid": 999,
+    "gid": 986
+  },
+  "mountOwners": [
+    {
+      "uid": 999,
+      "gid": 986,
+      "permissions": "0o755"
+    },
+    {
+      "uid": 999,
+      "gid": 986,
+      "permissions": "0o755"
+    }
+  ],
+  "limitations": [
+    "Synthetic Unix-socket folder service, no database or vsock identity proof",
+    "Copied office confinement, not a running office application or desktop",
+    "Candidate parent-bind alias, not implemented office integration",
+    "Offline helper primitive only; no production request authorization or command mount attachment",
+    "Existing descriptors do not migrate to a new FUSE connection"
+  ],
+  "confinementProperties": [
+    "--property",
+    "User=qorpera-office",
+    "--property",
+    "Group=qorpera-office",
+    "--property",
+    "UMask=0077",
+    "--property",
+    "LimitCORE=0",
+    "--property",
+    "PrivateTmp=yes",
+    "--property",
+    "PrivateDevices=yes",
+    "--property",
+    "ProtectSystem=strict",
+    "--property",
+    "InaccessiblePaths=/etc/qorpera-office/credentials -/etc/qorpera-office/boots/%b/credentials -/var/lib/qorpera/identity -/qorpera/company-live",
+    "--property",
+    "ProtectHome=yes",
+    "--property",
+    "ProtectProc=invisible",
+    "--property",
+    "ProcSubset=all",
+    "--property",
+    "ProtectHostname=private",
+    "--property",
+    "ProtectClock=yes",
+    "--property",
+    "ProtectKernelTunables=no",
+    "--property",
+    "ProtectKernelLogs=no",
+    "--property",
+    "ProtectKernelModules=yes",
+    "--property",
+    "ProtectControlGroups=yes",
+    "--property",
+    "NoNewPrivileges=yes",
+    "--property",
+    "CapabilityBoundingSet=",
+    "--property",
+    "AmbientCapabilities=",
+    "--property",
+    "RestrictNamespaces=user mnt pid net ipc uts cgroup",
+    "--property",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+    "--property",
+    "RestrictSUIDSGID=yes",
+    "--property",
+    "LockPersonality=yes",
+    "--property",
+    "MemoryMax=4G",
+    "--property",
+    "MemorySwapMax=0",
+    "--property",
+    "TasksMax=512",
+    "--property",
+    "CPUQuota=200%",
+    "--property",
+    "ReadWritePaths=/run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55",
+    "--property",
+    "RuntimeMaxSec=120",
+    "--property",
+    "KillMode=control-group"
+  ],
+  "directBefore": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532573]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true
+  },
+  "propagatedBefore": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532690]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true
+  },
+  "direct": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532573]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true,
+    "afterErrno": 107,
+    "writableAfter": false,
+    "afterWriteErrno": 107,
+    "oldDescriptor": "before",
+    "oldDescriptorCloseErrno": 107,
+    "mountinfo": [
+      "654 544 0:58 / /company rw,nosuid,nodev,noatime - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+    ]
+  },
+  "propagated": {
+    "pid": 2,
+    "mountNamespace": "mnt:[4026532690]",
+    "status": {
+      "CapEff": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "before": "before",
+    "writable": true,
+    "after": "after remount",
+    "writableAfter": true,
+    "oldDescriptor": "before",
+    "oldDescriptorCloseErrno": 107,
+    "mountinfo": [
+      "657 522 0:29 /qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent /folder-parent rw,nosuid,nodev master:441 - tmpfs tmpfs rw,size=786612k,nr_inodes=819200,mode=755,inode64",
+      "373 657 0:67 / /folder-parent/company rw,nosuid,nodev,noatime master:380 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+    ]
+  },
+  "checks": {
+    "mountOwnershipApplied": true,
+    "directBindNegativeControl": true,
+    "runningNamespaceRecovered": true,
+    "officeCanWrite": true,
+    "officeCanWriteAfterRemount": true
+  },
+  "error": "RuntimeError('offline ended before ready: {\\'error\\': \"PermissionError(1, \\'Operation not permitted\\')\", \\'beforeUnshare\\': {\\'Name\\': \\'python3\\', \\'Umask\\': \\'0077\\', \\'State\\': \\'R (running)\\', \\'Tgid\\': \\'3\\', \\'Ngid\\': \\'0\\', \\'Pid\\': \\'3\\', \\'PPid\\': \\'2\\', \\'TracerPid\\': \\'0\\', \\'Uid\\': \\'999\\\\t999\\\\t999\\\\t999\\', \\'Gid\\': \\'986\\\\t986\\\\t986\\\\t986\\', \\'FDSize\\': \\'64\\', \\'Groups\\': \\'986\\', \\'NStgid\\': \\'3\\', \\'NSpid\\': \\'3\\', \\'NSpgid\\': \\'1\\', \\'NSsid\\': \\'1\\', \\'Kthread\\': \\'0\\', \\'VmPeak\\': \\'33236 kB\\', \\'VmSize\\': \\'33236 kB\\', \\'VmLck\\': \\'0 kB\\', \\'VmPin\\': \\'0 kB\\', \\'VmHWM\\': \\'13868 kB\\', \\'VmRSS\\': \\'13868 kB\\', \\'RssAnon\\': \\'9644 kB\\', \\'RssFile\\': \\'4224 kB\\', \\'RssShmem\\': \\'0 kB\\', \\'VmData\\': \\'11476 kB\\', \\'VmStk\\': \\'132 kB\\', \\'VmExe\\': \\'3608 kB\\', \\'VmLib\\': \\'7448 kB\\', \\'VmPTE\\': \\'88 kB\\', \\'VmSwap\\': \\'0 kB\\', \\'HugetlbPages\\': \\'0 kB\\', \\'CoreDumping\\': \\'0\\', \\'THP_enabled\\': \\'1\\', \\'untag_mask\\': \\'0xffffffffffffffff\\', \\'Threads\\': \\'1\\', \\'SigQ\\': \\'0/11364\\', \\'SigPnd\\': \\'0000000000000000\\', \\'ShdPnd\\': \\'0000000000000000\\', \\'SigBlk\\': \\'0000000000000000\\', \\'SigIgn\\': \\'0000000001001000\\', \\'SigCgt\\': \\'0000000000000002\\', \\'CapInh\\': \\'0000000000200000\\', \\'CapPrm\\': \\'0000000000200000\\', \\'CapEff\\': \\'0000000000200000\\', \\'CapBnd\\': \\'0000000000200000\\', \\'CapAmb\\': \\'0000000000200000\\', \\'NoNewPrivs\\': \\'1\\', \\'Seccomp\\': \\'2\\', \\'Seccomp_filters\\': \\'20\\', \\'Speculation_Store_Bypass\\': \\'thread vulnerable\\', \\'SpeculationIndirectBranch\\': \\'conditional enabled\\', \\'Cpus_allowed\\': \\'3ff\\', \\'Cpus_allowed_list\\': \\'0-9\\', \\'Mems_allowed\\': \\'00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\\', \\'Mems_allowed_list\\': \\'0\\', \\'voluntary_ctxt_switches\\': \\'0\\', \\'nonvoluntary_ctxt_switches\\': \\'0\\', \\'x86_Thread_features\\': \\'\\', \\'x86_Thread_features_locked\\': \\'\\'}, \\'status\\': {\\'Name\\': \\'python3\\', \\'Umask\\': \\'0077\\', \\'State\\': \\'R (running)\\', \\'Tgid\\': \\'3\\', \\'Ngid\\': \\'0\\', \\'Pid\\': \\'3\\', \\'PPid\\': \\'2\\', \\'TracerPid\\': \\'0\\', \\'Uid\\': \\'999\\\\t999\\\\t999\\\\t999\\', \\'Gid\\': \\'986\\\\t986\\\\t986\\\\t986\\', \\'FDSize\\': \\'64\\', \\'Groups\\': \\'986\\', \\'NStgid\\': \\'3\\', \\'NSpid\\': \\'3\\', \\'NSpgid\\': \\'1\\', \\'NSsid\\': \\'1\\', \\'Kthread\\': \\'0\\', \\'VmPeak\\': \\'33236 kB\\', \\'VmSize\\': \\'33236 kB\\', \\'VmLck\\': \\'0 kB\\', \\'VmPin\\': \\'0 kB\\', \\'VmHWM\\': \\'14936 kB\\', \\'VmRSS\\': \\'14936 kB\\', \\'RssAnon\\': \\'9652 kB\\', \\'RssFile\\': \\'5284 kB\\', \\'RssShmem\\': \\'0 kB\\', \\'VmData\\': \\'11476 kB\\', \\'VmStk\\': \\'132 kB\\', \\'VmExe\\': \\'3608 kB\\', \\'VmLib\\': \\'7448 kB\\', \\'VmPTE\\': \\'88 kB\\', \\'VmSwap\\': \\'0 kB\\', \\'HugetlbPages\\': \\'0 kB\\', \\'CoreDumping\\': \\'0\\', \\'THP_enabled\\': \\'1\\', \\'untag_mask\\': \\'0xffffffffffffffff\\', \\'Threads\\': \\'1\\', \\'SigQ\\': \\'0/11364\\', \\'SigPnd\\': \\'0000000000000000\\', \\'ShdPnd\\': \\'0000000000000000\\', \\'SigBlk\\': \\'0000000000000000\\', \\'SigIgn\\': \\'0000000001001000\\', \\'SigCgt\\': \\'0000000000000002\\', \\'CapInh\\': \\'0000000000200000\\', \\'CapPrm\\': \\'0000000000200000\\', \\'CapEff\\': \\'0000000000200000\\', \\'CapBnd\\': \\'0000000000200000\\', \\'CapAmb\\': \\'0000000000200000\\', \\'NoNewPrivs\\': \\'1\\', \\'Seccomp\\': \\'2\\', \\'Seccomp_filters\\': \\'20\\', \\'Speculation_Store_Bypass\\': \\'thread vulnerable\\', \\'SpeculationIndirectBranch\\': \\'conditional enabled\\', \\'Cpus_allowed\\': \\'3ff\\', \\'Cpus_allowed_list\\': \\'0-9\\', \\'Mems_allowed\\': \\'00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\\', \\'Mems_allowed_list\\': \\'0\\', \\'voluntary_ctxt_switches\\': \\'0\\', \\'nonvoluntary_ctxt_switches\\': \\'0\\', \\'x86_Thread_features\\': \\'\\', \\'x86_Thread_features_locked\\': \\'\\'}}')",
+  "protocolErrors": [],
+  "controlRecords": {
+    "direct-done.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532573]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true,
+      "afterErrno": 107,
+      "writableAfter": false,
+      "afterWriteErrno": 107,
+      "oldDescriptor": "before",
+      "oldDescriptorCloseErrno": 107,
+      "mountinfo": [
+        "654 544 0:58 / /company rw,nosuid,nodev,noatime - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+      ]
+    },
+    "propagated-done.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532690]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true,
+      "after": "after remount",
+      "writableAfter": true,
+      "oldDescriptor": "before",
+      "oldDescriptorCloseErrno": 107,
+      "mountinfo": [
+        "657 522 0:29 /qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent /folder-parent rw,nosuid,nodev master:441 - tmpfs tmpfs rw,size=786612k,nr_inodes=819200,mode=755,inode64",
+        "373 657 0:67 / /folder-parent/company rw,nosuid,nodev,noatime master:380 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+      ]
+    },
+    "offline-done.json": {
+      "error": "PermissionError(1, 'Operation not permitted')",
+      "beforeUnshare": {
+        "Name": "python3",
+        "Umask": "0077",
+        "State": "R (running)",
+        "Tgid": "3",
+        "Ngid": "0",
+        "Pid": "3",
+        "PPid": "2",
+        "TracerPid": "0",
+        "Uid": "999\t999\t999\t999",
+        "Gid": "986\t986\t986\t986",
+        "FDSize": "64",
+        "Groups": "986",
+        "NStgid": "3",
+        "NSpid": "3",
+        "NSpgid": "1",
+        "NSsid": "1",
+        "Kthread": "0",
+        "VmPeak": "33236 kB",
+        "VmSize": "33236 kB",
+        "VmLck": "0 kB",
+        "VmPin": "0 kB",
+        "VmHWM": "13868 kB",
+        "VmRSS": "13868 kB",
+        "RssAnon": "9644 kB",
+        "RssFile": "4224 kB",
+        "RssShmem": "0 kB",
+        "VmData": "11476 kB",
+        "VmStk": "132 kB",
+        "VmExe": "3608 kB",
+        "VmLib": "7448 kB",
+        "VmPTE": "88 kB",
+        "VmSwap": "0 kB",
+        "HugetlbPages": "0 kB",
+        "CoreDumping": "0",
+        "THP_enabled": "1",
+        "untag_mask": "0xffffffffffffffff",
+        "Threads": "1",
+        "SigQ": "0/11364",
+        "SigPnd": "0000000000000000",
+        "ShdPnd": "0000000000000000",
+        "SigBlk": "0000000000000000",
+        "SigIgn": "0000000001001000",
+        "SigCgt": "0000000000000002",
+        "CapInh": "0000000000200000",
+        "CapPrm": "0000000000200000",
+        "CapEff": "0000000000200000",
+        "CapBnd": "0000000000200000",
+        "CapAmb": "0000000000200000",
+        "NoNewPrivs": "1",
+        "Seccomp": "2",
+        "Seccomp_filters": "20",
+        "Speculation_Store_Bypass": "thread vulnerable",
+        "SpeculationIndirectBranch": "conditional enabled",
+        "Cpus_allowed": "3ff",
+        "Cpus_allowed_list": "0-9",
+        "Mems_allowed": "00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+        "Mems_allowed_list": "0",
+        "voluntary_ctxt_switches": "0",
+        "nonvoluntary_ctxt_switches": "0",
+        "x86_Thread_features": "",
+        "x86_Thread_features_locked": ""
+      },
+      "status": {
+        "Name": "python3",
+        "Umask": "0077",
+        "State": "R (running)",
+        "Tgid": "3",
+        "Ngid": "0",
+        "Pid": "3",
+        "PPid": "2",
+        "TracerPid": "0",
+        "Uid": "999\t999\t999\t999",
+        "Gid": "986\t986\t986\t986",
+        "FDSize": "64",
+        "Groups": "986",
+        "NStgid": "3",
+        "NSpid": "3",
+        "NSpgid": "1",
+        "NSsid": "1",
+        "Kthread": "0",
+        "VmPeak": "33236 kB",
+        "VmSize": "33236 kB",
+        "VmLck": "0 kB",
+        "VmPin": "0 kB",
+        "VmHWM": "14936 kB",
+        "VmRSS": "14936 kB",
+        "RssAnon": "9652 kB",
+        "RssFile": "5284 kB",
+        "RssShmem": "0 kB",
+        "VmData": "11476 kB",
+        "VmStk": "132 kB",
+        "VmExe": "3608 kB",
+        "VmLib": "7448 kB",
+        "VmPTE": "88 kB",
+        "VmSwap": "0 kB",
+        "HugetlbPages": "0 kB",
+        "CoreDumping": "0",
+        "THP_enabled": "1",
+        "untag_mask": "0xffffffffffffffff",
+        "Threads": "1",
+        "SigQ": "0/11364",
+        "SigPnd": "0000000000000000",
+        "ShdPnd": "0000000000000000",
+        "SigBlk": "0000000000000000",
+        "SigIgn": "0000000001001000",
+        "SigCgt": "0000000000000002",
+        "CapInh": "0000000000200000",
+        "CapPrm": "0000000000200000",
+        "CapEff": "0000000000200000",
+        "CapBnd": "0000000000200000",
+        "CapAmb": "0000000000200000",
+        "NoNewPrivs": "1",
+        "Seccomp": "2",
+        "Seccomp_filters": "20",
+        "Speculation_Store_Bypass": "thread vulnerable",
+        "SpeculationIndirectBranch": "conditional enabled",
+        "Cpus_allowed": "3ff",
+        "Cpus_allowed_list": "0-9",
+        "Mems_allowed": "00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+        "Mems_allowed_list": "0",
+        "voluntary_ctxt_switches": "0",
+        "nonvoluntary_ctxt_switches": "0",
+        "x86_Thread_features": "",
+        "x86_Thread_features_locked": ""
+      }
+    },
+    "offline-start.json": {
+      "status": {
+        "Name": "python3",
+        "Umask": "0077",
+        "State": "R (running)",
+        "Tgid": "2",
+        "Ngid": "0",
+        "Pid": "2",
+        "PPid": "1",
+        "TracerPid": "0",
+        "Uid": "999\t999\t999\t999",
+        "Gid": "986\t986\t986\t986",
+        "FDSize": "64",
+        "Groups": "986",
+        "NStgid": "2",
+        "NSpid": "2",
+        "NSpgid": "1",
+        "NSsid": "1",
+        "Kthread": "0",
+        "VmPeak": "33020 kB",
+        "VmSize": "33020 kB",
+        "VmLck": "0 kB",
+        "VmPin": "0 kB",
+        "VmHWM": "22176 kB",
+        "VmRSS": "22176 kB",
+        "RssAnon": "9628 kB",
+        "RssFile": "12548 kB",
+        "RssShmem": "0 kB",
+        "VmData": "11260 kB",
+        "VmStk": "132 kB",
+        "VmExe": "3608 kB",
+        "VmLib": "7448 kB",
+        "VmPTE": "100 kB",
+        "VmSwap": "0 kB",
+        "HugetlbPages": "0 kB",
+        "CoreDumping": "0",
+        "THP_enabled": "1",
+        "untag_mask": "0xffffffffffffffff",
+        "Threads": "1",
+        "SigQ": "0/11364",
+        "SigPnd": "0000000000000000",
+        "ShdPnd": "0000000000000000",
+        "SigBlk": "0000000000000000",
+        "SigIgn": "0000000001001000",
+        "SigCgt": "0000000000000002",
+        "CapInh": "0000000000200000",
+        "CapPrm": "0000000000200000",
+        "CapEff": "0000000000200000",
+        "CapBnd": "0000000000200000",
+        "CapAmb": "0000000000200000",
+        "NoNewPrivs": "1",
+        "Seccomp": "2",
+        "Seccomp_filters": "20",
+        "Speculation_Store_Bypass": "thread vulnerable",
+        "SpeculationIndirectBranch": "conditional enabled",
+        "Cpus_allowed": "3ff",
+        "Cpus_allowed_list": "0-9",
+        "Mems_allowed": "00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+        "Mems_allowed_list": "0",
+        "voluntary_ctxt_switches": "1",
+        "nonvoluntary_ctxt_switches": "11",
+        "x86_Thread_features": "",
+        "x86_Thread_features_locked": ""
+      },
+      "user": "user:[4026532809]",
+      "mount": "mnt:[4026532750]",
+      "net": "net:[4026532755]",
+      "uid": 999,
+      "securityLabel": "bwrap//&unpriv_bwrap (enforce)"
+    },
+    "propagated-ready.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532690]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true
+    },
+    "direct-ready.json": {
+      "pid": 2,
+      "mountNamespace": "mnt:[4026532573]",
+      "status": {
+        "CapEff": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "before": "before",
+      "writable": true
+    }
+  },
+  "mountLogs": [
+    "qorpera-folder: view synthetic accepted at change 0, read-write\nqorpera-folder: kernel FUSE ABI Version(7, 45)\nqorpera-folder: mounted at /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent/company with 16 threads\n",
+    "qorpera-folder: view synthetic accepted at change 0, read-write\nqorpera-folder: kernel FUSE ABI Version(7, 45)\nqorpera-folder: mounted at /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent/company with 16 threads\n"
+  ],
+  "kernelDenials": [
+    "Oct 09 13:13:51 qorpera-substrate-499f1bca kernel: audit: type=1400 audit(1791551631.600:188): apparmor=\"DENIED\" operation=\"capable\" class=\"cap\" profile=\"unpriv_bwrap\" pid=1609 comm=\"python3\" capability=21  capname=\"sys_admin\""
+  ],
+  "units": {
+    "direct": "Oct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: Started qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-direct.service - [systemd-run] /usr/bin/bwrap --unshare-user --unshare-pid --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup --disable-userns --assert-userns-disabled --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/control /control --ro-bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/probe.py /probe.py --setenv PATH /usr/bin:/bin --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent/company /company --remount-ro / -- python3 /probe.py client /control direct.\nOct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-direct.service: Deactivated successfully.",
+    "propagated": "Oct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: Started qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-propagated.service - [systemd-run] /usr/bin/bwrap --unshare-user --unshare-pid --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup --disable-userns --assert-userns-disabled --die-with-parent --new-session --cap-drop ALL --clearenv --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/control /control --ro-bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/probe.py /probe.py --setenv PATH /usr/bin:/bin --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/parent /folder-parent --symlink /folder-parent/company /company --remount-ro / -- python3 /probe.py client /control propagated.\nOct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-propagated.service: Deactivated successfully.",
+    "offline": "Oct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: Started qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-offline.service - [systemd-run] /usr/bin/bwrap --unshare-user --unshare-pid --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup --disable-userns --assert-userns-disabled --die-with-parent --new-session --cap-drop ALL --cap-add CAP_SYS_ADMIN --clearenv --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp --bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/control /control --ro-bind /run/qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55/probe.py /probe.py --setenv PATH /usr/bin:/bin --remount-ro / -- python3 /probe.py shell /control.\nOct 09 13:13:51 qorpera-substrate-499f1bca systemd[1]: qorpera-substrate-23e92732-4975-49c3-9ebd-71bde3d63e55-offline.service: Deactivated successfully."
+  }
+}
+OFFICE_FOLDER_SUBSTRATE_EVIDENCE_END
+== run-on-node: exit 1 after 200817 ms
+== run-on-node record {"schema":"qorpera.run-on-node/v1","machine":"node01","host":"tester@10.201.0.3","via":"company41-node-01","machines":[{"name":"node01","busy":2,"waiting":0,"arriving":0,"closed":false,"setUp":true,"cpus":10,"load":3.2}],"probeSeconds":0.333,"environment":{"machine":"qorpera-testvm-node01","kernel":"7.0.0-30-generic","os":"Ubuntu 26.04.1 LTS","node":"v24.21.0","npm":"11.19.0","docker":"29.8.2","git":"git version 2.53.0","cpus":"10","kvm":true},"source":{"head":"38301f5a6f47d59f1ad5a29fc24ecbdd7d423c9c","dirty":true,"files":3687,"untracked":5,"treeSha256":"ba9fe6cb6ce18f6774310dff37b42ba6b4cd5cf4ec0b1fa560cae7fadc6dcb70"},"command":["bash","scripts/prove-office-folder-substrate-vm.sh","office-account"],"sudo":true,"install":false,"build":false,"run":"20261009T131030-53082-28d87d18","runner":"ci01","cpuSlot":1,"queuedSeconds":0,"vitestMaxWorkers":3,"loadAtStart":3.2,"uncappedTestProcesses":0,"startedAt":"2026-10-09T13:10:30.921Z","copySeconds":1.491,"prepareSeconds":0.002,"suiteSeconds":200.817,"elapsedSeconds":202.978,"exitCode":1,"result":"failed","githubStatus":{"context":null,"sha":"38301f5a6f47d59f1ad5a29fc24ecbdd7d423c9c","posted":false,"reason":"--no-status"}}

@@ -17,6 +17,7 @@ import {
 	type CloudWakeEnvelope,
 	type CloudWakePolicy,
 	cloudCoworkerMessageTool,
+	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
 	HttpCloudWakeControl,
 	parseCloudWakeEnvelope,
@@ -449,6 +450,47 @@ describe("machine check-in envelopes", () => {
 		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
 		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
 	});
+	/** A session that read files only some agents may read, as the kernel names it (W6a). */
+	const narrow = (wake: CloudWakeEnvelope, running: unknown[]) => ({
+		...wake,
+		payload: {
+			...wake.payload,
+			checkins: [
+				first(wake),
+				{ ...second(wake), machine: "a coding session that read files only some agents may read", running },
+			],
+		},
+	});
+	it("admits a narrow coding session's check-in with each command by its commandId and turn alone", () => {
+		const { identity, wake } = codingCheckinWakeFixture();
+		const commandId = randomUUID();
+		expect(second(parseCloudWakeEnvelope(narrow(wake, [{ commandId, turn: 2 }]), identity))).toMatchObject({
+			machine: "a coding session that read files only some agents may read",
+			running: [{ commandId, turn: 2 }],
+		});
+	});
+	it.each([
+		[{ commandId: "build-1", turn: 2 }],
+		[{ command: "npm run dev", commandId: randomUUID(), turn: 2 }],
+		[{ turn: 2 }],
+		[{ commandId: randomUUID(), turn: 0 }],
+	])("rejects a narrow coding session's command that is not exactly what the kernel admits %#", (running) => {
+		const { identity, wake } = codingCheckinWakeFixture();
+		expect(() =>
+			parseCloudWakeEnvelope(narrow(wake, [{ commandId: randomUUID(), turn: 2 }]), identity),
+		).not.toThrow();
+		expect(() => parseCloudWakeEnvelope(narrow(wake, [running]), identity)).toThrow();
+	});
+	it("rejects a command named by its commandId alone on a computer", () => {
+		const { identity, wake } = checkinWakeFixture();
+		const shell = first(wake);
+		const startedAt = (shell.running as { startedAt: string }[])[0].startedAt;
+		const bare = {
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...shell, running: [{ commandId: randomUUID(), startedAt }] }] },
+		};
+		expect(() => parseCloudWakeEnvelope(bare, identity)).toThrow();
+	});
 	it("admits an agent's machine's check-in with each command's handle, and with no command", () => {
 		const { identity, wake } = machineCheckinWakeFixture();
 		expect(second(parseCloudWakeEnvelope(wake, identity))).toMatchObject({
@@ -738,6 +780,14 @@ describe("immutable cloud wake policies", () => {
 		expect(own.map(({ scenario }) => scenario)).toEqual(["room-required"]);
 		const room = policies.find(({ scenario }) => scenario === "room")!.policy;
 		expect(cloudWakeIsOwnThread({ kind: "human", policy: { ...room, final: "required" } })).toBe(false);
+	});
+	it("reads a post in a conversation, the agent's thread or a group chat, only from a room policy", () => {
+		// The summary tree's gate (M4c): both kinds of room the kernel admits, never any other wake.
+		const posts = policies.filter(({ policy }) => cloudWakeIsConversationPost({ kind: policy.kind!, policy }));
+		expect(posts.map(({ scenario }) => scenario).sort()).toEqual(["room", "room-required"]);
+		const room = policies.find(({ scenario }) => scenario === "room")!.policy;
+		expect(cloudWakeIsConversationPost({ kind: "human", policy: room })).toBe(false);
+		expect(cloudWakeIsConversationPost({ kind: "room", policy: REQUIRED_CLOUD_WAKE_POLICY })).toBe(false);
 	});
 	it("allows a successful silent routine through the existing mouth component", async () => {
 		const send = vi.fn();

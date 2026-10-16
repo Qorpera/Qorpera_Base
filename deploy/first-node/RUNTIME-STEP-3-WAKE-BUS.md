@@ -441,6 +441,9 @@ an integration action, but no shared interface change is requested.
 
 ### Drain and materialization
 
+Legacy sweep F3b (20260930295000) dropped both functions; on folder-v2 a wake becomes a run through
+`qorpera_folder_materialize_company`.
+
 ```sql
 qorpera_drain_company_file_wakes(p_limit integer default 32) returns jsonb
 qorpera_materialize_wake_execution_runs(p_limit integer default 32) returns jsonb

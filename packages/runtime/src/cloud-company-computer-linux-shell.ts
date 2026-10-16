@@ -61,7 +61,8 @@ const SHELL_IMAGE_FILES = [
 	"/etc/ld.so.cache",
 	"/etc/ssl/openssl.cnf",
 ];
-const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg"];
+// LibreOffice's registry links into /etc/libreoffice; without it soffice cannot start, not even for --version.
+const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/libreoffice"];
 
 /**
  * Why a command ended, for the platform's record of it: on its own, by the

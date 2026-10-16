@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	COMMAND_ENDED,
 	type CommitActor,
 	type CommitAnswer,
 	type CommitOutcome,
@@ -15,6 +16,9 @@ import {
 	type FeedEvent,
 	type FolderActor,
 	type FolderCore,
+	MEMBER_HELD_READS,
+	type ReleaseAnswer,
+	type ReleasedRead,
 	type UploadSeal,
 	type ViewRenewal,
 } from "../src/folder-service/core.ts";
@@ -148,8 +152,8 @@ export class FakeCore implements FolderCore {
 	#check(actor: FolderActor, environmentId: string) {
 		if (actor.kind !== "view") return undefined;
 		const view = this.views.get(actor.viewId);
-		if (!view || view.pass !== actor.pass || view.state !== "open" || view.environmentId !== environmentId)
-			throw new CoreRefusal("denied");
+		if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		if (view.state !== "open") throw new CoreRefusal("denied", "Folder view has ended");
 		return view;
 	}
 	/** Events per feed page (0: all in one page), and the feed call (counted from `feedCalls`) that fails. */
@@ -271,6 +275,9 @@ export class FakeCore implements FolderCore {
 	/** Objects on the share the catalog knows, by hash: their sizes. */
 	readonly catalog = new Map<string, number>();
 	readonly intents = new Map<string, { manifest: string; objects: Map<string, number>; put: Set<string> }>();
+	/** Opt-in possession check from folder_core_bytes: a view needs its own live seal or an already-readable file. */
+	checkViewPossession = false;
+	readonly sealedIntents = new Map<string, { viewId: string; manifestSha256: string }>();
 	/** Every commit asked, in order (a replay included), and whether it was a command view's final. */
 	readonly commits: { key: string; units: readonly CommitUnit[]; final: boolean }[] = [];
 	readonly #answers = new Map<string, { request: string; answer: CommitAnswer }>();
@@ -324,6 +331,8 @@ export class FakeCore implements FolderCore {
 			mediaType: string;
 			executable: boolean;
 		};
+		if (actor.kind === "view")
+			this.sealedIntents.set(intentId, { viewId: actor.viewId, manifestSha256: hashOf(intent.manifest) });
 		return {
 			state: "sealed",
 			file: {
@@ -369,7 +378,11 @@ export class FakeCore implements FolderCore {
 		const view = this.#check(actor, environmentId);
 		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
-		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied");
+		if (view?.kind === "computer_shell_command" && view.ended && !final)
+			throw new CoreRefusal("denied", COMMAND_ENDED);
+		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it.
+		if (actor.kind === "view" && [...(this.readSets.get(actor.viewId)?.keys() ?? [])].some((p) => this.hidden(p)))
+			throw new CoreRefusal("denied", "A read is no longer readable");
 		if (this.commitRefusal) throw new CoreRefusal(this.commitRefusal);
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "down") {
 			this.commitFailures.count--;
@@ -393,6 +406,32 @@ export class FakeCore implements FolderCore {
 				version: null,
 			});
 			const path = u.op === "move" ? u.to : u.path;
+			if (this.checkViewPossession && actor.kind === "view") {
+				const files =
+					u.op === "write"
+						? [u.file]
+						: u.op === "new_folder"
+							? u.contents.flatMap((entry) => (entry.file ? [entry.file] : []))
+							: [];
+				if (
+					files.some(
+						(file) =>
+							![...this.sealedIntents].some(
+								([id, seal]) =>
+									seal.viewId === actor.viewId &&
+									seal.manifestSha256 === file.manifestSha256 &&
+									!this.lapsed.has(id),
+							) &&
+							![...this.entries.values()].some(
+								(entry) =>
+									entry.kind === "file" &&
+									entry.manifestSha256 === file.manifestSha256 &&
+									!this.hidden(entry.path),
+							),
+					)
+				)
+					return no("refused", "bytes_unverified");
+			}
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
 			if (this.park(path)) return no("waiting_for_review", "parked");
 			const conflict = (reason: string): CommitOutcome => {
@@ -517,6 +556,65 @@ export class FakeCore implements FolderCore {
 	async conflictCopies(environmentId: string, commitId: string): Promise<readonly ConflictCopy[]> {
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		return this.copies.get(commitId) ?? [];
+	}
+
+	// ---- Releases (F3 4c), as core §6 and 20260928259230 decide them, in memory ----------------------------------------
+
+	/** Every release asked, in order (a replay included), and the reads each view's read set holds, by view: a path's
+	 * last read. */
+	readonly releases: { viewId: string; releaseId: string; reads: readonly ReleasedRead[] }[] = [];
+	readonly readSets = new Map<string, Map<string, ReleasedRead>>();
+	readonly #releaseAnswers = new Map<string, string>();
+	/** Views a member holds: they record no reads (22023). */
+	readonly memberHeld = new Set<string>();
+	/** The next releases get no answer: `lost` files them first (the reply was lost), `down` does not. */
+	releaseFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
+	/** When set, the core refuses every release not asked before, and why (the pause, the run check, and the like). */
+	releaseRefusal: CoreRefusal["reason"] | undefined;
+
+	/** A release id used once per view: the same reads replay (the view's pass checked, open or not), others are refused
+	 * (22023). A read of a path the view does not see now is refused whole (42501, as `qorpera_folder_release_pairs`
+	 * re-resolves a receipt that names nothing). */
+	async releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+	): Promise<ReleaseAnswer> {
+		this.releases.push({ viewId: actor.viewId, releaseId, reads });
+		if (reads.length > 10_000 || reads.some((r) => r.path === "")) throw new CoreRefusal("invalid");
+		const view = this.views.get(actor.viewId);
+		if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		const request = JSON.stringify(reads);
+		const key = `${actor.viewId}:${releaseId}`;
+		const earlier = this.#releaseAnswers.get(key);
+		if (earlier !== undefined) {
+			if (earlier !== request) throw new CoreRefusal("invalid", "Release id was used for other reads");
+			return this.#released({ releaseId, replay: true });
+		}
+		this.#check(actor, environmentId);
+		if (this.memberHeld.has(actor.viewId)) throw new CoreRefusal("invalid", MEMBER_HELD_READS);
+		if (this.releaseRefusal) throw new CoreRefusal(this.releaseRefusal);
+		if (this.releaseFailures.count > 0 && this.releaseFailures.mode === "down") {
+			this.releaseFailures.count--;
+			throw new Error("The database did not answer");
+		}
+		if (reads.some((r) => this.hidden(r.path)))
+			throw new CoreRefusal("unreadable", "A released read is no longer readable");
+		const set = this.readSets.get(actor.viewId) ?? new Map<string, ReleasedRead>();
+		for (const read of reads) set.set(read.path, read);
+		this.readSets.set(actor.viewId, set);
+		this.#releaseAnswers.set(key, request);
+		return this.#released({ releaseId, replay: false });
+	}
+
+	/** A release's answer, unless the next one is lost. */
+	#released(answer: ReleaseAnswer): ReleaseAnswer {
+		if (this.releaseFailures.count > 0 && this.releaseFailures.mode === "lost") {
+			this.releaseFailures.count--;
+			throw new Error("The answer was lost");
+		}
+		return answer;
 	}
 
 	async renewView(viewId: string, pass: string, unsavedSince: string | null): Promise<ViewRenewal> {

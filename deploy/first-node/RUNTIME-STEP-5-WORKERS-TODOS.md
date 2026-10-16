@@ -21,7 +21,7 @@ the current runtime; the draft's acceptance list was used as a checklist.
 | The parent is a dispatcher and stays interruptible (7.3, 13) | `manage_worker dispatch` returns at admission. The parent says what is running and ends its run. Runs are serialized per conversation, not per agent, so a new human message starts a new run while the child is still leased. |
 | A worker starts blank with a complete dispatch | The child is a run of the same agent admitted through the wake bus: wake kind `agent`, source kind `worker-dispatch`, no conversation. The kernel refuses a dispatch without goal, definition of done, access and a todo. The wake payload carries goal, definition of done, bounded context, sources, authority, output contract, parent run and todo, cancellation and completion policy. The child does not inherit the parent's read set, conversation or history. |
 | Workers cannot talk to humans | No conversation means the kernel policy is zero public sends, and the runtime offers the child no mouth, no coworker channel, no hiring, no routines and no workers of its own. A read-only worker gets no Company File write tools. |
-| Durable completion reaches the parent | `report_work` stores one report per sequence. `qorpera_drain_worker_wakes`, called by the wake materializer, revives the parent with a typed internal continuation: wake kind `agent`, source kind `worker-completion`, `parent_run_id` = the dispatching run, in the parent's conversation. It is never a human or coworker message (8.1). A child that ends or never starts without a report still completes, as a failure the parent hears about. |
+| Durable completion reaches the parent | `report_work` stores one report per sequence. `qorpera_drain_worker_wakes`, called by the wake materializer, revives the parent with a typed internal continuation (on folder-v2 the folder drain `workers` does, and legacy sweep F3b, 20260930295000, dropped the legacy drain): wake kind `agent`, source kind `worker-completion`, `parent_run_id` = the dispatching run, in the parent's conversation. It is never a human or coworker message (8.1). A child that ends or never starts without a report still completes, as a failure the parent hears about. |
 | The revived parent may speak | The continuation's policy is kernel-owned: initial optional, final optional, at most three sends, silence valid. Every other agent wake keeps zero sends, and a revival never gains a mouth its parent's wake did not have: the revival of a silent routine run stays silent. |
 | One worker per coherent stream | `followup` continues the same worker: sequence + 1, same identity, and the child reads its own earlier stream (`qorpera.worker-stream/v1`), never the parent's conversation. A second dispatch under the same key is refused. |
 | Todos and worker handles are durable code objects | `qorpera_runtime_agent_todos`, `qorpera_runtime_workers`, `qorpera_runtime_worker_events`. Every change is idempotent by operation key through the existing run operation ledger. |
@@ -44,7 +44,8 @@ they belong to Orders 9, 7 and 8.
 - `supabase/migrations/20260920080000_runtime_workers_todos.sql`: tables, the
   four run-bound operations (`qorpera_manage_agent_todo`,
   `qorpera_confirm_agent_todo_publication`, `qorpera_manage_agent_worker`,
-  `qorpera_report_worker_result`), the drain, the continuation context, and
+  `qorpera_report_worker_result`; all four dropped in legacy sweep D6,
+  20260930335000), the drain, the continuation context, and
   reviewed patches to wake admission, authorization, policy, the wake envelope,
   the materializer, the continuation source and the wake work gate. Each patch
   fails the migration if the function it extends has changed.

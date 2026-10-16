@@ -184,8 +184,8 @@ function checkMove(from: string, to: string): void {
  * no unit's failure loses another's work. Outside a moved folder, the view's paths are the live paths.
  */
 export class PendingView {
-	readonly #live: () => ViewTree;
-	readonly #seq: () => number;
+	#live: () => ViewTree;
+	#seq: () => number;
 	readonly #now: () => number;
 	readonly #nodes = new Map<string, Node>();
 	/** The names of nodes under each folder path. */
@@ -205,6 +205,23 @@ export class PendingView {
 		this.#live = live;
 		this.#seq = seq;
 		this.#now = now;
+	}
+
+	/** The service atomically moves this overlay, including open handles, onto a successor desktop's live tree. */
+	rebind(live: () => ViewTree, seq: () => number): void {
+		this.#live = live;
+		this.#seq = seq;
+		// A sealed reference proves possession only for the actor that sealed it. The successor must stage again,
+		// including a last-fixed save that an abandoned reopened handle can restore. Bytes and versions stay intact;
+		// the service retains their old intents and any unanswered commit's original actor and exact units.
+		const files = new Set<PendingFile>();
+		for (const node of this.#nodes.values()) if (node.kind === "file") files.add(node);
+		for (const { node } of this.#handles.values()) files.add(node);
+		for (const node of files) {
+			node.staged = undefined;
+			const fixed = this.#fixed.get(node);
+			if (fixed) this.#fixed.set(node, { ...fixed, staged: undefined });
+		}
 	}
 
 	/** No pending change at all. */
@@ -506,7 +523,7 @@ export class PendingView {
 		return node;
 	}
 
-	/** The machine's connection ended with the handle still open: what was written and no close fixed is lost (founder
+	/** A still-open handle is abandoned: what was written and no close fixed is lost (founder
 	 * decision 3). Writes share the file, as in a page cache: while another handle is still open, its close will fix
 	 * them; when this was the last, the file goes back to how the last close (or open) left it. */
 	abandon(handle: number): void {
