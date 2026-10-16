@@ -23,6 +23,7 @@ import {
 	type InterfaceQuery,
 	interfaceOutsideColumns,
 	parseInterfaceFile,
+	parseTableRows,
 	type TableFile,
 	type TableRow,
 	tableRowKey,
@@ -124,9 +125,64 @@ export function isLiveSource(source: string): boolean {
 	return Object.hasOwn(LIVE_SOURCES, source) || isMailSource(source) || isFolderSource(source);
 }
 
+/** A table as a save an agent asks to make would leave it (step I10): its definition, and whether the save makes it. */
+export interface ProposedTable {
+	readonly table: TableFile;
+	readonly created: boolean;
+}
+
+/** While a review card's preview draws (views/interface-preview.ts): the tables its save would change. */
+let preview: ReadonlyMap<string, ProposedTable> | undefined;
+
+/** Each proposed table as read after the save, from the table the folder last published: made again only when the
+ * folder publishes it anew, not on each draw (a page asks for its table once per row and column, a thread redraws on
+ * each change). */
+const proposedReads = new WeakMap<
+	ProposedTable,
+	{ readonly from: FolderTable | undefined; readonly table: FolderTable | undefined }
+>();
+
+/** Draws as though the folder held the tables of a save an agent asks to make: a table it changes is read by its new
+ * definition, from the rows the folder holds; one it makes has no rows yet. The company's mail is not read meanwhile:
+ * it is read for the one page on screen (app/company-mail.ts), so a page's mail blocks are not previewed. */
+export function withPreview(tables: ReadonlyMap<string, ProposedTable>, draw: () => void): void {
+	const before = preview;
+	preview = tables;
+	try {
+		draw();
+	} finally {
+		preview = before;
+	}
+}
+
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
 	if (!source.startsWith("table:")) return undefined;
-	return company.store.get().interfaceFolder?.tables.get(source.slice("table:".length));
+	const name = source.slice("table:".length);
+	const read = company.store.get().interfaceFolder?.tables.get(name);
+	const proposed = preview?.get(name);
+	if (!proposed) return read;
+	const last = proposedReads.get(proposed);
+	if (last && last.from === read) return last.table;
+	const table = proposedTable(proposed, read);
+	proposedReads.set(proposed, { from: read, table });
+	return table;
+}
+
+/** A table a save changes or makes, as read after the save. One it changes that the folder hasn't been read for is not
+ * there yet; one whose rows file hasn't been read can't be read until it is. */
+function proposedTable({ table, created }: ProposedTable, read: FolderTable | undefined): FolderTable | undefined {
+	if (created) return { table, rows: [], problems: [], readable: true };
+	if (!read) return undefined;
+	if (read.rowsText === undefined) return { table, rows: [], problems: [], readable: false };
+	// A table without its rows file yet has no rows (§5).
+	const rows =
+		read.rowsText === null ? { rows: [], problems: [], readable: true } : parseTableRows(table, read.rowsText);
+	return {
+		table,
+		rows: rows.rows,
+		problems: rows.problems.map(({ line, message }) => ({ line, message })),
+		readable: rows.readable,
+	};
 }
 
 /** A table source's definition as last read from the folder, or null. */
@@ -168,7 +224,7 @@ function folderText(company: CompanyController, source: string): string | undefi
 export function interfaceSource(company: CompanyController, source: string): InterfaceSource | undefined {
 	const live = Object.hasOwn(LIVE_SOURCES, source) ? LIVE_SOURCES[source] : undefined;
 	if (live) return { ...live, readable: true, problems: [] };
-	const mail = mailSource(company, source);
+	const mail = preview ? undefined : mailSource(company, source);
 	if (mail) return { ...mail, readable: true, problems: [] };
 	if (isFolderSource(source)) {
 		const read = company.store.get().interfaceFolder?.sources.get(source);
@@ -495,7 +551,7 @@ export function interfaceMainProblem(company: CompanyController): string | null 
 
 /** The rows of a source this client reads, or undefined when it can't read it. */
 export function interfaceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
-	if (isMailSource(source)) return mailSourceRows(company, source);
+	if (isMailSource(source)) return preview ? undefined : mailSourceRows(company, source);
 	const state = company.store.get();
 	if (isFolderSource(source))
 		return folderSourceRows(company, state.interfaceFolder, source, () =>

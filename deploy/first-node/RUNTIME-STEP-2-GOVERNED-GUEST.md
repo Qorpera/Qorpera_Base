@@ -93,7 +93,9 @@ canonical input identity, exact hash, size and media type. A pre-input proof
 expires after ten minutes; only the exact admitted input can make it durable.
 Current authority is checked before and after I/O. This closes the attachment
 dependency on the legacy raw-hash route. Limits are five images and 8 MiB per
-input, without automatic retry of ambiguous publication.
+input, without automatic retry of ambiguous publication. Legacy sweep D17
+(`20260930416000`) dropped this upload authority with its table; on folder-v2 a
+chat image is a folder file (`20260930260000`).
 
 These product and SQL paths have component/browser-fixture evidence, not a
 released-client or production cutover proof. **Do not enroll Company41 until

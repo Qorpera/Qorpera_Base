@@ -16,6 +16,9 @@
  *   (§6.1 rule 3), and a rows file a column leaves before the definition without it (§5).
  * - `table_write` edits the rows file in place: the fields it changes, the rows it adds or removes, and every other
  *   byte as it was.
+ * - An agent changes a claim (a needs_yes cell) only for its area's supervisor (§5.1, I9b), named in `tables/areas`:
+ *   `table_write` reads them there for a change that touches a claim, and the folder core checks their consent at the
+ *   commit.
  * - A replay of a call whose change was saved finds the files or rows holding it and answers that nothing changed (an
  *   id `table_write` made is made again, so it finds its own row and names the id once more); a call that waits for a
  *   review or failed at its commit replays from its receipt.
@@ -523,7 +526,7 @@ async function planSave(
 		const holder = at.of && at.name ? holders.get(`${at.of}/${at.name}`) : undefined;
 		let ownersOnly = false;
 		if (at.of && at.name && holder) {
-			if (holder.entry?.kind === "file") {
+			if (holder.entry && holder.entry.kind !== "folder") {
 				block(item, "not_a_folder");
 				continue;
 			}
@@ -548,7 +551,7 @@ async function planSave(
 		else if (ownersOnly) block(item, "owners_only");
 		else if (current.kind === "absent") {
 			if (file.expectedVersion !== null) block(item, "missing");
-		} else if (current.entry.kind === "folder") block(item, "not_a_file");
+		} else if (current.entry.kind !== "file") block(item, "not_a_file");
 		else if (file.expectedVersion === null) block(item, "exists");
 		else if (current.entry.version !== file.expectedVersion) block(item, "version_changed");
 		else {
@@ -870,9 +873,9 @@ const BLOCKED_NEXT: Readonly<Record<Blocked, string>> = {
 	exists: `Nothing was saved. A file is already at a path you gave no version for: ${READ_AGAIN}.`,
 	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
 	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
-	not_a_file: "Nothing was saved. A path you gave is a folder, not a file.",
+	not_a_file: "Nothing was saved. A path you gave is a folder or a link, not a file.",
 	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file, not a folder: choose another name.",
+		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
 	folder_missing:
 		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
 	owners_only:
@@ -1206,10 +1209,17 @@ const ROWS_NEXT = {
 	not_a_writer:
 		"Nothing was saved. You may not write this table's rows (its [write] agents do not name you): tell the member what you would change.",
 	invalid: "Nothing was saved. Fix the problems listed and call again with a new operationKey.",
-	claim: "Nothing was saved. A needs_yes cell (a claim) is not yours to change: leave it as it is, or tell the member.",
+	claim: "Nothing was saved. You change a needs_yes cell (a claim) only for the member who supervises your area, taking an empty one for them or letting theirs go, and never an area's owner, supervisor or agents: leave it as it is, or tell the member.",
 	too_large:
 		"Nothing was saved. The rows would be larger than 64 KiB, the most a table holds for now: remove rows first, or tell the member.",
 } as const;
+
+/** The member an agent acts for (§5.1): the `supervisor` of the areas row whose `agents` name it (one area per agent,
+ * rule 9). Whether their consent is live is the folder core's to say at the commit, which refuses a claim without it. */
+function areaSupervisor(areas: readonly TableRow[], agent: string): string | null {
+	const supervisor = areas.find((row) => Array.isArray(row.agents) && row.agents.includes(agent))?.supervisor;
+	return typeof supervisor === "string" ? supervisor : null;
+}
 
 /** A row write's answer after its commit, by its one unit's outcome. */
 function rowsCommitted(
@@ -1220,12 +1230,16 @@ function rowsCommitted(
 ): string {
 	const state =
 		unit.outcome === "saved" ? "applied" : unit.outcome === "waiting_for_review" ? "proposed" : "not_applied";
+	// The folder core's claim rule refused it: the supervisor named has no live consent, or the areas changed.
+	const claim = unit.problems.some((problem) => (problem.code as string) === "claim");
 	const next =
 		state === "applied"
 			? undefined
 			: unit.outcome === "conflict"
 				? "Nothing was saved: the rows changed while this call wrote them. Call again with a new operationKey."
-				: committedNext([unit])[0];
+				: claim
+					? ROWS_NEXT.claim
+					: committedNext([unit])[0];
 	return rowsText(request, {
 		state,
 		version: unit.outcome === "saved" ? unit.version : null,
@@ -1390,7 +1404,7 @@ export function cloudInterfaceWriteTools(options: {
 	const tableWrite: CloudNativeTool = {
 		name: "table_write" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
-		description: `Set and remove rows of a table (tables/<table>/rows.csv, as tables/<table>/table.toml defines it). set lists rows to add or change, each an object of column names and values: a row whose key columns match a row of the table changes in the cells you name, and any other row is added. A new row may leave out an id column to get a new id; the result's ids give it, with the row's place in set (from 0). A value is text, a number, true or false, a list of texts for a list column, or null to empty an optional cell. remove lists rows to remove, each named by exactly its key columns; one that is not in the table is counted in notFound. At most ${ROWS_PER_CALL} rows in each list. You write a table only when its [write] agents names you or is all, and a needs_yes column (a claim) is not yours to change. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when the rows were saved.`,
+		description: `Set and remove rows of a table (tables/<table>/rows.csv, as tables/<table>/table.toml defines it). set lists rows to add or change, each an object of column names and values: a row whose key columns match a row of the table changes in the cells you name, and any other row is added. A new row may leave out an id column to get a new id; the result's ids give it, with the row's place in set (from 0). A value is text, a number, true or false, a list of texts for a list column, or null to empty an optional cell. remove lists rows to remove, each named by exactly its key columns; one that is not in the table is counted in notFound. At most ${ROWS_PER_CALL} rows in each list. You write a table only when its [write] agents names you or is all. You change a needs_yes column (a claim) only for the member who supervises your area (tables/areas): put their id in an empty cell, or empty a cell that holds them; an area's owner, supervisor and agents are the members' to change. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when the rows were saved.`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1454,9 +1468,27 @@ export function cloudInterfaceWriteTools(options: {
 				const next = `Nothing changed: the rows already hold these values${gone}.`;
 				return show(context, rowsText(request, { state: "unchanged", version, change, next }), reads);
 			}
-			// Without a supervisor to act for, an agent changes no claim (§5): said before the folder core refuses it.
-			const actor = { kind: "agent" as const, agentId: agent, supervisorId: null };
-			const claims = tableClaimProblems(definition, table.rows, change.after, actor, { folder: request.table });
+			// An agent changes a claim only for its area's supervisor (§5.1): said before the folder core refuses it. The
+			// areas are read only for a change that touches a claim, and every answer from then on is released with them.
+			const claimsFor = (supervisorId: string | null) =>
+				tableClaimProblems(
+					definition,
+					table.rows,
+					change.after,
+					{ kind: "agent", agentId: agent, supervisorId },
+					{ folder: request.table },
+				);
+			let claims = claimsFor(null);
+			if (claims.length > 0) {
+				let areas = table.rows;
+				if (request.table !== "areas") {
+					const read = await readTable(folder, "areas", context.signal);
+					if (read.kind !== "absent") reads.push(read.entry);
+					if (read.kind === "ok" && read.rowsEntry) reads.push(read.rowsEntry);
+					areas = read.kind === "ok" ? read.rows : [];
+				}
+				claims = claimsFor(areaSupervisor(areas, agent));
+			}
 			if (claims.length > 0)
 				return refused(
 					"claim",

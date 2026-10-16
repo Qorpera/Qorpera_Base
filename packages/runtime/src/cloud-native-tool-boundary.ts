@@ -64,6 +64,10 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
+ * replaces it, so a cut answer never grows. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
+const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
 /** The pinned fence's bound on one tool result's PNG. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
 /** A run carries every tool its agent is granted, with no count cap (founder,
@@ -932,7 +936,18 @@ export class CloudNativeToolBoundary {
 			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
 			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
 			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
-			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
+			if (
+				tool.name === "computer_screenshot" &&
+				tool.source === "runtime" &&
+				// No picture when the office gave the screen back or the company folder held the capture back (F3 4d).
+				!(
+					content.kind === "json" &&
+					content.value !== null &&
+					typeof content.value === "object" &&
+					!Array.isArray(content.value) &&
+					content.value.completed === false
+				)
+			) {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),
 					this.#signal,
@@ -1038,9 +1053,12 @@ export class CloudNativeToolBoundary {
 			(tool?.source !== "company_file" || status !== "ok" || !UUID.test(content.companyReadId))
 		)
 			throw new Error("Invalid Company File read provenance");
-		const text = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
-		if (typeof text !== "string" || Buffer.byteLength(text) > MAX_SOURCE_BYTES)
+		const raw = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
+		if (typeof raw !== "string" || Buffer.byteLength(raw) > MAX_SOURCE_BYTES)
 			throw new Error("Invalid cloud tool content");
+		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
+		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
+		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;

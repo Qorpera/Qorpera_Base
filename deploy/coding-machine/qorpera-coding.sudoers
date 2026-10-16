@@ -1,0 +1,4 @@
+# /etc/sudoers.d/qorpera-coding: every coding session's uid is root in its machine
+# (RUNTIME-FOLDER-CODING-MACHINES.md, "Root through sudo"). The guest agent adds each
+# session's user (qorpera-<uid>, in /etc/passwd) to this group.
+%qorpera-coding ALL=(ALL:ALL) NOPASSWD: ALL

@@ -3,17 +3,21 @@
 -- deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md). The open answer carries the view's kind and machine_id: the
 -- allocation of the office's activation for a desktop, the coding machine's allocation for a coding session, null for
 -- a run box. The closed answer is unchanged, and so is what renew checks and sets. The office, screen and helpers are
--- 639's.
+-- 639's. Since 20260930446000 the answer also names the company, and a coding session's coding machine (null for every
+-- other kind); a coding session's renewal names its folder service (487 covers the service).
 
--- Renew carries this migration's marker and is still the service's alone.
+-- Renew carries this migration's marker (and 20260930446000's) and is still the service's alone.
 do $$
-declare v_definition text := pg_get_functiondef('public.qorpera_folder_view_renew(uuid,text,timestamptz)'::regprocedure);
+declare v_definition text := pg_get_functiondef('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)'::regprocedure);
 begin
-	if strpos(v_definition, '20260930104000') = 0 then raise exception 'renew has no marker 20260930104000'; end if;
-	if has_function_privilege('authenticated', 'public.qorpera_folder_view_renew(uuid,text,timestamptz)', 'EXECUTE')
-		or has_function_privilege('anon', 'public.qorpera_folder_view_renew(uuid,text,timestamptz)', 'EXECUTE')
-		or not has_function_privilege('service_role', 'public.qorpera_folder_view_renew(uuid,text,timestamptz)', 'EXECUTE') then
+	if strpos(v_definition, '20260930104000') = 0 or strpos(v_definition, '20260930446000') = 0 then
+		raise exception 'renew has lost a marker'; end if;
+	if has_function_privilege('authenticated', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE')
+		or has_function_privilege('anon', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE')
+		or not has_function_privilege('service_role', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE') then
 		raise exception 'renew''s privileges changed'; end if;
+	if to_regprocedure('public.qorpera_folder_view_renew(uuid,text,timestamptz)') is not null then
+		raise exception 'the three-argument renew is still there'; end if;
 end $$;
 
 -- A run box: kind run_box, no machine. Renew still records unsaved changes and moves the lease.
@@ -25,9 +29,10 @@ begin
 	-- Every check here is null-safe (`is distinct from`): a missing or null field fails it.
 	if r ->> 'schema' is distinct from 'qorpera.folder-view-renew/v1' or r ->> 'state' is distinct from 'open'
 		or r ->> 'kind' is distinct from 'run_box' or jsonb_typeof(r -> 'machineId') is distinct from 'null'
-		or r ->> 'leaseUntil' is null then
+		or r ->> 'leaseUntil' is null or r ->> 'companyId' is distinct from '63200000-0000-4000-8000-000000000010'
+		or jsonb_typeof(r -> 'codingMachineId') is distinct from 'null' then
 		raise exception 'Run box renewal: %', r; end if;
-	if (select count(*) from jsonb_object_keys(r)) <> 5 then raise exception 'Run box renewal fields: %', r; end if;
+	if (select count(*) from jsonb_object_keys(r)) <> 7 then raise exception 'Run box renewal fields: %', r; end if;
 	select * into v from public.qorpera_folder_views where id = (b ->> 'viewId')::uuid;
 	if v.unsaved_since is distinct from t or v.lease_until is distinct from (r ->> 'leaseUntil')::timestamptz then
 		raise exception 'Run box renewal sets: %', to_jsonb(v); end if;
@@ -51,7 +56,8 @@ begin
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	r := public.qorpera_folder_view_renew((d ->> 'viewId')::uuid, d ->> 'pass');
 	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'computer_desktop'
-		or r ->> 'machineId' is distinct from '63900000-0000-4000-8000-0000000000e1' then
+		or r ->> 'machineId' is distinct from '63900000-0000-4000-8000-0000000000e1'
+		or jsonb_typeof(r -> 'codingMachineId') is distinct from 'null' then
 		raise exception 'Run-held desktop renewal: %', r; end if;
 	perform pg_temp.hold(null, '63200000-0000-4000-8000-000000000001');
 	m := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4',
@@ -100,9 +106,10 @@ begin
 	values (cm, '63200000-0000-4000-8000-000000000010', 'lxd', repeat('9', 64), cm, clock_timestamp());
 	set local session_replication_role = origin;
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
-	r := public.qorpera_folder_view_renew((cv ->> 'viewId')::uuid, cv ->> 'pass');
+	r := public.qorpera_folder_view_renew((cv ->> 'viewId')::uuid, cv ->> 'pass', null, extensions.gen_random_uuid());
 	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'coding_session'
-		or r ->> 'machineId' is distinct from cm::text then
+		or r ->> 'machineId' is distinct from cm::text or r ->> 'codingMachineId' is distinct from cm::text
+		or r ->> 'companyId' is distinct from '63200000-0000-4000-8000-000000000010' then
 		raise exception 'Coding session renewal: %', r; end if;
 	raise exception 'Undo' using errcode = 'QTF80';
 exception when sqlstate 'QTF80' then null;

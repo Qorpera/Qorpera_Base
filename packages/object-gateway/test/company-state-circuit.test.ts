@@ -30,7 +30,6 @@ const companies = {
 	b: { companyId: "40000000-0000-4000-8000-00000000000b", environmentId: "40000000-0000-4000-8000-0000000000eb" },
 };
 type Company = keyof typeof companies;
-const version = "40000000-0000-4000-8000-000000000030";
 const path = "documents/plan.md";
 const bytes = Buffer.from("Company bytes for the circuit test.");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -141,19 +140,11 @@ async function gateway() {
 			if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(name))
 				return Response.json(true);
 			if (name === "qorpera_list_profile_objects_for_migration") return Response.json([]);
-			if (name === "qorpera_authorize_member_company_path_object")
+			if (name === "qorpera_member_folder_object")
 				return Response.json({
-					schema: "qorpera.member-company-object/v2",
-					companyId: companies[company!].companyId,
-					environmentId: companies[company!].environmentId,
-					actorUserId: "40000000-0000-4000-8000-000000000201",
-					resourceId: "40000000-0000-4000-8000-000000000202",
-					resourceVersion: "40000000-0000-4000-8000-000000000203",
-					path,
-					version,
-					sha256,
+					schema: "qorpera.folder-object-download/v1",
+					profileId: companies[company!].companyId,
 					bytes: bytes.length,
-					backend: "nas-object-gateway",
 				});
 			return Response.json({}, { status: 403 });
 		},
@@ -165,10 +156,9 @@ async function gateway() {
 			store,
 			authority,
 			replication,
-			memberObjects: authority,
+			memberFolderObjects: authority,
 			nativeObjects: { token: nativeToken, folder: authority },
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -201,18 +191,11 @@ async function gateway() {
 				body: bytes,
 			}),
 		"member read": (company: Company) =>
-			fetch(`${origin}/v1/member-company-objects/${companies[company].environmentId}/${version}/${sha256}`, {
-				headers: {
-					authorization: `Bearer ${memberToken}`,
-					"x-qorpera-company-path": Buffer.from(path).toString("base64url"),
-				},
+			fetch(`${origin}/v1/member-folder-objects/${companies[company].environmentId}/${sha256}`, {
+				headers: { authorization: `Bearer ${memberToken}` },
 			}),
 	};
-	const profileRead = (company: Company) =>
-		fetch(`${origin}/v1/profile-objects/${companies[company].companyId}/${sha256}`, {
-			headers: { authorization: "Bearer synthetic-verifier" },
-		});
-	return { authority, journal, replication, state, routes, profileRead };
+	return { authority, journal, replication, state, routes };
 }
 
 type Route = "folder read" | "folder write" | "member read";
@@ -321,16 +304,6 @@ describe("one company's database state and the shared circuit", () => {
 			expect(state.replicas.size).toBe(2);
 		},
 	);
-
-	it.each(["55P03", "40P01", "40001"])("keeps a %s on a profile read a plain 503", async (code) => {
-		// The lock conflict stays circuit-neutral (ObjectLockConflict).
-		const { authority, profileRead, state } = await gateway();
-		state.fail = { company: "a", respond: async () => postgrest(code) };
-		const refused = await profileRead("a");
-		expect(refused.status).toBe(503);
-		expect(await refused.json()).toEqual({ error: "Object dependency is unavailable" });
-		expect(authority.health().api.status).not.toBe("unavailable");
-	});
 
 	it.each([
 		// PostgREST's own 409: the garbage collector's write fence, which lasts until its deletion ends.
@@ -561,7 +534,6 @@ describe("member presence route and the caller's own abort", () => {
 				store: {} as never,
 				authority: {} as never,
 				controlToken: "synthetic-control",
-				verifierToken: "synthetic-verifier",
 				memberPresence: authority,
 			}),
 		);

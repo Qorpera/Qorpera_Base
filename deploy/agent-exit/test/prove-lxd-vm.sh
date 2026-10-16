@@ -80,7 +80,7 @@ fi
 lx image copy "$IMAGE" local: --vm --alias qae2b-vm >/dev/null
 lx image copy "$IMAGE" local: --alias qae2b-ct >/dev/null
 lx image export qae2b-ct "$work/push/image/" >/dev/null
-ls "$work/push/image" | grep -q . || fail "the container image did not export"
+[[ -n $(ls -A "$work/push/image") ]] || fail "the container image did not export"
 cp -r "$here" "$work/push/agent-exit"
 pass "fetched LXD's snaps, the packages and the container image on the test machine"
 
