@@ -210,10 +210,12 @@ stop only after its completion (`cloud-company-computer-service-stop-control.ts`
   left (`list`), asks a boundary on each (a command's is its final one: its processes are gone) and unmounts it. A
   mount whose program exited 3 answers at once, and one whose program exited otherwise is asked without it (above);
 - the boundaries are asked on every mount at once, inside the stop control's 100 s
-  (`cloud-company-computer-service-stop-control-main.ts`). `systemctl stop` may take 80 s of that
-  (`cloud-company-computer-service-stop-systemd.ts`; the unit's `TimeoutStopSec=70`), so a first run's boundaries get
-  at least 20 s; a run that finds its claim retained only observes the stopped service, so its boundaries get nearly
-  all of the 100 s;
+  (`cloud-company-computer-service-stop-control-main.ts`), which keeps its last 5 s to seal its history and write its
+  completion, and 10 s before that for the unmounts and drops (`cloud-company-computer-service-stop-folders.ts`).
+  `systemctl stop` may take 80 s of the 100 (`cloud-company-computer-service-stop-systemd.ts`; the unit's
+  `TimeoutStopSec=70`), so a first run's boundaries get what it left less those 15 s; under a second, the run fails
+  without asking. A run that finds its claim retained only observes the stopped service, so its boundaries get nearly
+  85 s. An image without the folder helper has no socket and no mount: the step asks nothing;
 - a boundary with no answer, or refused in a way a retry gets past (QRC01, the run check; Reads, below), fails the
   stop control's run, so the provider has no completion and acknowledges nothing: `qorpera_ack_runtime_office_stop`
   does not clear the pending drain that keeps the old view valid. Every other refusal is an answer: one under rule 4
