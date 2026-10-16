@@ -621,6 +621,8 @@ class CodexBoundaryRpc {
 	#startingSide?: StartingSide;
 	/** The latest side thread start, settled or not: the next one waits for it. */
 	#sideStarting: Promise<void> = Promise.resolve();
+	/** Releases the side thread starts held while the agent's thread starts: its bind, or the boundary's end. */
+	#threadStarted?: () => void;
 	#turnEndRequested = false;
 	#finished = false;
 	#closed = false;
@@ -1071,13 +1073,14 @@ class CodexBoundaryRpc {
 	}
 
 	/** Opens a compactor thread (RUNTIME-AGENT-MEMORY-TREE.md §7.1): fresh, ephemeral and tool-less, its system prompt
-	 * the developer instructions. While the run's process lasts it opens after the agent's turn too, for closing. */
+	 * the developer instructions. It opens once the run is bound: at the opening, before the agent's thread (settle,
+	 * §5.4), during the agent's turn, and after it for closing while the run's process lasts. */
 	async compact(
 		input: { model: string; effort: CloudRuntimeReasoningEffort; instructions: string; cwd: string },
 		signal: AbortSignal,
 	): Promise<MemoryCompactThread> {
 		signal.throwIfAborted();
-		if (this.#failure || this.#closed || !this.#threadId) throw this.#compactStop();
+		if (this.#failure || this.#closed || !this.#boundary) throw this.#compactStop();
 		const started = this.#startSide("compact", signal, {
 			model: input.model,
 			cwd: input.cwd,
@@ -1356,6 +1359,7 @@ class CodexBoundaryRpc {
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(this.#failure);
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
+		this.#threadStarted?.();
 		this.#rejectCompleted(this.#failure);
 	}
 
@@ -1372,8 +1376,18 @@ class CodexBoundaryRpc {
 	initialized(): void {
 		this.#write({ method: "initialized", params: {} });
 	}
-	startThread(): void {
-		if (!this.#boundary) throw new Error("Native thread binding failed");
+	/** The agent's thread starts once every side thread start before it has (a compactor's at the opening), and no
+	 * other starts until its id is bound: a prewarm arriving meanwhile is always the agent's. */
+	async startThread(): Promise<void> {
+		if (!this.#boundary || this.#startingThread || this.#threadId || this.#threadStarted)
+			throw new Error("Native thread binding failed");
+		const before = this.#sideStarting;
+		this.#sideStarting = new Promise<void>((resolve) => {
+			this.#threadStarted = resolve;
+		});
+		await before;
+		if (this.#failure) throw this.#failure;
+		if (this.#closed) throw new Error("Native boundary transport closed");
 		this.#startingThread = true;
 	}
 	bindThread(threadId: string): void {
@@ -1381,6 +1395,7 @@ class CodexBoundaryRpc {
 			throw new Error("Native thread binding failed");
 		this.#threadId = identifier(threadId);
 		this.#startingThread = false;
+		this.#threadStarted?.();
 	}
 	startTurn(): void {
 		this.#startingTurn = true;
@@ -1399,6 +1414,7 @@ class CodexBoundaryRpc {
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
+		this.#threadStarted?.();
 		this.#child.stdin.end();
 	}
 
@@ -1703,6 +1719,14 @@ export type CloudCodexContextComposer = (
 	request: CloudNativeContextRequest,
 	signal: AbortSignal,
 ) => CloudNativeContextComposition | Promise<CloudNativeContextComposition>;
+
+/** What a run's opening composes (RUNTIME-AGENT-MEMORY-TREE.md §5.4, §6.1): the agent's input, its laws and views, and
+ * the composer of its provider requests. */
+export interface CloudCodexOpening {
+	prompt: string;
+	runtimeInstructions?: string;
+	composeContext?: CloudCodexContextComposer;
+}
 
 /** A started, handshaken Codex app-server that no run has used: no thread, no provider request. */
 interface CloudCodexProcess {
@@ -2151,7 +2175,8 @@ export async function runCloudCodexToolSession(options: {
 	reasoningEffort?: CloudRuntimeReasoningEffort;
 	/** The run's admitted tier; anything that does not supply one runs at standard speed. */
 	serviceTier?: CloudRuntimeServiceTier;
-	prompt: string;
+	/** The agent's input; a run with an opening takes it, its instructions and its composer from there instead. */
+	prompt?: string;
 	/** Versioned host-owned laws, and the head and views as escaped, labelled data
 	 * (RUNTIME-AGENT-MEMORY-TREE.md §6.1). */
 	runtimeInstructions?: string;
@@ -2169,10 +2194,14 @@ export async function runCloudCodexToolSession(options: {
 	reusedIdentityRoot?: boolean;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
+	/** The opening (RUNTIME-AGENT-MEMORY-TREE.md §5.4): after beforeModelStart and before the agent's thread, with the
+	 * compactor's lane open, it settles the conversation's tree and composes what the agent starts with. What it throws
+	 * ends the run before the agent's thread starts. */
+	opening?: (signal: AbortSignal) => Promise<CloudCodexOpening>;
 	/** Auto-review (v130): this session answers the boundary's reviews while the agent's turn runs. */
 	reviewer?: CloudActionReviewChannel;
-	/** The memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): this session answers the run's compactor calls, while
-	 * the agent's turn runs and at closing. */
+	/** The memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): this session answers the run's compactor calls, at the
+	 * opening, while the agent's turn runs and at closing. */
 	compactor?: MemoryCompactChannel;
 	/** Closing (§7.1): runs once the agent's turn has completed and been checked, before the process goes. What it
 	 * throws never fails the run: the lines it left unbuilt stay missing, for a settle to build (§5.4). */
@@ -2200,6 +2229,13 @@ export async function runCloudCodexToolSession(options: {
 	const idleTimeoutMs = options.idleTimeoutMs;
 	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
 	const serviceTier = options.serviceTier ?? "standard";
+	// The agent's input: given, or composed by the opening (and never both).
+	const sized = (input: CloudCodexOpening): boolean =>
+		Buffer.byteLength(input.prompt) <= MAX_PROMPT_BYTES &&
+		Buffer.byteLength(input.runtimeInstructions ?? "") <= MAX_RUNTIME_INSTRUCTIONS_BYTES;
+	const oneInput = options.opening
+		? [options.prompt, options.runtimeInstructions, options.composeContext].every((value) => value === undefined)
+		: options.prompt !== undefined && sized({ ...options, prompt: options.prompt });
 	if (
 		process.platform === "win32" ||
 		(timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) ||
@@ -2212,8 +2248,7 @@ export async function runCloudCodexToolSession(options: {
 		/[\0\r\n]/.test(options.model) ||
 		!/^[0-9a-f]{64}$/.test(options.binarySha256) ||
 		!isAbsolute(options.command[0]) ||
-		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
-		Buffer.byteLength(options.runtimeInstructions ?? "") > MAX_RUNTIME_INSTRUCTIONS_BYTES ||
+		!oneInput ||
 		!isCloudRuntimeReasoningEffort(effort) ||
 		!isCloudRuntimeServiceTier(serviceTier)
 	)
@@ -2262,20 +2297,17 @@ export async function runCloudCodexToolSession(options: {
 			started.binding.recordContextView = options.recordContextView;
 			started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
 		}
-		if (options.composeContext) started.binding.composeContext = options.composeContext;
 		if (
 			options.boundary.captureImagesEnabled &&
 			!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
 		)
 			throw new Error("Native boundary requires capture image support");
-		stage = "codex-identity";
-		// Generate one host-owned bootstrap and explicitly load these exact bytes.
-		// Ambient project/home instruction discovery remains disabled: a Company
-		// File or restored auth home must never add a second platform prompt.
-		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, options.runtimeInstructions]
-			.filter(Boolean)
-			.join("\n");
-		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
+		// The compactor's lane opens with the run: the opening settles through it, and the agent's turn and closing
+		// compact through it after.
+		const compaction = { model: COMPACT_MODEL, effort: COMPACT_EFFORT, cwd: started.workspace };
+		options.compactor?.attach((system, compactSignal) =>
+			rpc.compact({ ...compaction, instructions: system }, compactSignal),
+		);
 		if (idleTimeoutMs !== undefined) {
 			idleWatch = setInterval(
 				() => {
@@ -2291,8 +2323,26 @@ export async function runCloudCodexToolSession(options: {
 		stage = "execution-admission";
 		await options.beforeModelStart?.(signal);
 		signal.throwIfAborted();
+		const opening: CloudCodexOpening = options.opening
+			? await options.opening(signal)
+			: {
+					prompt: options.prompt ?? "",
+					runtimeInstructions: options.runtimeInstructions,
+					composeContext: options.composeContext,
+				};
+		signal.throwIfAborted();
+		if (!sized(opening)) throw new Error("Invalid native boundary input");
+		if (opening.composeContext) started.binding.composeContext = opening.composeContext;
+		stage = "codex-identity";
+		// Generate one host-owned bootstrap and explicitly load these exact bytes.
+		// Ambient project/home instruction discovery remains disabled: a Company
+		// File or restored auth home must never add a second platform prompt.
+		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
+			.filter(Boolean)
+			.join("\n");
+		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		stage = "codex-thread-start";
-		rpc.startThread();
+		await rpc.startThread();
 		const thread = object(
 			await rpc.request("thread/start", {
 				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
@@ -2315,16 +2365,12 @@ export async function runCloudCodexToolSession(options: {
 		options.reviewer?.attach({
 			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
 		});
-		const compaction = { model: COMPACT_MODEL, effort: COMPACT_EFFORT, cwd: started.workspace };
-		options.compactor?.attach((system, compactSignal) =>
-			rpc.compact({ ...compaction, instructions: system }, compactSignal),
-		);
 		stage = "codex-turn-start";
 		rpc.startTurn();
-		rpc.observeTurnStart(Buffer.byteLength(options.prompt));
+		rpc.observeTurnStart(Buffer.byteLength(opening.prompt));
 		const turnRequest = rpc.request("turn/start", {
 			threadId,
-			input: [{ type: "text", text: options.prompt, text_elements: [] }],
+			input: [{ type: "text", text: opening.prompt, text_elements: [] }],
 			effort,
 			environments: [],
 			runtimeWorkspaceRoots: [],

@@ -3190,6 +3190,19 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    - Delegation to the company's own agents is denied only when the member said
      no, or when it goes against what they said. When the reviewer cannot tell
      whether the member agreed, it asks with a card.
+   Amended 2026-10-16 (finding 881f1f21: a run woken by its own worker's report
+   was denied its follow-up to that worker, because it had no member request):
+   - A run that carries on the agent's own earlier work (its workers' report,
+     a worker's own run, a machine event or check-in, an office start) and has
+     no request of its own is reviewed against the request that started that
+     work: the member inputs, room posts or routine intent of the chain's first
+     run, found by the platform from the wakes' parents (never from the agent),
+     marked as such. Only a chain of the same agent and requester has one.
+   - It carries only that request, not what the member was answering there, so
+     a chain started by a short reply ("Yes please") reads that reply alone.
+   - A coworker's message is never the request, for its own run or for a chain
+     it started (9.2): the reviewed steps of such a chain (an agent dispatching
+     or steering its worker, say) still have no member request, as before.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -3941,6 +3954,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      its commands are not reviewed (founder, 28 September), like a coding
      session's commands. This is an exception to item 2 and to item 7 of the
      2026-09-27 amendment "every machine works in the company folder".
+     Changed by the coordinator, 15 Oct 2026, step 6 plan Q2: from 6d every
+     machine_run is reviewed as an outside effect, with or without /company
+     (reasons: RUNTIME-FOLDER-TEST-MACHINES.md, Review).
    - Once the company folder is mounted on machines (/company), a machine
      shows the company-wide view, as a company machine does: the paths under
      the root company-shared resource, and rules/ read-only. The folder is
@@ -5442,7 +5458,9 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
     company machine's new image (step 4); coding machines (step 5) and test machines (step 6) come after it.
     - Each of those steps meets this amendment, and its acceptance shows it, including a networked command and a
       program that keeps running.
-    - Until a machine carries the folder, today's rules hold for it.
+    - Until a machine carries the folder, today's rules hold for it. Changed by the coordinator, 15 Oct 2026, step 6
+      plan Q2: from 6d every machine_run is reviewed as an outside effect, with or without /company (reasons:
+      RUNTIME-FOLDER-TEST-MACHINES.md, Review).
 
 11. **Coding machines match a cloud coding machine.** Coding agents write in any language, with what the cloud
     machines of other coding agents offer (the founder named Cursor's cloud agents as the reference, 14 October). A

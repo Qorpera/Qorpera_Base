@@ -19,6 +19,7 @@ import {
 	cloudRunLogReleases,
 } from "./cloud-run-log.ts";
 import {
+	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
 	cloudRuntimeErrorCategory,
@@ -39,6 +40,7 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 	"REFUSED: the tool did nothing, for the reason it gives; change what you ask (under a new operation key) or tell the member why it cannot be done. " +
 	"An action whose result you did not see may already have happened: retry it only as its tool describes, with the same operation key and arguments, never under a new key or by another route. " +
 	"OUTCOME_UNKNOWN is the one exception: your run was cut off while that action ran, so it may or may not have happened, and its operation key cannot run it again. Check whether it happened before you repeat it, and repeat it only if it did not, under a new operation key. " +
+	"A result's companyFolder reports what the company folder did with your desktop's changes since the last report: how many paths it saved, the paths it did not take (notSaved, with why), and why it did not take a desktop's last changes at all (refused); more means the rest comes in a later result. " +
 	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not. " +
 	"Members' rules can make an action wait for approval (APPROVAL_PENDING): the platform has raised the card, so do not ask again in chat; do other work meanwhile. When you are woken because such a card was approved, call the same tool again with the card's `call` field as its arguments, value for value: not its `arguments` text, which is the same call escaped (use that only when the card has no `call`); if the card's entry is cut short, read the rest of it first. It then runs once, without another review.";
 
@@ -64,8 +66,16 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
+ * replaces it, so a cut answer never grows. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
+const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
 /** The pinned fence's bound on one tool result's PNG. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
+/** A result asks the run's desktop folder report (F3 4f-2b) for this long at most, and shows one this big at most. */
+const FOLDER_REPORT_WAIT_MS = 1000;
+const FOLDER_REPORT_BYTES = 4 * 1024;
+const FOLDER_REPORT_MARK = /^[0-9a-f-]{36}:[0-9]{1,15}$/;
 /** A run carries every tool its agent is granted, with no count cap (founder,
  * 2026-09-24: a provider's own limit, such as OpenAI's per-request function
  * count, is enforced by the provider). Only the serialized catalog is bounded,
@@ -125,6 +135,10 @@ export interface CloudNativeTool {
 	prepare?(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue>;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
+	/** Why an answer says the call changed nothing, when the tool answers a refusal rather than throwing one (a
+	 * folder-v2 change that was not saved): the call is observed as denied with this category, never as succeeded
+	 * (contract, Minimum operational observability). Read from the answer alone; the model's answer is unchanged. */
+	refused?(content: CloudToolContent): CloudRuntimeErrorCategory | undefined;
 	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
 	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
 	 * denial. It never runs the call; if it fails, the denial stands as it is. */
@@ -178,6 +192,22 @@ export interface CloudToolResult {
 		sha256: string;
 		truncated: boolean;
 	};
+	/** What the company folder did with the run's desktop changes since the report a result last showed (F3 4f-2b). */
+	companyFolder?: CloudCompanyFolderReport;
+}
+
+/** A run's desktop folder report, as a tool result shows it (`CompanyComputerDesktopFolderReport`). */
+export interface CloudCompanyFolderReport {
+	readonly saved: number;
+	readonly notSaved?: readonly { readonly path: string; readonly outcome: string; readonly reason?: string }[];
+	readonly refused?: string;
+	readonly more?: true;
+}
+
+/** The run's desktop folder reports (F3 4f-2b): the report since the one marked `shown` ("" for none), and its mark;
+ * nothing when nothing is new. A tool result shows it, and the next ask names its mark once the model got it. */
+export interface CloudNativeFolderReports {
+	next(shown: string, signal: AbortSignal): Promise<{ mark: string; report: unknown } | undefined>;
 }
 
 export interface CloudDynamicToolResponse {
@@ -402,6 +432,18 @@ export class CloudNativeToolBoundary {
 	readonly #shownImages = new Map<string, string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
 	#pending: Promise<void> = Promise.resolve();
+	readonly #folderReports?: CloudNativeFolderReports;
+	/** The mark of the last folder report a result the model got showed. */
+	#folderShown = "";
+	/** The response the call running now showed a folder report in, with that report's mark. */
+	#folderIssued?: { readonly response: CloudDynamicToolResponse; readonly mark: string };
+	/** The last call's answer that showed a folder report, until its release check says whether the model got it. */
+	#folderAwaiting?: {
+		readonly response: CloudDynamicToolResponse;
+		readonly mark: string;
+		readonly checked: Promise<void>;
+		readonly settle: () => void;
+	};
 
 	constructor(options: {
 		companyId: string;
@@ -416,6 +458,8 @@ export class CloudNativeToolBoundary {
 		review?: CloudNativeActionReview;
 		/** The run's work log: every call is a step, and an acting call is committed before it runs. */
 		runLog?: CloudRunLog;
+		/** The run's desktop folder reports (F3 4f-2b): a call that runs shows the one since the last in its result. */
+		folderReports?: CloudNativeFolderReports;
 	}) {
 		if (
 			!UUID.test(options.companyId) ||
@@ -437,6 +481,7 @@ export class CloudNativeToolBoundary {
 		this.#captures = options.captures;
 		this.#review = options.review;
 		this.#runLog = options.runLog;
+		this.#folderReports = options.folderReports;
 		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		for (const tool of options.tools) {
 			if (
@@ -764,8 +809,10 @@ export class CloudNativeToolBoundary {
 				await untilStopped(() => this.#captures!.assertReadable(this.#signal), this.#signal);
 			}
 			release?.finish("succeeded");
+			this.#folderChecked(reply, true);
 			return reply;
 		} catch {
+			this.#folderChecked(reply, false);
 			release?.finish("denied", { errorCategory: "authority_unavailable" });
 			// The model gets only the denial: its step keeps no reads or releases of the result held back.
 			logged?.releases.splice(0);
@@ -782,13 +829,60 @@ export class CloudNativeToolBoundary {
 		observation?: CloudRuntimeObservationSpan,
 		logged?: LoggedCall,
 	): Promise<CloudDynamicToolResponse> {
-		if (!logged) return this.#act(callId, tool, digest, argumentsText, observation);
-		if (this.#runLog?.gone)
-			return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
-		// Every release the call makes is kept with its step.
-		return cloudRunLogReleases(logged.releases, () =>
-			this.#act(callId, tool, digest, argumentsText, observation, logged.step, logged.resultPaths),
-		);
+		let response: CloudDynamicToolResponse | undefined;
+		try {
+			if (!logged) response = await this.#act(callId, tool, digest, argumentsText, observation);
+			else if (this.#runLog?.gone)
+				response = this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
+			// Every release the call makes is kept with its step.
+			else
+				response = await cloudRunLogReleases(logged.releases, () =>
+					this.#act(callId, tool, digest, argumentsText, observation, logged.step, logged.resultPaths),
+				);
+			return response;
+		} finally {
+			// Calls run one after another: the next one's folder report starts after the one this call's answer showed,
+			// once the release check let the model have that answer (#folderChecked). A report shown in a result the call
+			// did not answer with (its screenshot could not be issued) comes again.
+			const issued = this.#folderIssued;
+			this.#folderIssued = undefined;
+			if (response && issued?.response === response) {
+				let settle!: () => void;
+				const checked = new Promise<void>((resolve) => {
+					settle = resolve;
+				});
+				this.#folderAwaiting = { ...issued, checked, settle };
+			}
+		}
+	}
+
+	/** The release check's verdict on a call's answer: a folder report it showed counts as shown only if the model got
+	 * it, and one held back (`AUTHORITY_UNAVAILABLE` in its place) comes again. */
+	#folderChecked(reply: CloudDynamicToolResponse, released: boolean): void {
+		const awaiting = this.#folderAwaiting;
+		if (awaiting?.response !== reply) return;
+		this.#folderAwaiting = undefined;
+		if (released) this.#folderShown = awaiting.mark;
+		awaiting.settle();
+	}
+
+	/** The run's desktop folder report since the last one shown (F3 4f-2b), when there is one: asked for a second at
+	 * most, and nothing when it does not answer or its answer is not a report. */
+	async #folderReport(): Promise<{ mark: string; report: CloudCompanyFolderReport } | undefined> {
+		const reports = this.#folderReports;
+		if (!reports || this.#signal.aborted) return undefined;
+		// The wait ends at the second even when the reports do not heed their signal.
+		const wait = AbortSignal.any([this.#signal, AbortSignal.timeout(FOLDER_REPORT_WAIT_MS)]);
+		// The last report counts as shown once the release check let the model have the answer it was in: until then,
+		// within the same second, nothing is asked, and a check still going then leaves the report for a later result.
+		const awaiting = this.#folderAwaiting;
+		if (awaiting) await untilStopped(() => awaiting.checked, wait).catch(() => undefined);
+		if (this.#folderAwaiting) return undefined;
+		const shown = this.#folderShown;
+		const answer = await untilStopped(() => reports.next(shown, wait), wait).catch(() => undefined);
+		if (!answer || typeof answer.mark !== "string" || !FOLDER_REPORT_MARK.test(answer.mark)) return undefined;
+		const report = cloudCompanyFolderReport(answer.report);
+		return report ? { mark: answer.mark, report } : undefined;
 	}
 
 	async #act(
@@ -800,8 +894,20 @@ export class CloudNativeToolBoundary {
 		step?: number,
 		resultPaths?: string[],
 	): Promise<CloudDynamicToolResponse> {
+		// The call's answer shows the run's desktop folder report (F3 4f-2b), whatever it says, except that the run's
+		// authority is gone. Its paths are needles of the step, as the result's own are.
+		const reported = async (
+			status: CloudToolResult["status"],
+			content: CloudToolContent,
+		): Promise<CloudDynamicToolResponse> => {
+			const folder = await this.#folderReport();
+			const response = this.#result(callId, tool, digest, status, content, folder);
+			if (folder && resultPaths && this.#folderIssued?.response === response)
+				for (const path of cloudRunLogPaths(folder.report as unknown as JsonValue)) resultPaths.push(path);
+			return response;
+		};
 		if (tool.name === "computer_screenshot" && tool.source === "runtime" && !this.#captures)
-			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
+			return reported("denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
 		let parsed: JsonValue;
 		try {
 			parsed = tool.parseArguments(JSON.parse(argumentsText) as JsonValue);
@@ -815,7 +921,7 @@ export class CloudNativeToolBoundary {
 				REFUSAL_PLAIN.test(error.message)
 					? `: ${error.message}`
 					: "";
-			return this.#result(callId, tool, digest, "denied", { kind: "text", value: `INVALID_ARGUMENTS${reason}` });
+			return reported("denied", { kind: "text", value: `INVALID_ARGUMENTS${reason}` });
 		}
 		try {
 			this.#signal.throwIfAborted();
@@ -847,9 +953,9 @@ export class CloudNativeToolBoundary {
 						Buffer.byteLength(error.message) <= 1024 && REFUSAL_PLAIN.test(error.message)
 							? `: ${error.message}`
 							: "";
-					return this.#result(callId, tool, digest, "denied", { kind: "text", value: `REFUSED${reason}` });
+					return reported("denied", { kind: "text", value: `REFUSED${reason}` });
 				}
-				return this.#result(callId, tool, digest, "denied", {
+				return reported("denied", {
 					kind: "text",
 					value: "TOOL_UNAVAILABLE: What this call changes could not be read, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 				});
@@ -867,7 +973,7 @@ export class CloudNativeToolBoundary {
 					this.#signal,
 				);
 			} catch {
-				return this.#result(callId, tool, digest, "denied", {
+				return reported("denied", {
 					kind: "text",
 					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 				});
@@ -890,7 +996,7 @@ export class CloudNativeToolBoundary {
 						// The denial stands, and what the call stood for stays open until a later denial or a discard.
 					}
 				}
-				return this.#result(callId, tool, digest, "denied", { kind: "text", value: text });
+				return reported("denied", { kind: "text", value: text });
 			}
 			actionReviewId = gate.reviewId;
 			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
@@ -917,7 +1023,7 @@ export class CloudNativeToolBoundary {
 					(parsed.action === "dispatch" || parsed.action === "followup");
 				await untilStopped(() => runLog.precommit(step, this.#signal, { afterEarlierResults }), this.#signal);
 			} catch (error) {
-				return this.#result(callId, tool, digest, "denied", {
+				return reported("denied", {
 					kind: "text",
 					value: error instanceof CloudRunLogGone ? WORK_LOG_GONE : WORK_LOG_UNAVAILABLE,
 				});
@@ -928,11 +1034,22 @@ export class CloudNativeToolBoundary {
 				() => tool.execute(parsed, { ...context, ...(actionReviewId ? { actionReviewId } : {}) }),
 				this.#signal,
 			);
-			const response = this.#result(callId, tool, digest, "ok", content);
+			const response = await reported("ok", content);
 			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
 			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
 			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
-			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
+			if (
+				tool.name === "computer_screenshot" &&
+				tool.source === "runtime" &&
+				// No picture when the office gave the screen back or the company folder held the capture back (F3 4d).
+				!(
+					content.kind === "json" &&
+					content.value !== null &&
+					typeof content.value === "object" &&
+					!Array.isArray(content.value) &&
+					content.value.completed === false
+				)
+			) {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),
 					this.#signal,
@@ -972,7 +1089,13 @@ export class CloudNativeToolBoundary {
 				!Array.isArray(content.value) &&
 				content.value.schema === "qorpera.company-path-result/v1" &&
 				content.value.state === "proposed";
-			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
+			// A refusal the tool answered: nothing happened, as for a thrown one. A call that took a receipt was observed
+			// by its operation already, with the same reading of the answer; the first finish stands.
+			const refused = tool.refused?.(content);
+			observation?.finish(
+				refused ? "denied" : proposed ? "proposed" : "succeeded",
+				refused ? { errorCategory: refused } : proposed ? { errorCategory: "protected_path" } : {},
+			);
 			return response;
 		} catch (error) {
 			if (
@@ -982,7 +1105,7 @@ export class CloudNativeToolBoundary {
 				["company_write", "company_mkdir", "company_delete"].includes(tool.name)
 			) {
 				observation?.finish("denied", { errorCategory: "authority_unavailable" });
-				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
+				return reported("denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
 			}
 			// Contract 5.2: a definite stale version is a typed result, never an unknown outcome.
 			// These tools are one gateway mutation each, so it proves the call changed nothing.
@@ -993,7 +1116,7 @@ export class CloudNativeToolBoundary {
 				["company_write", "company_mkdir", "company_delete"].includes(tool.name)
 			) {
 				observation?.finish("denied", { errorCategory: "stale_version" });
-				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_VERSION_CHANGED });
+				return reported("denied", { kind: "text", value: COMPANY_FILE_VERSION_CHANGED });
 			}
 			// The gateway never invents parent folders; a missing one is refused before any commit.
 			if (
@@ -1003,12 +1126,12 @@ export class CloudNativeToolBoundary {
 				["company_write", "company_mkdir"].includes(tool.name)
 			) {
 				observation?.finish("denied", { errorCategory: "parent_missing" });
-				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
+				return reported("denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
 			}
 			// A call its run was cut off in: it may have happened, and its key is spent, so the model checks first.
 			if (error instanceof CloudToolOutcomeUnknown && !this.#signal.aborted) {
 				observation?.finish("unconfirmed", { errorCategory: "ambiguous_effect" });
-				return this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: OUTCOME_UNKNOWN });
+				return reported("unconfirmed", { kind: "text", value: OUTCOME_UNKNOWN });
 			}
 			// A tool's own refusal before any effect: nothing happened, and the model is told why.
 			if (error instanceof CloudToolRefusal && !this.#signal.aborted) {
@@ -1017,11 +1140,11 @@ export class CloudNativeToolBoundary {
 					Buffer.byteLength(error.message) <= 1024 && REFUSAL_PLAIN.test(error.message)
 						? `: ${error.message}`
 						: "";
-				return this.#result(callId, tool, digest, "denied", { kind: "text", value: `REFUSED${reason}` });
+				return reported("denied", { kind: "text", value: `REFUSED${reason}` });
 			}
 			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
 			// A thrown adapter error may follow a completed effect. Never echo it or automatically rerun the call.
-			return this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
+			return reported("unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
 		}
 	}
 
@@ -1031,6 +1154,7 @@ export class CloudNativeToolBoundary {
 		digest: string | null,
 		status: CloudToolResult["status"],
 		content: CloudToolContent,
+		folder?: { readonly mark: string; readonly report: CloudCompanyFolderReport },
 	): CloudDynamicToolResponse {
 		if (content.kind !== "text" && content.kind !== "json") throw new Error("Invalid cloud tool content");
 		if (
@@ -1038,9 +1162,12 @@ export class CloudNativeToolBoundary {
 			(tool?.source !== "company_file" || status !== "ok" || !UUID.test(content.companyReadId))
 		)
 			throw new Error("Invalid Company File read provenance");
-		const text = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
-		if (typeof text !== "string" || Buffer.byteLength(text) > MAX_SOURCE_BYTES)
+		const raw = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
+		if (typeof raw !== "string" || Buffer.byteLength(raw) > MAX_SOURCE_BYTES)
 			throw new Error("Invalid cloud tool content");
+		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
+		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
+		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
@@ -1077,6 +1204,12 @@ export class CloudNativeToolBoundary {
 				(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
 			);
 		};
+		// The folder report goes before the content: the content is cut to what is left. A report that leaves no room
+		// stays for a later result.
+		if (folder) {
+			result.companyFolder = folder.report;
+			if (Buffer.byteLength(encode(0)) > MAX_CLOUD_TOOL_RESULT_BYTES) delete result.companyFolder;
+		}
 		let serialized = encode(end);
 		if (Buffer.byteLength(serialized) > MAX_CLOUD_TOOL_RESULT_BYTES) {
 			let low = 0;
@@ -1098,10 +1231,57 @@ export class CloudNativeToolBoundary {
 			tool?.source === "runtime" &&
 			(tool.name === "send_message" || tool.name === "ask_member") &&
 			content.completesTurn === true;
-		return {
+		const response: CloudDynamicToolResponse = {
 			contentItems: [{ type: "inputText", text: serialized }],
 			success: status === "ok",
 			...(completesTurn ? { completesTurn: true } : {}),
 		};
+		if (folder && result.companyFolder) this.#folderIssued = { response, mark: folder.mark };
+		return response;
 	}
+}
+
+/** A folder report as a result may show it: its shape, its words with no webhook secret, and no more than
+ * `FOLDER_REPORT_BYTES` as the result's JSON writes it. Anything else is not shown. */
+function cloudCompanyFolderReport(value: unknown): CloudCompanyFolderReport | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const { saved, notSaved, refused, more, ...rest } = value as Record<string, unknown>;
+	if (
+		Object.keys(rest).length > 0 ||
+		typeof saved !== "number" ||
+		!Number.isSafeInteger(saved) ||
+		saved < 0 ||
+		(notSaved !== undefined && (!Array.isArray(notSaved) || notSaved.length === 0)) ||
+		(refused !== undefined && typeof refused !== "string") ||
+		(more !== undefined && more !== true)
+	)
+		return undefined;
+	const words = (text: string): string => text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+	const paths: { path: string; outcome: string; reason?: string }[] = [];
+	for (const entry of (notSaved ?? []) as unknown[]) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+		const { path, outcome, reason, ...other } = entry as Record<string, unknown>;
+		if (
+			Object.keys(other).length > 0 ||
+			typeof path !== "string" ||
+			typeof outcome !== "string" ||
+			(reason !== undefined && typeof reason !== "string")
+		)
+			return undefined;
+		paths.push({
+			path: words(path),
+			outcome: words(outcome),
+			...(reason !== undefined ? { reason: words(reason) } : {}),
+		});
+	}
+	if (saved === 0 && paths.length === 0 && refused === undefined) return undefined;
+	const report: CloudCompanyFolderReport = {
+		saved,
+		...(paths.length > 0 ? { notSaved: paths } : {}),
+		...(refused !== undefined ? { refused: words(refused) } : {}),
+		...(more ? { more: true as const } : {}),
+	};
+	const json = JSON.stringify(report);
+	const bytes = Buffer.byteLength(json) + 5 * (json.match(/[<>&\u2028\u2029]/g)?.length ?? 0);
+	return bytes <= FOLDER_REPORT_BYTES ? report : undefined;
 }

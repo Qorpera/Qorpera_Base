@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import { describe, expect, it, vi } from "vitest";
+import { errorCode, logCodeHost, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import { codingHostWatchdogProject } from "../../../deploy/coding-worker/host-watchdog.ts";
 
 function fixture() {
 	return {
@@ -94,10 +95,18 @@ describe("coding executor service configuration", () => {
 		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual({
 			...machines,
 			previousHelperSha256s: [],
+			folder: false,
 		});
 		// The helpers of earlier images whose machines still run on this node.
 		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
-		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual(upgraded);
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual({
+			...upgraded,
+			folder: false,
+		});
+		// Each boot's company folder through the node's folder service (F3 6d): switched on only by true.
+		expect(
+			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...upgraded, folder: true } }).machines,
+		).toEqual({ ...upgraded, folder: true });
 		for (const bad of [
 			{ ...machines, helperSha256: "x" },
 			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
@@ -105,8 +114,62 @@ describe("coding executor service configuration", () => {
 			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
 			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
 			{ ...machines, extra: true },
+			{ ...machines, folder: false },
+			{ ...machines, folder: "true" },
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
+	});
+	it("carries the folder model only with pinned agent and program files and an absolute control socket", () => {
+		const folder = {
+			agent: { path: "/opt/qorpera-coding/folder/coding-guest-agent.mjs", sha256: "a".repeat(64) },
+			program: { path: "/opt/qorpera-coding/folder/qorpera-folder", sha256: "b".repeat(64) },
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).folder).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), folder }).folder).toEqual({
+			...folder,
+			controlSocket: null,
+		});
+		const socket = { ...folder, controlSocket: "/run/qorpera-folder-control/control.sock" };
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, folder: socket }).folder).toEqual(socket);
+		for (const bad of [
+			null,
+			{ agent: folder.agent },
+			{ ...folder, extra: true },
+			{ ...folder, agent: { ...folder.agent, sha256: "A".repeat(64) } },
+			{ ...folder, agent: { ...folder.agent, size: 1 } },
+			{ ...folder, agent: { ...folder.agent, path: "opt/agent.mjs" } },
+			{ ...folder, agent: { ...folder.agent, path: "/opt/../etc/agent.mjs" } },
+			{ ...folder, agent: { ...folder.agent, path: "/opt/agent/" } },
+			{ ...folder, agent: { ...folder.agent, path: "/opt/agent\n.mjs" } },
+			{ ...folder, program: { ...folder.program, path: folder.agent.path } },
+			{ ...folder, controlSocket: null },
+			{ ...folder, controlSocket: "run/control.sock" },
+			{ ...folder, controlSocket: `/run/${"s".repeat(110)}` },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), folder: bad })).toThrow("CONFIG_INVALID");
+	});
+	it("makes code hosts only with the node inventory policy's code host block", () => {
+		const codeHost = {
+			imageFingerprint: "e".repeat(64),
+			storagePool: "qorpera-vm",
+			cpus: 2,
+			memoryBytes: 4 * 1024 ** 3,
+			rootDiskBytes: 20 * 1024 ** 3,
+			running: 2,
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).codeHost).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), codeHost }).codeHost).toEqual(codeHost);
+		for (const bad of [
+			null,
+			{},
+			{ ...codeHost, extra: true },
+			{ ...codeHost, imageFingerprint: "x" },
+			{ ...codeHost, memoryBytes: 4 * 1024 ** 3 + 1 },
+			{ ...codeHost, running: 0 },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), codeHost: bad })).toThrow(
+				"CODING_EXECUTOR_CONFIG_INVALID",
+			);
 	});
 	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
 		const config = fixture();
@@ -147,6 +210,24 @@ describe("coding executor service configuration", () => {
 				repositories: [{ repository: config.repositories[0].repository, credential: null }],
 			}),
 		).toThrow("CONFIG_INVALID");
+	});
+	it("gives the host watchdog the executor's own LXD project, and no project the executor refuses", () => {
+		const config = fixture();
+		expect(codingHostWatchdogProject(config)).toBe(parseCodingExecutorConfiguration(config).vmPolicy.project);
+		expect(codingHostWatchdogProject({ ...config, broker })).toBe("coding");
+		for (const refused of [
+			{ ...config, schema: "qorpera.coding-executor-service/v6" },
+			{ ...config, vmPolicy: { ...config.vmPolicy, project: "Coding" } },
+			{ ...config, vmPolicy: { ...config.vmPolicy, project: "coding_" } },
+			{ ...config, vmPolicy: { ...config.vmPolicy, project: 7 } },
+			{ ...config, vmPolicy: [config.vmPolicy] },
+			{ ...config, vmPolicy: undefined },
+			[config],
+			null,
+		]) {
+			expect(() => parseCodingExecutorConfiguration(refused)).toThrow();
+			expect(() => codingHostWatchdogProject(refused)).toThrow("CODING_EXECUTOR_CONFIG_INVALID");
+		}
 	});
 	it("accepts trusted peer identities and rejects ambiguous routes or credential reuse", () => {
 		const peer = {
@@ -265,5 +346,33 @@ describe("executor error codes", () => {
 			errorCode(Object.assign(new Error("EACCES: permission denied, open '/secret/path'"), { code: "EACCES" })),
 		).toBe("ERRNO:EACCES");
 		expect(errorCode(Object.assign(new Error("free text"), { code: "not an errno" }))).toBe("UNCLASSIFIED");
+	});
+});
+
+describe("executor code host log", () => {
+	it("logs a code host's events as they are, and its errors and its jobs' errors by their code only", () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const project = "qorpera-code-host-1";
+		const lxd = new Error("LXD request failed (500)");
+		const text = new Error("fatal: /company/code/acme/app");
+		const coded = new Error("CODE_HOST_VIEW_OPEN");
+		try {
+			logCodeHost({ event: "code-host", step: "project-made", project });
+			logCodeHost({ event: "code-host-error", step: "refused", project });
+			logCodeHost({ event: "code-host-error", step: "stop", project, error: lxd });
+			logCodeHost({ event: "code-host-view-error", step: "clean", project, error: text });
+			logCodeHost({ event: "code-host-view-error", step: "close", project, error: coded });
+			expect(log.mock.calls).toEqual([[JSON.stringify({ event: "code-host", step: "project-made", project })]]);
+			expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+				{ event: "code-host-error", step: "refused", project },
+				{ event: "code-host-error", step: "stop", project, code: "LXD request failed (500)" },
+				{ event: "code-host-view-error", step: "clean", project, code: "UNCLASSIFIED" },
+				{ event: "code-host-view-error", step: "close", project, code: "CODE_HOST_VIEW_OPEN" },
+			]);
+		} finally {
+			log.mockRestore();
+			error.mockRestore();
+		}
 	});
 });

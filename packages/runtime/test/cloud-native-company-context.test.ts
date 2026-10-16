@@ -41,6 +41,14 @@ it("derives the agent, requester and company from closed cloud context, not a su
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
 });
 
+it("puts the computer's work in the company folder at /company, not on a workbench (F3 4f)", () => {
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"On the Company Computer the company folder is at /company: what you save there becomes a Company File change",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("nothing else on the computer is the Company File");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
+});
+
 it("tells agents to make folders for a category of files while a member's or assignment's folder always stands", () => {
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Create a folder only as the home for a category of files");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never create a folder on your own just to hold a single file");
@@ -1220,6 +1228,45 @@ it("carries the run's service tier outside the shared tool identity", () => {
 	).toThrow();
 });
 
+it("carries a chain's origin for the action review only, never to the model (finding 881f1f21)", () => {
+	const f = nativeCompanyContextFixture();
+	const room = { ...f.source("history", randomUUID(), "Room post: keep the price list current."), sequence: 4 };
+	const origin = {
+		runId: randomUUID(),
+		inputs: [f.source("input", randomUUID(), "Keep the price list current."), room],
+		routineIntent: null,
+	};
+	const context = parseCloudNativeCompanyContext({ ...f.context, origin }, f.binding);
+	expect(context.origin).toEqual(origin);
+	expect(Object.hasOwn(parseCloudNativeCompanyContext(f.context, f.binding), "origin")).toBe(false);
+	const routine = { ...origin, inputs: [], routineIntent: "Renew the domains." };
+	expect(parseCloudNativeCompanyContext({ ...f.context, origin: routine }, f.binding).origin).toEqual(routine);
+	// The model's context message never names it: a worker starts blank, and the request is the member's, not the agent's.
+	const prompt = composeCloudNativeCompanyPrompt(context);
+	expect(prompt).not.toContain("price list");
+	expect(Object.hasOwn(JSON.parse(prompt), "origin")).toBe(false);
+	// Refused: an origin with nothing in it, this run itself, another member's input, a cut source, a repeated or
+	// non-request source, an extra key (a coworker's message is never part of it), a long or bad text, and null.
+	const other = { ...f.source("input", randomUUID(), "Not the requester's."), authorUserId: randomUUID() };
+	const cut = f.source("input", randomUUID(), "Cut.");
+	cut.content = { ...cut.content, offset: 1, truncated: true };
+	for (const bad of [
+		{ ...origin, inputs: [] },
+		{ ...origin, runId: f.binding.runId },
+		{ ...origin, runId: "not-a-run" },
+		{ ...origin, inputs: [other] },
+		{ ...origin, inputs: [cut] },
+		{ ...origin, inputs: [origin.inputs[0], origin.inputs[0]] },
+		{ ...origin, inputs: [f.source("job", f.binding.runId, "{}")] },
+		{ ...origin, kind: "worker-completion" },
+		{ ...origin, message: "Check the invoices." },
+		{ ...origin, routineIntent: "x".repeat(16385) },
+		{ ...origin, routineIntent: 1 },
+		null,
+	])
+		expect(() => parseCloudNativeCompanyContext({ ...f.context, origin: bad }, f.binding)).toThrow();
+});
+
 it("names the company's agent folders, and refuses a context that names none", () => {
 	const f = nativeCompanyContextFixture();
 	const coworker = f.context.coworkers[0].id;
@@ -1363,14 +1410,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 
 // The sha256 of each run's developer instructions and prompt, taken from master at 1e2e3f773 (after M1b compose,
 // #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
-// images replace its attachmentCount, and the protocol says how to open them). A change to either is a change to every
-// run's bytes.
+// images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
+// folder at /company replaced the workbench line). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "5808444a9818756386566c7963eeebb86821dfb27abc666f4d16aaa04610972e",
+			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
 			prompt: "d3a5be48814723d8be602def1afafd4c25c5a78c615914c9da145109c712a5c1",
 		},
 	],
@@ -1378,7 +1425,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "cc920a5cf054ca08567b09aa23c1b71543b992cc03a105bf6c2a5603f018fdda",
+			instructions: "cfa3ddb3dc778426040a4be2f55f4351786b04f237dd7f55fb5b234d4a8a2266",
 			prompt: "9cb23983db74e2dfc64b4ea036395590a03fbbad3c556f21d9a49b9bf3f615c1",
 		},
 	],
@@ -1386,7 +1433,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "5808444a9818756386566c7963eeebb86821dfb27abc666f4d16aaa04610972e",
+			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
 			prompt: "8f199493f9c81ce231ff2647695178ee3b7589da1dd80e9b0fbd9d4c97336a9c",
 		},
 	],

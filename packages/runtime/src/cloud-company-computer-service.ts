@@ -35,7 +35,7 @@ export interface CompanyComputerServiceGuest {
 	): ReturnType<CompanyComputerNativeGuestSessionFactory>;
 	viewer: CompanyComputerViewerGuestTransport;
 	privacy: CompanyComputerPrivacyBoundary;
-	stopResources(binding: CompanyComputerScreenBinding, signal: AbortSignal): Promise<void>;
+	stopResources(binding: CompanyComputerScreenBinding, signal: AbortSignal, stop?: { until?: number }): Promise<void>;
 	/** Await all process trees, capture/input/browser channels and desktops
 	 * stopping. Unknown cleanup must reject; persistent work/profile bytes stay. */
 	close(): Promise<void>;
@@ -180,7 +180,7 @@ export async function startCompanyComputerOfficeService(options: {
 			scope: options.scope,
 			gate,
 			control: options.registry,
-			stopResources: (binding, checked) => options.guest.stopResources(binding, checked),
+			stopResources: (binding, checked, until) => options.guest.stopResources(binding, checked, { until }),
 		});
 		const privacy = new CompanyComputerPrivacySupervisor({
 			scope: options.scope,

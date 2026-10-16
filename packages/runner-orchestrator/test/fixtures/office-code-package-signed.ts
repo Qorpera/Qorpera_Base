@@ -7,6 +7,8 @@ import {
 import { verifyLxdOfficeCodePackageProvision } from "../../src/lxd-office-code-package-provision-verification.ts";
 import {
 	OFFICE_IMAGE_EXECUTABLES,
+	OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
+	OFFICE_IMAGE_FOLDER_PACKAGE_FILES,
 	officeImageDestination,
 	renderOfficeImageMount,
 } from "../../src/lxd-office-image-installation.ts";
@@ -14,7 +16,7 @@ import { officeCanonical, officeDigest } from "../../src/lxd-office-image-proven
 import { officeSoftwareFixture } from "./office-software.ts";
 
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
-export function officeCodePackageSignedFixture() {
+export function officeCodePackageSignedFixture(options: { folder?: boolean } = {}) {
 	const old = officeSoftwareFixture();
 	const base = structuredClone(old.previous),
 		target = structuredClone(old.previous);
@@ -24,6 +26,17 @@ export function officeCodePackageSignedFixture() {
 			bytes: mountBytes.length,
 			sha256: hash(mountBytes),
 		});
+	// Newer bases carry the company folder's group (F3 4e-2). A code package keeps it as it is.
+	const folderMountFile = `${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`;
+	const folderMountBytes = Buffer.from(
+		"[Service]\nExecStart=qorpera-folder mount --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@\n",
+	);
+	if (options.folder)
+		for (const manifest of [base, target])
+			for (const file of OFFICE_IMAGE_FOLDER_PACKAGE_FILES) {
+				const bytes = file === folderMountFile ? folderMountBytes : Buffer.from(`folder:${file}`);
+				manifest.artifacts.push({ file, bytes: bytes.length, sha256: hash(bytes) });
+			}
 	for (const file of COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS) {
 		const artifact = { file, bytes: 456, sha256: hash(`next:${file}`) };
 		const index = target.artifacts.findIndex((a) => a.file === file);
@@ -94,13 +107,18 @@ export function officeCodePackageSignedFixture() {
 			browserTreeSha256: hash("browser"),
 			executables: Object.fromEntries(OFFICE_IMAGE_EXECUTABLES.map((p) => [p, hash(p)])),
 		};
-		const rendered = Buffer.from(renderOfficeImageMount(mountBytes.toString(), 1000, 1000));
+		const rendered = new Map<string, Buffer>();
+		for (const [file, bytes] of [
+			["qorpera-office-private.mount.in", mountBytes],
+			[folderMountFile, folderMountBytes],
+		] as const)
+			rendered.set(file, Buffer.from(renderOfficeImageMount(bytes.toString(), 1000, 1000)));
 		const files = base.artifacts.map((a) => ({
 			...((COMPANY_COMPUTER_CODE_PACKAGE_RESET_ARTIFACTS as readonly string[]).includes(a.file)
 				? { path: `/opt/qorpera-office/${a.file}`, mode: 0o444 }
 				: officeImageDestination(a.file)),
-			bytes: a.file === "qorpera-office-private.mount.in" ? rendered.length : a.bytes,
-			sha256: a.file === "qorpera-office-private.mount.in" ? hash(rendered) : a.sha256,
+			bytes: rendered.get(a.file)?.length ?? a.bytes,
+			sha256: rendered.has(a.file) ? hash(rendered.get(a.file)!) : a.sha256,
 		}));
 		for (const file of ["qorpera-company-computer.service", "qorpera-company-computer-preparation.service"]) {
 			const a = base.artifacts.find((a) => a.file === file)!;
@@ -123,11 +141,12 @@ export function officeCodePackageSignedFixture() {
 			dependencies,
 			files,
 		};
-		const manifests = {
+		const manifests: Parameters<typeof verifyLxdOfficeCodePackageProvision>[3] = {
 			base: baseBytes,
 			target: Buffer.from(JSON.stringify(target)),
 			baseInstallationReceipt: Buffer.from(JSON.stringify(baseReceipt)),
 			baseMountTemplate: mountBytes,
+			...(options.folder ? { baseFolderMountTemplate: folderMountBytes } : {}),
 		};
 		statement.compatibility = {
 			baseInstallationReceiptSha256: hash(manifests.baseInstallationReceipt),

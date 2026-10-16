@@ -3,6 +3,7 @@ import {
 	parseRuntimeNodeInventoryContext,
 	parseRuntimeNodeInventoryPolicy,
 	reconcileRuntimeNodeInventory,
+	runtimeNodeReserved,
 } from "../packages/runner-orchestrator/src/runtime-node-inventory.ts";
 import { officeRecord, officeSha } from "../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
 
@@ -55,11 +56,8 @@ export function planNodeBuilderInventory(value) {
 		(builder) => builder.project === entry.project && builder.name === entry.name,
 	));
 	if (!isDeepStrictEqual(retainedBefore, retainedAfter)) throw new Error("BUILDER_INVENTORY_EXISTING_AUTHORITY_CHANGED");
-	// A declared build space is reserved like infrastructure, whether a build runs or not.
-	const requiredCpuMillis = policy.operatingCpuMillis + policy.infrastructure.reduce((sum, item) => sum + item.cpuMillis, 0)
-		+ (policy.buildSpace?.cpuMillis ?? 0);
-	const requiredMemoryBytes = policy.operatingMemoryBytes + policy.infrastructure.reduce((sum, item) => sum + item.memoryBytes, 0)
-		+ (policy.buildSpace?.memoryBytes ?? 0);
+	// A declared build space and the code hosts are reserved like infrastructure, whether anything runs or not.
+	const { cpuMillis: requiredCpuMillis, memoryBytes: requiredMemoryBytes } = runtimeNodeReserved(policy);
 	return {
 		schema: "qorpera.node-builder-inventory-plan/v1",
 		reviewOnly: true,

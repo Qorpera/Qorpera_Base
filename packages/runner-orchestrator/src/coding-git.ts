@@ -10,6 +10,25 @@ import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const MAX_BUNDLE = 64 * 1024 ** 2;
+const MAX_PREREQUISITES = 64;
+
+/** The `-<sha>` prerequisite lines of a v2/v3 bundle header. Anything that is
+ * not a bundle yields none, so Git itself refuses the bytes. */
+function bundlePrerequisites(bytes: Buffer): string[] {
+	const signature = bytes.subarray(0, 16).toString("latin1");
+	if (signature !== "# v2 git bundle\n" && signature !== "# v3 git bundle\n") return [];
+	const end = bytes.indexOf("\n\n");
+	if (end < 0) return [];
+	const found = new Set<string>();
+	for (const line of bytes.subarray(16, end).toString("latin1").split("\n")) {
+		if (!line.startsWith("-")) continue;
+		const sha = line.slice(1, 41);
+		if (!SHA.test(sha) || (line.length > 41 && line[41] !== " ")) throw new Error("INVALID_CODING_GIT_PUSH");
+		found.add(sha);
+	}
+	if (found.size > MAX_PREREQUISITES) throw new Error("INVALID_CODING_GIT_PUSH");
+	return [...found];
+}
 
 export interface CodingGitPush {
 	repository: CloudCodingRepository;
@@ -27,6 +46,9 @@ export interface CodingBrokerGitCommand {
 	 * for a network command; never persist, log or forward it into the VM. */
 	readonly env: Readonly<Record<string, string>>;
 	readonly signal: AbortSignal;
+	/** A whole-repository step (a seed's fetch, fsck or bundle, a push's two
+	 * fetches): 240 s of CPU and 300 s in all instead of 30 s and 60 s. */
+	readonly long?: boolean;
 }
 export type CodingBrokerGitRunner = (command: CodingBrokerGitCommand) => Promise<string>;
 export interface CodingGitPushOptions {
@@ -47,7 +69,7 @@ export interface CodingGitPushOptions {
 /** Closed process transport: no shell, inherited environment, error body or
  * unbounded output. Git descendants are killed together on timeout/lease loss. */
 export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {}): CodingBrokerGitRunner {
-	return async ({ cwd, scratchRoot, network, args, env, signal }) => {
+	return async ({ cwd, scratchRoot, network, args, env, signal, long = false }) => {
 		signal.throwIfAborted();
 		if (process.platform !== "linux" || process.getuid?.() === 0)
 			throw new Error("CODING_GIT_BROKER_REQUIRES_UNPRIVILEGED_LINUX");
@@ -67,7 +89,7 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 					"/usr/bin/prlimit",
 					[
 						"--as=1073741824",
-						"--cpu=30",
+						long ? "--cpu=240" : "--cpu=30",
 						"--fsize=268435456",
 						"--nofile=64",
 						"--nproc=512",
@@ -97,7 +119,7 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 						child.kill("SIGKILL");
 					}
 				};
-				const checked = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+				const checked = AbortSignal.any([signal, AbortSignal.timeout(long ? 300_000 : 60_000)]);
 				checked.addEventListener("abort", kill, { once: true });
 				if (checked.aborted) kill();
 				child.stdout?.on("data", (value: Buffer) => {
@@ -128,9 +150,12 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 
 export const runCodingBrokerGit = createCodingBrokerGitRunner();
 
-/** Publish one complete bundle into the worker's fixed GitHub branch. Objects
- * are imported into a new bare broker repository; no worktree, repository
- * config, hooks, filters, submodules or model code execute in the token lane.
+/** Publish one bundle into the worker's fixed GitHub branch. Objects are
+ * imported into a new bare broker repository; no worktree, repository config,
+ * hooks, filters, submodules or model code execute in the token lane. A thin
+ * bundle's prerequisites are fetched from the repository at depth 1 before it
+ * is verified, and the base branch tip, when the bundle did not bring it, after
+ * the checks, so the push sends only new objects.
  * The caller holds exclusive branch publication authority through draft PR
  * creation. An uncertain push is observed with ls-remote and never reissued. */
 export async function pushCloudCodingBundle(
@@ -155,6 +180,7 @@ export async function pushCloudCodingBundle(
 		throw new Error("INVALID_CODING_GIT_PUSH");
 	const input = Object.freeze({ ...value, repository: parseCloudCodingRepository(value.repository) });
 	const bytes = Buffer.from(bundle);
+	const prerequisites = bundlePrerequisites(bytes);
 	const branch = `qorpera/coding/${input.workerId}`,
 		ref = `refs/heads/${branch}`,
 		baseRef = `refs/heads/${input.repository.baseBranch}`;
@@ -237,7 +263,7 @@ export async function pushCloudCodingBundle(
 			"receive.fsckObjects=true",
 		];
 		const prefix = ["--no-replace-objects", ...configs.flatMap((config) => ["-c", config])];
-		const run = async (args: string[], network = false, directory = cwd): Promise<string> => {
+		const run = async (args: string[], network = false, directory = cwd, long = false): Promise<string> => {
 			await authorize();
 			const invoke = async (token?: string): Promise<string> => {
 				await authorize();
@@ -255,6 +281,7 @@ export async function pushCloudCodingBundle(
 					args: [...prefix, ...args],
 					env,
 					signal: options.signal,
+					...(long ? { long } : {}),
 				});
 				await authorize();
 				return output;
@@ -268,7 +295,7 @@ export async function pushCloudCodingBundle(
 			}
 		};
 		await run(["init", "--bare", "--template=", cwd], false, scratch);
-		const inspectRemote = async (): Promise<string | null> => {
+		const inspectRemote = async (): Promise<{ base: string; head: string | null }> => {
 			const output = await run(["ls-remote", "--refs", "--heads", remote, baseRef, ref], true);
 			const found = new Map<string, string>();
 			for (const line of output.trimEnd().split("\n")) {
@@ -279,25 +306,41 @@ export async function pushCloudCodingBundle(
 			}
 			// Base branch may advance normally. Worker ancestry remains pinned to the
 			// immutable original base below; its repository/branch cannot be retargeted.
-			if (!found.has(baseRef)) throw new Error("CODING_GIT_BASE_UNAVAILABLE");
-			return found.get(ref) ?? null;
+			const base = found.get(baseRef);
+			if (base === undefined) throw new Error("CODING_GIT_BASE_UNAVAILABLE");
+			return { base, head: found.get(ref) ?? null };
 		};
 		const observed = await inspectRemote();
-		if (observed === input.headSha) return { branch, headSha: input.headSha };
+		if (observed.head === input.headSha) return { branch, headSha: input.headSha };
 		if (claimed) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
-		if (observed !== input.expectedRemoteHeadSha) throw new Error("CODING_GIT_HEAD_CHANGED");
+		if (observed.head !== input.expectedRemoteHeadSha) throw new Error("CODING_GIT_HEAD_CHANGED");
 		const expectedHead = `${input.headSha} ${ref}\n`;
 		if ((await run(["bundle", "list-heads", bundlePath])) !== expectedHead)
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
+		const depthOne = ["fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote];
+		if (prerequisites.length > 0)
+			await run(
+				[...depthOne, ...prerequisites.map((sha, index) => `${sha}:refs/qorpera/prerequisite/${index}`)],
+				true,
+				cwd,
+				true,
+			);
 		await run(["bundle", "verify", bundlePath]);
 		if ((await run(["bundle", "unbundle", bundlePath])) !== expectedHead)
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
 		if ((await run(["cat-file", "-t", input.headSha])) !== "commit\n")
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
-		await run(["fsck", "--strict", "--no-reflogs", input.headSha]);
+		// A prerequisite the head does not reach is not reported.
+		await run(["fsck", "--strict", "--no-reflogs", "--no-dangling", input.headSha]);
 		await run(["merge-base", "--is-ancestor", input.baseSha, input.headSha]);
 		if (input.expectedRemoteHeadSha !== null)
 			await run(["merge-base", "--is-ancestor", input.expectedRemoteHeadSha, input.headSha]);
+		// The base tip lets the push leave out what the base already has. Fetched at
+		// depth 1 it is shallow, so it is fetched only when the broker lacks it: then
+		// it is on none of the head's history, and the walks above and the push's own
+		// fast-forward check see that history whole.
+		if (prerequisites.length > 0 && (await run(["rev-list", "--no-walk", "--ignore-missing", observed.base])) === "")
+			await run([...depthOne, `${observed.base}:refs/qorpera/base`], true, cwd, true);
 		await authorize();
 		if (!(await publish(options.journalRoot, claimName, Buffer.from(JSON.stringify(claim)))))
 			throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
@@ -306,7 +349,7 @@ export async function pushCloudCodingBundle(
 			["push", "--porcelain", "--no-verify", "--recurse-submodules=no", remote, `${input.headSha}:${ref}`],
 			true,
 		);
-		if ((await inspectRemote()) !== input.headSha) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
+		if ((await inspectRemote()).head !== input.headSha) throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");
 		return { branch, headSha: input.headSha };
 	} finally {
 		await rm(scratch, { recursive: true, force: true });

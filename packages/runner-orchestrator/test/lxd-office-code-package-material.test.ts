@@ -27,6 +27,29 @@ describe("protected signed reset package preflight", () => {
 			expect(f.readBuffers.every((b) => b.every((v) => v === 0))).toBe(true);
 		},
 	);
+	it("reads a folder base's mount template from the path the lane document names", async () => {
+		const f = officeCodePackageMaterialFixture({ folder: true }),
+			m = await loadLxdOfficeCodePackageMaterial(f.document, f.policy, f.resetPlan, signal(), f.ports);
+		expect(f.reads).toContain("/protected/folder-mount.in");
+		expect(m.manifests.baseFolderMountTemplate).toEqual(f.manifests.baseFolderMountTemplate);
+		m.dispose();
+		expect(f.readBuffers.every((b) => b.every((v) => v === 0))).toBe(true);
+	});
+	it.each(["missing", "unnamed"])("rejects a folder base whose mount template is %s", async (kind) => {
+		const f = officeCodePackageMaterialFixture({ folder: true });
+		if (kind === "missing") f.files.delete(f.document.baseFolderMountTemplatePath!);
+		const { baseFolderMountTemplatePath: _, ...unnamed } = f.document;
+		await expect(
+			loadLxdOfficeCodePackageMaterial(
+				kind === "unnamed" ? unnamed : f.document,
+				f.policy,
+				f.resetPlan,
+				signal(),
+				f.ports,
+			),
+		).rejects.toThrow("OFFICE_CODE_PACKAGE_MATERIAL_UNCONFIRMED");
+		expect(f.reads).not.toContain(f.document.providerCapabilityCredential.path);
+	});
 	it.each([
 		"bootstrapToolPath",
 		"measurementToolPath",

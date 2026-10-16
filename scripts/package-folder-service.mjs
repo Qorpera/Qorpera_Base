@@ -36,6 +36,7 @@ await copyFile(program, join(output, "qorpera-folder"));
 await chmod(join(output, "qorpera-folder"), 0o755);
 const deployed = [
 	"qorpera-folder-service.socket",
+	"qorpera-folder-control.socket",
 	"qorpera-folder-service.service",
 	"qorpera-folder-bridge.service",
 	"install-folder-service.sh",

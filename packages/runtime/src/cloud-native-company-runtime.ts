@@ -11,6 +11,7 @@ import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-h
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
 	type CloudChatGptPlanAuth,
+	type CloudCodexOpening,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
@@ -112,7 +113,9 @@ import {
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
+import { MemoryCompactChannel, MemoryCompactLane } from "./memory-tree/compact.ts";
 import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./memory-tree/compose.ts";
+import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/conversation-lines.ts";
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
 import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
@@ -121,6 +124,18 @@ type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
 	Required<Pick<CloudNativeToolOperationControlPlane, "completeFolderToolOperation">> &
 	Pick<NativeProviderControlPlane, "sendMessage" | "appendInteractionRequest">;
+
+/** An admission's answer (the run's, or its start once the context is bound) is exactly `expected`, or the run stops. */
+function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<string, unknown>>): void {
+	if (
+		!answer ||
+		typeof answer !== "object" ||
+		Array.isArray(answer) ||
+		Object.keys(answer).length !== Object.keys(expected).length ||
+		Object.entries(expected).some(([key, value]) => (answer as Record<string, unknown>)[key] !== value)
+	)
+		throw new Error("Native execution admission was not confirmed");
+}
 
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
@@ -261,15 +276,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		try {
 			// Both reads need only the binding: ask for them together and check them in
 			// the original order, so a failure still names its stage. Both lock the run's
-			// job row, so each gets the pair's budget (the database serialises them).
+			// job row, so each gets the pair's budget (the database serialises them), down to the transport.
 			const contextRequest = cloudToolRequest(
 				(requestSignal) =>
-					this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
+					this.#paths.call(
+						"qorpera_describe_company_run_context",
+						{ p_binding: binding },
+						requestSignal,
+						CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+					),
 				signal,
 				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
 			const wakeRequest = cloudToolRequest(
-				(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
+				(requestSignal) =>
+					this.#paths.call(
+						"qorpera_read_native_wake",
+						{ p_binding: binding },
+						requestSignal,
+						CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+					),
 				signal,
 				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
@@ -360,6 +386,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				context.identity.sessionId !== null &&
 				cloudWakeIsConversationPost(wake) &&
 				!cloudWorkerToolFilter(wake).isWorker;
+			// Such a run writes its conversation's tree too (§5.4, §7.1, M1b-4b-3), through the compactor its Codex session
+			// answers: the writer reads the conversation and its tree now, alongside the reads below, so the catalog offers
+			// zoom to a run that has the view; it settles the tree at the opening and closes it after the agent's turn.
+			const compactor = new MemoryCompactChannel();
+			const lines = memoryTree
+				? new CloudConversationLines({
+						control: this.#paths,
+						binding,
+						folder: folder.client,
+						call: compactor.call,
+						lane: new MemoryCompactLane(),
+						record: memoryCompactionRecorder(this.#paths, binding),
+					})
+				: undefined;
+			const viewedRequest = lines ? lines.open(signal) : Promise.resolve(false);
+			viewedRequest.catch(() => undefined);
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -395,14 +437,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
-				// The primary view and branches, asked alongside the notebook. A failure keeps the history, with no zoom.
-				const viewRequest = memoryTree
-					? memoryComposeView(this.#paths, binding, signal).catch((error) => {
-							if (!signal.aborted)
-								console.error(`Memory view was not composed (${cloudRuntimeErrorCategory(error, signal)})`);
-							return null;
-						})
-					: Promise.resolve(null);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
@@ -436,56 +470,123 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					vision,
 					openWork: await openWorkRequest,
 					proposals: await proposalsRequest,
-					view: await viewRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals, view } =
-				await composeContext().catch(async (error) => {
+			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
+				async (error) => {
 					await connectorTools();
 					throw error;
-				});
-			const connectorDescriptors = await connectorTools();
-			signal.throwIfAborted();
-			const head = composeCloudAgentHead(context, vision, memory);
-			// The primary view (§5.3) goes after the head; the context message keeps the history after it.
-			const views = view?.views ?? "";
-			const prompt = composeCloudNativeCompanyPrompt(
-				context,
-				wake,
-				initialPresence,
-				memory,
-				openWork,
-				skills,
-				proposals?.context,
-				head,
-				view?.tree,
+				},
 			);
-			// The run's context is its head and views (in the developer instructions) and its context message, hashed
-			// together.
-			const composed = `${head.text}\n${views}\n${prompt}`;
-			const contextBytes = Buffer.byteLength(composed);
-			composition.finish("succeeded", { outputBytes: contextBytes });
-			const contextSha256 = createHash("sha256").update(composed).digest("hex");
-			// What composition read from the folder is released under the composed context before any model request, with
-			// the paths of the proposals it shows (P40b).
-			await notebooks.releaseComposition(contextSha256, signal, proposals?.reads);
-			// So are the summary lines the view and the branches show, and the run's first request is recorded (§13). A
-			// failed release fails the run. A failed record leaves it without the answer, the view reference (W4a-1),
-			// which is for the workers the run dispatches (W4b).
-			if (view)
-				await memoryCommitView(
-					this.#paths,
-					binding,
-					view,
-					{
+			const connectorDescriptors = await connectorTools();
+			const viewed = await viewedRequest;
+			signal.throwIfAborted();
+			// The run's admission (contract §6, M1b-4b-3), before any provider work: its binary, bundle, reasoning policy
+			// and exact tool catalog. The opening binds its context to it once composed.
+			let admitted: Record<string, unknown> | undefined;
+			// The run's opening (§5.4), once it is admitted and before the agent's thread starts. The settle builds the lines
+			// `[0, T)` is missing; the primary view and branches are then composed from the tree as stored. The context is
+			// hashed, released and bound to the admission, and becomes the agent's input and developer instructions.
+			const opening = async (openingSignal: AbortSignal): Promise<CloudCodexOpening> => {
+				stage = "prompt-composition";
+				let composed: CloudCodexOpening & { contextSha256: string; contextBytes: number };
+				try {
+					const wait = lines && viewed ? await lines.settle(openingSignal) : { waitMs: 0, waitedLines: 0 };
+					// A failed view keeps the history. Zoom stays: the catalog was admitted with it.
+					const view = viewed
+						? await memoryComposeView(this.#paths, binding, openingSignal).catch((error) => {
+								if (!openingSignal.aborted)
+									console.error(
+										`Memory view was not composed (${cloudRuntimeErrorCategory(error, openingSignal)})`,
+									);
+								return null;
+							})
+						: null;
+					openingSignal.throwIfAborted();
+					const head = composeCloudAgentHead(context, vision, memory);
+					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
+					const views = view?.views ?? "";
+					const prompt = composeCloudNativeCompanyPrompt(
+						context,
+						wake,
+						initialPresence,
+						memory,
+						openWork,
+						skills,
+						proposals?.context,
+						head,
+						view?.tree,
+					);
+					// The run's context is its head and views (in the developer instructions) and its context message, hashed
+					// together.
+					const text = `${head.text}\n${views}\n${prompt}`;
+					const contextBytes = Buffer.byteLength(text);
+					composition.finish("succeeded", { outputBytes: contextBytes });
+					const contextSha256 = createHash("sha256").update(text).digest("hex");
+					// What composition read from the folder is released under the composed context before any model request,
+					// with the paths of the proposals it shows (P40b).
+					await notebooks.releaseComposition(contextSha256, openingSignal, proposals?.reads);
+					// So are the summary lines the view and the branches show, and the run's first request is recorded with
+					// the settle's wait (§13). A failed release fails the run. A failed record leaves it without the answer,
+					// the view reference (W4a-1), which is for the workers the run dispatches (W4b).
+					if (view)
+						await memoryCommitView(
+							this.#paths,
+							binding,
+							view,
+							{
+								contextSha256,
+								headBytes: Buffer.byteLength(head.text),
+								stablePrefixSha256: createHash("sha256")
+									.update(cloudNativeStableInstructions(context, { head: head.text, views }))
+									.digest("hex"),
+							},
+							wait,
+							openingSignal,
+						);
+					composed = {
+						prompt,
+						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
+						// Every request of a run with the view shares its conversation's cache key (§6.2).
+						...(view && context.identity.sessionId !== null
+							? {
+									composeContext: memoryCacheKeyComposer(
+										memoryPromptCacheKey({
+											payerLoginConnectionId: context.identity.providerConnectionId,
+											agentId: context.identity.staffAgentId,
+											conversationId: context.identity.sessionId,
+										}),
+									),
+								}
+							: {}),
 						contextSha256,
-						headBytes: Buffer.byteLength(head.text),
-						stablePrefixSha256: createHash("sha256")
-							.update(cloudNativeStableInstructions(context, { head: head.text, views }))
-							.digest("hex"),
-					},
-					signal,
+						contextBytes,
+					};
+				} catch (error) {
+					throw tagNativeRuntimeFailure(error, stage, cloudRuntimeErrorCategory(error, openingSignal));
+				}
+				stage = "native-tools";
+				const { contextSha256, contextBytes, ...input } = composed;
+				// The context is bound once, and the call writes the run's start: a lost answer is not asked again.
+				const admission = admitted;
+				if (!admission) throw new Error("Native execution admission was not confirmed");
+				const started = await cloudToolRequest(
+					(requestSignal) =>
+						this.#paths.call(
+							"qorpera_bind_native_company_context",
+							{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
+							requestSignal,
+						),
+					openingSignal,
 				);
+				confirmNativeAdmission(started, {
+					...admission,
+					schema: "qorpera.native-company-execution-start/v1",
+					contextSha256,
+					contextBytes,
+				});
+				return input;
+			};
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -609,6 +710,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				stage = "native-tools";
 				// Whether the run had a machine, whose changes are noted after it (Interfaces I10, below).
 				let machine = false;
+				// The run's own offline commands (F3 4d): its computer tools add each one it starts, and its action review
+				// lets input to them through as it lets their start through.
+				const offlineShells = new Set<string>();
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -616,21 +720,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					controlPlane: this.#control,
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
-						const started = await this.#paths.call(
-							"qorpera_begin_native_company_execution_v2",
+						const answer = await this.#paths.call(
+							"qorpera_begin_native_company_execution_v3",
 							{
 								p_binding: binding,
 								p_binary_sha256: this.#sha256,
 								p_runtime_bundle_sha256: context.identity.runtimeBundleSha256,
 								p_reasoning_policy_sha256: context.identity.reasoningPolicySha256,
 								p_tool_catalog_text: toolCatalogText,
-								p_context_sha256: contextSha256,
-								p_context_bytes: contextBytes,
 							},
 							requestSignal,
 						);
-						const expected = {
-							schema: "qorpera.native-company-execution-start/v1",
+						const admission = {
 							runId: binding.runId,
 							jobId: binding.jobId,
 							leaseId: binding.leaseId,
@@ -639,40 +740,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							reasoningEffort: context.identity.reasoningEffort,
 							reasoningPolicySha256: context.identity.reasoningPolicySha256,
 							toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
-							contextSha256,
-							contextBytes,
 						};
-						if (
-							!started ||
-							typeof started !== "object" ||
-							Array.isArray(started) ||
-							Object.keys(started).length !== Object.keys(expected).length ||
-							Object.entries(expected).some(
-								([key, value]) => (started as Record<string, unknown>)[key] !== value,
-							)
-						)
-							throw new Error("Native execution admission was not confirmed");
+						confirmNativeAdmission(answer, {
+							schema: "qorpera.native-company-execution-admission/v1",
+							...admission,
+						});
+						admitted = admission;
 					},
+					opening,
+					...(lines && viewed ? { compactor, closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					command: this.#command,
 					binarySha256: this.#sha256,
 					identityRoot,
 					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
-					prompt,
-					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
-					// Every request of a run with the view shares its conversation's cache key (§6.2).
-					...(view && context.identity.sessionId !== null
-						? {
-								composeContext: memoryCacheKeyComposer(
-									memoryPromptCacheKey({
-										payerLoginConnectionId: context.identity.providerConnectionId,
-										agentId: context.identity.staffAgentId,
-										conversationId: context.identity.sessionId,
-									}),
-								),
-							}
-						: {}),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
@@ -689,6 +771,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							request: cloudActionReviewRequest(context, wake),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							offlineShells,
 							facts: {
 								coworkers: new Map(context.coworkers.map((coworker) => [coworker.id, coworker.name])),
 								timeZone: wake.time.timeZone,
@@ -702,7 +785,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							)
 						)
 							throw new Error("Cloud context identity changed before execution");
-						const computer = await this.#computerSession?.(run, operations);
+						const computer = await this.#computerSession?.(run, operations, { offlineShells });
 						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
 						// too: it only reads.
@@ -718,6 +801,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						const work = cloudWorkerToolFilter(wake);
 						return {
 							captures: computer?.captures,
+							folderReports: computer?.folderReports,
 							tools: [
 								...(computer?.tools ?? []),
 								// A run's file tools act through the folder core with its own authority (P19), and so do the
@@ -741,7 +825,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										]
 									: []),
 								cloudCompanyContextTool(context, binding, this.#paths),
-								...(view ? [memoryZoomTool(binding, identity, this.#paths)] : []),
+								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 								// A worker has no outbound effects: no mouth, no connectors.
 								...(this.#secretBroker && !work.isWorker
 									? cloudSecretTools({
@@ -912,7 +996,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								// Listed only for a run that may raise their cards (composeContext).
 								...(proposals ? proposals.tools(operations) : []),
 							],
-							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
+							assertContext: (requestSignal, timeoutMs) =>
+								gateway.assertReadableContext(requestSignal, timeoutMs),
 							recordContextView: (frame, outputs, requestSignal) =>
 								gateway.recordContextView(frame, outputs, requestSignal),
 							fenceContextView: (frame, outputs, requestSignal) =>
@@ -966,10 +1051,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const kind = nativeProviderUsageSignal(error);
 		if (!kind) return;
 		try {
+			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(
 				"qorpera_record_provider_usage_signal",
 				{ p_binding: binding, p_signal_kind: kind },
 				AbortSignal.timeout(10_000),
+				10_000,
 			);
 		} catch {
 			console.error(`Provider usage signal was not recorded (${kind})`);

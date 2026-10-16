@@ -419,14 +419,10 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_folder_presence_routes(%L, %L, false)',
 		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']),
 		'42501', 'Company File authority is unavailable');
-	-- A member's shared exports: no company fence, and nothing listed yet.
-	perform pg_temp.path_claims('authenticated', c_member);
-	s := public.qorpera_list_member_file_exports(c_env);
-	if s -> 'items' <> '[]'::jsonb then raise exception 'Member exports: %', s; end if;
-	perform pg_temp.raises_like(format('select public.qorpera_member_file_export_source(%L, %L)', c_env,
-		jsonb_build_object('realm','object_storage','assetId',extensions.gen_random_uuid(),'sha256',repeat('a',64))), '42501',
-		'Completed shared export required');
-	perform pg_temp.path_claims('service_role');
+	-- A member's shared exports are gone (legacy sweep E3, 20260930450000); the member actor is in 6.
+	if to_regprocedure('public.qorpera_list_member_file_exports(uuid,uuid,integer)') is not null
+		or to_regprocedure('public.qorpera_member_file_export_source(uuid,jsonb)') is not null then
+		raise exception 'A member''s shared export functions must be gone'; end if;
 end $$;
 
 -- 8. The run context: the company name from the folder index and F2's agent folders (F2-1b, 20260929440000), whose
@@ -472,9 +468,9 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office's export and the self-approval until C1c-3 (machine start serves folder-v2 since C1c-3f, test
--- 824; an agent's office start and its descriptor since C1c-3l, test 890; an agent's screenshot capture since P06d, test
--- 910); the
+-- 9. Refusals: the shared file export's source and the self-approval until C1c-3 (machine start serves folder-v2 since
+-- C1c-3f, test 824; an agent's office start and its descriptor since C1c-3l, test 890; an agent's screenshot capture
+-- since P06d, test 910; legacy sweep D3, 20260930332000, dropped the office's export); the
 -- runner broker's send, direct receipts
 -- and transcript append until C3 (the native send, the interaction request and the tool operation receipts have folder
 -- bodies since C1c-2b, tests 650 and 652). The same calls on a snapshot-v1 company are not refused as folder-v2.
@@ -485,8 +481,6 @@ declare
 begin
 	foreach v in array array[b, s] loop
 		foreach v_sql in array array[
-			format('select public.qorpera_native_office_file_export(%L, %L, %L, %L, %L, %L, %L, %L)', v, '{}', '{}', '{}',
-				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_shared_file_export_source(%L, %L)', v, '{}'),
 			format('select public.qorpera_self_approve_organization_proposal(%L, %L)', v, extensions.gen_random_uuid()),
 			format('select public.qorpera_send_runner_agent_message(%L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'runnerId', repeat('f', 64),

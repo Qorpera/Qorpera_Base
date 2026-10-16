@@ -20,6 +20,8 @@ const OPTIONS = {
 	"--target-package": "targetPackage",
 	"--installation-receipt": "installationReceipt",
 	"--mount-template": "mountTemplate",
+	// Only for a base that carries the company folder's mount template (F3 4e-2).
+	"--folder-mount-template": "folderMountTemplate",
 	"--tools": "tools",
 	"--reset-plan": "resetPlan",
 	"--policy": "policy",
@@ -44,7 +46,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
 	args[key] = process.argv[i + 1];
 }
 for (const key of Object.values(OPTIONS))
-	if (!(key in args) && !["testedAt", "repository"].includes(key)) throw new Error(`Missing ${key}`);
+	if (!(key in args) && !["testedAt", "repository", "folderMountTemplate"].includes(key)) throw new Error(`Missing ${key}`);
 const root = resolve(args.repository ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
 const SHA = /^[0-9a-f]{64}$/, COMMIT = /^[0-9a-f]{40}$/;
 const hash = (b) => createHash("sha256").update(b).digest("hex");
@@ -103,6 +105,7 @@ try {
 		target: await readFile(join(args.targetPackage, "manifest.json")),
 		baseInstallationReceipt: await readFile(args.installationReceipt),
 		baseMountTemplate: await readFile(args.mountTemplate),
+		...(args.folderMountTemplate && { baseFolderMountTemplate: await readFile(args.folderMountTemplate) }),
 	};
 	const policy = await readJson(args.policy);
 	if (hash(manifests.base) !== policy.image.guestPackageManifestSha256) throw new Error("Base manifest is not the policy's enrolled image package");
@@ -205,6 +208,7 @@ try {
 		artifactRoot: `${laneRoot}/artifacts`,
 		baseInstallationReceiptPath: `${laneRoot}/base-installation-receipt.json`,
 		baseMountTemplatePath: `${laneRoot}/base-mount-template`,
+		...(args.folderMountTemplate && { baseFolderMountTemplatePath: `${laneRoot}/base-folder-mount-template` }),
 		bootstrapToolPath: `${laneRoot}/tools/${tools.bootstrap.file}`,
 		measurementToolPath: `${laneRoot}/tools/${tools.measure.file}`,
 		trust,

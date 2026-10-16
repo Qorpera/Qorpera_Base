@@ -160,6 +160,19 @@ Then on node 1 (root), with the file copied to the node:
 
 ```bash
 install -o root -g root -m 0444 observer-v173.cjs /opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs
+cd / && runuser -u qn25-phql-observer -- /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/node --jitless \
+	--disable-proto=throw --disallow-code-generation-from-strings \
+	/opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs --health-probe
+sha256sum /opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs
+```
+
+The probe is the node health loop's child, run by hand the way the observer runs it (from v180 the loop runs its own
+file this way; before, it ran the first installation's `/opt/qorpera/node-observer/qorpera-node-observer.cjs`, which
+these observers do not use, so every sample was `COLLECTION_UNCONFIRMED`). It takes about a second and prints one
+JSON line with a `bootId`, `"errors":[]` and `observerPackageSha256` equal to the `sha256sum`. If it prints
+`NODE_HEALTH_COLLECTION_UNCONFIRMED` and a code instead, stop here: nothing has changed yet. Then:
+
+```bash
 cat > /etc/systemd/system/qorpera-native25-phql-observer.service.d/zzzzzzzzz-observer-v173-a1.conf <<'EOF'
 [Service]
 ExecStart=
@@ -182,7 +195,10 @@ Check, per node, within 30 seconds of the restart:
   `{"event":"node_agent_exit","state":"healthy"}` (and `node_inventory` still `ready`);
 - `select healthy, problem_count, now() - observed_at as age, now() - checked_at as check_age from public.qorpera_runtime_node_agent_exit where node_id = '<node id>';`
   shows `true`, `0` and both ages under 20 seconds (the observer posts every 5 seconds, the exit checks every 10);
-- `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`.
+- `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`;
+- the node's health (`node_health` in the log says `reported` for an unconfirmed sample too, so read the row):
+  `select now() - h.observed_at as age, h.observation->>'bootId' is not null as measured, h.observation->'errors' as errors, h.observation->>'observerPackageSha256' as software from public.qorpera_runtime_node_health_latest l join public.qorpera_runtime_node_health_receipts h using (node_id, observation_id) where l.node_id = '<node id>';`
+  shows an age under 20 seconds, `true`, `[]` and the `sha256sum` above.
 
 Undo (back to the untouched `observer-nodeNN-v145.cjs`; nothing reads the health yet):
 

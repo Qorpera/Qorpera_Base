@@ -149,6 +149,31 @@ it("composes the notebook and the skill catalog through the folder, and releases
 	).rejects.toThrow("inside a tool call");
 });
 
+it("never follows a link: reading one is not text, a listing leaves it out, and a SKILL.md that is one is not loaded", async () => {
+	const f = await fixture({
+		files: { "skills/invoices/SKILL.md": "---\nname: invoices\ndescription: How to send an invoice\n---\nSteps.\n" },
+		links: {
+			"skills/latest": "invoices",
+			"skills/invoices/NOTES.md": "SKILL.md",
+			"skills/reports/SKILL.md": "../invoices/SKILL.md",
+		},
+	});
+	const signal = new AbortController().signal;
+	const { composition } = f.notebooks;
+	const link = composition.readTrusted("skills/invoices/NOTES.md", signal);
+	await expect(link).rejects.toThrow("Company folder path is a link");
+	expect((await composition.listTrusted("skills", signal)).map((entry) => entry.path)).toEqual([
+		"skills/invoices",
+		"skills/reports",
+	]);
+	// The catalog names a skill whose SKILL.md is a link as one it cannot read, never the file the link names.
+	const skills = await composeCloudAgentSkills(composition, f.identity, signal, PLACE);
+	expect(skills.company.skills).toEqual([
+		{ name: "invoices", description: "How to send an invoice" },
+		{ name: "reports", problem: "unreadable" },
+	]);
+});
+
 it("creates, reads and deletes the agent's own skill through the folder core; the deletion records its review", async () => {
 	const f = await fixture({ folders: ["agents/nora/skills"] });
 	const path = "agents/nora/skills/call-the-bank/SKILL.md";
