@@ -53,6 +53,8 @@ class FakeHost {
 	mountAfter = 1;
 	mountSource = "fuse.qorpera qorpera-company";
 	cleanStatus = 0;
+	/** A command whose exec never ends: it stays pending until its signal aborts. */
+	stall: string | undefined;
 	publishes: ({ status: number; stdout?: string } | "lost")[] = [];
 	/** A job's own command. */
 	job: (argv: readonly string[], signal: AbortSignal) => Promise<LxdExecPipeResult> = async () => output(0, "ok");
@@ -104,6 +106,10 @@ class FakeLxd implements LxdInstanceExecPipeClient {
 		const stdin = request.stdin instanceof Uint8Array ? Buffer.from(request.stdin).toString("utf8") : undefined;
 		const label = labelOf(request.command);
 		this.execs.push({ project, name, label, request, ...(stdin === undefined ? {} : { stdin }) });
+		if (host.stall === label)
+			return new Promise((_resolve, reject) =>
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+			);
 		switch (label) {
 			case "clean":
 				if (host.cleanStatus !== 0) return output(host.cleanStatus, "", "umount: /company: target is busy");
@@ -350,13 +356,18 @@ describe("CodeHostJobs", () => {
 		expect(control.methods()).toEqual(["qorpera_folder_view_open", "qorpera_folder_view_close"]);
 	});
 
-	it("fails the job when the node does not save every path, and asks again only when no answer came", async () => {
+	it("fails the job when the node does not save every path or its answer is lost, and asks again only while paths wait", async () => {
 		const conflict = report([
 			{ path: "code/acme/app/repo.git/packed-refs", outcome: "saved" },
 			{ path: "code/acme/app/repo.git/refs/heads/main", outcome: "conflict" },
 		]);
+		const waiting = report([
+			{ path: "code/acme/app/repo.git/packed-refs", outcome: "saved" },
+			{ path: "code/acme/app/repo.git/HEAD", outcome: "waiting" },
+		]);
 		const cases: {
 			publishes: FakeHost["publishes"];
+			stall?: boolean;
 			code?: string;
 			detail?: string;
 			count: number;
@@ -379,17 +390,52 @@ describe("CodeHostJobs", () => {
 				count: 1,
 			},
 			{ publishes: [{ status: 3 }], code: "CODE_HOST_VIEW_CLOSED", count: 1 },
+			// A lost answer is never asked again: its boundary may have settled a conflict, and the next publish would
+			// find nothing pending and exit 0.
+			...(
+				[
+					{ status: 1 },
+					"lost",
+					{ status: 0, stdout: "not json\n" },
+					{ status: 0, stdout: conflict },
+					{ status: 4, stdout: saved() },
+					{ status: 2, stdout: saved() },
+				] satisfies FakeHost["publishes"]
+			).map((first) => ({
+				publishes: [first, { status: 0, stdout: report([]) }],
+				code: "CODE_HOST_PUBLISH_UNANSWERED",
+				detail: "the node did not answer the publish",
+				count: 1,
+			})),
+			// The same for a publish that never ends: its deadline is the end.
+			{ publishes: [], stall: true, code: "CODE_HOST_PUBLISH_UNANSWERED", count: 1, waitMs: 50 },
+			// A whole report whose paths wait is asked again, until they are saved or the deadline.
+			{ publishes: [{ status: 1, stdout: waiting }], count: 2 },
 			{
-				publishes: [{ status: 1 }, "lost", { status: 0, stdout: "not json\n" }, { status: 0, stdout: saved() }],
-				count: 4,
+				publishes: [
+					{ status: 1, stdout: saved() },
+					{ status: 1, stdout: waiting },
+				],
+				count: 3,
 			},
 			{
-				publishes: [{ status: 1, stdout: report([{ path: "code/acme/app/repo.git/HEAD", outcome: "waiting" }]) }],
+				publishes: [
+					{ status: 1, stdout: waiting },
+					{ status: 1, stdout: conflict },
+				],
+				code: "CODE_HOST_PUBLISH_REFUSED",
 				count: 2,
 			},
 			{
-				publishes: Array.from({ length: 1000 }, () => ({ status: 1 })),
+				publishes: [{ status: 1, stdout: waiting }, "lost", { status: 0, stdout: report([]) }],
 				code: "CODE_HOST_PUBLISH_UNANSWERED",
+				detail: "the node did not answer the publish",
+				count: 2,
+			},
+			{
+				publishes: Array.from({ length: 1000 }, () => ({ status: 1, stdout: waiting })),
+				code: "CODE_HOST_PUBLISH_UNANSWERED",
+				detail: "code/acme/app/repo.git/HEAD: waiting",
 				count: -1,
 				waitMs: 100,
 			},
@@ -397,6 +443,7 @@ describe("CodeHostJobs", () => {
 		for (const test of cases) {
 			const { lxd, control, jobs, host } = setup({ publishWaitMs: test.waitMs ?? 10_000 });
 			host.publishes = [...test.publishes];
+			if (test.stall) host.stall = "publish";
 			const running = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
 			if (test.code) {
 				const error = await running.catch((error: unknown) => error);
@@ -405,6 +452,7 @@ describe("CodeHostJobs", () => {
 					expect((error as { detail: string }).detail).toBe(
 						test.detail ?? "code/acme/app/repo.git/refs/heads/main: conflict",
 					);
+				else if (test.detail) expect((error as { detail: string }).detail).toBe(test.detail);
 			} else await expect(running).resolves.toBe("ok");
 			const publishes = lxd.labels().filter((label) => label === "publish").length;
 			if (test.count >= 0) expect(publishes).toBe(test.count);
@@ -441,6 +489,37 @@ describe("CodeHostJobs", () => {
 		const { jobs, host } = setup();
 		host.mountSource = "fuse qorpera-company";
 		await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+	});
+
+	it("bounds the view file's write, the folder program's start and each look at its mount by mountWaitMs", async () => {
+		for (const stall of ["view", "start", "state"]) {
+			const { lxd, control, jobs, host } = setup({ mountWaitMs: 30 });
+			host.stall = stall;
+			let ran = false;
+			await expect(
+				jobs.run(COMPANY, ENVIRONMENT, signal(), async () => {
+					ran = true;
+				}),
+			).rejects.toMatchObject({ name: "CodeHostJobFailure", code: "CODE_HOST_FOLDER_UNAVAILABLE" });
+			expect(ran).toBe(false);
+			expect(lxd.labels().filter((label) => label === stall)).toHaveLength(1);
+			expect(lxd.labels()).not.toContain("publish");
+			expect(lxd.labels().at(-1)).toBe("clean");
+			expect(control.methods()).toEqual(["qorpera_folder_view_open", "qorpera_folder_view_close"]);
+			// The next job gets the host.
+			host.stall = undefined;
+			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+		}
+		// A run cancelled meanwhile fails with its own reason.
+		const { lxd, jobs, host } = setup({ mountWaitMs: 10_000 });
+		host.stall = "state";
+		const controller = new AbortController();
+		const running = jobs.run(COMPANY, ENVIRONMENT, controller.signal, oneCommand);
+		await until(() => lxd.labels().includes("state"));
+		const reason = new Error("the run stopped");
+		controller.abort(reason);
+		await expect(running).rejects.toBe(reason);
+		expect(lxd.labels().at(-1)).toBe("clean");
 	});
 
 	it("opens no view on a code host it cannot clean", async () => {
@@ -715,7 +794,7 @@ describe("CodeHostJobs", () => {
 });
 
 describe("codeHostPublishAnswer", () => {
-	it("takes saved only from exit 0 with every path saved, and refused from an answered report that says so", () => {
+	it("takes saved only from exit 0 with every path saved, refused from an answered report that says so, and waiting from a whole report at exit 1 whose paths wait", () => {
 		const conflict = report([{ path: "code/a/b/repo.git/HEAD", outcome: "conflict" }]);
 		const waiting = report([{ path: "code/a/b/repo.git/HEAD", outcome: "waiting" }]);
 		const cases: [number, string, string][] = [
@@ -729,8 +808,12 @@ describe("codeHostPublishAnswer", () => {
 			[4, report([], { refused: "UNPROVEN_READS" }), "refused"],
 			[4, "", "unanswered"],
 			[1, "", "unanswered"],
-			[1, saved(), "unanswered"],
-			[1, waiting, "unanswered"],
+			[1, "not json\n", "unanswered"],
+			[1, saved(), "waiting"],
+			[1, report([]), "waiting"],
+			[1, waiting, "waiting"],
+			[1, report([{ path: "x", outcome: "waiting_for_review" }]), "refused"],
+			[1, report([{ path: "x", outcome: "waiting" }], { refused: "unproven" }), "refused"],
 			[1, conflict, "refused"],
 			[1, report([{ path: "x", outcome: "denied" }]), "refused"],
 			[3, "", "closed"],
@@ -753,6 +836,10 @@ describe("codeHostPublishAnswer", () => {
 		expect(codeHostPublishAnswer(4, Buffer.from(many))).toEqual({
 			answer: "refused",
 			detail: `${Array.from({ length: 20 }, (_, i) => `p${i}: not_applied`).join(", ")}, and 5 more`,
+		});
+		expect(codeHostPublishAnswer(1, Buffer.from(waiting))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: waiting",
 		});
 	});
 });
