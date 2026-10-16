@@ -183,11 +183,11 @@ whose `revisit_at` has passed. A step that leaves an erasure `waiting` sets `rev
 is on `(state, revisit_at, requested_at) where done_at is null`. For each candidate in turn: its company
 row `FOR KEY SHARE SKIP LOCKED` (the purge's `FOR UPDATE` makes it skip), then the erasure row `FOR UPDATE SKIP
 LOCKED`, re-read; on a skip it goes to the next candidate (the skipped company's `KEY SHARE` is held to the end of the
-step, which is harmless). pg_cron runs it every 5 seconds (`'5 seconds'`, one `select
+step, which is harmless). pg_cron runs it every 30 seconds (`'30 seconds'` since 20260930483000, every 5 seconds before; one `select
 public.qorpera_folder_erasure_step(1000, 1000, 2000)` per tick; no procedure, since one that commits can be neither
 security definer nor carry `set`). Like the repo's other cron functions it checks no JWT role and is revoked from
 `public, anon, authenticated, service_role` (20260930002600:141-197). Seconds schedules need pg_cron 1.5 or later
-(checked in production before the cut). It writes about 17,000 `cron.job_run_details` rows a day; P18a's migration
+(checked in production before the cut). It writes about 2,900 `cron.job_run_details` rows a day (17,000 at 5 seconds); P18a's migration
 schedules their cleanup (a daily delete of this job's rows older than a day), since `cron.log_run` is cluster-wide.
 Both jobs follow the repo's optional-pg_cron pattern (20260930002600:199-225), so the migration applies where pg_cron
 is absent. A large agent folder (50,000 versions, 1,000 per
