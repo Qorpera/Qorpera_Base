@@ -5,7 +5,17 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { ALL_STARTED, beside, describePlan, planChanged, planScript, RUNNER_ORCHESTRATOR_WAITING, RUNTIME_WAITING, STEPS } from "./run-on-node-plan.mjs";
+import {
+	ALL_STARTED,
+	beside,
+	describePlan,
+	planChanged,
+	planScript,
+	RUNNER_ORCHESTRATOR_WAITING,
+	RUNTIME_WAITING,
+	STEPS,
+	splitPlan,
+} from "./run-on-node-plan.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -191,6 +201,39 @@ test("shared configuration and unknown paths run every step", () => {
 	assert.equal(unknown.full, true);
 	assert.match(unknown.reason, /no rule knows: new-top-level\/tool\.ts/);
 	assert.match(describePlan(unknown, "origin/master")[0], /every step/);
+});
+
+test("in parts, every step runs in exactly one part, the heaviest work first to the lightest part, in plan order", () => {
+	const groupNames = (groups) => groups.map((group) => group.steps.map((step) => step.name));
+	// The full plan in two parts: runner-orchestrator (588 s × 3 cores) outweighs every other step together, so it runs
+	// alone, without the build; the other part has all the rest, the build and the alone checks.
+	const full = planChanged(["package-lock.json"]).steps;
+	const two = splitPlan(full, 2);
+	assert.deepEqual(groupNames(two), [
+		["runner-orchestrator"],
+		full.map((step) => step.name).filter((name) => name !== "runner-orchestrator"),
+	]);
+	assert.deepEqual(two.map((group) => group.build), [false, true]);
+	assert.deepEqual(groupNames(splitPlan(full, 1)), [full.map((step) => step.name)]);
+	assert.equal(splitPlan(full, 1)[0].build, true);
+	for (const parts of [2, 3, 5]) {
+		const groups = splitPlan(full, parts);
+		assert.equal(groups.length, parts);
+		assert.ok(groups.every((group) => group.steps.length > 0), String(parts));
+		assert.deepEqual(groups.flatMap((group) => group.steps.map((step) => step.name)).sort(), full.map((step) => step.name).sort());
+		for (const group of groups)
+			assert.deepEqual(group.steps, full.filter((step) => group.steps.includes(step)), "plan order");
+	}
+	// Work is seconds × cores; at equal work a step goes to the part with the fewest steps, so steps without a measured
+	// time spread over the parts. Fewer steps than parts make one part per step.
+	const steps = [{ name: "a", seconds: 50, cores: 2 }, { name: "b", seconds: 100, build: true }, { name: "c" }, { name: "d" }, { name: "e" }];
+	assert.deepEqual(groupNames(splitPlan(steps, 2)), [
+		["a", "c", "e"],
+		["b", "d"],
+	]);
+	assert.deepEqual(splitPlan(steps, 2).map((group) => group.build), [false, true]);
+	assert.deepEqual(groupNames(splitPlan(steps.slice(2), 2)), [["c", "e"], ["d"]]);
+	assert.deepEqual(groupNames(splitPlan(steps.slice(0, 2), 5)), [["a"], ["b"]]);
 });
 
 test("every step runs, a failing command fails its step, and the exit code says so", () => {

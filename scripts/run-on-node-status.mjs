@@ -31,10 +31,15 @@ export function statusDecision({ suite, dirty, disabled, slug, plain = true, bas
 	return { post: true, reason: null };
 }
 
-/** How a status names the machine a run used: node01 is "node 1". */
+/** How a status names the machine a run used: node01 is "node 1"; a run in parts (node02+node01) "node 2 + node 1". */
 export function machineLabel(name) {
-	const node = /^node0*([1-9][0-9]*)$/.exec(name);
-	return node ? `node ${node[1]}` : name;
+	return name
+		.split("+")
+		.map((one) => {
+			const node = /^node0*([1-9][0-9]*)$/.exec(one);
+			return node ? `node ${node[1]}` : one;
+		})
+		.join(" + ");
 }
 
 function duration(seconds) {
