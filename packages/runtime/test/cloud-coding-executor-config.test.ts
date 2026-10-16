@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import { describe, expect, it, vi } from "vitest";
+import { errorCode, logCodeHost, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
 import { codingHostWatchdogProject } from "../../../deploy/coding-worker/host-watchdog.ts";
 
 function fixture() {
@@ -346,5 +346,33 @@ describe("executor error codes", () => {
 			errorCode(Object.assign(new Error("EACCES: permission denied, open '/secret/path'"), { code: "EACCES" })),
 		).toBe("ERRNO:EACCES");
 		expect(errorCode(Object.assign(new Error("free text"), { code: "not an errno" }))).toBe("UNCLASSIFIED");
+	});
+});
+
+describe("executor code host log", () => {
+	it("logs a code host's events as they are, and its errors and its jobs' errors by their code only", () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const project = "qorpera-code-host-1";
+		const lxd = new Error("LXD request failed (500)");
+		const text = new Error("fatal: /company/code/acme/app");
+		const coded = new Error("CODE_HOST_VIEW_OPEN");
+		try {
+			logCodeHost({ event: "code-host", step: "project-made", project });
+			logCodeHost({ event: "code-host-error", step: "refused", project });
+			logCodeHost({ event: "code-host-error", step: "stop", project, error: lxd });
+			logCodeHost({ event: "code-host-view-error", step: "clean", project, error: text });
+			logCodeHost({ event: "code-host-view-error", step: "close", project, error: coded });
+			expect(log.mock.calls).toEqual([[JSON.stringify({ event: "code-host", step: "project-made", project })]]);
+			expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+				{ event: "code-host-error", step: "refused", project },
+				{ event: "code-host-error", step: "stop", project, code: "LXD request failed (500)" },
+				{ event: "code-host-view-error", step: "clean", project, code: "UNCLASSIFIED" },
+				{ event: "code-host-view-error", step: "close", project, code: "CODE_HOST_VIEW_OPEN" },
+			]);
+		} finally {
+			log.mockRestore();
+			error.mockRestore();
+		}
 	});
 });

@@ -7,7 +7,9 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "../../pa
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
-import { type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
+import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
+import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
+import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingFolderControl } from "../../packages/runner-orchestrator/src/coding-folder-control.ts";
 import { CodingFolderViews } from "../../packages/runner-orchestrator/src/coding-folder-views.ts";
@@ -61,7 +63,9 @@ interface Config {
 	codeHost: Readonly<CodeHostPolicy> | null;
 	/** The folder model for coding sessions (F3 5g-6a): the guest agent and the folder program this executor pushes into
 	 * each member machine, as files on this node with their pins, and the folder service's control socket (default
-	 * /run/qorpera-folder-control/control.sock). Absent: the NAS model. */
+	 * /run/qorpera-folder-control/control.sock). Absent: the NAS model. With `codeHost` as well, each session works in
+	 * its own worktree of its company's code area on the code host (5g-6b); without, its commands start at the company
+	 * folder and a turn pushes nothing. */
 	folder: { agent: PinnedFile; program: PinnedFile; controlSocket: string | null } | null;
 }
 interface PinnedFile { path: string; sha256: string }
@@ -208,6 +212,13 @@ export function errorCode(error: unknown): string {
 	return codingErrorCode(error);
 }
 
+/** A code host's line in the executor's log, for its VM and for its jobs: an error by its code only, never as itself. */
+export function logCodeHost(event: CodeHostEvent | CodeHostViewEvent): void {
+	if (event.event === "code-host") console.log(JSON.stringify(event));
+	else console.error(JSON.stringify({ event: event.event, step: event.step, project: event.project,
+		...(event.error === undefined ? {} : { code: errorCode(event.error) }) }));
+}
+
 /** Independent Linux service: the identity host runs the model turn, this
  * service runs the repository VM, the command gateway and the Git broker. No
  * member client participates in this loop. */
@@ -225,6 +236,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const storage = createCodingNasStorage(config.storagePolicy);
 	const journalRoot = await storage.prepareControl();
 	const lxd = new LxdUnixClient();
+	const codeHosts = config.codeHost ? new LxdCodeHosts({ client: new LxdUnixClient(), policy: config.codeHost, log: logCodeHost }) : undefined;
+	// Each company's code host jobs, one at a time: its sessions' worktrees on the folder model.
+	const codeHostJobs = codeHosts ? new CodeHostJobs({ hosts: codeHosts, client: lxd, control, log: logCodeHost }) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
@@ -233,10 +247,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		folder = {
 			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: folderControl, client: lxd,
+			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs) } : {}),
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
 		};
 		// Which model this executor runs, and with what: a proof reads it from the log.
-		console.log(JSON.stringify({ event: "coding-executor-folder", agentSha256: config.folder.agent.sha256, programSha256: config.folder.program.sha256 }));
+		console.log(JSON.stringify({ event: "coding-executor-folder", agentSha256: config.folder.agent.sha256, programSha256: config.folder.program.sha256,
+			repositories: codeHostJobs ? "code-host" : "none" }));
 	}
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
@@ -270,13 +286,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
-	}) : undefined;
-	const codeHosts = config.codeHost ? new LxdCodeHosts({
-		client: new LxdUnixClient(), policy: config.codeHost,
-		log: (event) => event.event === "code-host-error"
-			? console.error(JSON.stringify({ event: event.event, step: event.step, project: event.project,
-				...(event.error === undefined ? {} : { code: errorCode(event.error) }) }))
-			: console.log(JSON.stringify(event)),
 	}) : undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
