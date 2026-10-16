@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { isUuid } from "@qorpera/contracts";
+import { type CloudCodingRepository, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { CodeHostLease, LxdCodeHosts } from "./code-host.ts";
 import {
 	type CodeHostCommandResult,
@@ -8,7 +8,9 @@ import {
 	CodeHostJobFailure,
 	type CodeHostLayout,
 	type CodeHostShell,
+	exportCodeBranch,
 } from "./code-host-jobs.ts";
+import { attachCodeSession, type CodeAreaBroker, type CodeSessionAttached } from "./code-host-seed.ts";
 import type { LxdInstanceExecPipeClient } from "./lxd-client.ts";
 
 /** The code host's views (5e-3b, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"). Every job gets its own `code_host`
@@ -159,6 +161,16 @@ export function lxdCodeHostShell(
 	};
 }
 
+/** A coding session's place on its company's code host (5e-4). */
+export interface CodeHostSession {
+	companyId: string;
+	environmentId: string;
+	repository: CloudCodingRepository;
+	workerId: string;
+	/** The base branch's commit the session started from (`resolveCloudCodingBase`). */
+	baseSha: string;
+}
+
 /** The jobs of the executor's code hosts: `run` gives a job its company's code host, with the company folder mounted
  * through a view of its own, and the core's gc block on that view. What a job that ends well wrote is published (all
  * saved, or the job fails) before it answers; a job that fails or is cancelled publishes nothing. The mount and view
@@ -207,6 +219,27 @@ export class CodeHostJobs {
 		} finally {
 			done();
 		}
+	}
+
+	/** A coding session's worktree on the code area, seeded first when needed, in one job (5e-4, `attachCodeSession`). */
+	async attach(value: CodeHostSession, broker: CodeAreaBroker, signal: AbortSignal): Promise<CodeSessionAttached> {
+		const { companyId, environmentId, repository, workerId, baseSha } = sessionOf(value);
+		return await this.run(companyId, environmentId, signal, (job) =>
+			attachCodeSession(job, { repository, workerId, baseSha }, broker),
+		);
+	}
+
+	/** The session's submitted commit as a bundle for the broker's push, or none when it has nothing beyond the
+	 * session's base (`exportCodeBranch`). */
+	async export(
+		value: CodeHostSession & { headSha: string },
+		options: { maximumBytes: number },
+		signal: AbortSignal,
+	): Promise<{ headSha: string; bundle: Buffer | null }> {
+		const { companyId, environmentId, repository, workerId, baseSha, headSha } = sessionOf(value, ["headSha"]);
+		return await this.run(companyId, environmentId, signal, (job) =>
+			exportCodeBranch(job, { repository, workerId, baseSha, headSha }, options),
+		);
 	}
 
 	/** A company's jobs, one at a time, in the order they came. One that stops waiting leaves its place. */
@@ -451,6 +484,15 @@ export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostP
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const SESSION_KEYS = ["baseSha", "companyId", "environmentId", "repository", "workerId"];
+
+/** A session's fields and no others; `run` and the jobs check each one. */
+function sessionOf<T extends CodeHostSession>(value: T, extra: readonly string[] = []): T {
+	if (!isRecord(value) || Object.keys(value).sort().join() !== [...SESSION_KEYS, ...extra].sort().join())
+		throw new Error("INVALID_CODE_HOST_JOB");
+	return { ...value, repository: parseCloudCodingRepository(value.repository) } as T;
 }
 
 function waitFor(promise: Promise<void>, signal: AbortSignal): Promise<void> {

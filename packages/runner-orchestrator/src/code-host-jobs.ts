@@ -687,6 +687,37 @@ export async function readCodeAreaBase(job: CodeHostJob, value: CloudCodingRepos
 	});
 }
 
+export interface CodeAreaState {
+	/** The base ref's commit, or null before the first seed. */
+	base: string | null;
+	/** main/ is at the base: a seed of the same base would change nothing. */
+	ready: boolean;
+	/** The commit asked about is in repo.git. */
+	holds: boolean;
+	restored: string[];
+}
+
+/** What a session's attach needs to know before it seeds: the code area's base, whether main/ is at it, and whether
+ * the session's base commit is already there. */
+export async function inspectCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; commit: string },
+): Promise<CodeAreaState> {
+	const input = closed(value, ["repository", "commit"]);
+	const repository = repositoryOf(input.repository),
+		commit = sha(input.commit);
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded) return { base: null, ready: false, holds: false, restored: run.restored };
+		const base = await run.ref(`refs/heads/${repository.baseBranch}`);
+		const ready =
+			area.main === "present" &&
+			base !== null &&
+			(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${base}\n`)) === true;
+		return { base, ready, holds: await run.isCommit(run.repo, commit), restored: run.restored };
+	});
+}
+
 export interface CodeWorktree {
 	repository: CloudCodingRepository;
 	workerId: string;
@@ -748,32 +779,62 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 export interface CodeBranchExport {
 	repository: CloudCodingRepository;
 	workerId: string;
-	branch: string;
+	/** The session's base, which GitHub holds: the bundle leaves out what it reaches. */
+	baseSha: string;
+	/** The commit the session submitted: its branch's head, or a commit the branch still reaches. */
+	headSha: string;
 }
 
-/** A complete bundle of the session's own branch and nothing else, for `coding-git.ts` (fsck, ancestry, push). */
+/** The session's submitted commit as `refs/heads/qorpera/coding/<workerId>`, without what baseSha reaches, for
+ * `coding-git.ts` (which fetches the bundle's prerequisites from GitHub, then fsck, ancestry and push); no bundle when
+ * the commit has nothing beyond baseSha, so there is nothing to push. Made in a scratch repository on the code host's
+ * disk that borrows the code area's objects: the code area gets no ref of the export's. */
 export async function exportCodeBranch(
 	job: CodeHostJob,
 	value: CodeBranchExport,
 	options: { maximumBytes: number },
-): Promise<{ headSha: string; bundle: Buffer }> {
-	const input = closed(value, ["repository", "workerId", "branch"]);
+): Promise<{ headSha: string; bundle: Buffer | null }> {
+	const input = closed(value, ["repository", "workerId", "baseSha", "headSha"]);
 	const repository = repositoryOf(input.repository),
-		workerId = workerIdOf(input.workerId);
+		workerId = workerIdOf(input.workerId),
+		baseSha = sha(input.baseSha),
+		headSha = sha(input.headSha);
 	if (!Number.isSafeInteger(options?.maximumBytes) || options.maximumBytes < 1)
 		throw new Error("INVALID_CODE_HOST_JOB");
-	if (input.branch !== `qorpera/coding/${workerId}`)
-		throw new CodeHostRefusal("CODE_HOST_EXPORT_NOT_SESSION_BRANCH", [String(input.branch)]);
-	const ref = `refs/heads/${input.branch}`;
+	const ref = `refs/heads/qorpera/coding/${workerId}`;
 	return withJob(job, repository, async (run) => {
 		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		const headSha = await run.ref(ref);
-		if (!headSha) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
-		const file = `${run.directory}/export.bundle`;
-		await run.gitOk(run.repo, ["bundle", "create", "--quiet", file, ref], "CODE_HOST_EXPORT_FAILED");
-		// The branch may have moved since it was read; the bundle must hold what was read.
-		const heads = await run.gitOk(run.repo, ["bundle", "list-heads", file], "CODE_HOST_EXPORT_FAILED");
-		if (heads.toString("utf8") !== `${headSha} ${ref}\n`) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const branch = await run.ref(ref);
+		if (!branch) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
+		if (!(await run.isCommit(run.repo, baseSha))) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+		// The branch may have moved on since the session submitted; it must still hold what was submitted.
+		if (!(await run.isCommit(run.repo, headSha))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", headSha, branch]);
+		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(held.stderr));
+		const beyond = await run.gitOk(
+			run.repo,
+			["rev-list", "--max-count=1", headSha, `^${baseSha}`],
+			"CODE_HOST_EXPORT_FAILED",
+		);
+		if (!beyond.length) return { headSha, bundle: null };
+		const scratch = `${run.directory}/export.git`,
+			file = `${run.directory}/export.bundle`;
+		await run.gitOk(
+			scratch,
+			["init", "--quiet", "--bare", "--template=", "--ref-format=files", scratch],
+			"CODE_HOST_EXPORT_FAILED",
+		);
+		const borrowed = await run.sh('printf "%s\\n" "$2" >"$1"', [
+			`${scratch}/objects/info/alternates`,
+			`${run.repo}/objects`,
+		]);
+		if (borrowed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(borrowed.stderr));
+		await run.gitOk(scratch, ["update-ref", "--no-deref", ref, headSha, ZERO], "CODE_HOST_EXPORT_FAILED");
+		await run.gitOk(scratch, ["bundle", "create", "--quiet", file, ref, `^${baseSha}`], "CODE_HOST_EXPORT_FAILED");
+		const heads = await run.gitOk(scratch, ["bundle", "list-heads", file], "CODE_HOST_EXPORT_FAILED");
+		if (heads.toString("utf8") !== `${headSha} ${ref}\n`)
+			throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", "the bundle does not hold the submitted commit");
 		const counted = await run.sh('exec wc -c <"$1"', [file]),
 			size = Number(counted.stdout.toString("utf8").trim());
 		if (counted.status !== 0 || !Number.isSafeInteger(size)) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED");

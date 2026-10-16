@@ -1,10 +1,8 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,13 +13,14 @@ import {
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
-	type CodeHostShell,
 	collectCodeGarbage,
 	exportCodeBranch,
+	inspectCodeArea,
 	readCodeAreaBase,
 	seedCodeArea,
 	withCodeCommit,
 } from "../src/code-host-jobs.ts";
+import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile),
 	roots: string[] = [];
@@ -34,41 +33,6 @@ const exists = (path: string) =>
 		() => true,
 		() => false,
 	);
-
-/** The stand-in for LXD exec: the same command as a local process, stdout capped, the end of stderr kept. */
-function localShell(log: CodeHostCommand[]): CodeHostShell {
-	return {
-		run: (command, signal) =>
-			new Promise((resolve, reject) => {
-				log.push(command);
-				const child = spawn(command.argv[0], command.argv.slice(1), {
-					cwd: command.cwd,
-					env: { ...command.env },
-					stdio: ["pipe", "pipe", "pipe"],
-					signal,
-				});
-				const out: Buffer[] = [];
-				let size = 0,
-					stderr = "";
-				child.stdout.on("data", (chunk: Buffer) => {
-					size += chunk.length;
-					if (size > command.maximumOutputBytes) {
-						child.kill("SIGKILL");
-						reject(new Error("CODE_HOST_OUTPUT_TOO_LARGE"));
-					} else out.push(chunk);
-				});
-				child.stderr.on("data", (chunk: Buffer) => {
-					stderr = (stderr + chunk.toString("utf8")).slice(-4000);
-				});
-				child.on("error", reject);
-				child.on("close", (status) => resolve({ status: status ?? 128, stdout: Buffer.concat(out), stderr }));
-				child.stdin.on("error", () => {});
-				if (command.stdin === undefined) child.stdin.end();
-				else if (command.stdin instanceof Uint8Array) child.stdin.end(command.stdin);
-				else pipeline(Readable.from(command.stdin), child.stdin).catch(() => {});
-			}),
-	};
-}
 
 async function fixture() {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "code-host-test-")));
@@ -162,6 +126,29 @@ describe("code host seed", () => {
 		expect(again).toEqual({ state: "unchanged", baseSha: second, restored: ["code/qorpera/example/main/.git"] });
 		expect(await readFile(join(c.code, "main/.git"), "utf8")).toBe(`gitdir: ${c.repo}/worktrees/main\n`);
 		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("inspects the code area: its base, main/ at it, and whether it holds a commit", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const inspect = (commit: string) => inspectCodeArea(c.job, { repository: f.repository, commit });
+		expect(await inspect(f.baseSha)).toEqual({ base: null, ready: false, holds: false, restored: [] });
+		await seedCodeArea(c.job, { repository: f.repository, baseSha: f.baseSha, bundle: await f.bundle("main") });
+		expect(await inspect(f.baseSha)).toEqual({ base: f.baseSha, ready: true, holds: true, restored: [] });
+		const second = await f.commit({ "README.md": "two\n" }, "two");
+		expect(await inspect(second)).toEqual({ base: f.baseSha, ready: true, holds: false, restored: [] });
+		await writeFile(join(c.code, "main/.git"), "gitdir: /elsewhere\n");
+		expect(await inspect(f.baseSha)).toEqual({
+			base: f.baseSha,
+			ready: true,
+			holds: true,
+			restored: ["code/qorpera/example/main/.git"],
+		});
+		await rm(join(c.code, "main"), { recursive: true });
+		expect(await inspect(f.baseSha)).toEqual({ base: f.baseSha, ready: false, holds: true, restored: [] });
+		await expect(inspectCodeArea(c.job, { repository: f.repository, commit: "main" })).rejects.toThrow(
+			"INVALID_CODE_HOST_JOB",
+		);
 	});
 
 	it("refuses a seed whose names are not NFC, naming the path, before anything reaches the folder", async () => {
@@ -388,56 +375,103 @@ describe("code host worktrees", () => {
 });
 
 describe("code host export", () => {
-	it("exports a complete bundle of the session's branch only", async () => {
+	it("exports the submitted commit without what the base reaches, and nothing for a commit with none beyond it", async () => {
 		const { f, c } = await seeded(),
 			workerId = randomUUID(),
 			tree = join(c.code, "worktrees", workerId);
 		await addCodeWorktree(c.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const input = { repository: f.repository, workerId, baseSha: f.baseSha };
+		const options = { maximumBytes: 64 * 1024 ** 2 };
+		expect(await exportCodeBranch(c.job, { ...input, headSha: f.baseSha }, options)).toEqual({
+			headSha: f.baseSha,
+			bundle: null,
+		});
 		await writeFile(join(tree, "work.txt"), "work\n");
 		await f.git(tree, "add", "work.txt");
 		await f.git(tree, "commit", "--quiet", "-m", "work");
-		const head = await f.git(tree, "rev-parse", "HEAD");
-		const branch = `qorpera/coding/${workerId}`;
-		const exported = await exportCodeBranch(
-			c.job,
-			{ repository: f.repository, workerId, branch },
-			{ maximumBytes: 64 * 1024 ** 2 },
-		);
-		expect(exported.headSha).toBe(head);
+		const submitted = await f.git(tree, "rev-parse", "HEAD");
+		// The session goes on after it submitted: the export still holds what was submitted.
+		await writeFile(join(tree, "more.txt"), "more\n");
+		await f.git(tree, "add", "more.txt");
+		await f.git(tree, "commit", "--quiet", "-m", "more");
+		const later = await f.git(tree, "rev-parse", "HEAD");
+		const branch = `refs/heads/qorpera/coding/${workerId}`;
+		const exported = await exportCodeBranch(c.job, { ...input, headSha: submitted }, options);
+		expect(exported.headSha).toBe(submitted);
+		if (!exported.bundle) throw new Error("no bundle");
 		const file = join(f.root, "export.bundle"),
 			empty = join(f.root, "empty.git");
 		await writeFile(file, exported.bundle);
 		await f.git(f.root, "init", "--quiet", "--bare", "--template=", empty);
-		expect(await f.git(empty, "bundle", "list-heads", file)).toBe(`${head} refs/heads/${branch}`);
-		await f.git(empty, "fetch", "--quiet", file, `refs/heads/${branch}:refs/heads/${branch}`);
-		expect(await f.git(empty, "rev-parse", `refs/heads/${branch}`)).toBe(head);
+		expect(await f.git(empty, "bundle", "list-heads", file)).toBe(`${submitted} ${branch}`);
+		// Thin: it needs the base, which GitHub holds, and carries nothing the base reaches.
+		expect(exported.bundle.toString("latin1")).toContain(`\n-${f.baseSha}`);
+		await expect(f.git(empty, "bundle", "verify", "--quiet", file)).rejects.toThrow();
+		await f.git(empty, "fetch", "--quiet", await bundleFile(f, "refs/heads/main"), "refs/heads/main:refs/heads/main");
+		await f.git(empty, "fetch", "--quiet", file, `${branch}:${branch}`);
+		expect(await f.git(empty, "rev-parse", branch)).toBe(submitted);
+		expect(await f.git(empty, "show", `${branch}:work.txt`)).toBe("work");
+		await expect(f.git(empty, "cat-file", "-e", later)).rejects.toThrow();
+		// The code area gets no ref of the export's, and the scratch is gone.
+		expect((await f.git(c.repo, "for-each-ref", "--format=%(refname)")).split("\n")).toEqual([
+			"refs/heads/main",
+			branch,
+		]);
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 
 		await expect(
-			exportCodeBranch(c.job, { repository: f.repository, workerId, branch }, { maximumBytes: 10 }),
+			exportCodeBranch(c.job, { ...input, headSha: submitted }, { maximumBytes: 10 }),
 		).rejects.toMatchObject({ code: "CODE_HOST_EXPORT_TOO_LARGE" });
 	});
 
-	it("refuses an export of a branch that is not the session's, a missing branch and a symbolic one", async () => {
+	it("refuses another field, a missing or symbolic branch, an unknown base, and a commit the branch no longer holds", async () => {
 		const { f, c } = await seeded(),
-			workerId = randomUUID();
+			workerId = randomUUID(),
+			tree = join(c.code, "worktrees", workerId);
+		const input = { repository: f.repository, workerId, baseSha: f.baseSha };
+		const options = { maximumBytes: 1024 ** 2 };
 		const commands = c.log.length;
-		for (const branch of ["main", `qorpera/coding/${randomUUID()}`, `qorpera/coding/${workerId}/x`])
-			await expect(
-				exportCodeBranch(c.job, { repository: f.repository, workerId, branch }, { maximumBytes: 1024 }),
-			).rejects.toMatchObject({ code: "CODE_HOST_EXPORT_NOT_SESSION_BRANCH", paths: [branch] });
+		await expect(
+			exportCodeBranch(
+				c.job,
+				{ ...input, headSha: f.baseSha, branch: `qorpera/coding/${workerId}` } as never,
+				options,
+			),
+		).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		expect(c.log).toHaveLength(commands);
-		const branch = `qorpera/coding/${workerId}`;
+		await expect(exportCodeBranch(c.job, { ...input, headSha: f.baseSha }, options)).rejects.toMatchObject({
+			code: "CODE_HOST_EXPORT_NO_BRANCH",
+		});
+
+		await addCodeWorktree(c.job, input);
+		await writeFile(join(tree, "work.txt"), "work\n");
+		await f.git(tree, "add", "work.txt");
+		await f.git(tree, "commit", "--quiet", "-m", "work");
+		const dropped = await f.git(tree, "rev-parse", "HEAD");
 		await expect(
-			exportCodeBranch(c.job, { repository: f.repository, workerId, branch }, { maximumBytes: 1024 }),
-		).rejects.toMatchObject({ code: "CODE_HOST_EXPORT_NO_BRANCH" });
+			exportCodeBranch(c.job, { ...input, baseSha: "e".repeat(40), headSha: dropped }, options),
+		).rejects.toMatchObject({ code: "CODE_HOST_BASE_UNKNOWN", paths: ["e".repeat(40)] });
+		await f.git(tree, "reset", "--quiet", "--hard", f.baseSha);
+		for (const headSha of [dropped, "f".repeat(40)])
+			await expect(exportCodeBranch(c.job, { ...input, headSha }, options)).rejects.toMatchObject({
+				code: "CODE_HOST_EXPORT_MOVED",
+				paths: [`refs/heads/qorpera/coding/${workerId}`],
+			});
+
+		const other = randomUUID();
 		await mkdir(join(c.repo, "refs/heads/qorpera/coding"), { recursive: true });
-		await writeFile(join(c.repo, "refs/heads", branch), "ref: refs/heads/main\n");
+		await writeFile(join(c.repo, "refs/heads/qorpera/coding", other), "ref: refs/heads/main\n");
 		await expect(
-			exportCodeBranch(c.job, { repository: f.repository, workerId, branch }, { maximumBytes: 1024 * 1024 }),
+			exportCodeBranch(c.job, { ...input, workerId: other, headSha: f.baseSha }, options),
 		).rejects.toMatchObject({ code: "CODE_HOST_REF_IS_SYMBOLIC" });
 	});
 });
+
+async function bundleFile(f: Awaited<ReturnType<typeof fixture>>, ...revs: string[]) {
+	const file = join(f.root, `${randomUUID()}.bundle`);
+	await writeFile(file, await f.bundle(...revs));
+	return file;
+}
 
 describe("code host gc", () => {
 	function block(answers: ({ state: "blocking"; held: number } | { state: "busy" })[]) {
@@ -584,11 +618,12 @@ describe("code host git ignores the repository's settings", () => {
 		const added = await addCodeWorktree(c.job, { repository: f.repository, workerId: other, baseSha: second });
 		expect(added).toMatchObject({ state: "added", restored: ["code/qorpera/example/repo.git/config"] });
 		expect(await readFile(join(c.code, "worktrees", other, "b.txt"), "utf8")).toBe("b\n");
-		await exportCodeBranch(
+		const exported = await exportCodeBranch(
 			c.job,
-			{ repository: f.repository, workerId, branch: `qorpera/coding/${workerId}` },
+			{ repository: f.repository, workerId: other, baseSha: f.baseSha, headSha: second },
 			{ maximumBytes: 1024 ** 2 },
 		);
+		expect(exported.bundle).not.toBeNull();
 		await collectCodeGarbage(
 			c.job,
 			{ repository: f.repository },
