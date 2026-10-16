@@ -353,6 +353,31 @@ describe("cloud-owned native tool boundary", () => {
 		expect(result.content.text).not.toContain("\ufffd");
 	});
 
+	it("cuts a webhook signing secret out of any answer, its digest included, and never grows it (E3c-2)", async () => {
+		const secret = "whsec_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op5+/=";
+		const text = `Signing secret ${secret} (reveal) whsec_short whsec_ ${"x".repeat(40)}`;
+		const cut = `Signing secret whsec_[REDACTED] (reveal) whsec_short whsec_ ${"x".repeat(40)}`;
+		const { call } = fixture({ execute: async () => ({ kind: "text", value: text }) });
+		const { result, response } = await call();
+		expect(result.content).toMatchObject({
+			text: cut,
+			originalBytes: Buffer.byteLength(cut),
+			sha256: createHash("sha256").update(cut).digest("hex"),
+			truncated: false,
+		});
+		expect(response.contentItems[0].text).not.toContain("Ab12Cd34");
+		const json = fixture({ execute: async () => ({ kind: "json", value: { page: { text: `Secret: ${secret}` } } }) });
+		const fenced = await json.call();
+		expect(fenced.result.content.text).toContain("whsec_[REDACTED]");
+		expect(fenced.response.contentItems[0].text).not.toContain("Ab12Cd34");
+		// A page made only of secrets is cut to no more bytes than it had.
+		const many = `${"whsec_0123456789 ".repeat(50_000)}`;
+		const crowded = fixture({ execute: async () => ({ kind: "text", value: many }) });
+		const { result: full } = await crowded.call();
+		expect(full.content.originalBytes).toBe(Buffer.byteLength(many));
+		expect(full.content.text).not.toContain("whsec_0123456789");
+	});
+
 	it("passes only exact host-issued results through the native fence and revalidates every replay", async () => {
 		const { call, boundary, assertActive } = fixture();
 		const { response } = await call();

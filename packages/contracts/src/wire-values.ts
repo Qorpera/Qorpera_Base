@@ -33,6 +33,11 @@ export class WireValueError extends Error {
  */
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+/** PostgreSQL's canonical lower-case UUID text, including nil and otherwise reserved version/variant bits. Use only
+ * for a storage grammar that explicitly accepts every PostgreSQL UUID (for example memory run files). This does not
+ * relax the runtime identifier rule above: admission and authority bindings still use isUuid/parseUuid. */
+export const POSTGRES_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** A UUID already in the lower case the database prints (see `UUID_PATTERN`); upper case is refused. */
 export function isUuid(value: unknown): value is string {
 	return typeof value === "string" && UUID_PATTERN.test(value);

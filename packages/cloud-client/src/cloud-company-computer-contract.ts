@@ -175,9 +175,12 @@ export class CompanyComputerActionNotStartedError extends Error {
 			// A vault_fill that cannot be opened here (company accounts A1-3): nothing was typed.
 			| "ACCOUNT_FILL_UNAVAILABLE"
 			| "ACCOUNT_FILL_UNOPENED"
-			| "ACCOUNT_FILL_EXPIRED",
+			| "ACCOUNT_FILL_EXPIRED"
+			// A vault_capture whose hook the office cannot read from the database (E3c-3): nothing was clicked.
+			| "VAULT_CAPTURE_UNAVAILABLE",
+		options?: ErrorOptions,
 	) {
-		super(message);
+		super(message, options);
 		this.name = "CompanyComputerActionNotStartedError";
 	}
 }
