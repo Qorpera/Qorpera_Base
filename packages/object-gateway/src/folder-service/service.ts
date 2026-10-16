@@ -17,7 +17,7 @@ import {
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
-import { type BoundaryPlan, type CommitUnit, type PlannedUnit, planBoundary } from "./plan.ts";
+import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
 import {
 	type BridgeInfo,
 	type ChunkPart,
@@ -2693,7 +2693,6 @@ export class FolderService {
 			settlement.keep,
 			settlement.plan.units.flatMap((u) => u.paths),
 			settlement.saved,
-			settlement.plan.units,
 		);
 	}
 
@@ -2735,14 +2734,12 @@ export class FolderService {
 		}
 	}
 
-	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. `units`:
-	 * the boundary's, for a test machine's credits. */
+	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. */
 	#settleNodes(
 		view: View,
 		keep: ReadonlySet<string>,
 		paths: readonly string[],
 		saved: ReadonlySet<string> = new Set(),
-		units: readonly PlannedUnit[] = [],
 	): void {
 		const pending = view.pending;
 		if (!pending) return;
@@ -2754,11 +2751,9 @@ export class FolderService {
 				if (!saved.has(parent)) keepAll.add(parent);
 			}
 		const before = [...pending.nodes().keys()];
-		const kept = new Set([...keepAll].filter((p) => pending.nodes().has(p)));
-		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file kept that
-		// took in a removal settling drops keeps that removal's, in the same step.
-		view.credit.kept(units, pending, kept);
-		pending.settle(kept);
+		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
+		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file or link kept
+		// keeps the removal it holds, and so that one's.
 		view.credit.prune(pending);
 		if (pending.empty) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,

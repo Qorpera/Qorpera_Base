@@ -20,6 +20,7 @@ import {
 	FakeUploads,
 	folder,
 	hashOf,
+	link,
 	MEMBER,
 	OFFICE,
 	OFFICE_PROJECT,
@@ -78,8 +79,9 @@ async function company() {
 		service.stop();
 		await rm(root, { recursive: true, force: true });
 	});
-	const open = async (bridge: BridgeInfo = AT_TEST) => {
-		const hello: Hello = { protocol: 3, environmentId: ENV, viewId: TEST_VIEW, pass: PASS, role: "io" };
+	/** A connection of the machine's, at `protocol` (4 makes links). */
+	const open = async (bridge: BridgeInfo = AT_TEST, protocol = 3) => {
+		const hello: Hello = { protocol, environmentId: ENV, viewId: TEST_VIEW, pass: PASS, role: "io" };
 		const handle = await service.open(hello, bridge);
 		handles.push(handle);
 		return handle;
@@ -483,6 +485,96 @@ describe("test machine views", () => {
 		expect(core.commits.map((c) => c.units.map((u) => u.op))).toEqual([["delete"], ["write"], ["write"], ["write"]]);
 		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("a"));
 	});
+
+	it("keeps a removal's credits in the new file or link renamed over it, until it is renamed on", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2), link("docs/latest", "v1.md", 3)]);
+		const view = await open(AT_TEST, 4);
+		// The first command removes a file and a link, and its boundary is refused whole; then the command ends.
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await view.unlink("docs/a.md", undefined);
+		await view.unlink("docs/latest", undefined);
+		core.commitRefusal = "stopped";
+		await service.closeWindow(PLACEMENT, FIRST);
+		core.commitRefusal = undefined;
+		core.endedCommands.add(FIRST);
+		// The starter saves a new docs/a.md as an editor does, and makes a new link as `ln -sf` does: each holds the
+		// removal of the one it replaces, and so the command, through the boundary that refuses it and keeps it.
+		await write(view, "docs/new.md", "new");
+		await view.rename({ from: "docs/new.md", to: "docs/a.md", noReplace: false });
+		await view.symlink("docs/CuXXXXXX", "v2.md");
+		await view.rename({ from: "docs/CuXXXXXX", to: "docs/latest", noReplace: false });
+		await service.boundary(PLACEMENT);
+		// Renamed on, each lets the removal go again, its credits with it; what it publishes now is the starter's.
+		await view.rename({ from: "docs/a.md", to: "docs/b.md", noReplace: false });
+		await view.rename({ from: "docs/latest", to: "docs/next", noReplace: false });
+		await service.boundary(PLACEMENT);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/a.md", [FIRST]],
+				["docs/latest", [FIRST]],
+			],
+			[
+				["docs/a.md", [FIRST]],
+				["docs/latest", [FIRST]],
+			],
+			[
+				["docs/a.md", [FIRST]],
+				["docs/latest", [FIRST]],
+				["docs/b.md", undefined],
+				["docs/next", undefined],
+			],
+		]);
+		expect(core.commits.map((c) => c.units.map((u) => u.op))).toEqual([
+			["delete", "delete"],
+			["write", "symlink"],
+			["delete", "delete", "write", "symlink"],
+		]);
+		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("a"));
+		expect(core.entries.get("docs/latest")).toMatchObject({ kind: "symlink", target: "v1.md" });
+		expect(core.entries.get("docs/b.md")?.fileSha256).toBe(hashOf("new"));
+		expect(core.entries.get("docs/next")).toMatchObject({ kind: "symlink", target: "v2.md" });
+	});
+
+	it("credits a symlink and a hard link made in a window to its command, a hard link at its new name", async () => {
+		const { core, service, open } = await company();
+		const view = await open(AT_TEST, 4);
+		await write(view, "docs/fresh.md", "fresh");
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await view.symlink("docs/latest", "plan.md");
+		// The source, the starter's, stays so: the link is a file of its own at its new name.
+		await view.link({ from: "docs/fresh.md", to: "docs/copy.md" });
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/fresh.md", undefined],
+				["docs/copy.md", [FIRST]],
+				["docs/latest", [FIRST]],
+			],
+		]);
+		expect(core.commits[0]?.units.map((u) => u.op)).toEqual(["write", "write", "symlink"]);
+		expect(core.entries.get("docs/copy.md")?.fileSha256).toBe(hashOf("fresh"));
+		expect(core.entries.get("docs/latest")).toMatchObject({ kind: "symlink", target: "plan.md" });
+	});
+
+	it("credits a link's removal and rename to the command whose window was open", async () => {
+		const { core, service, open } = await company();
+		core.seed([link("docs/old", "plan.md", 2), link("docs/here", "plan.md", 3)]);
+		const view = await open(AT_TEST, 4);
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await view.unlink("docs/old", undefined);
+		await view.rename({ from: "docs/here", to: "docs/there", noReplace: false });
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[
+				["docs/old", [FIRST]],
+				["docs/there", [FIRST]],
+			],
+		]);
+		expect(core.commits[0]?.units.map((u) => u.op)).toEqual(["delete", "move"]);
+		expect(core.entries.has("docs/old")).toBe(false);
+		expect(core.entries.get("docs/there")).toMatchObject({ kind: "symlink", target: "plan.md" });
+	});
 });
 
 /** A seeded generator (mulberry32): a seed gives the same sequence at every run. */
@@ -504,6 +596,8 @@ interface ModelFile {
 	dirty: boolean;
 	/** The tags of the changes made to it since it last had nothing to publish. */
 	readonly tags: Set<string>;
+	/** A new file's: the tags of the removal of the live file at its path, which it replaces. */
+	replaces?: ReadonlySet<string> | undefined;
 }
 
 /** A unit as a commit names it: its op, the path it publishes (a move's target), and its credits. */
@@ -512,7 +606,8 @@ type ModelUnit = readonly [string, string, readonly string[] | undefined];
 /** The credit rule, on a model of a test machine's pending files kept apart from PendingView: a unit is credited to
  * the commands whose windows were open when a change now in it was made. A pending file has the tags of the changes
  * made to it since it last had nothing to publish; a pending removal of a live path has those of the change that
- * removed it and of the file it took. */
+ * removed it and of the file it took. A new file made or renamed where a live file was removed holds that removal, and
+ * its tags, until it is removed or renamed on, which lets it go again. */
 class CreditModel {
 	live: ReadonlySet<string> = new Set();
 	readonly files = new Map<string, ModelFile>();
@@ -530,10 +625,12 @@ class CreditModel {
 	}
 
 	write(path: string, tags: readonly string[]): void {
+		const shown = this.shows(path);
 		const file = this.files.get(path) ?? {
-			origin: this.shows(path) ? path : undefined,
+			origin: shown ? path : undefined,
 			dirty: false,
 			tags: new Set<string>(),
+			replaces: shown ? undefined : this.#take(path),
 		};
 		file.dirty = true;
 		for (const tag of tags) file.tags.add(tag);
@@ -544,6 +641,7 @@ class CreditModel {
 		const file = this.files.get(path);
 		const at = file === undefined ? path : file.origin;
 		if (at !== undefined) this.removals.set(at, new Set([...(file?.tags ?? []), ...tags]));
+		else if (file !== undefined) this.#release(path, file);
 		this.files.delete(path);
 		if (this.live.has(path)) this.hidden.add(path);
 	}
@@ -558,8 +656,19 @@ class CreditModel {
 	}
 
 	rename(from: string, to: string, tags: readonly string[]): void {
-		const file = this.files.get(from) ?? { origin: from, dirty: false, tags: new Set<string>() };
-		if (this.shows(to)) this.remove(to, tags);
+		const file: ModelFile = this.files.get(from) ?? { origin: from, dirty: false, tags: new Set<string>() };
+		const fresh = file.origin === undefined;
+		// A new file renamed lets the removal it held go, and holds what it replaces at its new path: a pending file not
+		// moved there goes with what that one replaced (its removal, or its origin's, removed now), else the removal there.
+		if (fresh) this.#release(from, file);
+		const target = this.files.get(to);
+		if (fresh && target !== undefined && (target.origin === undefined || target.origin === to)) {
+			file.replaces = target.origin === undefined ? target.replaces : new Set([...target.tags, ...tags]);
+			this.files.delete(to);
+		} else {
+			if (this.shows(to)) this.remove(to, tags);
+			if (fresh) file.replaces = this.#take(to);
+		}
 		this.files.delete(from);
 		if (this.live.has(from)) this.hidden.add(from);
 		for (const tag of tags) file.tags.add(tag);
@@ -568,35 +677,42 @@ class CreditModel {
 		else this.files.set(to, file);
 	}
 
-	/** The units a boundary publishes: one per pending file, and one per removal but one a new file at its path is the
-	 * next version of. */
+	/** The units a boundary publishes: one per pending file (a new file's, the next version of the live one it replaces,
+	 * credited with that one's removal too), and one per removal. */
 	units(): ModelUnit[] {
 		const credits = (tags: Iterable<string>): readonly string[] | undefined => {
 			const ids = [...new Set(tags)].filter((tag) => tag !== STARTER).sort();
 			return ids.length === 0 ? undefined : ids;
 		};
 		const units: ModelUnit[] = [];
-		const replaced = new Set<string>();
 		for (const [path, file] of this.files) {
-			const removal = file.origin === undefined ? this.removals.get(path) : undefined;
-			if (removal !== undefined) replaced.add(path);
 			const op = file.origin === undefined || file.origin === path ? "write" : "move";
-			units.push([op, path, credits([...file.tags, ...(removal ?? [])])]);
+			units.push([op, path, credits([...file.tags, ...(file.replaces ?? [])])]);
 		}
-		for (const [at, tags] of this.removals) if (!replaced.has(at)) units.push(["delete", at, credits(tags)]);
+		for (const [at, tags] of this.removals) units.push(["delete", at, credits(tags)]);
 		return sortUnits(units);
 	}
 
-	/** After a boundary the core answered: what it kept pending stays, with its tags, and a new file kept takes those of
-	 * the removal it was the next version of, which goes; the rest is live now, or gone. */
+	/** After a boundary the core answered: what it kept pending stays, with its tags, and a new file kept keeps the
+	 * removal it holds, and so its tags; the rest is live now, or gone. */
 	settle(kept: ReadonlySet<string>, live: ReadonlySet<string>): void {
-		for (const [path, file] of [...this.files]) {
-			if (!kept.has(path)) this.files.delete(path);
-			else if (file.origin === undefined) for (const tag of this.removals.get(path) ?? []) file.tags.add(tag);
-		}
+		for (const path of [...this.files.keys()]) if (!kept.has(path)) this.files.delete(path);
 		this.removals.clear();
 		this.hidden.clear();
 		this.live = live;
+	}
+
+	/** The removal at `path`, which a new file made there takes. */
+	#take(path: string): ReadonlySet<string> | undefined {
+		const tags = this.removals.get(path);
+		this.removals.delete(path);
+		return tags;
+	}
+
+	/** A new file lets the removal it holds go: it is pending again at the file's path. */
+	#release(path: string, file: ModelFile): void {
+		if (file.replaces !== undefined) this.removals.set(path, file.replaces);
+		file.replaces = undefined;
 	}
 
 	#cycle(origin: string, target: string): boolean {
