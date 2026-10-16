@@ -203,41 +203,60 @@ export function isCompanyComputerCommandNamespace(
 	return top?.root.replace(/\/\/deleted$/, "").endsWith(`/mounts/${name}`) ?? false;
 }
 
-/** How many passes a look for a namespace's processes takes before it gives up, answering in use, while processes
- * keep being forked meanwhile. */
+/** How many passes a look for a namespace's tasks takes before it gives up, answering in use, while tasks keep being
+ * made meanwhile; and how many times it lists one process's threads again while listed ones keep ending. */
 const SCAN_PASSES = 50;
 
-/** A look at a machine's processes: the last pid it gave, the pids there now, and whether a process is in the
- * namespace looked for (false when it is gone; an error when that cannot be known). */
+/** A look at a machine's tasks: the last pid it gave (a thread's id is a pid too), the processes there now (their
+ * thread group ids), a process's threads there now (none once it is gone), and whether a thread is in the namespace
+ * looked for (undefined once it is gone; an error when that cannot be known). */
 export interface CompanyComputerProcessScan {
 	lastPid(): Promise<number>;
-	pids(): Promise<readonly number[]>;
-	inside(pid: number): Promise<boolean>;
+	processes(): Promise<readonly number[]>;
+	threads(group: number): Promise<readonly number[]>;
+	inside(group: number, thread: number): Promise<boolean | undefined>;
 }
 
 /**
- * Whether a process is in a namespace that only grows by fork and that no process leaves: the command's filter refuses
- * setns and new user namespaces, and it holds no capability, so it can neither join the namespace (the initial user
- * namespace owns it) nor unshare a mount namespace of its own. One list of the processes is not enough: one can fork
- * while it is read, then exit before it is looked at, and its child came after the list. Pids are given in a cycle, so
- * each pass after the first looks again at the pids given during the one before, until a pass during which none was
- * given: a process then in the namespace was there through that pass, or forked during an earlier one. While the
- * computer keeps forking, such a pass can take long to come; the answer is then in use: late, never early. An error is
- * no answer.
+ * Whether a task is in a namespace that only grows by fork and clone and that no task leaves: the command's filter
+ * refuses setns and new user namespaces, and it holds no capability, so it can neither join the namespace (the initial
+ * user namespace owns it) nor unshare a mount namespace of its own.
+ *
+ * One look at every task is not enough: a task can fork while the processes are listed, then end before it is looked
+ * at, and its child came after the list. So the look is made in whole passes until a quiet one, a pass during which
+ * the last pid given did not move (fewer than pid_max are given during one). Every task then in the namespace was made
+ * before that pass and lived through it, so the pass looked at it:
+ * - its process's thread group id stayed listed under /proc throughout, as the leader's pid lives until the group's
+ *   last task ends (a leader that ended first stays a zombie), and it passes to the task that execs;
+ * - the kernel's list of a process's threads can stop early, or resume past a thread, only after a thread it listed
+ *   ended (`next_tid`, `first_tid`); such a thread reads as gone, so the threads are listed again while one did;
+ * - a thread that execs takes the group id without a new pid, so the leader's place is looked at last, after the list
+ *   it may have left. A leader that is a zombie reads as gone, and asks for no new list: its threads are listed.
+ * While the computer keeps making tasks, a quiet pass can take long to come; the answer is then in use: late, never
+ * early. An error is no answer.
  */
 export async function companyComputerNamespaceInUse(scan: CompanyComputerProcessScan): Promise<boolean> {
-	let from: number | undefined,
-		to = await scan.lastPid();
+	let last = await scan.lastPid();
 	for (let pass = 0; pass < SCAN_PASSES; pass++) {
-		for (const pid of await scan.pids()) {
-			// After the first pass, only the pids after `from` up to `to`, in their cycle.
-			const look = from === undefined || (from < to ? pid > from && pid <= to : pid > from || pid <= to);
-			if (look && (await scan.inside(pid))) return true;
+		for (const group of await scan.processes()) if (await groupInside(scan, group)) return true;
+		const now = await scan.lastPid();
+		if (now === last) return false;
+		last = now;
+	}
+	return true;
+}
+
+async function groupInside(scan: CompanyComputerProcessScan, group: number): Promise<boolean> {
+	for (let list = 0; list < SCAN_PASSES; list++) {
+		let ended = false;
+		for (const thread of await scan.threads(group)) {
+			if (thread === group) continue;
+			const inside = await scan.inside(group, thread);
+			if (inside) return true;
+			ended ||= inside === undefined;
 		}
-		const last = await scan.lastPid();
-		if (last === to) return false;
-		from = to;
-		to = last;
+		if (await scan.inside(group, group)) return true;
+		if (!ended) return false;
 	}
 	return true;
 }
@@ -1112,27 +1131,23 @@ export function createLinuxCompanyComputerFolderHelperSystem(): CompanyComputerF
 				if (!["ENOENT", "ESRCH", "EINVAL"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
 				return undefined;
 			};
-			// Undefined when the task's link does not read (it exited, or it is a leader whose other threads still run).
-			const inside = async (task: string): Promise<boolean | undefined> => {
-				const target = await readlink(`${task}/ns/mnt`).catch(gone);
-				if (target !== wanted) return target === undefined ? undefined : false;
-				const table = await readCompanyComputerLinuxMetadata(`${task}/mountinfo`, 1048576).catch(gone);
-				return table !== undefined && isCompanyComputerCommandNamespace(parseCompanyComputerMountinfo(table), name);
-			};
+			const ids = (names: readonly string[]) => names.filter((id) => /^[1-9][0-9]*$/.test(id)).map(Number);
 			return companyComputerNamespaceInUse({
 				lastPid: async () =>
 					integer((await readCompanyComputerLinuxMetadata("/proc/sys/kernel/ns_last_pid", 64)).trim(), 4194304),
-				pids: async () => (await readdir("/proc")).filter((pid) => /^[1-9][0-9]*$/.test(pid)).map(Number),
-				async inside(pid) {
-					let found = await inside(`/proc/${pid}`);
-					if (found === undefined)
-						for (const tid of await readdir(`/proc/${pid}/task`).catch(
-							(error: unknown): string[] => gone(error) ?? [],
-						)) {
-							if (tid !== String(pid)) found = await inside(`/proc/${pid}/task/${tid}`);
-							if (found !== undefined) break;
-						}
-					return found === true;
+				processes: async () => ids(await readdir("/proc")),
+				threads: async (group) =>
+					ids(await readdir(`/proc/${group}/task`).catch((error: unknown): string[] => gone(error) ?? [])),
+				// Undefined when the thread's link or its table does not read: it ended, or it is a leader that ended
+				// before its other threads.
+				async inside(group, thread) {
+					const task = `/proc/${group}/task/${thread}`;
+					const target = await readlink(`${task}/ns/mnt`).catch(gone);
+					if (target !== wanted) return target === undefined ? undefined : false;
+					const table = await readCompanyComputerLinuxMetadata(`${task}/mountinfo`, 1048576).catch(gone);
+					return table === undefined
+						? undefined
+						: isCompanyComputerCommandNamespace(parseCompanyComputerMountinfo(table), name);
 				},
 			});
 		},
