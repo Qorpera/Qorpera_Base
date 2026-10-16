@@ -435,6 +435,52 @@ describe("writes through the mount", () => {
 		);
 	});
 
+	it("lands a draft against what its open saw: a file another machine made there since is a conflict", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([folder("docs"), await storeFile(root, "docs/live.md", "v1", 1, BIG)]);
+		const view = await open();
+		const draft = (path: string) => view.open({ path, create: true, exclusive: false, truncate: true, draft: true });
+		const data = Buffer.from("drafted");
+		const fill = (handle: number) =>
+			view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		// Opened where nothing was and over the live file; another machine then creates the one and changes the other.
+		const fresh = await draft("docs/raced.md");
+		const over = await draft("docs/live.md");
+		await fill(fresh.handle);
+		await fill(over.handle);
+		core.write(await storeFile(root, "docs/raced.md", "theirs", 2, BIG));
+		core.write(await storeFile(root, "docs/live.md", "theirs", 3, BIG));
+		await service.poll();
+		await service.settled();
+		await view.close(fresh.handle, data.byteLength);
+		await view.close(over.handle, data.byteLength);
+		const report = await view.publish();
+		expect(byPath(report.paths)).toEqual([
+			{ path: "docs/live.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+			{ path: "docs/raced.md", outcome: "conflict", reason: "exists", receipt: report.commitId },
+		]);
+		expect(core.entries.get("docs/raced.md")?.fileSha256).toBe(hashOf("theirs"));
+		expect(core.entries.get("docs/live.md")?.fileSha256).toBe(hashOf("theirs"));
+		expect(await read(view, "docs/raced.md")).toBe("theirs");
+		expect(await read(view, "docs/live.md")).toBe("theirs");
+		// Over the view's own unsaved file, a draft holds it unpublished, and its close is that file's next save.
+		await write(view, "docs/mine.md", "mine");
+		const mine = await draft("docs/mine.md");
+		await fill(mine.handle);
+		await view.publish();
+		expect(core.entries.has("docs/mine.md")).toBe(false);
+		await view.close(mine.handle, data.byteLength);
+		expect((await view.publish()).paths).toEqual([{ path: "docs/mine.md", outcome: "saved" }]);
+		expect(core.entries.get("docs/mine.md")?.fileSha256).toBe(hashOf("drafted"));
+		// Given up, it lets the file go as it was.
+		await write(view, "docs/kept.md", "kept");
+		const kept = await draft("docs/kept.md");
+		await fill(kept.handle);
+		await view.discard(kept.handle);
+		expect((await view.publish()).paths).toEqual([{ path: "docs/kept.md", outcome: "saved" }]);
+		expect(core.entries.get("docs/kept.md")?.fileSha256).toBe(hashOf("kept"));
+	});
+
 	it("bases a save on the machine's own published save when it names the version that save made", async () => {
 		const { root, core, service, open } = await fixture();
 		core.seed([folder("docs")]);
