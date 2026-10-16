@@ -145,12 +145,15 @@ export function unpublished(path: string): boolean {
 
 const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
 
-/** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key. */
+/** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key: git's directories only below
+ * code/<owner>/<name>/ (20260930446100). */
 function reserved(key: string): boolean {
 	const parts = key.split("/");
+	const code = parts[0] === "code";
 	return (
 		[".qorpera", "trail", "inbox", "credentials", "secrets"].includes(parts[0]!) ||
-		(parts[0] !== "code" && parts.some((p) => p === ".git" || p === "node_modules"))
+		(!code && parts.includes("node_modules")) ||
+		parts.some((p, i) => (p === ".git" || p === "repo.git") && (!code || i < 3))
 	);
 }
 
@@ -763,6 +766,11 @@ export class PendingView {
 			if (origin !== undefined && this.#cycle(origin, to))
 				throw new PublishFirst("moves that take each other's places");
 		}
+		// A new folder's pending nodes move with it, each to a name the folder takes there (a name only code/ holds stays
+		// in code/): all checked before anything moves.
+		const moved: [string, Node][] = [];
+		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
+		for (const [path, n] of moved) if (n.kind !== "gone") checkNewPath(to + path.slice(from.length));
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder | PendingLink;
 		if (source.kind === "node") node = source.node;
@@ -802,10 +810,7 @@ export class PendingView {
 		if (fresh && lets) this.#release(fresh);
 		const take = fresh !== undefined && !unpublished(to);
 		const replaces = target ? this.#replaced(target, to, options.toBase, take) : undefined;
-		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows what the node
-		// holds there.
-		const moved: [string, Node][] = [];
-		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
+		// Then `from` is hidden if the live folder still shows what the node holds there.
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
 		this.#dropUnder(to);

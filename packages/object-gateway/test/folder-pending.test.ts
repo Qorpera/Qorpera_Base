@@ -888,7 +888,15 @@ describe("a view's pending changes", () => {
 		refused(() => f.view.mkdir("Secrets"), "NOT_PERMITTED");
 		refused(() => f.view.mkdir("docs/.git"), "NOT_PERMITTED");
 		refused(() => f.view.mkdir("docs/NODE_MODULES"), "NOT_PERMITTED");
-		f.view.mkdir("code/repo/.git");
+		// git's directories only below code/<owner>/<name>/; there a name may hold '%' and ':' or be a device name.
+		refused(() => f.view.mkdir("code/repo/.git"), "NOT_PERMITTED");
+		refused(() => f.view.mkdir("docs/repo.git"), "NOT_PERMITTED");
+		refused(() => f.view.mkdir("docs/a%b"), "BAD_REQUEST");
+		f.view.mkdir("code/repo/app");
+		f.view.mkdir("code/repo/app/repo.git");
+		f.view.mkdir("code/repo/app/.git");
+		f.view.mkdir("code/repo/app/a%b:c");
+		f.view.mkdir("code/repo/app/CON.txt");
 		refused(() => f.view.mkdir("docs/plan.md"), "EXISTS");
 		refused(() => f.view.rmdir("docs"), "NOT_EMPTY");
 		refused(() => f.view.rename("docs", "docs/inside"), "BAD_REQUEST");
@@ -898,6 +906,34 @@ describe("a view's pending changes", () => {
 		expect(f.view.get("docs/plan.md")).toBeDefined();
 		expect(f.view.get("docs/Plan.md")).toBeUndefined();
 		f.publish();
+	});
+
+	it("moves a new folder only where the folder takes every name in it; a refused move leaves the rest to publish", () => {
+		const f = setup({ code: null, "code/acme": null, "code/acme/app": null, docs: null });
+		f.view.mkdir("code/acme/app/tmp");
+		f.view.mkdir("code/acme/app/tmp/a%b");
+		f.view.mkdir("code/acme/app/tmp/.git");
+		f.view.mkdir("docs/kept");
+		const before = shown(f.view);
+		// '%' only under code/, and '.git' only below code/<owner>/<name>/.
+		refused(() => f.view.rename("code/acme/app/tmp", "docs/tmp"), "BAD_REQUEST");
+		refused(() => f.view.rename("code/acme/app/tmp", "code/tmp"), "NOT_PERMITTED");
+		expect(shown(f.view)).toEqual(before);
+		const units = f.publish();
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "mkdir", path: "docs/kept" },
+				{
+					op: "new_folder",
+					path: "code/acme/app/tmp",
+					contents: expect.arrayContaining([
+						{ path: "a%b", kind: "folder" },
+						{ path: ".git", kind: "folder" },
+					]),
+				},
+			]),
+		);
 	});
 });
 

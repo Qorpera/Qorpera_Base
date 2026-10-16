@@ -1,8 +1,9 @@
 -- A routine never watches a reserved path (launch checklist L23.2, 16 October 2026).
 --
 -- An agent's manage_routine saved a file-change routine watching inbox/. No save ever lands on a reserved path
--- (qorpera_folder_path_reserved: .qorpera, trail, inbox, credentials and secrets, and .git or node_modules outside code/;
--- the folder commit refuses them for every actor), so that routine would never wake. The routine rules
+-- (qorpera_folder_path_reserved: .qorpera, trail, inbox, credentials and secrets, node_modules outside code/, and .git
+-- or repo.git outside a repository's folder code/<owner>/<name>/ (20260930446100); the folder commit refuses them for
+-- every actor), so that routine would never wake. The routine rules
 -- (qorpera_company_state_routine_rules, 20260928259310 and P29's 20260928479120) now refuse such a watch as they refuse
 -- the other file-change problems: structured_rule, one value problem that names the watch. The check comes first among
 -- the file-change checks, so a reserved watch the agent may not read either (credentials, secrets) gets this reason.

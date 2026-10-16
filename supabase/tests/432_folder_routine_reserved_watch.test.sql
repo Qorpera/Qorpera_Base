@@ -1,10 +1,11 @@
 -- @fixture 708_folder_state_routines.test.sql until "-- 2. A member's routine: its row, its version and its position"
 -- Launch checklist L23.2 (migration 20260930493000): a routine never watches a reserved path. No save lands on one
--- (qorpera_folder_path_reserved: .qorpera, trail, inbox, credentials, secrets, and .git or node_modules outside code/),
--- so a file-change routine watching one would never wake. The routine rules refuse it as their other problems
--- (structured_rule, one value problem naming the watch), by its folder key (Inbox, inbox and inbox/x.md alike), for a
--- member and an agent's run, on a new routine and on an edit, before the read check; nothing is stored. A watch outside
--- them, and a .git under code/, is saved as before. On 708's company (Nora and Otto); rolled back at the end.
+-- (qorpera_folder_path_reserved: .qorpera, trail, inbox, credentials, secrets, node_modules outside code/, and .git or
+-- repo.git outside a repository's folder code/<owner>/<name>/, so code/repo/.git too: 20260930446100), so a file-change
+-- routine watching one would never wake. The routine rules refuse it as their other problems (structured_rule, one value
+-- problem naming the watch), by its folder key (Inbox, inbox and inbox/x.md alike), for a member and an agent's run, on
+-- a new routine and on an edit, before the read check; nothing is stored. A watch outside them, and a .git in a
+-- repository's folder (code/acme/repo/.git), is saved as before. On 708's company (Nora and Otto); rolled back at the end.
 
 create function pg_temp.is(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin
@@ -43,13 +44,14 @@ do $$
 begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'reserved-0001', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','orders'), jsonb_build_object('op','mkdir','path','orders/incoming'),
-		jsonb_build_object('op','mkdir','path','code'), jsonb_build_object('op','mkdir','path','code/repo'),
-		jsonb_build_object('op','mkdir','path','code/repo/.git'))));
+		jsonb_build_object('op','mkdir','path','code'), jsonb_build_object('op','mkdir','path','code/acme'),
+		jsonb_build_object('op','mkdir','path','code/acme/repo'), jsonb_build_object('op','mkdir','path','code/acme/repo/.git'))));
 	if not (select bool_and(public.qorpera_folder_path_reserved(public.qorpera_folder_key(p))) from unnest(array['inbox', 'Inbox',
 			'inbox/x.md', 'ＩＮＢＯＸ', 'trail', '.qorpera/x.md', 'credentials', 'secrets/api.md', 'orders/node_modules',
-			'orders/incoming/.git/HEAD']) p)
+			'orders/incoming/.git/HEAD', 'code/.git', 'code/repo/.git', 'code/acme/repo.git']) p)
 		or (select bool_or(public.qorpera_folder_path_reserved(public.qorpera_folder_key(p))) from unnest(array['orders',
-			'orders/incoming', 'orders/inbox', 'inboxes', 'code/repo/.git', 'code/repo/node_modules', 'agents/nora']) p) then
+			'orders/incoming', 'orders/inbox', 'inboxes', 'code/acme/repo/.git', 'code/acme/repo/repo.git', 'code/repo/node_modules',
+			'agents/nora']) p) then
 		raise exception 'The reserved paths by their folder key'; end if;
 end $$;
 
@@ -58,11 +60,13 @@ end $$;
 do $$
 declare w text[]; i integer := 0; a jsonb;
 begin
-	-- Every reserved root, a file and a folder under one, any case or width, exact or subtree; .git and node_modules
-	-- outside code/. Credentials and secrets, which the agent may not read either, are refused as reserved.
+	-- Every reserved root, a file and a folder under one, any case or width, exact or subtree; node_modules outside code/,
+	-- and .git outside a repository's folder, under code/ too. Credentials and secrets, which the agent may not read
+	-- either, are refused as reserved.
 	foreach w slice 1 in array array[['inbox','subtree'], ['Inbox','subtree'], ['inbox/x.md','exact'], ['ＩＮＢＯＸ/Mail','subtree'],
 		['trail','subtree'], ['.qorpera','subtree'], ['.qorpera/settings.md','exact'], ['credentials','subtree'],
-		['secrets/api.md','exact'], ['orders/node_modules','subtree'], ['orders/incoming/.git/HEAD','exact']] loop
+		['secrets/api.md','exact'], ['orders/node_modules','subtree'], ['orders/incoming/.git/HEAD','exact'],
+		['code/repo/.git','subtree']] loop
 		i := i + 1;
 		perform pg_temp.refuse(pg_temp.owner(), 'reserved-01' || lpad(i::text, 2, '0'), 'agents/nora/routines/watch-' || i || '.md',
 			('43200000-0000-4000-8000-0000000001' || lpad(i::text, 2, '0'))::uuid, w[1], w[2]);
@@ -92,15 +96,16 @@ begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'reserved-0301', jsonb_build_array(
 		pg_temp.routine('agents/nora/routines/orders.md', pg_temp.watch('43200000-0000-4000-8000-000000000301', 'orders/incoming', 'subtree')),
 		pg_temp.routine('agents/nora/routines/order.md', pg_temp.watch('43200000-0000-4000-8000-000000000302', 'orders/incoming/a.md', 'exact')),
-		pg_temp.routine('agents/otto/routines/repo.md', pg_temp.watch('43200000-0000-4000-8000-000000000303', 'code/repo/.git', 'subtree')))));
+		pg_temp.routine('agents/otto/routines/repo.md', pg_temp.watch('43200000-0000-4000-8000-000000000303', 'code/acme/repo/.git',
+			'subtree')))));
 	perform pg_temp.is((pg_temp.rv('43200000-0000-4000-8000-000000000301')).triggers::text,
 		'[{"id": "file", "kind": "file-change", "match": "subtree", "watch": "orders/incoming", "timeZone": "Europe/Copenhagen", "replyPolicy": "optional"}]',
 		'the watch on orders/incoming');
 	perform pg_temp.is((pg_temp.rt('43200000-0000-4000-8000-000000000301')).status, 'active', 'an active listener');
 	perform pg_temp.is((pg_temp.rv('43200000-0000-4000-8000-000000000302')).triggers -> 0 ->> 'watch', 'orders/incoming/a.md',
 		'the exact watch on a file');
-	perform pg_temp.is((pg_temp.rv('43200000-0000-4000-8000-000000000303')).triggers -> 0 ->> 'watch', 'code/repo/.git',
-		'.git under code/ is not reserved');
+	perform pg_temp.is((pg_temp.rv('43200000-0000-4000-8000-000000000303')).triggers -> 0 ->> 'watch', 'code/acme/repo/.git',
+		'.git in a repository''s folder is not reserved');
 end $$;
 
 -- 4. An edit that points a saved routine's watch at a reserved path is refused; the routine stays as it was ------------------
