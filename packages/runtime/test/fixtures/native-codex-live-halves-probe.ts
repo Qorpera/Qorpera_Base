@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -37,6 +37,7 @@ type Composer = (
 
 interface ProviderRequest {
 	model: string;
+	instructions?: string;
 	input: Array<Record<string, unknown>>;
 	tools?: Array<{ type: string; name?: string; tools?: Array<{ name: string }> }>;
 	reasoning?: { effort?: string };
@@ -357,7 +358,13 @@ export async function runNativeCodexLiveHalvesProbe(binary: string, mode: Native
 			keys.push(parsed.prompt_cache_key === key ? "run" : String(parsed.prompt_cache_key));
 			const shapes = parsed.input.map(shape);
 			const prompt = shapes.lastIndexOf("prompt");
-			heads.add(JSON.stringify(shapes.slice(0, prompt + 1)));
+			// The cached prefix in full (instructions, tools, every item up to the prompt); the rest by shape only.
+			const head = {
+				instructions: parsed.instructions,
+				tools: parsed.tools,
+				input: parsed.input.slice(0, prompt + 1),
+			};
+			heads.add(createHash("sha256").update(JSON.stringify(head)).digest("hex"));
 			tails.push(shapes.slice(prompt + 1));
 			let output: Array<Record<string, unknown>>;
 			if (number === 1) output = [REASONING, call("c1")];
