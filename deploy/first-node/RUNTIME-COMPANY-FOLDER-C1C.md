@@ -65,7 +65,8 @@ test. A caller left alone stays refused. Paths that never went through the actor
   - the dead v1 execution start (`begin_native_company_execution`);
   - row writers of company state (contract 5.6): `manage_agent_routine`, `manage_agent_todo`, `manage_agent_sidebar`
     → routine, todo and section files (F2); `manage_agent_worker` and `report_worker_result` until C3 and F2-5b make
-    worker briefs and results files.
+    worker briefs and results files. All five, with `confirm_agent_todo_publication` and `decide_agent_routine`, were
+    dropped in legacy sweep D6 (20260930335000).
 - **Branches (12), in C1c-2:**
   - the send and model-request checks: the context-send trigger (`enforce_company_context_send`), which today
     returns early for `folder-v2`; `assert_company_path_reads`; `record_native_context_view` (bound to release ids
@@ -97,7 +98,8 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
 - **The approval and member-command actors** (`company_path_approved_actor`, `member_company_path_command_actor`)
   refuse before their company fence.
 - **The office's Company File transfers** (`native_office_company_file_source`, `confirm_office_company_file_import`):
-  the folder views replace them (C1b-3). The binding names no company, so the guard reads the run's job.
+  the folder views replace them (C1b-3). The binding names no company, so the guard reads the run's job. Legacy sweep
+  D3 (20260930332000) dropped the confirmation, with the office's file import and export.
 - **The runner broker's whole-tree lane** (`runner_broker_describe`, `runner_broker_authorize_input_object`),
   **completion's legacy lane** (`complete_runner_job_v6`) and **the runner's revision lane**
   (`runner_prepare_company_revision`, `runner_begin_`, `_append_` and `_complete_company_revision_graph`,
@@ -112,8 +114,9 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   their functions and the seed.
 - **The legacy pause** refuses: `folder-v2` companies stop through `qorpera_folder_pause`, which drains effects.
 - **Old row writers:** `put_profile_staff`, `delete_profile_staff`, `put_staff_provider_model`,
-  `confirm_agent_todo_publication`. The binding check reads the run's job, and reads the job id as the run lookup
-  does (any spelling uuid input accepts). Legacy sweep D1 (20260930330000) dropped the two staff writers.
+  `confirm_agent_todo_publication` (dropped in legacy sweep D6, 20260930335000). The binding check reads the run's job,
+  and reads the job id as the run lookup does (any spelling uuid input accepts). Legacy sweep D1 (20260930330000)
+  dropped the two staff writers.
 - **Left as they are, on purpose:**
   - `upsert_cloud_routine`: F2-6 (#523) decides its `folder-v2` rule. It refuses new routines, but still accepts saves
     of routines that existed as rows before the company became `folder-v2` (test 708);
@@ -139,8 +142,8 @@ for each that must not be refused (the Storage policies and the bootstrap claim 
 turn: the test failed for 31 of 34. The other three (`runner_begin_company_revision_graph`, `runner_authorize_` and
 `_finalize_company_revision_verification`) call `runner_company_revision_snapshot` first, whose own guard refuses;
 they keep theirs in case that call moves. Legacy sweep D1 (20260930330000) removed the bootstrap claim's and the staff
-writers' cases with the functions, and legacy sweep D2 (20260930331000) the whole-tree lane's. `folder-v2` proposals
-are tested by 926, 927 and 937.
+writers' cases with the functions, legacy sweep D2 (20260930331000) the whole-tree lane's, and legacy sweep D3
+(20260930332000) the office import confirmation's. `folder-v2` proposals are tested by 926, 927 and 937.
 
 ## 5. C1c-2: run paths on the folder fence
 
@@ -841,6 +844,9 @@ Decisions:
 - **Refusals** (0A000): `append_session_input`, `request_session_turn` and its v2; the conversation attachment uploads;
   and any `folder-v2` input with images, inserted or changed (the upload check returned early for every company off
   the path gateway).
+  - **Legacy sweep D17 (20260930416000)** dropped the conversation attachment uploads (the begin, the stage, the fetch
+    and their table) with the snapshot-v1 arm of the input trigger; the trigger keeps its `folder-v2` arm
+    (20260930260000), where a chat image is a folder file.
 - Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
   membership on either core; that is fixed on its own (it affects live companies).
 
@@ -1240,8 +1246,9 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   snapshot-v1 company still waits for a
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
   row `KEY SHARE`, and 824 H reversed 3h's line before 3f's (no digests since 3 October; legacy sweep A, #829).
-- **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
-  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
+- **Inert until C3:** `manage_agent_worker` (dropped in legacy sweep D6, 20260930335000) refuses `folder-v2` (the path
+  actor), so no `folder-v2` coding session can be created yet. 3i brings the turn's admission (`begin_coding_turn`)
+  and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
@@ -2240,11 +2247,12 @@ folder companies (`!context.folder`); offering it is the next PR (TypeScript, a 
 
 ## 7. Traps for C1c-2 and C1c-3
 
-- `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
+- `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is. (Both were
+  dropped in legacy sweep D6, 20260930335000.)
 - The v149 activation markers pin text in `record_native_context_view`, `add_agent_review_rule`,
-  `manage_agent_routine`, `check_company_path_mutation`, `pin_wake_occurrence`, `guard_founder_departure` and
-  `authorize_coding_machine_run`. An edit that drops a marker, or adds the gc fence to the functions it must stay out
-  of, fails the next cut.
+  `manage_agent_routine` (until legacy sweep D6 dropped it), `check_company_path_mutation`, `pin_wake_occurrence`,
+  `guard_founder_departure` and `authorize_coding_machine_run`. An edit that drops a marker, or adds the gc fence to
+  the functions it must stay out of, fails the next cut.
 - The coding lane goes through the actor (`begin_native_coding_execution`, `record_coding_context_view`), so coding
   turns, and C1b-3a's coding views with a live turn, refuse on `folder-v2` until C1c-2.
 - Runner-broker model requests do no Company File recheck at all today.

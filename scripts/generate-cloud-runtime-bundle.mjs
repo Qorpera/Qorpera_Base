@@ -17,7 +17,6 @@ const sha = (text) => createHash("sha256").update(text).digest("hex");
 // The packager consumes this same list: process/worker entrypoints which are
 // launched by filename must not disappear from the import-graph provenance.
 export const CLOUD_RUNTIME_ENTRY_POINTS = Object.freeze({
-	"company-lock-heartbeat": "packages/company/src/company-lock-heartbeat.ts",
 	"qorpera-ephemeral-runner": "packages/runtime/src/cloud-runner-service-main.ts",
 	"qorpera-native-provider-host": "packages/runtime/src/cloud-native-provider-service-main.ts",
 	"qorpera-identity-recovery-restore": "packages/runtime/src/cloud-identity-recovery-restore-main.ts",

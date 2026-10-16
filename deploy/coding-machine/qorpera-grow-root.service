@@ -1,0 +1,10 @@
+[Unit]
+Description=Grow the root file system to fill the machine's disk
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/qorpera-coding/qorpera-grow-root
+
+[Install]
+WantedBy=multi-user.target

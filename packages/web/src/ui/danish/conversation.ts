@@ -72,6 +72,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Agent {id}": "Agent {id}",
 	"Agent reply · speaker unavailable": "Agentsvar · afsender ukendt",
 	"(empty)": "(tom)",
+	"(erased)": "(slettet)",
 	Failed: "Mislykkedes",
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",
@@ -403,6 +404,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Approvals are not available here yet. Reply in a message instead.":
 		"Godkendelser er ikke tilgængelige her endnu. Svar i en besked i stedet.",
 	"No details provided.": "Ingen detaljer angivet.",
+	"How the page will look": "Sådan kommer siden til at se ud",
 
 	// Message formatting (ui/markdown.ts)
 	"Task status": "Opgavestatus",

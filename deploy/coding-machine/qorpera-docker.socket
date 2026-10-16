@@ -1,0 +1,15 @@
+# The session's Docker socket (DOCKER_HOST=unix:///run/user/<uid>/docker.sock), a
+# user unit enabled for every user manager. The session's rootless daemon starts on
+# its first connection: dockerd runs inside rootlesskit's namespaces, where a socket
+# passed by systemd cannot reach it, so a proxy carries each connection to the
+# daemon's own socket.
+[Unit]
+Description=The session's Docker socket
+
+[Socket]
+ListenStream=%t/docker.sock
+SocketMode=0600
+Service=qorpera-docker-proxy.service
+
+[Install]
+WantedBy=sockets.target

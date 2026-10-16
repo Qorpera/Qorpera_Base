@@ -28,6 +28,8 @@ export interface EventHook {
 	email?: string;
 	/** A signed hook's: whether its sender's signing secret is in the vault. */
 	signingSecretReady?: boolean;
+	/** A Stripe hook's: the last event refused under the secret the vault read off Stripe's page, and why. */
+	lastRefusal?: { receivedAt: string; reason: string };
 	createdAt: string;
 	lastReceivedAt?: string;
 }
@@ -53,6 +55,10 @@ export function parseEventHook(value: unknown, projectUrl: string): EventHook {
 		input.signingSecret && typeof input.signingSecret === "object"
 			? (input.signingSecret as Record<string, unknown>)
 			: undefined;
+	const refusal =
+		signing?.lastRefusal && typeof signing.lastRefusal === "object"
+			? (signing.lastRefusal as Record<string, unknown>)
+			: undefined;
 	return {
 		id: input.id,
 		name: input.name,
@@ -66,6 +72,9 @@ export function parseEventHook(value: unknown, projectUrl: string): EventHook {
 			? { email: input.email }
 			: {}),
 		...(signing ? { signingSecretReady: signing.ready === true } : {}),
+		...(typeof refusal?.receivedAt === "string" && typeof refusal.reason === "string" && refusal.reason
+			? { lastRefusal: { receivedAt: refusal.receivedAt, reason: refusal.reason } }
+			: {}),
 		createdAt: typeof input.createdAt === "string" ? input.createdAt : "",
 		...(typeof input.lastReceivedAt === "string" ? { lastReceivedAt: input.lastReceivedAt } : {}),
 	};
