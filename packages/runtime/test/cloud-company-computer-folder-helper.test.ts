@@ -228,6 +228,8 @@ else {
 		detached: true,
 		stdio: ["inherit", "inherit", "inherit", "pipe"],
 	});
+	// A stop right after the go can end the command before it reads the go; its gate then resets.
+	child.stdio[3].on("error", () => undefined);
 	const kill = () => {
 		try {
 			process.kill(-child.pid, "SIGKILL");
