@@ -1041,7 +1041,7 @@ gave it stops being an owner or administrator or leaves: promoting them again re
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
 
-### Coding MCP sign-ins (20260930440000_coding_mcp_sign_ins)
+### Coding MCP sign-ins (20260928559210_coding_mcp_sign_ins)
 
 The API key a coding session's MCP server needs (an HTTP MCP server that asks for a sign-in). Each is a vault secret
 with the connector id `mcp`, owned by the company (owners and administrators start those) or by the member, captured
