@@ -81,3 +81,22 @@ there (not together with the coding image's proof).
 
 It passed on node 2's test machine on 16 October 2026 (run `20261016T003039-13516-550adc9e`): the image built in five
 minutes, the code hosts' part took 112 s, and the test machine's state was the same after as before.
+
+## The image as files, for a node VM
+
+A proof that runs code hosts inside a node VM of its own (P3's coding session proof) takes the image as files:
+
+```
+node scripts/run-on-node.mjs --machine node02 --sudo --no-status -- \
+  bash deploy/code-host/test/export-code-host-image.sh <out dir> </dev/null
+```
+
+`test/export-code-host-image.sh` builds the folder program and the image on the test machine as the proof above
+does, exports the image from the default store into `<out dir>` (which must not exist yet) and then removes the image
+and the build project again, checking that the test machine is as it was. `<out dir>` gets the image's files
+(`image.root` and its metadata, or one file), the build's record `code-host-image-build.json` and
+`code-host-image-export.json` (`qorpera.code-host-image-export/v1`): the fingerprint, the folder program's sha-256 and
+each file's name, size and sha-256, in the order `lxc image import` takes them. LXD's fingerprint is the sha-256 of
+those files in that order, so the script checks it before it writes the record, and `lxc image import <files...>`
+gives the same image in the VM's default store. The folder program is the one this tree records, so the VM's node
+side, built from the same tree, runs the same program. On failure `<out dir>` is removed.
