@@ -1,8 +1,8 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- 20260930487000 on 924's real native run of Alice's: the native host's describe (qorpera_describe_native_tool_authority
 -- as the entry point) reads its run without the run mutex, through qorpera_folder_native_run_plain. Its answer and its
--- refusals are the locked run check's; the helper is the database owner's only and locks nothing; only describe calls
--- it. With the fixture committed (the harness of 793), another connection holds the run's budget row: describe through
+-- refusals are the locked run check's; the helper is the database owner's only and locks nothing; only describe and
+-- (20260930488000, test 675) the connector tool list call it. With the fixture committed (the harness of 793), another connection holds the run's budget row: describe through
 -- the host answers at once, while a direct describe, the writers and the context fence still wait for the row, also
 -- with request.path set to describe by hand. The timing is printed, not checked.
 reset role;
@@ -71,7 +71,8 @@ $$;
 
 -- 1. The helper is the database owner's only, and its own body names no budget row and locks no row (the source check
 --    sees only this body: the sponsor test it reaches for a wake run still takes the provider connection FOR SHARE, as
---    in the locked check); only describe calls it (this test's own pg_temp functions aside).
+--    in the locked check); only describe and the connector tool list (20260930488000) call it (this test's own pg_temp
+--    functions aside).
 do $$
 declare v_helper pg_proc;
 begin
@@ -83,9 +84,10 @@ begin
 		raise exception 'The plain run check is not the owner''s only: % %', v_helper.proacl, v_helper.proconfig; end if;
 	if v_helper.prosrc ~* 'qorpera_execution_run_budgets|for\s+(update|share|no\s+key\s+update|key\s+share)|nowait|skip\s+locked' then
 		raise exception 'The plain run check names the budget row or locks a row'; end if;
-	if (select array_agg(p.oid) from pg_proc p where p.prosrc like '%qorpera_folder_native_run_plain%' and p.oid <> v_helper.oid and p.pronamespace <> pg_my_temp_schema())
-			is distinct from array['public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure::oid] then
-		raise exception 'A function other than describe calls the plain run check: %', (select array_agg(p.oid::regprocedure)
+	if (select array_agg(p.oid order by p.oid) from pg_proc p where p.prosrc like '%qorpera_folder_native_run_plain%' and p.oid <> v_helper.oid and p.pronamespace <> pg_my_temp_schema())
+			is distinct from (select array_agg(caller order by caller) from unnest(array['public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure::oid,
+				'public.qorpera_list_native_connector_tools(jsonb)'::regprocedure::oid]) caller) then
+		raise exception 'A function other than describe and the connector tool list calls the plain run check: %', (select array_agg(p.oid::regprocedure)
 			from pg_proc p where p.prosrc like '%qorpera_folder_native_run_plain%' and p.oid <> v_helper.oid and p.pronamespace <> pg_my_temp_schema()); end if;
 end $$;
 
