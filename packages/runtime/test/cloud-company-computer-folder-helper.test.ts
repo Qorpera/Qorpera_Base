@@ -517,6 +517,42 @@ describe("the folder helper's boundaries", () => {
 		expect(system.publishes).toHaveLength(3);
 		expect(await gone(paths(DESKTOP).view)).toBe(true);
 	});
+
+	it("logs each boundary's report, a stop's refusal included, without a path or a reason", async () => {
+		const { helper, system, logs } = await setup();
+		await helper.answer({ op: "mount", name: COMMAND, view: VIEW });
+		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		// The stop's final boundary of a command: refused, so the stop control drops the mount; only this log keeps why.
+		const stopped = report(
+			[
+				{ path: "plans/secret.md", outcome: "refused", reason: "the view stopped mid-save", kept: true },
+				{ path: "notes.md", outcome: "saved" },
+				{ path: "draft.md", outcome: "Not A Word" },
+			],
+			{ commitId: null, seq: null, refused: "stopped" },
+		);
+		system.published = { code: 4, stdout: printed(stopped) };
+		expect(await helper.answer(unmount(COMMAND, true))).toEqual({
+			answer: "refused",
+			report: stopped,
+			unmounted: false,
+		});
+		system.published = { code: 0, stdout: printed(report(undefined, { commitId: "commit with spaces" })) };
+		await helper.answer(boundary(DESKTOP));
+		system.published = { code: 1, stdout: undefined };
+		await helper.answer(boundary(DESKTOP));
+		expect(
+			logs.filter((line) => line.startsWith("folder-helper: boundary") || line.startsWith("folder-helper: unmount")),
+		).toEqual([
+			`folder-helper: boundary ${COMMAND} (final): {"answer":"refused","refused":"stopped","commitId":null,"seq":null,"outcomes":{"refused":1,"saved":1,"other":1}}`,
+			`folder-helper: unmount ${COMMAND}: kept`,
+			`folder-helper: boundary ${DESKTOP}: {"answer":"saved","refused":null,"commitId":"other","seq":4,"outcomes":{"saved":1}}`,
+			`folder-helper: boundary ${DESKTOP}: {"answer":"unanswered"}`,
+		]);
+		const logged = logs.join("\n");
+		for (const secret of ["plans/secret.md", "notes.md", "mid-save", "Not A Word", "commit with spaces", VIEW.pass])
+			expect(logged).not.toContain(secret);
+	});
 });
 
 describe("moving a desktop's mount to a newer view", () => {

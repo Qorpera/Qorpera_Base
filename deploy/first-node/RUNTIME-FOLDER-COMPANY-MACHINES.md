@@ -210,13 +210,18 @@ stop only after its completion (`cloud-company-computer-service-stop-control.ts`
   left (`list`), asks a boundary on each (a command's is its final one: its processes are gone) and unmounts it. A
   mount whose program exited 3 answers at once, and one whose program exited otherwise is asked without it (above);
 - the boundaries are asked on every mount at once, inside the stop control's 100 s
-  (`cloud-company-computer-service-stop-control-main.ts`). `systemctl stop` may take 80 s of that
-  (`cloud-company-computer-service-stop-systemd.ts`; the unit's `TimeoutStopSec=70`), so a first run's boundaries get
-  at least 20 s; a run that finds its claim retained only observes the stopped service, so its boundaries get nearly
-  all of the 100 s;
-- a boundary with no answer, or refused in a way a retry gets past (QRC01, the run check; Reads, below), fails the
-  stop control's run, so the provider has no completion and acknowledges nothing: `qorpera_ack_runtime_office_stop`
-  does not clear the pending drain that keeps the old view valid. Every other refusal is an answer: one under rule 4
+  (`cloud-company-computer-service-stop-control-main.ts`), which keeps its last 5 s to seal its history and write its
+  completion, and 10 s before that for the unmounts and drops (`cloud-company-computer-service-stop-folders.ts`).
+  `systemctl stop` may take 80 s of the 100 (`cloud-company-computer-service-stop-systemd.ts`; the unit's
+  `TimeoutStopSec=70`), so a first run's boundaries get what it left less those 15 s; under a second, the run fails
+  without asking. A run that finds its claim retained only observes the stopped service, so its boundaries get nearly
+  85 s. An image without the folder helper has no socket and no mount: the step asks nothing;
+- a boundary with no answer, refused in a way a retry gets past (QRC01, the run check; Reads, below), or refused with
+  no reason while a change still waits (the core did not answer the commit, or a path is left waiting: a command's
+  final that did not close its view, or a desktop's boundary that kept a path), fails the stop control's run, so the
+  provider has no completion and acknowledges nothing: `qorpera_ack_runtime_office_stop` does not clear the pending
+  drain that keeps the old view valid. A desktop's drain asks such a boundary again too. Every other refusal is an
+  answer: one under rule 4
   (a read log that cannot be shown complete), the company's pause, and any other the core gives (`denied`, such as a
   read in the view's read set narrowed since). It is final for that mount, whose changes are refused, a member's as
   well as an agent's, and the report says why; the run goes on (rule 3; review rounds 10, 12 and 13);
@@ -506,11 +511,13 @@ has unsaved changes (4a).
   commit by its view. 4f builds it: a notification through the helper's connection, and the holder run's next tool
   result reading the view's commits since the last one shown, and the publishes refused since, which the office
   service has from the notifications (a refused publish makes no commit). Until then the service logs it (4a).
-- A drain's or a stop's boundaries answer with reports too, refusals included (rule 3), and the office service logs
-  them with the drain, the stop control with the stop. 4f also puts a drain's into the next tool result of the run
-  that held the desktop (a command's goes to its next output read, above), and shows it to the member who took over
-  as a notification on that member's desktop. A stop ends the office service and its desktops, so a stop's report is
-  the log's alone (review round 13).
+- A drain's or a stop's boundaries answer with reports too, refusals included (rule 3). The folder helper logs every
+  boundary's report as it answers (the refusal, the commit and how many paths had each outcome, never a path or a
+  reason), and the office service logs a drain's with the drain too. The stop control writes nothing (its locked child
+  runs with no output), so a stop's is the helper's log, whose journal outlives the office service. 4f also puts a
+  drain's into the next tool result of the run that held the desktop (a command's goes to its next output read,
+  above), and shows it to the member who took over as a notification on that member's desktop. A stop ends the office
+  service and its desktops, so a stop's report is the log's alone (review round 13).
 
 ## Slices
 
