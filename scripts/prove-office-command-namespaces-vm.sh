@@ -99,6 +99,9 @@ for _attempt in $(seq 1 120); do
 	sleep 2
 done
 lx exec "$vm" -- true
+# The guest's lxd-agent has dropped calls (`Error: EOF`) while the guest still boots: let the boot finish first. With no
+# NIC the boot can end degraded, which is fine here.
+lx exec "$vm" -- timeout 240 systemctl is-system-running --wait >/dev/null || true
 [[ -z $(lx exec "$vm" -- ip -br link | awk '$1 != "lo" {print $1}') ]] || fail "nested VM unexpectedly has a NIC"
 [[ $(lx exec "$vm" -- systemd-detect-virt --vm) == kvm ]] || fail "the guest is not a KVM VM"
 uuid=$(lx config get "$vm" volatile.uuid)
@@ -114,8 +117,15 @@ awk '$1 == "Inst" { v = ($3 ~ /^\[/) ? $4 : $3; sub(/^\(/, "", v); print $2 "=" 
 if [[ -s "$work/wanted" ]]; then
 	(cd "$work/push/debs" && xargs apt-get download -q <"$work/wanted")
 fi
-lx file push -r "$work/push" "$vm/root/"
-lx exec "$vm" -- bash -euc 'if compgen -G "/root/push/debs/*.deb" >/dev/null; then dpkg -i /root/push/debs/*.deb; fi'
+# The steps can be done again from the start, so a dropped call is retried.
+for attempt in 1 2 3; do
+	if lx exec "$vm" -- rm -rf /root/push && lx file push -r "$work/push" "$vm/root/" &&
+		lx exec "$vm" -- bash -euc 'if compgen -G "/root/push/debs/*.deb" >/dev/null; then dpkg -i /root/push/debs/*.deb; fi'; then
+		break
+	fi
+	((attempt < 3)) || fail "could not push and install the guest's packages"
+	sleep 5
+done
 lx exec "$vm" -- useradd --system --user-group --no-create-home --shell /usr/sbin/nologin qorpera-office
 # The office unit hides this folder without a '-' prefix, so it must exist, as on the image. It stays empty.
 lx exec "$vm" -- install -d -m 0700 /etc/qorpera-office/credentials
