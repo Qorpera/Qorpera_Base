@@ -1495,7 +1495,7 @@ export const WORKER_BRIEF_SECTIONS = Object.freeze([
 ] as const);
 /** A worker's results' body sections after the summary, in their order (F2-5b). */
 export const WORKER_RESULTS_SECTIONS = Object.freeze(["Needs", "Files"] as const);
-/** Today's bounds of the worker tools' texts (qorpera_manage_agent_worker, report_work), kept. */
+/** The worker tools' text bounds (manage_worker, report_work), kept from the row writer legacy sweep D6 dropped. */
 export const WORKER_TEXT_MAX_BYTES = Object.freeze({
 	goal: 4000,
 	doneWhen: 2000,
@@ -2489,8 +2489,8 @@ function workerPathItems(section: string, paths: readonly string[], maxBytes: nu
 	return paths.map((path) => `- ${path}`).join("\n");
 }
 
-/** The platform's standing texts of a brief (contract 13), as `qorpera_manage_agent_worker` writes
- * them today; the database checks a brief's against its own copy. */
+/** The platform's standing texts of a brief (contract 13), as `qorpera_company_state_worker_standing` has
+ * them; the database checks a brief's against that copy. */
 export function workerStandingTexts(worker: {
 	readonly species: "in-house" | "coding";
 	readonly access: "read" | "write";

@@ -72,6 +72,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Agent {id}": "Agent {id}",
 	"Agent reply · speaker unavailable": "Agentsvar · afsender ukendt",
 	"(empty)": "(tom)",
+	"(erased)": "(slettet)",
 	Failed: "Mislykkedes",
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",

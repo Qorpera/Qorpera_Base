@@ -56,10 +56,20 @@ const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 export const beside = (first, second, label) =>
 	`out=$(mktemp) && { ( ${second} ) >"$out" 2>&1 & pid=$!; ${first}; a=$?; wait $pid; b=$?; echo "== ${label} (ran beside)"; cat "$out"; rm -f "$out"; [ $a = 0 ] && [ $b = 0 ]; }`;
 
+/** The commands that run `waiting`, test files of packages/`workspace` that mostly wait, as a second vitest beside
+ * the rest of the package. The rest excludes them by these same names (and `exclude` too), so every test file runs
+ * once. A name that matches no file fails the step before anything runs, so a rename never drops tests. */
+const besideTheRest = (workspace, waiting, exclude = []) => [
+	`(cd packages/${workspace} && for file in ${waiting.join(" ")}; do [ -f "$file" ] || { echo "== ${workspace}: $file is missing"; exit 1; }; done)`,
+	beside(
+		vitest(workspace, [...exclude, ...waiting].map((file) => ` --exclude ${file}`).join("")),
+		vitest(workspace, waiting.map((file) => ` ${file}`).join("")),
+		`${workspace}: the files that mostly wait`,
+	),
+];
+
 /** Runner-orchestrator test files that spend nearly all their time waiting on real deadlines and timeouts, not on
- * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run as a second vitest beside the rest
- * of the package, which excludes them by these same names, so every test file runs once. A name that matches no file
- * fails the step, so a rename never drops tests. */
+ * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run beside the rest (besideTheRest). */
 export const RUNNER_ORCHESTRATOR_WAITING = [
 	"test/lxd-office-preparation-execution.test.ts",
 	"test/lxd-office-preparation-transport.test.ts",
@@ -71,6 +81,22 @@ export const RUNNER_ORCHESTRATOR_WAITING = [
 	"test/lxd-provider-concurrency.test.ts",
 	"test/orchestrator.test.ts",
 ];
+
+/** Runtime test files that spend nearly all their time asleep on timers and child processes, not on CPU: about 127 s
+ * of the step's 235 s of file time, 121 s of it asleep (15 Oct). They run beside the rest (besideTheRest). */
+export const RUNTIME_WAITING = [
+	"test/cloud-codex-tool-session.test.ts",
+	"test/cloud-company-computer-control-output-linux.test.ts",
+	"test/cloud-company-computer-linux-guest.test.ts",
+	"test/cloud-company-computer-browser-egress.test.ts",
+	"test/shared-vault-secrets.test.ts",
+	"test/cloud-company-computer-shell.test.ts",
+	"test/cloud-company-computer-desktop.test.ts",
+	"test/cloud-company-computer-service.test.ts",
+	"test/cloud-native-transport.test.ts",
+];
+/** The coding command supervisor's test, which runs on its own after the rest of the runtime package. */
+const RUNTIME_GUEST = "test/cloud-coding-command-guest.test.ts";
 
 /** Paths that never need a test: prose, and the switched-off workflows. */
 const QUIET = [/\.md$/, /^docs-audit\//, /^LICENSE$/, /^\.github\//];
@@ -169,12 +195,9 @@ export const STEPS = [
 	},
 	{
 		name: "runtime",
-		why: "every change that is not web-only (runtime-release-train.yml): all tests, then the coding command supervisor",
+		why: "every change that is not web-only (runtime-release-train.yml): all tests, then the coding command supervisor; the files that mostly wait run beside the rest",
 		paths: NOT_WEB_ONLY,
-		commands: [
-			vitest("runtime", " --exclude test/cloud-coding-command-guest.test.ts"),
-			vitest("runtime", " test/cloud-coding-command-guest.test.ts"),
-		],
+		commands: [...besideTheRest("runtime", RUNTIME_WAITING, [RUNTIME_GUEST]), vitest("runtime", ` ${RUNTIME_GUEST}`)],
 	},
 	{
 		name: "scripts",
@@ -199,14 +222,7 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\//,
 			/^packages\/cloud-client\/src\//,
 		],
-		commands: [
-			`(cd packages/runner-orchestrator && for file in ${RUNNER_ORCHESTRATOR_WAITING.join(" ")}; do [ -f "$file" ] || { echo "== runner-orchestrator: $file is missing"; exit 1; }; done)`,
-			beside(
-				vitest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING.map((file) => ` --exclude ${file}`).join("")),
-				vitest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING.map((file) => ` ${file}`).join("")),
-				"runner-orchestrator: the files that mostly wait",
-			),
-		],
+		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING),
 	},
 	{
 		name: "folder-program",
