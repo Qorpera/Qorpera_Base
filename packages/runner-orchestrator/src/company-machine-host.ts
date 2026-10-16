@@ -162,9 +162,8 @@ interface BootFolder {
 	bootId: string;
 	/** pending: not settled yet, and a start waits; open: the boot's commands are fenced, by their windows and the
 	 * machine's boundaries, with or without a view; none: no pass can have reached the boot's guest (#viewless), which
-	 * runs without /company; ended: the boot's folder can never be proven again, and its guest restarts or its
-	 * placement was retired (6d-2): its starts are refused. */
-	state: "pending" | "open" | "none" | "ended";
+	 * runs without /company. A boot whose folder ended (6d-2) is kept apart from its folder (#endings). */
+	state: "pending" | "open" | "none";
 	/** This process saw the boot start; false once it restarted, and then the service's views decide. */
 	known: boolean;
 	/** This process handed the guest a pass of the boot (answered or not): the boot is fenced for good. */
@@ -185,9 +184,6 @@ interface BootFolder {
 	/** The windows this process opened for the boot's commands, until their command ends: the service keeps them in
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
-	/** How the boot's folder ended: its guest restarts (asked again each pass until the new boot comes), or its
-	 * placement was retired; and the code each pass reports. */
-	ended?: { by: "restart" | "retirement"; code: string };
 }
 export type CompanyMachineCommand =
 	| { action: "start"; commandId: string; inputSha256: string; command: string; timeoutMs: number | null }
@@ -262,6 +258,11 @@ export class LxdCompanyMachineHost {
 	readonly #starting = new Map<string, number>();
 	/** Per placement: its running boot's folder. */
 	readonly #folders = new Map<string, BootFolder>();
+	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
+	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
+	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
+	 * it whatever came of its folder, a stop or a record (#ended). Dropped only with the placement (#remove). */
+	readonly #endings = new Map<string, { by: "restart" | "retirement"; code: string }>();
 	/** Per placement and command: the starts being delivered (from their window's open to the guest's answer). */
 	readonly #delivering = new Map<string, number>();
 	/** Per look inside a machine with a folder, until its ends are worked out: the commands whose start's delivery
@@ -493,6 +494,14 @@ export class LxdCompanyMachineHost {
 		if (lease.schema !== "qorpera.machine-guest-lease-receipt/v1" || lease.bootId !== bootId)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		const folder = this.#options.folder;
+		// A guest whose boot's folder ended (6d-2), whatever came of that folder: nothing of the boot is looked at,
+		// recorded or marked running. A guest that restarts is asked again until its next boot comes, and a retired
+		// placement waits for its stop.
+		const over = this.#endings.get(`${e.placementId}/${bootId}`);
+		if (over) {
+			if (over.by === "restart") await this.#reboot(e, signal);
+			return { placementId: e.placementId, step: "commands", state: "done", folder: over.code };
+		}
 		if (e.bootId !== bootId) {
 			// The boot before ends first: its views' final boundary, before the new boot is recorded.
 			if (folder && e.runningAt !== null && e.bootId !== null) await this.#endFolder(e, e.bootId, signal, true);
@@ -543,12 +552,11 @@ export class LxdCompanyMachineHost {
 				};
 				this.#folders.set(e.placementId, f);
 			}
-			if (f.state === "pending") settled = await this.#settle(e, f, helperSha256, signal);
-			if (f.state === "ended") {
-				// Nothing of an ended boot is looked at or recorded: a guest that restarts is asked again until its new
-				// boot comes, and a retired placement waits for its stop.
-				if (f.ended?.by === "restart") await this.#reboot(e, signal);
-				return { placementId: e.placementId, step: "commands", state: "done", folder: settled ?? f.ended?.code };
+			if (f.state === "pending") {
+				settled = await this.#settle(e, f, helperSha256, signal);
+				// A settle that ended the boot (its new disk retired) leaves it as above.
+				if (this.#ended(e.placementId, bootId))
+					return { placementId: e.placementId, step: "commands", state: "done", folder: settled };
 			}
 		}
 		// A boot settled before this pass is watched: its windows opened again first, then its reads and views checked.
@@ -762,8 +770,7 @@ export class LxdCompanyMachineHost {
 		)
 			code = `FOLDER_RETIRED:${String(retired.reason).toUpperCase()}`;
 		else return "COMPANY_MACHINE_RETIRE_INVALID";
-		f.state = "ended";
-		f.ended = { by: "retirement", code };
+		this.#endings.set(`${e.placementId}/${f.bootId}`, { by: "retirement", code });
 		return code;
 	}
 	/** A boot whose folder can never be proven again (6d-2): its reads stay unproven, or its own view was closed or is
@@ -772,8 +779,7 @@ export class LxdCompanyMachineHost {
 	 * (#delivered). */
 	async #restart(e: CompanyMachineEntry, f: BootFolder, why: string, signal: AbortSignal): Promise<string> {
 		const code = `FOLDER_RESTART:${why}`;
-		f.state = "ended";
-		f.ended = { by: "restart", code };
+		this.#endings.set(`${e.placementId}/${f.bootId}`, { by: "restart", code });
 		await this.#delivered(e, signal);
 		await this.#reboot(e, signal);
 		return code;
@@ -798,10 +804,9 @@ export class LxdCompanyMachineHost {
 			.catch(() => undefined);
 	}
 	/** A boot whose folder ended (6d-2): nothing of it is looked at or recorded any more, by a pass or its stop, and
-	 * nothing its commands printed, nor how they ended, leaves it (#command). */
+	 * nothing its commands printed, nor how they ended, leaves it (#command). Its starts are refused (#settled). */
 	#ended(placementId: string, bootId: string): boolean {
-		const f = this.#folders.get(placementId);
-		return f?.state === "ended" && f.bootId === bootId;
+		return this.#endings.has(`${placementId}/${bootId}`);
 	}
 	/** Hands a view to the guest's folder program (folder-mount, F3 6c) on exec stdin: its pass is never in an argument,
 	 * a file on this host or a log. The newest view the guest is handed wins. */
@@ -843,7 +848,9 @@ export class LxdCompanyMachineHost {
 	/** A boot's folder ends (F3 6d), with its machine up: the final boundary of every view of the boot the service may
 	 * hold, which closes them in the core (at most a minute: what an unanswered final held is not applied), then the
 	 * view's close. A machine that restarted is then said to have (`restarted`): its command windows end, and a read it
-	 * lost no longer makes its next views unproven. Nothing here holds up the stop or the next boot. */
+	 * lost no longer makes its next views unproven. Nothing here holds up the stop or the next boot. A boot whose folder
+	 * ended (6d-2) stays so once its folder is gone (#endings): a stop, or a next boot, that SQL did not take yet comes
+	 * back to it. */
 	async #endFolder(e: CompanyMachineEntry, bootId: string, signal: AbortSignal, restarted: boolean): Promise<void> {
 		const folder = this.#options.folder as FolderControl;
 		const kept = this.#folders.get(e.placementId);
@@ -968,8 +975,9 @@ export class LxdCompanyMachineHost {
 		// A last look first, when this boot was seen before, so a machine busy again since the last pass keeps running
 		// (stop custody then refuses). A guest that does not answer still stops, once busy work seen earlier is recorded;
 		// a record SQL does not take leaves the machine running until a later pass records it. A boot whose folder ended
-		// (6d-2) is neither looked at nor recorded, before its windows close or after: how its commands ended, and what
-		// they printed, stay held whatever a boundary answers (#ended).
+		// (6d-2) is neither looked at nor recorded, before its windows close or after, and at every stop again after one
+		// whose record or power-off failed (its folder gone by then): how its commands ended, and what they printed, stay
+		// held whatever a boundary answers (#ended).
 		const kept = this.#guests.get(e.placementId);
 		const bootId = e.bootId;
 		const ended = () => bootId !== null && this.#ended(e.placementId, bootId);
@@ -1059,6 +1067,9 @@ export class LxdCompanyMachineHost {
 		if (released.state !== "released") throw new Error("COMPANY_MACHINE_RELEASE_INVALID");
 		this.#guests.delete(e.placementId);
 		this.#folders.delete(e.placementId);
+		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
+		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.
+		for (const key of this.#endings.keys()) if (key.startsWith(`${e.placementId}/`)) this.#endings.delete(key);
 		return { placementId: e.placementId, step: "release", state: "done" };
 	}
 	/** This placement's own instance exists, unchanged, and runs. */
@@ -1220,7 +1231,10 @@ export class LxdCompanyMachineHost {
 			// A pass can end the boot's folder (6d-2), or see its next boot, while the start waits: after each wait, up to
 			// the guest's exec, the start goes on only on the boot it was let in on, and its folder not ended.
 			const fenced = () => {
-				if (boot && (this.#folders.get(authority.placementId) !== boot || boot.state === "ended"))
+				if (
+					boot &&
+					(this.#folders.get(authority.placementId) !== boot || this.#ended(authority.placementId, boot.bootId))
+				)
 					throw new Error("COMPANY_MACHINE_FOLDER_ENDED");
 			};
 			if (folder && boot?.state === "open") {
@@ -1307,15 +1321,15 @@ export class LxdCompanyMachineHost {
 		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		if (!folder) return receipt;
-		const f = this.#folders.get(authority.placementId);
-		if (f?.bootId === authority.bootId && f?.state === "none") return receipt;
 		// What the command printed, and how it ended, leave only once every read the machine was served is released
 		// (F3 6d): a boundary first. A start, whose wait took most of the gateway's time, holds them for the next read,
 		// and a command still running with nothing printed has nothing to let out. Nothing leaves a boot whose folder
-		// ended (6d-2), whatever a boundary answers (a crashed service's successor releases reads it never served): its
-		// guest may still run, its reboot not taken yet. A boot can end while its guest answers or the boundary is out,
-		// so it is checked after each.
+		// ended (6d-2), whatever a boundary answers (a crashed service's successor releases reads it never served) and
+		// whatever came of its folder: its guest may still run, its reboot not taken yet. A boot can end while its guest
+		// answers or the boundary is out, so it is checked after each. Only a boot without /company (none) skips this.
 		const ended = () => !!authority.bootId && this.#ended(authority.placementId, authority.bootId);
+		const f = this.#folders.get(authority.placementId);
+		if (!ended() && f?.bootId === authority.bootId && f?.state === "none") return receipt;
 		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
 		if (request.action === "start" || ended() || (receipt.state === "running" && receipt.log.totalBytes === 0))
 			return held(receipt, at);
@@ -1329,9 +1343,9 @@ export class LxdCompanyMachineHost {
 	async #settled(authority: CompanyMachineCommandAuthority, signal: AbortSignal): Promise<BootFolder> {
 		const deadline = Date.now() + FOLDER_WAIT_MS;
 		for (;;) {
-			const f = this.#folders.get(authority.placementId);
-			if (typeof authority.bootId === "string" && f?.bootId === authority.bootId && f.state === "ended")
+			if (typeof authority.bootId === "string" && this.#ended(authority.placementId, authority.bootId))
 				throw new Error("COMPANY_MACHINE_FOLDER_ENDED");
+			const f = this.#folders.get(authority.placementId);
 			if (typeof authority.bootId === "string" && f?.bootId === authority.bootId && f.state !== "pending") return f;
 			if (typeof authority.bootId !== "string" || Date.now() >= deadline)
 				throw new Error("COMPANY_MACHINE_FOLDER_UNANSWERED");

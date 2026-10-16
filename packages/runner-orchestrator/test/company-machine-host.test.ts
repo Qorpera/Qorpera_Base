@@ -7,7 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
-import { type CompanyMachineEntry, LxdCompanyMachineHost } from "../src/company-machine-host.ts";
+import {
+	type CompanyMachineCommand,
+	type CompanyMachineEntry,
+	LxdCompanyMachineHost,
+} from "../src/company-machine-host.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type { LxdExecStreamRequest, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
@@ -1937,6 +1941,128 @@ describe("company machine host when a test machine's folder can never be proven 
 		});
 		expect(after.indexOf("sql:qorpera_suspend_company_machine")).toBeGreaterThan(after.indexOf("lxd:stop"));
 		expect(reboots(f)).toBe(1);
+	});
+
+	it("records nothing of a boot whose folder ended at a stop tried again, after its record or power-off failed", async () => {
+		for (const failed of ["record", "power-off"] as const) {
+			const f = await fixture({ folder: true });
+			await f.host.pass(f.signal);
+			const commandId = randomUUID();
+			f.running([commandId]);
+			await start(f, commandId);
+			// The guest does not take its reboot.
+			const exec = f.client.execInstance.getMockImplementation()!;
+			f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+				if (command.join(" ") !== "/bin/sh -c systemctl --no-block reboot") return exec(project, name, command);
+				f.order.push("reboot");
+				throw new Error("LXD instance command failed");
+			});
+			expect(await f.host.pass(f.signal)).toEqual([quiet]);
+			// The service crashed, and the next one holds no view of the boot's: it answers the machine's reads released.
+			f.service.held = [];
+			const now = Date.now();
+			const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+			try {
+				expect(await f.host.pass(f.signal)).toEqual([quiet]);
+				clock.mockReturnValue(now + 90000);
+				expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:VIEW_GONE" }]);
+			} finally {
+				clock.mockRestore();
+			}
+			// The command finishes meanwhile, and the machine is stopped before its guest boots again.
+			f.observe({ ...idle, ended: [{ commandId, state: "succeeded", exitCode: 0, outputTail: "ok" }] });
+			f.snapshot({ commands: [commandId], containers: true });
+			f.entry.stopDue = true;
+			const from = f.order.length;
+			const asked = f.service.requests.length;
+			if (failed === "record") {
+				// SQL does not take the stop's record (its company's locks are busy): the boot's folder ended by then.
+				f.busy.add("qorpera_record_company_machine_stop");
+				expect(await f.host.pass(f.signal)).toEqual([
+					{ placementId: id(6), step: "stop", state: "not-now", code: "CODING_CONTROL_BUSY" },
+				]);
+				f.busy.delete("qorpera_record_company_machine_stop");
+			} else {
+				// SQL refuses the power-off once the stop was recorded: the machine is wanted running again first.
+				const failing = f.client.execInstance.getMockImplementation()!;
+				f.client.execInstance.mockImplementation(
+					async (project: string, name: string, command: readonly string[]) => {
+						if (command[3] === "stop-commands") f.refusals.set("stop", "MACHINE_WANTED_RUNNING");
+						return failing(project, name, command);
+					},
+				);
+				expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "not-now" }]);
+				f.client.execInstance.mockImplementation(failing);
+				f.refusals.delete("stop");
+				f.entry.stopDue = false;
+				// Its guest is asked to reboot again, and nothing of the boot is looked at or recorded.
+				expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:VIEW_GONE" }]);
+				expect(reboots(f)).toBe(2);
+				f.entry.stopDue = true;
+			}
+			expect(f.instance()?.status).toBe("Running");
+			// The stop tried again: no last look, no window close, and no end of the command recorded. Each of its records
+			// lists none of the boot's commands, and tells its containers.
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+			const after = f.order.slice(from);
+			expect(after).not.toContain("exec:observe");
+			expect(f.service.requests.slice(asked).map((request) => request.op)).not.toContain("close");
+			expect(recorded(f)).toEqual([]);
+			expect(
+				f.calls
+					.filter((call) => call.method === "qorpera_record_company_machine_stop")
+					.map((call) => [call.args.p_boot_id, call.args.p_commands, call.args.p_containers]),
+			).toEqual([
+				[f.boot, [], true],
+				[f.boot, [], true],
+			]);
+			expect(f.instance()?.status).toBe("Stopped");
+			const suspended = after.lastIndexOf("sql:qorpera_suspend_company_machine");
+			expect(suspended).toBeGreaterThan(after.lastIndexOf("lxd:stop"));
+		}
+	});
+
+	it("holds what a boot whose folder ended prints, and refuses its starts, until SQL takes its next boot", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		const commandId = randomUUID();
+		f.running([commandId]);
+		await start(f, commandId);
+		f.service.reads = "unproven";
+		expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:UNPROVEN" }]);
+		// The guest boots again, its command printed and exited before. SQL does not take the next boot yet (its
+		// company's locks are busy): it still knows the boot before, whose folder ended, and the gateway lets in that
+		// boot's reads.
+		const old = f.boot;
+		f.reboot();
+		f.service.reads = "released";
+		f.result(finished);
+		f.busy.add("qorpera_mark_company_machine_running");
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "not-now", code: "CODING_CONTROL_BUSY" },
+		]);
+		const kept = { state: "running", exitCode: null, output: "", truncated: false };
+		const onOld = (action: CompanyMachineCommand) =>
+			f.host.command(
+				{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: old, ...credit() },
+				action,
+				f.signal,
+			);
+		const reading: CompanyMachineCommand = { action: "read", read: { commandId, tail: true, limit: 100 } };
+		expect(await onOld(reading)).toMatchObject(kept);
+		expect(await onOld({ action: "cancel", commandId })).toMatchObject(kept);
+		const late = { ...credit(), bootId: old };
+		await expect(start(f, randomUUID(), late)).rejects.toThrow("COMPANY_MACHINE_FOLDER_ENDED");
+		// SQL takes the next boot, which gets its own view. A read let in for the boot before is still held, and the next
+		// boot's starts run.
+		f.busy.delete("qorpera_mark_company_machine_running");
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(await onOld(reading)).toMatchObject(kept);
+		f.running();
+		f.result({});
+		expect(await start(f)).toMatchObject({ state: "running" });
 	});
 
 	it("refuses a start whose boot a pass ended while its window opened, and the restart waits for it", async () => {
