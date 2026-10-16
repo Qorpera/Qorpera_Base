@@ -33,7 +33,7 @@ import {
 	selectSessionExecutionSponsor,
 } from "../cloud/session-input.ts";
 import { applySidebarRequest, type CompanySidebar, type SidebarRequest } from "../cloud/sidebar.ts";
-import { projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
+import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
 	HostedProfileTeam,
@@ -205,6 +205,11 @@ export interface ConversationState {
 	events: HostedSessionEvent[];
 	pending: PendingSessionInput[];
 	projection: TranscriptProjection;
+	/** The erasure generation (`memory_generation`) that `events` reflect. An erase rewrites an event's body in place,
+	 * so a full read that finds another generation reads the loaded events again. Undefined until a full read found
+	 * it, and again when a read that may predate an erase landed after the events were read again: a full read then
+	 * reads them again once the generation is above 0. */
+	memoryGeneration?: number;
 	loading: boolean;
 	complete: boolean;
 	error?: string;
@@ -360,11 +365,21 @@ function missingTailRead(error: unknown): boolean {
 	return error instanceof CloudRpcError && (error.missing || error.code === "42883");
 }
 
-/** Reads of one transcript as one list: each event once, oldest first. */
+/** Whether `event` should replace `known`, a copy of the same event read before: only an erased copy of a copy that
+ * is not. An event never changes but by an erase, and an erase is final, so a read from before it never puts the
+ * erased words back. */
+function erasedCopy(known: HostedSessionEvent | undefined, event: HostedSessionEvent): boolean {
+	return known !== undefined && isErased(event.body) && !isErased(known.body);
+}
+
+/** Reads of one transcript as one list: each event once (its erased copy where a read has one), oldest first. */
 function mergeEvents(...reads: readonly (readonly HostedSessionEvent[])[]): HostedSessionEvent[] {
 	const bySequence = new Map<number, HostedSessionEvent>();
 	for (const read of reads)
-		for (const event of read) if (!bySequence.has(event.sequence)) bySequence.set(event.sequence, event);
+		for (const event of read) {
+			const known = bySequence.get(event.sequence);
+			if (!known || erasedCopy(known, event)) bySequence.set(event.sequence, event);
+		}
 	return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
@@ -1545,19 +1560,39 @@ export class CompanyController {
 			const full = request.full || !known.complete;
 			request.full = false;
 			const events = [...known.events];
-			const sequences = new Set(events.map((event) => event.sequence));
+			const places = new Map(events.map((event, place) => [event.sequence, place]));
+			/** Set when a read replaced an event with its erased copy. */
+			let replaced = false;
 			const add = (read: readonly HostedSessionEvent[]) => {
-				for (const event of read)
-					if (!sequences.has(event.sequence)) {
-						sequences.add(event.sequence);
+				for (const event of read) {
+					const place = places.get(event.sequence);
+					if (place === undefined) {
+						places.set(event.sequence, events.length);
 						events.push(event);
+					} else if (erasedCopy(events[place], event)) {
+						events[place] = event;
+						replaced = true;
 					}
+				}
 			};
 			/** Set when this load read the newest events first; else the thread keeps what it knew. */
 			let hasEarlier: boolean | undefined;
 			// A failed read ends the others at their next page.
 			let failed = false;
 			const live = () => !this.#stopped && !failed;
+			// The history after `from`, page by page, oldest first.
+			const readForward = async (from: number): Promise<boolean> => {
+				let after = from;
+				for (;;) {
+					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE);
+					if (!live()) return false;
+					add(page);
+					if (page.length < EVENT_PAGE) return true;
+					const next = page[page.length - 1]?.sequence ?? after;
+					if (next <= after) throw new Error(t("The transcript cursor did not advance."));
+					after = next;
+				}
+			};
 			const readEvents = async (): Promise<boolean> => {
 				// A thread opens at its newest events; "Show earlier" reads further back (loadEarlier).
 				if (!known.events.length && !this.#tailMissing) {
@@ -1573,17 +1608,8 @@ export class CompanyController {
 						this.#tailMissing = true;
 					}
 				}
-				// The history after what the thread has, page by page, oldest first.
-				let after = known.projection.lastSequence;
-				for (;;) {
-					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE);
-					if (!live()) return false;
-					add(page);
-					if (page.length < EVENT_PAGE) return true;
-					const next = page[page.length - 1]?.sequence ?? after;
-					if (next <= after) throw new Error(t("The transcript cursor did not advance."));
-					after = next;
-				}
+				// The history after what the thread has.
+				return readForward(known.projection.lastSequence);
 			};
 			// Every input still waiting, all pages.
 			const readPending = async (): Promise<PendingSessionInput[] | undefined> => {
@@ -1606,9 +1632,9 @@ export class CompanyController {
 			const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
 			const agent = session && isPrimaryStaffSession(session) ? session : undefined;
 			try {
-				// The history, the waiting inputs, the coding sessions and the proposals do not depend on
-				// one another: they are read side by side, and the thread draws once, when all landed.
-				const [complete, read, listed, proposals] = await Promise.all([
+				// The history, the waiting inputs, the coding sessions, the proposals and the erasure generation do not
+				// depend on one another: they are read side by side, and the thread draws once, when all landed.
+				const [complete, read, listed, proposals, generation] = await Promise.all([
 					readEvents(),
 					// New events only: the waiting inputs, coding sessions and proposals stay as last read.
 					full ? readPending() : Promise.resolve(undefined),
@@ -1619,9 +1645,22 @@ export class CompanyController {
 					full && agent?.staffAgentId
 						? this.#api.listAgentProposals(agent.environmentId, agent.staffAgentId).catch(() => undefined)
 						: Promise.resolve(undefined),
+					// An erase rewrites an event the thread may have read already. A failed read keeps the generation the
+					// events reflect, and the next full read asks again.
+					full
+						? this.#api.readSessionMemoryGeneration(sessionId).catch(() => undefined)
+						: Promise.resolve(undefined),
 				]);
 				const pending = full ? read : store.get().pending;
 				if (this.#stopped || !complete || !pending) return;
+				// Another generation than the events reflect (or, first found, above 0, which may have come after a read
+				// that ran beside it): the events read so far are read again, and each erased copy replaces its event.
+				const reflected = store.get().memoryGeneration;
+				const reread =
+					generation !== undefined && (reflected === undefined ? generation > 0 : generation !== reflected)
+						? current()[0]?.sequence
+						: undefined;
+				if (reread !== undefined && !(await readForward(reread - 1))) return;
 				let merged = current();
 				let earlier = hasEarlier ?? store.get().hasEarlier ?? false;
 				// An input a run took before the oldest event read stands in the transcript before it: read
@@ -1647,6 +1686,12 @@ export class CompanyController {
 					any: now,
 					full: full ? now : (this.#conversationReadAt.get(sessionId)?.full ?? 0),
 				});
+				// A "Show earlier" that landed meanwhile may hold copies from before an erase: unless it reached no
+				// further back than the events read again, and left the generation as this read found it, the generation
+				// stays unknown and the next full read reads the events again.
+				const settled =
+					store.get().memoryGeneration === reflected &&
+					(reread === undefined || (store.get().events[0]?.sequence ?? reread) >= reread);
 				store.set({
 					events: merged,
 					pending,
@@ -1658,14 +1703,16 @@ export class CompanyController {
 					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
 					codingSessions,
 					...(proposals ? { proposals: this.#withoutDiscarded(proposals) } : {}),
+					...(generation === undefined ? {} : { memoryGeneration: settled ? generation : undefined }),
 					hasEarlier: earlier,
 				});
 			} catch (error) {
 				failed = true;
-				// The history read before the failure stays, so the next read resumes after it.
+				// The history read before the failure stays, so the next read resumes after it, and so do erased copies.
+				// The generation the events reflect stays as it was: a failed read of them again is repeated.
 				const merged = current();
 				const read =
-					!this.#stopped && events.length > known.events.length
+					!this.#stopped && (events.length > known.events.length || replaced)
 						? {
 								events: merged,
 								projection: projectTranscript(merged, store.get().pending),
@@ -1728,6 +1775,9 @@ export class CompanyController {
 				earlierLoading: false,
 				optimistic: reconcileOptimistic({ optimistic: current.optimistic, pending: current.pending, events }),
 				interactionAnswers: reconcileInteractionAnswers(current.interactionAnswers, projection, current.pending),
+				// A full read found another erasure generation meanwhile, and may have read the events again before these
+				// landed: they may predate an erase, so the next full read reads them again.
+				...(current.memoryGeneration === state.memoryGeneration ? {} : { memoryGeneration: undefined }),
 			});
 		} catch (error) {
 			if (!this.#stopped) store.set({ earlierLoading: false, earlierError: describeError(error) });

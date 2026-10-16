@@ -219,6 +219,111 @@ export function takeConnectorReturn(): HostedConnectorReturn | undefined {
 	};
 }
 
+/** Whose secret a capture makes or replaces, and what it is called. The cloud checks each against the member's
+ * role before it issues a ticket. */
+export interface SecretCaptureTarget {
+	ownerKind: "company" | "member";
+	/** The member who owns a member secret (always the caller); null for the company's. */
+	ownerUserId: string | null;
+	connectorId: string;
+	secretName: string;
+	purpose: string;
+	/** The secret whose value this capture replaces; undefined for a new one. */
+	existingSecretId: string | undefined;
+}
+
+/** The two hops every typed secret takes: a one-time ticket from the cloud, then the company's broker. */
+export interface SecretCapture {
+	ticket(target: SecretCaptureTarget): Promise<HostedConnectorCaptureTicket>;
+	/** Posts JSON to the broker and resolves to its status and answer, whatever the status. */
+	call(
+		url: string,
+		body: unknown,
+		signal: AbortSignal | undefined,
+		deadlineMs?: number,
+	): Promise<{ status: number; value: unknown }>;
+	/** Posts JSON to the broker; anything but a 200 is a failure. */
+	post(url: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown>;
+	/** Hands typed fields to the broker under a ticket; they never pass through Supabase. */
+	send(
+		issued: HostedConnectorCaptureTicket,
+		fields: Readonly<Record<string, string>>,
+		signal: AbortSignal | undefined,
+	): Promise<void>;
+}
+
+export function createSecretCapture(
+	cloud: Cloud,
+	profile: { profileId: string; environmentId: string },
+	fetchImplementation: typeof fetch = fetch,
+): SecretCapture {
+	const company = profile.profileId.toLowerCase();
+	async function call(
+		url: string,
+		body: unknown,
+		signal: AbortSignal | undefined,
+		deadlineMs = 30_000,
+	): Promise<{ status: number; value: unknown }> {
+		return withCloudDeadline(
+			async (deadline) => {
+				const response = await fetchImplementation(url, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(body),
+					signal: deadline,
+					redirect: "error",
+					cache: "no-store",
+					credentials: "omit",
+				});
+				const bytes = await readBoundedCloudResponse(response, 64 * 1024, deadline);
+				let value: unknown = null;
+				try {
+					value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+				} catch {
+					value = null;
+				}
+				return { status: response.status, value };
+			},
+			deadlineMs,
+			signal,
+		);
+	}
+	async function post(url: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+		const answer = await call(url, body, signal);
+		if (answer.status !== 200) throw new Error("The connection could not be started. Try again.");
+		return answer.value;
+	}
+	return {
+		async ticket(target) {
+			return parseTicket(
+				await cloud.rpc("qorpera_begin_cloud_secret_capture", {
+					p_profile_id: profile.profileId,
+					p_environment_id: profile.environmentId,
+					p_owner_kind: target.ownerKind,
+					p_owner_user_id: target.ownerUserId,
+					p_connector_id: target.connectorId,
+					p_secret_name: target.secretName,
+					p_purpose: target.purpose,
+					p_existing_secret_id: target.existingSecretId ?? null,
+				}),
+			);
+		},
+		call,
+		post,
+		async send(issued, fields, signal) {
+			await post(
+				`${issued.serviceOrigin}/v1/captures/${issued.ticketId}?company=${company}`,
+				{
+					schema: "qorpera.cloud-secret-capture-request/v1",
+					captureCapability: issued.captureCapability,
+					fields,
+				},
+				signal,
+			);
+		},
+	};
+}
+
 export interface WebConnectors {
 	list(signal?: AbortSignal): Promise<HostedConnectorConnection[]>;
 	/** Starts a provider sign-in for a company connection; resolves to the
@@ -254,57 +359,19 @@ export function createWebConnectors(
 	if (!UUID_PATTERN.test(profile.profileId) || !UUID_PATTERN.test(profile.environmentId))
 		throw new Error("Invalid company for connectors.");
 	const company = profile.profileId.toLowerCase();
+	const capture = createSecretCapture(cloud, profile, fetchImplementation);
 	const label = (connectorId: HostedConnectorId) =>
 		HOSTED_CONNECTORS.find((connector) => connector.id === connectorId)?.label ?? connectorId;
 	async function ticket(connectorId: HostedConnectorId, existingSecretId: string | undefined) {
-		return parseTicket(
-			await cloud.rpc("qorpera_begin_cloud_secret_capture", {
-				p_profile_id: profile.profileId,
-				p_environment_id: profile.environmentId,
-				// Company first: the connection is the company's, never the member's.
-				p_owner_kind: "company",
-				p_owner_user_id: null,
-				p_connector_id: connectorId,
-				p_secret_name: "primary",
-				p_purpose: `${label(connectorId)} account`,
-				p_existing_secret_id: existingSecretId ?? null,
-			}),
-		);
-	}
-	async function brokerCall(
-		url: string,
-		body: unknown,
-		signal: AbortSignal | undefined,
-		deadlineMs = 30_000,
-	): Promise<{ status: number; value: unknown }> {
-		return withCloudDeadline(
-			async (deadline) => {
-				const response = await fetchImplementation(url, {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify(body),
-					signal: deadline,
-					redirect: "error",
-					cache: "no-store",
-					credentials: "omit",
-				});
-				const bytes = await readBoundedCloudResponse(response, 64 * 1024, deadline);
-				let value: unknown = null;
-				try {
-					value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-				} catch {
-					value = null;
-				}
-				return { status: response.status, value };
-			},
-			deadlineMs,
-			signal,
-		);
-	}
-	async function brokerPost(url: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
-		const answer = await brokerCall(url, body, signal);
-		if (answer.status !== 200) throw new Error("The connection could not be started. Try again.");
-		return answer.value;
+		return capture.ticket({
+			// Company first: the connection is the company's, never the member's.
+			ownerKind: "company",
+			ownerUserId: null,
+			connectorId,
+			secretName: "primary",
+			purpose: `${label(connectorId)} account`,
+			existingSecretId,
+		});
 	}
 	return {
 		async list(signal) {
@@ -322,7 +389,7 @@ export function createWebConnectors(
 			// itself only with the confirmation after the provider sends us back.
 			const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
 			const started = record(
-				await brokerPost(
+				await capture.post(
 					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
 					{
 						schema: "qorpera.cloud-connector-oauth-start/v2",
@@ -358,7 +425,7 @@ export function createWebConnectors(
 			forgetSignIn();
 			if (outcome.connection !== "confirm" || !outcome.confirmation || signIn.companyId !== company)
 				throw new Error("This sign-in cannot be finished here.");
-			const answer = await brokerCall(
+			const answer = await capture.call(
 				`${signIn.serviceOrigin}/v1/oauth/${signIn.ticketId}/confirm?company=${company}`,
 				{
 					schema: "qorpera.cloud-connector-oauth-confirm/v1",
@@ -385,15 +452,7 @@ export function createWebConnectors(
 			const issued = await ticket(connectorId, existingSecretId);
 			const connector = HOSTED_CONNECTORS.find((item) => item.id === connectorId);
 			if (!connector?.token) throw new Error("This service only connects by signing in.");
-			await brokerPost(
-				`${issued.serviceOrigin}/v1/captures/${issued.ticketId}?company=${company}`,
-				{
-					schema: "qorpera.cloud-secret-capture-request/v1",
-					captureCapability: issued.captureCapability,
-					fields: { access_token: trimmed },
-				},
-				signal,
-			);
+			await capture.send(issued, { access_token: trimmed }, signal);
 		},
 		async grantAllAgents(secretId, signal) {
 			signal?.throwIfAborted();

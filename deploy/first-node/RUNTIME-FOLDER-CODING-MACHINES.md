@@ -299,7 +299,10 @@ folder on the list lives on the disk, is never published, and other views and ma
 the cache lives in the VM, the folder program keeps the list and reads the worktree's index (5d); a wrong list only
 keeps the session's own files unpublished, which root could do anyway. The amendment's item 8 (dependencies and builds
 in each machine's own cache) is a slice of its own for every machine; whichever of it and 5d lands first builds the
-program's part, and the other reuses it.
+program's part, and the other reuses it. 5d builds it (the local layer, the worktree's list and the index reader), and
+item 8's plan, [RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md), extends it: what git ignores in a
+worktree is a cache too, unless tracked, and the cache moves to a folder the coding setup gives (`--cache-dir`), one
+per machine, so it outlives the session (MC3).
 
 **Links.** A checkout writes a mode-120000 entry as a symbolic link, and `git clone --local` hard-links objects. Links
 in the folder are [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)'s (LK1–LK6), which leaves the per-session git

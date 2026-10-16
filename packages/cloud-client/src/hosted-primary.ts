@@ -35,12 +35,6 @@ export const HOSTED_SESSION_EVENT_TYPES = [
 ] as const;
 export type HostedSessionEventType = (typeof HOSTED_SESSION_EVENT_TYPES)[number];
 
-export const HOSTED_COMPANY_OPERATION_TYPES = ["staff_state", "session_state", "session_event"] as const;
-export type HostedCompanyOperationType = (typeof HOSTED_COMPANY_OPERATION_TYPES)[number];
-
-export const HOSTED_ARTIFACT_ROOT_CONTRACTS = ["qorpera.object/v1", "qorpera.cloud-file-manifest/v1"] as const;
-export type HostedArtifactRootContract = (typeof HOSTED_ARTIFACT_ROOT_CONTRACTS)[number];
-
 export interface HostedProfile {
 	profileType: "cloud";
 	profileId: string;
@@ -161,25 +155,6 @@ export interface HostedStaffAgent extends StaffAgent {
 	updatedByUserId: string;
 }
 
-export interface HostedCompanySnapshot {
-	snapshotId: string;
-	profileId: string;
-	environmentId: string;
-	workspaceId: string;
-	clientSnapshotId: string;
-	parentSnapshotId?: string;
-	tree: {
-		manifestSha256: string;
-		manifestBytes: number;
-		contractVersion: number;
-		fileCount: number;
-		totalBytes: number;
-	};
-	createdByUserId: string;
-	createdAt: string;
-	publicationState?: "prepared" | "published";
-}
-
 export interface HostedAccountEntitlement {
 	planKey: "freemium" | "internal";
 	billingMode: "free" | "complimentary";
@@ -204,70 +179,6 @@ export interface HostedCompanyFile {
 	entitlement: HostedAccountEntitlement;
 	createdAt: string;
 	updatedAt: string;
-}
-
-export interface HostedCompanySubstrateVersion {
-	versionId: string;
-	profileId: string;
-	environmentId: string;
-	companySnapshotId: string;
-	clientVersionId: string;
-	contractVersion: number;
-	operationSequence: number;
-	operationCount: number;
-	artifactIndexId?: string;
-	artifactManifestSha256?: string;
-	contentSha256: string;
-	createdByUserId: string;
-	createdAt: string;
-}
-
-export interface HostedArtifact {
-	artifactId: string;
-	profileId: string;
-	environmentId: string;
-	clientArtifactId: string;
-	sessionId?: string;
-	artifactType: string;
-	name: string;
-	rootObjectSha256: string;
-	rootContract: HostedArtifactRootContract;
-	contentSha256: string;
-	bytes: number;
-	mediaType: string;
-	createdByUserId: string;
-	createdAt: string;
-	eligibleForGcAt: string;
-}
-
-export interface HostedArtifactIndex {
-	indexId: string;
-	profileId: string;
-	environmentId: string;
-	clientIndexId: string;
-	contractVersion: 1;
-	contentSha256: string;
-	artifactCount: number;
-	totalBytes: number;
-	createdByUserId: string;
-	createdAt: string;
-}
-
-export interface HostedArtifactIndexEntry extends HostedArtifact {
-	ordinal: number;
-}
-
-export interface HostedCompanyOperation {
-	profileId: string;
-	sequence: number;
-	environmentId?: string;
-	operationType: HostedCompanyOperationType;
-	entityId: string;
-	entityVersion: number;
-	contentSha256: string;
-	payload: JsonValue;
-	actorUserId: string;
-	createdAt: string;
 }
 
 export interface HostedPresenceIdentity {

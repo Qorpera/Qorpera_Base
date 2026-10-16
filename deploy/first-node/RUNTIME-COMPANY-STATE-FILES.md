@@ -566,9 +566,10 @@ locked at rank 5 `FOR NO KEY UPDATE` (a run of that routine holds it `FOR KEY SH
 company row at rank 0 for the rows' foreign keys. The scheduler takes the company row `FOR
 UPDATE` (its fence) before the routine, so it and a save wait for each other at the company row
 (test 709). The member RPC (`qorpera_upsert_cloud_routine`) refuses a `folder-v2` company's
-routines with 55000, except rows from before it became `folder-v2`; the agent tools
-(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refuse on a `folder-v2` company, whose
-agents write routine files (their file writers come with F2-1b). The name index
+routines with 55000, except rows from before it became `folder-v2`; the agent tools' row writers
+(`qorpera_manage_agent_routine`, `qorpera_decide_agent_routine`) refused on a `folder-v2` company, whose
+agents write routine files (their file writers come with F2-1b), until legacy sweep D6
+(20260930335000) dropped them. The name index
 (`qorpera_cloud_routines_agent_key`) covers file routines of either origin. Known: a save that
 carries several routines (an agent folder's delete or move) locks them in id order while the
 expiry sweep updates ended routines in its own order, so the two can deadlock (40P01; one side
@@ -2174,7 +2175,8 @@ What exists (inventory of 3 October, master 041ad1c15):
   row holds the brief (`dispatch`), the result, the decision and the runtime state (state, sequence, epoch,
   the wake, revival). Nothing writes `brief.md` or `results.md` today.
 - Every worker writer (`qorpera_manage_agent_worker`, `qorpera_report_worker_result`) goes through the
-  old actor, which refuses `folder-v2` (55000). `manage_worker` is still offered to `folder-v2` runs.
+  old actor, which refuses `folder-v2` (55000). `manage_worker` is still offered to `folder-v2` runs. (Both
+  writers were dropped in legacy sweep D6, 20260930335000.)
 - The worker drain (dispatch failures, revival) and the wake materializer skip `folder-v2` companies,
   until C4 gives `folder-v2` real runs (P28).
 - The hook knows the two kinds by path and checks their names, and nothing else: anyone who may write
