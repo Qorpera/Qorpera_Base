@@ -276,6 +276,12 @@ test("the checks pass on complete evidence and each fails on its own when its ev
 	const errored = passing();
 	errored.error = "P4_TIMEOUT: the machine stops";
 	assert.equal(judge(errored).serviceClean.ok, false);
+	const passFailed = passing();
+	passFailed.service.outcomes = [{ step: "start", state: "done" }, { step: "start", state: "failed", code: "CODING_CONTROL_UNCONFIRMED" }];
+	assert.equal(judge(passFailed).serviceClean.ok, false, "a host pass that failed fails the run");
+	const passThrew = passing();
+	passThrew.service.passErrors = [{ t: 1, error: "LXD_UNAVAILABLE" }];
+	assert.equal(judge(passThrew).serviceClean.ok, false, "a host pass that threw fails the run");
 });
 
 test("another agent's run either takes the machine's reads in or is refused as a run without the company-wide view", () => {

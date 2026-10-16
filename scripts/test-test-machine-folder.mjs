@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -323,8 +323,10 @@ export function judge(evidence, leaks = []) {
 	);
 	check(
 		"serviceClean",
-		!evidence.error && !(evidence.cleanupErrors?.length > 0) && evidence.service?.bridgeExit === null,
-		"no step failed, the folder bridge ran to the end, and everything this run made in-process closed",
+		!evidence.error && !(evidence.cleanupErrors?.length > 0) && evidence.service?.bridgeExit === null &&
+			!(evidence.service?.passErrors?.length > 0) && !evidence.service?.outcomes?.some((o) => o.state === "failed"),
+		"no step failed, no host pass failed or threw, the folder bridge ran to the end, and everything this run made " +
+			"in-process closed",
 	);
 	check("noSecretsInEvidence", leaks.length === 0, "the record holds no holder token, view pass or service token");
 	return checks;
@@ -504,13 +506,25 @@ async function until(label, probe, { timeoutMs, everyMs = 2000, signal }) {
 	}
 }
 
+/** The lxc CLI in the claimed project. Not synchronous: a VM's init takes long enough that a blocked event loop would
+ * time out the executor's control calls and the folder service's timers. */
 function lxc(project, args, { timeoutMs = 600_000 } = {}) {
-	const result = spawnSync("lxc", ["--force-local", "--project", project, ...args], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-		timeout: timeoutMs,
+	return new Promise((answered) => {
+		const child = spawn("lxc", ["--force-local", "--project", project, ...args], {
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: timeoutMs,
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (d) => {
+			stdout += d;
+		});
+		child.stderr.setEncoding("utf8").on("data", (d) => {
+			stderr = (stderr + d).slice(-2000);
+		});
+		child.on("error", (error) => answered({ status: null, stdout, stderr: String(error.message).slice(0, 2000) }));
+		child.on("close", (status) => answered({ status, stdout, stderr }));
 	});
-	return { status: result.status, stdout: result.stdout ?? "", stderr: (result.stderr ?? "").slice(-2000) };
 }
 
 const receiptOf = (r) => (r ? { state: r.state, exitCode: r.exitCode, output: r.output, totalBytes: r.log?.totalBytes } : null);
@@ -689,7 +703,6 @@ async function prove(options, evidence, cleanups, secrets) {
 	}
 	service.start();
 	cleanups.push(async () => service.stop());
-	const { spawn } = await import("node:child_process");
 	const bridge = spawn(
 		options.folderBinary,
 		["bridge", "--service", `unix:${folderPath}`, "--listen", "vsock:any:5250", "--lxd-socket", "/var/snap/lxd/common/lxd/unix.socket"],
@@ -1042,13 +1055,16 @@ async function prove(options, evidence, cleanups, secrets) {
 	secrets.viewPass = JSON.parse(handover.stdin.toString("utf8")).pass;
 	const intruder = `qorpera-machine-${randomBytes(16).toString("hex")}`;
 	steps.refusals.intruder = { name: intruder };
-	const made = lxc(project, ["init", image, intruder, "--vm", "--no-profiles", "--storage", pool, "-d", "root,size=10GiB",
+	const made = await lxc(project, ["init", image, intruder, "--vm", "--no-profiles", "--storage", pool, "-d", "root,size=10GiB",
 		"-c", "limits.cpu=1", "-c", "limits.memory=1GiB", "-c", "boot.mode=uefi-secureboot", "-c", "boot.autostart=false"]);
-	const ran = made.status === 0 ? lxc(project, ["start", intruder]) : made;
+	const ran = made.status === 0 ? await lxc(project, ["start", intruder]) : made;
 	steps.refusals.intruder.made = { status: ran.status, stderr: ran.stderr };
 	if (ran.status === 0) {
-		await until("the second machine's agent answers", () => lxc(project, ["exec", intruder, "--", "true"], { timeoutMs: 30_000 }).status === 0,
-			{ timeoutMs: 300_000, everyMs: 3000, signal });
+		await until(
+			"the second machine's agent answers",
+			async () => (await lxc(project, ["exec", intruder, "--", "true"], { timeoutMs: 30_000 })).status === 0,
+			{ timeoutMs: 300_000, everyMs: 3000, signal },
+		);
 		const guest = async (args, stdin) => {
 			const nonce = randomUUID();
 			try {
@@ -1074,7 +1090,7 @@ async function prove(options, evidence, cleanups, secrets) {
 		steps.refusals.intruder.answer = answer;
 		steps.refusals.intruder.mount = answer?.mount ?? answer?.code ?? null;
 		steps.refusals.intruder.opens = opens.filter((o) => o.t >= triedAt && o.machine === intruder);
-		steps.refusals.intruder.removed = lxc(project, ["delete", "--force", intruder]).status;
+		steps.refusals.intruder.removed = (await lxc(project, ["delete", "--force", intruder])).status;
 	}
 	const still = await machineRun("alice", "p4-still", "cat /company/p4/alice.txt");
 	steps.refusals.stillReads = await readDone("alice", still.commandId);
@@ -1095,7 +1111,7 @@ async function prove(options, evidence, cleanups, secrets) {
 	steps.stop.finalBoundary = ops.find((o) => o.at >= stopAt && o.op === "boundary" && o.final.length > 0) ?? null;
 	steps.stop.restarted = ops.some((o) => o.at >= stopAt && o.op === "restarted" && o.answer === "ok");
 	steps.stop.view = views().find((v) => v.id === bootView.id);
-	steps.stop.instanceStatus = JSON.parse(lxc(project, ["list", lxdName, "--format", "json"]).stdout || "[]")[0]?.status ?? null;
+	steps.stop.instanceStatus = JSON.parse((await lxc(project, ["list", lxdName, "--format", "json"])).stdout || "[]")[0]?.status ?? null;
 	say(`stop: view ${steps.stop.view?.state} (${steps.stop.view?.closeReason}); VM ${steps.stop.instanceStatus}`);
 	const wakeAt = Date.now();
 	steps.stop.wake = { request: await db.asRun(runs.alice.binding, `p4.mc_start('p4-again', ${literal({ machine: MACHINE })})`) };
