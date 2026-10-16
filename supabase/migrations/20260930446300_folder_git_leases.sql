@@ -372,18 +372,25 @@ begin
 	where not public.qorpera_folder_git_object(public.qorpera_folder_key(u.value ->> 'path'));
 	if v_saved > 0 and v_saved < v_ref_units then
 		raise exception 'Folder git publish would land a ref without its reflog' using errcode = '22023'; end if;
-	if p_release or (v_ref_units > 0 and v_saved = v_ref_units) then
+	-- A replay changes no lease: the first answer ended it, or kept it.
+	if (v_result ->> 'replay')::boolean is not true and (p_release or (v_ref_units > 0 and v_saved = v_ref_units)) then
 		delete from public.qorpera_folder_git_leases where id = p_lease_id and view_id = (p_actor ->> 'viewId')::uuid;
 	end if;
 	return v_result || jsonb_build_object('units', v_units, 'published', v_ref_units > 0 and v_saved = v_ref_units);
 end $$;
 
--- git renamed X.lock over X: the session's objects, then X and logs/X under the lease.
+-- git renamed X.lock over X: the session's objects, then X and logs/X under the lease. The commit's operation key binds
+-- the caller's to the lease ('git-publish:<leaseId>:<sha-256 of the caller's key>'), so the same key under another
+-- lease is new work, never the first publish's replay. The caller's key is held to the commit's rule.
 create function public.qorpera_folder_git_publish(p_environment_id uuid, p_actor jsonb, p_lease_id uuid, p_operation_key text,
 	p_units jsonb)
-returns jsonb language sql security definer set search_path = '' as $$
-	select public.qorpera_folder_git_land(p_environment_id, p_actor, p_lease_id, p_operation_key, p_units, false)
-$$;
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+	if p_operation_key is null or p_operation_key !~ '^[A-Za-z0-9._:-]{8,200}$' then
+		raise exception 'Operation key is invalid' using errcode = '22023'; end if;
+	return public.qorpera_folder_git_land(p_environment_id, p_actor, p_lease_id,
+		'git-publish:' || p_lease_id::text || ':' || encode(extensions.digest(p_operation_key, 'sha256'), 'hex'), p_units, false);
+end $$;
 
 -- git unlinked X.lock: the lease ends. With units, X's and logs/X's writes or deletes land first (a delete of X, a
 -- reflog expire), under the operation key 'git-release:<leaseId>'. With none, a lease already gone is released too.
