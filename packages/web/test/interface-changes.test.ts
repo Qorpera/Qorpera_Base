@@ -385,8 +385,10 @@ function historyFolder() {
 					if ([...closed].some((root) => under(unit.path, root))) return outcome("denied");
 					const current = live(unit.path);
 					if (current?.version !== unit.expectedVersion) return outcome("conflict");
-					if (unit.op === "write")
+					if (unit.op === "write") {
+						if (!("text" in unit)) throw new Error("Undo sends no write of a file reference");
 						return outcome("saved", save(unit.path, "file", "write", unit.text, at).version);
+					}
 					const asOfSeq = unit.asOfSeq;
 					if (asOfSeq !== undefined && livePaths(unit.path).some((pathValue) => live(pathValue)!.seq > asOfSeq))
 						return outcome("conflict");

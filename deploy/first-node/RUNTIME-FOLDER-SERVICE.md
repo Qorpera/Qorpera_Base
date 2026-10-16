@@ -195,9 +195,10 @@ for this (`FUSE_NOTIFY_INC_EPOCH`, kernel 6.16), which would also drop every oth
   a view refused), and a third that races 300 lookups against removals and new versions and requires every one to
   show the change within a second;
 - beside them, the release build in the same image and its check against the build record, then the built program
-  in `node:24.21.0-bookworm-slim` against this package's folder service with a stand-in core and share
-  (`packages/object-gateway/test/folder-mount-e2e.test.ts`): a 3 MiB file across chunks, a member's edit shown in
-  under a second, a folder taken away disappearing, SIGTERM unmounting.
+  in `node:24.21.0-bookworm` (not slim: it has git and python3) against this package's folder service with a
+  stand-in core and share (`packages/object-gateway/test/folder-mount-e2e.test.ts`): a 3 MiB file across chunks, a
+  member's edit shown in under a second, a folder taken away disappearing, SIGTERM unmounting, and links made, read
+  and cloned by git, Python and Node.
 
 `scripts/folder-program-step.mjs` runs the step. Compiled crates stay between runs in a volume of the runner user's
 own, emptied when the image, `Cargo.toml` or `Cargo.lock` changes; the folder program itself is built again every

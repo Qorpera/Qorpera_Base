@@ -11,6 +11,9 @@ const guest = join(repositoryRoot, "deploy/lxd-company-computer-guest");
 const recipePath = join(guest, "office-image-dependencies.json");
 const recipe = JSON.parse(readFileSync(recipePath, "utf-8"));
 const installer = readFileSync(join(guest, "install-office-image-dependencies.sh"), "utf-8");
+// The candidate builder and the recipe it sources.
+const builders = ["build-office-image-candidate.sh", "office-image-recipe.sh"].map((file) => join(repositoryRoot, "scripts", file));
+const builderSource = () => builders.map((file) => readFileSync(file, "utf-8")).join("\n");
 
 // QORPERA-RUNTIME-CONTRACT.md, the 2026-10-14 amendment's item 7: what every computer's shell runs.
 // Adding a tool needs no founder decision; dropping one of these does.
@@ -89,9 +92,8 @@ test("the in-guest installer stays offline and leaves swap off", () => {
 });
 
 test("the candidate builder copies every confinement key of the office unit and stays offline", () => {
-	const builder = join(repositoryRoot, "scripts/build-office-image-candidate.sh");
-	execFileSync("bash", ["-n", builder]);
-	const source = readFileSync(builder, "utf-8");
+	for (const builder of builders) execFileSync("bash", ["-n", builder]);
+	const source = builderSource();
 	const keys = source.match(/grep -E '\^\(([A-Za-z|]+)\)='\)/)[1].split("|");
 	const unit = readFileSync(join(guest, "qorpera-company-computer.service"), "utf-8").split("\n");
 	const copied = unit.filter((line) => keys.includes(line.split("=", 1)[0]));
@@ -111,7 +113,7 @@ test("the candidate builder copies every confinement key of the office unit and 
 });
 
 test("the candidate carries the pinned folder program and leaves the folder's units stopped", () => {
-	const source = readFileSync(join(repositoryRoot, "scripts/build-office-image-candidate.sh"), "utf-8");
+	const source = builderSource();
 	assert.match(source, /node scripts\/build-folder-program\.mjs --out "\$work\/qorpera-folder"/);
 	assert.match(source, /package-company-computer\.mjs --out "\$push\/package" --folder-program "\$work\/qorpera-folder"/);
 	for (const unit of ["helper.service", "helper.socket", "mount@.service"])
@@ -120,7 +122,7 @@ test("the candidate carries the pinned folder program and leaves the folder's un
 });
 
 test("the candidate builder's apt runs none of this machine's apt hooks", () => {
-	const source = readFileSync(join(repositoryRoot, "scripts/build-office-image-candidate.sh"), "utf-8");
+	const source = builderSource();
 	const written = source.match(/^printf '%s\\n' ((?:'[^']*' )+)>"\$apt_root\/apt\.conf"\nexport APT_CONFIG="\$apt_root\/apt\.conf"\n/m);
 	assert.ok(written, "the builder writes apt its own configuration");
 	assert.ok(source.indexOf("export APT_CONFIG=") < source.indexOf('apt-get "${apt_options[@]}"'));
