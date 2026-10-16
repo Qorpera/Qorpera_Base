@@ -216,10 +216,10 @@ machine when it takes the reads in.
 - **K's end.** K is ended with SQL's own end for stopped commands
   (`qorpera_end_company_machine_commands(..., 'stopped', [K])`), the one the stop
   path uses, while the guest still runs it.
-- **The take-in.** The host takes in Alice's reads at each read of her output
-  (6d-3b). Bob reads no output, so the proof calls
-  `qorpera_folder_run_inherit_view_reads` itself for his run, and once more
-  for Alice's (step 3).
+- **The take-in.** The host takes in a run's reads at each read of its output
+  (6d-3b): Alice's from step 1, Bob's and Carol's in step 4. Bob's run has read
+  no output by step 3, so the proof calls `qorpera_folder_run_inherit_view_reads`
+  itself for his run there, and once more for Alice's.
 - **The second machine.** It is made with the `lxc` CLI in the claimed project,
   not by the host, and prepared through the guest helper.
 - **The seed.** `p4/seed.md` is staged with the platform writer, so its bytes
@@ -239,5 +239,6 @@ of them, and the record is written with them redacted if one slipped in.
 - The folder service runs in the harness's process, not under its systemd
   units and sockets.
 - No model: the runs' calls are made by the harness, as the runtime would.
-- Bob's take-in is a SQL call: no run of his reads output in the proof. The
-  notify continuation's take-in (6d-3c) is not built.
+- Bob's step 3 take-in is a SQL call; his run reads output only in step 4,
+  where the host takes his reads in, as it does Carol's. The notify
+  continuation's take-in (6d-3c) is not built.
