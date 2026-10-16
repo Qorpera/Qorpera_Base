@@ -103,7 +103,10 @@ machine when it takes the reads in.
    `units` keep no credits, so the check reads a unit's credits from its commit
    when the unit has none (`unitOf`).
 5. **`refusals`.**
-   - Carol's command M writes `m.txt`, which is committed credited `[M]`.
+   - Carol's command M writes `m.txt`, which is committed credited `[M]`. M
+     starts only after SQL has B's and C's ends: a command's window stays open
+     until the host's pass records its end, and a change made while it is open
+     is credited to it too (one run had `m.txt` credited `[C, M]`).
    - Bob's command K sleeps 5 s, then writes `k.txt`. Right after its start
      returns, SQL ends K (`qorpera_end_company_machine_commands(machine,
      'stopped', [K])`, which sets it `lost`). The service keeps K's window open

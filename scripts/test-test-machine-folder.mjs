@@ -1007,7 +1007,14 @@ async function prove(options, evidence, cleanups, secrets) {
 	);
 	const [receiptB, receiptC] = await Promise.all([readDone("bob", overB.commandId), readDone("carol", overC.commandId)]);
 	await until("carol-after.txt is committed", () => entries("p4/carol-after.txt") === 1, { timeoutMs: 120_000, signal });
-	steps.overlap = { b: overB.commandId, c: overC.commandId, receipts: { b: receiptB, c: receiptC }, commits: commits() };
+	// A window stays open until the host's pass records its command's end, and a change made while it is open is credited
+	// to it too. M (below) starts only after B's and C's ends are recorded, so its write is credited to M alone.
+	await until(
+		"B's and C's ends are recorded",
+		() => commandRow(overB.commandId)?.endedAt && commandRow(overC.commandId)?.endedAt,
+		{ timeoutMs: 120_000, signal },
+	);
+	steps.overlap ={ b: overB.commandId, c: overC.commandId, receipts: { b: receiptB, c: receiptC }, commits: commits() };
 	say(`overlap: B ${receiptB.state} C ${receiptC.state}`);
 
 	// 5a. Refusals: a command ended in SQL is refused (the gateway's start again, and its write at the boundary).
