@@ -69,19 +69,15 @@ select pg_temp.fx($q$insert into public.qorpera_profile_objects(profile_id, sha2
 	('64600000-0000-4000-8000-000000000010', repeat('b', 64), 1, 'supabase-storage'),
 	('64600000-0000-4000-8000-000000000011', repeat('b', 64), 1, 'supabase-storage') on conflict do nothing$q$);
 
--- Raw object reads and uploads: a member is refused for folder-v2 (the read lease too); a trusted service is not; a
--- snapshot-v1 company is unchanged.
+-- Raw object reads and uploads by hash, and the read lease, are gone on every company (legacy sweep E3, 20260930450000).
 do $$
+declare v_signature text;
 begin
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000002');
-	perform pg_temp.refuses($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000010', repeat('b', 64))$q$);
-	perform pg_temp.refuses($q$select public.qorpera_issue_profile_object_read_lease('64600000-0000-4000-8000-000000000010', repeat('b', 64), 30)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_authorize_profile_object_upload('64600000-0000-4000-8000-000000000010', repeat('c', 64), 1)$q$);
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000011', repeat('b', 64))$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_upload('64600000-0000-4000-8000-000000000011', repeat('c', 64), 1)$q$);
-	perform pg_temp.as_service();
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000010', repeat('b', 64))$q$);
+	foreach v_signature in array array['public.qorpera_authorize_profile_object_download(uuid,text)',
+		'public.qorpera_authorize_profile_object_upload(uuid,text,bigint)',
+		'public.qorpera_issue_profile_object_read_lease(uuid,text,integer)'] loop
+		if to_regprocedure(v_signature) is not null then raise exception '% must be gone', v_signature; end if;
+	end loop;
 end $$;
 
 -- The Storage read policy: a member never reads a folder-v2 object from Storage directly.

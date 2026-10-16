@@ -1933,7 +1933,7 @@ and revoke its secret grants. What remains:
   (`qorpera_folder_follow_up_mark_all`, the rebuild's too), with no commit and no member: their agents never went
   through the queue, and a Co-Founder must converge before its company shows as ready. An active agent with no first
   run yet gets a kickoff its owner authors, and nobody's login pays for its turn (`last_problem` `no_hirer`).
-- **The drain** is a pg_cron step every 2 seconds, one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
+- **The drain** is a pg_cron step every 10 seconds (every 2 seconds until 20260930483000), one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
   step: `lock_timeout` 2 seconds, read committed). One step is one transaction, and holds one work row (P22a's model):
   1. plain reads: skip companies being deleted (`qorpera_company_deletions`) and paused companies (a pause is not an
      attempt, so a hire converges as soon as the company resumes; a 55000 from the pause read again under the fence is
@@ -1965,7 +1965,7 @@ and revoke its secret grants. What remains:
   updated inside a savepoint.
 
   Indexes keep an idle pass to index probes: marks by subject, work rows by due time. The cron job's own log
-  (`cron.job_run_details`, about 43,200 rows a day at 2 seconds) gets erasure's daily cleanup.
+  (`cron.job_run_details`, about 8,640 rows a day at 10 seconds) gets erasure's daily cleanup.
 
   **Kicks:** a service-role writer that just committed marks converges them at once, one subject per call (each call its
   own transaction, so no lock of one subject comes after another's clock, and the name copy never runs where an agent's
@@ -1974,12 +1974,12 @@ and revoke its secret grants. What remains:
   marked, the company's first, answering whether more remain, so the caller calls again (the object gateway's member
   commit route, P34a, Interfaces, which knows the commit but not the staff ids; recorded in the registry and asked of
   Interfaces for C4-MEMBERS §P34a). A subject another transaction holds answers `busy`, and so
-  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the 2-second
-  step: a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
+  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the
+  step, up to 10 seconds (2 until 20260930483000): a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
   does not add. The step is the safety net.
 - A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`. The kicks run
   at read committed (25000 otherwise).
-- **Throughput:** the step converges one subject every 2 seconds across all companies (about 30 a minute); kicks cover
+- **Throughput:** the step converges one subject every 10 seconds across all companies (about 6 a minute); kicks cover
   creation and members' saves at once. P24's load test measures the backlog; if it grows, more steps run side by side
   (one subject each, one company per transaction, as core §3 requires; `SKIP LOCKED` keeps them apart).
 - The job runs as the database owner with no JWT. Every helper the converge calls checks no `auth.role()`; the
