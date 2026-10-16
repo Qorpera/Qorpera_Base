@@ -1247,6 +1247,40 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(recorded(f)).toEqual([[{ commandId, state: "lost", outputTail: "" }]]);
 	});
 
+	it("leaves a start's window open when its guest called it lost before the start was delivered", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		const commandId = randomUUID();
+		f.running([commandId]);
+		// The guest calls the command lost, and its answer waits until the start was delivered in full.
+		let answer = () => {};
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		let looked = false;
+		const exec = f.client.execInstance.getMockImplementation();
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			const done = await exec?.(project, name, command);
+			if (command[3] !== "observe") return done;
+			looked = true;
+			await answered;
+			return done;
+		});
+		f.observe({ ...idle, ended: [{ commandId, state: "lost" }] });
+		const passed = f.host.pass(f.signal);
+		await vi.waitFor(() => expect(looked).toBe(true));
+		expect(await start(f, commandId)).toMatchObject({ state: "running" });
+		answer();
+		expect(await passed).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		// That answer is from before the guest had the command: its window stays open, and nothing is recorded.
+		expect(f.service.requests.map((request) => request.op)).toEqual(["open"]);
+		expect(recorded(f)).toEqual([]);
+		// A look after the delivery decides.
+		await f.host.pass(f.signal);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "close"]);
+		expect(recorded(f)).toEqual([[{ commandId, state: "lost", outputTail: "" }]]);
+	});
+
 	it("opens a start's window only once a close of it on its way is answered", async () => {
 		const f = await fixture({ folder: true });
 		await f.host.pass(f.signal);
@@ -1268,6 +1302,8 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(await started).toMatchObject({ state: "running" });
 		expect(f.service.requests.map((request) => request.op)).toEqual(["close", "open"]);
 		expect(f.order.indexOf("push")).toBeGreaterThan(f.order.indexOf("folder:open"));
+		// The start came while that close was on its way: the pass does not end it.
+		expect(recorded(f)).toEqual([]);
 	});
 
 	it("ends the boot's folder at a stop, before SQL ends its commands and the machine powers off", async () => {

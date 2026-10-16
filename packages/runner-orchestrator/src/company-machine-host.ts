@@ -240,6 +240,9 @@ export class LxdCompanyMachineHost {
 	readonly #folders = new Map<string, BootFolder>();
 	/** Per placement and command: the starts being delivered (from their window's open to the guest's answer). */
 	readonly #delivering = new Map<string, number>();
+	/** Per look inside a machine with a folder, until its ends are worked out: the commands whose start's delivery
+	 * began or ended since the look began. What that look says of them is stale. */
+	readonly #looks = new Set<Set<string>>();
 	/** Per placement and command: a window close on its way, answered with the machine's reads. */
 	readonly #closing = new Map<string, Promise<FolderReads>>();
 	readonly #generation = Math.floor(Date.now() / 1000);
@@ -505,7 +508,7 @@ export class LxdCompanyMachineHost {
 			}
 			if (f.state === "pending") settled = await this.#settle(e, f, helperSha256, signal);
 		}
-		const look = await this.#ends(e, bootId, await this.#look(e, bootId, signal), signal);
+		const look = await this.#ends(e, bootId, () => this.#look(e, bootId, signal), signal);
 		await this.#record(e, bootId, look, signal);
 		return {
 			placementId: e.placementId,
@@ -744,46 +747,60 @@ export class LxdCompanyMachineHost {
 		}
 		this.#folders.delete(e.placementId);
 	}
-	/** The end order (F3 6d): each ended command's window closes first, and its end (how it ended, its exit and its
-	 * output tail) is recorded only once that close answers the machine's reads released. Any other answer, or none,
-	 * leaves the end for a later look. A start still being delivered is not ended: its guest does not have it yet, and
-	 * its window stays open. */
+	/** A look (`looking`) and its ends, in the end order (F3 6d): each ended command's window closes first, and its end
+	 * (how it ended, its exit and its output tail) is recorded only once that close answers the machine's reads
+	 * released. Any other answer, or none, leaves the end for a later look. A start being delivered at any time from
+	 * the look's beginning is not ended by it: its guest may have looked before it had the command, so its window stays
+	 * open (or opens again, after the close), and a later look decides. */
 	async #ends(
 		e: CompanyMachineEntry,
 		bootId: string,
-		look: { ended: Record<string, unknown>[]; busy: boolean },
+		looking: () => Promise<{ ended: Record<string, unknown>[]; busy: boolean }>,
 		signal: AbortSignal,
 	): Promise<{ ended: Record<string, unknown>[]; busy: boolean }> {
 		const folder = this.#options.folder;
-		const f = this.#folders.get(e.placementId);
-		if (!folder || (f?.bootId === bootId && f.state === "none")) return look;
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(WINDOWS_MS)]);
-		const ended: Record<string, unknown>[] = [];
-		for (const item of look.ended) {
-			const key = `${e.placementId}/${item.commandId as string}`;
-			if (this.#delivering.has(key)) continue;
-			// A start that comes meanwhile opens its window only once this close is answered (#command).
-			const closing = folder.closeWindow(e.placementId, item.commandId as string, checked).then(
-				(boundary) => boundary.reads,
-				() => "unanswered" as const,
-			);
-			this.#closing.set(key, closing);
-			const reads = await closing;
-			if (this.#closing.get(key) === closing) this.#closing.delete(key);
-			if (reads === "released") ended.push(item);
+		if (!folder) return looking();
+		const touched = new Set<string>();
+		this.#looks.add(touched);
+		try {
+			const look = await looking();
+			const keyOf = (item: Record<string, unknown>) => `${e.placementId}/${item.commandId as string}`;
+			const stale = (item: Record<string, unknown>) => touched.has(keyOf(item)) || this.#delivering.has(keyOf(item));
+			// A boot without /company has no windows to close, but a start delivered meanwhile is not ended either.
+			const f = this.#folders.get(e.placementId);
+			if (f?.bootId === bootId && f.state === "none")
+				return { ended: look.ended.filter((item) => !stale(item)), busy: look.busy };
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(WINDOWS_MS)]);
+			const ended: Record<string, unknown>[] = [];
+			for (const item of look.ended) {
+				if (stale(item)) continue;
+				// A start that comes meanwhile opens its window only once this close is answered (#command).
+				const key = keyOf(item);
+				const closing = folder.closeWindow(e.placementId, item.commandId as string, checked).then(
+					(boundary) => boundary.reads,
+					() => "unanswered" as const,
+				);
+				this.#closing.set(key, closing);
+				const reads = await closing;
+				if (this.#closing.get(key) === closing) this.#closing.delete(key);
+				if (reads === "released") ended.push(item);
+			}
+			// A start that came while the windows closed is not ended either: its window opens again after the close.
+			return { ended: ended.filter((item) => !stale(item)), busy: look.busy };
+		} finally {
+			this.#looks.delete(touched);
 		}
-		return { ended, busy: look.busy };
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		// A last look first, when this boot was seen before, so a machine busy again since the last pass keeps running
 		// (stop custody then refuses). A guest that does not answer still stops, once busy work seen earlier is recorded;
 		// a record SQL does not take leaves the machine running until a later pass records it.
 		const kept = this.#guests.get(e.placementId);
-		if (e.bootId !== null && kept?.bootId === e.bootId) {
-			const look = await this.#look(e, e.bootId, AbortSignal.any([signal, AbortSignal.timeout(30000)])).catch(
-				() => ({ ended: [], busy: kept.busy }),
-			);
-			await this.#record(e, e.bootId, await this.#ends(e, e.bootId, look, signal), signal);
+		const bootId = e.bootId;
+		if (bootId !== null && kept?.bootId === bootId) {
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
+			const looking = () => this.#look(e, bootId, checked).catch(() => ({ ended: [], busy: kept.busy }));
+			await this.#record(e, bootId, await this.#ends(e, bootId, looking, signal), signal);
 		}
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
 		try {
@@ -976,7 +993,7 @@ export class LxdCompanyMachineHost {
 	}
 
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
-	 * meanwhile: a pass that looks before its guest has it leaves its window open (#ends). */
+	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends). */
 	async command(
 		authority: CompanyMachineCommandAuthority,
 		request: CompanyMachineCommand,
@@ -984,14 +1001,19 @@ export class LxdCompanyMachineHost {
 	): Promise<CloudMachineCommandReceipt> {
 		if (request.action !== "start" || !this.#options.folder) return this.#command(authority, request, signal);
 		const key = `${authority.placementId}/${authority.commandId}`;
-		this.#delivering.set(key, (this.#delivering.get(key) ?? 0) + 1);
+		this.#delivery(key, 1);
 		try {
 			return await this.#command(authority, request, signal);
 		} finally {
-			const left = (this.#delivering.get(key) ?? 1) - 1;
-			if (left) this.#delivering.set(key, left);
-			else this.#delivering.delete(key);
+			this.#delivery(key, -1);
 		}
+	}
+	/** A start's delivery begins (1) or ends (-1): every look on its way no longer speaks for its command. */
+	#delivery(key: string, by: 1 | -1): void {
+		const left = (this.#delivering.get(key) ?? 0) + by;
+		if (left > 0) this.#delivering.set(key, left);
+		else this.#delivering.delete(key);
+		for (const touched of this.#looks) touched.add(key);
 	}
 	async #command(
 		authority: CompanyMachineCommandAuthority,
