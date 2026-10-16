@@ -5,12 +5,10 @@ import {
 	postgrestErrorCode,
 	readBoundedObjectResponse,
 } from "./dependency.ts";
-import type { FileSystemObjectStore } from "./object-store.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 export type MemberCompanyRpc =
 	| "qorpera_company_presence_scope"
-	| "qorpera_member_file_export_source"
 	// The chat image route (20260930260000): a member's begin of one image, and the read of a posted one.
 	| "qorpera_room_image_begin"
 	| "qorpera_room_image_download"
@@ -42,7 +40,24 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_company_creation_release"
 	| "qorpera_folder_company_creation_fail"
 	// Its kick of the follow-up queue for the new Co-Founder (P15).
-	| "qorpera_folder_follow_up_now";
+	| "qorpera_folder_follow_up_now"
+	// The memory message eraser (memory-message-eraser.ts, M3): its queue and its take, its four steps and step 2's plan.
+	| "qorpera_memory_message_erase_due"
+	| "qorpera_memory_message_erase_take"
+	| "qorpera_memory_message_erase_open"
+	| "qorpera_memory_message_erase_plan"
+	| "qorpera_memory_message_erase_rewrite"
+	| "qorpera_memory_message_erase_ask"
+	| "qorpera_memory_message_erase_scrub"
+	// The member erase route (member-message-erases.ts, M3c): a member's request, and where it stands.
+	| "qorpera_memory_message_erase_request"
+	| "qorpera_memory_message_erase_status";
+
+/** The RPCs whose P0002 names a member's missing conversation, message or erase: 404, not a dependency failure. */
+const NOT_FOUND_RPCS: ReadonlySet<string> = new Set([
+	"qorpera_memory_message_erase_request",
+	"qorpera_memory_message_erase_status",
+]);
 
 export interface MemberCompanyAuthority {
 	member(
@@ -52,13 +67,6 @@ export interface MemberCompanyAuthority {
 		signal: AbortSignal,
 	): Promise<unknown>;
 	publisher(method: MemberCompanyPublisherRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
-}
-
-/** What the member export route reads through. */
-export interface MemberCompanyFileOptions {
-	authority: MemberCompanyAuthority;
-	store: FileSystemObjectStore;
-	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
 
 export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
@@ -127,9 +135,11 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 				// Never inspect a denial body. A very short, bounded error-code read distinguishes one company's
 				// state or lock conflict from the database's health; a missing or unreadable body stays a
 				// dependency failure. One of the company's limits (54000: an input's images, its hooks) refuses this
-				// request only, as 413.
+				// request only, as 413; so does a missing conversation, message or erase (P0002, which PostgREST
+				// answers as 500) of the member erase route, as 404.
 				if (response.status === 500) {
 					const code = await postgrestErrorCode(response, combined);
+					if (code === "P0002" && NOT_FOUND_RPCS.has(method)) throw new ObjectDependencyError(404);
 					throw code === "54000" ? new ObjectDependencyError(413) : companyStateFailure(code);
 				}
 				void response.body?.cancel().catch(() => undefined);

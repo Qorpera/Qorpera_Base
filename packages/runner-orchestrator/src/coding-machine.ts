@@ -35,6 +35,12 @@ const MAX_FAILED_ATTEMPTS = 3;
 // refused submission) is settled from the VM itself once any operation it
 // could have started is long over.
 const DISPATCH_SETTLE_MS = 10 * 60_000;
+// A member's machine that stopped by itself more than this many times within
+// the window waits for an operator: a stop-start loop (a watchdog that keeps
+// stopping it, a guest that keeps powering off) is never run again by itself.
+const MAX_OUTSIDE_STOPS = 3;
+const OUTSIDE_STOP_WINDOW_MS = 60 * 60_000;
+const OUTSIDE_STOP = /^outside-stop-\d{6}-\d{6}\.json$/;
 
 /** One member's coding machine in one company environment: the machine SQL
  * planned (qorpera_plan_coding_machine) from the environment's VM policy. It
@@ -317,6 +323,13 @@ export interface CodingMachineJournalPlan {
 	 * is tried again a bounded number of times; a VM that is gone needs no
 	 * delete. Coding machines never set it. */
 	readonly disposable?: true;
+	/** A member's machine: a VM that LXD shows stopped after its settled start
+	 * (the host watchdog's forced stop, a poweroff inside, a node reboot) is
+	 * stopped, so a run starts it again and a delete deletes it. Each such stop
+	 * is written down next to the journal, and a machine that stops by itself
+	 * too often waits for an operator, as does everything else the journal
+	 * cannot tell. */
+	readonly selfStops?: true;
 	assertInstance(instance: LxdInstanceRecord): void;
 }
 export function lxdCodingMachineJournalPlan(
@@ -343,6 +356,7 @@ export function lxdCodingMachineJournalPlan(
 			},
 			device: "network",
 		},
+		selfStops: true,
 		assertInstance: (instance: LxdInstanceRecord) => {
 			assertLxdCodingMachineInstance(plan.binding, storage, instance);
 		},
@@ -371,6 +385,14 @@ export interface CodingMachineReconcileOptions {
 	signal: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
+	/** A member's machine that LXD shows stopped after its settled start: called
+	 * once that stop is written down and before anything else is done to the
+	 * machine (a start, a delete, or waiting for an operator), each time it is
+	 * seen so. The executor ends the machine's attachments here. A failure
+	 * fails the reconcile. `startOperationId` names the stop: the LXD operation
+	 * of the start it ended, the same each time that stop is seen and no other
+	 * stop's, since the next start comes only after this call succeeds. */
+	stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -381,17 +403,23 @@ export interface CodingMachineReconcileResult {
 }
 
 /** Which triplet may follow a settled one: create first; then start and stop
- * in turn; delete only from a stopped machine and never followed by anything.
+ * in turn (or start again, or delete, after the start of a VM that may stop by
+ * itself); delete only from a stopped machine and never followed by anything.
  * A failed stop leaves the VM's state to physical observation (a re-issued
  * stop while it still runs, else start or delete); a failed delete may only
  * be re-issued. A failed create or start is followed by nothing: an operator
  * settles it. */
-function nextActions(settled: Event | undefined, segment: number, disposable: boolean): readonly Action[] {
+function nextActions(
+	settled: Event | undefined,
+	segment: number,
+	disposable: boolean,
+	selfStops: boolean,
+): readonly Action[] {
 	if (!settled) return segment === 0 ? ["create"] : [];
 	if (settled.state === "succeeded") {
 		if (settled.action === "start")
-			// A disposable VM may stop by itself after its start: it is started again or deleted.
-			return disposable ? ["stop", "start", "delete"] : ["stop"];
+			// A disposable VM, or a member's machine, may stop by itself after its start: it is started again or deleted.
+			return disposable || selfStops ? ["stop", "start", "delete"] : ["stop"];
 		return settled.action === "delete" ? [] : ["start", "delete"];
 	}
 	if (settled.action === "stop") return ["stop", "start", "delete"];
@@ -436,11 +464,54 @@ function encode(value: unknown): Buffer {
 function sha(bytes: Buffer): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
+/** Writes down, once per start, that a member's machine stopped by itself
+ * after that settled start (segment and sequence name it), numbered among all
+ * its outside stops. True when it has now stopped by itself more than
+ * MAX_OUTSIDE_STOPS times within OUTSIDE_STOP_WINDOW_MS: the stop that crosses
+ * it stays the newest, so the machine keeps waiting for an operator. */
+async function recordOutsideStop(root: string, segment: number, start: Event): Promise<boolean> {
+	const recorded = async () => (await readdir(root)).filter((name) => OUTSIDE_STOP.test(name)).sort();
+	const name = `outside-stop-${String(segment).padStart(6, "0")}-${String(start.sequence).padStart(6, "0")}.json`;
+	const before = await recorded();
+	if (!before.includes(name))
+		await publish(
+			root,
+			name,
+			encode({
+				schema: "qorpera.coding-machine-outside-stop/v1",
+				segment,
+				sequence: start.sequence,
+				operationId: start.operationId,
+				count: before.length + 1,
+				observedAt: new Date().toISOString(),
+			}),
+		);
+	const recent = (await recorded()).slice(-(MAX_OUTSIDE_STOPS + 1));
+	if (recent.at(-1) !== name) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	if (recent.length <= MAX_OUTSIDE_STOPS) return false;
+	const [first, last] = await Promise.all(
+		[recent[0], name].map(async (entry) => {
+			const value = (await readRecord(join(root, entry))).value as Record<string, unknown>;
+			const observed = Date.parse(String(value?.observedAt));
+			if (
+				Object.keys(value ?? {})
+					.sort()
+					.join() !== "count,observedAt,operationId,schema,segment,sequence" ||
+				value.schema !== "qorpera.coding-machine-outside-stop/v1" ||
+				!Number.isFinite(observed)
+			)
+				throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+			return observed;
+		}),
+	);
+	return last - first < OUTSIDE_STOP_WINDOW_MS;
+}
 
 async function readEvents(
 	root: string,
 	binding: Readonly<object>,
 	disposable = false,
+	selfStops = false,
 ): Promise<{ events: Event[]; previousSha256: string; root: string; segment: number; prior?: Event }> {
 	await checkDirectory(root);
 	const authority = await readRecord(join(root, "binding.json"));
@@ -483,7 +554,9 @@ async function readEvents(
 		if (
 			sha(tail.bytes) !== value.previousTailSha256 ||
 			prior.sequence !== Number(value.previousEventCount) - 1 ||
-			(prior.action !== "stop" && !(disposable && (prior.action === "start" || prior.action === "create"))) ||
+			(prior.action !== "stop" &&
+				!(disposable && (prior.action === "start" || prior.action === "create")) &&
+				!(selfStops && prior.action === "start" && prior.state === "succeeded")) ||
 			prior.kind !== "settled" ||
 			(prior.state !== "succeeded" && prior.state !== "failed") ||
 			!UUID.test(prior.operationId ?? "")
@@ -504,7 +577,9 @@ async function readEvents(
 		const previous = events.at(-1);
 		const phase = sequence % 3;
 		const expectedActions =
-			phase === 0 ? nextActions(previous ?? carried, segment, disposable) : [events[sequence - phase].action];
+			phase === 0
+				? nextActions(previous ?? carried, segment, disposable, selfStops)
+				: [events[sequence - phase].action];
 		if (
 			!event ||
 			typeof event !== "object" ||
@@ -526,6 +601,29 @@ async function readEvents(
 		previousSha256 = sha(record.bytes);
 	}
 	return { events, previousSha256, root: activeRoot, segment, prior };
+}
+
+/** The LXD operation that started the machine as it runs now, from its journal under `journalRoot`: the last effect
+ * that succeeded there, which must be a start (a stop that failed since leaves it running). The folder model's
+ * commands are kept under it (coding-folder-command-transport.ts), so a command the guest lost is judged against the
+ * start it ran under. CODING_MACHINE_START_UNCONFIRMED when the journal does not show one. A member's machine started
+ * again after it stopped by itself has two starts in a row, read as its reconcile reads them. */
+export async function codingMachineStartOperation(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+): Promise<string> {
+	const current = await readEvents(
+		join(journalRoot, plan.journalName),
+		plan.binding,
+		plan.disposable === true,
+		plan.selfStops === true,
+	);
+	const last = [...(current.prior ? [current.prior] : []), ...current.events]
+		.reverse()
+		.find((event) => event.kind === "settled" && event.state === "succeeded");
+	// readEvents checked each settled event's operation id.
+	if (last?.action !== "start" || last.operationId === null) throw new Error("CODING_MACHINE_START_UNCONFIRMED");
+	return last.operationId;
 }
 
 /** One bounded physical reconciliation of one machine against its journal on
@@ -573,7 +671,7 @@ export async function reconcileCodingMachine(
 	}
 	await checkDirectory(root);
 	await publish(root, "binding.json", encode(plan.binding));
-	let current = await readEvents(root, plan.binding, plan.disposable === true);
+	let current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
 	const append = (entry: Omit<Event, "sequence" | "previousSha256">): Promise<boolean> => {
 		if (current.events.length >= MAX_RETAINED_EVENTS) throw new Error("CODING_MACHINE_JOURNAL_FULL");
 		return publish(
@@ -633,7 +731,7 @@ export async function reconcileCodingMachine(
 		if (state === "pending") return result("pending");
 		if (state !== "succeeded" && state !== "failed") return result("recovery-required");
 		await append({ action: tail.action, kind: "settled", operationId: tail.operationId, state });
-		current = await readEvents(root, plan.binding, plan.disposable === true);
+		current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
 		tail = current.events.at(-1);
 		if (tail?.kind !== "settled" || tail.state !== state) return result("recovery-required");
 	}
@@ -704,8 +802,21 @@ export async function reconcileCodingMachine(
 				else return result("recovery-required");
 			} else {
 				let expected: "running" | "stopped" = tail.action === "start" ? "running" : "stopped";
-				// A disposable VM that stopped by itself after its start is stopped.
-				if (plan.disposable && expected === "running" && seen === "stopped") expected = "stopped";
+				if (expected === "running" && seen === "stopped") {
+					// A disposable VM that stopped by itself after its start is stopped. So is a member's machine,
+					// each time written down and its sessions told, until it stops by itself too often.
+					if (plan.selfStops) {
+						const tooOften = await recordOutsideStop(
+							root,
+							current.events.length ? current.segment : current.segment - 1,
+							tail,
+						);
+						await options.stoppedFromOutside?.(tail.operationId as string, options.signal);
+						options.signal.throwIfAborted();
+						if (tooOften) return result("recovery-required");
+					}
+					if (plan.disposable || plan.selfStops) expected = "stopped";
+				}
 				if (seen !== expected) return result("recovery-required");
 				if (intent === "delete") {
 					// Only a confirmed stop comes before a delete.
@@ -725,10 +836,11 @@ export async function reconcileCodingMachine(
 		// is deleted or overwritten; the checkpoint commits its exact predecessor.
 		// Every contender derives the same next segment, whose first effect still
 		// competes through the ordinary immutable event CAS.
-		// A disposable VM that stopped by itself (its last record a start, LXD showing it stopped) closes one too.
+		// A disposable VM, or a member's machine, that stopped by itself (its last record a start, LXD showing it
+		// stopped) closes one too.
 		const selfStopped =
-			plan.disposable === true &&
-			(tail?.action === "start" || tail?.action === "create") &&
+			((plan.disposable === true && (tail?.action === "start" || tail?.action === "create")) ||
+				(plan.selfStops === true && tail?.action === "start" && tail.state === "succeeded")) &&
 			instance !== undefined &&
 			physical(instance) === "stopped";
 		if ((tail?.action !== "stop" && !selfStopped) || tail?.kind !== "settled" || current.segment >= 999999)
@@ -800,7 +912,7 @@ export async function reconcileCodingMachine(
 		return result("recovery-required");
 	}
 	// Preserve operation custody even if authority loss follows LXD acceptance.
-	current = await readEvents(root, plan.binding, plan.disposable === true);
+	current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
 	tail = current.events.at(-1);
 	if (tail?.kind !== "dispatch" || tail.action !== action) throw new Error("CODING_MACHINE_JOURNAL_CONFLICT");
 	await append({ action, kind: "accepted", operationId, state: null });

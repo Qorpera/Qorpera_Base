@@ -37,8 +37,61 @@ const methods = [
 	"qorpera_release_runtime_office_viewer",
 	// G2-6c: the office receiver's lease proof (migration 20260930152000); it answers a plain true.
 	"qorpera_native_binding_proven",
+	// F3 4d: a desktop's folder view (migration 20260928259230), opened for whoever holds its screen.
+	"qorpera_folder_view_open",
+	"qorpera_folder_view_close",
+	// F3 4f-2b: a desktop view's commits for its report (migration 20260930495000).
+	"qorpera_folder_view_commits",
+	// E3c-3: where a vault_capture's box goes, read by the office itself (migration 20260930344000); it writes nothing.
+	"qorpera_native_office_hook_capture",
+	// F3 4d-4e: a run's take-in of a command's view reads, before its output reaches that run (migration 20260930491000).
+	"qorpera_folder_office_inherit_command_reads",
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
+
+/**
+ * Why the core refused a desktop's or a shell command's folder view, in its own words, when they are one of these: the
+ * office passes them on to the run or member it gives the screen back to, or to the run whose command did not start
+ * (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A desktop's mount").
+ */
+const FOLDER_VIEW_REFUSALS = new Set([
+	"Folder core authority is required",
+	"Company folder is unavailable",
+	"Folder view holder is not current",
+	"Folder view command is not current",
+	"Folder view computer is unavailable",
+	"Folder view principals are unavailable",
+	"Folder view needs the company-wide view",
+	"Folder views open at read committed",
+	"Folder view is invalid",
+	"Folder view opener is invalid",
+	"Folder view anchor is invalid",
+]);
+
+/**
+ * Why the core refused a run's take-in of a command's view reads, in its own words, when they are one of these: the
+ * office tells that run why the command's output is held back from it (RUNTIME-FOLDER-COMPANY-MACHINES.md, "A command
+ * that outlived its run").
+ */
+const FOLDER_INHERIT_REFUSALS = new Set([
+	"Folder core authority is required",
+	"Company folder is unavailable",
+	"Folder releases run at read committed",
+	"Folder inheritance is invalid",
+	"Folder inheritance read is not current",
+	"Folder actor is invalid",
+	"Run is unavailable",
+	"Company execution is paused",
+	"Inherit id was used for another view",
+	"A run inherits only its own agent's and member's views",
+	"A released read is no longer readable",
+]);
+
+/** The methods whose refusals keep their reason, and the reasons kept. Any other text, and every other method's, is never kept. */
+const KEPT_REFUSALS: Partial<Record<CompanyComputerRegistryMethod, ReadonlySet<string>>> = {
+	qorpera_folder_view_open: FOLDER_VIEW_REFUSALS,
+	qorpera_folder_office_inherit_command_reads: FOLDER_INHERIT_REFUSALS,
+};
 
 /**
  * The registry gave no answer: the network, a timeout, a server that could not
@@ -57,16 +110,30 @@ export class CompanyComputerRegistryUnansweredError extends Error {
 
 /** The registry answered and refused: SQL raised, or any other 4xx. */
 class CompanyComputerRegistryRefusedError extends Error {
-	constructor(cause: unknown) {
+	/** The core's reason for refusing a folder view or a take-in, from KEPT_REFUSALS. */
+	readonly reason: string | undefined;
+	constructor(cause: unknown, reason?: string) {
 		super("OFFICE_REGISTRY_UNCONFIRMED", { cause });
 		this.name = "CompanyComputerRegistryRefusedError";
+		this.reason = reason;
 	}
+}
+
+/** Whether the registry answered a call and refused it; none of a refusal's text but `reason`. */
+export function companyComputerRegistryRefusal(error: unknown): { readonly reason?: string } | undefined {
+	if (!(error instanceof CompanyComputerRegistryRefusedError)) return undefined;
+	return error.reason === undefined ? {} : { reason: error.reason };
 }
 
 /** SQLSTATE classes (and codes) that report a passing condition, not a decision:
  * connection, rollback, resources, operator intervention, lock wait, and a
  * read-only transaction (seen during a database failover). */
 const transientSqlState = /^(08|40|53|57)|^(55P03|25006)$/;
+
+/** The largest answer the registry transport reads, in bytes. A page of a view's commits lists every unit of each
+ * commit in it, and one commit holds up to 1000. */
+const answerBytes = (method: CompanyComputerRegistryMethod): number =>
+	method === "qorpera_folder_view_commits" ? 8 * 1024 * 1024 : 64 * 1024;
 
 /** How long a desktop, or its browser, outlasts a registry that does not answer. */
 export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
@@ -146,8 +213,10 @@ export class HttpCloudCompanyComputerRegistry {
 						body,
 					});
 					if (!response.ok) {
-						// Only the SQLSTATE is kept from the body, never its message or details.
+						// Only the SQLSTATE is kept from the body, never its details, and its message only when it is
+						// one of its method's known refusals.
 						let sqlState: string | undefined;
+						let reason: string | undefined;
 						try {
 							const failure: unknown = JSON.parse(
 								new TextDecoder("utf-8", { fatal: true }).decode(
@@ -157,12 +226,16 @@ export class HttpCloudCompanyComputerRegistry {
 							const code =
 								failure && typeof failure === "object" && "code" in failure ? failure.code : undefined;
 							if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) sqlState = code;
+							const message =
+								failure && typeof failure === "object" && "message" in failure ? failure.message : undefined;
+							if (sqlState && typeof message === "string" && KEPT_REFUSALS[method]?.has(message))
+								reason = message;
 						} catch {
 							void response.body?.cancel().catch(() => undefined);
 						}
-						throw Object.assign(new Error("denied"), { status: response.status, sqlState });
+						throw Object.assign(new Error("denied"), { status: response.status, sqlState, reason });
 					}
-					const bytes = await readBoundedCloudResponse(response, 64 * 1024, requestSignal);
+					const bytes = await readBoundedCloudResponse(response, answerBytes(method), requestSignal);
 					requestSignal.throwIfAborted();
 					// A complete body that is not an object is still the registry's answer.
 					let value: unknown;
@@ -185,6 +258,7 @@ export class HttpCloudCompanyComputerRegistry {
 			// Never disclose SQL diagnostics, profile/input content or credentials.
 			const status = error instanceof Error && "status" in error ? error.status : undefined;
 			const sqlState = error instanceof Error && "sqlState" in error ? error.sqlState : undefined;
+			const reason = error instanceof Error && "reason" in error ? error.reason : undefined;
 			if (typeof sqlState === "string" && transientSqlState.test(sqlState))
 				throw new CompanyComputerRegistryUnansweredError(error);
 			if (
@@ -192,7 +266,7 @@ export class HttpCloudCompanyComputerRegistry {
 				typeof sqlState === "string" ||
 				(typeof status === "number" && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
 			)
-				throw new CompanyComputerRegistryRefusedError(error);
+				throw new CompanyComputerRegistryRefusedError(error, typeof reason === "string" ? reason : undefined);
 			throw new CompanyComputerRegistryUnansweredError(error);
 		}
 	}

@@ -313,8 +313,9 @@ block = ["casino.example", "*.torrents.example"]  # refused in both modes
 allow = ["github.com"]                            # the only names reached in "only-listed"
 ```
 
-E8 lands in four PRs: E8a, the file, its check and the rules the nodes read; E8b-1, the reader that keeps them on each
-node, and its login; E8b-2, per-company names on each node's exit; E8c, "only listed".
+E8 lands in five PRs: E8a, the file, its check and the rules the nodes read; E8b-1, the reader that keeps them on each
+node, and its login; E8b-2, per-company names on each node's exit; E8c-1, "only listed" by address; E8c-2, its TLS
+server name check.
 
 - **Names.** A name covers itself and every name under it (`github.com` covers `api.github.com`); `*.` in front
   covers only the names under it. A name is written in lowercase, without `https://`, a path, a port or the dot at
@@ -354,6 +355,15 @@ node, and its login; E8b-2, per-company names on each node's exit; E8c, "only li
   machine's lookups to its company's resolver, by the client map (a machine's company is its LXD
   `user.qorpera.company_id`). A machine whose company has rules gets no answers until that resolver runs. A blocked
   name lands in the name-lookup record.
+  - As built: a reconciler (`qorpera-agent-exit-names.service`, root) runs each resolver as a template unit
+    `qorpera-agent-exit-resolver@<port>.service`, on a port of the company's own (10001–19999, kept across restarts),
+    and fills an nft map from each verified machine's address to that port, or to the exit's own dnsmasq for a
+    company without rules. A machine of a company not known yet, or with rules that cannot be used, has no element
+    and its lookups are dropped. A company that just got rules keeps the exit's own dnsmasq until its resolver
+    answers, at most 10 seconds. It ends a machine's open DNS connections when its port changes, and every machine's
+    once in each exit table it has not seen (one the exit's reload made again); on start it reloads every resolver
+    that runs. All resolvers log to the exit's one `dns.log`. `verify` fails when the reconciler's
+    status is stale or names a problem: no usable rules, a resolver not answering, a map it cannot read or set.
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
   DNS, gets past a block list.
@@ -362,7 +372,22 @@ node, and its login; E8b-2, per-company names on each node's exit; E8c, "only li
   unlisted site that shares a listed site's address is refused. E8 adds that check as a pass-through that reads only
   the server name, like the model relay's check. Everything else is refused in this mode: plain HTTP, other ports and
   protocols, UDP (QUIC) and SSH included. The exit never decrypts, so domain fronting (a listed TLS name carrying
-  another site inside) is not caught.
+  another site inside) is not caught. As built:
+  - **E8c-1, by address (no new kernel modules).** The company's resolver answers only the listed names that are not
+    blocked (every other name is "no such name") and its dnsmasq puts each address it gives out in the company's
+    set `allow_<port>`. A map `reach` sends each machine's traffic to the chain `open` (open mode, or a company
+    without rules) or to its company's `only_<port>` (TCP 443 to the set's addresses, everything else refused and
+    counted as `not_listed`); a machine without an entry is refused (`rules_unknown`). A switch to "only listed", a
+    narrower list or a switch back restarts the company's resolver (about a second without names) and, unless the
+    company is now open, ends its machines' connections; a wider list is a reload. The exit's reload empties the
+    sets: names are asked again. The addresses stay until then (no timeouts), at most 65,536 per company; an
+    unlisted site on a listed site's address is reached until E8c-2.
+  - **E8c-2, the server name check.** The first data packets of each new TCP 443 flow of an "only listed" machine
+    go through NFQUEUE to a checker in the exit's namespace that reads the TLS ClientHello's server name (held over
+    several segments, bounded in size and time) and refuses an unlisted one; a flow judged once is marked and passes
+    the queue no more. No bypass: with the checker down the queue refuses (fails closed). It needs the kernel
+    modules `nfnetlink_queue` and `nft_queue` on the nodes, which Jonas decides; without them "only listed" stays as
+    E8c-1 made it.
 
 ## 11. The address block (E9, choice 1)
 
@@ -405,6 +430,10 @@ node, and its login; E8b-2, per-company names on each node's exit; E8c, "only li
 - **Rules unreadable** (the database down, or the reader's login refused). Each node keeps the last rules it read,
   also across a restart, and the reader's status names the problem. A company the node has not read yet is unknown:
   from E8b-2 on, its machines get no answers until a read succeeds.
+- **A company's resolver down** (E8b-2). Only that company's machines on that node get no answers; never another
+  company's resolver or the exit's own. systemd starts it again within seconds, the names reconciler restarts one
+  that runs but does not answer, and `verify` fails meanwhile. The names reconciler down leaves the map as it was:
+  rule changes wait, and `verify` fails after 30 seconds.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
 ## 13. Build plan
@@ -420,7 +449,7 @@ node, and its login; E8b-2, per-company names on each node's exit; E8c, "only li
 | E5 | Coding machines use the agent plug | made with it |
 | E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | made with it |
 | E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
-| E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c "only listed" | rules work |
+| E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c-1 "only listed" by address; E8c-2 its server name check | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
 | E10 | Each company's own log view (its own interfaces amendment) | companies see it |
 

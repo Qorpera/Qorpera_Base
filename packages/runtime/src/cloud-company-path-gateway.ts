@@ -21,6 +21,9 @@ export type CloudCompanyPathRpc =
 	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
+	// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
+	| "qorpera_begin_native_company_execution_v3"
+	| "qorpera_bind_native_company_context"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
@@ -51,6 +54,12 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_read"
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
+	| "qorpera_folder_memory_commit"
+	| "qorpera_memory_run_log_place"
+	| "qorpera_memory_run_resume"
+	| "qorpera_memory_run_resume_record"
+	| "qorpera_memory_step_narrow"
+	| "qorpera_memory_step_hashes"
 	| "qorpera_folder_record_release"
 	| "qorpera_folder_run_view_open"
 	// Staging a folder-v2 file's bytes (core C1d).
@@ -92,11 +101,23 @@ export type CloudCompanyPathRpc =
 	| "qorpera_memory_release"
 	| "qorpera_memory_view"
 	| "qorpera_memory_view_record"
-	| "qorpera_memory_branches";
+	| "qorpera_memory_branches"
+	// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
+	| "qorpera_memory_events_run"
+	| "qorpera_memory_compaction_record";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {
-	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+	/**
+	 * `timeoutMs` is the caller's own budget for this call. Given, the transport waits that long instead of its
+	 * own short stop; an outer budget above a shorter inner stop never applies (16 Oct 2026).
+	 */
+	call(
+		method: CloudCompanyPathRpc,
+		argumentsValue: Record<string, unknown>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<unknown>;
 }
 
 /** Only a positively identified SQL head conflict permits a rebuilt candidate. */
@@ -204,7 +225,7 @@ export class CloudCompanyPathGateway {
 		timeoutMs?: number,
 	): Promise<unknown> {
 		return await cloudToolRequest(
-			(requestSignal) => this.#control.call(method, argumentsValue, requestSignal),
+			(requestSignal) => this.#control.call(method, argumentsValue, requestSignal, timeoutMs),
 			signal,
 			timeoutMs,
 		);
@@ -216,9 +237,14 @@ export class CloudCompanyPathGateway {
 
 	/** Required before every model request, including prewarm and compaction. SQL checks
 	 * the run's whole read set. The gateway itself names no path any more: a folder-v2
-	 * run's reads come from the folder tools, so it sends none. */
-	async assertReadableContext(signal: AbortSignal): Promise<void> {
-		const checked = await this.#call("qorpera_assert_company_path_reads", { ...this.#bound(), p_paths: [] }, signal);
+	 * run's reads come from the folder tools, so it sends none. `timeoutMs` is the caller's budget for the call. */
+	async assertReadableContext(signal: AbortSignal, timeoutMs?: number): Promise<void> {
+		const checked = await this.#call(
+			"qorpera_assert_company_path_reads",
+			{ ...this.#bound(), p_paths: [] },
+			signal,
+			timeoutMs,
+		);
 		if (checked !== null) throw new Error("Invalid Company File context authorization");
 	}
 

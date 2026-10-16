@@ -1279,7 +1279,9 @@ by a machine.
   - it re-resolves the view's recorded paths where a check fails, and
     refuses if one is no longer readable;
   - it copies the view's read records into the run's, so the run's recheck
-    finds the paths;
+    finds the paths. Since `20260930498000` it copies only the records this
+    run has not taken in from that view (each one is marked per run and
+    view), after checking the view's whole set as above;
   - it writes at rank 10 and is idempotent per `inherit_id`.
 
   The runtime calls it when a run takes in a view's output (C3 wires it).
@@ -1320,8 +1322,10 @@ by a machine.
     id;
   - `office_id`, `screen_id`, the screen `generation`, `run_id`,
     `staff_agent_id` and `requested_by_user_id` (from the run);
-  - `network`: the start's `network` argument (absent, false). Only an
-    offline command gets a view; rows the report makes say true;
+  - `network`: the start's `network` argument (absent, false). A command
+    gets a view, offline or networked (20260930342000, F3 4b-2: the
+    contract's 14 October 2026 amendment); rows the report makes say true,
+    and get none (they name no screen generation);
   - `started_at`, then `ended_at` and `end_reason` (`exited`, `stopped`,
     `pressure`, `paused`, `closed`, `slept`, `lost`, `unknown`: the
     table's check, from 20260928489100).

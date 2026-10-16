@@ -496,6 +496,60 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		},
 	);
 
+	it("shows each notice the office service left once in the desktop's notification area, and removes it", async () => {
+		const fixture = await xfceFixture();
+		const notices = join(fixture.root, "run");
+		await mkdir(notices);
+		const script = (await readFile(xfceHelper, "utf8")).replace(
+			"notices=/run/qorpera",
+			`notices=${JSON.stringify(notices)}`,
+		);
+		expect(script).toContain(notices);
+		const helper = join(fixture.root, "qorpera-screen-xfce");
+		await writeFile(helper, script, { mode: 0o755 });
+		const bin = join(fixture.root, "bin");
+		const shown = join(fixture.root, "shown");
+		await writeFile(shown, "");
+		await writeFile(
+			join(bin, "notify-send"),
+			'#!/bin/bash\nfor arg do printf "[%s]" "$arg"; done >> "$TEST_SHOWN"\necho >> "$TEST_SHOWN"\n',
+			{
+				mode: 0o700,
+			},
+		);
+		// The session lives while the watcher looks.
+		await writeFile(join(bin, "xfce4-session"), '#!/bin/sh\nprintf "SESSION\\n" >> "$TEST_LOG"\nsleep 2\n', {
+			mode: 0o700,
+		});
+		await writeFile(
+			join(notices, "folder-notice.000000000001.a"),
+			"2 changes saved to the company folder.\n1 change not saved.\n",
+		);
+		await writeFile(
+			join(notices, "folder-notice.000000000002.b"),
+			"The company folder refused a change on this desktop.",
+		);
+		// A link the desktop put there, a notice still being written, and an empty one are not shown.
+		const outside = join(fixture.root, "outside");
+		await writeFile(outside, "service-owned bytes");
+		await symlink(outside, join(notices, "folder-notice.000000000003.c"));
+		await writeFile(join(notices, ".folder-notice.d"), "half");
+		await writeFile(join(notices, "folder-notice.000000000004.e"), "");
+		await execute("/bin/bash", [helper, fixture.wallpaper], {
+			env: { ...fixture.env, TEST_SHOWN: shown },
+			timeout: 6000,
+		});
+		expect(await readFile(shown, "utf8")).toBe(
+			[
+				"[--app-name=Company folder][--][Company folder][2 changes saved to the company folder.\n1 change not saved.]",
+				"[--app-name=Company folder][--][Company folder][The company folder refused a change on this desktop.]",
+				"",
+			].join("\n"),
+		);
+		expect((await readdir(notices)).sort()).toEqual([".folder-notice.d", "folder-notice.000000000003.c"]);
+		expect(await readFile(outside, "utf8")).toBe("service-owned bytes");
+	});
+
 	it("refuses a wallpaper from a different screen state directory", async () => {
 		const fixture = await xfceFixture();
 		const other = join(fixture.root, "other.png");
@@ -514,6 +568,11 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		expect(wrapper).toContain("wallpaper=${QORPERA_SCREEN_WALLPAPER:?");
 		expect(wrapper).toContain(`\${wallpaper} != "\${screen_state}/wallpaper.png"`);
 		expect(wrapper).toContain(`XDG_CONFIG_HOME="\${screen_state}/config"`);
+		// Caches and thumbnails, of company files too, stay in memory.
+		expect(wrapper).toContain(`cache_dir="\${runtime_dir}/cache"`);
+		expect(wrapper).toContain(`XDG_CACHE_HOME="\${cache_dir}"`);
+		// The company folder only when the office service bound it.
+		expect(wrapper).toContain(`\${QORPERA_COMPANY_FOLDER:-} == /company && -d /company && -x /company`);
 		expect(wrapper).toContain(`/usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "\${wallpaper}"`);
 		expect(wrapper).not.toMatch(/QORPERA_LIVE_COMPANY_ROOT|dataset\/live|qorpera-chrome/);
 		// The desktop follows the company's local day and carries only the office dock.
@@ -796,7 +855,7 @@ printf '\\n' >> "$TEST_LOG"
 		// Extract only the file-writing block; the remaining wrapper needs a real X server.
 		const text = await readFile(wrapper, "utf8");
 		const start = text.indexOf("panel_config=");
-		const end = text.indexOf(`cd "\${workbench_root}"`);
+		const end = text.indexOf(`cd "\${folder_root}"`);
 		// The guest image resolves aliases with GNU realpath; the local double must not.
 		const block = text
 			.slice(start, end)
@@ -804,15 +863,18 @@ printf '\\n' >> "$TEST_LOG"
 		expect(start).toBeGreaterThan(0);
 		expect(end).toBeGreaterThan(start);
 		expect(block).not.toContain("/usr/bin/realpath");
+		// Without the company folder Terminal and Files open in the desktop's home, never in the workbench (F3 4f-1b).
+		expect(text).toMatch(/\nfolder_root=\$\{desktop_home\}\n/);
+		expect(text).not.toMatch(/folder_root=\$\{workbench_root\}|company workbench/);
 		const screenState = join(fixture.root, "screen with spaces");
-		const workbench = join(fixture.root, "workbench dir");
-		await mkdir(workbench);
-		const run = () =>
+		const home = join(fixture.root, "home dir");
+		await mkdir(home);
+		const run = (folderRoot = home) =>
 			execute(
 				"/bin/bash",
 				[
 					"-c",
-					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}\n${block}`,
+					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; folder_root=${JSON.stringify(folderRoot)}\n${block}`,
 				],
 				{ timeout: 3000 },
 			);
@@ -863,7 +925,7 @@ printf '\\n' >> "$TEST_LOG"
 			);
 		}
 		const terminal = await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8");
-		expect(terminal).toContain(`Path=${workbench}\nIcon=${join(dock, "terminal-idle.png")}\n`);
+		expect(terminal).toContain(`Path=${home}\nIcon=${join(dock, "terminal-idle.png")}\n`);
 		// Only the initial idle copy is managed; every reusable source is outside.
 		expect(await readdir(join(config, "panel", "launcher-6"))).toEqual(["qorpera-browser.desktop"]);
 		expect((await readdir(dock)).filter((name) => name.startsWith("qorpera-browser")).sort()).toEqual([
@@ -899,7 +961,7 @@ printf '\\n' >> "$TEST_LOG"
 			for (const part of selector.replace("{", "").split(",")) expect(part.trim()).toMatch(/^\.xfce4-panel\b/);
 		// Files and Terminal go through the dock helper, which restores an existing window first.
 		expect(await readFile(join(config, "panel", "launcher-5", "qorpera-files.desktop"), "utf8")).toContain(
-			`Exec=/usr/local/bin/qorpera-screen-browser files\nPath=${workbench}\n`,
+			`Exec=/usr/local/bin/qorpera-screen-browser files\nPath=${home}\n`,
 		);
 		expect(terminal).toContain("Exec=/usr/local/bin/qorpera-screen-browser terminal\n");
 		expect(await readFile(join(config, "panel", "launcher-6", "qorpera-browser.desktop"), "utf8")).toContain(
@@ -913,7 +975,7 @@ printf '\\n' >> "$TEST_LOG"
 		expect(terminalrc).toContain("ColorBackground=#12141a\n");
 		expect(await readFile(rc, "utf8")).toContain("PS1=");
 		const prompt = await execute("/bin/bash", ["--rcfile", rc, "-i", "-c", 'printf %s "$PS1"'], {
-			env: { HOME: workbench, PATH: "/usr/bin:/bin" },
+			env: { HOME: home, PATH: "/usr/bin:/bin" },
 			timeout: 3000,
 		});
 		expect(prompt.stdout).toContain("\\w");
@@ -921,6 +983,26 @@ printf '\\n' >> "$TEST_LOG"
 		// No predictable temporary names, and the private write directory is gone.
 		expect(text).not.toMatch(/\.tmp\.\$\$/);
 		expect((await readdir(join(screenState, "config"))).filter((name) => name.startsWith(".qorpera"))).toEqual([]);
+		await expect(stat(join(screenState, "config", "user-dirs.dirs"))).rejects.toMatchObject({ code: "ENOENT" });
+
+		// With the company folder bound, Terminal and Files open in it, and Desktop, Documents and Downloads are it.
+		await run("/company");
+		expect(await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8")).toContain(
+			"Comment=Shell in the company folder\nExec=/usr/local/bin/qorpera-screen-browser terminal\nPath=/company\n",
+		);
+		expect(await readFile(join(config, "panel", "launcher-5", "qorpera-files.desktop"), "utf8")).toContain(
+			"Comment=Files of the company folder\nExec=/usr/local/bin/qorpera-screen-browser files\nPath=/company\n",
+		);
+		expect(await readFile(join(dock, "qorpera-files-running.desktop"), "utf8")).toContain("Path=/company\n");
+		expect(await readFile(join(screenState, "config", "user-dirs.dirs"), "utf8")).toBe(
+			'XDG_DESKTOP_DIR="/company"\nXDG_DOCUMENTS_DIR="/company"\nXDG_DOWNLOAD_DIR="/company"\n',
+		);
+		// A later start without it takes the usual folders back.
+		await run();
+		expect(await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8")).toContain(
+			`Comment=Shell in the home folder\nExec=/usr/local/bin/qorpera-screen-browser terminal\nPath=${home}\n`,
+		);
+		await expect(stat(join(screenState, "config", "user-dirs.dirs"))).rejects.toMatchObject({ code: "ENOENT" });
 
 		// Something inside the desktop planted directories where files belong (and at
 		// the old predictable temporary names). Looks are skipped; the desktop still gets

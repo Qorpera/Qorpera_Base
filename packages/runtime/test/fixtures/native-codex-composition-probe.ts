@@ -125,7 +125,9 @@ export async function runNativeCodexCompositionProbe(
 				event(response, { type: "response.output_item.added", output_index: 1, item: call });
 				await waitFor(() => composition().some((row) => row.phase === "start"));
 				const start = Date.now();
-				await new Promise<void>((resolve) => setTimeout(resolve, HOLD_MS));
+				// A timer can fire a millisecond early by Date.now() (the loop's clock is cached): wait out the rest.
+				while (Date.now() - start < HOLD_MS)
+					await new Promise<void>((resolve) => setTimeout(resolve, HOLD_MS - (Date.now() - start)));
 				heldMs = Date.now() - start;
 				assert.equal(sends, 0, "Send executed while its arguments were still being composed");
 				assert.equal(composition().filter((row) => row.phase === "finish").length, 0);

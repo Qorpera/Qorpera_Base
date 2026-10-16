@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
+import { AREAS_TABLE, CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
+import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
@@ -12,6 +13,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -160,7 +162,7 @@ const BLOCKED = {
 	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
 	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
 	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file, not a folder: choose another name.",
+		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
 	folder_missing:
 		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
 	owners_only:
@@ -175,7 +177,7 @@ const ROWS = {
 	not_a_writer:
 		"Nothing was saved. You may not write this table's rows (its [write] agents do not name you): tell the member what you would change.",
 	invalid: "Nothing was saved. Fix the problems listed and call again with a new operationKey.",
-	claim: "Nothing was saved. A needs_yes cell (a claim) is not yours to change: leave it as it is, or tell the member.",
+	claim: "Nothing was saved. You change a needs_yes cell (a claim) only for the member who supervises your area, taking an empty one for them or letting theirs go, and never an area's owner, supervisor or agents: leave it as it is, or tell the member.",
 	too_large:
 		"Nothing was saved. The rows would be larger than 64 KiB, the most a table holds for now: remove rows first, or tell the member.",
 };
@@ -225,6 +227,66 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	);
 	expect(f.releases).toEqual([]);
 	expect(f.commits).toEqual([]);
+});
+
+it("says how to write what a first try at a new page often gets wrong, and saves the page written that way", async () => {
+	// A production run's first three saves of a new page were refused (P0-2, 16 Oct): a text that spans lines and a
+	// made-up id are refused with what to write instead, whole, so the model can fix them in one more call.
+	const f = await fixture({ folders: ["interfaces"] });
+	const launch = (id: string, text: string) => `format = "qorpera.interface/v0"
+
+[interface]
+id = "${id}"
+name = "Launch check"
+
+[[view]]
+name = "Items"
+
+[[view.block]]
+kind = "text"
+text = ${text}
+`;
+	const one = (text: string) => save("launch-1", [{ path: NOTES, text }]);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch(NOTES_ID, '"""\nAlpha: open\nBeta: done\n"""')),
+		`${NOTES} cannot be saved: interface.toml line 12: Multi-line strings are not used in these files: write it on one line in "double quotes", with \\n for each line break.`,
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch(NOTES_ID, '"Alpha: open\nBeta: done"')),
+		'interface.toml line 12: A quoted text must close on its line: write it on one line in "double quotes"',
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch("11111111-2222-3333-4444-555555555555", '"Alpha: open"')),
+		`${NOTES} cannot be saved: interface.toml line 4: interface.id must be a new random lowercase uuid (version 4): 8-4-4-4-12 hex digits, the third group starting with 4 and the fourth with 8, 9, a or b.`,
+	);
+	// A list given its items in place, and a text too long, say what to write instead (the dash kept as one).
+	const list = launch(NOTES_ID, '""').replace(
+		'kind = "text"\ntext = ""',
+		'kind = "list"\nitems = ["Alpha", "Beta", "Gamma"]',
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(list),
+		'This block needs from: the source it shows, like "table:<name>". Only a text block holds its own text.',
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch(NOTES_ID, `"${"x".repeat(2001)}"`)),
+		"interface.toml line 12: view[0].block[0].text takes 0-2000 characters.",
+	);
+	expect(f.commits).toEqual([]);
+	const made = await f.call("save_interface", one(launch(NOTES_ID, '"Alpha: open\\nBeta: done"')));
+	expect(read(made)).toMatchObject({ state: "applied", files: [{ path: "interfaces/notes", outcome: "saved" }] });
+	const saved = parseInterfaceFile(f.text(NOTES) ?? "");
+	expect(saved.file?.views[0]?.blocks[0]?.text).toBe("Alpha: open\nBeta: done");
 });
 
 it("makes a new interface as a new folder, only with the review's approval, and a replay finds it made", async () => {
@@ -386,6 +448,15 @@ it("saves nothing when a file is not as the call expects, and says why with what
 		{
 			name: "a file where the interface's folder would be",
 			seed: { files: { "interfaces/odd": "odd" } },
+			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
+			reason: "not_a_folder",
+			path: "interfaces/odd/interface.toml",
+			reads: ["interfaces/odd"],
+		},
+		{
+			// The core keeps links out of interfaces/ (LK1); one is blocked as any other thing that is not a folder.
+			name: "a link where the interface's folder would be",
+			seed: { links: { "interfaces/odd": "../docs" } },
 			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
 			reason: "not_a_folder",
 			path: "interfaces/odd/interface.toml",
@@ -571,6 +642,8 @@ it("takes a column the definition drops out of the rows first, once it is option
 	});
 	cites(held, answer, ["tables/numbers", definition, rowsFile]);
 	expect(held.commits).toEqual([]);
+	// Blocked before any receipt: the boundary observes it as denied, never as succeeded (P5 pass 2 finding 1).
+	expect(held.tool("save_interface").refused?.(answer)).toBe("invalid_arguments");
 });
 
 it("sets, adds and removes rows in place, with the ids it made, and a replay finds its change made", async () => {
@@ -787,6 +860,118 @@ it("refuses a claim, a table the agent may not write, and rows that would be too
 	);
 	expect(answer).toMatchObject({ state: "not_applied", reason: "too_large", next: ROWS.too_large });
 	expect([...claim.commits, ...closed.commits, ...large.commits]).toEqual([]);
+});
+
+const AREAS_HEAD = "area,about,owner,shared,supervisor,agents";
+const AREAS_FILES = ["tables/areas/table.toml", "tables/areas/rows.csv"];
+/** The cards, and the areas: the run's agent works in Sales, which `supervisor` supervises (or nobody, when null). */
+async function supervised(supervisor: string | null, options: Parameters<typeof folderWriterFixture>[1] = {}) {
+	const f = await fixture({ files: CARDS }, options);
+	f.seed("tables/areas/table.toml", AREAS_TABLE);
+	f.seed(
+		"tables/areas/rows.csv",
+		`${AREAS_HEAD}\nOps,,,no,${randomUUID()},${randomUUID()}\nSales,,,no,${supervisor ?? ""},${AGENT} ${f.identity.staffAgentId}\n`,
+	);
+	return f;
+}
+
+it("changes a claim for the member who supervises the agent's area, and only takes or lets go for them", async () => {
+	const supervisor = randomUUID();
+	const f = await supervised(supervisor);
+	const path = "tables/cards/rows.csv";
+	// Taken for the supervisor: the areas were read for it, and the answer is released with them.
+	const taken = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]));
+	expect(read(taken)).toMatchObject({ state: "applied", outcome: "saved", changed: { updated: 1 } });
+	cites(f, taken, [...CARDS_FILES, ...AREAS_FILES]);
+	expect(f.text(path)).toBe(`${CARDS_HEAD}\n${C1},Bake,sales,${supervisor},open,,\n${C2},Sell,sales,,open,,\n`);
+	// Given to anybody else: refused before the commit.
+	const other = randomUUID();
+	const given = await f.call("table_write", rows("cards", "give-1", [{ id: C2, holder: other }]));
+	const answer = read(given);
+	expect(answer).toMatchObject({ state: "not_applied", reason: "claim", next: ROWS.claim });
+	expect(answer.problems).toEqual([expect.stringContaining("giving it to someone else is an offer")]);
+	cites(f, given, [...CARDS_FILES, ...AREAS_FILES]);
+	// The boundary observes the refusal as denied for want of authority (P5 pass 2 finding 1).
+	expect(f.tool("table_write").refused?.(given)).toBe("authority_unavailable");
+	// A change that touches no claim reads no areas.
+	const done = await f.call("table_write", rows("cards", "done-1", [{ id: C2, state: "done" }]));
+	expect(read(done)).toMatchObject({ state: "applied" });
+	expect(f.tool("table_write").refused?.(done)).toBeUndefined();
+	cites(f, done, CARDS_FILES);
+	// Let go for the supervisor.
+	const released = await f.call("table_write", rows("cards", "let-go-1", [{ id: C1, holder: null }]));
+	expect(read(released)).toMatchObject({ state: "applied", changed: { updated: 1 } });
+	expect(f.text(path)).toBe(`${CARDS_HEAD}\n${C1},Bake,sales,,open,,\n${C2},Sell,sales,,done,,\n`);
+	expect(f.commits).toHaveLength(3);
+	// An area nobody supervises: the agent has nobody to act for.
+	const alone = await supervised(null);
+	const refused = read(await alone.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }])));
+	expect(refused).toMatchObject({ state: "not_applied", reason: "claim", next: ROWS.claim });
+	expect(refused.problems).toEqual([expect.stringContaining("no supervisor to act for")]);
+	expect(alone.commits).toEqual([]);
+});
+
+it("writes the areas but never an area's owner, supervisor or agents", async () => {
+	const supervisor = randomUUID();
+	const f = await supervised(supervisor);
+	const about = await f.call("table_write", rows("areas", "about-1", [{ area: "Sales", about: "Selling" }]));
+	expect(read(about)).toMatchObject({ state: "applied", changed: { updated: 1 } });
+	cites(f, about, AREAS_FILES);
+	const changes: [string, JsonValue][] = [
+		["owner", supervisor],
+		["supervisor", null],
+		["agents", [AGENT]],
+	];
+	for (const [column, value] of changes) {
+		const answer = await f.call("table_write", rows("areas", `${column}-1`, [{ area: "Sales", [column]: value }]));
+		expect(read(answer)).toMatchObject({
+			state: "not_applied",
+			reason: "claim",
+			problems: [`Only members change ${column}; an agent can offer, never set it.`],
+			next: ROWS.claim,
+		});
+		cites(f, answer, AREAS_FILES);
+	}
+	expect(f.commits).toHaveLength(1);
+});
+
+it("answers the folder core's claim refusal at the commit as a claim", async () => {
+	const supervisor = randomUUID();
+	// The supervisor withdrew their consent: the folder core finds no member to act for and refuses the claim.
+	const message = "nobody assigns anybody: only the member named changes holder";
+	const f = await supervised(supervisor, {
+		hook: (path) =>
+			path === "tables/cards/rows.csv"
+				? { outcome: "refused", reason: "structured_rule", problems: [{ code: "claim", message }] }
+				: null,
+	});
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async () => {},
+	});
+	const span = observability.start("table_write");
+	const answer = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]), {
+		...f.context,
+		observation: span,
+	});
+	// Refused at the commit: observed as denied, never as succeeded (P5 pass 2 finding 1).
+	expect([span.result?.status, span.result?.errorCategory]).toEqual(["denied", "invalid_arguments"]);
+	await observability.close();
+	expect(read(answer)).toEqual({
+		schema: "qorpera.table-write-result/v1",
+		state: "not_applied",
+		operationKey: "take-1",
+		table: "cards",
+		version: null,
+		receiptId: expect.any(String),
+		outcome: "refused",
+		reason: "structured_rule",
+		problems: [message],
+		next: ROWS.claim,
+	});
+	cites(f, answer, [...CARDS_FILES, ...AREAS_FILES]);
+	expect(f.commits).toHaveLength(1);
+	expect(f.text("tables/cards/rows.csv")).toBe(CARDS_ROWS);
 });
 
 it("refuses a table that is not there, and answers one it cannot read with its problems", async () => {

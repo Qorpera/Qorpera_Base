@@ -5,9 +5,20 @@ node health receipts and the `qorpera_runtime_node_health(node_id)` and
 `qorpera_runtime_node_health_history(node_id, before_time, before_id, limit)`
 queries. These measurements never authorize admission or release capacity.
 
-The unprivileged installed observer starts one fixed child process per sample.
-It checks protected machine identity, boot/mount namespace, inventory policy and
-the installed package receipt before reporting:
+The unprivileged observer starts one child process per sample: its own file
+(`process.argv[1]`) with `--health-probe`, so the child reads the same
+configuration as the observer. It checks protected machine identity, boot/mount
+namespace and inventory policy, and names its software, before reporting. The
+first installation (`/opt/qorpera/node-observer/qorpera-node-observer.cjs`) is
+named by its installed package receipt, which must name the policy and the
+observer's account. A cut's observer file (`deploy/agent-exit/ROLLOUT.md` step
+4) has no receipt and is named by the SHA-256 of its own bytes, read only when
+the file and every directory above it are root-owned and not group- or
+world-writable. Until v180 the probe always ran the first installation's path,
+which the cuts' observers do not use, so every sample was
+`COLLECTION_UNCONFIRMED`. Run by hand, a failed probe prints
+`NODE_HEALTH_COLLECTION_UNCONFIRMED` and the closed code that stopped it, never
+an error's text or a path; the observer ignores the probe's stderr. It reports:
 
 - CPU busy basis points over a one-second sample of Node's OS CPU time counters,
   summed across CPUs and excluding idle time; the original interval is retained.
@@ -43,7 +54,12 @@ History uses descending observation-time/UUID cursors, at most 1,000 records and
 4 MiB per page. Pages are live snapshots, not a cross-page snapshot. Retained
 samples do not promise continuous coverage. Failed publication is not retried by
 the observer: a later attempt measures a new sample; committed receipts survive
-lost replies. There is no automatic receipt deletion. Tables and validation
+lost replies. Receipts observed more than seven days ago are deleted, oldest
+first, never the one a node's latest row names: from bundle v88 each health
+observation deleted up to 500 of its own node's, and since migration
+`20260930485000_node_health_receipts_hourly.sql` the hourly node receipt
+retention does, off the observer's path (`RUNTIME-NODE-CAPACITY.md`, "Receipt
+retention"). Tables and validation
 helpers remain private; only the three explicit RPCs are granted to service role.
 Member and guest APIs receive no additional access or authority.
 

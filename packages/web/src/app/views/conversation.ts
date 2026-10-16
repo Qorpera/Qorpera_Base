@@ -81,6 +81,7 @@ import {
 } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { InterfacePreview, proposedSave } from "./interface-preview.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -338,6 +339,9 @@ export class ConversationView {
 	#runNotificationKey = "";
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
+	/** A waiting approval card's preview of the pages its save would leave (I10), by review id: kept across re-renders
+	 * and drawn again as the folder is read. Null: its call saves no page. */
+	readonly #previews = new Map<string, InterfacePreview | null>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
 	#focusReview: string | undefined;
 	/** Every item of the last render by its id: a redraw keeps the nodes of unchanged items. */
@@ -781,6 +785,9 @@ export class ConversationView {
 		this.#sharedDrafts.dispose();
 		for (const drawn of this.#drawn.values()) drawn.message?.files?.view.dispose();
 		this.#drawn.clear();
+		for (const preview of this.#previews.values()) preview?.dispose();
+		this.#previews.clear();
+		this.#actions.previewInterfaces?.(this, []);
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
@@ -1227,6 +1234,18 @@ export class ConversationView {
 					...copies,
 				);
 		}
+	}
+
+	/** The preview of a waiting approval card's save (I10), made the first time the card is drawn; none when its call
+	 * saves no page. */
+	#previewOf(review: ActionReviewCard): InterfacePreview | undefined {
+		let preview = this.#previews.get(review.reviewId);
+		if (preview === undefined) {
+			const save = proposedSave(review);
+			preview = save ? new InterfacePreview(this.#company, review.reviewId, save) : null;
+			this.#previews.set(review.reviewId, preview);
+		}
+		return preview ?? undefined;
 	}
 
 	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
@@ -1960,6 +1979,8 @@ export class ConversationView {
 			// A sent message learns its input id: the element passes on by it (see `handedOver`).
 			conversation.optimistic.map((item) => item.inputId ?? null),
 		]);
+		// A waiting card's preview is drawn again as the folder is read, whether or not the thread changed.
+		for (const preview of this.#previews.values()) preview?.refresh();
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
 		const decisions = new Map<string, TranscriptCard>();
@@ -2009,6 +2030,8 @@ export class ConversationView {
 		const taken = new Set<DrawnItem>();
 		/** A card drawn anew → the element it replaces, whose day separator stays with it. */
 		const replaced = new Map<HTMLElement, HTMLElement>();
+		/** The waiting approval cards this render draws, by review id: the previews of all others go. */
+		const waitingCards = new Set<string>();
 		const slotFor = (id: string) => {
 			let slot = id;
 			for (let copy = 1; drawn.has(slot); copy++) slot = `${id}#${copy}`;
@@ -2301,6 +2324,10 @@ export class ConversationView {
 				const answerFailed = item.answerFailed === true && !given;
 				const answers =
 					canWrite && session?.status === "open" && answersActionReview(review, this.#company.userId, role);
+				// While it waits, a card whose call saves pages shows them as they would look (I10). Its preview is
+				// kept, and moves into the card when the card is drawn anew.
+				const preview = resolution === undefined ? this.#previewOf(review) : undefined;
+				if (resolution === undefined) waitingCards.add(review.reviewId);
 				// The Always allow draft is not part of the key: a kept card keeps the member's editor as it
 				// is. The card shows no time.
 				nodes.push(
@@ -2313,6 +2340,7 @@ export class ConversationView {
 								? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
 								: undefined,
 							memberName: (userId) => this.#company.memberName(userId),
+							...(preview ? { preview: preview.element } : {}),
 						}),
 					),
 				);
@@ -2452,6 +2480,16 @@ export class ConversationView {
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
 		this.#drawn = drawn;
+		// So do the previews of cards answered or gone; the folder reader reads what the others draw.
+		for (const [reviewId, preview] of this.#previews)
+			if (!waitingCards.has(reviewId)) {
+				preview?.dispose();
+				this.#previews.delete(reviewId);
+			}
+		this.#actions.previewInterfaces?.(
+			this,
+			[...this.#previews.values()].flatMap((preview) => preview?.pages ?? []),
+		);
 		const placeholderShown = this.#messagesPlaceholder?.isConnected === true;
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();

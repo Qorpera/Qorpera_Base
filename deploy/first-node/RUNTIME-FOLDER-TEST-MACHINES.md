@@ -21,7 +21,7 @@ A test machine whose starter's authority covers the company-wide view works in t
 commands read and write the company's files as on their own disk (item 1), with the network and the folder (item 2). A
 program that keeps running publishes about two seconds after its last change, each time its output is read, and when it
 ends (item 3). Each save is credited to the commands that ran while it was made, from #419's command records on the
-node. Once `/company` is mounted, starting a command passes the automatic review as an outside effect (design: "a
+node. Starting a command passes the automatic review as an outside effect, with or without `/company` (Q2; design: "a
 worker's commands pass under its agent's rules"). The read-only repository disk at `/mnt/repository`, and the copy of it
 to the machine's own disk, retire (build order row 6).
 
@@ -29,7 +29,7 @@ What does not change: a test machine is the company's own scratch compute, any a
 member sees it. Its only network is the agent exit: it reaches the internet but no private network, the NAS, the nodes or
 the control plane (§8). Its disk is throwaway ("Nothing on a node"). Its dependencies and builds stay in its own cache and
 are never published (item 8). A machine whose starter's authority does not cover the company-wide view has no `/company`
-and works as today (item 10; review of its commands is Q2).
+and works as today (item 10), except that its commands are reviewed (Q2).
 
 **Root is the agent's.** On a test machine an agent is root (design: "The guard there is the CID check plus exactly one
 view per machine"). Root reaches every command on the machine, whichever agent started it. So the walls between commands
@@ -193,6 +193,9 @@ mount propagation proof for a container started before the mount came up.
 - **Item 8's caches** stay on the machine's disk: "The folder program keeps item 8's caches on the machine." Step 6
   uses that part of the program as whichever slice builds it first leaves it (step 5's plan: "whichever of it and 5d
   lands first builds the program's part, and the other reuses it"). 6e, which retires the copy to the machine's disk, waits for it.
+  5d builds that part for worktrees, and item 8's plan
+  ([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)) extends it; there a test machine's cache is
+  one per machine, in the folder 6d's guest gives (`--cache-dir`).
 - **The toolbox** (item 7): "Agents' own machines and test machines start from a base image that carries it." 6c adds
   to `build-machine-image.sh` what today's image lacks of 4e's list (`tsc` and `tsx`, uv, ripgrep, fd, sqlite3, zip and
   LibreOffice), with `fuse3` and the folder program, in a new image generation. The image tests are 4e's: every
@@ -254,10 +257,10 @@ machine was lost".
 
 ## Review
 
-The design: "Once `/company` is mounted on it, starting a command and typing into one are outside effects and pass the
-automatic review…; a worker's commands pass under its agent's rules… Until then a machine has no company folder and its
-commands are not reviewed." Today every machine tool is "internal" or "read" (`cloud-action-review.ts:226–233`: "A
-company machine is the company's own scratch compute").
+The design, before Q2: "Once `/company` is mounted on it, starting a command and typing into one are outside effects
+and pass the automatic review…; a worker's commands pass under its agent's rules… Until then a machine has no company
+folder and its commands are not reviewed." Before 6d every machine tool was "internal" or "read"
+(`cloud-action-review.ts:226–233`: "A company machine is the company's own scratch compute").
 
 - **From 6d, `machine_run` is "external"**, as `computer_shell`'s commands are ("A command can reach the internet, and
   so can what is typed into one"). With `/company` mounted, a command also reaches the company's files (item 2).
@@ -266,15 +269,19 @@ company machine is the company's own scratch compute").
 - No tool types into a running command today. One added later is "external" too (the design's "typing into one").
 - **A worker's commands** pass under its agent's rules (design). 6d's tests show a worker's `machine_run` reaching the
   review with its agent's rules, and 6d adds that where it does not.
-- **A boot without `/company`.** Read with item 10, the design leaves such a machine's commands unreviewed. This plan
-  reviews every `machine_run` instead (Q2), for three reasons. `cloudActionEffect` is a pure function of the tool and
-  its arguments, and whether a machine has `/company` is decided per boot, so it can change between the review and the
-  start. Commands of an earlier boot that had `/company` may have copied company files to the disk (the platform keeps
-  none there, "Nothing on a node", but root can copy); "Access" keeps such a disk to callers who read the root, and
-  the review still sees what a command sends out. And a folderless machine is still a networked command run on the
-  company's behalf. If the coordinator keeps the design's
-  reading, 6d instead classes the call from the machine's state at the call, and `qorpera_authorize_machine_command`
-  refuses an unreviewed start on a placement that has or had a view.
+- **What the reviewer reads.** A worker's own run and a run woken by a machine event have no member request of their
+  own, so the reviewer would read "No member request in this run" (the v180 checks' finding 881f1f21). A worker gets
+  no approval card, so a review that asks would stop its command for good. The review-origin fix for 881f1f21 gives
+  such a run the request of the chain's first run, so 6d-3a merges after it.
+- **A boot without `/company`.** The contract ("compute for agents", item 4: "its commands are not reviewed (founder,
+  28 September)"), read with item 10, and the design left such a machine's commands unreviewed. This plan reviews
+  every `machine_run` instead (Q2), and notes it in the contract under both items, for three reasons.
+  `cloudActionEffect` is a pure function of the tool and its arguments, and whether a machine has `/company` is
+  decided per boot, so it can change between the review and the start. Commands of an earlier boot that had
+  `/company` may have copied company files to the disk (the platform keeps none there, "Nothing on a node", but root
+  can copy); "Access" keeps such a disk to callers who read the root, and the review still sees what a command sends
+  out. And a folderless machine is still a networked command run on the company's behalf. The coordinator chose this
+  (Q2, answered: its GO of 15 Oct).
 
 ## Reads
 
@@ -296,7 +303,11 @@ them. Step 6 builds that as follows:
    into that run (`qorpera_folder_run_inherit_view_reads`): the receipts of `machine_run`, `machine_read` and
    `machine_cancel`, the notify continuation and a worker's read. Output can show what any command on the machine read,
    so whoever sees it takes in what the machine read. This also covers a run whose command ran while its job was not
-   leased (rule 1 reaches only leased jobs).
+   leased (rule 1 reaches only leased jobs). The executor asks for it after the boundary releases the reads, through
+   `qorpera_folder_test_machine_inherit_reads` (6d-3b), for the placement, boot and run its command's authority names.
+   That takes in the newest view of the placement, so a boot without `/company` takes in what an earlier boot of the
+   same disk was served. Each take-in checks the view's whole read set for the run (rule 5), but copies into the run's
+   records only the view's records that run has not taken in yet (`20260930498000`, for the office's take-in too).
 4. **Boundaries come after reads.** A boundary (below) is answered only after every recorded read of the machine is
    released. A boundary with no answer holds the output back: the model gets nothing from the machine until it is
    answered.
@@ -478,8 +489,13 @@ only if a rule is wrong.
   change" holds: only the executor's order changes.
 - C1b-3 §6, `qorpera_folder_run_inherit_view_reads`: "A run inherits only its own agent's and member's views" is
   widened for `test_machine` views to a run whose agent and member read the root ("Reads", SQL).
+- The contract, "compute for agents", item 4: "its commands are not reviewed (founder, 28 September)", and item 10
+  of the 14 Oct amendment, "Until a machine carries the folder, today's rules hold for it", each get a note in place:
+  every command on a company machine is reviewed, also on a boot without the folder (Q2, "Review"; done in 6d-3a).
 - RUNTIME-COMPANY-FOLDER.md, the test machine's review: "Until then a machine has no company folder and its commands
-  are not reviewed", if Q2 is accepted ("Review").
+  are not reviewed" is replaced: a boot without `/company` is reviewed too (Q2, "Review"; done in 6d-3a). The review
+  is the one thing in which such a machine departs from item 10's "Until a machine carries the folder, today's rules
+  hold for it", and it only adds a review.
 - `cloud-action-review.ts`: `machine_run` leaves the machine tools' "internal" group (6d).
 - [deploy/machine/README.md](../machine/README.md): "A coding session's repository", Lifetime and acceptance step 4
   (6e); the build order's row 6 is done by 6e.
@@ -493,11 +509,12 @@ only if a rule is wrong.
 - **Q1 (coordinator).** When to build. 6b reuses 4c and 5c, and 6a's crashed-service refusal needs 5a's `served_by`;
   none of these is on master yet. Recommended: build 6a and 6c now (6a's crashed-service test lands once 5a has
   merged), and 6b against a stand-in core, merging after 4c and 5c; 6d after all three.
-- **Q2 (coordinator).** Review on a boot without `/company`. The design and item 10 leave such a machine's commands
-  unreviewed. Recommended: review every `machine_run` from 6d, for the reasons in "Review". Otherwise 6d classes each
-  call from the machine's state at the call, and `qorpera_authorize_machine_command` refuses an unreviewed start on a
-  placement that has or had a view.
+- **Q2 (coordinator, answered).** Review on a boot without `/company`. The contract's item 4, item 10 and the design
+  left such a machine's commands unreviewed. Answer (the coordinator's GO for step 6, 15 Oct: "Q2 yes (review
+  folderless boots too)"; it took 6d-3a, "machine_run reviewed as external", on 16 Oct 20:25Z): review every
+  `machine_run` from 6d, for the reasons in "Review".
 
 The contract and the design decide the rest, and this plan follows them: who opens the view and whose authority it
 shows, the guard (the CID check and exactly one view per machine), when to publish (item 3's quiet publish applies
-here), credit and reads per command, the review once `/company` is mounted, and what row 6 retires.
+here), credit and reads per command, the review of a machine's commands (Q2 widens it to boots without `/company`), and
+what row 6 retires.

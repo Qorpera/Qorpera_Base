@@ -47,6 +47,11 @@ An independent review of 0e5b25515 asked for changes; all fixed:
   woken agent's repeat matches and the reviewer reads the whole call.
 - A Deny (the member's or the reviewer's) stands for that exact call; a
   redundant wake after the holder already ran the action finds it done.
+  Only the run the answer woke (the room wake of the answer's input) is told
+  the approval was used, however long after the wake it or the holder got
+  there, and whether the holder's poll or its retry used it (20260930489000).
+  The woken run's repeat reads the card that woke it first, so a newer card
+  of the same action does not hide it. No other run's call is told so.
 - The wake paths check what a post or message there checks: write access to
   the conversation, the cleanup fence, the queue bound, and, in an agent's
   thread, an active thread membership. An answer whose delivery failed may be

@@ -21,6 +21,8 @@ import {
 import {
 	type CompanyComputerAction,
 	type CompanyComputerCloudEndpoint,
+	type CompanyComputerFolderRefusal,
+	companyComputerFolderGiveBack,
 	parseCompanyComputerToolArguments,
 } from "./cloud-company-computer-tools.ts";
 
@@ -59,7 +61,11 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser"> &
 		Partial<Pick<CompanyComputerGuestAutomation, "settle">>;
 	readonly #assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
-	readonly #prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
+	readonly #prepareScreen: (
+		binding: CompanyComputerScreenBinding,
+		signal: AbortSignal,
+		replyBy: number,
+	) => Promise<CompanyComputerFolderRefusal | undefined>;
 	/** Settled actions (failed or successful) whose drain got no confirmation yet, by receipt. */
 	readonly #undrained = new Map<string, CompanyComputerGuestEffectInput>();
 
@@ -76,8 +82,15 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		/** Pure authority/binding/readiness preflight. Must not launch or mutate a guest. */
 		assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 		/** Reuse or start the exact display and await real readiness. Runs only
-		 * inside the receipt-admitted screen gate, never during authorization. */
-		prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
+		 * inside the receipt-admitted screen gate, never during authorization.
+		 * `replyBy` is the action's reply deadline (performance.now()). A refusal
+		 * means the office gave the screen back for the folder (F3 4d): the
+		 * action does nothing and says why. */
+		prepareScreen: (
+			binding: CompanyComputerScreenBinding,
+			signal: AbortSignal,
+			replyBy: number,
+		) => Promise<CompanyComputerFolderRefusal | undefined>;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		if (options.capabilities.some((capability) => !["browser", "desktop", "shell"].includes(capability))) {
@@ -141,9 +154,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				resources: this.#resources,
 			}) ||
 			(action.kind !== "screen" &&
-				!this.capabilities.includes(
-					action.kind === "screenshot" ? action.surface : action.kind === "transfer" ? "shell" : action.kind,
-				))
+				!this.capabilities.includes(action.kind === "screenshot" ? action.surface : action.kind))
 		) {
 			throw new Error("COMPUTER_OPERATION_MISMATCH");
 		}
@@ -189,6 +200,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		// work before this point and the way back.
 		const replyBy = performance.now() + COMPANY_COMPUTER_REPLY_BUDGET_MS;
 		const resourceSignal = await this.#effects.begin(structuredClone(effect), context.signal);
+		let givenBack = false;
 		const result = await this.#gate
 			.perform({
 				lease,
@@ -209,8 +221,12 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				},
 				execute: async (signal): Promise<CompanyComputerToolContent> => {
 					if (action.kind !== "screen" || action.action === "open") {
-						await this.#prepareScreen(this.#binding, signal);
+						const refusal = await this.#prepareScreen(this.#binding, signal, replyBy);
 						signal.throwIfAborted();
+						if (refusal) {
+							givenBack = true;
+							return companyComputerFolderGiveBack(action, refusal);
+						}
 					}
 					if (action.kind === "screen") {
 						// Resource cleanup follows the durable result's final check in createCompanyComputerTools.
@@ -227,6 +243,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 						lease,
 						{ identity, ...receipt, signal, ...(context.fill ? { fill: context.fill } : {}) },
 						operation,
+						replyBy,
 					);
 				},
 			})
@@ -250,7 +267,11 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 			this.#undrained.set(receipt.receiptId, structuredClone(effect));
 			throw error;
 		});
+		// The screen went back with nothing done: there is nothing to wait for.
+		if (givenBack) return result;
 		// Outside the gate and after the resource drained: waiting stops nothing.
-		return this.#automation.settle ? this.#automation.settle(action, result, context.signal, replyBy) : result;
+		return this.#automation.settle
+			? this.#automation.settle(action, result, context.signal, replyBy, identity.runId, receipt.receiptId)
+			: result;
 	}
 }

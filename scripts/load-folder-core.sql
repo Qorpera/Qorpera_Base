@@ -10,43 +10,22 @@
 -- * the big run's read set: every file under load/big, read and released (10,000 per release, the runtime's cap);
 -- * GC candidates: 40 objects that lost their roots 25 hours ago (loadfolder.gc_texts), which writers write again
 --   while GC claims them; the sweep has 20 intents expired over an hour ago.
--- Persisted helpers in schema loadfolder do what the gateway and the runtime do (a file's bytes and its seal), so the
--- load connections can call them.
+-- A persisted helper in schema loadfolder builds a file's manifest as the gateway does, so the load connections can call
+-- it.
 
 create schema loadfolder;
-create table loadfolder.config(key text primary key, value text not null);
-insert into loadfolder.config values ('environment', '64800000-0000-4000-8000-000000000020'),
-	('profile', '64800000-0000-4000-8000-000000000010'), ('owner', '64800000-0000-4000-8000-000000000001');
 create table loadfolder.runs(n integer primary key, agent uuid not null, handle text not null, actor jsonb not null,
 	binding jsonb not null, big boolean not null default false);
 create table loadfolder.gc_texts(n integer primary key, text text not null, sha256 text not null);
 
--- A text's version-2 manifest (one chunk), as the object gateway builds it.
+-- A text's version-2 manifest (one chunk), as the object gateway builds it. The load's uploads open with it, then
+-- confirm and seal in calls of their own, as the gateway does.
 create function loadfolder.manifest(p_text text) returns text language sql immutable as $$
 	select format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":%s,"mediaType":"text/markdown","executable":false,"chunks":[%s]}',
 		encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'), octet_length(convert_to(p_text, 'utf8')),
 		case when p_text = '' then '' else format('{"sha256":"%s","bytes":%s}', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'),
 			octet_length(convert_to(p_text, 'utf8'))) end)
 $$;
--- The gateway's upload as the actor: open the intent, confirm each object the open did not find present (it has stored
--- them), seal. Returns the seal (its file is what a write unit names).
-create function loadfolder.seal(p_actor jsonb, p_text text) returns jsonb language plpgsql as $$
-declare
-	v_env uuid := (select value::uuid from loadfolder.config where key = 'environment');
-	v_manifest text := loadfolder.manifest(p_text);
-	v_open jsonb := public.qorpera_folder_open_upload(v_env, p_actor, v_manifest);
-	v_object jsonb;
-begin
-	for v_object in select c from jsonb_array_elements(v_manifest::jsonb -> 'chunks') c
-		union all select jsonb_build_object('sha256', encode(extensions.digest(convert_to(v_manifest, 'utf8'), 'sha256'), 'hex'),
-			'bytes', octet_length(convert_to(v_manifest, 'utf8'))) loop
-		if not (v_open -> 'present') ? (v_object ->> 'sha256') then
-			perform public.qorpera_folder_confirm_object(v_env, p_actor, (v_open ->> 'intentId')::uuid, v_object ->> 'sha256',
-				(v_object ->> 'bytes')::bigint);
-		end if;
-	end loop;
-	return public.qorpera_folder_seal_upload(v_env, p_actor, (v_open ->> 'intentId')::uuid);
-end $$;
 
 -- The login admits every load run (its limits are 64 native leases and 128 calls a run; the runs below go in by hand).
 set session_replication_role = replica;

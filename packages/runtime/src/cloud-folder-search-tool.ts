@@ -30,8 +30,9 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  */
 
 /** The node's folder protocol (packages/object-gateway/src/folder-service/protocol.ts): a u32 big-endian length of
- * the type byte and the payload, the type byte, then JSON. */
-const PROTOCOL = 1;
+ * the type byte and the payload, the type byte, then JSON. At 4 the node finds links by name, with their targets
+ * (deploy/first-node/RUNTIME-FOLDER-LINKS.md). */
+const PROTOCOL = 4;
 const KIND = { hello: 0x48, helloOk: 0x68, search: 0x53, found: 0x73, error: 0x65 } as const;
 const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** How long the node may take to answer a hello (it lists the whole view the first time, which a large folder takes a
@@ -51,6 +52,8 @@ const NO_RECEIPT: CloudCompanyFolderAuthority = {
 	grantRevision: null,
 };
 const MAX_QUERY = 256;
+/** A link's target, in UTF-8 bytes (the core's limit). */
+const MAX_TARGET = 4095;
 
 /** Where a search goes on (the node's `SearchCursor`). */
 interface SearchCursor {
@@ -62,11 +65,13 @@ interface SearchCursor {
 
 interface SearchHit {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	readonly line: number;
 	readonly text: string;
 	readonly version: string;
 	readonly offset: number;
+	/** A link's target, as written (a link is found by its name only). */
+	readonly target?: string;
 }
 
 interface SearchPage {
@@ -305,15 +310,27 @@ function parsePage(body: Record<string, unknown>): SearchPage {
 	const hits = (body.hits as unknown[]).map((item): SearchHit => {
 		const h = item as Record<string, unknown>;
 		if (!h || typeof h !== "object") bad();
-		if (h.kind !== "file" && h.kind !== "folder") bad();
-		return {
+		if (h.kind !== "file" && h.kind !== "folder" && h.kind !== "symlink") bad();
+		const found: SearchHit = {
 			path: text(h.path, 4096),
-			kind: h.kind as "file" | "folder",
+			kind: h.kind as SearchHit["kind"],
 			line: count(h.line),
 			text: text(h.text, 4096),
 			version: text(h.version, 64),
 			offset: count(h.offset),
 		};
+		if (found.kind !== "symlink") return h.target === undefined ? found : bad();
+		// A link is a name hit, with its target as the core keeps it.
+		const target = h.target;
+		if (
+			found.line !== 0 ||
+			found.text !== "" ||
+			typeof target !== "string" ||
+			target === "" ||
+			Buffer.byteLength(target) > MAX_TARGET
+		)
+			bad();
+		return { ...found, target: target as string };
 	});
 	const reads = (body.reads as unknown[]).map((item): CloudCompanyFolderRelease => {
 		const r = item as Record<string, unknown>;
@@ -374,8 +391,13 @@ function resumeAt(hit: SearchHit): SearchCursor {
  * the first hit is always shown (its line cut, and at worst its path, if that is what fits). `seal` turns where to go
  * on into the token the model passes back. */
 export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) => string): string {
-	const shownHit = (h: SearchHit, text = h.text): string =>
-		h.line === 0 ? `${h.path}${h.kind === "folder" ? "/" : ""}` : `${h.path}:${h.line}: ${text}`;
+	// A link shows what it names, quoted as JSON: its target is kept exactly, spaces and line breaks too.
+	const shownHit = (h: SearchHit, text = h.kind === "symlink" ? JSON.stringify(h.target) : h.text): string =>
+		h.kind === "symlink"
+			? `${h.path} -> ${text}`
+			: h.line === 0
+				? `${h.path}${h.kind === "folder" ? "/" : ""}`
+				: `${h.path}:${h.line}: ${text}`;
 	// Laid out with a stand-in token of a real token's length (16 characters, nothing to escape), and sealed once.
 	const lay = (shown: number, first?: string, token = "x".repeat(16)) => {
 		const lines = page.hits.slice(0, shown).map((h, i) => (i === 0 && first !== undefined ? first : shownHit(h)));
@@ -396,11 +418,17 @@ export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) 
 	let shown = page.hits.length;
 	while (shown > 1 && !fitsOneResult(lay(shown).text)) shown--;
 	if (shown === 0 || fitsOneResult(lay(shown).text)) return sealed(shown);
-	// One hit that does not fit whole: its line shorter and shorter, then its path.
+	// One hit that does not fit whole: its line (or a link's target) shorter and shorter, then its path.
 	const hit = page.hits[0]!;
-	const chars = Array.from(hit.text);
+	const link = hit.kind === "symlink";
+	const chars = Array.from(link ? (hit.target ?? "") : hit.text);
 	for (let keep = chars.length; keep >= 0; keep = keep === 0 ? -1 : Math.floor(keep / 2)) {
-		const first = shownHit(hit, `${chars.slice(0, keep).join("")}${keep < chars.length ? "…" : ""}`);
+		const kept = chars.slice(0, keep).join("");
+		const cut = keep < chars.length;
+		const first = shownHit(
+			hit,
+			link ? `${JSON.stringify(kept)}${cut ? "… (target cut)" : ""}` : `${kept}${cut ? "…" : ""}`,
+		);
 		if (fitsOneResult(lay(1, first).text)) return sealed(1, first);
 	}
 	const path = Array.from(hit.path);
@@ -454,8 +482,9 @@ export function cloudFolderSearchTool(options: {
 		name: "company_search",
 		description:
 			"Search the company folder: the lines of its text files that contain your query, or with names_only the names of " +
-			"its files and folders. Only what you may read is searched. Literal text, not case-sensitive unless you say. " +
-			"Each call answers one page, path:line: text; when there is more, it gives a cursor to call again with. " +
+			"its files, folders and links. Only what you may read is searched. Literal text, not case-sensitive unless you " +
+			'say. Each call answers one page, path:line: text (a link as path -> "what it names"; a link is never searched ' +
+			"through); when there is more, it gives a cursor to call again with. " +
 			"Read a file with company_read; work on files (spreadsheets, documents, scripts) on the company's computer.",
 		source: "company_file",
 		inputSchema: {

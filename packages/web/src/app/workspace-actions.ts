@@ -1,3 +1,4 @@
+import type { InterfaceFile } from "@qorpera/cloud-client/interfaces";
 import type { WebCompanyComputer } from "../cloud/computer.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
 import type { InterfaceChange, InterfaceUndo } from "../cloud/interface-changes.ts";
@@ -49,6 +50,9 @@ export interface WorkspaceActions {
 	/** Erases one message of a conversation for the whole company, and reads how far it got (summary trees M3c). The
 	 * route takes owners and admins; the thread offers it to them. */
 	messageErases?: WebMessageErases;
+	/** The pages `owner`'s review cards preview, all of them each time (none: it previews nothing now), so the folder
+	 * reader reads what they draw (I10). */
+	previewInterfaces?: (owner: object, pages: readonly InterfaceFile[]) => void;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;

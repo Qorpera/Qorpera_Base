@@ -69,8 +69,3 @@ verify_jwt = false
 # notices); it sends company mail with the platform's Resend key.
 [functions.mail-outbox]
 verify_jwt = false
-
-# Mail attachments: called by pg_net when an agent first saves a received attachment, and each minute by pg_cron,
-# with a Supabase secret key, which it checks itself; it fetches attachments with the platform's Resend key.
-[functions.mail-attachments]
-verify_jwt = false

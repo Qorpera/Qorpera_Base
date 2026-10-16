@@ -152,6 +152,15 @@ export const CONVERSATION: Record<string, string> = {
 	"{agent}'s routine no longer runs on your login. {member} moved it to {payer}'s login.":
 		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til {payer}s login.",
 	"another member": "et andet medlem",
+	// An area's supervisor who no longer supervises its agents (views/execution-notices.ts)
+	"{member} stopped supervising the agents in {area}.": "{member} holdt op med at have tilsyn med agenterne i {area}.",
+	"{member} no longer supervises the agents in {area}.": "{member} har ikke længere tilsyn med agenterne i {area}.",
+	"{member} no longer supervises the agents in {area}: the area is gone.":
+		"{member} har ikke længere tilsyn med agenterne i {area}: området findes ikke længere.",
+	"{member} left the company, so the agents in {area} have no supervisor.":
+		"{member} har forladt virksomheden, så agenterne i {area} har ingen tilsynsførende.",
+	"the area {name}": "området {name}",
+	"an area": "et område",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)
 	"The agent": "Agenten",
@@ -422,6 +431,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Approvals are not available here yet. Reply in a message instead.":
 		"Godkendelser er ikke tilgængelige her endnu. Svar i en besked i stedet.",
 	"No details provided.": "Ingen detaljer angivet.",
+	"How the page will look": "Sådan kommer siden til at se ud",
 
 	// Message formatting (ui/markdown.ts)
 	"Task status": "Opgavestatus",

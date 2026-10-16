@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
 	COMPANY_COMPUTER_BROWSER_REQUEST_FILE,
 	CompanyComputerLinuxDesktopLauncher,
+	leaveCompanyComputerDesktopNotice,
 	takeCompanyComputerBrowserRequest,
 } from "@qorpera/runtime/cloud-company-computer-linux-desktop";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -234,5 +235,53 @@ describe("dock browser request (an empty file in the service-owned session direc
 		).toBe(false);
 		await intact();
 		expect(await readdir(f.request)).toEqual(["link"]);
+	});
+});
+
+describe("desktop notices (whole files in the service-owned session directory, for the desktop's own watcher)", () => {
+	const roots: string[] = [];
+	afterEach(async () => {
+		for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+	});
+
+	it("leaves each whole under a numbered name, keeps the newest four, and refuses markup, controls or too much", async () => {
+		const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-desktop-notice-"));
+		roots.push(directory);
+		const left = { notices: [] as string[], noticed: 0 };
+		await leaveCompanyComputerDesktopNotice(directory, left, "1 change saved to the company folder.");
+		// The desktop's watcher took the first meanwhile: its removal by name later fails quietly.
+		const [taken] = await readdir(directory);
+		await rm(join(directory, taken));
+		for (let n = 2; n <= 6; n++)
+			await leaveCompanyComputerDesktopNotice(
+				directory,
+				left,
+				`${n} changes saved to the company folder.\n1 change not saved.`,
+			);
+		const names = (await readdir(directory)).sort();
+		expect(names.map((name) => name.replace(/\.[0-9a-f-]{36}$/, ""))).toEqual(
+			[3, 4, 5, 6].map((n) => `folder-notice.${String(n).padStart(12, "0")}`),
+		);
+		expect(left.notices).toEqual(names);
+		expect(await readFile(join(directory, names[0]), "utf8")).toBe(
+			"3 changes saved to the company folder.\n1 change not saved.",
+		);
+		for (const text of ["", "<b>bold</b>", "a &amp; b", "tab\there", "carriage\rreturn", "nul\0", "é".repeat(257)])
+			await expect(leaveCompanyComputerDesktopNotice(directory, left, text)).rejects.toThrow(
+				"INVALID_OFFICE_DESKTOP_NOTICE",
+			);
+		expect((await readdir(directory)).sort()).toEqual(names);
+	});
+
+	it("leaves nothing for a desktop that is not ready, and refuses an invalid notice first", async () => {
+		const launcher = new CompanyComputerLinuxDesktopLauncher(fixture());
+		try {
+			await expect(launcher.notify(computerBinding(), "1 change saved to the company folder.")).rejects.toThrow(
+				"OFFICE_DESKTOP_NOT_READY",
+			);
+			await expect(launcher.notify(computerBinding(), "<script>")).rejects.toThrow("INVALID_OFFICE_DESKTOP_NOTICE");
+		} finally {
+			await launcher.close();
+		}
 	});
 });
