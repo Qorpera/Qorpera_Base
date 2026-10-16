@@ -519,6 +519,36 @@ has unsaved changes (4a).
   above), and shows it to the member who took over as a notification on that member's desktop. A stop ends the office
   service and its desktops, so a stop's report is the log's alone (review round 13).
 
+### How 4f-2 carries the report
+
+- **Saves come from the core.** `qorpera_folder_view_commits` (4f-2a, migration `20260930495000`) lists a desktop
+  view's commits in the order they were made, after a cursor (the last commit shown), with the view's pass, also once
+  the view is closed. Each carries its seq (null when it saved nothing), who made it, its run (none once the view is
+  detached), and its units' outcomes as the commit recorded them (the first 20, and how many there are). Only the
+  service role calls it. The office service's desktop folder (`cloud-company-computer-desktop-folder.ts`) holds the
+  pass of every view it opens, keeps per view the id of the last commit it showed, and reads the ones since when it
+  builds a report. Its registry (`cloud-company-computer-registry-http.ts`) names the function.
+- **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service sends each
+  quiet boundary's answer as a notification on the connection of the helper that holds the mount (the refusal and its
+  reason, or the commit; never a pass), and the helper passes it to the office service on its socket. The office
+  service keeps a view's refusals since its last report, the newest 20 of them, and the report says how many it left
+  out.
+- **The holder run's next tool result.** When a desktop action of the run holding the screen settles
+  (`CompanyComputerGuestAutomation`), the office service adds the report to its result: the view's commits since the
+  last one shown and the refusals since. Nothing is added when nothing is new.
+- **A drain's report.** At a takeover the office service keeps, under the id of the run that held the desktop, the old
+  view's commits since the last one shown and the drain boundary's answer, refusals included. It adds them to the next
+  tool result it gives that run, a refused action included (while the member holds the screen the run's actions there
+  are refused), and drops them when the run ends.
+- **Notifications.** Each report is also a desktop notification: `notify-send` run as the office account in the
+  desktop's session (its `DBUS_SESSION_BUS_ADDRESS`), shown by xfce4-notifyd. It says how many paths were saved,
+  refused or conflicted, and why a publish was refused. A drain's report is a notification on the desktop of the
+  member who took over, and a member-held desktop's saves are notifications on it alone (no run gets them). The image
+  needs `libnotify-bin` and `xfce4-notifyd` (draft PR #1225).
+- **Slices.** 4f-2a: the SQL and its test (`434_folder_view_commits.test.sql`), and this design. 4f-2b: the folder
+  service's notifications, the helper passing them on, the office service's reports and notifications, and their
+  tests; its proof on the test machine needs an image with #1225's packages.
+
 ## Slices
 
 Each is its own PR with an exact-head review. 4a, 4b and 4c can be built side by side; 4d needs all three and 4b-2; 4e
