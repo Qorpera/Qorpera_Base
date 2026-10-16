@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { beside, describePlan, planChanged, planScript, RUNNER_ORCHESTRATOR_WAITING, RUNTIME_WAITING, STEPS } from "./run-on-node-plan.mjs";
+import { ALL_STARTED, beside, describePlan, planChanged, planScript, RUNNER_ORCHESTRATOR_WAITING, RUNTIME_WAITING, STEPS } from "./run-on-node-plan.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -14,6 +14,24 @@ const names = (files) => planChanged(files).steps.map((step) => step.name).sort(
 const set = (list) => [...list].sort();
 const ALWAYS = ["lint", "typecheck", "checks"];
 const BASELINE = [...ALWAYS, "cloud-client", "runtime", "scripts"];
+/** These tests run inside run-on-node's own side-by-side runs, which set QORPERA_RUN_CORES_FILE: a script under test
+ * gets only the file its test gives it. */
+const env = (coresFile) => {
+	const { QORPERA_RUN_CORES_FILE: _, ...rest } = process.env;
+	return coresFile ? { ...rest, QORPERA_RUN_CORES_FILE: coresFile } : rest;
+};
+/** The most cores in use at once, from the start and end events the steps logged. */
+const mostCores = (events, cores) => {
+	let used = 0;
+	let most = 0;
+	for (const event of events) {
+		const [kind, name] = event.split(" ");
+		used += kind === "start" ? cores[name] : -cores[name];
+		most = Math.max(most, used);
+	}
+	assert.equal(used, 0);
+	return most;
+};
 
 test("documentation and the switched-off workflows run nothing", () => {
 	const plan = planChanged(["README.md", "deploy/test-machine/README.md", "docs-audit/x.txt", ".github/workflows/web-client.yml"]);
@@ -227,7 +245,7 @@ test("side by side: alone parts first and alone, then the rest longest first wit
 	assert.match(script, /^pending="3 4 2 1 5";/m);
 	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
 	try {
-		const result = spawnSync("bash", ["-c", script], { cwd, encoding: "utf8" });
+		const result = spawnSync("bash", ["-c", script], { cwd, encoding: "utf8", env: env() });
 		assert.equal(result.status, 1, result.stdout);
 		assert.match(result.stdout, /== changed: lint\nlint-ran\n== changed: lint passed in \d+ s\n/);
 		// web's alone part ran in the first phase, its rest in the second; one block.
@@ -241,17 +259,45 @@ test("side by side: alone parts first and alone, then the rest longest first wit
 		assert.deepEqual(readFileSync(join(cwd, ".run-on-node-status"), "utf8").trim().split("=")[1].split(",").sort(), ["bad", "half"]);
 		// Never more than 2 cores at once, yet two at once (long beside bad); web's 2 cores alone.
 		const events = readFileSync(join(cwd, "events"), "utf8").trim().split("\n");
-		const cores = { web: 2, short: 1, long: 1, bad: 1, half: 1 };
-		let used = 0;
-		let most = 0;
-		for (const event of events) {
-			const [kind, name] = event.split(" ");
-			used += kind === "start" ? cores[name] : -cores[name];
-			most = Math.max(most, used);
-		}
-		assert.equal(used, 0);
-		assert.equal(most, 2);
+		assert.equal(mostCores(events, { web: 2, short: 1, long: 1, bad: 1, half: 1 }), 2);
 		assert.equal(events.length, 10);
+		// Only a run-on-node run, which reads its slots' cores, marks when every step has started.
+		assert.equal(existsSync(join(cwd, ALL_STARTED)), false);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("side by side within the cores the run's slots give it, read again as they grow", () => {
+	const rest = (name, more) => `echo "start ${name}" >>events; ${more}; s=$?; echo "end ${name}" >>events; exit $s`;
+	// The longest step starts alone in one slot's core, then a second slot frees (the file says 4).
+	const grow = 'echo 4 >"$QORPERA_RUN_CORES_FILE.tmp" && mv -f "$QORPERA_RUN_CORES_FILE.tmp" "$QORPERA_RUN_CORES_FILE"; sleep 3';
+	const steps = [
+		{ name: "first", commands: [rest("first", grow)], seconds: 100 },
+		...["b", "c", "d", "e"].map((name, i) => ({ name, commands: [rest(name, "sleep 2")], seconds: 50 - i })),
+	];
+	const cores = { first: 1, b: 1, c: 1, d: 1, e: 1 };
+	const script = planScript(steps, { cores: 6 });
+	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
+	try {
+		writeFileSync(join(cwd, "cores"), "1\n");
+		const result = spawnSync("bash", ["-c", script], { cwd, encoding: "utf8", env: env(join(cwd, "cores")) });
+		assert.equal(result.status, 0, result.stdout);
+		assert.match(result.stdout, /side by side within 6 cores \(at most 4 from its slots\): at most \d+ tasks/);
+		const events = readFileSync(join(cwd, "events"), "utf8").trim().split("\n");
+		// first alone, then 3 more beside it within the 4 cores, never the 6 asked.
+		assert.equal(events[0], "start first");
+		assert.equal(events[1].startsWith("start "), true);
+		assert.equal(mostCores(events, cores), 4);
+		assert.equal(existsSync(join(cwd, ALL_STARTED)), true);
+		// A cores file it cannot read keeps the budget at one core: the steps run one at a time.
+		rmSync(join(cwd, "events"));
+		rmSync(join(cwd, ALL_STARTED));
+		const quick = steps.map((step) => ({ ...step, commands: [rest(step.name, "true")] }));
+		const missing = spawnSync("bash", ["-c", planScript(quick, { cores: 6 })], { cwd, encoding: "utf8", env: env(join(cwd, "none")) });
+		assert.equal(missing.status, 0, missing.stdout);
+		assert.match(missing.stdout, /\(at most 1 from its slots\)/);
+		assert.equal(mostCores(readFileSync(join(cwd, "events"), "utf8").trim().split("\n"), cores), 1);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
