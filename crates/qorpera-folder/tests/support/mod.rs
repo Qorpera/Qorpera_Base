@@ -473,7 +473,7 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 			}
 			let content = open.chunks[..count].concat();
 			if open.draft && !st.entries.contains_key(&open.path) {
-				st.entries.insert(open.path.clone(), Node { folder: false, version: 1, content: Vec::new(), executable: false });
+				st.entries.insert(open.path.clone(), Node { folder: false, link: false, version: 1, content: Vec::new(), executable: false });
 			}
 			let n = st.entries.get(&open.path).cloned().expect("the file");
 			if n.content != content {
