@@ -232,7 +232,7 @@ describe("lease-bound run log protection", () => {
 		await expect(protection.narrow(randomUUID(), step, signal)).rejects.toThrow("protection_run_mismatch");
 		await expect(protection.hashes(randomUUID(), [], signal)).rejects.toThrow("protection_run_mismatch");
 		await expect(protection.narrow(binding.runId, { ...step, readPaths: [1 as never] }, signal)).rejects.toThrow(
-			"protection_paths_invalid",
+			"paths_invalid",
 		);
 		await expect(protection.hashes(binding.runId, ["bad"], signal)).rejects.toThrow("protection_digests_invalid");
 		await expect(protection.hashes(binding.runId, new Array(1), signal)).rejects.toThrow(

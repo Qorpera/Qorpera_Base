@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CloudSecretBroker,
@@ -6,6 +6,7 @@ import {
 	type CloudSecretCaptureDescription,
 	type CloudSecretConnectorAdapter,
 	type CloudSecretOperationRequest,
+	type CodingEnvironmentRequest,
 	type CodingRepositoryCredentialRequest,
 } from "@qorpera/runtime/cloud-secret-broker";
 import {
@@ -22,6 +23,9 @@ const services: HttpCloudSecretBrokerService[] = [];
 afterEach(async () => {
 	for (const service of services.splice(0)) await service.close();
 });
+
+// A coding session's environment value the kernel releases in these tests (not a real secret).
+const ENVIRONMENT_VALUE = "env-value-HTTP-CANARY-0123";
 
 function fixture(reflectSecret = false) {
 	const identity = {
@@ -47,6 +51,28 @@ function fixture(reflectSecret = false) {
 		expiresAt: "2099-08-29T00:00:00.000Z",
 	};
 	let envelope = new Uint8Array();
+	// The kernel releases one sealed environment secret for one leased coding session (5j-3).
+	const authorizeCodingEnvironment = vi.fn(async (request: CodingEnvironmentRequest) => {
+		const sealed = Buffer.from(keyring.seal({ value: ENVIRONMENT_VALUE }, identity));
+		return {
+			schema: "qorpera.coding-environment-authorization/v1",
+			companyId: identity.companyId,
+			environmentId: identity.environmentId,
+			workerId: request.workerId,
+			repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+			secrets: [
+				{
+					name: "API_KEY",
+					secretId: identity.secretId,
+					secretVersion: identity.version,
+					keyId: identity.keyId,
+					ownerKind: "member",
+					encryptedEnvelopeBase64: sealed.toString("base64"),
+					envelopeSha256: createHash("sha256").update(sealed).digest("hex"),
+				},
+			],
+		};
+	});
 	const authority: CloudSecretBrokerAuthority = {
 		describeCapture: vi.fn(async () => description),
 		completeCapture: vi.fn(async (_ticket, _capability, encryptedEnvelope) => {
@@ -104,6 +130,7 @@ function fixture(reflectSecret = false) {
 				repository: request.repository,
 			};
 		}),
+		authorizeCodingEnvironment,
 	};
 	const adapter: CloudSecretConnectorAdapter = {
 		connectorId: "linear",
@@ -142,6 +169,7 @@ function fixture(reflectSecret = false) {
 	};
 	return {
 		authority,
+		authorizeCodingEnvironment,
 		capability,
 		ticketId,
 		wrappingKey,
@@ -356,6 +384,76 @@ it("releases a coding repository token only to the executor's token, uncached, a
 	const text = await refused.text();
 	expect(JSON.parse(text)).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
 	expect(text).not.toContain("gho_");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("answers the coding environment only to the executor's token, uncached, and nothing on a refusal", async () => {
+	const f = fixture();
+	const port = await f.service.start();
+	const body = {
+		schema: "qorpera.coding-environment-request/v1",
+		workerId: randomUUID(),
+		leaseToken: randomUUID(),
+		executorOwner: "coding-node-02",
+	};
+	const post = (servicePort: number, authorization: string, sent: Record<string, unknown> = body) =>
+		fetch(`http://127.0.0.1:${servicePort}/v1/coding-environment?company=${randomUUID()}`, {
+			method: "POST",
+			headers: { authorization, "content-type": "application/json" },
+			body: JSON.stringify(sent),
+		});
+	const notFound = { schema: "qorpera.cloud-secret-error/v1", error: "not_found" };
+	const unavailable = { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" };
+	// The runtime token every guest holds never opens the route.
+	const guest = await post(port, `Bearer ${f.runtimeToken}`);
+	expect(guest.status).toBe(404);
+	expect(await guest.json()).toEqual(notFound);
+	const unauthorized = await post(port, `Bearer ${randomBytes(32).toString("base64url")}`);
+	expect(unauthorized.status).toBe(404);
+	expect(await unauthorized.json()).toEqual(notFound);
+	expect(f.authorizeCodingEnvironment).not.toHaveBeenCalled();
+	const released = await post(port, `Bearer ${f.codingExecutorToken}`);
+	expect(released.status).toBe(200);
+	expect(released.headers.get("cache-control")).toBe("no-store");
+	expect(released.headers.get("access-control-allow-origin")).toBeNull();
+	expect(await released.json()).toEqual({
+		schema: "qorpera.coding-environment/v1",
+		environment: { API_KEY: ENVIRONMENT_VALUE },
+	});
+	expect(f.authorizeCodingEnvironment).toHaveBeenCalledTimes(1);
+	expect(f.authorizeCodingEnvironment).toHaveBeenCalledWith(
+		{ workerId: body.workerId, leaseToken: body.leaseToken, executorOwner: body.executorOwner },
+		expect.any(AbortSignal),
+	);
+	// A request that is not exactly the v1 shape is refused before the kernel is asked.
+	for (const sent of [
+		{ ...body, schema: "qorpera.coding-environment-request/v2" },
+		{ ...body, repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } },
+	]) {
+		const malformed = await post(port, `Bearer ${f.codingExecutorToken}`, sent);
+		expect(malformed.status).toBe(403);
+		expect(malformed.headers.get("cache-control")).toBe("no-store");
+		expect(await malformed.json()).toEqual(unavailable);
+	}
+	expect(f.authorizeCodingEnvironment).toHaveBeenCalledTimes(1);
+	f.authorizeCodingEnvironment.mockRejectedValueOnce(new Error("coding session lease is unavailable"));
+	const refused = await post(port, `Bearer ${f.codingExecutorToken}`);
+	expect(refused.status).toBe(403);
+	expect(refused.headers.get("cache-control")).toBe("no-store");
+	const text = await refused.text();
+	expect(JSON.parse(text)).toEqual(unavailable);
+	expect(text).not.toContain(ENVIRONMENT_VALUE);
+	// A broker started without the executor's token has no environment route at all.
+	const bare = new HttpCloudSecretBrokerService(f.broker, f.runtimeToken);
+	services.push(bare);
+	const barePort = await bare.start();
+	for (const token of [f.codingExecutorToken, f.runtimeToken]) {
+		const closed = await post(barePort, `Bearer ${token}`);
+		expect(closed.status).toBe(404);
+		expect(await closed.json()).toEqual(notFound);
+	}
+	expect(f.authorizeCodingEnvironment).toHaveBeenCalledTimes(2);
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });
