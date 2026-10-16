@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
@@ -9,6 +9,8 @@ import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-co
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { CodingFolderControl } from "../../packages/runner-orchestrator/src/coding-folder-control.ts";
+import { CodingFolderViews } from "../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
 import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder-control.ts";
@@ -57,10 +59,15 @@ interface Config {
 	 * exactly the VMs this executor makes. Absent: this executor never makes a
 	 * code host project or VM. */
 	codeHost: Readonly<CodeHostPolicy> | null;
+	/** The folder model for coding sessions (F3 5g-6a): the guest agent and the folder program this executor pushes into
+	 * each member machine, as files on this node with their pins, and the folder service's control socket (default
+	 * /run/qorpera-folder-control/control.sock). Absent: the NAS model. */
+	folder: { agent: PinnedFile; program: PinnedFile; controlSocket: string | null } | null;
 }
+interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "machines"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -78,6 +85,33 @@ function broker(value: unknown): Config["broker"] {
 		!/^qorpera-coding-[a-z0-9-]{1,80}$/.test(input.executorTokenCredential) || RESERVED_CREDENTIALS.has(input.executorTokenCredential) ||
 		input.executorTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { origin: origin(input.origin), executorTokenCredential: input.executorTokenCredential };
+}
+function absolutePath(value: unknown, maxBytes: number): string {
+	if (typeof value !== "string" || !value.startsWith("/") || value === "/" || posix.normalize(value) !== value || value.endsWith("/") ||
+		Buffer.byteLength(value) > maxBytes || /[\0-\x1f\x7f]/.test(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return value;
+}
+function pinnedFile(value: unknown): PinnedFile {
+	const input = object(value);
+	if (Object.keys(input).sort().join() !== "path,sha256" || typeof input.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(input.sha256))
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { path: absolutePath(input.path, 4096), sha256: input.sha256 };
+}
+function folderConfig(value: unknown): Config["folder"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	const keys = Object.keys(input).sort().join();
+	if (keys !== "agent,program" && keys !== "agent,controlSocket,program") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const agent = pinnedFile(input.agent), program = pinnedFile(input.program);
+	if (agent.path === program.path) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	// A Unix socket's path fits in 107 bytes.
+	return { agent, program, controlSocket: input.controlSocket === undefined ? null : absolutePath(input.controlSocket, 107) };
+}
+/** The file's bytes, refused unless they are the pinned ones. */
+async function readPinned(file: PinnedFile): Promise<Buffer> {
+	const bytes = await readFile(file.path);
+	if (createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw new Error("CODING_EXECUTOR_FOLDER_PROGRAM_CHANGED");
+	return bytes;
 }
 /** The reviewed JSON configuration (v7: SQL placement routes commands across
  * per-node executors using a separate, local-only peer listener and credential;
@@ -163,7 +197,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	return {
 		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
-		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines, codeHost,
+		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines, codeHost, folder: folderConfig(config.folder),
 	};
 }
 
@@ -188,10 +222,25 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
-	const journalRoot = await createCodingNasStorage(config.storagePolicy).prepareControl();
+	const storage = createCodingNasStorage(config.storagePolicy);
+	const journalRoot = await storage.prepareControl();
+	const lxd = new LxdUnixClient();
+	let folder: LxdCodingExecutorHostOptions["folder"];
+	if (config.folder) {
+		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
+		const folderControl = new CodingFolderControl(config.folder.controlSocket ? { path: config.folder.controlSocket } : {});
+		// The views it holds are recorded beside its journals, on the NAS: a restarted executor still ends them.
+		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
+		folder = {
+			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: folderControl, client: lxd,
+			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
+		};
+		// Which model this executor runs, and with what: a proof reads it from the log.
+		console.log(JSON.stringify({ event: "coding-executor-folder", agentSha256: config.folder.agent.sha256, programSha256: config.folder.program.sha256 }));
+	}
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
-		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: new LxdUnixClient(), guest: config.guest, journalRoot,
+		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();

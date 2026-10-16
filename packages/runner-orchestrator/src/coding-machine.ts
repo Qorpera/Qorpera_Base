@@ -603,6 +603,29 @@ async function readEvents(
 	return { events, previousSha256, root: activeRoot, segment, prior };
 }
 
+/** The LXD operation that started the machine as it runs now, from its journal under `journalRoot`: the last effect
+ * that succeeded there, which must be a start (a stop that failed since leaves it running). The folder model's
+ * commands are kept under it (coding-folder-command-transport.ts), so a command the guest lost is judged against the
+ * start it ran under. CODING_MACHINE_START_UNCONFIRMED when the journal does not show one. A member's machine started
+ * again after it stopped by itself has two starts in a row, read as its reconcile reads them. */
+export async function codingMachineStartOperation(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+): Promise<string> {
+	const current = await readEvents(
+		join(journalRoot, plan.journalName),
+		plan.binding,
+		plan.disposable === true,
+		plan.selfStops === true,
+	);
+	const last = [...(current.prior ? [current.prior] : []), ...current.events]
+		.reverse()
+		.find((event) => event.kind === "settled" && event.state === "succeeded");
+	// readEvents checked each settled event's operation id.
+	if (last?.action !== "start" || last.operationId === null) throw new Error("CODING_MACHINE_START_UNCONFIRMED");
+	return last.operationId;
+}
+
 /** One bounded physical reconciliation of one machine against its journal on
  * the NAS control path. Never blindly retries an uncertain mutation: only a
  * forced stop or a delete is re-issued, and only from LXD's view of the VM

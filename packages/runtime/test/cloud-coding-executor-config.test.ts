@@ -119,6 +119,35 @@ describe("coding executor service configuration", () => {
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
 	});
+	it("carries the folder model only with pinned agent and program files and an absolute control socket", () => {
+		const folder = {
+			agent: { path: "/opt/qorpera-coding/folder/coding-guest-agent.mjs", sha256: "a".repeat(64) },
+			program: { path: "/opt/qorpera-coding/folder/qorpera-folder", sha256: "b".repeat(64) },
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).folder).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), folder }).folder).toEqual({
+			...folder,
+			controlSocket: null,
+		});
+		const socket = { ...folder, controlSocket: "/run/qorpera-folder-control/control.sock" };
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, folder: socket }).folder).toEqual(socket);
+		for (const bad of [
+			null,
+			{ agent: folder.agent },
+			{ ...folder, extra: true },
+			{ ...folder, agent: { ...folder.agent, sha256: "A".repeat(64) } },
+			{ ...folder, agent: { ...folder.agent, size: 1 } },
+			{ ...folder, agent: { ...folder.agent, path: "opt/agent.mjs" } },
+			{ ...folder, agent: { ...folder.agent, path: "/opt/../etc/agent.mjs" } },
+			{ ...folder, agent: { ...folder.agent, path: "/opt/agent/" } },
+			{ ...folder, agent: { ...folder.agent, path: "/opt/agent\n.mjs" } },
+			{ ...folder, program: { ...folder.program, path: folder.agent.path } },
+			{ ...folder, controlSocket: null },
+			{ ...folder, controlSocket: "run/control.sock" },
+			{ ...folder, controlSocket: `/run/${"s".repeat(110)}` },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), folder: bad })).toThrow("CONFIG_INVALID");
+	});
 	it("makes code hosts only with the node inventory policy's code host block", () => {
 		const codeHost = {
 			imageFingerprint: "e".repeat(64),
