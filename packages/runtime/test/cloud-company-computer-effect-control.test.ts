@@ -186,4 +186,82 @@ describe("durable office guest effects", () => {
 		await expect(f.effects.assertAuthorized(f.input, f.context.signal)).rejects.toThrow();
 		expect(f.call.mock.calls.at(-1)?.[1].p_action).toBe("finish");
 	});
+
+	it("reads a vault_capture's target itself, inside its begun receipt, and takes only this call's answer (E3c-3)", async () => {
+		const f = await fixture();
+		const hook = randomUUID();
+		const input: CompanyComputerGuestEffectInput = {
+			...f.input,
+			operation: {
+				...f.operation,
+				tool: "computer_browser",
+				arguments: {
+					kind: "browser",
+					action: "vault_capture",
+					role: "button",
+					name: "Reveal",
+					hook,
+					field: "signing_secret",
+				},
+			},
+		};
+		const target = {
+			schema: "qorpera.event-hook-capture-target/v1",
+			hookId: hook,
+			address: "A".repeat(43),
+			site: "dashboard.stripe.com",
+			companyId: f.scope.companyId,
+			companyComputerId: f.lease.binding.companyComputerId,
+			computerGeneration: f.lease.binding.computerGeneration,
+			receiptId: input.receipt!.receiptId,
+			field: "signing_secret",
+			capturePublicKey: "k".repeat(43),
+		};
+		// Only after this receipt's begin: the database's check needs the resource it made.
+		await expect(f.effects.hookCaptureTarget(input, f.context.signal)).rejects.toThrow("OFFICE_RESOURCE_EXPIRED");
+		expect(f.call).not.toHaveBeenCalled();
+		await f.effects.begin(input, f.context.signal);
+		f.call.mockImplementation((async (method: string) =>
+			method === "qorpera_native_office_hook_capture" ? target : { state: "drained" }) as never);
+		await expect(f.effects.hookCaptureTarget(input, f.context.signal)).resolves.toEqual(target);
+		const [method, args] = f.call.mock.calls.at(-1)!;
+		expect(method).toBe("qorpera_native_office_hook_capture");
+		expect(args).toEqual({
+			p_binding: f.run.binding,
+			p_scope: f.scope,
+			p_lease: f.lease,
+			p_envelope: cloudNativeToolOperationEnvelope(f.run.identity, input.operation),
+			p_receipt_id: input.receipt!.receiptId,
+			p_idempotency_sha256: createHash("sha256").update(input.receipt!.idempotencyKey).digest("hex"),
+		});
+		// An answer for another hook, receipt, computer or generation, with another field, a key or an address of
+		// another shape, or one key more or less, is not this call's.
+		for (const wrong of [
+			{ ...target, hookId: randomUUID() },
+			{ ...target, receiptId: randomUUID() },
+			{ ...target, companyId: randomUUID() },
+			{ ...target, companyComputerId: randomUUID() },
+			{ ...target, computerGeneration: f.lease.binding.computerGeneration + 1 },
+			{ ...target, field: "password" },
+			{ ...target, schema: "qorpera.event-hook-capture/v1" },
+			{ ...target, capturePublicKey: "k".repeat(44) },
+			{ ...target, address: "A/".repeat(21) + "A" },
+			{ ...target, site: "https://dashboard.stripe.com" },
+			{ ...target, extra: true },
+			(({ site: _, ...rest }) => rest)(target),
+			null,
+			[target],
+		]) {
+			f.call.mockResolvedValueOnce(wrong as never);
+			await expect(f.effects.hookCaptureTarget(input, f.context.signal)).rejects.toThrow(
+				"OFFICE_HOOK_CAPTURE_UNCONFIRMED",
+			);
+		}
+		// Never for another call, and never once the receipt finished.
+		await expect(f.effects.hookCaptureTarget({ ...input, operation: f.operation }, f.context.signal)).rejects.toThrow(
+			"OFFICE_HOOK_CAPTURE_INVALID",
+		);
+		await f.effects.finish(input, f.context.signal);
+		await expect(f.effects.hookCaptureTarget(input, f.context.signal)).rejects.toThrow("OFFICE_RESOURCE_EXPIRED");
+	});
 });

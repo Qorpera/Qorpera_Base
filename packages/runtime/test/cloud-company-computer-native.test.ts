@@ -100,6 +100,8 @@ async function fixture(
 		screenshots?: Map<string, Uint8Array>;
 		/** The capture the database reads back for the run. */
 		capture?: () => unknown;
+		/** The boxes the guest's vault_captures sealed (E3c-3), by receipt. */
+		hookBoxes?: Map<string, Readonly<Record<string, string>>>;
 	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
@@ -248,6 +250,15 @@ async function fixture(
 								const bytes = options.screenshots?.get(receiptId);
 								options.screenshots?.delete(receiptId);
 								return bytes;
+							},
+						}
+					: {}),
+				...(options.hookBoxes
+					? {
+							capture: (receiptId: string) => {
+								const box = options.hookBoxes?.get(receiptId);
+								options.hookBoxes?.delete(receiptId);
+								return box;
 							},
 						}
 					: {}),
@@ -1034,6 +1045,74 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			stop,
 		);
 		expect(s.eventHookCapture).not.toHaveBeenCalled();
+	});
+
+	it("carries the box a guest's vault_capture sealed in that call's answer only, and never a done read without one (E3c-3)", async () => {
+		const hook = randomUUID();
+		const box = {
+			schema: "qorpera.event-hook-capture-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const hookFills = {
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(),
+			eventHook: vi.fn<CompanyComputerHookFills["eventHook"]>(async () => ({
+				schema: "qorpera.event-hook-rekey-answer/v1",
+				hook,
+				replaced: false,
+			})),
+			eventHookCapture: vi.fn<CompanyComputerHookFills["eventHookCapture"]>(async () => ({
+				schema: "qorpera.event-hook-capture-answer/v1",
+				hook,
+				version: 2,
+				unchanged: false,
+			})),
+		};
+		const hookBoxes = new Map<string, Readonly<Record<string, string>>>();
+		const f = await fixture({ capabilities: ["browser"], hookFills, hookBoxes });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_capture",
+				role: "button",
+				name: "Reveal",
+				hook,
+				field: "signing_secret",
+			},
+		};
+		const read = (extra: Record<string, unknown> = {}) => ({
+			kind: "json" as const,
+			value: { action: "vault_capture", tabId: randomUUID(), completed: true, ...extra },
+		});
+		f.perform.mockImplementationOnce(async (_action, _lease, context) => {
+			hookBoxes.set(context.receiptId, box);
+			return read();
+		});
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_capture",
+				completed: true,
+				captured: { hook, field: "signing_secret", version: 2, unchanged: false },
+			},
+		});
+		expect(hookFills.eventHookCapture).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookCapture.mock.calls[0]![0]).toMatchObject({ receiptId: f.context.receiptId, box });
+		expect(hookBoxes.size).toBe(0);
+		// The receipt keeps the read, never the box.
+		expect(JSON.stringify(f.sql.mock.calls)).not.toContain("ciphertext");
+		// The page stopped the agent after the click: the stop is the answer, with no box, and nothing is stored.
+		const stop = read({ stop: "SITE_STOP_HUMAN_CHECK", message: "Stop" });
+		f.perform.mockResolvedValueOnce(stop);
+		expect(await f.endpoint.perform(operation, f.lease, { ...f.context, receiptId: randomUUID() })).toEqual(stop);
+		// A done read whose box is gone (the session ended under it) is no answer.
+		f.perform.mockResolvedValueOnce(read());
+		await expect(f.endpoint.perform(operation, f.lease, { ...f.context, receiptId: randomUUID() })).rejects.toThrow();
+		expect(hookFills.eventHookCapture).toHaveBeenCalledOnce();
 	});
 
 	it("re-derives the native principal, consumes the original receipt and physically closes before releasing occupancy", async () => {

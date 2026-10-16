@@ -67,7 +67,6 @@ async function fixture(options: { onNas?: boolean } = {}) {
 			memberFolderObjects: authority,
 			memberObservations: observations,
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -261,7 +260,7 @@ describe("a member's folder-v2 bytes", () => {
 });
 
 describe("operator-only human observation query", () => {
-	it.each([undefined, "wrong", memberToken, "synthetic-verifier", "synthetic-native"])(
+	it.each([undefined, "wrong", memberToken, "synthetic-native"])(
 		"rejects %s before reading observations",
 		async (token) => {
 			const gateway = await fixture();

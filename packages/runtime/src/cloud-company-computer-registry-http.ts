@@ -40,6 +40,8 @@ const methods = [
 	// F3 4d: a desktop's folder view (migration 20260928259230), opened for whoever holds its screen.
 	"qorpera_folder_view_open",
 	"qorpera_folder_view_close",
+	// E3c-3: where a vault_capture's box goes, read by the office itself (migration 20260930344000); it writes nothing.
+	"qorpera_native_office_hook_capture",
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
