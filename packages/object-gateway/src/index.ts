@@ -5,7 +5,6 @@ export * from "./member-company-authority.ts";
 export * from "./migration.ts";
 export * from "./native-objects.ts";
 export * from "./object-store.ts";
-export * from "./read-lease.ts";
 export * from "./replication.ts";
 export * from "./service.ts";
 export * from "./supabase-authority.ts";

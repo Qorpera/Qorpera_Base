@@ -379,6 +379,10 @@
 .service-token-form small { color: #73736f; }
 .service-token-row { display: flex; gap: 8px; }
 .service-token-row .service-token { flex: 1; min-width: 0; }
+/* A coding environment value is a textarea, so a multiline key keeps its line breaks; the buttons beside it keep
+   their height. */
+.coding-environment .service-token-row { align-items: flex-start; }
+.coding-environment textarea { resize: vertical; font-family: var(--font-mono); font-size: 12.5px; }
 .service-error { margin: 0 0 8px; }
 /* Webhooks and mailboxes (settings-hooks.ts) share the services' cards. */
 .hook-icon { display: grid; place-items: center; width: 32px; height: 32px; justify-self: center; border-radius: 9px; background: #e4e4e1; color: #5f5f5b; }

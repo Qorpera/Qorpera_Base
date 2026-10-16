@@ -1,0 +1,5 @@
+# /etc/tmpfiles.d/qorpera-coding.conf: where the guest agent mounts each session's
+# folder program (/run/qorpera-folder/mounts/<worker32>, bound at /company in the
+# session's units).
+d /run/qorpera-folder 0755 root root -
+d /run/qorpera-folder/mounts 0755 root root -
