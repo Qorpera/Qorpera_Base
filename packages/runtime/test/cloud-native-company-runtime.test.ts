@@ -2213,6 +2213,31 @@ it("asks for the connector catalog alongside the notebook", async () => {
 	expect(overlapped).toBe(true);
 });
 
+it("hands the run-start reads, the connector catalog and the read-set check their 10 s down to the transport (16 Oct 2026)", async () => {
+	// The path control stops a call at 3 s unless its caller gives it a budget. Two TESTCO runs (62cd3036, 5ca8ded9)
+	// failed there while the database had their reads waiting up to 4 s in line for the run's job row.
+	const f = await fixture("company-secret");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const budgets = (method: CloudCompanyPathRpc) =>
+		f.pathCall.mock.calls.filter(([called]) => called === method).map(([, , , timeoutMs]) => timeoutMs);
+	expect(budgets("qorpera_describe_company_run_context")).toEqual([10_000]);
+	expect(budgets("qorpera_read_native_wake")).toEqual([10_000]);
+	expect(budgets("qorpera_list_native_connector_tools")).toEqual([10_000]);
+	// The run's own check before a model request (the synthetic fence's checks stand for SQL's, inside one call).
+	expect(budgets("qorpera_assert_company_path_reads")).toContain(10_000);
+	// Every other call keeps the transport's own stop; the fence's attempt is still the run's retry's.
+	const budgeted: readonly CloudCompanyPathRpc[] = [
+		"qorpera_describe_company_run_context",
+		"qorpera_read_native_wake",
+		"qorpera_list_native_connector_tools",
+		"qorpera_assert_company_path_reads",
+		"qorpera_fence_native_context",
+	];
+	const others = f.pathCall.mock.calls.filter(([method]) => !budgeted.includes(method));
+	expect(others.length).toBeGreaterThan(0);
+	expect(others.filter(([, , , timeoutMs]) => timeoutMs !== undefined)).toEqual([]);
+});
+
 // A catalog failure fails the run at the connector stage, before Codex starts, even when
 // something that now runs beside it fails as well; otherwise that failure keeps its stage.
 it.each([
@@ -2296,9 +2321,12 @@ it.each([
 			return original(method, args, signal);
 		});
 		await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(message);
+		// Once, with its own 10 s down to the transport.
 		expect(
-			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_provider_usage_signal"),
-		).toHaveLength(1);
+			f.pathCall.mock.calls
+				.filter(([method]) => method === "qorpera_record_provider_usage_signal")
+				.map(([, , , timeoutMs]) => timeoutMs),
+		).toEqual([10_000]);
 		expect(f.control.sendMessage).not.toHaveBeenCalled();
 	},
 );

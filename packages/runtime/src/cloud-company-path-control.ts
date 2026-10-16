@@ -63,7 +63,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 		this.#fetch = options.fetch ?? fetch;
 	}
 
-	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+	call(
+		method: CloudCompanyPathRpc,
+		argumentsValue: Record<string, unknown>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_describe_agent_open_work",
 			"qorpera_record_runtime_observation_batch",
@@ -321,9 +326,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				return value;
 			},
 			signal,
-			// The one-call fence carries what four calls did before a model request. The run's retry decides how long
-			// each attempt waits: 10 s at first, twice as long after one is cut (CloudNativeToolRun.assertActiveWith).
-			method === "qorpera_fence_native_context" ? CLOUD_TOOL_REQUEST_MAX_MS : 3000,
+			// A caller's own budget wins: a shorter stop here would cut the call first, so that budget never applied.
+			// The run-start reads wait in line for the run's job row, up to 4 s (two TESTCO runs, 16 Oct 2026).
+			// Without one, a call stops at 3 s, except the one-call fence, which carries what four calls did before a
+			// model request. The run's retry decides how long each attempt waits: 10 s at first, twice as long after
+			// one is cut (CloudNativeToolRun.assertActiveWith).
+			timeoutMs ?? (method === "qorpera_fence_native_context" ? CLOUD_TOOL_REQUEST_MAX_MS : 3000),
 		);
 	}
 }

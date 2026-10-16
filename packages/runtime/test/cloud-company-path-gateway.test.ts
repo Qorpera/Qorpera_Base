@@ -74,10 +74,12 @@ function fixture(tools: readonly CloudNativeTool[] = []) {
 		}
 		throw new Error("Unexpected fixture RPC");
 	};
-	const call = vi.fn(async (method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal) => {
-		signal.throwIfAborted();
-		return overrides.has(method) ? overrides.get(method)!(args) : defaultCall(method, args);
-	});
+	const call = vi.fn(
+		async (method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal, _timeoutMs?: number) => {
+			signal.throwIfAborted();
+			return overrides.has(method) ? overrides.get(method)!(args) : defaultCall(method, args);
+		},
+	);
 	const control: CloudCompanyPathControl = { call };
 	const gateway = new CloudCompanyPathGateway({ binding, identity, control });
 	const signal = new AbortController().signal;
@@ -225,12 +227,43 @@ describe("cloud Company File path gateway", () => {
 		await expect(f.gateway.fenceContextView(frame("request-4"), [], f.signal)).resolves.toBeUndefined();
 		await expect(f.gateway.fenceContextView(frame("request-5"), [], f.signal)).resolves.toBeUndefined();
 		expect(missing).toHaveBeenCalledOnce();
-		// The separate calls still check the run's read set, naming no path.
+		// The separate calls still check the run's read set, naming no path, and with no budget of the caller's the
+		// transport keeps its own stop.
 		await f.gateway.assertReadableContext(f.signal);
 		expect(f.call.mock.calls.at(-1)).toEqual([
 			"qorpera_assert_company_path_reads",
 			expect.objectContaining({ p_paths: [] }),
 			expect.any(AbortSignal),
+			undefined,
+		]);
+	});
+
+	it("hands the caller's budget for the read-set check down to the transport (16 Oct 2026)", async () => {
+		// The check before each model request locks the run's job row alongside the run's admission read, so the
+		// run gives it the pair's 10 s; the transport's own 3 s stop would cut it first.
+		const f = fixture();
+		let answer: () => void = () => undefined;
+		f.overrides.set("qorpera_assert_company_path_reads", async () => {
+			await new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+			return null;
+		});
+		vi.useFakeTimers();
+		try {
+			const checked = f.gateway.assertReadableContext(f.signal, 10_000);
+			// Past the gateway's own 5 s default: the caller's budget is the only one.
+			await vi.advanceTimersByTimeAsync(6000);
+			answer();
+			await expect(checked).resolves.toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(f.call.mock.calls.at(-1)).toEqual([
+			"qorpera_assert_company_path_reads",
+			expect.objectContaining({ p_paths: [] }),
+			expect.any(AbortSignal),
+			10_000,
 		]);
 	});
 
