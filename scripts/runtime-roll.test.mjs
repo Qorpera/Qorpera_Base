@@ -231,10 +231,27 @@ test("the schema rehearsal applies every release migration in order in one trans
 	assert.match(text, /A guard the roll relies on is missing after the release migrations[\s\S]*as roll_rehearsal;/);
 });
 
-test("a release's pg_temp helpers and temporary tables are its own migration's, under names no other one creates", () => {
+test("a release's pg_temp helpers and temporary tables are its own migration's; only a function may be created again", () => {
 	const helper = (name, body) => ({ name, text: `create function pg_temp.${body}() returns void language sql as $$ select 1 $$;\nselect pg_temp.${body}();\n` });
 	const first = helper("20260928400100_one.sql", "roll_patch");
-	assert.throws(() => rollPackets(options({ migrations: [first, helper("20260928400200_two.sql", "roll_patch")] })), /both create pg_temp\.roll_patch/);
+	// Three migrations create one pg_temp function: each 10-* packet runs alone and drops nothing, while 05 drops it
+	// right after the first and the second (their history rows), so the next one creates it anew.
+	const again = [first, helper("20260928400200_two.sql", "roll_patch"), helper("20260928400300_three.sql", "roll_patch")];
+	const packets = rollPackets(options({ migrations: again }));
+	const rehearsal = packets["05-rehearse-migrations.sql"];
+	const parts = statements(rehearsal).map(([start, end]) => rehearsal.slice(start, end).trim());
+	const drop = /^do \$\$ declare f regprocedure; begin for f in select p\.oid::regprocedure from pg_catalog\.pg_proc p where p\.pronamespace = pg_my_temp_schema\(\) and p\.proname = 'roll_patch' loop execute format\('drop function %s', f\); end loop; end \$\$;$/;
+	const history = (version) => parts.findIndex((part) => part.startsWith(`insert into supabase_migrations.schema_migrations(version,name,statements) values ('${version}'`));
+	assert.deepEqual(
+		parts.flatMap((part, index) => (drop.test(part) ? [index] : [])),
+		[history("20260928400100") + 1, history("20260928400200") + 1],
+	);
+	assert.equal(parts[history("20260928400300") + 1].startsWith("do $roll_after$"), true);
+	for (const migration of again) assert.doesNotMatch(packets[`10-migration-${migration.name}`], /drop function/);
+	// A function and a temporary table, or two tables, still may not share a name.
+	const rows = (name) => ({ name, text: "create temp table roll_patch (id integer) on commit drop;\ninsert into pg_temp.roll_patch (id) values (1);\n" });
+	assert.throws(() => rollPackets(options({ migrations: [first, rows("20260928400200_two.sql")] })), /both create pg_temp\.roll_patch/);
+	assert.throws(() => rollPackets(options({ migrations: [rows("20260928400100_one.sql"), helper("20260928400200_two.sql", "roll_patch")] })), /both create pg_temp\.roll_patch/);
 	const borrow = { name: "20260928400200_two.sql", text: "select pg_temp.roll_patch();\n" };
 	assert.throws(() => rollPackets(options({ migrations: [first, borrow] })), /uses pg_temp\.roll_patch, which it does not create/);
 	// A temporary table filled with a column list is not a call; one made `if not exists` may be shared.
