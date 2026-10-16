@@ -1,10 +1,11 @@
 -- @fixture 628_runtime_company_machines.test.sql until "-- 7. A start the guest does not know yet"
--- Machine commands on a test machine's disk (20260930420000; F3 step 6, slice 6a: RUNTIME-FOLDER-TEST-MACHINES.md):
--- a disk that has had a test machine view may hold what its views read, so once it has had one, every command there
--- (start, read, cancel) needs the run's agent and member to read the folder's root, on every later boot too. A disk that
--- never had one keeps today's access; its first command marks it, and no view opens there after. 628's build-a ran its
--- first command in §6 (Alice's run, for 924's owner), through the real native receipts; a cleared mark stands in for a
--- new disk. The view is the platform's real open on build-a's current placement and boot.
+-- Machine commands on a test machine's disk (20260930420000, 20260930424000; F3 step 6, slices 6a and 6d:
+-- RUNTIME-FOLDER-TEST-MACHINES.md): a disk that has had a test machine view may hold what its views read, so once it has
+-- had one, every command there (start, read, cancel) needs the run's agent and member to read the folder's root, on
+-- every later boot too. A disk that never had one keeps today's access; its first command started by a caller without
+-- the root read marks it, and no view opens there after. 628's build-a ran its commands in §6 as Alice (for 924's owner,
+-- who reads the root), through the real native receipts, so its disk is unmarked. The view is the platform's real open on
+-- build-a's current placement and boot.
 
 -- 510's: the statement fails with this SQLSTATE, message and detail (no detail unless one is named).
 create function pg_temp.refused(p_sql text, p_state text, p_message text default null, p_detail text default null)
@@ -50,14 +51,14 @@ create function pg_temp.command(p_intent text, p_command uuid) returns jsonb lan
 		p_intent, p_command)
 $$;
 
--- 1. build-a's disk never had a view. Its commands keep today's access without the root (undone after). Its first
---    command marked it, so the platform's open there tells the executor to move the machine to a new disk.
+-- 1. build-a's disk never had a view. Its commands keep today's access without the root (undone after). That first
+--    command marks it, so the platform's open there tells the executor to move the machine to a new disk.
 do $$
 declare v_auth jsonb;
 begin
-	perform pg_temp.base_assert(pg_temp.reads_root() and (pg_temp.mc_placement('build-a')).folder_unchecked_at is not null
+	perform pg_temp.base_assert(pg_temp.reads_root() and (pg_temp.mc_placement('build-a')).folder_unchecked_at is null
 		and not exists (select 1 from public.qorpera_folder_views where placement_id = (pg_temp.mc_placement('build-a')).id),
-		'Alice and her member read the root; the disk ran a command without the check and never had a view');
+		'Alice and her member read the root; their commands left the disk unmarked, and it never had a view');
 	begin
 		perform pg_temp.revoke_agent();
 		perform pg_temp.base_assert(not pg_temp.reads_root(), 'Without its grants the agent does not read the root');
@@ -66,21 +67,21 @@ begin
 			and pg_temp.command('read', '51100000-0000-4000-8000-000000000001') ->> 'executorOwner' = 'mx-a'
 			and pg_temp.command('cancel', '51100000-0000-4000-8000-000000000001') ->> 'executorOwner' = 'mx-a',
 			'A disk that never had a view keeps today''s access: ' || v_auth::text);
+		perform pg_temp.base_assert((pg_temp.mc_placement('build-a')).folder_unchecked_at is not null,
+			'A start by a caller without the root read marks the disk');
+		perform pg_temp.refused('select pg_temp.open_build_a()', '42501', 'Test machine disk was used without the folder check',
+			'qorpera.test-machine/new-disk');
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;
-	perform pg_temp.refused('select pg_temp.open_build_a()', '42501', 'Test machine disk was used without the folder check',
-		'qorpera.test-machine/new-disk');
 end $$;
 
--- 2. On a clean disk (the cleared mark), the platform opens a view. With the root, a command there is started, read
---    and cancelled, and the disk stays unmarked. Without it (undone after), each is refused: with the view open, once it
---    is closed, and on the disk's next boot. With the root again, the next boot runs commands.
+-- 2. On the clean disk, the platform opens a view. With the root, a command there is started, read and cancelled, and
+--    the disk stays unmarked. Without it (undone after), each is refused: with the view open, once it is closed, and on
+--    the disk's next boot. With the root again, the next boot runs commands.
 do $$
 declare v_view jsonb; v_boot uuid := extensions.gen_random_uuid(); v_case text; v_intent text;
 begin
-	perform pg_temp.fx(format('update public.qorpera_company_machine_placements set folder_unchecked_at = null where id = %L',
-		(pg_temp.mc_placement('build-a')).id));
 	v_view := pg_temp.open_build_a();
 	perform pg_temp.base_assert(exists (select 1 from public.qorpera_folder_views where id = (v_view ->> 'viewId')::uuid
 		and kind = 'test_machine' and state = 'open' and placement_id = (pg_temp.mc_placement('build-a')).id),

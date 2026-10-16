@@ -132,6 +132,7 @@ export function folderFake(
 			seq: node.seq,
 			updatedAt: "2026-10-04T09:00:00Z",
 			file: node.kind === "file" ? reference(node.text ?? "", node.path) : null,
+			target: null,
 		};
 	}
 
@@ -371,6 +372,7 @@ export function folderFake(
 											priorVersion: null,
 											updatedAt: null,
 											file: null,
+											target: null,
 										})),
 								},
 					),
