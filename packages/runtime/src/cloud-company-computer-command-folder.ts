@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import {
 	closeCompanyComputerFolderView,
+	companyComputerFolderDrainLogged as drainLogged,
 	openCompanyComputerFolderView,
 	companyComputerFolderWithin as within,
 } from "./cloud-company-computer-desktop-folder.ts";
@@ -28,6 +29,10 @@ const DROP_WAIT_MS = 60000;
 const FINAL_RETRY_MS = 5000;
 const ENDED_RETRY_MS = 1000;
 const RETRY_CAP_MS = 5 * 60 * 1000;
+/** While a drain waits for the command's mount, its final boundary, drop and end check are asked again after this. */
+const DRAIN_RETRY_MS = 1000;
+/** The least time a drain's boundary is still asked with: the helper takes at least a second. */
+const DRAIN_LAST_ASK_MS = 2000;
 /** What a tool result lists of the paths the company folder did not take. */
 const NOT_SAVED_SHOWN = 20;
 const NOT_SAVED_BYTES = 8 * 1024;
@@ -94,10 +99,13 @@ interface Seams {
 /**
  * Each shell command's mount of the company folder on a company machine (F3 4d, "A command's mount"): its own view
  * and mount, made before it runs; a boundary before its output reaches the run that started it; and, once no process
- * of it is left, the final boundary, asked again on its own until it has a final answer, then the mount goes.
+ * of it is left, the final boundary, asked again on its own until it has a final answer, then the mount goes. A
+ * screen's drain waits for its commands' mounts.
  */
 export class CompanyComputerCommandFolders {
 	readonly #seams: Seams;
+	/** By screen id: the commands whose mount may still be there. */
+	readonly #unsettled = new Map<string, Set<CompanyComputerCommandFolder>>();
 
 	constructor(options: {
 		registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
@@ -118,9 +126,29 @@ export class CompanyComputerCommandFolders {
 		};
 	}
 
-	/** The folder of the command whose start's effect receipt (its shell command id) is `receipt`. */
-	command(receipt: string): CompanyComputerCommandFolder {
-		return new CompanyComputerCommandFolder(this.#seams, receipt);
+	/** The folder of the command whose start's effect receipt (its shell command id) is `receipt`, on the screen
+	 * `screenId`. */
+	command(receipt: string, screenId: string): CompanyComputerCommandFolder {
+		return new CompanyComputerCommandFolder(this.#seams, receipt, (folder, left) => {
+			const folders = this.#unsettled.get(screenId) ?? new Set();
+			this.#unsettled.set(screenId, folders.add(folder));
+			void left.then(() => {
+				folders.delete(folder);
+				if (folders.size === 0 && this.#unsettled.get(screenId) === folders) this.#unsettled.delete(screenId);
+			});
+		});
+	}
+
+	/**
+	 * A drain's boundaries on the screen's command mounts, after its shell closed and before the drain's
+	 * acknowledgement ("Drains and stops"): each command's final boundary has its final answer, the pause's included,
+	 * and its mount goes. A mount still there at `until` (performance.now()) fails the drain; its own final boundary
+	 * goes on, and what it leaves is the stop control's.
+	 */
+	async drain(screenId: string, signal: AbortSignal, until: number): Promise<void> {
+		const folders = [...(this.#unsettled.get(screenId) ?? [])];
+		const left = await Promise.all(folders.map((folder) => folder.drain(signal, until)));
+		if (left.includes(false)) throw new Error("OFFICE_FOLDER_DRAIN_UNANSWERED");
 	}
 }
 
@@ -149,11 +177,28 @@ export class CompanyComputerCommandFolder {
 	/** Settles when the final boundary has its answer. */
 	#done?: Promise<void>;
 	#chain: Promise<unknown> = Promise.resolve();
+	/** Tells the command's screen that its mount is being made; the screen's drain waits until `left` settles. */
+	readonly #screen: (folder: CompanyComputerCommandFolder, left: Promise<void>) => void;
+	/** Settles once nothing of the command is left in the company folder: its mount went, or none was made. */
+	readonly #left: Promise<void>;
+	#leave: () => void = () => undefined;
+	/** A drain's deadline (performance.now()), once a drain waits for the mount. */
+	#drainUntil?: number;
+	/** Each retry's wait, which a drain cuts short. */
+	readonly #waits = new Set<() => void>();
 
-	constructor(seams: Seams, receipt: string) {
+	constructor(
+		seams: Seams,
+		receipt: string,
+		screen: (folder: CompanyComputerCommandFolder, left: Promise<void>) => void = () => undefined,
+	) {
 		this.#seams = seams;
 		this.#receipt = receipt;
 		this.#name = companyComputerFolderName("command", receipt);
+		this.#screen = screen;
+		this.#left = new Promise((resolve) => {
+			this.#leave = resolve;
+		});
 	}
 
 	get status(): CompanyComputerCommandFolderStatus {
@@ -196,6 +241,7 @@ export class CompanyComputerCommandFolder {
 	): Promise<{ ran: true } | { note: string }> {
 		if (this.#status !== "idle") return { note: START_FAILED };
 		this.#event = event;
+		this.#screen(this, this.#left);
 		let made = false;
 		try {
 			const view = await openCompanyComputerFolderView(
@@ -210,6 +256,7 @@ export class CompanyComputerCommandFolder {
 			);
 			if (!("viewId" in view)) {
 				this.#status = "none";
+				this.#leave();
 				return { note: `The command did not start (${view.message}); start it again.` };
 			}
 			this.#view = view;
@@ -256,6 +303,7 @@ export class CompanyComputerCommandFolder {
 	#none(note: string, made = true): { note: string } {
 		this.#status = "none";
 		if (made) void this.#queue(() => this.#gone(true));
+		else this.#leave();
 		return { note };
 	}
 
@@ -287,7 +335,7 @@ export class CompanyComputerCommandFolder {
 					await this.#queue(() => this.#gone(true));
 					return;
 				}
-				await later(wait);
+				await this.#later(wait);
 			}
 		})().catch(() => undefined);
 	}
@@ -303,6 +351,49 @@ export class CompanyComputerCommandFolder {
 		if (this.#status !== "running") return;
 		this.#status = "ending";
 		this.#done = this.#queue(() => this.#final()).catch(() => undefined);
+	}
+
+	/**
+	 * A drain of the command's screen, after its shell closed ("Drains and stops"): until `until` (performance.now())
+	 * the final boundary, the mount's drop and the end check are asked again each second, and the pause's refusal is a
+	 * final answer, as every other but no answer, QRC01 and the run check; the final answer is logged with the drain.
+	 * Answers whether the mount went by `until`; it is asked as before after that.
+	 */
+	async drain(signal: AbortSignal, until: number): Promise<boolean> {
+		this.#drainUntil = until;
+		for (const wake of [...this.#waits]) wake();
+		if (
+			await within(
+				this.#left.then(() => true),
+				signal,
+				until,
+				false,
+			)
+		)
+			return true;
+		const late = this.#status === "running" || this.#status === "ending" ? "no final answer" : "the mount did not go";
+		this.#seams.log(`office-folder: drain ${this.#name}: ${late} by the drain's deadline`);
+		return false;
+	}
+
+	/** The drain's deadline while a drain still asks before it. */
+	#draining(): number | undefined {
+		const until = this.#drainUntil;
+		return until !== undefined && until - performance.now() >= DRAIN_LAST_ASK_MS ? until : undefined;
+	}
+
+	/** A retry's wait: a second while a drain asks, and cut short when one begins. Never keeps the service alive. */
+	#later(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			const wake = (): void => {
+				clearTimeout(timer);
+				this.#waits.delete(wake);
+				resolve();
+			};
+			const timer = setTimeout(wake, this.#draining() === undefined ? ms : Math.min(ms, DRAIN_RETRY_MS));
+			timer.unref?.();
+			this.#waits.add(wake);
+		});
 	}
 
 	/** The shell's stop for the command, once its run request was sent. False before that. */
@@ -393,27 +484,37 @@ export class CompanyComputerCommandFolder {
 	}
 
 	/** The final boundary: asked again on its own until it has a final answer, then the mount goes and its view
-	 * closes. A command held back for good gets none. */
+	 * closes. A command held back for good gets none. During a drain the pause's refusal is final too. */
 	async #final(): Promise<void> {
 		for (let wait = FINAL_RETRY_MS; this.#status === "ending"; wait = Math.min(wait * 2, RETRY_CAP_MS)) {
-			const answer = await this.#helper({
-				op: "unmount",
-				name: this.#name,
-				final: true,
-				timeoutMs: COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
-			});
+			const drain = this.#draining();
+			const remaining = drain === undefined ? undefined : Math.floor(drain - performance.now());
+			const answer = await this.#helper(
+				{
+					op: "unmount",
+					name: this.#name,
+					final: true,
+					timeoutMs:
+						remaining === undefined
+							? COMPANY_COMPUTER_FOLDER_BOUNDARY_MS
+							: Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MS, remaining - 1000),
+				},
+				remaining,
+			);
 			if (
 				!answer ||
 				answer.answer === "invalid" ||
 				answer.answer === "unanswered" ||
 				(answer.answer === "refused" &&
-					(answer.report.refused === "run_ended" || answer.report.refused === "stopped"))
+					(answer.report.refused === "run_ended" || (answer.report.refused === "stopped" && drain === undefined)))
 			) {
 				this.#retry = heldBack(answer);
 				this.#seams.log(`office-folder: command ${this.#name}: final boundary asked again (${word(answer)})`);
-				await later(wait);
+				await this.#later(wait);
 				continue;
 			}
+			if (drain !== undefined)
+				this.#seams.log(`office-folder: drain ${this.#name}: ${JSON.stringify(drainLogged(answer))}`);
 			if (answer.answer === "unknown") {
 				this.#hold(HELD_GONE);
 				break;
@@ -445,10 +546,17 @@ export class CompanyComputerCommandFolder {
 	/** The mount goes without a boundary, asked again until the helper takes it away; then the view closes. */
 	async #gone(drop: boolean): Promise<void> {
 		for (let wait = FINAL_RETRY_MS; drop; wait = Math.min(wait * 2, RETRY_CAP_MS)) {
-			const answer = (await this.#helper({ op: "drop", name: this.#name }, DROP_WAIT_MS))?.answer;
+			const drain = this.#draining();
+			const answer = (
+				await this.#helper(
+					{ op: "drop", name: this.#name },
+					drain === undefined ? DROP_WAIT_MS : Math.min(DROP_WAIT_MS, Math.floor(drain - performance.now())),
+				)
+			)?.answer;
 			if (answer === "dropped" || answer === "unknown") break;
-			await later(wait);
+			await this.#later(wait);
 		}
+		this.#leave();
 		const view = this.#view;
 		this.#view = undefined;
 		if (view) await closeCompanyComputerFolderView(this.#seams.registry, view);
@@ -498,9 +606,4 @@ function notSaved(
 function head(text: string, length: number): string {
 	const characters = Array.from(text);
 	return characters.length > length ? `${characters.slice(0, length).join("")}…` : text;
-}
-
-/** A wait that never keeps the service alive. */
-function later(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms).unref?.());
 }

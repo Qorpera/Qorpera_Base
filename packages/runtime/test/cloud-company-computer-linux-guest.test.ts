@@ -548,7 +548,11 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 			f.effect(),
 		);
 		expect(shellLaunchers).toEqual([expect.objectContaining({ company: true })]);
-		expect(shells[0].folder).toEqual({ folders: commandFolders, environmentId: f.binding.environmentId });
+		expect(shells[0].folder).toEqual({
+			folders: commandFolders,
+			environmentId: f.binding.environmentId,
+			screenId: f.binding.screenId,
+		});
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 
@@ -1828,6 +1832,30 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_close:read",
 		]);
 		expect(h.ops()).toEqual(["mount", "unmount"]);
+	});
+	it("answers a drain only once the mounts of the screen's shell commands went, and fails with one still there", async () => {
+		const left = computerDeferred<void>();
+		const drain = vi.fn(() => left.promise);
+		const commandFolders = { drain } as unknown as CompanyComputerCommandFolders;
+		const f = await fixture({ commandFolders });
+		const signal = new AbortController().signal;
+		const until = performance.now() + 19000;
+		let drained = false;
+		const stopping = f.guest.stopResources(f.binding, signal, { until }).then(() => {
+			drained = true;
+		});
+		await vi.waitFor(() => expect(drain).toHaveBeenCalledWith(f.binding.screenId, signal, until));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(drained).toBe(false);
+		left.resolve();
+		await stopping;
+		drain.mockRejectedValueOnce(new Error("OFFICE_FOLDER_DRAIN_UNANSWERED"));
+		await expect(f.guest.stopResources(f.binding, signal, { until })).rejects.toThrow(
+			"OFFICE_FOLDER_DRAIN_UNANSWERED",
+		);
+		// Any other stop leaves them to their own final boundaries.
+		await f.guest.stopResources(f.binding, signal);
+		expect(drain).toHaveBeenCalledTimes(2);
 	});
 	it("holds a desktop screenshot back until the company folder released the desktop's reads, and says why", async () => {
 		const h = folderHelper();

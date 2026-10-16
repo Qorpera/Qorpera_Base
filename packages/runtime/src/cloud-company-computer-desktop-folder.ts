@@ -682,4 +682,4 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-export { within as companyComputerFolderWithin };
+export { drainLogged as companyComputerFolderDrainLogged, within as companyComputerFolderWithin };

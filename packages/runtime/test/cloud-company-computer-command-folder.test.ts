@@ -17,6 +17,7 @@ import { computerDeferred, computerId, computerScope } from "./fixtures/company-
 const { environmentId } = computerScope();
 const receipt = computerId(40);
 const name = `command-${receipt}`;
+const screenId = computerId(50);
 const report = { commitId: "commit-1", seq: 7, paths: [] };
 const refusal = (refused: string) => ({
 	answer: "refused",
@@ -117,13 +118,14 @@ function fixture(options: { socket?: string; registry?: Pick<HttpCloudCompanyCom
 	const h = helper();
 	const r = runner();
 	const logged: string[] = [];
-	const folder = new CompanyComputerCommandFolders({
+	const folders = new CompanyComputerCommandFolders({
 		registry: options.registry ?? { call: c.call },
 		ask: h.ask,
 		run: r.run as unknown as typeof startCompanyComputerFolderRun,
 		log: (line) => logged.push(line),
 		...(options.socket ? { socket: options.socket } : {}),
-	}).command(receipt);
+	});
+	const folder = folders.command(receipt, screenId);
 	const events: CompanyComputerCommandFolderEvent[] = [];
 	const start = (still = () => true, signal = new AbortController().signal, network = false) =>
 		folder.start(
@@ -133,7 +135,10 @@ function fixture(options: { socket?: string; registry?: Pick<HttpCloudCompanyCom
 		);
 	const release = (until = performance.now() + 17000, signal = new AbortController().signal) =>
 		folder.release(signal, until);
-	return { ...c, ...h, ...r, folder, events, start, release, logged };
+	/** The drain of the command's screen, as a drain request's 20 s, less a second, give it. */
+	const drain = (until = performance.now() + 19000, signal = new AbortController().signal) =>
+		folders.drain(screenId, signal, until);
+	return { ...c, ...h, ...r, folders, folder, events, start, release, drain, logged };
 }
 
 /** A command whose run started: its view and mount were made and the helper answered `started`. */
@@ -598,5 +603,125 @@ describe("a lost command", () => {
 		expect(f.ops()).toEqual(["mount", "ended", "drop"]);
 		expect(f.closed).toHaveLength(1);
 		await expect(f.release()).resolves.toEqual({ released: false, heldBack: GONE });
+	});
+});
+
+describe("a screen's drain", () => {
+	it("answers once a command's final boundary has its answer and its mount went, the pause's refusal as final", async () => {
+		const f = await running();
+		f.answer("unmount", { ...refusal("stopped"), unmounted: false });
+		f.answer("drop", { answer: "dropped" });
+		let drained = false;
+		const draining = f.drain().then(() => {
+			drained = true;
+		});
+		await settle();
+		// The shell closed the command; its end is still to come.
+		expect(drained).toBe(false);
+		f.send({ t: "ended" });
+		await draining;
+		expect(f.ops()).toEqual(["mount", "unmount", "drop"]);
+		// Each asked within the drain's deadline.
+		const { timeoutMs } = f.asked[1] as { timeoutMs: number };
+		expect(timeoutMs).toBeGreaterThan(17000);
+		expect(timeoutMs).toBeLessThanOrEqual(18000);
+		expect(f.options[1]).toEqual({ timeoutMs: timeoutMs + 1000 });
+		expect((f.options[2] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(19000);
+		expect(f.logged).toEqual([
+			`office-folder: drain ${name}: {"answer":"refused","unmounted":false,"refused":"stopped","commitId":null,"seq":null,"outcomes":{}}`,
+		]);
+		expect(f.closed).toHaveLength(1);
+		await expect(f.release()).resolves.toEqual({ released: false, heldBack: NOT_TAKEN });
+		// Nothing of it is left for the next drain.
+		await f.drain();
+		expect(f.ops()).toEqual(["mount", "unmount", "drop"]);
+	});
+
+	it("asks the final boundary again each second past no answer, QRC01 and the run check, the first time at once", async () => {
+		const f = await running();
+		f.answer(
+			"unmount",
+			undefined,
+			{ answer: "unanswered", unmounted: false },
+			{ ...refusal("run_ended"), unmounted: false },
+			{ answer: "saved", report, unmounted: true },
+		);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		f.send({ t: "ended" });
+		await settle();
+		// No answer: asked again in 5 s, or once a drain begins.
+		expect(f.ops()).toEqual(["mount", "unmount"]);
+		let drained = false;
+		const draining = f.drain(performance.now() + 19000).then(() => {
+			drained = true;
+		});
+		await settle();
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount"]);
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount"]);
+		expect(drained).toBe(false);
+		await vi.advanceTimersByTimeAsync(1000);
+		await draining;
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount", "unmount"]);
+		expect(f.asked[1]).toEqual({ op: "unmount", name, final: true, timeoutMs: 30000 });
+		expect(f.asked[2]).toMatchObject({ op: "unmount", name, final: true });
+		expect((f.asked[2] as { timeoutMs: number }).timeoutMs).toBeLessThan(18000);
+		expect(f.logged).toEqual([
+			...["no answer", "unanswered", "refused run_ended"].map(
+				(word) => `office-folder: command ${name}: final boundary asked again (${word})`,
+			),
+			`office-folder: drain ${name}: {"answer":"saved","unmounted":true,"refused":null,"commitId":"commit-1","seq":7,"outcomes":{}}`,
+		]);
+		expect(f.folder.status).toBe("released");
+		expect(f.closed).toHaveLength(1);
+	});
+
+	it("fails once its deadline passes with no final answer, and the command's own final boundary goes on", async () => {
+		const f = await running();
+		const late = computerDeferred<unknown>();
+		f.answer("unmount", () => late.promise);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const failed = expect(f.drain(performance.now() + 19000)).rejects.toThrow("OFFICE_FOLDER_DRAIN_UNANSWERED");
+		f.send({ t: "ended" });
+		await vi.advanceTimersByTimeAsync(19000);
+		await failed;
+		expect(f.logged).toEqual([`office-folder: drain ${name}: no final answer by the drain's deadline`]);
+		late.resolve({ answer: "saved", report, unmounted: true });
+		await settle();
+		expect(f.folder.status).toBe("released");
+		expect(f.closed).toHaveLength(1);
+		await expect(f.release()).resolves.toEqual({ released: true, final: true });
+	});
+
+	it("asks a mount's drop again each second while a drain waits for it", async () => {
+		const f = fixture();
+		f.answer("mount", { answer: "failed" });
+		f.answer("drop", { answer: "failed" }, { answer: "failed" }, { answer: "dropped" });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		await expect(f.start()).resolves.toEqual({ note: START_UNMOUNTED });
+		await settle();
+		expect(f.ops()).toEqual(["mount", "drop"]);
+		const draining = f.drain(performance.now() + 19000);
+		await settle();
+		expect(f.ops()).toEqual(["mount", "drop", "drop"]);
+		expect((f.options[2] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(19000);
+		await vi.advanceTimersByTimeAsync(1000);
+		await draining;
+		expect(f.ops()).toEqual(["mount", "drop", "drop", "drop"]);
+		expect(f.closed).toHaveLength(1);
+	});
+
+	it("waits for no command that made no mount, nor for another screen's", async () => {
+		const f = fixture();
+		await f.drain();
+		const controller = new AbortController();
+		controller.abort(new Error("caller stopped"));
+		await expect(f.start(undefined, controller.signal)).resolves.toEqual({ note: START_FAILED });
+		await f.drain();
+		const g = await running();
+		await g.folders.drain(computerId(51), new AbortController().signal, performance.now() + 19000);
+		expect(g.ops()).toEqual(["mount"]);
+		expect(g.logged).toEqual([]);
 	});
 });
