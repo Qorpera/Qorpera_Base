@@ -30,11 +30,30 @@ afterEach(async () => {
 	for (const directory of temporary.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
-/** The core's folder views as `qorpera_folder_view_open` and `_close` answer them. */
+/** The core's folder views as `qorpera_folder_view_open`, `_close` and `_commits` answer them. A read of a view's
+ * commits takes the next page queued (a function is called for it), or a view's last page with none. */
 function core() {
 	const opened: Record<string, unknown>[] = [];
 	const closed: unknown[] = [];
-	const call = vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
+	const commits: Record<string, unknown>[] = [];
+	const reads: AbortSignal[] = [];
+	const pages: unknown[] = [];
+	const call = vi.fn(async (method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
+		if (method === "qorpera_folder_view_commits") {
+			commits.push(args);
+			reads.push(signal);
+			const next = pages.shift();
+			if (typeof next === "function") return next(args, signal);
+			return (
+				next ?? {
+					schema: "qorpera.folder-view-commits/v1",
+					viewId: args.p_view_id,
+					state: "closed",
+					more: false,
+					commits: [],
+				}
+			);
+		}
 		if (method === "qorpera_folder_view_open") {
 			opened.push(args);
 			return {
@@ -54,7 +73,7 @@ function core() {
 		viewId: computerId(100 + n),
 		pass: `pass-${n}`,
 	});
-	return { call, opened, closed, view };
+	return { call, opened, closed, view, commits, reads, pages };
 }
 
 /** The folder helper: each request takes the next answer queued for its op (a function is called for it). */
@@ -892,5 +911,316 @@ describe("a drain's and a capture's boundary", () => {
 		stop.abort(new Error("stopped"));
 		await expect(capture(f, 1, performance.now() + 15000, stop.signal)).rejects.toThrow("stopped");
 		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
+	});
+});
+
+describe("a run's report of its desktop changes", () => {
+	const PAUSED = "the company is paused, so the company folder did not take this desktop's last changes";
+	const CLOSED = "the company folder had closed this desktop's view, so it did not take its last changes";
+	const REFUSED = "the company folder refused this desktop's last changes";
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/** A page of a view's commits, as `qorpera_folder_view_commits` answers it. */
+	const page = (
+		n: number,
+		commits: { id: number; units: unknown[] }[],
+		{ more = false, state = "open" }: { more?: boolean; state?: string } = {},
+	) => ({
+		schema: "qorpera.folder-view-commits/v1",
+		viewId: computerId(100 + n),
+		state,
+		more,
+		commits: commits.map(({ id, units }) => ({ commitId: computerId(id), units })),
+	});
+	/** The office's clock, moved on past the report's read throttle. */
+	function clock() {
+		const now = performance.now.bind(performance);
+		let skipped = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => now() + skipped);
+		return {
+			skip: () => {
+				skipped += 1000;
+			},
+		};
+	}
+	async function followed(signal = new AbortController().signal) {
+		const f = fixture();
+		f.folders.follow(run.runId, signal);
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(run);
+		return f;
+	}
+	const report = (f: ReturnType<typeof fixture>, shown = "", until = performance.now() + 1000) =>
+		f.folders.report(run.runId, shown, new AbortController().signal, until);
+	const drain = (f: ReturnType<typeof fixture>) =>
+		f.folders.drain(binding.screenId, new AbortController().signal, performance.now() + 19000);
+
+	it("reports the commits of the views opened for the run, and drops only what the mark it was shown names", async () => {
+		const t = clock();
+		const f = await followed();
+		f.pages.push(
+			page(1, [
+				{
+					id: 60,
+					units: [
+						{ path: "docs/a.md", outcome: "saved" },
+						{ path: "docs/b.md", outcome: "saved" },
+						{ path: "docs/c.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" },
+						// An erased path.
+						{ outcome: "refused" },
+					],
+				},
+			]),
+		);
+		const first = await report(f);
+		expect(f.commits).toEqual([
+			{ p_view_id: computerId(101), p_pass: "pass-1", p_after_commit_id: null, p_limit: 64 },
+		]);
+		expect(first).toEqual({
+			mark: expect.stringMatching(/^[0-9a-f-]{36}:3$/),
+			report: {
+				saved: 2,
+				notSaved: [
+					{ path: "docs/c.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" },
+					{ path: "", outcome: "refused" },
+				],
+			},
+		});
+		// A report whose result was never shown comes again, and so it does past another record's mark. The core is read
+		// at most once a second.
+		await expect(report(f)).resolves.toEqual(first);
+		await expect(report(f, `${computerId(99)}:3`)).resolves.toEqual(first);
+		await expect(report(f, first!.mark)).resolves.toBeUndefined();
+		expect(f.commits).toHaveLength(1);
+		t.skip();
+		f.pages.push(page(1, [{ id: 61, units: [{ path: "docs/d.md", outcome: "saved" }] }]));
+		await expect(report(f, first!.mark)).resolves.toEqual({
+			mark: first!.mark.replace(/:3$/, ":4"),
+			report: { saved: 1 },
+		});
+		expect(f.commits[1]).toMatchObject({ p_view_id: computerId(101), p_after_commit_id: computerId(60) });
+		// A run that is not followed has no report.
+		await expect(
+			f.folders.report(computerId(22), "", new AbortController().signal, performance.now() + 1000),
+		).resolves.toBeUndefined();
+	});
+
+	it("reads each of the run's views on from its last commit, page by page, until it is closed and read to its end", async () => {
+		const t = clock();
+		const f = await followed();
+		// A member takes the screen over: their view is not the run's.
+		f.answer("switch", { answer: "switched" });
+		await f.hold(member);
+		f.pages.push(page(1, [{ id: 60, units: [{ path: "docs/a.md", outcome: "saved" }] }], { more: true }));
+		const first = await report(f);
+		expect(first?.report).toEqual({ saved: 1, more: true });
+		t.skip();
+		f.pages.push(
+			page(
+				1,
+				[
+					{
+						id: 61,
+						units: [
+							{ path: "docs/b.md", outcome: "saved" },
+							{ path: "docs/c.md", outcome: "saved" },
+						],
+					},
+				],
+				{
+					state: "closed",
+				},
+			),
+		);
+		const second = await report(f, first!.mark);
+		expect(second?.report).toEqual({ saved: 2 });
+		t.skip();
+		await expect(report(f, second!.mark)).resolves.toBeUndefined();
+		expect(f.commits.map((args) => [args.p_view_id, args.p_after_commit_id])).toEqual([
+			[computerId(101), null],
+			[computerId(101), computerId(60)],
+		]);
+	});
+
+	it("shows at most twenty paths not saved a report, in 2 KiB but one at least, and the rest in the next", async () => {
+		const f = await followed();
+		const short = Array.from({ length: 25 }, (_, n) => ({ path: `docs/${n}.md`, outcome: "conflict" }));
+		const long = Array.from({ length: 8 }, (_, n) => ({ path: `${n}`.padEnd(400, "a"), outcome: "conflict" }));
+		const escaped = { path: "<".repeat(300), outcome: "refused", reason: "&".repeat(200) };
+		f.pages.push(
+			page(1, [
+				{ id: 60, units: short },
+				{ id: 61, units: long },
+				{ id: 62, units: [escaped] },
+			]),
+		);
+		const cut = long.map(({ path, outcome }) => ({ path: `${path.slice(0, 300)}…`, outcome }));
+		const first = await report(f);
+		expect(first?.report).toEqual({ saved: 0, notSaved: short.slice(0, 20), more: true });
+		// Five short paths take 215 bytes; each cut long path takes 336.
+		const second = await report(f, first!.mark);
+		expect(second?.report).toEqual({ saved: 0, notSaved: [...short.slice(20), ...cut.slice(0, 5)], more: true });
+		const third = await report(f, second!.mark);
+		expect(third?.report).toEqual({ saved: 0, notSaved: cut.slice(5), more: true });
+		const fourth = await report(f, third!.mark);
+		expect(fourth?.report).toEqual({ saved: 0, notSaved: [escaped] });
+		await expect(report(f, fourth!.mark)).resolves.toBeUndefined();
+	});
+
+	it("reports a drain's refusal of the desktop's last changes, one a report, and the paths of one that made no commit", async () => {
+		const f = await followed();
+		f.answer("unmount", {
+			answer: "refused",
+			report: {
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: "docs/a.md", outcome: "not_applied", reason: "the save did not get through" },
+					{ path: "docs/b.md", outcome: "saved" },
+				],
+				refused: "stopped",
+			},
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(run);
+		f.answer("unmount", { answer: "closed", unmounted: true });
+		await drain(f);
+		// A boundary that made a commit: its paths come with the commit's units.
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(run);
+		f.answer("unmount", {
+			answer: "refused",
+			report: { commitId: computerId(60), seq: 7, paths: [{ path: "docs/c.md", outcome: "conflict" }] },
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		// A member's drain is not the run's.
+		f.answer("mount", { answer: "mounted" });
+		await f.hold(member);
+		f.answer("unmount", { answer: "closed", unmounted: true });
+		await drain(f);
+
+		const first = await report(f);
+		expect(first?.report).toEqual({
+			saved: 0,
+			notSaved: [{ path: "docs/a.md", outcome: "not_applied", reason: "the save did not get through" }],
+			refused: PAUSED,
+			more: true,
+		});
+		const second = await report(f, first!.mark);
+		expect(second?.report).toEqual({ saved: 0, refused: CLOSED });
+		await expect(report(f, second!.mark)).resolves.toBeUndefined();
+		// Each of the run's views was read to its end; the member's was not read.
+		expect(f.commits.map((args) => args.p_view_id)).toEqual([computerId(101), computerId(102), computerId(103)]);
+	});
+
+	it.each([
+		["stopped", PAUSED],
+		[
+			"unreadable",
+			"the company folder refused this desktop's last changes: they used a read that is no longer readable",
+		],
+		[
+			"unproven",
+			"the company folder refused this desktop's last changes: the desktop's reads could not be shown complete",
+		],
+		["denied", REFUSED],
+		["invalid", REFUSED],
+	])("words a boundary refused %s in its own words", async (refused, words) => {
+		const f = await followed();
+		f.answer("unmount", {
+			answer: "refused",
+			report: { commitId: null, seq: null, paths: [], refused },
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		await expect(report(f)).resolves.toMatchObject({ report: { saved: 0, refused: words } });
+	});
+
+	it("keeps the report while one of the run's sessions lives, and reports no commit twice when a view is held again", async () => {
+		const t = clock();
+		const one = new AbortController();
+		const two = new AbortController();
+		const f = await followed(one.signal);
+		f.folders.follow(run.runId, two.signal);
+		f.folders.follow(run.runId, two.signal);
+		f.pages.push(page(1, [{ id: 60, units: [{ path: "docs/a.md", outcome: "saved" }] }]));
+		const first = await report(f);
+		expect(first?.report).toEqual({ saved: 1 });
+		one.abort();
+		// The same view held again keeps its place: it is read on from its last commit.
+		f.answer("list", { answer: "list", mounts: [{ name, viewId: computerId(101), program: "running" }] });
+		await f.hold(run);
+		t.skip();
+		f.pages.push(page(1, []));
+		await expect(report(f, first!.mark)).resolves.toBeUndefined();
+		expect(f.commits.map((args) => args.p_after_commit_id)).toEqual([null, computerId(60)]);
+		// The last session ends: the read on its way stops, and the report goes.
+		t.skip();
+		f.pages.push(
+			(_args: unknown, signal: AbortSignal) =>
+				new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+		);
+		await expect(report(f, first!.mark, performance.now() + 50)).resolves.toBeUndefined();
+		two.abort();
+		expect(f.reads[2].aborted).toBe(true);
+		t.skip();
+		await expect(report(f)).resolves.toBeUndefined();
+		expect(f.commits).toHaveLength(3);
+		// A report followed anew starts again; the old record's mark drops nothing of it.
+		f.folders.follow(run.runId, new AbortController().signal);
+		f.answer("list", { answer: "list", mounts: [{ name, viewId: computerId(101), program: "running" }] });
+		await f.hold(run);
+		f.pages.push(page(1, [{ id: 61, units: [{ path: "docs/b.md", outcome: "saved" }] }]));
+		const again = await report(f, first!.mark);
+		expect(again?.report).toEqual({ saved: 1 });
+		expect(again?.mark.split(":")[0]).not.toBe(first!.mark.split(":")[0]);
+	});
+
+	it("ends a view's reads at a refusal or an answer that is no page, and asks again past no answer", async () => {
+		const t = clock();
+		const f = await followed();
+		// The program ended: the mount is made again with the run's second view.
+		f.answer("list", { answer: "list", mounts: [{ name, viewId: computerId(101), program: "closed" }] });
+		f.answer("unmount", { answer: "closed", unmounted: true });
+		f.answer("mount", { answer: "mounted" });
+		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
+		f.pages.push(
+			() => {
+				throw new Error("fetch failed");
+			},
+			{ ...page(2, []), viewId: computerId(101) },
+			(args: Record<string, unknown>) =>
+				http(refused("Folder view is invalid")).registry.call(
+					"qorpera_folder_view_commits",
+					args,
+					new AbortController().signal,
+				),
+		);
+		await expect(report(f)).resolves.toBeUndefined();
+		t.skip();
+		await expect(report(f)).resolves.toBeUndefined();
+		t.skip();
+		await expect(report(f)).resolves.toBeUndefined();
+		expect(f.commits.map((args) => args.p_view_id)).toEqual([computerId(101), computerId(102), computerId(101)]);
+	});
+
+	it("waits for a read until its deadline, and the read goes on for the next ask", async () => {
+		const f = await followed();
+		const answer = computerDeferred<unknown>();
+		f.pages.push(() => answer.promise);
+		await expect(report(f, "", performance.now() + 50)).resolves.toBeUndefined();
+		const next = report(f);
+		answer.resolve(page(1, [{ id: 60, units: [{ path: "docs/a.md", outcome: "saved" }] }]));
+		await expect(next).resolves.toMatchObject({ report: { saved: 1 } });
+		expect(f.commits).toHaveLength(1);
 	});
 });

@@ -345,6 +345,17 @@ async function fixture(
 			return { schema: "qorpera.folder-view/v1", viewId: computerId(200 + opened), pass: `fixture-pass-${opened}` };
 		}
 		if (method === "qorpera_folder_view_close") return {};
+		if (method === "qorpera_folder_view_commits")
+			return {
+				schema: "qorpera.folder-view-commits/v1",
+				viewId: args.p_view_id,
+				state: "closed",
+				more: false,
+				commits:
+					args.p_after_commit_id === null
+						? [{ commitId: computerId(300), units: [{ path: "docs/a.md", outcome: "saved" }, folderConflict] }]
+						: [],
+			};
 		throw new Error(`Unexpected fixture RPC ${method}`);
 	});
 	const boundary = { assertReady: vi.fn(async () => undefined) };
@@ -1640,6 +1651,9 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 	});
 });
 
+/** A path the company folder did not take from the fixture's desktop (F3 4f-2b). */
+const folderConflict = { path: "docs/b.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" };
+
 /** The folder helper as the screen's mount asks it: each request takes the next answer queued for its op. */
 function folderHelper() {
 	const asked: CompanyComputerFolderRequest[] = [];
@@ -1716,6 +1730,25 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_close:read",
 		]);
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("reports what the company folder did with the run's desktop changes through its session (F3 4f-2b)", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		await expect(session.folderReport?.("", f.run.signal)).resolves.toEqual({
+			mark: expect.stringMatching(/^[0-9a-f-]{36}:[0-9]+$/),
+			report: { saved: 1, notSaved: [folderConflict] },
+		});
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_folder_view_commits",
+			{ p_view_id: computerId(201), p_pass: "fixture-pass-1", p_after_commit_id: null, p_limit: 64 },
+			expect.any(AbortSignal),
+		);
+		// A guest with no company folder has no report to give.
+		const bare = await fixture();
+		expect((await bare.create()).folderReport).toBeUndefined();
 	});
 	it("unmounts a mount made after its run's open was cancelled, a minute later with no desktop", async () => {
 		const h = folderHelper();

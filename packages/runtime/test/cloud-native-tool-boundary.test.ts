@@ -7,9 +7,12 @@ import {
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
 } from "@qorpera/runtime/cloud-agent-mouth";
+import type { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import {
 	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	type CloudNativeFolderReports,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	CloudToolArgumentRefusal,
@@ -27,6 +30,8 @@ function fixture(
 	overrides: Partial<CloudNativeTool> = {},
 	assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined),
 	additionalTools: readonly CloudNativeTool[] = [],
+	folderReports?: CloudNativeFolderReports,
+	captures?: CloudNativeCaptureImages,
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Company data" }));
 	const abort = new AbortController();
@@ -61,6 +66,8 @@ function fixture(
 		tools: [tool, ...additionalTools],
 		assertActive,
 		signal: abort.signal,
+		...(folderReports ? { folderReports } : {}),
+		...(captures ? { captures } : {}),
 	});
 	const call = async (callId = "call_1", argumentsValue: unknown = { path: "projects/roadmap.md" }) => {
 		const response = await boundary.invoke(callId, "qorpera", tool.name, argumentsValue);
@@ -376,6 +383,184 @@ describe("cloud-owned native tool boundary", () => {
 		const { result: full } = await crowded.call();
 		expect(full.content.originalBytes).toBe(Buffer.byteLength(many));
 		expect(full.content.text).not.toContain("whsec_0123456789");
+	});
+
+	it("shows the run's desktop folder report in a call's answer, and asks past it once the model got it (F3 4f-2b)", async () => {
+		const mark = (n: number) => `${runId}:${n}`;
+		const conflict = {
+			path: "notes/plan.md",
+			outcome: "conflict",
+			reason: "it changed in the company folder meanwhile",
+		};
+		const refused = "the company folder refused this desktop's last changes";
+		const next = vi
+			.fn<CloudNativeFolderReports["next"]>()
+			.mockResolvedValueOnce({ mark: mark(2), report: { saved: 2, notSaved: [conflict] } })
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce({ mark: mark(3), report: { saved: 0, refused, more: true } })
+			.mockResolvedValue(undefined);
+		const { call, boundary, execute } = fixture({}, undefined, [], { next });
+		const first = await call("call_1");
+		expect(first.result).toMatchObject({ status: "ok", companyFolder: { saved: 2, notSaved: [conflict] } });
+		expect(next.mock.calls[0][0]).toBe("");
+		expect(next.mock.calls[0][1]).toBeInstanceOf(AbortSignal);
+		const quiet = await call("call_2");
+		expect(quiet.result.companyFolder).toBeUndefined();
+		// A call that is refused shows it too.
+		const denied = await call("call_3", { path: 1 });
+		expect(denied.result).toMatchObject({
+			status: "denied",
+			content: { text: "INVALID_ARGUMENTS" },
+			companyFolder: { saved: 0, refused, more: true },
+		});
+		// A repeated call is the answer it had, and a call that never ran asks nothing.
+		expect((await call("call_1")).response).toEqual(first.response);
+		expect(await boundary.invoke("call_4", "qorpera", "missing_tool", {})).toMatchObject({ success: false });
+		expect(next).toHaveBeenCalledTimes(3);
+		await call("call_5");
+		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", mark(2), mark(2), mark(3)]);
+		expect(execute).toHaveBeenCalledTimes(3);
+		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
+			"A result's companyFolder reports what the company folder did with your desktop's changes",
+		);
+	});
+
+	it("fits the content to what the folder report leaves, and escapes and redacts the report's words", async () => {
+		const secret = "whsec_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op5+/=";
+		const text = "x".repeat(9000);
+		const report = {
+			saved: 1,
+			notSaved: [{ path: `<b>&${secret}`, outcome: "refused", reason: `it held ${secret}` }],
+			refused: `\u2028${secret}`,
+		};
+		const next = vi.fn<CloudNativeFolderReports["next"]>(async () => ({ mark: `${runId}:1`, report }));
+		const { call } = fixture({ execute: async () => ({ kind: "text", value: text }) }, undefined, [], { next });
+		const { result, response } = await call();
+		expect(result.companyFolder).toEqual({
+			saved: 1,
+			notSaved: [{ path: "<b>&whsec_[REDACTED]", outcome: "refused", reason: "it held whsec_[REDACTED]" }],
+			refused: "\u2028whsec_[REDACTED]",
+		});
+		expect(result.content).toMatchObject({ truncated: true, originalBytes: 9000 });
+		expect(result.content.includedBytes).toBeGreaterThan(0);
+		expect(Buffer.byteLength(response.contentItems[0].text)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
+		expect(response.contentItems[0].text).not.toMatch(/[<>&\u2028]|Ab12Cd34/);
+	});
+
+	it.each([
+		["no mark", { report: { saved: 1 } }],
+		["a mark of another shape", { mark: "a mark", report: { saved: 1 } }],
+		["a mark that is a number", { mark: 3, report: { saved: 1 } }],
+		["nothing new", { mark: `${runId}:1`, report: { saved: 0 } }],
+		["another field", { mark: `${runId}:1`, report: { saved: 1, paths: [] } }],
+		["a count below zero", { mark: `${runId}:1`, report: { saved: -1 } }],
+		["an empty list", { mark: `${runId}:1`, report: { saved: 1, notSaved: [] } }],
+		[
+			"a path's other field",
+			{ mark: `${runId}:1`, report: { saved: 0, notSaved: [{ path: "a", outcome: "x", note: "y" }] } },
+		],
+		["a path with no outcome", { mark: `${runId}:1`, report: { saved: 0, notSaved: [{ path: "a" }] } }],
+		["more that is not true", { mark: `${runId}:1`, report: { saved: 1, more: false } }],
+		["a refusal that is not words", { mark: `${runId}:1`, report: { saved: 0, refused: 1 } }],
+		["more than 4 KiB", { mark: `${runId}:1`, report: { saved: 0, refused: "x".repeat(4100) } }],
+		["more than 4 KiB once escaped", { mark: `${runId}:1`, report: { saved: 0, refused: "<".repeat(700) } }],
+		["no answer", null],
+	])("shows no folder report that is not one, and asks for it again: %s", async (_, answer) => {
+		const next = vi.fn<CloudNativeFolderReports["next"]>(async () => answer as never);
+		const { call } = fixture({}, undefined, [], { next });
+		const { result } = await call("call_1");
+		expect(result).toMatchObject({ status: "ok", content: { text: "Company data" } });
+		expect(result.companyFolder).toBeUndefined();
+		await call("call_2");
+		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", ""]);
+	});
+
+	it("waits a second at most for the folder report, and answers without it when it fails", async () => {
+		let asked: AbortSignal | undefined;
+		const next = vi
+			.fn<CloudNativeFolderReports["next"]>()
+			.mockRejectedValueOnce(new Error("fetch failed"))
+			.mockImplementationOnce((_shown, signal) => {
+				asked = signal;
+				// It does not heed its signal.
+				return new Promise<undefined>(() => undefined);
+			})
+			.mockResolvedValue({ mark: `${runId}:1`, report: { saved: 1 } });
+		const { call } = fixture({}, undefined, [], { next });
+		const failed = await call("call_1");
+		expect(failed.result).toMatchObject({ status: "ok", content: { text: "Company data" } });
+		expect(failed.result.companyFolder).toBeUndefined();
+		const started = performance.now();
+		const slow = await call("call_2");
+		expect(slow.result.companyFolder).toBeUndefined();
+		expect(performance.now() - started).toBeGreaterThanOrEqual(900);
+		expect(asked?.aborted).toBe(true);
+		expect((await call("call_3")).result.companyFolder).toEqual({ saved: 1 });
+		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", "", ""]);
+	});
+
+	it("shows a folder report again when the result it was in was not the call's answer", async () => {
+		const next = vi
+			.fn<CloudNativeFolderReports["next"]>()
+			.mockResolvedValueOnce({ mark: `${runId}:1`, report: { saved: 1 } })
+			.mockResolvedValueOnce({ mark: `${runId}:2`, report: { saved: 2 } })
+			.mockResolvedValue(undefined);
+		// An image from a tool that shows none: that result is never answered, and the call ends unconfirmed.
+		const image = { png: Buffer.from("png"), sha256: createHash("sha256").update("png").digest("hex") };
+		const { call, execute } = fixture({}, undefined, [], { next });
+		execute.mockResolvedValueOnce({ kind: "text", value: "Company data", image });
+		const { result } = await call("call_1");
+		expect(result).toMatchObject({
+			status: "unconfirmed",
+			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+			companyFolder: { saved: 2 },
+		});
+		await call("call_2");
+		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", "", `${runId}:2`]);
+	});
+
+	it("counts a folder report as shown only once the release check let the model have its answer", async () => {
+		const next = vi
+			.fn<CloudNativeFolderReports["next"]>()
+			.mockResolvedValueOnce({ mark: `${runId}:1`, report: { saved: 1 } })
+			.mockResolvedValueOnce({ mark: `${runId}:2`, report: { saved: 2 } })
+			.mockResolvedValueOnce({ mark: `${runId}:3`, report: { saved: 3 } })
+			.mockResolvedValue(undefined);
+		let release!: () => void;
+		// The run's captures are checked before each answer is let out: call_1's check is slow, call_3's fails once (the
+		// run goes on).
+		const assertReadable = vi
+			.fn<CloudNativeCaptureImages["assertReadable"]>()
+			.mockImplementationOnce(
+				() =>
+					new Promise<void>((resolve) => {
+						release = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("Capture authority unavailable"))
+			.mockResolvedValue(undefined);
+		const { call } = fixture({}, undefined, [], { next }, {
+			assertReadable,
+		} as unknown as CloudNativeCaptureImages);
+		const first = call("call_1");
+		// call_2 runs while call_1's answer waits for its check: it asks nothing for that second, and answers without
+		// a report.
+		const started = Date.now();
+		const second = await call("call_2");
+		expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+		expect(second.result.companyFolder).toBeUndefined();
+		expect(next).toHaveBeenCalledTimes(1);
+		release();
+		expect((await first).result.companyFolder).toEqual({ saved: 1 });
+		// call_3's answer is held back: its report comes again in call_4's.
+		const third = await call("call_3");
+		expect(third.result).toMatchObject({ status: "denied", content: { text: "AUTHORITY_UNAVAILABLE" } });
+		expect(third.result.companyFolder).toBeUndefined();
+		expect((await call("call_4")).result.companyFolder).toEqual({ saved: 3 });
+		await call("call_5");
+		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", `${runId}:1`, `${runId}:1`, `${runId}:3`]);
+		expect(assertReadable).toHaveBeenCalledTimes(5);
 	});
 
 	it("passes only exact host-issued results through the native fence and revalidates every replay", async () => {
