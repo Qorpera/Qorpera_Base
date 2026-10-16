@@ -160,9 +160,10 @@ begin
 	perform pg_temp.inherit_refused(c2, k, '42501', 'Folder inheritance read is not current');
 	perform pg_temp.action(v, p_receipt => c);
 	perform pg_temp.inherit_refused(c, c, '42501', 'Folder inheritance read is not current');
+	-- Agent B's screen in the same office.
 	perform pg_temp.fx('insert into public.qorpera_runtime_office_screens(id, office_id, ordinal, staff_agent_id, generation, epoch, power)
 		values (''63900000-0000-4000-8000-0000000000e5'', ''63900000-0000-4000-8000-0000000000e0'', 2,
-			''63200000-0000-4000-8000-0000000000a1'', 1, 1, ''open'')');
+			''63200000-0000-4000-8000-0000000000a2'', 1, 1, ''open'')');
 	perform pg_temp.inherit_refused(c, pg_temp.action(v2, '63900000-0000-4000-8000-0000000000e5'), '42501',
 		'Folder inheritance read is not current');
 	perform pg_temp.inherit_refused(c, k, '42501', 'Folder inheritance read is not current', '63200000-0000-4000-8000-000000000021');
