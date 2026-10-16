@@ -1281,6 +1281,8 @@ function gate(options: {
 	waits?: Array<Record<string, unknown> | Error>;
 	/** Its answers to a leaving hold's park, in order (by default, parked); an error is thrown. */
 	leaving?: Array<Record<string, unknown> | Error>;
+	/** How long each failed wait takes, on Date's clock (fake it to use this). */
+	failMs?: number;
 	holdMs?: number;
 	reviewerFails?: boolean;
 }) {
@@ -1309,7 +1311,10 @@ function gate(options: {
 			}
 			// As the kernel does: a wait that asks to park is never answered "still pending".
 			const next = waits.shift();
-			if (next instanceof Error) throw next;
+			if (next instanceof Error) {
+				if (options.failMs) vi.setSystemTime(Date.now() + options.failMs);
+				throw next;
+			}
 			return args.p_park && (!next || next.state === "pending")
 				? { state: "parked" }
 				: (next ?? { state: "pending" });
@@ -1801,6 +1806,74 @@ describe("the review step", () => {
 			"qorpera_await_action_review",
 			"qorpera_await_action_review",
 		]);
+	});
+
+	// A wait uses an answered approval, and the agent its answer woke is told so only within 30 s of the wake. So a
+	// failed wait is asked again only for 5 s after the answer could first have woken the agent: a heartbeat (a wait
+	// that holds) puts that 10 s off; a card found waiting, or a park, may wake it at once. Each hold below ends just
+	// before an approval it would otherwise have used.
+	it("asks a failed wait again only soon after the answer could wake the agent, then parks the card", async () => {
+		vi.useFakeTimers({ now: Date.parse("2026-10-16T16:00:00Z"), toFake: ["Date"] });
+		try {
+			const ended = async (options: Parameters<typeof gate>[0], failure: Error) => {
+				const { check, calls } = gate(options);
+				await expect(check()).rejects.toBe(failure);
+				const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+				// The hold parked its card on the way out, and used nothing.
+				expect(waits.at(-1)).toMatchObject({ args: { p_park: true, p_leaving: true } });
+				return waits.slice(0, -1);
+			};
+			// Raised held at 0 s: failures at 6 s and 12 s are asked again (before 15 s). A heartbeat at 12 s: failures at
+			// 18 s and 24 s are asked again (before 27 s), the one at 30 s is not.
+			const late30 = late();
+			const held = await ended(
+				{
+					holdMs: 60_000,
+					failMs: 6_000,
+					record: { decision: "ask", card: true, reviewId: "review-15" },
+					waits: [
+						{ state: "pending" },
+						late(),
+						lost(),
+						{ state: "pending" },
+						late(),
+						lost(),
+						late30,
+						{ state: "approved" },
+					],
+				},
+				late30,
+			);
+			expect(held).toHaveLength(7);
+			expect(held.every((call) => call.args.p_review_id === "review-15" && call.args.p_park === false)).toBe(true);
+			// Found waiting at 0 s: the failure at 3 s is asked again, the one at 6 s is not.
+			const lost6 = lost();
+			const found = await ended(
+				{
+					begin: { state: "pending", reviewId: "review-16", approverName: "Jonas" },
+					holdMs: 60_000,
+					failMs: 3_000,
+					waits: [late(), lost6, { state: "approved" }],
+				},
+				lost6,
+			);
+			expect(found).toHaveLength(2);
+			// The hold runs out at once and parks at 0 s: the failure at 3 s is asked again, the one at 6 s is not.
+			const parks6 = lost();
+			const parks = await ended(
+				{
+					holdMs: 0,
+					failMs: 3_000,
+					record: { decision: "ask", card: true, reviewId: "review-17" },
+					waits: [late(), parks6, { state: "approved" }],
+				},
+				parks6,
+			);
+			expect(parks).toHaveLength(2);
+			expect(parks.every((call) => call.args.p_park === true && !("p_leaving" in call.args))).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("passes on the approval's id on each approving path, and none from a malformed answer", async () => {
