@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+	CODE_HOST_DELETION_RPCS,
 	CODE_HOST_PROJECT_CONFIG,
 	type CodeHostEvent,
 	type CodeHostPolicy,
@@ -9,6 +10,7 @@ import {
 	codeHostProject,
 	codeHostProjectMatches,
 	codeHostRequest,
+	controlCodeHostDeletions,
 	LxdCodeHosts,
 	parseCodeHostPolicy,
 } from "../src/code-host.ts";
@@ -43,6 +45,10 @@ class FakeLxd implements LxdCodeHostClient {
 	made?: (instance: LxdInstanceRecord & { config: Record<string, string> }) => void;
 	/** The next this many stops fail. */
 	failStop = 0;
+	/** A stop of this project never ends by itself. */
+	hangStop?: string;
+	/** The project list never ends by itself. */
+	hangList = false;
 	/** Called on every exec, before it answers. */
 	onExec?: () => void;
 	async getProject(name: string): Promise<LxdProjectRecord | undefined> {
@@ -73,7 +79,11 @@ class FakeLxd implements LxdCodeHostClient {
 		if (this.instances.has(name)) throw new Error("Only empty projects can be removed");
 		return this.projects.delete(name);
 	}
-	async listProjectNames(): Promise<string[]> {
+	async listProjectNames(signal?: AbortSignal): Promise<string[]> {
+		if (this.hangList)
+			await new Promise((_, reject) =>
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+			);
 		return ["default", "qorpera-build", ...this.projects.keys()];
 	}
 	async getInstance(project: string, name: string): Promise<LxdInstanceRecord | undefined> {
@@ -102,10 +112,19 @@ class FakeLxd implements LxdCodeHostClient {
 		this.made?.(instance);
 		this.instances.set(project, instance);
 	}
-	async setInstancePower(project: string, _name: string, action: LxdInstancePowerAction): Promise<void> {
+	async setInstancePower(
+		project: string,
+		_name: string,
+		action: LxdInstancePowerAction,
+		signal?: AbortSignal,
+	): Promise<void> {
 		this.calls.push(`${action} ${project}`);
 		const instance = this.instances.get(project);
 		if (!instance) throw new Error("Instance not found");
+		if (action === "stop" && this.hangStop === project)
+			await new Promise((_, reject) =>
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+			);
 		if (action === "stop" && this.failStop > 0) {
 			this.failStop -= 1;
 			throw new Error("Failed to stop instance");
@@ -605,6 +624,204 @@ describe("LxdCodeHosts", () => {
 		]);
 		await codeHosts.close();
 	});
+	it("removes the code hosts of the companies being deleted, and one in a job or made again on a later pass", async () => {
+		const { lxd, events, codeHosts } = hosts({ running: 3 });
+		const [deleted, kept, busy, refused] = [1, 2, 3, 4].map((n) => codeHostProject(company(n)));
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		await codeHosts.use(company(2), signal(), async () => undefined);
+		const job = held();
+		const running = codeHosts.use(company(3), signal(), job.job);
+		await vi.waitFor(() => expect(lxd.running(company(3))).toBe(true));
+		await lxd.createProject(refused, CODE_HOST_PROJECT_CONFIG);
+		(lxd.projects.get(refused) as { config: Record<string, string> }).config.restricted = "false";
+		events.length = 0;
+		const asked: string[][] = [];
+		const deleting = async (companyIds: readonly string[]) => {
+			asked.push([...companyIds]);
+			return [1, 3, 4].map(company);
+		};
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect(asked).toEqual([[1, 2, 3, 4].map(company)]);
+		expect([deleted, kept, busy, refused].map((project) => lxd.projects.has(project))).toEqual([
+			false,
+			true,
+			true,
+			true,
+		]);
+		expect([2, 3].map((n) => lxd.running(company(n)))).toEqual([true, true]);
+		expect(events).toEqual([
+			{ event: "code-host", step: "stopped", project: deleted },
+			{ event: "code-host", step: "removed", project: deleted },
+			{ event: "code-host-error", step: "remove", project: busy, error: new Error("CODE_HOST_BUSY") },
+			{ event: "code-host-error", step: "refused", project: refused },
+			{ event: "code-host-error", step: "remove", project: refused, error: new Error("CODE_HOST_PROJECT_DIFFERS") },
+		]);
+		// The job ends, and a later job makes the removed one again: the next pass removes both.
+		job.release();
+		await running;
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		events.length = 0;
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(2);
+		expect(asked[1]).toEqual([2, 3, 4, 1].map(company));
+		expect([deleted, kept, busy, refused].map((project) => lxd.projects.has(project))).toEqual([
+			false,
+			true,
+			false,
+			true,
+		]);
+		expect(events).toEqual([
+			{ event: "code-host", step: "stopped", project: busy },
+			{ event: "code-host", step: "removed", project: busy },
+			{ event: "code-host-error", step: "refused", project: refused },
+			{ event: "code-host-error", step: "remove", project: refused, error: new Error("CODE_HOST_PROJECT_DIFFERS") },
+			{ event: "code-host", step: "stopped", project: deleted },
+			{ event: "code-host", step: "removed", project: deleted },
+		]);
+		await codeHosts.close();
+	});
+	it("asks nothing on a node without code hosts, and touches nothing when the answer fails", async () => {
+		const { lxd, codeHosts } = hosts();
+		const deleting = vi.fn(async () => [company(1)]);
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(0);
+		expect(deleting).not.toHaveBeenCalled();
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		lxd.calls.length = 0;
+		await expect(
+			codeHosts.removeDeleting(async () => {
+				throw new Error("CODING_CONTROL_UNCONFIRMED");
+			}, signal()),
+		).rejects.toThrow("CODING_CONTROL_UNCONFIRMED");
+		expect(lxd.calls).toEqual([]);
+		expect(lxd.running(company(1))).toBe(true);
+		await codeHosts.close();
+	});
+	it("gives each removal its agent wait, so one that hangs holds up no other; the executor's stop ends the pass", async () => {
+		const { lxd, events, codeHosts } = hosts({ agentWaitMs: 500 });
+		const [stuck, next] = [1, 2].map((n) => codeHostProject(company(n)));
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		await codeHosts.use(company(2), signal(), async () => undefined);
+		events.length = 0;
+		lxd.hangStop = stuck;
+		const deleting = async () => [1, 2].map(company);
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect([stuck, next].map((project) => lxd.projects.has(project))).toEqual([true, false]);
+		expect(events).toEqual([
+			{
+				event: "code-host-error",
+				step: "remove",
+				project: stuck,
+				error: expect.objectContaining({ name: "TimeoutError" }),
+			},
+			{ event: "code-host", step: "stopped", project: next },
+			{ event: "code-host", step: "removed", project: next },
+		]);
+		// The executor stops while a removal hangs: the pass ends with its reason.
+		const stop = new AbortController();
+		const pass = codeHosts.removeDeleting(deleting, stop.signal);
+		await vi.waitFor(() => expect(lxd.calls.filter((call) => call === `stop ${stuck}`)).toHaveLength(2), {
+			interval: 5,
+		});
+		stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+		await expect(pass).rejects.toThrow("CODING_EXECUTOR_SHUTDOWN");
+		lxd.hangStop = undefined;
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect(lxd.projects.has(stuck)).toBe(false);
+		await codeHosts.close();
+	});
+	it("refuses at once the removal of a code host whose job waits for a start, and the next company's still goes", async () => {
+		const { lxd, events, codeHosts } = hosts({ running: 1 });
+		const [waits, next] = [2, 3].map((n) => codeHostProject(company(n)));
+		await codeHosts.use(company(2), signal(), async () => undefined);
+		await codeHosts.use(company(3), signal(), async () => undefined);
+		const job = held();
+		const busy = codeHosts.use(company(1), signal(), job.job);
+		await vi.waitFor(() => expect(lxd.running(company(1))).toBe(true));
+		// The node's one start is the job's: the second company's job waits for it, with no bound.
+		const waiting = codeHosts.use(company(2), signal(), async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		events.length = 0;
+		const deleting = async () => [2, 3].map(company);
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect([waits, next].map((project) => lxd.projects.has(project))).toEqual([true, false]);
+		expect(events).toEqual([
+			{ event: "code-host-error", step: "remove", project: waits, error: new Error("CODE_HOST_BUSY") },
+			{ event: "code-host", step: "removed", project: next },
+		]);
+		// The job ends, the waiting one runs, and the next pass removes its code host.
+		job.release();
+		await busy;
+		await expect(waiting).resolves.toBe("ran");
+		events.length = 0;
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect(lxd.projects.has(waits)).toBe(false);
+		expect(events).toEqual([
+			{ event: "code-host", step: "stopped", project: waits },
+			{ event: "code-host", step: "removed", project: waits },
+		]);
+		await codeHosts.close();
+	});
+	it("ends a removal's wait for the host's other steps at its agent wait and never runs it later; one a job came to while it waited is CODE_HOST_BUSY", async () => {
+		const { lxd, events, codeHosts } = hosts({ agentWaitMs: 500 });
+		const [stuck, next] = [1, 2].map((n) => codeHostProject(company(n)));
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		await codeHosts.use(company(2), signal(), async () => undefined);
+		events.length = 0;
+		// The executor's start housekeeps, and its stop of the first code host hangs.
+		lxd.hangStop = stuck;
+		const start = new AbortController();
+		const housekeeping = codeHosts.housekeep(start.signal);
+		await vi.waitFor(() => expect(lxd.calls).toContain(`stop ${stuck}`));
+		const deleting = async () => [1, 2].map(company);
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect(events).toEqual([
+			{
+				event: "code-host-error",
+				step: "remove",
+				project: stuck,
+				error: expect.objectContaining({ name: "TimeoutError" }),
+			},
+			{ event: "code-host", step: "stopped", project: next },
+			{ event: "code-host", step: "removed", project: next },
+		]);
+		// Another removal waits for the housekeeping, and a job comes meanwhile; then the housekeeping ends.
+		const removal = codeHosts.remove(company(1), signal());
+		const job = codeHosts.use(company(1), signal(), async () => "ran");
+		lxd.hangStop = undefined;
+		start.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+		await expect(housekeeping).rejects.toThrow("CODING_EXECUTOR_SHUTDOWN");
+		await expect(removal).rejects.toThrow("CODE_HOST_BUSY");
+		await expect(job).resolves.toBe("ran");
+		// The removal out of time never ran.
+		expect(lxd.projects.has(stuck)).toBe(true);
+		expect(lxd.calls).not.toContain(`delete-project ${stuck}`);
+		events.length = 0;
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect(lxd.projects.has(stuck)).toBe(false);
+		expect(events).toEqual([
+			{ event: "code-host", step: "stopped", project: stuck },
+			{ event: "code-host", step: "removed", project: stuck },
+		]);
+		await codeHosts.close();
+	});
+	it("gives the listing of the node's projects its agent wait, so a later pass goes on after one stalled", async () => {
+		const { lxd, codeHosts } = hosts({ agentWaitMs: 200 });
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		const deleting = vi.fn(async () => [company(1)]);
+		lxd.hangList = true;
+		await expect(codeHosts.removeDeleting(deleting, signal())).rejects.toEqual(
+			expect.objectContaining({ name: "TimeoutError" }),
+		);
+		// The executor's stop ends a stalled listing too.
+		const stop = new AbortController();
+		const pass = codeHosts.removeDeleting(deleting, stop.signal);
+		stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+		await expect(pass).rejects.toThrow("CODING_EXECUTOR_SHUTDOWN");
+		expect(deleting).not.toHaveBeenCalled();
+		lxd.hangList = false;
+		await expect(codeHosts.removeDeleting(deleting, signal())).resolves.toBe(1);
+		expect(lxd.projects.has(codeHostProject(company(1)))).toBe(false);
+		await codeHosts.close();
+	});
 	it("closes: no new job, and each code host stops once its jobs end", async () => {
 		const { lxd, codeHosts } = hosts();
 		await codeHosts.use(company(1), signal(), async () => undefined);
@@ -627,4 +844,39 @@ describe("LxdCodeHosts", () => {
 			"INVALID_CODE_HOST_POLICY",
 		);
 	});
+});
+
+describe("code host deletions from the control plane", () => {
+	const ids = Array.from({ length: 501 }, (_, n) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`);
+	it("asks as the node's executor, 500 companies at a time", async () => {
+		const calls: [string, Record<string, unknown>][] = [];
+		const deleting = controlCodeHostDeletions({
+			control: {
+				async call(method, args) {
+					calls.push([method, args]);
+					return (args.p_company_ids as string[]).filter((_, n) => n % 2 === 0);
+				},
+			},
+			owner: "exec-a",
+			machineIdSha256: "a".repeat(64),
+		});
+		expect(CODE_HOST_DELETION_RPCS).toEqual(["qorpera_code_hosts_deleting"]);
+		await expect(deleting(ids, signal())).resolves.toEqual(ids.filter((_, n) => n % 2 === 0));
+		const args = { p_owner: "exec-a", p_machine_id_sha256: "a".repeat(64) };
+		expect(calls).toEqual([
+			["qorpera_code_hosts_deleting", { ...args, p_company_ids: ids.slice(0, 500) }],
+			["qorpera_code_hosts_deleting", { ...args, p_company_ids: ids.slice(500) }],
+		]);
+	});
+	it.each<unknown>([null, {}, ids[0], [7], [ids[1], "00000000-0000-4000-8000-00000000000f"]])(
+		"refuses an answer of %j",
+		async (answer) => {
+			const deleting = controlCodeHostDeletions({
+				control: { call: async () => answer },
+				owner: "exec-a",
+				machineIdSha256: "a".repeat(64),
+			});
+			await expect(deleting(ids.slice(0, 2), signal())).rejects.toThrow("CODE_HOST_DELETIONS_UNCONFIRMED");
+		},
+	);
 });

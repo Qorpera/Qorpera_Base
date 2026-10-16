@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { parseCloudCompanyInnerPath, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	companyStatePath,
@@ -121,6 +121,14 @@ function path(value: unknown): string {
 	}
 }
 
+function innerPath(folder: string, value: unknown): string {
+	try {
+		return parseCloudCompanyInnerPath(folder, value);
+	} catch {
+		return invalid();
+	}
+}
+
 function text(value: unknown): string {
 	if (typeof value !== "string" || LONE_SURROGATE.test(value)) return invalid();
 	if (Buffer.byteLength(value) > MAX_FILE_BYTES) throw new ObjectDependencyError(413);
@@ -196,16 +204,12 @@ function unit(value: unknown): Unit {
 				path: folder,
 				contents: input.contents.map((item): Content => {
 					const kind = (item as { kind?: unknown } | null)?.kind;
-					// Each entry's joined path is checked here too, so a refusal never follows staged bytes.
-					if (kind === "folder") {
-						const inner = path(object(item, ["path", "kind"]).path);
-						path(`${folder}/${inner}`);
-						return { path: inner, kind };
-					}
+					// Each entry's joined path is checked here, as the core checks it, so a refusal never follows staged bytes.
+					if (kind === "folder") return { path: innerPath(folder, object(item, ["path", "kind"]).path), kind };
 					if (kind !== "file") return invalid();
 					const file = object(item, ["path", "kind", "text"]);
-					const inner = path(file.path);
-					return { path: inner, whole: path(`${folder}/${inner}`), kind, text: text(file.text) };
+					const inner = innerPath(folder, file.path);
+					return { path: inner, whole: `${folder}/${inner}`, kind, text: text(file.text) };
 				}),
 			};
 		}

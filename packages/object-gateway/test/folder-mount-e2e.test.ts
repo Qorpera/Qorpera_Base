@@ -923,10 +923,10 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 
 describe.skipIf(!program)("links through a real FUSE mount", () => {
 	it("clones by copying the objects, fails a --local clone with git's own error, checks out a link, and makes links from Python and Node, each hard link a read of its source", async () => {
-		// A repository goes under `code/`: elsewhere the folder takes no `.git`.
-		const m = await loggedMount("computer_shell_command", [folder("code")]);
+		// A repository goes under `code/<owner>/`: the folder takes a `.git` only below code/<owner>/<name>/.
+		const m = await loggedMount("computer_shell_command", [folder("code"), folder("code/acme")]);
 		const docs = join(m.company, "docs");
-		const code = join(m.company, "code");
+		const code = join(m.company, "code/acme");
 		const repo = join(code, "repo");
 		const ok = async (ran: Promise<{ code: number | null; stderr: string }>) => {
 			const done = await ran;
@@ -999,7 +999,7 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 			{ version: v(1), authority: m.receipt },
 			{ version: v(1), authority: m.receipt },
 		]);
-		expect(reads.map((read) => read.path)).toEqual(expect.arrayContaining(["code/copy/latest", "docs/py-link"]));
+		expect(reads.map((read) => read.path)).toEqual(expect.arrayContaining(["code/acme/copy/latest", "docs/py-link"]));
 		m.core.commitHook = async () => {
 			expect(m.core.readSets.get(m.viewId)?.get("docs/plan.md")).toEqual({
 				path: "docs/plan.md",
@@ -1009,13 +1009,13 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 		};
 		const report = await m.publish();
 		expect(report, m.output()).toMatchObject({ code: 0, stderr: "" });
-		for (const path of ["code/repo/latest", "code/copy/latest", "docs/py-link"])
+		for (const path of ["code/acme/repo/latest", "code/acme/copy/latest", "docs/py-link"])
 			expect(m.core.entries.get(path), path).toMatchObject({ kind: "symlink", target: "plan.md" });
 		for (const path of ["docs/py-copy", "docs/node-copy"])
 			expect(m.core.entries.get(path), path).toMatchObject({ kind: "file", fileSha256: hashOf("the plan") });
 		for (const name of objects)
-			expect(m.core.entries.get(`code/copy/.git/objects/${name}`)?.fileSha256, name).toBe(
-				m.core.entries.get(`code/repo/.git/objects/${name}`)?.fileSha256,
+			expect(m.core.entries.get(`code/acme/copy/.git/objects/${name}`)?.fileSha256, name).toBe(
+				m.core.entries.get(`code/acme/repo/.git/objects/${name}`)?.fileSha256,
 			);
 	}, 60_000);
 

@@ -9,7 +9,7 @@ namespaces that are already running see the new mount? It is not completion of
 The real `qorpera-folder` program runs under master's office mount unit,
 rendered with the office account's ids as the image installer renders it. Only
 its `ExecStart` changes: the program is the one pushed in, and it talks to a
-synthetic protocol-3 node on a Unix socket. The office namespaces are started
+synthetic protocol-4 node on a Unix socket. The office namespaces are started
 by the runtime's own process gate (`cloud-company-computer-linux-process.ts`,
 types stripped) with mirrored bubblewrap arguments, from a relay that carries
 every confinement line of master's office unit. No plumber, credentials, vsock identity, SQL or model is
@@ -305,7 +305,7 @@ too, but the office user cannot enter it, so a shell spawned with
 
 The record lists these under `limitations`:
 
-- The node is a synthetic protocol-3 node on a Unix socket: no database, vsock
+- The node is a synthetic protocol-4 node on a Unix socket: no database, vsock
   identity, view switching or plumber.
 - The office namespaces come from the runtime's process gate and mirrored
   bubblewrap arguments, in a relay that runs under the office unit's

@@ -13,6 +13,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -641,6 +642,8 @@ it("takes a column the definition drops out of the rows first, once it is option
 	});
 	cites(held, answer, ["tables/numbers", definition, rowsFile]);
 	expect(held.commits).toEqual([]);
+	// Blocked before any receipt: the boundary observes it as denied, never as succeeded (P5 pass 2 finding 1).
+	expect(held.tool("save_interface").refused?.(answer)).toBe("invalid_arguments");
 });
 
 it("sets, adds and removes rows in place, with the ids it made, and a replay finds its change made", async () => {
@@ -888,9 +891,12 @@ it("changes a claim for the member who supervises the agent's area, and only tak
 	expect(answer).toMatchObject({ state: "not_applied", reason: "claim", next: ROWS.claim });
 	expect(answer.problems).toEqual([expect.stringContaining("giving it to someone else is an offer")]);
 	cites(f, given, [...CARDS_FILES, ...AREAS_FILES]);
+	// The boundary observes the refusal as denied for want of authority (P5 pass 2 finding 1).
+	expect(f.tool("table_write").refused?.(given)).toBe("authority_unavailable");
 	// A change that touches no claim reads no areas.
 	const done = await f.call("table_write", rows("cards", "done-1", [{ id: C2, state: "done" }]));
 	expect(read(done)).toMatchObject({ state: "applied" });
+	expect(f.tool("table_write").refused?.(done)).toBeUndefined();
 	cites(f, done, CARDS_FILES);
 	// Let go for the supervisor.
 	const released = await f.call("table_write", rows("cards", "let-go-1", [{ id: C1, holder: null }]));
@@ -939,7 +945,18 @@ it("answers the folder core's claim refusal at the commit as a claim", async () 
 				? { outcome: "refused", reason: "structured_rule", problems: [{ code: "claim", message }] }
 				: null,
 	});
-	const answer = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]));
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async () => {},
+	});
+	const span = observability.start("table_write");
+	const answer = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]), {
+		...f.context,
+		observation: span,
+	});
+	// Refused at the commit: observed as denied, never as succeeded (P5 pass 2 finding 1).
+	expect([span.result?.status, span.result?.errorCategory]).toEqual(["denied", "invalid_arguments"]);
+	await observability.close();
 	expect(read(answer)).toEqual({
 		schema: "qorpera.table-write-result/v1",
 		state: "not_applied",

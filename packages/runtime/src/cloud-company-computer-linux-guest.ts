@@ -191,6 +191,8 @@ export interface CompanyComputerLinuxGuestOptions {
 const SHELL_REPORT_ATTEMPTS = 10;
 /** The most commands of each kind (open, ended) one report names for a screen. */
 const SHELL_REPORT_ITEMS = 64;
+/** How long a run's folder report waits for its read of the core: a tool result waits for its report. */
+const FOLDER_REPORT_WAIT_MS = 800;
 
 /** One screen's shell in a report: whole when its lists name every command it has, open and ended. */
 export interface CompanyComputerShellReportScreen {
@@ -445,7 +447,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					},
 				},
 			}),
-			folders ? { folders, environmentId: binding.environmentId } : {},
+			folders ? { folders, environmentId: binding.environmentId, screenId: binding.screenId } : {},
 		);
 		return screen.shell;
 	}
@@ -895,6 +897,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		// So are the boxes its hook captures sealed (E3c-3), each kept for its perform answer only.
 		const captures = new CompanyComputerHookCaptureBoxes();
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
+		// The run's folder report (F3 4f-2b) is kept while the run lives, not the session: a drain ends the session
+		// before its own report can be read, and the next session of the same run reads it.
+		const folders = this.#options.folders;
+		folders?.follow(input.run.identity.runId, input.run.signal);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
 			signal.throwIfAborted();
@@ -1140,9 +1146,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
 				},
-				settle: (action, content, requestSignal, replyBy, runId) =>
+				settle: (action, content, requestSignal, replyBy, runId, receiptId) =>
 					automation
-						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy, runId)
+						? automation.settle(
+								action,
+								content,
+								AbortSignal.any([signal, requestSignal]),
+								replyBy,
+								runId,
+								receiptId,
+							)
 						: Promise.resolve(content),
 			},
 		});
@@ -1151,6 +1164,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			ended: () => ended,
 			screenshot: (receiptId) => screenshots.takeInline?.(receiptId),
 			capture: (receiptId) => captures.take(receiptId),
+			...(folders
+				? {
+						folderReport: (shown: string, asked: AbortSignal) =>
+							folders.report(input.run.identity.runId, shown, asked, performance.now() + FOLDER_REPORT_WAIT_MS),
+					}
+				: {}),
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,
@@ -1375,10 +1394,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	};
 	/**
 	 * `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. A drain request
-	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary before it answers (F3 4d, "Drains
-	 * and stops"), and the drain fails when the boundary has no final answer by then. Any other stop lets the mount go
-	 * after it. A stop that cannot confirm what it closed gone (the screen's sessions, private surface, browser or shell)
-	 * fails, and the mount stays for the stop control: the browser's namespace, say, may still read it.
+	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary, and each mount of its shell's
+	 * commands its final boundary, before it answers (F3 4d, "Drains and stops"), and the drain fails when a mount is
+	 * still there by then. Any other stop lets the mount go after it. A stop that cannot confirm what it closed gone (the
+	 * screen's sessions, private surface, browser or shell) fails, and the mount stays for the stop control: the
+	 * browser's namespace, say, may still read it.
 	 */
 	async stopResources(
 		binding: CompanyComputerScreenBinding,
@@ -1454,14 +1474,22 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		if (screen) screen.closing ??= drain();
 		await cloudToolRequest(() => screen?.closing ?? drain(), signal, 30000);
-		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it.
-		if (stop.until !== undefined)
-			await this.#options.folders?.drain(
-				binding.screenId,
-				signal,
-				stop.until,
-				() => !this.#screens.has(binding.screenOrdinal),
-			);
+		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it; and
+		// the mounts of the shell's commands, which ended with it, go once their final boundaries have their answers.
+		if (stop.until !== undefined) {
+			const until = stop.until;
+			const drained = await Promise.allSettled([
+				this.#options.folders?.drain(
+					binding.screenId,
+					signal,
+					until,
+					() => !this.#screens.has(binding.screenOrdinal),
+				),
+				this.#options.commandFolders?.drain(binding.screenId, signal, until),
+			]);
+			const failed = drained.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failed) throw failed.reason;
+		}
 	}
 	close(): Promise<void> {
 		this.#stop.abort();

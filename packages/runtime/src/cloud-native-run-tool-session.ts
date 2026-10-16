@@ -21,6 +21,7 @@ import {
 import {
 	type CloudNativeActionReview,
 	type CloudNativeFencedResult,
+	type CloudNativeFolderReports,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
@@ -35,8 +36,11 @@ import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
 	captures?: CloudNativeCaptureImages;
-	/** Revalidate the context's path/audience read set, not only run admission. */
-	assertContext: (signal: AbortSignal) => Promise<void>;
+	/** The run's desktop folder reports (F3 4f-2b): its tool results show them. */
+	folderReports?: CloudNativeFolderReports;
+	/** Revalidate the context's path/audience read set, not only run admission. `timeoutMs` is the caller's
+	 * budget for the read, all the way to the transport. */
+	assertContext: (signal: AbortSignal, timeoutMs?: number) => Promise<void>;
 	recordContextView: (
 		frame: CloudNativeFenceRequest,
 		outputs: readonly CloudNativeFencedResult[],
@@ -127,11 +131,12 @@ export async function runCloudNativeRunToolSession(options: {
 			const observation = options.observability?.start("context_authority");
 			try {
 				// Two independent reads, both required: the run's admission and its context read set.
-				// Both lock the run's job row, so each gets the pair's budget, not one read's. Each is asked again
-				// while its answer is lost or late, until the run's authority would lapse; a refusal stops the run.
+				// Both lock the run's job row, so each gets the pair's budget, not one read's, down to the transport.
+				// Each is asked again while its answer is lost or late, until the run's authority would lapse; a
+				// refusal stops the run.
 				const admission = run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
 				const context = run.retry(
-					(requestSignal) => activeAdapters.assertContext(requestSignal),
+					(requestSignal) => activeAdapters.assertContext(requestSignal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS),
 					signal,
 					CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 				);
@@ -190,6 +195,7 @@ export async function runCloudNativeRunToolSession(options: {
 			identity: run.identity,
 			tools: adapters.tools,
 			captures: adapters.captures,
+			...(adapters.folderReports ? { folderReports: adapters.folderReports } : {}),
 			assertActive,
 			signal: run.signal,
 			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),

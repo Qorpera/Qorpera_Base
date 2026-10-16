@@ -57,9 +57,12 @@ export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;
 /** Finished commands remembered for a later read or list. */
 const FINISHED_KEPT = 64;
 const LISTED = 40;
-/** Where every command starts. The company folder mount will replace this with `/company`. */
-export function companyComputerShellWorkingDirectory(layout: CompanyComputerGuestLayout): string {
-	return layout.workbenchRoot;
+/**
+ * Where the shell starts: its home. With the company folder, the folder launcher starts every command in `/company`
+ * (F3 4d); without it, a command starts here (F3 4f-1b: never the workbench).
+ */
+export function companyComputerShellWorkingDirectory(): string {
+	return "/home/qorpera";
 }
 /** Image configuration a shell may read. Nothing here holds a secret; missing entries are skipped. */
 const SHELL_IMAGE_FILES = [
@@ -174,6 +177,8 @@ const FOLDER_LOST = "The company folder stopped answering for this command, so i
 /** A boundary's answer can take this long; an output read leaves it this much of the reply's time. */
 const FOLDER_READ_RESERVE_MS = 8000;
 const FOLDER_REPLY_RESERVE_MS = 2000;
+/** A read for another run also leaves its take-in this much: the registry's call takes at most 3 s. */
+const FOLDER_INHERIT_RESERVE_MS = 3000;
 
 /** The physical namespace behind one shell. Test seams replace it with an in-process host. */
 export interface CompanyComputerShellEnvironment {
@@ -247,17 +252,22 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#releasing = 0;
 	#processes = 0;
 	#closing?: Promise<void>;
-	/** With the company folder, every command runs through the folder helper with a mount of its own. */
-	readonly #folders?: { commands: CompanyComputerCommandFolders; environmentId: string };
+	/** With the company folder, every command runs through the folder helper with a mount of its own, which the
+	 * drain of the shell's screen waits for. */
+	readonly #folders?: { commands: CompanyComputerCommandFolders; environmentId: string; screenId: string };
 
 	constructor(
 		launch: CompanyComputerShellEnvironmentLauncher,
-		options: { folders?: CompanyComputerCommandFolders; environmentId?: string } = {},
+		options: { folders?: CompanyComputerCommandFolders; environmentId?: string; screenId?: string } = {},
 	) {
 		this.#launch = launch;
 		if (options.folders) {
-			if (!options.environmentId) throw new Error("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
-			this.#folders = { commands: options.folders, environmentId: options.environmentId };
+			if (!options.environmentId || !options.screenId) throw new Error("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
+			this.#folders = {
+				commands: options.folders,
+				environmentId: options.environmentId,
+				screenId: options.screenId,
+			};
 		}
 	}
 
@@ -597,33 +607,60 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		};
 	}
 
-	/** A folder command's output up to a mark reaches the run that started it once its boundary answers. */
+	/**
+	 * A folder command's output up to a mark reaches the run that started it once its boundary answers. Another run's
+	 * read, by an action of its own (`receiptId`), takes in the command's reads after that ("A command that outlived its
+	 * run"), and sees what was released before its take-in, with the paths not saved its boundary reported. Paths a later
+	 * boundary reports, or those of a take-in that did not answer `inherited`, wait for a later read. The shell has one
+	 * read cursor, as for a command outside the folder: output one run read does not come again to another.
+	 */
 	async #folderResult(
 		session: Session,
 		folder: CompanyComputerCommandFolder,
 		input: Parameters<CompanyComputerGuestShell["result"]>[0],
 	): Promise<CompanyComputerShellCommandResult> {
-		if (input.runId === undefined || input.runId !== session.runId)
-			return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
-		const until = input.until ?? performance.now() + input.waitMs + FOLDER_READ_RESERVE_MS;
+		if (input.runId === undefined) return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
+		const other = input.runId !== session.runId;
+		if (other && input.receiptId === undefined) return this.#held(session, COMPANY_COMPUTER_COMMAND_OTHER_RUN);
+		const inheritReserve = other ? FOLDER_INHERIT_RESERVE_MS : 0;
+		const until = input.until ?? performance.now() + input.waitMs + FOLDER_READ_RESERVE_MS + inheritReserve;
 		await this.#wait(
 			session,
-			Math.min(input.waitMs, Math.floor(until - performance.now()) - FOLDER_READ_RESERVE_MS),
+			Math.min(input.waitMs, Math.floor(until - performance.now()) - FOLDER_READ_RESERVE_MS - inheritReserve),
 			input.signal,
 		);
 		const before = mark(session);
+		let report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {};
 		// Nothing new since the last boundary: nothing more reaches the run, so none is asked.
-		if (folder.status === "running" && session.released && sameMark(before, session.released))
-			return this.#result(session, session.released);
-		const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS);
-		const report = {
-			...(release.notSaved ? { notSaved: release.notSaved } : {}),
-			...(release.moreNotSaved ? { moreNotSaved: release.moreNotSaved } : {}),
-		};
-		if (!release.released) return this.#held(session, release.heldBack, report);
-		// Once the mount is gone, everything the command wrote is out.
-		session.released = release.final ? mark(session) : before;
-		return { ...this.#result(session, session.released), ...report };
+		if (!(folder.status === "running" && session.released && sameMark(before, session.released))) {
+			const release = await folder.release(input.signal, until - FOLDER_REPLY_RESERVE_MS - inheritReserve);
+			report = {
+				...(release.notSaved ? { notSaved: release.notSaved } : {}),
+				...(release.moreNotSaved ? { moreNotSaved: release.moreNotSaved } : {}),
+			};
+			if (!release.released) {
+				if (!other) return this.#held(session, release.heldBack, report);
+				folder.restoreReport(report);
+				return this.#held(session, release.heldBack);
+			}
+			// Once the mount is gone, everything the command wrote is out.
+			session.released = release.final ? mark(session) : before;
+		} else report = folder.takeReport(); // What a take-in that did not answer `inherited` put back.
+		// What was released before the take-in is asked: a boundary meanwhile may release more, and report more paths.
+		const shown = session.released ?? before;
+		if (other && input.receiptId !== undefined) {
+			const inherited = await folder
+				.inherit(input.receiptId, input.signal, until - FOLDER_REPLY_RESERVE_MS)
+				.catch((error: unknown) => {
+					folder.restoreReport(report);
+					throw error;
+				});
+			if (!inherited.inherited) {
+				folder.restoreReport(report);
+				return this.#held(session, inherited.heldBack);
+			}
+		}
+		return { ...this.#result(session, shown), ...report };
 	}
 
 	/** The ready namespace a live command runs in; never a fresh one. */
@@ -658,7 +695,12 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			total: 0,
 			readTo: 0,
 			waiters: new Set(),
-			...(this.#folders ? { folder: this.#folders.commands.command(input.key), abort: new AbortController() } : {}),
+			...(this.#folders
+				? {
+						folder: this.#folders.commands.command(input.key, this.#folders.screenId),
+						abort: new AbortController(),
+					}
+				: {}),
 		};
 		this.#sessions.set(session.id, session);
 		this.#keys.set(input.key, session.id);
@@ -1015,7 +1057,7 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 					"/run/qorpera-company/company",
 					"/company",
 				);
-			args.push("--chdir", companyComputerShellWorkingDirectory(layout), "--remount-ro", "/");
+			args.push("--chdir", companyComputerShellWorkingDirectory(), "--remount-ro", "/");
 			lifetime.throwIfAborted();
 			launched = spawnCompanyComputerLinuxProcess({
 				args,

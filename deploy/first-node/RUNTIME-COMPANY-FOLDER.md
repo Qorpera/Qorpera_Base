@@ -703,7 +703,9 @@ Agents search and read through the shell and still write with today's tools.
 
 **Retired after acceptance** (amended 2026-09-28: at the steps named):
 - the five `company_*` tools, at step 3;
-- the Company File realm of `computer_transfer`, at step 4.
+- the Company File realm of `computer_transfer`, at step 4. The whole tool retired there (F3 4f-1,
+  `RUNTIME-FOLDER-COMPANY-MACHINES.md` "Slices"): legacy sweep step C's removal of company objects had left no
+  realm working.
 
 **Workers.** A worker gets its own box, with the worker's authority.
 

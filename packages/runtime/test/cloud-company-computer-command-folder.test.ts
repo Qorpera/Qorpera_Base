@@ -17,6 +17,7 @@ import { computerDeferred, computerId, computerScope } from "./fixtures/company-
 const { environmentId } = computerScope();
 const receipt = computerId(40);
 const name = `command-${receipt}`;
+const screenId = computerId(50);
 const report = { commitId: "commit-1", seq: 7, paths: [] };
 const refusal = (refused: string) => ({
 	answer: "refused",
@@ -42,16 +43,33 @@ const STOPPED =
 const GONE = "the company folder no longer serves this command, so its output is held back; start it again";
 const SAVING = "the command's last changes are still being saved; read again";
 const NOT_TAKEN = "the company folder did not take this command's last changes";
+const OTHER_AGENT = "this command's output reaches only runs of the agent and member it was started for";
+const UNREADABLE = "this run can no longer read what this command read";
+const REREAD = "this command's output changed since this action first read it; read again";
+const NOT_INHERITED = "the company folder refused this run's take-in of what this command read";
 
 afterEach(() => {
 	vi.useRealTimers();
 });
 
-/** The core's folder views as `qorpera_folder_view_open` and `_close` answer them. */
+/** The core's folder views as `qorpera_folder_view_open` and `_close` answer them, and a run's take-in of a command's
+ * reads as `qorpera_folder_office_inherit_command_reads` does: an action's second one replays its first. */
 function core() {
 	const opened: Record<string, unknown>[] = [];
 	const closed: unknown[] = [];
+	const takeIns: Record<string, unknown>[] = [];
 	const call = vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
+		if (method === "qorpera_folder_office_inherit_command_reads") {
+			const replay = takeIns.some((taken) => taken.p_receipt_id === args.p_receipt_id);
+			takeIns.push(args);
+			return {
+				schema: "qorpera.folder-inherit/v1",
+				inheritId: args.p_receipt_id,
+				viewId: computerId(101),
+				reads: 1,
+				replay,
+			};
+		}
 		if (method === "qorpera_folder_view_open") {
 			opened.push(args);
 			return {
@@ -67,7 +85,7 @@ function core() {
 		throw new Error(`Unexpected fixture RPC ${method}`);
 	});
 	const view = (n: number) => ({ environmentId, viewId: computerId(100 + n), pass: `pass-${n}` });
-	return { call, opened, closed, view };
+	return { call, opened, closed, takeIns, view };
 }
 
 /** The folder helper: each request takes the next answer queued for its op (a function is called for it). */
@@ -124,13 +142,14 @@ function fixture(options: { socket?: string; registry?: Pick<HttpCloudCompanyCom
 	const h = helper();
 	const r = runner();
 	const logged: string[] = [];
-	const folder = new CompanyComputerCommandFolders({
+	const folders = new CompanyComputerCommandFolders({
 		registry: options.registry ?? { call: c.call },
 		ask: h.ask,
 		run: r.run as unknown as typeof startCompanyComputerFolderRun,
 		log: (line) => logged.push(line),
 		...(options.socket ? { socket: options.socket } : {}),
-	}).command(receipt);
+	});
+	const folder = folders.command(receipt, screenId);
 	const events: CompanyComputerCommandFolderEvent[] = [];
 	const start = (still = () => true, signal = new AbortController().signal, network = false) =>
 		folder.start(
@@ -140,7 +159,13 @@ function fixture(options: { socket?: string; registry?: Pick<HttpCloudCompanyCom
 		);
 	const release = (until = performance.now() + 17000, signal = new AbortController().signal) =>
 		folder.release(signal, until);
-	return { ...c, ...h, ...r, folder, events, start, release, logged };
+	/** Another run's take-in, by its reading action's receipt, as the shell asks it two seconds before the reply. */
+	const inherit = (receiptId: string, until = performance.now() + 17000, signal = new AbortController().signal) =>
+		folder.inherit(receiptId, signal, until);
+	/** The drain of the command's screen, as a drain request's 20 s, less a second, give it. */
+	const drain = (until = performance.now() + 19000, signal = new AbortController().signal) =>
+		folders.drain(screenId, signal, until);
+	return { ...c, ...h, ...r, folders, folder, events, start, release, inherit, drain, logged };
 }
 
 /** A command whose run started: its view and mount were made and the helper answered `started`. */
@@ -476,6 +501,206 @@ describe("a command's output before it reaches the run", () => {
 	});
 });
 
+describe("a command's output for a run that did not start it", () => {
+	const action = computerId(60);
+	const taken = (receiptId: string) => ({
+		p_environment_id: environmentId,
+		p_shell_command_id: receipt,
+		p_receipt_id: receiptId,
+	});
+
+	it("needs that run's take-in of the command's reads by its reading action; a retry replays it until a boundary released more", async () => {
+		const f = await running();
+		f.answer("boundary", { answer: "saved", report }, refusal("stopped"), { answer: "saved", report });
+		await expect(f.release()).resolves.toEqual({ released: true });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		expect(f.takeIns).toEqual([taken(action)]);
+		// The action's retry: the core replays its take-in.
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		// A boundary held back released nothing more.
+		await expect(f.release()).resolves.toEqual({ released: false, heldBack: PAUSED });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		expect(f.takeIns).toEqual([taken(action), taken(action), taken(action)]);
+		// Once a boundary released more, what the retry would show is not what its take-in covered: none is asked.
+		await expect(f.release()).resolves.toEqual({ released: true });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(f.takeIns).toHaveLength(3);
+		// A new action takes in the reads up to now.
+		await expect(f.inherit(computerId(61))).resolves.toEqual({ inherited: true });
+		expect(f.takeIns.at(-1)).toEqual(taken(computerId(61)));
+		expect(f.ops()).toEqual(["mount", "boundary", "boundary", "boundary"]);
+	});
+
+	it("takes in nothing while nothing ran in the folder", async () => {
+		const f = fixture();
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		const stopped = new AbortController();
+		stopped.abort(new Error("caller stopped"));
+		await expect(f.start(undefined, stopped.signal)).resolves.toEqual({ note: START_FAILED });
+		expect(f.folder.status).toBe("none");
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		expect(f.takeIns).toEqual([]);
+	});
+
+	it("is still asked once the command ended and its view closed", async () => {
+		const f = await running();
+		f.answer("unmount", { answer: "saved", report, unmounted: true });
+		f.send({ t: "ended" });
+		await expect(f.release()).resolves.toEqual({ released: true, final: true });
+		expect(f.closed).toHaveLength(1);
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		expect(f.takeIns).toEqual([taken(action)]);
+	});
+
+	it.each([
+		["a paused company", "55000", "Company execution is paused", PAUSED],
+		["an ended run", "42501", "Run is unavailable", RUN_ENDED],
+		[
+			"another agent's or member's run",
+			"42501",
+			"A run inherits only its own agent's and member's views",
+			OTHER_AGENT,
+		],
+		["a read no longer readable", "42501", "A released read is no longer readable", UNREADABLE],
+		["an action of no leased run of the office", "42501", "Folder inheritance read is not current", NOT_INHERITED],
+		["a reason it does not keep", "42501", "Folder view is invalid", NOT_INHERITED],
+		["a conflict, as no answer", "40001", "could not serialize access", UNANSWERED],
+	])("is held back when the core refuses it for %s", async (_, code, message, heldBack) => {
+		const fetcher = vi.fn<typeof fetch>(async (url) =>
+			String(url).endsWith("/rpc/qorpera_folder_view_open")
+				? Response.json({ schema: "qorpera.folder-view/v1", viewId: computerId(101), pass: "pass-1" })
+				: Response.json({ message, code, details: "secret" }, { status: 403 }),
+		);
+		const f = await running({
+			registry: new HttpCloudCompanyComputerRegistry({
+				supabaseUrl: "https://control.example.test",
+				serviceRoleKey: "sb_secret_fixture",
+				fetch: fetcher,
+			}),
+		});
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack });
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		expect(fetcher.mock.calls[1][0]).toBe(
+			"https://control.example.test/rest/v1/rpc/qorpera_folder_office_inherit_command_reads",
+		);
+		expect(JSON.parse(fetcher.mock.calls[1][1]!.body as string)).toEqual(taken(action));
+	});
+
+	it("is held back when the core's answer is not a take-in for this action", async () => {
+		const f = await running();
+		for (const answer of [
+			{},
+			{ schema: "qorpera.folder-view/v1", inheritId: action, replay: false },
+			{ schema: "qorpera.folder-inherit/v1", inheritId: computerId(61), replay: false },
+			{ schema: "qorpera.folder-inherit/v1", inheritId: action },
+		]) {
+			f.call.mockImplementationOnce(async () => answer);
+			await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: NOT_INHERITED });
+		}
+	});
+
+	it("is held back for a replay of a take-in it does not remember: it remembers the last 256 actions'", async () => {
+		const f = await running();
+		const asks = () =>
+			f.call.mock.calls.filter(([method]) => method === "qorpera_folder_office_inherit_command_reads").length;
+		f.call.mockImplementationOnce(async (_, args) => ({
+			schema: "qorpera.folder-inherit/v1",
+			inheritId: args.p_receipt_id,
+			replay: true,
+		}));
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		// Nor is a retry of it shown: it is held back with no call.
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(asks()).toBe(1);
+		const actions = Array.from({ length: 257 }, (_, n) => computerId(1000 + n));
+		for (const id of actions) await expect(f.inherit(id)).resolves.toEqual({ inherited: true });
+		// The oldest of them is gone, and the next oldest is kept.
+		await expect(f.inherit(actions[1])).resolves.toEqual({ inherited: true });
+		expect(f.takeIns).toHaveLength(258);
+		// After a newer release, the one it forgot replays a take-in that does not cover it, and is held back; then, with
+		// no boundary since, its retry is held back with no call.
+		f.answer("boundary", { answer: "saved", report });
+		await expect(f.release()).resolves.toEqual({ released: true });
+		await expect(f.inherit(actions[0])).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		await expect(f.inherit(actions[0])).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(f.takeIns).toHaveLength(259);
+		expect(asks()).toBe(260);
+	});
+
+	it("forgets an action whose first take-in had no answer: a retry asks again, and is held back if the core replays it", async () => {
+		const f = await running();
+		// The core did not take it in: the retry is the first take-in.
+		f.call.mockImplementationOnce(async () => {
+			throw new Error("connection reset");
+		});
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: UNANSWERED });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: true });
+		// The core took it in, but its answer was lost: what that take-in covered is unknown.
+		const lost = computerId(61);
+		f.call.mockImplementationOnce(async (_, args) => {
+			f.takeIns.push(args);
+			throw new Error("connection reset");
+		});
+		await expect(f.inherit(lost)).resolves.toEqual({ inherited: false, heldBack: UNANSWERED });
+		await expect(f.inherit(lost)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		await expect(f.inherit(lost)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(f.takeIns).toEqual([taken(action), taken(action), taken(lost), taken(lost)]);
+	});
+
+	it("is held back at the reply's deadline, without asking when it is too near, and stops with its caller", async () => {
+		const f = await running();
+		const asks = () =>
+			f.call.mock.calls.filter(([method]) => method === "qorpera_folder_office_inherit_command_reads").length;
+		await expect(f.inherit(action, performance.now())).resolves.toEqual({ inherited: false, heldBack: UNANSWERED });
+		expect(asks()).toBe(0);
+		f.call.mockImplementationOnce(() => computerDeferred<unknown>().promise);
+		await expect(f.inherit(action, performance.now() + 50)).resolves.toEqual({
+			inherited: false,
+			heldBack: UNANSWERED,
+		});
+		expect(asks()).toBe(1);
+		const stopped = new AbortController();
+		stopped.abort(new Error("caller stopped"));
+		await expect(f.inherit(action, undefined, stopped.signal)).rejects.toThrow("caller stopped");
+		expect(asks()).toBe(1);
+		// A retry while its first take-in has no answer yet is held back with no call.
+		await expect(f.inherit(action)).resolves.toEqual({ inherited: false, heldBack: REREAD });
+		expect(asks()).toBe(1);
+		f.call.mockImplementationOnce(() => computerDeferred<unknown>().promise);
+		const controller = new AbortController();
+		const read = f.inherit(computerId(61), undefined, controller.signal);
+		await settle();
+		controller.abort(new Error("caller stopped"));
+		await expect(read).rejects.toThrow("caller stopped");
+	});
+
+	it("puts paths not saved that no run was shown back in front of those reported since, under the same caps", async () => {
+		const f = await running();
+		const refused = (path: string) => ({ path, outcome: "refused" });
+		const paths = (...names: string[]) => ({ ...report, paths: names.map(refused) });
+		f.answer("boundary", { answer: "refused", report: paths("a") });
+		await expect(f.release()).resolves.toEqual({ released: true, notSaved: [refused("a")] });
+		expect(f.folder.takeReport()).toEqual({});
+		// The command ends and its final boundary reports another path before the first is put back.
+		f.answer("unmount", { answer: "saved", report: paths("b"), unmounted: true });
+		f.send({ t: "ended" });
+		await vi.waitFor(() => expect(f.folder.status).toBe("released"));
+		f.folder.restoreReport({ notSaved: [refused("a")] });
+		await expect(f.release()).resolves.toEqual({
+			released: true,
+			final: true,
+			notSaved: [refused("a"), refused("b")],
+		});
+		// Behind those put back that were counted only, the ones reported since are counted only too.
+		const shown = Array.from({ length: 20 }, (_, n) => refused(`m${n}`));
+		f.folder.restoreReport({ notSaved: [refused("c")] });
+		f.folder.restoreReport({ notSaved: shown, moreNotSaved: 1 });
+		expect(f.folder.takeReport()).toEqual({ notSaved: shown, moreNotSaved: 2 });
+		expect(f.folder.takeReport()).toEqual({});
+	});
+});
+
 describe("a command's end", () => {
 	it("publishes the command's last changes once no process of it is left; then its mount goes and its view closes", async () => {
 		const f = await running();
@@ -754,5 +979,158 @@ describe("a lost command", () => {
 		expect(f.ops()).toEqual(["mount", "ended", "drop"]);
 		expect(f.closed).toHaveLength(1);
 		await expect(f.release()).resolves.toEqual({ released: false, heldBack: GONE });
+	});
+});
+
+describe("a screen's drain", () => {
+	it("answers once a command's final boundary has its answer and its mount went, the pause's refusal as final", async () => {
+		const f = await running();
+		f.answer("unmount", { ...refusal("stopped"), unmounted: false });
+		f.answer("drop", { answer: "dropped" });
+		let drained = false;
+		const draining = f.drain().then(() => {
+			drained = true;
+		});
+		await settle();
+		// The shell closed the command; its end is still to come.
+		expect(drained).toBe(false);
+		f.send({ t: "ended" });
+		await draining;
+		expect(f.ops()).toEqual(["mount", "unmount", "drop"]);
+		// Each asked within the drain's deadline.
+		const { timeoutMs } = f.asked[1] as { timeoutMs: number };
+		expect(timeoutMs).toBeGreaterThan(17000);
+		expect(timeoutMs).toBeLessThanOrEqual(18000);
+		expect(f.options[1]).toEqual({ timeoutMs: timeoutMs + 1000 });
+		expect((f.options[2] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(19000);
+		expect(f.logged).toEqual([
+			`office-folder: drain ${name}: {"answer":"refused","unmounted":false,"refused":"stopped","commitId":null,"seq":null,"outcomes":{}}`,
+		]);
+		expect(f.closed).toHaveLength(1);
+		await expect(f.release()).resolves.toEqual({ released: false, heldBack: NOT_TAKEN });
+		// Nothing of it is left for the next drain.
+		await f.drain();
+		expect(f.ops()).toEqual(["mount", "unmount", "drop"]);
+	});
+
+	it("asks the final boundary again each second past no answer, QRC01 and the run check, the first time at once", async () => {
+		const f = await running();
+		f.answer(
+			"unmount",
+			undefined,
+			{ answer: "unanswered", unmounted: false },
+			{ ...refusal("run_ended"), unmounted: false },
+			{ answer: "saved", report, unmounted: true },
+		);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		f.send({ t: "ended" });
+		await settle();
+		// No answer: asked again in 5 s, or once a drain begins.
+		expect(f.ops()).toEqual(["mount", "unmount"]);
+		let drained = false;
+		const draining = f.drain(performance.now() + 19000).then(() => {
+			drained = true;
+		});
+		await settle();
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount"]);
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount"]);
+		expect(drained).toBe(false);
+		await vi.advanceTimersByTimeAsync(1000);
+		await draining;
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount", "unmount"]);
+		expect(f.asked[1]).toEqual({ op: "unmount", name, final: true, timeoutMs: 30000 });
+		expect(f.asked[2]).toMatchObject({ op: "unmount", name, final: true });
+		expect((f.asked[2] as { timeoutMs: number }).timeoutMs).toBeLessThan(18000);
+		expect(f.logged).toEqual([
+			...["no answer", "unanswered", "refused run_ended"].map(
+				(word) => `office-folder: command ${name}: final boundary asked again (${word})`,
+			),
+			`office-folder: drain ${name}: {"answer":"saved","unmounted":true,"refused":null,"commitId":"commit-1","seq":7,"outcomes":{}}`,
+		]);
+		expect(f.folder.status).toBe("released");
+		expect(f.closed).toHaveLength(1);
+	});
+
+	it.each([
+		[
+			"saved",
+			{ answer: "saved", report, unmounted: true },
+			'{"answer":"saved","unmounted":true,"refused":null,"commitId":"commit-1","seq":7,"outcomes":{}}',
+			{ released: true, final: true },
+		],
+		[
+			"the pause's refusal",
+			{ ...refusal("stopped"), unmounted: true },
+			'{"answer":"refused","unmounted":true,"refused":"stopped","commitId":null,"seq":null,"outcomes":{}}',
+			{ released: false, heldBack: NOT_TAKEN },
+		],
+	])(
+		"takes as its own the answer of a final boundary asked before it began: %s",
+		async (_, answer, logged, released) => {
+			const f = await running();
+			const late = computerDeferred<unknown>();
+			f.answer("unmount", () => late.promise);
+			f.send({ t: "ended" });
+			await settle();
+			expect(f.ops()).toEqual(["mount", "unmount"]);
+			const draining = f.drain();
+			await settle();
+			late.resolve(answer);
+			await draining;
+			expect(f.ops()).toEqual(["mount", "unmount"]);
+			expect(f.logged).toEqual([`office-folder: drain ${name}: ${logged}`]);
+			expect(f.closed).toHaveLength(1);
+			await expect(f.release()).resolves.toEqual(released);
+		},
+	);
+
+	it("fails once its deadline passes with no final answer, and the command's own final boundary goes on", async () => {
+		const f = await running();
+		const late = computerDeferred<unknown>();
+		f.answer("unmount", () => late.promise);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const failed = expect(f.drain(performance.now() + 19000)).rejects.toThrow("OFFICE_FOLDER_DRAIN_UNANSWERED");
+		f.send({ t: "ended" });
+		await vi.advanceTimersByTimeAsync(19000);
+		await failed;
+		expect(f.logged).toEqual([`office-folder: drain ${name}: no final answer by the drain's deadline`]);
+		late.resolve({ answer: "saved", report, unmounted: true });
+		await settle();
+		expect(f.folder.status).toBe("released");
+		expect(f.closed).toHaveLength(1);
+		await expect(f.release()).resolves.toEqual({ released: true, final: true });
+	});
+
+	it("asks a mount's drop again each second while a drain waits for it", async () => {
+		const f = fixture();
+		f.answer("mount", { answer: "failed" });
+		f.answer("drop", { answer: "failed" }, { answer: "failed" }, { answer: "dropped" });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		await expect(f.start()).resolves.toEqual({ note: START_UNMOUNTED });
+		await settle();
+		expect(f.ops()).toEqual(["mount", "drop"]);
+		const draining = f.drain(performance.now() + 19000);
+		await settle();
+		expect(f.ops()).toEqual(["mount", "drop", "drop"]);
+		expect((f.options[2] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(19000);
+		await vi.advanceTimersByTimeAsync(1000);
+		await draining;
+		expect(f.ops()).toEqual(["mount", "drop", "drop", "drop"]);
+		expect(f.closed).toHaveLength(1);
+	});
+
+	it("waits for no command that made no mount, nor for another screen's", async () => {
+		const f = fixture();
+		await f.drain();
+		const controller = new AbortController();
+		controller.abort(new Error("caller stopped"));
+		await expect(f.start(undefined, controller.signal)).resolves.toEqual({ note: START_FAILED });
+		await f.drain();
+		const g = await running();
+		await g.folders.drain(computerId(51), new AbortController().signal, performance.now() + 19000);
+		expect(g.ops()).toEqual(["mount"]);
+		expect(g.logged).toEqual([]);
 	});
 });

@@ -68,8 +68,9 @@ rewrites the panel configuration in the screen state on every start: a single
 opaque dark `xfce4-panel` along the bottom edge (full width, 80 px, 64 px
 icons) holding, centred between two expanding gaps, exactly three launchers —
 Browser (`/usr/local/bin/qorpera-screen-browser`), Files (`thunar` in the
-workbench) and Terminal (`xfce4-terminal` running Bash in the workbench) — the
-date at the left and an `HH:MM` clock at the right (equal widths, so the icons
+company folder at `/company`) and Terminal (`xfce4-terminal` running Bash
+there; without the folder both open in the desktop's home, never in the
+workbench) — the date at the left and an `HH:MM` clock at the right (equal widths, so the icons
 sit on the centre line). There is no top bar and no window list:
 the dock shows what is open, and the browser opens maximised. The image must
 install `xfce4-terminal`, `thunar` and `tzdata`; no ambient/raw-NAS launch
@@ -594,10 +595,10 @@ authorization and waits for browser shutdown before acknowledging takeover.
 `CompanyComputerGuestAutomation` adapts Playwright and the image's `xdotool` and
 `scrot`. Arbitrary shell and screenshot execution use
 `CompanyComputerLinuxCommands` through `CompanyComputerGuestCommands`, composed
-with the desktop and physical supervisor lifetimes. Agent commands receive only an assigned display and the
-noncanonical workbench. Canonical Company File reads/writes must use the
-governed projection/gateway, never the historical direct NAS `dataset/live`
-route. Screenshot publishing uses the existing immutable asset boundary.
+with the desktop and physical supervisor lifetimes. Agent commands receive only an assigned display and start
+in the desktop's home, never in the workbench (F3 4f-1b). Company File work
+happens in the company folder at `/company` (F3 4d), never through the
+historical direct NAS `dataset/live` route. Screenshot publishing uses the existing immutable asset boundary.
 Page captures preserve their actual viewport dimensions within 1920×1200;
 desktop captures must match the full fixed display. Receipts identify the
 surface, width and height so page pixels are not treated as desktop coordinates.

@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ALL_STARTED, describePlan, planChanged, planScript, splitPlan } from "./run-on-node-plan.mjs";
+import { ALL_STARTED, describePlan, planChanged, planScript, STOP, splitPlan } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
 	machineLabel,
@@ -41,16 +41,20 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
          --machine NAME             run on this machine only (node02, node01)
-         --front                    wait at the front of the CPU lane's queue, ahead of every run without it
-                                    (pr-loop's batch runs, which test every approved head at once)
+         --front                    wait at the front of the CPU lane's queue, ahead of every run without it, and
+                                    take the slot kept for such runs when it is free (pr-loop's batch runs,
+                                    which test every approved head at once)
          --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
                                     first and alone (default: one step at a time). With --front the run takes
-                                    up to 3 slots as they free (one such run per machine); otherwise it keeps
-                                    to its one slot's cores
+                                    up to 3 slots as they free (one such run per machine), each only while the
+                                    machine has 2 GiB available; otherwise it keeps to its one slot's cores
          --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own on
                                     its own machine, all at once (N at most the machines' count). One exit code, status
                                     and record: the run passes only if every part passed. With one machine open, or
                                     --machine, one part
+         --fail-fast                changed: stop at the first failed step: no step starts after it, the steps running
+                                    side by side end, and so do the other parts' (pr-loop's batch runs, which are
+                                    bisected when they fail). Without --cores, the shortest steps first
          --tree NAME               copy against the machine's shared base copy NAME, not this checkout's own,
                                     comparing file contents (for checkouts made fresh per run, such as
                                     pr-loop's merged trees)
@@ -61,7 +65,8 @@ Machines: node02 (tester@10.201.0.2 via company41-node-02), node01 (tester@10.20
 A run asks each how many runs it holds and takes the one with the most free slots (ties: this order). If that
 machine fails before the suite starts (unreachable, copy failed), the run moves to the next one.
 hosted-db -- --only <tests> takes the quick lane: one slot and queue of its own, so it never waits behind long runs.
-A --front run takes the machine with the fewest runs ahead of it: those in its slots and other --front runs.
+Of the CPU lane's 5 slots, other runs take 4: the fifth is kept for --front runs. A --front run takes the machine
+with the fewest runs ahead of it: those in its slots and other --front runs.
 
 A named suite run on a clean, pushed commit posts its result as the commit status qorpera-ci/<suite>
 (pending while it runs), so the PR shows it as a check. Uncommitted changes or ad-hoc commands post none.
@@ -112,14 +117,24 @@ export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).p
  * (about 55% on average) on node01 over a minute, iowait at most 4%, ~11.5 GiB available. A fifth run keeps
  * 2 workers each. Later runs wait in arrival order. */
 export const CPU_SLOTS = 5;
+/** The CPU lane's last KEPT_SLOTS slots are kept for --front runs, which try them first; every other run takes one of
+ * the slots before them. pr-loop's batch then starts at once and grows as other slots free: in proof run
+ * 20261016T144011 one of its parts waited 587 s for a slot on a full machine. The coordinator's decision of 16 Oct.
+ * guest-setup.sh makes the kept slots' lock files root's and read-only, so a client from before the change (which opens
+ * a slot's file for writing) skips them too; this one opens a slot's file for reading where it can. */
+export const KEPT_SLOTS = 1;
+/** A --front --cores run takes another slot (growScript) only while its machine has at least this much memory available
+ * (MiB, MemAvailable): in proof run 20261016T144011 five busy runs left node01 1264 MiB. The coordinator's decision of
+ * 16 Oct. */
+export const GROW_MEMORY_MIB = 2048;
 /** A hosted-db run narrowed with --only (a few SQL tests, about 15 s of work) takes one of QUICK_SLOTS slots of
  * its own, with its own arrival-ordered queue: on 14 Oct such runs waited 5-20 minutes behind the CPU slots'
  * 20-minute changed runs. */
 export const QUICK_SLOTS = 1;
-/** Each lane's slot count, slot lock files and queue directory under LOCKS. */
+/** Each lane's slot count, how many of them are kept for --front runs, slot lock files and queue directory under LOCKS. */
 const LANES = {
-	cpu: { name: "CPU lane", slots: CPU_SLOTS, slot: "qorpera-test-machine-slot", queue: "qorpera-test-machine-queue" },
-	quick: { name: "quick lane", slots: QUICK_SLOTS, slot: "qorpera-test-machine-quick-slot", queue: "qorpera-test-machine-quick-queue" },
+	cpu: { name: "CPU lane", slots: CPU_SLOTS, kept: KEPT_SLOTS, slot: "qorpera-test-machine-slot", queue: "qorpera-test-machine-queue" },
+	quick: { name: "quick lane", slots: QUICK_SLOTS, kept: 0, slot: "qorpera-test-machine-quick-slot", queue: "qorpera-test-machine-quick-queue" },
 };
 /** The start of a --front run's queue ticket name. pr-loop's batch run tests every approved head in one `changed`,
  * so its wait delays every one of them: on 15 Oct the CPU lane's queue wait had a median of 14 minutes. */
@@ -152,6 +167,7 @@ export function parseArgs(argv) {
 		front: false,
 		cores: null,
 		parts: null,
+		failFast: false,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -166,6 +182,7 @@ export function parseArgs(argv) {
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
 		else if (flag === "--front") options.front = true;
+		else if (flag === "--fail-fast") options.failFast = true;
 		else if (["--env", "--record", "--base", "--machine", "--tree", "--cores", "--parts"].includes(flag)) {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
@@ -205,6 +222,7 @@ export function parseArgs(argv) {
 	let extra = [];
 	if (options.cores && rest[0] !== "changed") throw new Error("--cores is for changed");
 	if (options.parts && rest[0] !== "changed") throw new Error("--parts is for changed");
+	if (options.failFast && rest[0] !== "changed") throw new Error("--fail-fast is for changed");
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -356,13 +374,15 @@ export function runCommandLine({ command, env = [], sudo = false, cores = null }
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
  * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
- * for the CPU lane's; a `front` run waits ahead of every run without it. A `cores` run (changed --cores) tells its
+ * for the CPU lane's; a `front` run waits ahead of every run without it and tries the kept slots (KEPT_SLOTS) first,
+ * which no other run takes. A `cores` run (changed --cores) tells its
  * steps how many cores its slots give it in its cores file; a `front` one takes up to WIDE_SLOTS slots (growScript).
  * Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
 export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const lane = quick ? LANES.quick : LANES.cpu;
 	const queue = `${LOCKS}/${lane.queue}`;
+	const slots = front ? lane.slots : lane.slots - lane.kept;
 	const inner = [
 		`cd ${runDir} || exit 91`,
 		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
@@ -389,7 +409,8 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		// Arrival-ordered queue for the lane's slots: a ticket per waiting run, its name sorting by arrival.
 		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
 		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
-		// free slot. The slot lock stays on fd 9 until this session ends.
+		// free slot: a front run the kept ones first, any other run only those before them. The slot lock stays
+		// on fd 9 until this session ends; it is opened for reading where it can be (a kept slot's file is root's).
 		`mkdir -p ${queue}`,
 		// Only a probe or another run's cleanup can hold this new ticket, and only for an instant: wait it out.
 		// Other tickets' names start with the time in nanoseconds (1...), so a front run's 0- sorts ahead of all of
@@ -403,13 +424,13 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock 7; }',
 		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
 		'\tif [ "$position" = 1 ]; then',
-		`\t\tfor candidate in $(seq 1 ${lane.slots}); do`,
-		`\t\t\t{ exec 9>"${LOCKS}/${lane.slot}$candidate.lock"; } 2>/dev/null || continue`,
+		`\t\tfor candidate in $(seq ${front ? `${lane.slots} -1 1` : `1 ${slots}`}); do`,
+		`\t\t\tlock="${LOCKS}/${lane.slot}$candidate.lock"; { exec 9<"$lock" || exec 9>"$lock"; } 2>/dev/null || continue`,
 		'\t\t\tif flock -n 9; then slot=$candidate; break; fi',
 		"\t\tdone",
 		"\tfi",
 		'\tif [ -z "$slot" ]; then',
-		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${lane.slots} run${lane.slots === 1 ? "" : "s"} at a time), queue position $position" && shown=$position`,
+		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${slots} run${slots === 1 ? "" : "s"} at a time${front || !lane.kept ? "" : `, ${lane.kept} more slot${lane.kept === 1 ? "" : "s"} kept for --front runs`}), queue position $position" && shown=$position`,
 		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
 		"\t\tsleep 2",
 		"\tfi",
@@ -460,30 +481,40 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 /** The bash function `grow` of a --front --cores run: it takes up to `$want` of the CPU lane's slots in all, the
  * session's first included, and keeps `$cores_file` at the cores they give (`$per` each). It waits like a queued run,
  * with a front ticket of its own (fd 7) named by the time it starts, so --front runs that came earlier go first and
- * every other run after, and it drops dead tickets as they do. It stops waiting once every step has started
- * (`allStarted`), and keeps the slots it took until its stdin ends: run as `exec 4> >(grow)`, that pipe ends with the
- * session's last process, so no slot outlives the run. */
-export function growScript({ locks = LOCKS, allStarted }) {
+ * every other run after, and it drops dead tickets as they do. It tries the kept slots first, as the session did, and
+ * takes one slot a turn. While the machine has less than GROW_MEMORY_MIB available (`meminfo`, read before each slot)
+ * it takes none and leaves the queue, so the runs
+ * behind it need not wait for a slot it would not take; it rejoins under the same name. It stops waiting once every step
+ * has started (`allStarted`), and keeps the slots it took until its stdin ends: run as `exec 4> >(grow)`, that pipe ends
+ * with the session's last process, so no slot outlives the run. */
+export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo" }) {
 	const queue = `${locks}/${LANES.cpu.queue}`;
 	return [
 		"grow() {",
 		// The session's own locks stay the session's: the wide lock (fd 6), the runner user (fd 8) and its first slot (fd 9).
 		"\texec 6>&- 8>&- 9>&-; umask 022",
-		`\theld=1; more=${queue}/${FRONT}$(date +%s%N)-$$-more; exec 7>"$more"; flock 7; trap 'rm -f "$more" "$cores_file" "$cores_file.tmp"' EXIT`,
+		`\theld=1; low=""; more=${queue}/${FRONT}$(date +%s%N)-$$-more; exec 7>"$more"; flock 7; trap 'rm -f "$more" "$cores_file" "$cores_file.tmp"' EXIT`,
 		`\twhile [ "$held" -lt "$want" ] && [ ! -e ${shellQuote(allStarted)} ]; do`,
-		`\t\tfor t in ${queue}/*; do [ "$t" != "$more" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
-		'\t\t[ -e "$more" ] || { exec 7>"$more"; flock 7; }',
-		`\t\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$more")" | cut -d: -f1)`,
-		'\t\tif [ "$position" = 1 ]; then',
-		`\t\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
+		`\t\tavailable=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' ${shellQuote(meminfo)} 2>/dev/null)`,
+		`\t\tif [ "\${available:-0}" -lt ${GROW_MEMORY_MIB} ]; then`,
+		`\t\t\t[ -n "$low" ] || { rm -f "$more"; exec 7>&-; low=1; echo "== run-on-node: \${available:-no} MiB available, under ${GROW_MEMORY_MIB}: no more slots until there is more"; }`,
+		"\t\telse",
+		'\t\t\t[ -z "$low" ] || { low=""; echo "== run-on-node: $available MiB available again: waiting for more slots"; }',
+		`\t\t\tfor t in ${queue}/*; do [ "$t" != "$more" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
+		'\t\t\t[ -e "$more" ] || { exec 7>"$more"; flock 7; }',
+		`\t\t\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$more")" | cut -d: -f1)`,
+		'\t\t\tif [ "$position" = 1 ]; then',
+		`\t\t\t\tfor candidate in $(seq ${CPU_SLOTS} -1 1); do`,
 		// A new descriptor cannot lock the session's own slot either: flock locks conflict between open files.
-		`\t\t\t\t{ exec {fd}>"${locks}/${LANES.cpu.slot}$candidate.lock"; } 2>/dev/null || continue`,
-		'\t\t\t\tif flock -n "$fd"; then',
-		'\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
-		'\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
-		'\t\t\t\t\t[ "$held" -lt "$want" ] || break',
-		"\t\t\t\telse exec {fd}>&-; fi",
-		"\t\t\tdone",
+		`\t\t\t\t\tlock="${locks}/${LANES.cpu.slot}$candidate.lock"; { exec {fd}<"$lock" || exec {fd}>"$lock"; } 2>/dev/null || continue`,
+		'\t\t\t\t\tif flock -n "$fd"; then',
+		'\t\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
+		'\t\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
+		// One slot a turn: the memory is read again before the next.
+		"\t\t\t\t\t\tbreak",
+		"\t\t\t\t\telse exec {fd}>&-; fi",
+		"\t\t\t\tdone",
+		"\t\t\tfi",
 		"\t\tfi",
 		// The wait ends early when stdin does (read's status 1, a timeout's is over 128): the session is over.
 		'\t\t[ "$held" -lt "$want" ] && { read -r -t 2 _; [ $? -gt 128 ] || return 0; }',
@@ -538,19 +569,23 @@ export function probeScript({ locks, closed, setUp, arriving }) {
 	return [
 		`busy=0; waiting=0; quick_busy=0; quick_waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
 		...count(LANES.cpu, "busy", "waiting"),
+		// The CPU lane's slots kept for front runs that runs hold, counted in `busy` too.
+		`kept_busy=0; for i in $(seq ${CPU_SLOTS - KEPT_SLOTS + 1} ${CPU_SLOTS}); do { flock -n 5 || kept_busy=$((kept_busy + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/${LANES.cpu.slot}`)}"$i.lock"; done`,
 		...count(LANES.quick, "quick_busy", "quick_waiting"),
 		// The CPU lane's waiting front runs, counted in `waiting` too. With none, the unmatched pattern opens no file.
 		`front_waiting=0; for t in ${shellQuote(`${locks}/${LANES.cpu.queue}/${FRONT}`)}*; do { flock -n 5 || front_waiting=$((front_waiting + 1)); } 2>/dev/null 5<"$t"; done`,
 		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
-		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting kept_busy=$kept_busy closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
 	].join("\n");
 }
 
 /** Free slots in the run's lane after running and queued runs, and in the CPU lane after arriving ones too;
- * negative when runs wait. A front run counts only running runs and the front runs it would queue behind. */
+ * negative when runs wait. A front run counts every slot, only running runs and the front runs it would queue behind;
+ * any other CPU run only the slots before the kept ones. */
 function free(probe, quick, front = false) {
 	if (quick) return QUICK_SLOTS - probe.quickBusy - probe.quickWaiting;
-	return front ? CPU_SLOTS - probe.busy - probe.frontWaiting : CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
+	if (front) return CPU_SLOTS - probe.busy - probe.frontWaiting;
+	return CPU_SLOTS - KEPT_SLOTS - (probe.busy - (probe.keptBusy ?? 0)) - probe.waiting - probe.arriving;
 }
 
 /** Open to the automatic choice: answered, not closed by an operator, and set up. */
@@ -634,7 +669,7 @@ export function describeProbes(probes) {
 	return probes
 		.map((probe) =>
 			probe.unreachable === undefined
-				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}`
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy${probe.keptBusy ? ` (${probe.keptBusy} kept for --front runs)` : ""}, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}`
 				: `${probe.name} unreachable (${probe.unreachable})`,
 		)
 		.join("; ");
@@ -704,7 +739,7 @@ function probeOverSsh(machine, key, signal) {
 		child.on("error", (error) => unreachable(error.message));
 		child.on("close", (code) => {
 			const answer = parseStatus(out);
-			const counts = ["busy", "waiting", "quick_busy", "quick_waiting", "arriving", "front_waiting"].map((name) => answer[name] ?? "");
+			const counts = ["busy", "waiting", "quick_busy", "quick_waiting", "arriving", "front_waiting", "kept_busy"].map((name) => answer[name] ?? "");
 			if (code === 0 && counts.every((count) => /^\d+$/.test(count)))
 				settle({
 					name: machine.name,
@@ -714,6 +749,7 @@ function probeOverSsh(machine, key, signal) {
 					quickWaiting: Number(answer.quick_waiting),
 					arriving: Number(answer.arriving),
 					frontWaiting: Number(answer.front_waiting),
+					keptBusy: Number(answer.kept_busy),
 					closed: answer.closed === "1",
 					setUp: answer.setup === "1",
 					cpus: Number(answer.cpus) || null,
@@ -792,15 +828,17 @@ const WORST_FIRST = ["setup-failed", "unknown", "install-failed", "failed"];
  * `machine` every part's machine (node02+node01). The run passes only if every part passed. Otherwise the part that
  * went worst (`WORST_FIRST`, the first such part on a tie) gives the run its result and its exit code (1 for an exit of
  * 0), whatever the order of the parts, so a failure one part ran never stands for a part that ran no steps, and a
- * machine that died posts the harness's error. A failed run's failed steps are every part's, in plan order (`order`);
- * none when a failed part names none, as a single run cut off mid-way shows. */
+ * machine that died posts the harness's error. A failed run's failed steps are every part's, in plan order (`order`),
+ * and so are the steps --fail-fast stopped; none when a failed part names neither, as a single run cut off mid-way shows. */
 export function joinRecords(records, { order, ...common }) {
 	const notPassed = records.filter((record) => record.result !== "passed");
 	const rank = (record) => WORST_FIRST.indexOf(record.result);
 	const worst = notPassed.reduce((found, record) => (found && rank(found) <= rank(record) ? found : record), null);
 	const result = worst ? worst.result : "passed";
-	const failedSteps = [...new Set(records.flatMap((record) => record.failedSteps ?? []))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-	const named = result === "failed" && notPassed.every((record) => record.failedSteps?.length);
+	const every = (key) => [...new Set(records.flatMap((record) => record[key] ?? []))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+	const failedSteps = every("failedSteps");
+	const stoppedSteps = every("stoppedSteps");
+	const named = result === "failed" && notPassed.every((record) => record.failedSteps?.length || record.stoppedSteps?.length);
 	return {
 		schema: "qorpera.run-on-node/v1",
 		machine: records.map((record) => record.machine).join("+"),
@@ -810,6 +848,7 @@ export function joinRecords(records, { order, ...common }) {
 		exitCode: worst ? worst.exitCode || 1 : 0,
 		result,
 		...(named ? { failedSteps } : {}),
+		...(named && stoppedSteps.length ? { stoppedSteps } : {}),
 		parts: records,
 	};
 }
@@ -878,7 +917,7 @@ async function main() {
 			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
-		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores, stepWorkers })];
+		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores, stepWorkers, failFast: options.failFast })];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
@@ -916,7 +955,7 @@ async function main() {
 			? split.map((group, k) => ({
 					run: `${run}-p${k + 1}`,
 					order: [...ranked.slice(k), ...ranked.slice(0, k)],
-					command: ["bash", "-c", planScript(group.steps, { cores: options.cores, stepWorkers })],
+					command: ["bash", "-c", planScript(group.steps, { cores: options.cores, stepWorkers, failFast: options.failFast })],
 					build: build ?? group.build,
 					changed: { ...changedPlan, steps: group.steps.map((step) => step.name) },
 				}))
@@ -949,8 +988,9 @@ async function main() {
 	}
 	if (untracked.length) console.error(`== run-on-node: copying ${untracked.length} untracked file(s) too`);
 	console.error(`== run-on-node: ${describeProbes(probes)}`);
+	const width = options.quick ? QUICK_SLOTS : options.front ? CPU_SLOTS : CPU_SLOTS - KEPT_SLOTS;
 	const pending = (machines) =>
-		`running on ${machines.map((machine) => machineLabel(machine.name)).join(" + ")} (waits while ${CPU_SLOTS} runs are busy)`;
+		`running on ${machines.map((machine) => machineLabel(machine.name)).join(" + ")} (waits while ${width} run${width === 1 ? " is" : "s are"} busy)`;
 
 	try {
 		if (!ranked.length) throw new Error(`No open test machine: ${describeProbes(probes)}`);
@@ -1048,8 +1088,8 @@ async function main() {
 			github.abandon("the working tree changed while it was copied: this run is not the commit's");
 
 		if (parts.length === 1) return finish(await runPart(parts[0], started));
-		// Every part runs to its end whatever the others do. The run passes only when every part passed: a part whose
-		// machine died or that was cut off makes the whole run fail (joinRecords).
+		// Every part runs to its end whatever the others do, unless --fail-fast stops them (runPart). The run passes only
+		// when every part passed: a part whose machine died or that was cut off makes the whole run fail (joinRecords).
 		const outcomes = await Promise.allSettled(parts.map((part) => runPart(part, started)));
 		const rejected = outcomes.find((outcome) => outcome.status === "rejected");
 		if (rejected) throw rejected.reason;
@@ -1064,6 +1104,7 @@ async function main() {
 					lane: "cpu",
 					...(options.front ? { front: true } : {}),
 					...(options.cores ? { cores: options.cores } : {}),
+					...(options.failFast ? { failFast: true } : {}),
 					changed: changedPlan,
 					startedAt: new Date(started).toISOString(),
 					elapsedSeconds: (Date.now() - started) / 1000,
@@ -1109,6 +1150,19 @@ async function main() {
 			parts.length > 1,
 		);
 		const finished = Date.now();
+		part.ended = true;
+		// --fail-fast: a part that did not pass stops the others still running; their steps end and no more start (planScript).
+		if (options.failFast && code !== 0)
+			for (const [k, other] of parts.entries()) {
+				if (other.ended) continue;
+				console.error(`== run-on-node: part ${parts.indexOf(part) + 1} failed: stopping part ${k + 1} (--fail-fast)`);
+				try {
+					// A part whose directory is gone has ended.
+					sshCapture(other.t, `sudo -n touch ${other.runDir}/${STOP} 2>/dev/null || [ ! -d ${other.runDir} ]`);
+				} catch (error) {
+					console.error(`run-on-node: could not stop part ${k + 1}: ${error.message}`);
+				}
+			}
 		let status = {};
 		try {
 			status = parseStatus(sshCapture(t, `cat ${part.runDir}/.run-on-node-status 2>/dev/null || true`));
@@ -1148,6 +1202,7 @@ async function main() {
 			lane: options.quick ? "quick" : "cpu",
 			...(options.front ? { front: true } : {}),
 			...(options.cores ? { cores: options.cores } : {}),
+			...(options.failFast ? { failFast: true } : {}),
 			cpuSlot: status.slot ? Number(status.slot) : null,
 			queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
 			vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
@@ -1175,6 +1230,7 @@ async function main() {
 							? "unknown"
 							: "setup-failed",
 			...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
+			...(status.stopped_steps ? { stoppedSteps: status.stopped_steps.split(",").filter(Boolean) } : {}),
 		};
 	}
 }

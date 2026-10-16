@@ -35,6 +35,8 @@ const layout = {
 	screenStateRoot: `${adopted}/screens`,
 	browserProfilesRoot: `${adopted}/profiles`,
 };
+// A shell command starts in its home (F3 4f-1b); the work the agents share here stays in the workbench.
+const inWorkbench = (command: string) => `cd ${layout.workbenchRoot} && ${command}`;
 async function mount(path: string) {
 	const fd = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
 	try {
@@ -333,14 +335,17 @@ try {
 	);
 	const written = await first.perform({
 		kind: "shell",
-		command: "printf shared-state > shared-state.txt",
+		command: inWorkbench("printf shared-state > shared-state.txt"),
 		timeoutMs: 1000,
 	});
 	assert.equal(written.kind, "json");
-	assert.deepEqual(await second.perform({ kind: "shell", command: "cat shared-state.txt", timeoutMs: 1000 }), {
-		kind: "json",
-		value: { code: 0, stdout: "shared-state", stderr: "" },
-	});
+	assert.deepEqual(
+		await second.perform({ kind: "shell", command: inWorkbench("cat shared-state.txt"), timeoutMs: 1000 }),
+		{
+			kind: "json",
+			value: { code: 0, stdout: "shared-state", stderr: "" },
+		},
+	);
 	await first.perform({ kind: "browser", action: "list_tabs" });
 	await first.perform({ kind: "screenshot", surface: "browser" });
 	assert.ok(png);
@@ -376,12 +381,12 @@ try {
 	for (const result of await Promise.all([
 		offlineFirst.perform({
 			kind: "shell",
-			command: "printf 'item,total\\na,12\\nb,8\\n' > totals-a.csv",
+			command: inWorkbench("printf 'item,total\\na,12\\nb,8\\n' > totals-a.csv"),
 			timeoutMs: 2000,
 		}),
 		offlineSecond.perform({
 			kind: "shell",
-			command: "printf 'item,total\\nc,13\\nd,7\\n' > totals-b.csv",
+			command: inWorkbench("printf 'item,total\\nc,13\\nd,7\\n' > totals-b.csv"),
 			timeoutMs: 2000,
 		}),
 	]))
@@ -389,16 +394,20 @@ try {
 	assert.deepEqual(
 		await offlineFirst.perform({
 			kind: "shell",
-			command:
+			command: inWorkbench(
 				'set -e; total=0; for report_part in totals-a.csv totals-b.csv; do { IFS=, read -r item amount; while IFS=, read -r item amount; do total=$((total + amount)); done; } < "$report_part"; done; printf \'Total: %d\\n\' "$total" > report.txt; cat report.txt',
+			),
 			timeoutMs: 2000,
 		}),
 		{ kind: "json", value: { code: 0, stdout: "Total: 40\n", stderr: "" } },
 	);
-	assert.deepEqual(await offlineSecond.perform({ kind: "shell", command: "cat report.txt", timeoutMs: 2000 }), {
-		kind: "json",
-		value: { code: 0, stdout: "Total: 40\n", stderr: "" },
-	});
+	assert.deepEqual(
+		await offlineSecond.perform({ kind: "shell", command: inWorkbench("cat report.txt"), timeoutMs: 2000 }),
+		{
+			kind: "json",
+			value: { code: 0, stdout: "Total: 40\n", stderr: "" },
+		},
+	);
 	await offlineFirst.close();
 	await offlineSecond.close();
 	await privacy.transition(transition("entering"), signal);
@@ -447,10 +456,13 @@ try {
 	assert.deepEqual(await readdir("/run/office-browser"), []);
 	epoch++;
 	const resumed = await session(0);
-	assert.deepEqual(await resumed.perform({ kind: "shell", command: "cat shared-state.txt", timeoutMs: 1000 }), {
-		kind: "json",
-		value: { code: 0, stdout: "shared-state", stderr: "" },
-	});
+	assert.deepEqual(
+		await resumed.perform({ kind: "shell", command: inWorkbench("cat shared-state.txt"), timeoutMs: 1000 }),
+		{
+			kind: "json",
+			value: { code: 0, stdout: "shared-state", stderr: "" },
+		},
+	);
 	await resumed.close();
 	assert.equal((await readdir("/run/office-screens")).length, 1);
 	await guest.close();
@@ -470,10 +482,13 @@ try {
 	guest = await createGuest();
 	await guest.privacy.fence(challenge!, signal);
 	const reconstructed = await session(1);
-	assert.deepEqual(await reconstructed.perform({ kind: "shell", command: "cat report.txt", timeoutMs: 2000 }), {
-		kind: "json",
-		value: { code: 0, stdout: "Total: 40\n", stderr: "" },
-	});
+	assert.deepEqual(
+		await reconstructed.perform({ kind: "shell", command: inWorkbench("cat report.txt"), timeoutMs: 2000 }),
+		{
+			kind: "json",
+			value: { code: 0, stdout: "Total: 40\n", stderr: "" },
+		},
+	);
 	await reconstructed.close();
 	await guest.close();
 	assert.deepEqual(failures, []);

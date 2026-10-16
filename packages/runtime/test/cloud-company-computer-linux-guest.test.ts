@@ -345,6 +345,17 @@ async function fixture(
 			return { schema: "qorpera.folder-view/v1", viewId: computerId(200 + opened), pass: `fixture-pass-${opened}` };
 		}
 		if (method === "qorpera_folder_view_close") return {};
+		if (method === "qorpera_folder_view_commits")
+			return {
+				schema: "qorpera.folder-view-commits/v1",
+				viewId: args.p_view_id,
+				state: "closed",
+				more: false,
+				commits:
+					args.p_after_commit_id === null
+						? [{ commitId: computerId(300), units: [{ path: "docs/a.md", outcome: "saved" }, folderConflict] }]
+						: [],
+			};
 		throw new Error(`Unexpected fixture RPC ${method}`);
 	});
 	const boundary = { assertReady: vi.fn(async () => undefined) };
@@ -528,7 +539,15 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(shells[0].start.mock.calls.map(([input]) => input.network)).toEqual([false, true]);
 		// The reply's deadline goes with the read: a company folder command settles its folder before it.
 		expect(shells[0].result).toHaveBeenCalledWith(
-			expect.objectContaining({ runId: f.run.identity.runId, until: expect.any(Number) }),
+			expect.objectContaining({
+				runId: f.run.identity.runId,
+				receiptId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				until: expect.any(Number),
+			}),
+		);
+		// The read's receipt is its action's own, by which another run would take in a folder command's reads.
+		expect((shells[0].result.mock.calls[0][0] as { receiptId?: string }).receiptId).toBe(
+			shells[0].start.mock.calls[0][0].key,
 		);
 		await session.endpoint.perform(f.operation({ kind: "shell", action: "list" }), f.lease, f.effect());
 		expect(shells[0].list).toHaveBeenCalledWith(f.run.identity.runId);
@@ -548,7 +567,11 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 			f.effect(),
 		);
 		expect(shellLaunchers).toEqual([expect.objectContaining({ company: true })]);
-		expect(shells[0].folder).toEqual({ folders: commandFolders, environmentId: f.binding.environmentId });
+		expect(shells[0].folder).toEqual({
+			folders: commandFolders,
+			environmentId: f.binding.environmentId,
+			screenId: f.binding.screenId,
+		});
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 
@@ -1628,6 +1651,9 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 	});
 });
 
+/** A path the company folder did not take from the fixture's desktop (F3 4f-2b). */
+const folderConflict = { path: "docs/b.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" };
+
 /** The folder helper as the screen's mount asks it: each request takes the next answer queued for its op. */
 function folderHelper() {
 	const asked: CompanyComputerFolderRequest[] = [];
@@ -1704,6 +1730,25 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_close:read",
 		]);
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("reports what the company folder did with the run's desktop changes through its session (F3 4f-2b)", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		await expect(session.folderReport?.("", f.run.signal)).resolves.toEqual({
+			mark: expect.stringMatching(/^[0-9a-f-]{36}:[0-9]+$/),
+			report: { saved: 1, notSaved: [folderConflict] },
+		});
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_folder_view_commits",
+			{ p_view_id: computerId(201), p_pass: "fixture-pass-1", p_after_commit_id: null, p_limit: 64 },
+			expect.any(AbortSignal),
+		);
+		// A guest with no company folder has no report to give.
+		const bare = await fixture();
+		expect((await bare.create()).folderReport).toBeUndefined();
 	});
 	it("unmounts a mount made after its run's open was cancelled, a minute later with no desktop", async () => {
 		const h = folderHelper();
@@ -1828,6 +1873,30 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			"qorpera_folder_view_close:read",
 		]);
 		expect(h.ops()).toEqual(["mount", "unmount"]);
+	});
+	it("answers a drain only once the mounts of the screen's shell commands went, and fails with one still there", async () => {
+		const left = computerDeferred<void>();
+		const drain = vi.fn(() => left.promise);
+		const commandFolders = { drain } as unknown as CompanyComputerCommandFolders;
+		const f = await fixture({ commandFolders });
+		const signal = new AbortController().signal;
+		const until = performance.now() + 19000;
+		let drained = false;
+		const stopping = f.guest.stopResources(f.binding, signal, { until }).then(() => {
+			drained = true;
+		});
+		await vi.waitFor(() => expect(drain).toHaveBeenCalledWith(f.binding.screenId, signal, until));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(drained).toBe(false);
+		left.resolve();
+		await stopping;
+		drain.mockRejectedValueOnce(new Error("OFFICE_FOLDER_DRAIN_UNANSWERED"));
+		await expect(f.guest.stopResources(f.binding, signal, { until })).rejects.toThrow(
+			"OFFICE_FOLDER_DRAIN_UNANSWERED",
+		);
+		// Any other stop leaves them to their own final boundaries.
+		await f.guest.stopResources(f.binding, signal);
+		expect(drain).toHaveBeenCalledTimes(2);
 	});
 	it("holds a desktop screenshot back until the company folder released the desktop's reads, and says why", async () => {
 		const h = folderHelper();

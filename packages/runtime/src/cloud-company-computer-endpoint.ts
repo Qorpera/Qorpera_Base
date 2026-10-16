@@ -154,9 +154,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				resources: this.#resources,
 			}) ||
 			(action.kind !== "screen" &&
-				!this.capabilities.includes(
-					action.kind === "screenshot" ? action.surface : action.kind === "transfer" ? "shell" : action.kind,
-				))
+				!this.capabilities.includes(action.kind === "screenshot" ? action.surface : action.kind))
 		) {
 			throw new Error("COMPUTER_OPERATION_MISMATCH");
 		}
@@ -273,7 +271,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		if (givenBack) return result;
 		// Outside the gate and after the resource drained: waiting stops nothing.
 		return this.#automation.settle
-			? this.#automation.settle(action, result, context.signal, replyBy, identity.runId)
+			? this.#automation.settle(action, result, context.signal, replyBy, identity.runId, receipt.receiptId)
 			: result;
 	}
 }

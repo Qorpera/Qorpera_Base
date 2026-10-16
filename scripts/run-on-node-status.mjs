@@ -54,8 +54,11 @@ export function statusDescription(record) {
 	let text;
 	if (record.result === "passed")
 		text = record.changed ? `passed ${where}: ${record.changed.steps.length} steps${who}` : `passed ${where}${who}`;
-	else if (record.result === "failed")
-		text = record.failedSteps?.length ? `failed ${where}: ${record.failedSteps.join(", ")}${who}` : `failed ${where}${who}`;
+	else if (record.result === "failed") {
+		// The steps --fail-fast stopped had no result: only their number.
+		const named = [...(record.failedSteps ?? []), ...(record.stoppedSteps?.length ? [`${record.stoppedSteps.length} stopped`] : [])];
+		text = named.length ? `failed ${where}: ${named.join(", ")}${who}` : `failed ${where}${who}`;
+	}
 	else if (record.result === "install-failed") text = `failed ${where}: npm ci or the build${who}`;
 	else text = `${record.result} ${where}${who}: the harness, not the suite`;
 	return text.length > 140 ? `${text.slice(0, 139)}…` : text;

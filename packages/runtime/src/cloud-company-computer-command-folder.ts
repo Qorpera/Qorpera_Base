@@ -13,10 +13,14 @@ import {
 	type CompanyComputerFolderRun,
 	type CompanyComputerFolderRunEvent,
 	type CompanyComputerFolderView,
+	companyComputerFolderAnswerLogged,
 	companyComputerFolderName,
 	startCompanyComputerFolderRun,
 } from "./cloud-company-computer-folder-helper-client.ts";
-import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import {
+	companyComputerRegistryRefusal,
+	type HttpCloudCompanyComputerRegistry,
+} from "./cloud-company-computer-registry-http.ts";
 
 /** How long a command's view is asked for while the core does not answer. */
 const OPEN_WAIT_MS = 30000;
@@ -28,9 +32,15 @@ const DROP_WAIT_MS = 60000;
 const FINAL_RETRY_MS = 5000;
 const ENDED_RETRY_MS = 1000;
 const RETRY_CAP_MS = 5 * 60 * 1000;
+/** While a drain waits for the command's mount, its final boundary, drop and end check are asked again after this. */
+const DRAIN_RETRY_MS = 1000;
+/** The least time a drain's boundary is still asked with: the helper takes at least a second. */
+const DRAIN_LAST_ASK_MS = 2000;
 /** What a tool result lists of the paths the company folder did not take. */
 const NOT_SAVED_SHOWN = 20;
 const NOT_SAVED_BYTES = 8 * 1024;
+/** How many actions' take-ins a command remembers: an older one's retry is held back. */
+const INHERITS_KEPT = 256;
 
 /** Why a command does not run in the company folder; the command ends with it. */
 const START_UNMOUNTED = "The company folder could not be mounted for this command; start it again.";
@@ -46,7 +56,12 @@ const HELD_STOPPED =
 const HELD_GONE = "the company folder no longer serves this command, so its output is held back; start it again";
 const HELD_SAVING = "the command's last changes are still being saved; read again";
 const HELD_NOT_TAKEN = "the company folder did not take this command's last changes";
-/** Also the shell's answer to a run that did not start the command. */
+/** Why a command's output is held back from a run that did not start it ("A command that outlived its run"). */
+const HELD_OTHER_AGENT = "this command's output reaches only runs of the agent and member it was started for";
+const HELD_UNREADABLE = "this run can no longer read what this command read";
+const HELD_REREAD = "this command's output changed since this action first read it; read again";
+const HELD_NOT_INHERITED = "the company folder refused this run's take-in of what this command read";
+/** Also the shell's answer to a read that names no run or action. */
 export const COMPANY_COMPUTER_COMMAND_OTHER_RUN = "this command's output reaches only the run that started it";
 
 /** What a command's folder tells its session: the run's output and exit, and `lost` when the helper went before the
@@ -75,6 +90,18 @@ export type CompanyComputerCommandRelease = (
 	readonly moreNotSaved?: number;
 };
 
+/** Whether the command's released output may reach a run that did not start it: that run took in the command's reads. */
+export type CompanyComputerCommandInherit =
+	| { readonly inherited: true }
+	| { readonly inherited: false; readonly heldBack: string };
+
+/** An action's first take-in: how many boundaries had released when it was asked, and whether it answered as a new
+ * take-in (`ours`), as a replay of one the command does not remember (`unknown`), or not yet (`asking`). */
+interface CommandInherit {
+	readonly releases: number;
+	first: "asking" | "ours" | "unknown";
+}
+
 /**
  * `idle`: the command's view and mount are being made, and nothing runs yet. `none`: nothing ran in the folder.
  * `running`: the run request was sent. `ending`: the command ended (or the helper lost it), and its final boundary is
@@ -94,10 +121,13 @@ interface Seams {
 /**
  * Each shell command's mount of the company folder on a company machine (F3 4d, "A command's mount"): its own view
  * and mount, made before it runs; a boundary before its output reaches the run that started it; and, once no process
- * of it is left, the final boundary, asked again on its own until it has a final answer, then the mount goes.
+ * of it is left, the final boundary, asked again on its own until it has a final answer, then the mount goes. A
+ * screen's drain waits for its commands' mounts.
  */
 export class CompanyComputerCommandFolders {
 	readonly #seams: Seams;
+	/** By screen id: the commands whose mount may still be there. */
+	readonly #unsettled = new Map<string, Set<CompanyComputerCommandFolder>>();
 
 	constructor(options: {
 		registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
@@ -118,19 +148,45 @@ export class CompanyComputerCommandFolders {
 		};
 	}
 
-	/** The folder of the command whose start's effect receipt (its shell command id) is `receipt`. */
-	command(receipt: string): CompanyComputerCommandFolder {
-		return new CompanyComputerCommandFolder(this.#seams, receipt);
+	/** The folder of the command whose start's effect receipt (its shell command id) is `receipt`, on the screen
+	 * `screenId`. */
+	command(receipt: string, screenId: string): CompanyComputerCommandFolder {
+		return new CompanyComputerCommandFolder(this.#seams, receipt, (folder, left) => {
+			const folders = this.#unsettled.get(screenId) ?? new Set();
+			this.#unsettled.set(screenId, folders.add(folder));
+			void left.then(() => {
+				folders.delete(folder);
+				if (folders.size === 0 && this.#unsettled.get(screenId) === folders) this.#unsettled.delete(screenId);
+			});
+		});
+	}
+
+	/**
+	 * A drain's boundaries on the screen's command mounts, after its shell closed and before the drain's
+	 * acknowledgement ("Drains and stops"): each command's final boundary has its final answer, the pause's included,
+	 * and its mount goes. A mount still there at `until` (performance.now()) fails the drain; its own final boundary
+	 * goes on, and what it leaves is the stop control's.
+	 */
+	async drain(screenId: string, signal: AbortSignal, until: number): Promise<void> {
+		const folders = [...(this.#unsettled.get(screenId) ?? [])];
+		const left = await Promise.all(folders.map((folder) => folder.drain(signal, until)));
+		if (left.includes(false)) throw new Error("OFFICE_FOLDER_DRAIN_UNANSWERED");
 	}
 }
 
-/** One command's view, mount and run. Every helper request but the run and the end check runs after the one before. */
+/** One command's view, mount and run, and the take-ins of the runs it did not start that read its output. Every
+ * helper request but the run and the end check runs after the one before. */
 export class CompanyComputerCommandFolder {
 	readonly #seams: Seams;
 	readonly #receipt: string;
 	readonly #name: string;
 	#status: CompanyComputerCommandFolderStatus = "idle";
+	#environmentId?: string;
 	#view?: CompanyComputerFolderView;
+	/** How many boundaries released the command's reads: a take-in covers those before it. */
+	#releases = 0;
+	/** By the effect receipt of an action that read the output for another run: its first take-in. */
+	readonly #inherits = new Map<string, CommandInherit>();
 	#run?: CompanyComputerFolderRun;
 	#event: (event: CompanyComputerCommandFolderEvent) => void = () => undefined;
 	/** The helper answered `started`. */
@@ -152,11 +208,28 @@ export class CompanyComputerCommandFolder {
 	/** Settles when the final boundary has its answer. */
 	#done?: Promise<void>;
 	#chain: Promise<unknown> = Promise.resolve();
+	/** Tells the command's screen that its mount is being made; the screen's drain waits until `left` settles. */
+	readonly #screen: (folder: CompanyComputerCommandFolder, left: Promise<void>) => void;
+	/** Settles once nothing of the command is left in the company folder: its mount went, or none was made. */
+	readonly #left: Promise<void>;
+	#leave: () => void = () => undefined;
+	/** A drain's deadline (performance.now()), once a drain waits for the mount. */
+	#drainUntil?: number;
+	/** Each retry's wait, which a drain cuts short. */
+	readonly #waits = new Set<() => void>();
 
-	constructor(seams: Seams, receipt: string) {
+	constructor(
+		seams: Seams,
+		receipt: string,
+		screen: (folder: CompanyComputerCommandFolder, left: Promise<void>) => void = () => undefined,
+	) {
 		this.#seams = seams;
 		this.#receipt = receipt;
 		this.#name = companyComputerFolderName("command", receipt);
+		this.#screen = screen;
+		this.#left = new Promise((resolve) => {
+			this.#leave = resolve;
+		});
 	}
 
 	get status(): CompanyComputerCommandFolderStatus {
@@ -198,7 +271,9 @@ export class CompanyComputerCommandFolder {
 		signal: AbortSignal,
 	): Promise<{ ran: true } | { note: string }> {
 		if (this.#status !== "idle") return { note: START_FAILED };
+		this.#environmentId = input.environmentId;
 		this.#event = event;
+		this.#screen(this, this.#left);
 		let made = false;
 		try {
 			const view = await openCompanyComputerFolderView(
@@ -213,6 +288,7 @@ export class CompanyComputerCommandFolder {
 			);
 			if (!("viewId" in view)) {
 				this.#status = "none";
+				this.#leave();
 				return { note: `The command did not start (${view.message}); start it again.` };
 			}
 			this.#view = view;
@@ -259,6 +335,7 @@ export class CompanyComputerCommandFolder {
 	#none(note: string, made = true): { note: string } {
 		this.#status = "none";
 		if (made) void this.#queue(() => this.#gone(true));
+		else this.#leave();
 		return { note };
 	}
 
@@ -290,7 +367,7 @@ export class CompanyComputerCommandFolder {
 					await this.#queue(() => this.#gone(true));
 					return;
 				}
-				await later(wait);
+				await this.#later(wait);
 			}
 		})().catch(() => undefined);
 	}
@@ -306,6 +383,56 @@ export class CompanyComputerCommandFolder {
 		if (this.#status !== "running") return;
 		this.#status = "ending";
 		this.#done = this.#queue(() => this.#final()).catch(() => undefined);
+	}
+
+	/**
+	 * A drain of the command's screen, after its shell closed ("Drains and stops"): until `until` (performance.now())
+	 * the final boundary, the mount's drop and the end check are asked again each second, and the pause's refusal is a
+	 * final answer, as every other but no answer, QRC01, and a refusal with no reason or the run check's that did not
+	 * close the view; the final answer is logged with the drain.
+	 * Answers whether the mount went by `until`; it is asked as before after that.
+	 */
+	async drain(signal: AbortSignal, until: number): Promise<boolean> {
+		this.#drainUntil = until;
+		for (const wake of [...this.#waits]) wake();
+		if (
+			await within(
+				this.#left.then(() => true),
+				signal,
+				until,
+				false,
+			)
+		)
+			return true;
+		const late = this.#status === "running" || this.#status === "ending" ? "no final answer" : "the mount did not go";
+		this.#seams.log(`office-folder: drain ${this.#name}: ${late} by the drain's deadline`);
+		return false;
+	}
+
+	/** Whether a drain waits for the command's mount now. */
+	#inDrain(): boolean {
+		const until = this.#drainUntil;
+		return until !== undefined && performance.now() < until;
+	}
+
+	/** The drain's deadline while a drain still asks before it. */
+	#draining(): number | undefined {
+		const until = this.#drainUntil;
+		return until !== undefined && until - performance.now() >= DRAIN_LAST_ASK_MS ? until : undefined;
+	}
+
+	/** A retry's wait: a second while a drain asks, and cut short when one begins. Never keeps the service alive. */
+	#later(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			const wake = (): void => {
+				clearTimeout(timer);
+				this.#waits.delete(wake);
+				resolve();
+			};
+			const timer = setTimeout(wake, this.#draining() === undefined ? ms : Math.min(ms, DRAIN_RETRY_MS));
+			timer.unref?.();
+			this.#waits.add(wake);
+		});
 	}
 
 	/** The shell's stop for the command, once its run request was sent. False before that. */
@@ -365,6 +492,77 @@ export class CompanyComputerCommandFolder {
 		}
 	}
 
+	/** The paths not saved that no release showed yet, which come once. */
+	takeReport(): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
+		return this.#takeReport();
+	}
+
+	/** Puts back paths not saved that a release or `takeReport` handed out but no run was shown (another run's take-in
+	 * did not answer `inherited`): in front of those noted since, under the same caps. */
+	restoreReport(report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved">): void {
+		const later = this.#takeReport();
+		for (const item of report.notSaved ?? []) this.#add(item);
+		this.#moreNotSaved += report.moreNotSaved ?? 0;
+		for (const item of later.notSaved ?? []) this.#add(item);
+		this.#moreNotSaved += later.moreNotSaved ?? 0;
+	}
+
+	/**
+	 * Before the command's released output reaches a run that did not start it ("A command that outlived its run"):
+	 * that run takes in the command's view reads, by the action that reads (`receiptId`, its effect receipt). The core
+	 * finds the run from the action, and refuses a run of another agent or member. Output released before this is asked
+	 * may reach the run when it answers `inherited`. A retry of the action replays its first take-in, so it is shown
+	 * only once that one answered here as a new take-in and no boundary released more since. The caller waits until
+	 * `until` (performance.now()); the call goes on after that.
+	 */
+	async inherit(receiptId: string, signal: AbortSignal, until: number): Promise<CompanyComputerCommandInherit> {
+		signal.throwIfAborted();
+		// Nothing ran in the company folder: there is nothing to take in.
+		if (this.#status === "idle" || this.#status === "none" || this.#environmentId === undefined)
+			return { inherited: true };
+		const remaining = Math.floor(until - performance.now());
+		if (remaining < 1) return { inherited: false, heldBack: HELD_UNANSWERED };
+		const releases = this.#releases;
+		const known = this.#inherits.get(receiptId);
+		if (known && (known.first !== "ours" || known.releases !== releases))
+			return { inherited: false, heldBack: HELD_REREAD };
+		const entry: CommandInherit = known ?? { releases, first: "asking" };
+		if (!known) {
+			this.#inherits.set(receiptId, entry);
+			if (this.#inherits.size > INHERITS_KEPT) this.#inherits.delete(this.#inherits.keys().next().value as string);
+		}
+		// A first take-in with no valid answer is forgotten: a retry asks as a new one.
+		const forget = () => {
+			if (entry.first === "asking" && this.#inherits.get(receiptId) === entry) this.#inherits.delete(receiptId);
+		};
+		const work = this.#seams.registry
+			.call(
+				"qorpera_folder_office_inherit_command_reads",
+				{ p_environment_id: this.#environmentId, p_shell_command_id: this.#receipt, p_receipt_id: receiptId },
+				AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
+			)
+			.then(
+				(answer): CompanyComputerCommandInherit => {
+					const { schema, inheritId, replay } = (answer ?? {}) as Record<string, unknown>;
+					if (schema !== "qorpera.folder-inherit/v1" || inheritId !== receiptId || typeof replay !== "boolean") {
+						forget();
+						return { inherited: false, heldBack: HELD_NOT_INHERITED };
+					}
+					// The first answer decides, even past the caller's deadline. A replay of a take-in this command does not
+					// remember covered what is unknown, so neither it nor a retry is shown.
+					if (entry.first === "asking") entry.first = replay ? "unknown" : "ours";
+					return entry.first === "ours" ? { inherited: true } : { inherited: false, heldBack: HELD_REREAD };
+				},
+				(error: unknown): CompanyComputerCommandInherit => {
+					forget();
+					signal.throwIfAborted();
+					const refusal = companyComputerRegistryRefusal(error);
+					return { inherited: false, heldBack: refusal ? notInherited(refusal.reason) : HELD_UNANSWERED };
+				},
+			);
+		return within(work, signal, until, { inherited: false, heldBack: HELD_UNANSWERED } as const);
+	}
+
 	async #boundary(signal: AbortSignal, until: number): Promise<CompanyComputerCommandRelease> {
 		const timeoutMs = Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MS, Math.floor(until - performance.now()) - 1000);
 		if (timeoutMs < 1000) return { released: false, heldBack: HELD_UNANSWERED };
@@ -381,8 +579,10 @@ export class CompanyComputerCommandFolder {
 		if (answer && "report" in answer && answer.report) this.#note(answer.report, out);
 		signal.throwIfAborted();
 		// Saved, or refused only for some paths (refused or conflicting saves): the reads were released.
-		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined))
+		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined)) {
+			this.#releases++;
 			return { released: true };
+		}
 		if (answer?.answer === "unknown") {
 			this.#hold(HELD_GONE);
 			this.#run?.stop();
@@ -399,19 +599,30 @@ export class CompanyComputerCommandFolder {
 	}
 
 	/** The final boundary: asked again on its own until it has a final answer, then the mount goes and its view
-	 * closes. A command held back for good gets none, even one a boundary held back while the command ended. */
+	 * closes. A command held back for good gets none, even one a boundary held back while the command ended. During a
+	 * drain the pause's refusal is final too. */
 	async #final(): Promise<void> {
 		if (this.#status !== "ending") return this.#gone(true);
 		for (let wait = FINAL_RETRY_MS; this.#status === "ending"; wait = Math.min(wait * 2, RETRY_CAP_MS)) {
-			const answer = await this.#helper({
-				op: "unmount",
-				name: this.#name,
-				final: true,
-				timeoutMs: COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
-			});
+			const drain = this.#draining();
+			const remaining = drain === undefined ? undefined : Math.floor(drain - performance.now());
+			const answer = await this.#helper(
+				{
+					op: "unmount",
+					name: this.#name,
+					final: true,
+					timeoutMs:
+						remaining === undefined
+							? COMPANY_COMPUTER_FOLDER_BOUNDARY_MS
+							: Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MS, remaining - 1000),
+				},
+				remaining,
+			);
+			// Whether a drain waits for the mount as the answer comes, though it may have begun while the boundary was asked.
+			const drained = this.#inDrain();
 			// A refusal is final once the final closed the view, or the core refused it but for the run check or the
-			// pause. Without a reason the core did not answer, or a change still waits: the view stays open, and the
-			// final is asked again.
+			// pause (during a drain, the pause's too). Without a reason the core did not answer, or a change still waits: the
+			// view stays open, and the final is asked again.
 			if (
 				!answer ||
 				answer.answer === "invalid" ||
@@ -420,21 +631,26 @@ export class CompanyComputerCommandFolder {
 					!answer.report.closed &&
 					(answer.report.refused === undefined ||
 						answer.report.refused === "run_ended" ||
-						answer.report.refused === "stopped"))
+						(answer.report.refused === "stopped" && !drained)))
 			) {
 				if (answer && "report" in answer && answer.report) this.#note(answer.report, false);
 				this.#retry = heldBack(answer);
 				this.#seams.log(`office-folder: command ${this.#name}: final boundary asked again (${word(answer)})`);
-				await later(wait);
+				await this.#later(wait);
 				continue;
 			}
+			if (drained)
+				this.#seams.log(
+					`office-folder: drain ${this.#name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
+				);
 			if (answer.answer === "unknown") {
 				this.#hold(HELD_GONE);
 				break;
 			}
-			if (answer.answer === "saved" || (answer.answer === "refused" && answer.report.closed))
+			if (answer.answer === "saved" || (answer.answer === "refused" && answer.report.closed)) {
 				this.#status = "released";
-			else this.#hold(HELD_NOT_TAKEN);
+				this.#releases++;
+			} else this.#hold(HELD_NOT_TAKEN);
 			if ("report" in answer) this.#note(answer.report, true);
 			if (!answer.unmounted) {
 				await this.#gone(true);
@@ -455,21 +671,25 @@ export class CompanyComputerCommandFolder {
 	#note(report: CompanyComputerFolderReport, final: boolean): void {
 		for (const entry of report.paths) {
 			if (entry.outcome === "saved" || (entry.kept && !final)) continue;
-			const item = {
+			this.#add({
 				path: head(entry.path, 300),
 				outcome: head(entry.outcome, 64),
 				...(entry.reason ? { reason: head(entry.reason, 200) } : {}),
-			};
-			const bytes = Buffer.byteLength(JSON.stringify(item));
-			if (
-				this.#moreNotSaved === 0 &&
-				this.#notSaved.length < NOT_SAVED_SHOWN &&
-				this.#notSavedBytes + bytes <= NOT_SAVED_BYTES
-			) {
-				this.#notSaved.push(item);
-				this.#notSavedBytes += bytes;
-			} else this.#moreNotSaved++;
+			});
 		}
+	}
+
+	/** One path not saved, shown if it fits and none was counted only; so those shown always come first. */
+	#add(item: CompanyComputerCommandNotSaved): void {
+		const bytes = Buffer.byteLength(JSON.stringify(item));
+		if (
+			this.#moreNotSaved === 0 &&
+			this.#notSaved.length < NOT_SAVED_SHOWN &&
+			this.#notSavedBytes + bytes <= NOT_SAVED_BYTES
+		) {
+			this.#notSaved.push(item);
+			this.#notSavedBytes += bytes;
+		} else this.#moreNotSaved++;
 	}
 
 	/** The paths not saved that no release showed yet, which come once. */
@@ -487,10 +707,17 @@ export class CompanyComputerCommandFolder {
 	/** The mount goes without a boundary, asked again until the helper takes it away; then the view closes. */
 	async #gone(drop: boolean): Promise<void> {
 		for (let wait = FINAL_RETRY_MS; drop; wait = Math.min(wait * 2, RETRY_CAP_MS)) {
-			const answer = (await this.#helper({ op: "drop", name: this.#name }, DROP_WAIT_MS))?.answer;
+			const drain = this.#draining();
+			const answer = (
+				await this.#helper(
+					{ op: "drop", name: this.#name },
+					drain === undefined ? DROP_WAIT_MS : Math.min(DROP_WAIT_MS, Math.floor(drain - performance.now())),
+				)
+			)?.answer;
 			if (answer === "dropped" || answer === "unknown") break;
-			await later(wait);
+			await this.#later(wait);
 		}
+		this.#leave();
 		const view = this.#view;
 		this.#view = undefined;
 		if (view) await closeCompanyComputerFolderView(this.#seams.registry, view);
@@ -507,6 +734,15 @@ function heldBack(answer: CompanyComputerFolderAnswer<"boundary" | "unmount"> | 
 	return HELD_REFUSED;
 }
 
+/** Why the core refused a run's take-in of the command's reads, as the run hears it. */
+function notInherited(reason: string | undefined): string {
+	if (reason === "Company execution is paused") return HELD_PAUSED;
+	if (reason === "Run is unavailable") return HELD_RUN_ENDED;
+	if (reason === "A run inherits only its own agent's and member's views") return HELD_OTHER_AGENT;
+	if (reason === "A released read is no longer readable") return HELD_UNREADABLE;
+	return HELD_NOT_INHERITED;
+}
+
 /** The answer as the office logs it: a plain name, never the company's paths or reasons. */
 function word(answer: CompanyComputerFolderAnswer<"unmount"> | undefined): string {
 	if (!answer) return "no answer";
@@ -518,9 +754,4 @@ function word(answer: CompanyComputerFolderAnswer<"unmount"> | undefined): strin
 function head(text: string, length: number): string {
 	const characters = Array.from(text);
 	return characters.length > length ? `${characters.slice(0, length).join("")}…` : text;
-}
-
-/** A wait that never keeps the service alive. */
-function later(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms).unref?.());
 }

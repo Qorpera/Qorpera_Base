@@ -293,6 +293,25 @@ describe("a member's change set to a folder-v2 company", () => {
 		]);
 	});
 
+	it("takes the names only code/ holds there, a new folder's contents by their joined paths (20260930446100)", async () => {
+		const g = await gateway();
+		const units = [
+			{ op: "mkdir", path: "code/acme/app/main/a%b" },
+			{ op: "new_folder", path: "code/acme/app/main/c:d", contents: [{ path: "CON.txt", kind: "folder" }] },
+		];
+		expect((await g.send(request(units))).status).toBe(200);
+		expect(g.commits()[0]?.args.p_units).toEqual(units);
+		for (const unit of [
+			{ op: "mkdir", path: "docs/a%b" },
+			{ op: "new_folder", path: "docs/x", contents: [{ path: "c:d", kind: "folder" }] },
+			{ op: "new_folder", path: "docs/x", contents: [{ path: "50%.txt", kind: "file", text: "x" }] },
+		]) {
+			const refused = await gateway();
+			expect((await refused.send(request([unit]))).status, JSON.stringify(unit)).toBe(400);
+			expect(refused.staged()).toEqual([]);
+		}
+	});
+
 	it("passes a link's `symlink` unit through with its target exactly as sent, staging nothing", async () => {
 		const g = await gateway();
 		// 4,095 bytes, the most a target holds: relative with `..` and two-byte characters, kept as written.

@@ -66,6 +66,7 @@
 - Added bounded, operator-only Company File request observations with canonical command/read linkage, timing, safe outcomes and available object-byte counts. The in-process window exposes restart/eviction gaps and excludes paths, file contents, tokens and raw errors.
 
 ### Changed
+- A member's folder commits and a machine's folder view take under code/ the names only code/ holds ('%', ':', device names), and a new folder's contents are checked by their joined paths, as the folder core checks them (F3 step 5b, part 1; migration `20260930446100`, SQL test 488). The view's reserved names follow the core's: '.git' and 'repo.git' only below code/<owner>/<name>/. A new folder the view has not published moves only where the folder takes every name in it, so it never takes a name only code/ holds out of code/.
 - The maintenance loop no longer runs the legacy company bootstrap (`CompanyBootstrapProvisioner`): new companies are created at the founding table by the folder creation loop, so a legacy bootstrap job stays queued (lobby hardening, from #776's review).
 
 - The replication reconciler reads folder GC's conflict (`qorpera_authorize_profile_object_replication` answering QRC01 409 with the folder core's "being collected" message, for an object folder GC holds) as a lock conflict: the entry stays pending instead of `blocked`, and the database circuit is left alone. snapshot-v1's cleanup fence, which also answers QRC01, keeps its 409, and no other RPC's answer changes.

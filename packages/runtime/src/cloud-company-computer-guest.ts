@@ -360,8 +360,11 @@ export interface CompanyComputerGuestShell {
 	result(input: {
 		sessionId: string;
 		waitMs: number;
-		/** The run asking: a company folder command shows its output only to the run that started it. */
+		/** The run asking: a company folder command shows its output to the run that started it, and to another run once
+		 * that one took in the command's reads. */
 		runId?: string;
+		/** The effect receipt of the action that reads: another run takes in a company folder command's reads by it. */
+		receiptId?: string;
 		/** When the reply is due (performance.now()); a company folder command settles its folder before then. */
 		until?: number;
 		signal: AbortSignal;
@@ -371,10 +374,6 @@ export interface CompanyComputerGuestShell {
 }
 
 export interface CompanyComputerGuestCommands {
-	/** Broker-only selected workbench read; no member or canonical paths. */
-	readFile?(input: { path: string; signal: AbortSignal }): Promise<Uint8Array>;
-	/** Broker-only atomic no-overwrite import of already authorized bytes. */
-	writeFile?(input: { path: string; bytes: Uint8Array; sha256: string; signal: AbortSignal }): Promise<void>;
 	/** Existing Step 2 contained command runner. No inherited provider/service env; kill/reap descendants on abort. */
 	run(input: {
 		program: string;
@@ -778,11 +777,6 @@ export class CompanyComputerGuestAutomation {
 		await companyComputerActionCheck(this.#browser?.assertActive(signal) ?? Promise.resolve());
 		signal.throwIfAborted();
 		if (action.kind === "screen") throw new Error("SCREEN_LIFECYCLE_REQUIRES_CLOUD_REGISTRY");
-		if (action.kind === "transfer") {
-			// Company objects carried these bytes and are gone (legacy removal, step C): no import or export.
-			if (action.action === "import") throw new Error("OFFICE_FILE_IMPORT_UNAVAILABLE");
-			throw new Error("OFFICE_FILE_EXPORT_UNAVAILABLE");
-		}
 		const display = companyComputerScreenDisplay(this.#binding.screenOrdinal);
 		if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
 			if (!this.#browser) throw new Error("BROWSER_GRANT_REQUIRED");
@@ -1210,7 +1204,7 @@ export class CompanyComputerGuestAutomation {
 					PATH: "/usr/local/bin:/usr/bin:/bin",
 					LANG: "C.UTF-8",
 				},
-				workingDirectory: this.#layout.workbenchRoot,
+				workingDirectory: "/home/qorpera",
 				timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
 				maxOutputBytes: 16_384,
 				signal,
@@ -1248,8 +1242,10 @@ export class CompanyComputerGuestAutomation {
 		signal: AbortSignal,
 		/** `performance.now()` by which the reply must be on its way back to the run. */
 		replyBy: number,
-		/** The run asking, which sees a company folder command's output only if it started it. */
+		/** The run asking, which sees a company folder command's output if it started it, or once it took in its reads. */
 		runId?: string,
+		/** The action's effect receipt, by which another run takes in a company folder command's reads. */
+		receiptId?: string,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		if (action.kind !== "shell" || action.action === undefined || action.action === "list" || !this.#shell)
@@ -1265,6 +1261,7 @@ export class CompanyComputerGuestAutomation {
 				Math.min(action.action === "stop" ? 4000 : action.waitMs, Math.floor(replyBy - performance.now())),
 			),
 			...(runId === undefined ? {} : { runId }),
+			...(receiptId === undefined ? {} : { receiptId }),
 			until: replyBy,
 			signal,
 		});

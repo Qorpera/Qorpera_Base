@@ -54,7 +54,12 @@ History uses descending observation-time/UUID cursors, at most 1,000 records and
 4 MiB per page. Pages are live snapshots, not a cross-page snapshot. Retained
 samples do not promise continuous coverage. Failed publication is not retried by
 the observer: a later attempt measures a new sample; committed receipts survive
-lost replies. There is no automatic receipt deletion. Tables and validation
+lost replies. Receipts observed more than seven days ago are deleted, oldest
+first, never the one a node's latest row names: from bundle v88 each health
+observation deleted up to 500 of its own node's, and since migration
+`20260930485000_node_health_receipts_hourly.sql` the hourly node receipt
+retention does, off the observer's path (`RUNTIME-NODE-CAPACITY.md`, "Receipt
+retention"). Tables and validation
 helpers remain private; only the three explicit RPCs are granted to service role.
 Member and guest APIs receive no additional access or authority.
 

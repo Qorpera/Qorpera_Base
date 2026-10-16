@@ -426,13 +426,15 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await expect(harness.call("computer_shell", { kind: "shell", action: "list" }, "test:2")).resolves.toMatchObject({
 			kind: "json",
 		});
-		// Offline unless the model asks; the run asking goes with the wait, as only it sees a folder command's output.
+		// Offline unless the model asks; the run asking goes with the wait, as only it, or another run that took in a
+		// folder command's reads by this action's receipt, sees that command's output.
 		expect(settle.mock.calls[0]).toEqual([
 			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000, network: false },
 			{ kind: "json", value: { sessionId: computerId(90) } },
 			expect.any(AbortSignal),
 			expect.any(Number),
 			harness.run.identity.runId,
+			computerId(10),
 		]);
 		waited.resolve({ kind: "json", value: { sessionId: computerId(90), state: "running", output: "" } });
 		await expect(reply).resolves.toEqual({
@@ -701,59 +703,26 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		},
 	);
 
-	// From the deleted file transfer classes' tests (legacy removal, step C): the guest still parses every transfer.
-	it.each(["/etc/passwd", "../secret", "a/../b", "a//b", "a/./b", "a\\b", "a\0b", "a/", "x".repeat(256)])(
-		"rejects a transfer path outside the workbench: %j",
-		(path) => {
-			expect(() =>
-				parseCompanyComputerAction({
-					kind: "transfer",
-					action: "export",
-					source: { realm: "company_computer", path },
-					destination: { realm: "object_storage" },
-					mediaType: "text/plain",
-				}),
-			).toThrow();
-			expect(() =>
-				parseCompanyComputerAction({
-					kind: "transfer",
-					action: "import",
-					source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-					destination: { realm: "company_computer", path },
-				}),
-			).toThrow();
-		},
-	);
-
-	it("keeps a transfer's literal names and refuses implicit realms, raw hashes and extra flags", () => {
-		const exported = {
-			kind: "transfer",
-			action: "export",
-			source: { realm: "company_computer", path: 'output/`quote` $(value) "name".bin' },
-			destination: { realm: "object_storage" },
-			mediaType: "application/octet-stream",
-		};
-		const imported = {
-			kind: "transfer",
-			action: "import",
-			source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-			destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
-		};
-		expect(parseCompanyComputerAction(exported)).toEqual(exported);
-		expect(parseCompanyComputerAction(imported)).toEqual(imported);
-		for (const bad of [
-			{ ...exported, source: { realm: "member_device", path: "selected" } },
-			{ ...exported, source: { ...exported.source, realm: "isolated_worker" } },
-			{ ...exported, destination: { realm: "isolated_worker" } },
-			...["member_device", "company_file", "isolated_worker", "company_computer"].map((realm) => ({
-				...imported,
-				source: { ...imported.source, realm },
-			})),
-			{ ...imported, destination: { ...imported.destination, realm: "isolated_worker" } },
-			{ ...imported, source: { realm: "object_storage", sha256: "a".repeat(64) } },
-			{ ...imported, overwrite: true },
+	// F3 4f: the company folder at /company replaced the transfer tool; no capability offers it, and no guest parses one.
+	it("offers no file transfer and parses none", () => {
+		for (const capabilities of [["shell"], ["browser", "desktop", "shell"]] as const)
+			expect(toolHarness(capabilities).session.tools.map((tool) => tool.name)).not.toContain("computer_transfer");
+		for (const transfer of [
+			{
+				kind: "transfer",
+				action: "export",
+				source: { realm: "company_computer", path: "reports/a.bin" },
+				destination: { realm: "object_storage" },
+				mediaType: "application/octet-stream",
+			},
+			{
+				kind: "transfer",
+				action: "import",
+				source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+				destination: { realm: "company_computer", path: "inbox/a.bin" },
+			},
 		])
-			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow();
+			expect(() => parseCompanyComputerAction(transfer)).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});
 
 	it("reads a vault_fill as a box, an account and a field, never a value", () => {

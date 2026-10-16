@@ -15,6 +15,12 @@ export interface MachineCommandAuthority {
 	machine: string;
 	executorOwner: string;
 	providerId: string;
+	/** The boot SQL knows the placement runs (null before its first), and who the command acts for: a test machine's
+	 * start waits for that boot's folder and opens the command's window for its run, staff agent and requester (F3 6d). */
+	bootId: string | null;
+	runId: string;
+	staffAgentId: string;
+	requestedByUserId: string;
 }
 
 /** The calling run's live tool authority, a running machine of its company
@@ -43,7 +49,8 @@ export async function authorizeMachineCommand(
 		typeof result.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(result.operationKey) ||
 		typeof result.machine !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(result.machine) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
-		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId))
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		(result.bootId !== null && (typeof result.bootId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(result.bootId))))
 		throw new Error("MACHINE_COMMAND_AUTHORITY_INVALID");
 	const identity = parseCloudNativeToolAuthority({ schema: "qorpera.native-tool-authority/v1", identity: result.identity, validForMs: 1 }, request.binding).identity;
 	if (request.action === "start") {
@@ -59,5 +66,6 @@ export async function authorizeMachineCommand(
 	}
 	signal.throwIfAborted();
 	return { inputSha256: result.inputSha256, machineId: result.machineId as string, placementId: result.placementId, machine: result.machine,
-		executorOwner: result.executorOwner, providerId: result.providerId };
+		executorOwner: result.executorOwner, providerId: result.providerId, bootId: result.bootId as string | null,
+		runId: identity.runId, staffAgentId: identity.staffAgentId, requestedByUserId: identity.requesterUserId };
 }
