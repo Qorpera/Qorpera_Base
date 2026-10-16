@@ -15,6 +15,7 @@ import {
 	type ReleasedRead,
 } from "./core.ts";
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
+import { NOTICES_KEPT, noticeOf, pageOfNotices } from "./notices.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
 import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
@@ -26,6 +27,9 @@ import {
 	LIST_PAGE,
 	type LinkRequest,
 	MAX_PAYLOAD,
+	type Notice,
+	type NoticesAnswer,
+	type NoticesRequest,
 	type OpenRequest,
 	ProtocolError,
 	type ReadLogEntry,
@@ -418,6 +422,12 @@ class View {
 	/** What its last boundary heard, until a change or a read since. A desktop no machine holds is kept while it is
 	 * `open`, and a command's unless it is `refused` (F3 4c). */
 	heard: Heard | undefined;
+	/** What came of its boundaries no machine asked for, oldest first (at most NOTICES_KEPT), for the office's folder
+	 * helper to ask after (F3 4f-2b-2). `noticed` numbers them from 1, in the series `noticeNonce` names: a view opened
+	 * again under the same key is another series. */
+	readonly notices: Notice[] = [];
+	noticed = 0;
+	readonly noticeNonce = randomUUID();
 
 	constructor(grant: Grant) {
 		this.key = grant.key;
@@ -493,6 +503,11 @@ export interface ViewHandle {
 	publish(final?: boolean): Promise<Report>;
 	/** Entries of the machine's read log, released before the view's next boundary (protocol 3, F3 4c). */
 	reads(request: ReadsRequest): Promise<ReadsAnswer>;
+}
+
+/** A `notices` connection (F3 4f-2b-2): the notices of the view its hello names, asked page by page. */
+export interface NoticesHandle {
+	page(request: NoticesRequest): NoticesAnswer;
 }
 
 /** The node's folder service: one tree per view, built from the core and kept current from its feed; listings from
@@ -811,6 +826,30 @@ export class FolderService {
 		// The core's clock says until when; never trust it for longer than one lease from now.
 		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), asked + LEASE_MS);
 		view.confirmed = true;
+	}
+
+	/** Checks a `notices` hello (F3 4f-2b-2): the office's folder helper asks, through the folder program's relay, what
+	 * came of the boundaries no machine asked for of a view the service holds. It never opens, holds or keeps a view:
+	 * one not held, or whose pass the core has not checked yet, has none to give, and a closed or moved one still has
+	 * its own. At each ask the view is checked as a machine joining it is: its pass, its company folder and, for a core
+	 * view, this machine. */
+	notices(hello: Hello, bridge: BridgeInfo): NoticesHandle {
+		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		const grant = this.#grants.admit(hello, bridge);
+		return {
+			page: (request) => {
+				const view = this.#views.get(grant.key);
+				if (!view?.confirmed) return { nonce: null, notices: [], last: 0, more: false };
+				if (
+					view.environmentId !== grant.environmentId ||
+					!timingSafeEqual(view.passSha256, grant.passSha256) ||
+					(view.core && !view.access?.admits(bridge))
+				)
+					throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
+				const from = request.nonce === view.noticeNonce ? request.after : 0;
+				return pageOfNotices(view.notices, from, view.noticeNonce);
+			},
+		};
 	}
 
 	/** Checks a machine's hello and opens (or joins) its view. The first connection of a view lists its tree. */
@@ -1713,7 +1752,7 @@ export class FolderService {
 			made = make();
 		} catch (error) {
 			if (!(error instanceof PublishFirst)) throw error;
-			await this.#publish(view);
+			await this.#publish(view, false, false, true);
 			// The boundary must be answered and settled, and no other one running, before the change is made again: until
 			// then the view still holds what that boundary published, and settling it would undo the change (BUSY).
 			await this.#quiet(view);
@@ -1747,7 +1786,7 @@ export class FolderService {
 			await publishing.catch(() => undefined);
 			this.#tree(view);
 			if (view.unanswered) {
-				await this.#publish(view);
+				await this.#publish(view, false, false, true);
 				if (view.unanswered) throw new ProtocolError(ErrorCode.busy, "The last save has not got through yet");
 			} else if (view.unsettled) {
 				await this.#settleInTurn(view);
@@ -1822,11 +1861,11 @@ export class FolderService {
 		view.quiet.unref?.();
 	}
 
-	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop.
-	 * `quiet`: one a quiet period asked. */
+	/** A boundary no machine asked for: what it did not save goes to the log, and what came of it to the view's notices
+	 * (F3 4f-2b-2). `quiet`: one a quiet period asked. */
 	async #publishLogged(view: View, quiet = false): Promise<void> {
 		try {
-			const report = await this.#publish(view, false, quiet);
+			const report = await this.#publish(view, false, quiet, true);
 			for (const entry of report.paths)
 				if (entry.outcome !== "saved")
 					this.#log(
@@ -2042,17 +2081,31 @@ export class FolderService {
 
 	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. `quiet`:
 	 * one a quiet period asked, which publishes nothing on a command's view no machine holds by its turn: the last
-	 * connection left while it waited, and what is pending waits for the boundary the command's machine asks. */
-	#publish(view: View, final = false, quiet = false): Promise<Report> {
+	 * connection left while it waited, and what is pending waits for the boundary the command's machine asks. `unasked`:
+	 * one no machine asked for (a quiet period's, the last connection's leaving, one a change needs first, or one with
+	 * no answer asked again before a change), whose report no machine hears: what came of it goes to the view's notices
+	 * (F3 4f-2b-2). */
+	#publish(view: View, final = false, quiet = false, unasked = false): Promise<Report> {
 		return this.#inTurn(view, async () => {
 			if (quiet && view.access?.command && view.connections === 0) return { commitId: null, seq: null, paths: [] };
-			return await this.#boundary(view, final);
+			const report = await this.#boundary(view, final, final, unasked);
+			if (unasked) this.#notice(view, report);
+			return report;
 		});
 	}
 
+	/** Keeps what came of a boundary no machine asked for as the view's next notice, if it committed or was refused. */
+	#notice(view: View, report: Report): void {
+		const notice = noticeOf(report, view.noticed + 1, this.#now());
+		if (!notice) return;
+		view.noticed = notice.n;
+		view.notices.push(notice);
+		if (view.notices.length > NOTICES_KEPT) view.notices.splice(0, view.notices.length - NOTICES_KEPT);
+	}
+
 	/** `last`: a coding view's final boundary, which the executor asks before it closes the view (F3 5c): a refusal
-	 * that may not lift is final there, as a command's final's is. */
-	async #boundary(view: View, final: boolean, last = final): Promise<Report> {
+	 * that may not lift is final there, as a command's final's is. `unasked`: as #publish's. */
+	async #boundary(view: View, final: boolean, last = final, unasked = false): Promise<Report> {
 		const pending = view.pending;
 		if (final && view.closed) {
 			// A final with no answer may be what closed the view: asked again under its key, as it was (the core answers
@@ -2070,7 +2123,7 @@ export class FolderService {
 		// A view kept for its final takes nothing else.
 		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 		if (!pending) return { commitId: null, seq: null, paths: [] };
-		return await this.#boundaryOf(view, pending, final, last);
+		return await this.#boundaryOf(view, pending, final, last, unasked);
 	}
 
 	/** The report of a boundary of a view whose machine cannot show its reads complete: it publishes nothing. */
@@ -2091,8 +2144,14 @@ export class FolderService {
 	 * set, empty when nothing is pending, whose answer closes the view. A path still waiting holds it back (the machine
 	 * asks again). Each boundary first releases the reads the view's machine logged (F3 4c), and is refused if they
 	 * are refused; a coding view's, every read its machine was served under any of its views (F3 5c, the plan's rule
-	 * 1). `view.heard` keeps what it heard. */
-	async #boundaryOf(view: View, pending: PendingView, final: boolean, last: boolean): Promise<Report> {
+	 * 1). `view.heard` keeps what it heard. `unasked`: as #publish's. */
+	async #boundaryOf(
+		view: View,
+		pending: PendingView,
+		final: boolean,
+		last: boolean,
+		unasked: boolean,
+	): Promise<Report> {
 		const entries: ReportEntry[] = [];
 		// An answered boundary the feed has not brought back yet settles first; nothing else is decided until it has.
 		if (view.unsettled) {
@@ -2129,11 +2188,15 @@ export class FolderService {
 				};
 			}
 			if (!holds(view, answer, last)) {
-				entries.push(...(await this.#settle(view, earlier.plan, earlier.made, answer)));
+				const settled = await this.#settle(view, earlier.plan, earlier.made, answer);
+				entries.push(...settled);
 				if (view.unsettled) {
 					view.heard = heardOf(answer);
 					return { ...committed(answer), paths: entries };
 				}
+				// This boundary's report says what the rest did: a boundary no machine asked for keeps what came of the earlier
+				// one as a notice of its own (F3 4f-2b-2), its change set or its refusal (which no commit shows).
+				if (unasked) this.#notice(view, { ...committed(answer), paths: settled });
 			}
 		}
 		await this.#stageAll(view);
