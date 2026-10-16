@@ -4,8 +4,8 @@
 use crate::frame::{kind, read_frame, write_frame};
 use crate::proto::{
 	code, Ack, Change, ChunkHeader, CloseRequest, Entry, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
-	ListRequest, Listing, OpenRequest, Opened, PathRequest, PublishRequest, ReadRequest, ReadsAnswer, RemoveRequest,
-	RenameRequest, Report, Role, Saved, MAX_READ, PART, PROTOCOL,
+	LinkRequest, ListRequest, Listing, OpenRequest, Opened, PathRequest, PublishRequest, ReadRequest, ReadsAnswer,
+	RemoveRequest, RenameRequest, Report, Role, Saved, SymlinkRequest, MAX_READ, PART, PROTOCOL,
 };
 use crate::reads::{Locked, ReadLog};
 use crate::transport::{connect, Stream};
@@ -570,6 +570,19 @@ impl Link {
 	pub fn set_executable(&self, path: &str, base: Option<String>, executable: bool) -> Result<String, Fail> {
 		let request = ExecutableRequest { path: path.to_string(), base, executable };
 		let saved: Saved = self.change(kind::EXECUTABLE, &json(&request), kind::DONE).and_then(|b| parse(&b))?;
+		Ok(saved.version)
+	}
+
+	/// A symbolic link (protocol 4); the answer is the version the link has. Its target reads back with `read`.
+	pub fn symlink(&self, path: &str, target: &str) -> Result<String, Fail> {
+		let request = SymlinkRequest { path: path.to_string(), target: target.to_string() };
+		let saved: Saved = self.change(kind::SYMLINK, &json(&request), kind::DONE).and_then(|b| parse(&b))?;
+		Ok(saved.version)
+	}
+
+	/// A hard link (protocol 4); the answer is the version the new name has.
+	pub fn hard_link(&self, request: &LinkRequest) -> Result<String, Fail> {
+		let saved: Saved = self.change(kind::LINK, &json(request), kind::DONE).and_then(|b| parse(&b))?;
 		Ok(saved.version)
 	}
 

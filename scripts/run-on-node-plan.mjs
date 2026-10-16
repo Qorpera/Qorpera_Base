@@ -44,8 +44,8 @@ const WEB_RELEASE_CONFIG = JSON.stringify({
 export const RUST_IMAGE =
 	"rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082";
 /** Node for the folder program's run against the folder service: the same Debian release as RUST_IMAGE, so the
- * program built there runs here. */
-export const NODE_IMAGE = "node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6";
+ * program built there runs here. The full image, not slim: its git and python3 use the mounted folder's links. */
+export const NODE_IMAGE = "node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
@@ -121,7 +121,7 @@ const NOT_WEB_ONLY = Symbol("not web-only");
  * that need the tree to themselves, run after `commands` one step at a time, but first in a side-by-side run
  * (planScript). `cores`: the step's mean busy cores at 2 vitest workers, its PostgreSQL containers included (node01,
  * 16 Oct), which a side-by-side run packs by (default 1). `seconds`: its median in pr-loop's full runs (15 Oct), so a side-by-side run starts the longest
- * first. */
+ * first. `workers`: a side-by-side run's vitest workers for the step (default: the slot's, 2 on a test machine). */
 export const STEPS = [
 	{
 		name: "lint",
@@ -241,7 +241,10 @@ export const STEPS = [
 		],
 		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s as one vitest. Since the files that mostly wait
 		// run beside the rest, the same CPU (689 s) takes about 400 s (402 s in pr-loop's one run so far): about 1.7.
-		cores: 1.7,
+		// Side by side, the rest is the whole run's critical path, CPU-bound at 2 workers (634 s of a 651 s run, 16 Oct):
+		// 4 workers, packed as 3 cores so hosted-db still starts beside it.
+		cores: 3,
+		workers: 4,
 		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING),
 	},
 	{
@@ -390,6 +393,7 @@ function planned(step) {
 		alone: step.alone ?? [],
 		cores: step.cores ?? 1,
 		seconds: step.seconds ?? 0,
+		workers: step.workers ?? null,
 	};
 }
 
@@ -408,10 +412,11 @@ function sample(files) {
  * once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code on that many
  * threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs RUNNERS), and the
  * steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that npm or a script
- * starts keeps node's default. */
-function narrow(step) {
+ * starts keeps node's default. A step with `workers` runs its vitests with that many workers, not the slot's, unless
+ * the run set its own (`stepWorkers` false). */
+function narrow(step, stepWorkers) {
 	const width = Math.max(1, Math.ceil(step.cores ?? 1));
-	return `export GOMAXPROCS=${width}; node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
+	return `export GOMAXPROCS=${width}; ${step.workers && stepWorkers ? `export VITEST_MAX_WORKERS=${step.workers}; ` : ""}node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
 }
 
 /** A side-by-side run started by run-on-node.mjs makes this file in its directory once every step has started, so the
@@ -429,8 +434,9 @@ export const ALL_STARTED = ".run-on-node-all-started";
  *
  * Under run-on-node.mjs, the file QORPERA_RUN_CORES_FILE holds the cores the run's slots give it, more as further
  * slots free: the budget is the smaller of that and `cores`, read again every second. A value it cannot read keeps
- * the budget where it was, from one core. */
-export function planScript(steps, { cores = null } = {}) {
+ * the budget where it was, from one core. `stepWorkers` false: a VITEST_MAX_WORKERS the run was given (run-on-node.mjs
+ * --env) wins over the steps' `workers`. */
+export function planScript(steps, { cores = null, stepWorkers = true } = {}) {
 	const fail = [
 		// The failed step names reach the run record (and the GitHub status) through the status file.
 		'if [ -n "$failed" ]; then echo "== changed: failed:$failed"; echo "failed_steps=$(echo $failed | tr \' \' ,)" >>.run-on-node-status; exit 1; fi',
@@ -466,7 +472,7 @@ export function planScript(steps, { cores = null } = {}) {
 		// Each part is a subshell, so a command's own exit ends only its part. A rest fans out within its step's cores.
 		...indexed.flatMap(({ step, i }) => [
 			...(step.alone?.length ? [`alone_${i}() ( ${step.alone.join(" && ")} )`] : []),
-			...(step.commands.length ? [`rest_${i}() ( ${narrow(step)}; ${step.commands.join(" && ")} )`] : []),
+			...(step.commands.length ? [`rest_${i}() ( ${narrow(step, stepWorkers)}; ${step.commands.join(" && ")} )`] : []),
 		]),
 		'report() { echo "== changed: ${names[$1]}"; cat "$out/$1.log"; if [ "${code[$1]}" = 0 ]; then echo "== changed: ${names[$1]} passed in ${seconds[$1]} s"; else echo "== changed: ${names[$1]} FAILED after ${seconds[$1]} s"; failed="$failed ${names[$1]}"; fi; }',
 		...indexed

@@ -21,6 +21,9 @@ export type CloudCompanyPathRpc =
 	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
+	// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
+	| "qorpera_begin_native_company_execution_v3"
+	| "qorpera_bind_native_company_context"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
@@ -96,7 +99,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_memory_release"
 	| "qorpera_memory_view"
 	| "qorpera_memory_view_record"
-	| "qorpera_memory_branches";
+	| "qorpera_memory_branches"
+	// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
+	| "qorpera_memory_events_run"
+	| "qorpera_memory_compaction_record";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

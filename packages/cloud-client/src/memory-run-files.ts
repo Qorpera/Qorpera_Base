@@ -1,6 +1,7 @@
-/** Browser-safe run-log files (W1b, 20260928549100_memory_run_logs.sql). The database
- * checks ownership, append-only history, narrowing and generations. These parsers check
- * the bytes and placement alone. Stored structured parses are deliberately only {kind}. */
+/** Browser-safe run-log files (W1b, 20260928549100_memory_run_logs.sql) and conversation
+ * summary trees (M1a, 20260928509150_memory_tree_files.sql). The database checks ownership,
+ * append-only history, narrowing, generations and each level-0 line's message. These parsers
+ * check the bytes and placement alone. Stored structured parses are deliberately only {kind}. */
 import { SHA256_HEX_PATTERN as HASH, POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
 import type { CompanyStateProblem } from "./company-state-files.ts";
 import { companyPathKey } from "./company-state-shared.ts";
@@ -8,6 +9,10 @@ import { companyPathKey } from "./company-state-shared.ts";
 export type MemoryRunFileKind = "memory-run" | "memory-steps" | "memory-run-block";
 export interface MemoryRunFile {
 	readonly kind: MemoryRunFileKind;
+}
+export type MemoryTreeFileKind = "memory-tree" | "memory-block";
+export interface MemoryTreeFile {
+	readonly kind: MemoryTreeFileKind;
 }
 export interface MemoryRunOrigin {
 	readonly run: string;
@@ -27,6 +32,11 @@ const TOML = new RegExp(
 		`(?:parent = "(${UUID_TEXT})"\nstep = (0|[1-9][0-9]{0,8})\n)?` +
 		`(?:continues = "(${UUID_TEXT})"\n)?(narrow = true\n)?$`,
 );
+// A conversation's tree, at its owner's memory folder (qorpera_structured_path_kind): a group's patterns come first, and
+// no agent is named groups or sections.md.
+const TREE_PATH =
+	/^agents\/(?:groups\/([^/]+)\/memory|(?!(?:groups|sections\.md)\/)([^/]+)\/memory\/thread)\/(tree\.toml|t([0-9]|1[0-4])\/[0-9]{8}\.jsonl)$/;
+const TREE_TOML = new RegExp(`^format = 1\nconversation = "(${UUID_TEXT})"\nnode_bytes = ([1-9][0-9]{0,3})\n$`);
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const encoder = new TextEncoder();
@@ -40,6 +50,25 @@ export function memoryRunFilePath(path: string) {
 	const kind: MemoryRunFileKind =
 		suffix === "run.toml" ? "memory-run" : suffix.startsWith("log/") ? "memory-steps" : "memory-run-block";
 	return { kind, group: match[1] ?? null, agent: match[2] ?? null, run: match[3]!, suffix };
+}
+
+/** Match by the folder key; the normal dispatcher checks the spelling as written. */
+export function memoryTreeFilePath(path: string) {
+	const match = TREE_PATH.exec(companyPathKey(path));
+	if (!match) return null;
+	const suffix = match[3]!;
+	const kind: MemoryTreeFileKind = suffix === "tree.toml" ? "memory-tree" : "memory-block";
+	return { kind, group: match[1] ?? null, agent: match[2] ?? null, suffix };
+}
+
+/** tree.toml's exact grammar (qorpera_memory_tree_toml): format = 1, conversation and node_bytes 1 to 1024, one per
+ * line. Database state decides whose conversation it must name. */
+export function parseMemoryTreeToml(
+	text: string,
+): { readonly conversation: string; readonly nodeBytes: number } | null {
+	const match = TREE_TOML.exec(text);
+	if (!match || Number(match[2]) > 1024) return null;
+	return { conversation: match[1]!, nodeBytes: Number(match[2]) };
 }
 
 /** The exact canonical TOML grammar, not general TOML. UUIDs follow SQL's hex shape,
@@ -224,6 +253,42 @@ function stepLine(text: string): bigint | null {
 	return j;
 }
 
+/** A summary line's level and number (qorpera_memory_block_line), or why it is not one. A conversation's level-0 line
+ * also names its message, by seq and hash; a run's lines never do. */
+function summaryLine(line: string, conversation: boolean): { readonly l: number; readonly k: bigint } | string {
+	const parsed = jsonObject(line);
+	if (!parsed) return "this line is not a summary line";
+	const { value: row, fields } = parsed;
+	const level = integer(fields.get("l"), 59n);
+	const number = integer(fields.get("k"), 9223372036854775807n);
+	const message = conversation && level === 0n;
+	if (
+		level === null ||
+		number === null ||
+		typeof row.free !== "boolean" ||
+		typeof row.text !== "string" ||
+		!closed(fields, [
+			"l",
+			"k",
+			...(message ? ["seq", "hash"] : []),
+			"free",
+			"text",
+			...(row.free === false ? ["tries"] : []),
+		]) ||
+		(row.free === false && (integer(fields.get("tries"), 3n) ?? 0n) < 1n) ||
+		(message &&
+			(integer(fields.get("seq"), 9223372036854775807n) === null ||
+				typeof row.hash !== "string" ||
+				!HASH.test(row.hash))) ||
+		CONTROL.test(row.text)
+	)
+		return "this line is not a summary line";
+	const escapedBytes =
+		encoder.encode(row.text).length + [...row.text].filter((char) => char === '"' || char === "\\").length;
+	if (escapedBytes > 2048) return "the summary text is longer than 2048 escaped bytes";
+	return { l: Number(level), k: number };
+}
+
 export type MemoryRunParseResult =
 	| { readonly ok: true; readonly file: MemoryRunFile }
 	| { readonly ok: false; readonly problems: readonly CompanyStateProblem[] };
@@ -268,31 +333,63 @@ export function parseMemoryRunFile(kind: MemoryRunFileKind, path: string, text: 
 				return refuse("the steps go by j from the block's number, each once", index + 1);
 			continue;
 		}
-		const parsed = jsonObject(line);
-		if (!parsed) return refuse("this line is not a summary line", index + 1);
-		const { value: row, fields } = parsed;
-		const level = integer(fields.get("l"), 59n);
-		const number = integer(fields.get("k"), 9223372036854775807n);
-		if (
-			level === null ||
-			number === null ||
-			typeof row.free !== "boolean" ||
-			typeof row.text !== "string" ||
-			!closed(fields, ["l", "k", "free", "text", ...(row.free === false ? ["tries"] : [])]) ||
-			(row.free === false && (integer(fields.get("tries"), 3n) ?? 0n) < 1n) ||
-			CONTROL.test(row.text)
-		)
-			return refuse("this line is not a summary line", index + 1);
-		const escapedBytes =
-			encoder.encode(row.text).length + [...row.text].filter((char) => char === '"' || char === "\\").length;
-		if (escapedBytes > 2048) return refuse("the summary text is longer than 2048 escaped bytes", index + 1);
-		const l = Number(level);
+		const parsed = summaryLine(line, false);
+		if (typeof parsed === "string") return refuse(parsed, index + 1);
+		const { l, k: number } = parsed;
 		if (l < 4 * tier || l > 4 * tier + 3 || number >> BigInt(4 * tier + 4 - l) !== block)
 			return refuse("this line does not belong in this block", index + 1);
 		if (l < previousLevel || (l === previousLevel && number <= previousNumber))
 			return refuse("the lines go by level, then by number, each once", index + 1);
 		previousLevel = l;
 		previousNumber = number;
+	}
+	return { ok: true, file: { kind } };
+}
+
+export type MemoryTreeParseResult =
+	| { readonly ok: true; readonly file: MemoryTreeFile }
+	| { readonly ok: false; readonly problems: readonly CompanyStateProblem[] };
+
+/** A conversation's tree.toml or block (qorpera_memory_block_parse). The database checks the conversation it names, and
+ * each level-0 line's message by seq, hash and number. */
+export function parseMemoryTreeFile(kind: MemoryTreeFileKind, path: string, text: string): MemoryTreeParseResult {
+	const refuse = (
+		message: string,
+		line: number | null = null,
+		code: CompanyStateProblem["code"] = "value",
+	): MemoryTreeParseResult => ({ ok: false, problems: [{ code, line, key: null, message }] });
+	const place = memoryTreeFilePath(path);
+	if (!place || place.kind !== kind)
+		return refuse("the file is not at a summary tree's structured path", null, "name");
+	const maxBytes = kind === "memory-block" ? 65004 : 65536;
+	if (encoder.encode(text).length > maxBytes)
+		return refuse(`the file is larger than ${maxBytes} bytes`, null, "too_large");
+	if (text.includes("\u0000") || LONE_SURROGATE.test(text))
+		return refuse("the file must be plain UTF-8 text", null, "encoding");
+	if (kind === "memory-tree")
+		return parseMemoryTreeToml(text)
+			? { ok: true, file: { kind } }
+			: refuse('tree.toml is format = 1, conversation = "<id>" and node_bytes = 1 to 1024, one per line');
+	const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : [];
+	if (lines.length < 1 || lines.length > 30) return refuse("a block is 1 to 30 lines, each ending in a newline");
+	const tier = Number(place.suffix.slice(1, place.suffix.indexOf("/")));
+	const block = BigInt(place.suffix.slice(-14, -6));
+	let previousLevel = -1;
+	let previousNumber = -1n;
+	for (const [index, line] of lines.entries()) {
+		// Sized before it is parsed, by the bound of a level-0 line, which also holds its seq and hash.
+		const bytes = encoder.encode(line).length;
+		if (bytes > 2212) return refuse("this line is longer than a summary line can be", index + 1);
+		const parsed = summaryLine(line, true);
+		if (typeof parsed === "string") return refuse(parsed, index + 1);
+		const { l, k } = parsed;
+		if (l > 0 && bytes > 2113) return refuse("this line is longer than a summary line can be", index + 1);
+		if (l < 4 * tier || l > 4 * tier + 3 || k >> BigInt(4 * tier + 4 - l) !== block)
+			return refuse("this line does not belong in this block", index + 1);
+		if (l < previousLevel || (l === previousLevel && k <= previousNumber))
+			return refuse("the lines go by level, then by number, each once", index + 1);
+		previousLevel = l;
+		previousNumber = k;
 	}
 	return { ok: true, file: { kind } };
 }

@@ -1,4 +1,5 @@
-import { type FileRef, folderKey, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
+import { folderKey } from "@qorpera/contracts";
+import { type FileRef, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
 import { parentOf } from "./view-tree.ts";
 
 /** A structured file's parse for the commit's hook (`memberFolderStructured`, core §3 "Before the transaction"). */
