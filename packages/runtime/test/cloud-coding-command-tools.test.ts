@@ -218,10 +218,29 @@ describe("isolated coding command tools", () => {
 			f.boundary.close();
 		}
 	});
+	it("passes on a command the machine's stop ended, with the output its ring dropped", async () => {
+		const f = fixture();
+		const stopped = {
+			...f.receipt,
+			state: "machine_stopped",
+			output: "step 1\n",
+			truncated: false,
+			log: { offset: 0, nextOffset: 7, totalBytes: 7, limitBytes: 67108864, limitReached: false, gapBytes: 65536 },
+		};
+		f.gateway.read.mockResolvedValue(stopped);
+		try {
+			const result = await f.boundary.invoke("page", "qorpera", "coding_read_command", { commandId: f.commandId });
+			expect(result.success).toBe(true);
+			expect(JSON.parse(JSON.parse(result.contentItems[0].text).content.text)).toEqual(stopped);
+		} finally {
+			f.boundary.close();
+		}
+	});
 	it.each([
 		{ state: "succeeded", exitCode: null },
 		{ state: "failed", exitCode: 0 },
 		{ state: "running", exitCode: 0 },
+		{ state: "machine_stopped", exitCode: 137 },
 		{ output: "x".repeat(16385) },
 		{ token: "unexpected" },
 	])("rejects inconsistent guest receipt %j", (patch) => {

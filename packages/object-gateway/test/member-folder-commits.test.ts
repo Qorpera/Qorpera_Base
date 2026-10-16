@@ -41,6 +41,8 @@ async function gateway(
 		followUp?: (call: number) => unknown;
 		/** No follow-up client: the route makes no follow-up. */
 		noFollowUps?: boolean;
+		/** The stored objects the member may read, by hash. */
+		readable?: ReadonlyMap<string, Uint8Array>;
 	} = {},
 ) {
 	let followUps = 0;
@@ -74,6 +76,12 @@ async function gateway(
 					return { schema: "qorpera.folder-object-upload/v1", profileId };
 				case "qorpera_folder_confirm_object":
 					return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
+				case "qorpera_folder_authorize_object_download": {
+					// The core's 42501 for an object the actor may not read.
+					const bytes = options.readable?.get(args.p_sha256 as string);
+					if (!bytes) throw new ObjectDependencyError(403);
+					return { schema: "qorpera.folder-object-download/v1", profileId, bytes: bytes.byteLength };
+				}
 				case "qorpera_folder_seal_upload": {
 					const manifest = manifests.get(args.p_intent as string) as string;
 					const parsed = JSON.parse(manifest);
@@ -123,9 +131,14 @@ async function gateway(
 			return "stored" as const;
 		},
 	};
+	const fetched: string[] = [];
 	const store = {
-		async get(): Promise<Uint8Array> {
-			throw new Error("Object not found");
+		async get(profile: string, hash: string): Promise<Uint8Array> {
+			expect(profile).toBe(profileId);
+			fetched.push(hash);
+			const bytes = options.readable?.get(hash);
+			if (!bytes) throw new Error("Object not found");
+			return bytes;
 		},
 	};
 	const server = createServer((request, response) => {
@@ -155,7 +168,8 @@ async function gateway(
 	};
 	const commits = () => calls.filter((call) => call.method === "qorpera_folder_commit");
 	const staged = () => calls.filter((call) => call.method === "qorpera_folder_open_upload");
-	return { calls, stored, send, commits, staged };
+	const read = () => calls.filter((call) => call.method === "qorpera_folder_authorize_object_download");
+	return { calls, stored, fetched, send, commits, staged, read };
 }
 
 const request = (units: unknown[], operationKey = "web:34000000-0000-4000-8000-0000000000d1") => ({
@@ -163,6 +177,30 @@ const request = (units: unknown[], operationKey = "web:34000000-0000-4000-8000-0
 	operationKey,
 	units,
 });
+
+/** A file already in the folder, as an old version names it, and the stored objects behind it. */
+function existing(content: string | Uint8Array, mediaType = "text/markdown") {
+	const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+	const fileSha256 = digest(bytes);
+	const manifest = new TextEncoder().encode(
+		JSON.stringify({
+			schema: "qorpera.cloud-file-manifest/v2",
+			fileSha256,
+			bytes: bytes.byteLength,
+			mediaType,
+			executable: false,
+			chunks: [{ sha256: fileSha256, bytes: bytes.byteLength }],
+		}),
+	);
+	const file = { manifestSha256: digest(manifest), fileSha256, bytes: bytes.byteLength, mediaType, executable: false };
+	return {
+		file,
+		objects: new Map<string, Uint8Array>([
+			[file.manifestSha256, manifest],
+			[fileSha256, bytes],
+		]),
+	};
+}
 
 describe("a member's change set to a folder-v2 company", () => {
 	it("stages each file and commits as the member the database named, with each state file's parse", async () => {
@@ -274,10 +312,175 @@ describe("a member's change set to a folder-v2 company", () => {
 		}
 	});
 
+	it("passes a link's `symlink` unit through with its target exactly as sent, staging nothing", async () => {
+		const g = await gateway();
+		// 4,095 bytes, the most a target holds: relative with `..` and two-byte characters, kept as written.
+		const longest = `../${"é".repeat(2046)}`;
+		const units = [
+			{ op: "symlink", path: "drafts/latest", target: "../notes/a file.md", expectedVersion: version },
+			{ op: "symlink", path: "drafts/far", target: longest },
+			{ op: "symlink", path: "drafts/system", target: "/etc/hosts" },
+		];
+		expect((await g.send(request(units))).status).toBe(200);
+		expect(g.staged()).toEqual([]);
+		expect(g.commits()[0]?.args.p_units).toEqual(units);
+		// A target over 4,095 bytes, empty, with a NUL or a lone surrogate, or not text, is refused before the core.
+		for (const unit of [
+			{ op: "symlink", path: "drafts/a", target: `${longest}x` },
+			{ op: "symlink", path: "drafts/a", target: "" },
+			{ op: "symlink", path: "drafts/a", target: "a\0b" },
+			{ op: "symlink", path: "drafts/a", target: "broken \ud800" },
+			{ op: "symlink", path: "drafts/a", target: 7 },
+			{ op: "symlink", path: "drafts/a" },
+			{ op: "symlink", path: "drafts/a", target: "b", text: "x" },
+			{ op: "symlink", path: "drafts/a", target: "b", expectedVersion: "v1" },
+		])
+			expect((await g.send(request([unit]))).status, JSON.stringify(unit)).toBe(400);
+		expect(g.commits()).toHaveLength(1);
+	});
+
+	it("writes a file already in the folder by its reference, a restore, reading back only a state file's bytes", async () => {
+		const agent = existing(agentText("Nora A."));
+		const scan = existing(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]), "application/pdf");
+		const g = await gateway({ readable: new Map([...agent.objects, ...scan.objects]) });
+		const response = await g.send(
+			request([
+				{ op: "write", path: "agents/nora/agent.md", file: agent.file, expectedVersion: version },
+				{ op: "write", path: "drafts/scan.pdf", file: scan.file },
+			]),
+		);
+		expect(response.status).toBe(200);
+		// Nothing is staged: the reference goes to the core as sent, and the core checks the member may read it.
+		expect(g.staged()).toEqual([]);
+		const [restored, plain] = g.commits()[0]?.args.p_units as Record<string, unknown>[];
+		expect(restored).toEqual({
+			op: "write",
+			path: "agents/nora/agent.md",
+			expectedVersion: version,
+			file: agent.file,
+			structured: [
+				expect.objectContaining({
+					path: "agents/nora/agent.md",
+					kind: "agent",
+					text: agentText("Nora A."),
+					parserVersion: 1,
+				}),
+			],
+		});
+		expect((restored?.structured as { parse: { name: string } }[])[0]?.parse.name).toBe("Nora A.");
+		expect(plain).toEqual({ op: "write", path: "drafts/scan.pdf", file: scan.file });
+		// Only the state file was read back, its manifest and then its chunk, as the member.
+		expect(g.read().map((call) => [call.args.p_sha256, call.args.p_actor])).toEqual([
+			[agent.file.manifestSha256, { kind: "member", userId }],
+			[agent.file.fileSha256, { kind: "member", userId }],
+		]);
+	});
+
+	it("gives a state file whose bytes are not UTF-8 its own `encoding` problem, and refuses bytes it can't read back", async () => {
+		const broken = existing(new Uint8Array([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0x0a]));
+		const agent = existing(agentText());
+		const g = await gateway({ readable: new Map([...broken.objects, ...agent.objects]) });
+		expect((await g.send(request([{ op: "write", path: "agents/nora/agent.md", file: broken.file }]))).status).toBe(
+			200,
+		);
+		expect((g.commits()[0]?.args.p_units as Record<string, unknown>[])[0]?.structured).toEqual([
+			{
+				path: "agents/nora/agent.md",
+				kind: "agent",
+				problems: [{ line: null, key: null, code: "encoding", message: "the file must be plain UTF-8 text" }],
+			},
+		]);
+		// An object the member may not read is the core's refusal; bytes that are not the reference's are the member's
+		// mistake; a state file over 64 KiB is refused before anything is read. None reaches the commit.
+		const unreadable = existing(agentText("Otto"));
+		const sent = (file: unknown, unit: Record<string, unknown> = {}) =>
+			g.send(
+				request([
+					{ op: "mkdir", path: "drafts" },
+					{ op: "write", path: "agents/nora/agent.md", file, ...unit },
+				]),
+			);
+		expect((await sent(unreadable.file)).status).toBe(403);
+		expect((await sent({ ...agent.file, fileSha256: digest("other bytes") })).status).toBe(400);
+		const reads = g.read().length;
+		expect((await sent({ ...agent.file, bytes: 64 * 1024 + 1 })).status).toBe(413);
+		expect(g.read()).toHaveLength(reads);
+		expect(g.staged()).toEqual([]);
+		expect(g.commits()).toHaveLength(1);
+		// A file at any other path is the core's alone, whatever its size: nothing is read.
+		const big = { ...existing("x", "application/octet-stream").file, bytes: 100 * 1024 * 1024 };
+		expect((await g.send(request([{ op: "write", path: "drafts/big.bin", file: big }]))).status).toBe(200);
+		expect(g.read()).toHaveLength(reads);
+	});
+
+	it("fetches nothing a reference or its manifest says is small but is not, a readable object posing as a manifest", async () => {
+		// Any text the member may read can pose as a manifest: this one says one byte and lists a 4 MiB chunk 64 times.
+		const chunk = new Uint8Array(4 * 1024 * 1024);
+		const forged = (bytes: number, chunks: { sha256: string; bytes: number }[]) => {
+			const text = new TextEncoder().encode(
+				JSON.stringify({
+					schema: "qorpera.cloud-file-manifest/v2",
+					fileSha256: digest("x"),
+					bytes,
+					mediaType: "text/markdown",
+					executable: false,
+					chunks,
+				}),
+			);
+			const file = { manifestSha256: digest(text), fileSha256: digest("x"), bytes, mediaType: "text/markdown" };
+			return { text, file: { ...file, executable: false } };
+		};
+		const manifests = [
+			forged(
+				1,
+				Array.from({ length: 64 }, () => ({ sha256: digest(chunk), bytes: chunk.byteLength })),
+			),
+			// The chunk's size as the manifest gives it, which the catalog's is not.
+			forged(1, [{ sha256: digest(chunk), bytes: 1 }]),
+			forged(2, [
+				{ sha256: digest("x"), bytes: 1 },
+				{ sha256: digest("x"), bytes: 0 },
+				{ sha256: digest("x"), bytes: 1 },
+			]),
+		];
+		const g = await gateway({
+			readable: new Map([[digest(chunk), chunk], ...manifests.map((m) => [m.file.manifestSha256, m.text] as const)]),
+		});
+		const write = (file: unknown) => g.send(request([{ op: "write", path: "agents/nora/agent.md", file }]));
+		for (const manifest of manifests) expect((await write(manifest.file)).status).toBe(400);
+		// A readable object over a manifest's bound, named as the manifest.
+		expect((await write({ ...manifests[1]?.file, manifestSha256: digest(chunk) })).status).toBe(400);
+		expect(g.fetched).toEqual(manifests.map((m) => m.file.manifestSha256));
+		expect(g.commits()).toEqual([]);
+	});
+
+	it("takes a write's text or its file, exactly one, and a reference only in the core's shape", async () => {
+		const g = await gateway();
+		const { file } = existing("hello");
+		for (const unit of [
+			{ op: "write", path: "a.md" },
+			{ op: "write", path: "a.md", text: "x", file },
+			{ op: "write", path: "a.md", file: { ...file, extra: true } },
+			{ op: "write", path: "a.md", file: { ...file, executable: undefined } },
+			{ op: "write", path: "a.md", file: { ...file, manifestSha256: file.manifestSha256.toUpperCase() } },
+			{ op: "write", path: "a.md", file: { ...file, fileSha256: "abc" } },
+			{ op: "write", path: "a.md", file: { ...file, bytes: -1 } },
+			{ op: "write", path: "a.md", file: { ...file, bytes: 1.5 } },
+			{ op: "write", path: "a.md", file: { ...file, mediaType: "Text/Markdown" } },
+			{ op: "write", path: "a.md", file: { ...file, mediaType: "markdown" } },
+			{ op: "write", path: "a.md", file: { ...file, executable: "no" } },
+			{ op: "write", path: "a.md", file: [file] },
+			{ op: "write", path: "a.md", file, expectedVersion: "v1" },
+		])
+			expect((await g.send(request([unit]))).status, JSON.stringify(unit)).toBe(400);
+		expect(g.commits()).toEqual([]);
+	});
+
 	it("refuses anything at or under human-tasks/ until P31, whatever its case, before staging", async () => {
 		for (const unit of [
 			{ op: "write", path: "human-tasks/sign-lease.md", text: "x" },
 			{ op: "mkdir", path: "human-tasks/sign-lease" },
+			{ op: "symlink", path: "human-tasks/latest", target: "sign-lease.md" },
 			{ op: "new_folder", path: "Human-Tasks/sign-lease", contents: [] },
 			{ op: "delete", path: "human-tasks", expectedVersion: version },
 			{ op: "move", from: "agents/nora/proof.pdf", to: "HUMAN-TASKS/sign-lease/proof.pdf" },

@@ -37,11 +37,24 @@ export interface Grant {
 export interface CoreAccess {
 	readonly write: boolean;
 	readonly quietMs?: number;
-	/** A command's view (F3 4b): published only when asked, its last publish final (the core closes the view with it);
-	 * kept when its last connection leaves; its renewals say nothing is unsaved (no seat waits on a command). */
+	/** A command's view (F3 4b): published after its quiet period while held (4b-2) and when asked, its last publish
+	 * final (the core closes the view with it); kept when its last connection leaves; its renewals say nothing is
+	 * unsaved (no seat waits on a command). */
 	readonly command?: true;
+	/** A coding session's view (F3 5c): the coding machine it is served to. Every read served under it is recorded
+	 * before its answer leaves and released before each boundary of that machine, with every other view's of it. */
+	readonly machine?: string;
 	/** Whether the calling machine may present the view. */
 	admits(bridge: BridgeInfo): boolean;
+}
+
+/** What the core's first renewal says a view is (F3 5a): its kind, its machine allocation (a desktop's, a command's),
+ * its company, and its coding machine (a coding session's). */
+export interface ViewIdentity {
+	readonly kind: string;
+	readonly machineId: string | null;
+	readonly companyId: string;
+	readonly codingMachineId: string | null;
 }
 
 /** The core's view passes: 32 random bytes, base64url without padding (C1b-3a `qorpera_folder_view_new_pass`). */
@@ -49,8 +62,13 @@ const CORE_PASS = /^[A-Za-z0-9_-]{43}$/;
 
 /** A company machine: the node names it after its allocation (`lxd-office-guest.ts`). */
 const OFFICE = /^qorpera-office-[0-9a-f]{32}$/;
+/** A coding machine, named after its id (RUNTIME-FOLDER-CODING-MACHINES.md "The design"). */
+const CODING_MACHINE = /^qorpera-coding-machine-[0-9a-f]{32}$/;
+/** A company's code host lives in its own project, named after the company (the plan's "The code host"). */
+const CODE_HOST_PROJECT = /^qorpera-codehost-[0-9a-f]{32}$/;
 
-/** A desktop publishes this long after its last change (RUNTIME-COMPANY-FOLDER.md §2: "one to two seconds"). */
+/** A desktop publishes this long after its last change (RUNTIME-COMPANY-FOLDER.md §2: "one to two seconds"), and so
+ * does a running command (the contract's 14 October 2026 amendment, item 3: "as a desktop's saves do"). */
 export const DESKTOP_QUIET_MS = 2_000;
 
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -102,26 +120,32 @@ export class MountGrants {
 	readonly #mounts: Map<string, OperatorMount>;
 	readonly #runBoxHosts: readonly MachineRef[];
 	readonly #companyMachineProjects: readonly string[];
+	readonly #codingMachineProjects: readonly string[];
 
 	/** `runBoxHosts`: the machines on this node that may present the core's run box views (the execution host).
 	 * `companyMachineProjects`: the LXD projects of this node's company machines, each of which may present its own
-	 * desktop views. */
+	 * desktop views. `codingMachineProjects`: those of its coding machines, each of which may present its own coding
+	 * sessions' views (F3 5c). */
 	constructor(
 		mounts: readonly OperatorMount[],
 		runBoxHosts: readonly MachineRef[] = [],
 		companyMachineProjects: readonly string[] = [],
+		codingMachineProjects: readonly string[] = [],
 	) {
 		this.#mounts = new Map(mounts.map((m) => [m.id, m]));
 		this.#runBoxHosts = runBoxHosts;
 		this.#companyMachineProjects = companyMachineProjects;
+		this.#codingMachineProjects = codingMachineProjects;
 	}
 
 	/** How a core view the core says is `kind`, on machine allocation `machineId`, is served; none for a kind this node
-	 * does not serve yet (a coding session's: step 5). A run box view is read-only, from a run box host. A computer
-	 * desktop's and a shell command's are served to their own company machine alone (named after the view's
-	 * allocation, in a company machine project) and write: a desktop's publishes after a quiet period, a command's only
-	 * when asked. */
-	coreAccess(identity: { readonly kind: string; readonly machineId: string | null }): CoreAccess | undefined {
+	 * does not serve. A run box view is read-only, from a run box host. A computer desktop's and a shell command's are
+	 * served to their own company machine alone (named after the view's allocation, in a company machine project) and
+	 * write, publishing after a quiet period; a command's only while its machine holds it, and also when asked, its last
+	 * publish final. A coding session's is served to its own coding machine alone (named after it, in a coding machine
+	 * project), and a code host's to its company's code host alone (any machine in the company's code host project):
+	 * both write, publishing after a quiet period and at each boundary the executor asks for. */
+	coreAccess(identity: ViewIdentity): CoreAccess | undefined {
 		if (identity.kind === "run_box")
 			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };
 		const desktop = identity.kind === "computer_desktop";
@@ -136,7 +160,25 @@ export class MountGrants {
 				bridge.machine !== undefined &&
 				this.#companyMachineProjects.includes(bridge.machine.project) &&
 				bridge.machine.name === name;
-			return desktop ? { write: true, quietMs: DESKTOP_QUIET_MS, admits } : { write: true, command: true, admits };
+			return desktop
+				? { write: true, quietMs: DESKTOP_QUIET_MS, admits }
+				: { write: true, quietMs: DESKTOP_QUIET_MS, command: true, admits };
+		}
+		const coding = identity.codingMachineId;
+		if (identity.kind === "coding_session" && coding !== null && isUuid(coding)) {
+			const name = `qorpera-coding-machine-${coding.replaceAll("-", "")}`;
+			const admits = (bridge: BridgeInfo): boolean =>
+				bridge.lookup === "found" &&
+				bridge.machine !== undefined &&
+				this.#codingMachineProjects.includes(bridge.machine.project) &&
+				bridge.machine.name === name;
+			return { write: true, quietMs: DESKTOP_QUIET_MS, machine: coding, admits };
+		}
+		if (identity.kind === "code_host" && isUuid(identity.companyId)) {
+			const project = `qorpera-codehost-${identity.companyId.replaceAll("-", "")}`;
+			const admits = (bridge: BridgeInfo): boolean =>
+				bridge.lookup === "found" && bridge.machine !== undefined && bridge.machine.project === project;
+			return { write: true, quietMs: DESKTOP_QUIET_MS, admits };
 		}
 		return undefined;
 	}
@@ -165,9 +207,10 @@ export class MountGrants {
 	}
 
 	/** A view the core opened (step 2: a run's box, opened by the execution host's service; step 4: a computer desktop
-	 * or a shell command, by its company machine). The core checks the pass when the view is first listed and at every
-	 * renewal (40 s); between them the service serves from memory, never past the lease the core confirmed. Here only the
-	 * pass's shape, and that the calling machine may present a core view at all (a run box host, or a company machine).
+	 * or a shell command, by its company machine; step 5: a coding session, by the coding executor, or a code host's).
+	 * The core checks the pass when the view is first listed and at every renewal (40 s); between them the service
+	 * serves from memory, never past the lease the core confirmed. Here only the pass's shape, and that the calling
+	 * machine may present a core view at all (a run box host, a company machine, a coding machine or a code host).
 	 * The view's kind and machine are the core's: the first renewal says them, and the service then admits only the
 	 * machines `coreAccess` names (P7 adds the node). */
 	#coreView(hello: Hello, bridge: BridgeInfo): Grant {
@@ -175,12 +218,15 @@ export class MountGrants {
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		if (bridge.lookup === "unavailable")
 			throw new ProtocolError(ErrorCode.unavailable, "This node could not tell which machine is calling");
+		const machine = bridge.lookup === "found" ? bridge.machine : undefined;
 		const companyMachine =
-			bridge.lookup === "found" &&
-			bridge.machine !== undefined &&
-			this.#companyMachineProjects.includes(bridge.machine.project) &&
-			OFFICE.test(bridge.machine.name);
-		if (!companyMachine && !this.#runBoxHosts.some((host) => isMachine(bridge, host)))
+			machine !== undefined && this.#companyMachineProjects.includes(machine.project) && OFFICE.test(machine.name);
+		const codingMachine =
+			machine !== undefined &&
+			this.#codingMachineProjects.includes(machine.project) &&
+			CODING_MACHINE.test(machine.name);
+		const codeHost = machine !== undefined && CODE_HOST_PROJECT.test(machine.project);
+		if (!companyMachine && !codingMachine && !codeHost && !this.#runBoxHosts.some((host) => isMachine(bridge, host)))
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		return {
 			key: `view:${hello.viewId}`,

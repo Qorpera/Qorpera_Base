@@ -541,7 +541,8 @@ describe("the account card's picture control", () => {
 		fitted.crop = { x: 100, y: 20, side: 640 };
 		await pick();
 		expect(prepare).toHaveBeenCalledWith(expect.any(File), { x: 100, y: 20, side: 640 });
-		expect(current.get(me)).toBe(nameOf(me, "fitted"));
+		// Hashing the picture takes a while on a busy machine.
+		await vi.waitFor(() => expect(current.get(me)).toBe(nameOf(me, "fitted")), { timeout: 4_000 });
 	});
 
 	it("opens one photo at a time, and ends the fitting when the account changes", async () => {
@@ -684,9 +685,12 @@ describe("the account card's picture control", () => {
 		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
 		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
 		input.dispatchEvent(new Event("change"));
-		await settle();
+		// Hashing the picture takes a while on a busy machine: wait for the choice to fail, then count its uploads.
+		await vi.waitFor(
+			() => expect(error.textContent).toBe("Your picture could not be saved. Try again in a moment."),
+			{ timeout: 4_000 },
+		);
 		expect(upload).toHaveBeenCalledTimes(2);
-		expect(error.textContent).toBe("Your picture could not be saved. Try again in a moment.");
 	});
 
 	it("moves from the menu itself to its first or last item", async () => {

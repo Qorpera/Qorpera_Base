@@ -10,6 +10,7 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 | `qorpera-folder-service.cjs` | node host, `qorpera-objects` (a drop-in; see "Reading the objects") | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
 | `qorpera-folder` | node host (`bridge`), machine (`mount`) | The folder program (from `crates/qorpera-folder/`), built by `scripts/build-folder-program.mjs`; its recorded build is `folder-program-linux-x64.json`. |
 | `qorpera-folder-service.socket` | node host | `/run/qorpera-folder/service.sock`, 0660, group `qorpera-folder-bridge`: only the bridge connects. |
+| `qorpera-folder-control.socket` | node host with coding machines | `/run/qorpera-folder-control/control.sock`, 0600, user `qorpera-coding-executor`: only the coding executor connects, to ask its machines' boundaries and say when it restarted one (F3 5c). |
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
 | `qorpera-folder-bridge.service` | node host, `qorpera-folder-bridge` (+ group `lxd`) | vsock port 5250 to the socket, naming each machine as LXD sees it. No credential. |
 | `qorpera-folder-mount@.service` | execution host, from the shared-execution package | One read-only mount per instance: `/srv/qorpera-folder/<id>` from `/etc/qorpera-folder/mounts/<id>.json`. |
@@ -53,7 +54,8 @@ Then, as root, without echoing anything secret:
 		}
 	],
 	"runBoxHosts": [],
-	"companyMachineProjects": []
+	"companyMachineProjects": [],
+	"codingMachineProjects": []
 }
 ```
 
@@ -66,10 +68,17 @@ of this node's company machines. A machine there named `qorpera-office-<allocati
 own desktop's and shell commands' views. It stays empty until company machines use the folder (which projects: the
 plan's Q1).
 
+`codingMachineProjects` (F3 step 5c, `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`, "Step 5c") names the LXD projects
+of this node's coding machines. A machine there named `qorpera-coding-machine-<coding machine id without dashes>` may
+present its own coding sessions' views, and `codingExecutorUid` (`id -u qorpera-coding-executor`) is the only uid the
+control socket lets ask their boundaries and say when it restarted one. Both stay unset until coding machines use the folder; a company's code host
+needs neither (its project is `qorpera-codehost-<company id without dashes>`).
+
 Which machine is served a core view is the core's to say: the view's first renewal says its kind and machine, and from
 then on a run box is served only to a `runBoxHosts` machine (read-only), a computer desktop or a shell command's view
-(step 4b) only to the company machine named after its allocation (read-write), and any other kind to no machine yet.
-A renewal that says another kind or machine closes the view.
+(step 4b) only to the company machine named after its allocation (read-write), a coding session's view only to its own
+coding machine in a `codingMachineProjects` project and a code host's view only to its company's code host (step 5c,
+read-write), and any other kind to no machine yet. A renewal that says another kind or machine closes the view.
 
 `storageRoot` is where the service sees the object gateway's store: `/srv/qorpera/objects`, a path inside the
 service's own mount namespace. The drop-in below binds the store there ("Reading the objects"). The store is the
@@ -95,8 +104,17 @@ connection starts it again on the new mount; after the share is mounted again by
 A member's or the platform's operator mount writes from step 3, a company machine's desktop view from step 4a (it
 publishes 2 s after its last change, and when its last connection leaves), and a shell command's view from step 4b (it
 publishes only when asked, or before a change that needs what is pending published first, is kept when its last
-connection leaves, and its final publish closes it); run box views
+connection leaves, and its final publish closes it); a coding session's view and a code host's from step 5c (2 s after
+the last change, and a coding machine's views at each boundary its executor asks for through the control socket; a
+coding session's is kept until the core closes it); run box views
 stay read-only until steps 5–6. Writes need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
+
+**Stopping (step 5c).** A stop or restart of the service ends nothing it serves for good: first it releases every read
+its coding machines' views served and publishes every coding and code host view, for up to 45 s
+(`TimeoutStopSec=60s`), then tells the core it stopped cleanly, and the next run serves those views. If it could not,
+or a coding machine lost a read this run served and the executor has not said it restarted it since (`restarted` on
+the control socket), the views stay marked as this run's: the core refuses them to the next run, and their machines
+restart.
 
 **Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:
 `qorpera-objects`, a system account with the same uid and gid on both nodes (1500; no shell, no home, no other groups,
@@ -150,6 +168,13 @@ InaccessiblePaths=-/var/lib/qorpera-acceptance-phql-a1 -/run/credentials/qorpera
   but `1` (the service) and the check's own, fails on the gateway's, lists only `objects`, prints 1, and the `touch`
   fails with "Read-only file system" (were it to succeed, the bind is not read-only: remove the file as root).
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`
+- On a node with coding machines (step 5c), once the `qorpera-coding-executor` account exists and `config.json` names
+  its uid (`codingExecutorUid`) and the projects (`codingMachineProjects`): `systemctl enable --now
+  qorpera-folder-control.socket`, then `systemctl restart qorpera-folder-service.service` if it is running (systemd
+  passes the control socket only to a service it starts after the socket listens). The journal then says "serving the
+  control socket from systemd". Check: `stat -c '%U %a' /run/qorpera-folder-control
+  /run/qorpera-folder-control/control.sock` prints `root 755` and `qorpera-coding-executor 600`; the service refuses
+  every connection while the file or a folder above it says otherwise, and logs why.
 - Expected in the service's journal at each start: node's `Warning: disabling flag --expose_wasm due to conflicting
   flags`. The unit's `--jitless` turns WebAssembly off, as it means to (`RUNTIME-FOLDER-SERVICE.md`).
 
@@ -178,4 +203,5 @@ view file and the start) are run again after one.
 ## Remove
 
 Machine: `systemctl stop qorpera-folder-mount@proof` (it unmounts). Node: `systemctl disable --now
-qorpera-folder-bridge.service qorpera-folder-service.socket qorpera-folder-service.service`. Nothing else is kept.
+qorpera-folder-bridge.service qorpera-folder-service.socket qorpera-folder-control.socket
+qorpera-folder-service.service`. Nothing else is kept.
