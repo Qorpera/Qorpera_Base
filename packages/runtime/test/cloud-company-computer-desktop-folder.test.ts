@@ -1241,7 +1241,10 @@ describe("a run's report of its desktop changes", () => {
 		const t = clock();
 		const f = await followed();
 		const denied = { reason: "denied", paths: ["docs/a.md", "docs/b.md"], pathCount: 3 };
-		f.answer("notices", noticed(1, [denied], { more: true }));
+		const stopped = { reason: "stopped", paths: ["docs/c.md"] };
+		// The same refusal again before a report gave the run the first: counted on it, in its place, its paths not given
+		// twice.
+		f.answer("notices", noticed(1, [denied, stopped, denied]));
 		const notSaved = [
 			{ path: "docs/a.md", outcome: "refused" },
 			{ path: "docs/b.md", outcome: "refused" },
@@ -1250,29 +1253,31 @@ describe("a run's report of its desktop changes", () => {
 		expect(first?.report).toEqual({
 			saved: 0,
 			notSaved,
-			refused: "the company folder refused 3 changes on this desktop",
+			refused: "the company folder refused 3 changes on this desktop (2 times)",
 			more: true,
 		});
 		expect(asks(f)).toEqual([{ op: "notices", view: f.view(1), after: 0, nonce: null }]);
-		// The same refusal again, before the run was shown the first: counted on it, its paths not given twice.
+		// The run was given that report, and the read its next ask starts runs past its wait: the same refusal this read
+		// brings may come after the run was shown the first, so it is not counted on it; it comes as new, with its paths.
 		t.skip();
-		f.answer("notices", noticed(3, [denied]));
-		expect((await report(f))?.report).toEqual({
+		const late = computerDeferred<unknown>();
+		f.answer("notices", () => late.promise);
+		await expect(report(f, "", performance.now() + 50)).resolves.toEqual(first);
+		late.resolve(noticed(5, [denied]));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(asks(f)[1]).toEqual({ op: "notices", view: f.view(1), after: 4, nonce: NONCE });
+		const second = await report(f, first!.mark);
+		expect(second?.report).toEqual({
 			saved: 0,
-			notSaved,
-			refused: "the company folder refused 3 changes on this desktop (2 times)",
+			notSaved: [{ path: "docs/c.md", outcome: "refused" }],
+			refused: "the company is paused, so the company folder did not take a change on this desktop",
+			more: true,
 		});
-		expect(asks(f)[1]).toEqual({ op: "notices", view: f.view(1), after: 2, nonce: NONCE });
-		// Once shown, it comes as new.
-		const shown = await report(f);
-		t.skip();
-		f.answer("notices", noticed(5, [denied]));
-		expect((await report(f, shown!.mark))?.report).toEqual({
+		expect((await report(f, second!.mark))?.report).toEqual({
 			saved: 0,
 			notSaved,
 			refused: "the company folder refused 3 changes on this desktop",
 		});
-		expect(asks(f)[2]).toMatchObject({ after: 4, nonce: NONCE });
 	});
 
 	it.each([

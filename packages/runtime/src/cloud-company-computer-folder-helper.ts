@@ -665,7 +665,7 @@ export class CompanyComputerFolderHelper {
 	}
 
 	async #perform(
-		request: Exclude<CompanyComputerFolderRequest, { op: "list" | "ended" | "run" }>,
+		request: Exclude<CompanyComputerFolderRequest, { op: "list" | "ended" | "notices" | "run" }>,
 	): Promise<CompanyComputerFolderAnswer> {
 		switch (request.op) {
 			case "mount":

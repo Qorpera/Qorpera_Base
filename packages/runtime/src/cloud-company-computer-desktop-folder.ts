@@ -315,6 +315,8 @@ interface RunReport {
 	views: ReportView[];
 	items: ReportItem[];
 	next: number;
+	/** The last item a report was given: the run may have been shown it, so nothing is counted on it or before it. */
+	given: number;
 	readonly signals: Set<AbortSignal>;
 	reading?: Promise<void>;
 	readAt: number;
@@ -733,6 +735,7 @@ export class CompanyComputerDesktopFolders {
 				views: [],
 				items: [],
 				next: 0,
+				given: 0,
 				signals: new Set(),
 				readAt: Number.NEGATIVE_INFINITY,
 				stop: new AbortController(),
@@ -866,12 +869,13 @@ export class CompanyComputerDesktopFolders {
 		return notices.asking;
 	}
 
-	/** A change set refused whole, once with its paths; the same refusal again (the same reason and paths) while the run
-	 * has not been shown it is counted on it, not kept twice. */
+	/** A change set refused whole, once with its paths; the same refusal again (the same reason and paths) before a report
+	 * gave the run the first is counted on it, in its place, not kept twice. */
 	#quiet(record: RunReport, viewId: string, notice: Extract<CompanyComputerFolderNotice, { refused: string }>): void {
 		const quiet = { viewId, reason: notice.refused, paths: notice.paths, pathCount: notice.pathCount };
 		const index = record.items.findIndex(
 			(item) =>
+				item.n > record.given &&
 				"quiet" in item &&
 				item.quiet.viewId === viewId &&
 				item.quiet.reason === quiet.reason &&
@@ -879,9 +883,9 @@ export class CompanyComputerDesktopFolders {
 				item.quiet.paths.length === quiet.paths.length &&
 				item.quiet.paths.every((path, at) => path === quiet.paths[at]),
 		);
-		const [earlier] = index < 0 ? [] : record.items.splice(index, 1);
+		const earlier = record.items[index];
 		if (earlier && "quiet" in earlier) {
-			record.items.push({ n: ++record.next, quiet: { ...quiet, times: earlier.quiet.times + 1 } });
+			record.items[index] = { n: earlier.n, quiet: { ...quiet, times: earlier.quiet.times + 1 } };
 			return;
 		}
 		record.items.push({ n: ++record.next, quiet: { ...quiet, times: 1 } });
@@ -935,7 +939,7 @@ export class CompanyComputerDesktopFolders {
 	}
 }
 
-/** The report from a run's items not yet shown, with the mark of the last item it holds. */
+/** The report from a run's items not yet shown, with the mark of the last item it holds (from then on given). */
 function reportOf(record: RunReport): { mark: string; report: CompanyComputerDesktopFolderReport } | undefined {
 	let saved = 0;
 	const shown: CompanyComputerCommandNotSaved[] = [];
@@ -957,6 +961,7 @@ function reportOf(record: RunReport): { mark: string; report: CompanyComputerDes
 		last = item.n;
 	}
 	if (last === undefined) return undefined;
+	record.given = Math.max(record.given, last);
 	const more = index < record.items.length || record.views.some((entry) => entry.more || entry.notices.more);
 	return {
 		mark: `${record.id}:${last}`,

@@ -573,8 +573,9 @@ has unsaved changes (4a).
   `switch` moved the mount on or the view closed (a drain, a release). Once a view's commits are read to their end
   it asks until the service no longer keeps the view (`nonce: null`), a minute and a half at most. It takes only the
   refusals (a commit's paths come with the view's commits): one is the report's refusal ("the company folder refused
-  3 changes on this desktop") with its paths not saved; one asked again with the same reason and paths before the run
-  was shown it is kept once, with how many times.
+  3 changes on this desktop") with its paths not saved; one asked again with the same reason and paths before a report
+  gave the run the first is kept once, in its place, with how many times. One after that comes as new, with its
+  paths: the run may have been shown the first already (a read can go on past the report's wait).
   - **Rollout.** The service's role (4f-2b-2a) goes out with a folder service deploy on the nodes; the helper's
     relay and operation (4f-2b-2b) with a new office image generation, as the helper is the image's. Either may go
     first: a service before the role answers the helper's hello "Bad role", which the helper reads as no notices,
