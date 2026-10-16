@@ -8,6 +8,7 @@ import {
 	CODING_FOLDER_CONTROL_SOCKET,
 	CodingFolderControl,
 	CodingFolderControlRefused,
+	codingFolderViewSaved,
 } from "../src/coding-folder-control.ts";
 
 const MACHINE = "12345678-1234-4234-8234-000000000001";
@@ -68,7 +69,7 @@ const reply =
 	(socket: Socket): void => {
 		socket.end(typeof value === "string" || Buffer.isBuffer(value) ? value : `${JSON.stringify(value)}\n`);
 	};
-const report = { commitId: null, seq: null, paths: [{ path: CANARY }] };
+const report = { commitId: null, seq: null, paths: [{ path: CANARY, outcome: "saved" }] };
 const boundary = (patch: Record<string, unknown> = {}) => ({
 	boundary: {
 		machine: MACHINE,
@@ -94,7 +95,10 @@ describe("the folder service's control socket", () => {
 		expect(answer).toEqual({
 			machine: MACHINE,
 			reads: "released",
-			views: [{ viewId: VIEW }, { viewId: FINAL, error: "VIEW_CLOSED" }],
+			views: [
+				{ viewId: VIEW, unsaved: 0 },
+				{ viewId: FINAL, error: "VIEW_CLOSED" },
+			],
 		});
 		expect(JSON.stringify(answer)).not.toContain(CANARY);
 		expect([answer, answer.views, ...answer.views].every((value) => Object.isFrozen(value))).toBe(true);
@@ -102,6 +106,51 @@ describe("the folder service's control socket", () => {
 		await f.client.boundary(MACHINE, [], signal());
 		expect(f.requests[1]).toBe(`${JSON.stringify({ op: "boundary", machine: MACHINE, final: [] })}\n`);
 		expect(f.connections()).toBe(2);
+	});
+
+	it("reads what each view's report says of the save: paths not saved, and a change set refused whole", async () => {
+		const views = [
+			// A final that closed the view with every path saved.
+			{ commitId: CANARY, seq: 7, closed: true, paths: [{ path: CANARY, outcome: "saved" }] },
+			// A final keeps nothing pending, so what it did not save is lost with the close.
+			{
+				commitId: CANARY,
+				seq: 8,
+				closed: true,
+				paths: [
+					{ path: CANARY, outcome: "saved" },
+					{ path: CANARY, outcome: "conflict", receipt: CANARY },
+					{ path: CANARY, outcome: "denied", reason: CANARY },
+					{ path: CANARY, outcome: "waiting_for_review", reason: "parked" },
+				],
+			},
+			// A commit with no answer yet, and a path waiting on an open file: both kept pending.
+			{
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: CANARY, outcome: "not_applied", reason: CANARY, kept: true },
+					{ path: CANARY, outcome: "waiting", reason: CANARY, kept: true },
+					{ path: CANARY, outcome: "saved" },
+				],
+			},
+			// Refused whole: what it carried stays pending.
+			{ commitId: null, seq: null, refused: "stopped", paths: [{ path: CANARY, outcome: "refused", kept: true }] },
+			{ commitId: null, seq: null, refused: "unproven", paths: [] },
+		].map((report) => ({ viewId: randomUUID(), report }));
+		const f = await control(reply(boundary({ views })));
+		const answer = await f.client.boundary(MACHINE, [], signal());
+		expect(answer.views).toEqual([
+			{ viewId: views[0].viewId, unsaved: 0 },
+			{ viewId: views[1].viewId, unsaved: 3 },
+			{ viewId: views[2].viewId, unsaved: 2 },
+			{ viewId: views[3].viewId, unsaved: 1, refused: "stopped" },
+			{ viewId: views[4].viewId, unsaved: 0, refused: "unproven" },
+		]);
+		expect(JSON.stringify(answer)).not.toContain(CANARY);
+		expect(answer.views.map((view) => codingFolderViewSaved(view))).toEqual([true, false, false, false, false]);
+		expect(codingFolderViewSaved({ viewId: VIEW, error: "VIEW_CLOSED" })).toBe(false);
+		expect(codingFolderViewSaved(undefined)).toBe(false);
 	});
 
 	it.each(["unanswered", "denied", "unreadable", "run_ended", "stopped", "invalid", "unproven"])(
@@ -162,7 +211,7 @@ describe("the folder service's control socket", () => {
 			);
 	});
 
-	it.each([
+	it.each<[string, unknown]>([
 		["another machine's boundary", boundary({ machine: OTHER })],
 		["reads it does not know", boundary({ reads: "maybe" })],
 		["reads that are not text", boundary({ reads: ["released"] })],
@@ -177,6 +226,24 @@ describe("the folder service's control socket", () => {
 		["a report that is not an object", boundary({ views: [{ viewId: VIEW, report: CANARY }] })],
 		["a report that is a list", boundary({ views: [{ viewId: VIEW, report: [CANARY] }] })],
 		["a report that is null", boundary({ views: [{ viewId: VIEW, report: null }] })],
+		...(
+			[
+				["a report without paths", { commitId: null, seq: null }],
+				["a report without a commit id", { seq: null, paths: [] }],
+				["a report with another key", { ...report, token: CANARY }],
+				["a commit id that is not text", { ...report, commitId: 1 }],
+				["a negative seq", { ...report, seq: -1 }],
+				["a closed that is not true", { ...report, closed: false }],
+				["a whole refusal it does not know", { ...report, refused: CANARY }],
+				["a whole refusal of released", { ...report, refused: "released" }],
+				["a path that is not an object", { ...report, paths: [CANARY] }],
+				["a path without an outcome", { ...report, paths: [{ path: CANARY }] }],
+				["an outcome it does not know", { ...report, paths: [{ path: CANARY, outcome: CANARY }] }],
+				["a kept that is not true", { ...report, paths: [{ path: CANARY, outcome: "waiting", kept: false }] }],
+				["a path entry with another key", { ...report, paths: [{ path: CANARY, outcome: "saved", at: 1 }] }],
+				["a reason that is not text", { ...report, paths: [{ path: CANARY, outcome: "denied", reason: 1 }] }],
+			] satisfies [string, unknown][]
+		).map(([name, bad]): [string, unknown] => [name, boundary({ views: [{ viewId: VIEW, report: bad }] })]),
 		["a lowercase error code", boundary({ views: [{ viewId: VIEW, error: { code: CANARY, message: "" } }] })],
 		["an error without a message", boundary({ views: [{ viewId: VIEW, error: { code: "DENIED" } }] })],
 		["an error with another key", boundary({ views: [{ viewId: VIEW, error: { ...viewError, at: 1 } }] })],

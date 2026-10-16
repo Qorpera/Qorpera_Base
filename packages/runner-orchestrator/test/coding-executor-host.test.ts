@@ -2313,7 +2313,7 @@ async function folderFixture(repositories = true) {
 	const boundary = vi.fn<CodingFolderControl["boundary"]>(async (machine) => ({
 		machine,
 		reads: "released",
-		views: [],
+		views: [{ viewId, unsaved: 0 }],
 	}));
 	const sessionRepositories = {
 		prepare: vi.fn<CodingFolderRepositories["prepare"]>(async () => ({ cwd })),
@@ -2483,6 +2483,12 @@ describe("a coding session on the folder model", () => {
 	it.each([
 		["holds the machine's reads", { reads: "unanswered" as const, views: [] }],
 		["did not save a view", { reads: "released" as const, views: [{ viewId: randomUUID(), error: "SAVE_FAILED" }] }],
+		["left a view's paths unsaved", { reads: "released" as const, views: [{ viewId: randomUUID(), unsaved: 2 }] }],
+		[
+			"refused a view's save whole",
+			{ reads: "released" as const, views: [{ viewId: randomUUID(), unsaved: 0, refused: "stopped" }] },
+		],
+		["answered a view without its report", { reads: "released" as const, views: [{ viewId: randomUUID() }] }],
 	])("publishes nothing when the boundary %s", async (_case, answer) => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

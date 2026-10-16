@@ -29,7 +29,7 @@ import type {
 } from "./coding-executor.ts";
 import { CodingMachineUnavailable } from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
-import type { CodingFolderControl } from "./coding-folder-control.ts";
+import { type CodingFolderControl, codingFolderViewSaved } from "./coding-folder-control.ts";
 import {
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
@@ -1418,9 +1418,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const folder = this.#options.folder;
 		let bundle: Buffer;
 		if (folder && ready.folder) {
-			// What the machine's views have pending is saved first: the export reads the session's work from the folder.
+			// What the machine's views have pending is saved first: the export reads the session's work from the folder, so
+			// a path any view left unsaved holds the publication.
 			const boundary = await folder.control.boundary(ready.machine.machineId, [], signal);
-			if (boundary.reads !== "released" || boundary.views.some((view) => view.error !== undefined))
+			if (boundary.reads !== "released" || !boundary.views.every(codingFolderViewSaved))
 				throw new Error("CODING_FOLDER_BOUNDARY_HELD");
 			this.#current(ready);
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(

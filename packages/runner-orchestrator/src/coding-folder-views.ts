@@ -3,7 +3,7 @@ import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CODING_GUEST, type CodingGuestRequests, isUuid, normalizeUuid, parseClosedRecord } from "@qorpera/contracts";
 import { CodingControlRefused } from "./coding-executor.ts";
-import type { CodingFolderBoundary } from "./coding-folder-control.ts";
+import { type CodingFolderBoundary, codingFolderViewSaved } from "./coding-folder-control.ts";
 import { CodingGuestRefused, LxdCodingGuestClient } from "./coding-guest-client.ts";
 import { type LxdCodingMachineBinding, lxdCodingMachineName, lxdCodingMachinePlan } from "./coding-machine.ts";
 import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient } from "./lxd-client.ts";
@@ -49,8 +49,9 @@ export interface CodingFolderViewSession {
 	readonly uid: number;
 }
 
-/** How a view ended: whether its final boundary released the machine's reads and saved the view without an error, and
- * whether the core confirmed its close. */
+/** How a view ended: whether its final boundary released the machine's reads and saved all the view had (a report with
+ * every changed path saved and nothing refused: the close loses what was not), and whether the core confirmed its
+ * close. */
 export interface CodingFolderViewEnd {
 	readonly workerId: string;
 	readonly viewId: string;
@@ -277,7 +278,7 @@ export class CodingFolderViews {
 				return {
 					workerId: view.workerId,
 					viewId: view.viewId,
-					saved: boundary?.reads === "released" && report !== undefined && report.error === undefined,
+					saved: boundary?.reads === "released" && codingFolderViewSaved(report),
 					closed,
 				};
 			}),
