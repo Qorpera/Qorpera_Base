@@ -94,10 +94,12 @@ the folder's links), each file written as a draft: in the folder only once its c
 that fails is tried again every few seconds and at the worktree's next index, after a restart too; until none is left,
 `<state-dir>/caches.moving` is there and `publish` refuses. Under
 `repo.git`, objects aside, every lookup asks the node (no kernel cache), and an exclusive create of a ref's,
-`packed-refs`' or `shallow`'s lock drops what the kernel holds of that file, its log and `packed-refs`, so git reads
-the versions the node's lease answered with (`src/mount/on_disk.rs`). `objects/info/alternates` and changing an
-object's times answer EPERM. The lock protocol itself (the lease on a lock's create, the publish on its rename or
-removal) is the folder service's (`packages/object-gateway/src/folder-service/git.ts`).
+`packed-refs`' or `shallow`'s lock drops what the kernel holds of that file, its log and `packed-refs`, so git reads the
+versions the node's lease answered with; under `packed-refs`' lock the mount also forgets its listings of `refs/` and
+the folders below it, as git then walks the loose refs, which the node read the feed for (`src/mount/on_disk.rs`).
+`objects/info/alternates` and changing an object's times answer EPERM. The lock protocol itself (the lease on a lock's
+create, the publish on its rename or removal) is the folder service's
+(`packages/object-gateway/src/folder-service/git.ts`).
 
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
