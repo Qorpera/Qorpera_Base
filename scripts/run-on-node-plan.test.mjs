@@ -269,6 +269,7 @@ test("one step at a time, a step runs its alone commands after its others", () =
 		assert.ok(Array.isArray(step.commands) && Array.isArray(step.alone), step.name);
 		assert.ok(step.commands.length + step.alone.length > 0, step.name);
 		assert.ok(step.cores > 0 && step.seconds >= 0, step.name);
+		assert.equal(step.width, STEPS.find((known) => known.name === step.name).width ?? null, step.name);
 	}
 	// The tree-wide checks run alone, so nothing else writes while they read every file.
 	for (const name of ["lint", "typecheck", "checks"])
@@ -563,7 +564,7 @@ test("fail-fast side by side: an alone part that fails stops the rest at once, a
 	}
 });
 
-test("side by side: a step's node --test and Go programs fan out within its cores, rounded up; one at a time as before", () => {
+test("side by side: a step's node --test and Go programs fan out within its width, or its cores rounded up; one at a time as before", () => {
 	// A stand-in node prints how it was called.
 	const bin = mkdtempSync(join(tmpdir(), "plan-node-"));
 	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
@@ -581,6 +582,7 @@ test("side by side: a step's node --test and Go programs fan out within its core
 				cores: 2.6,
 			},
 			{ name: "thin", commands: ["node --test e.test.mjs"], cores: 0.25 },
+			{ name: "waits", commands: ["node --test f.test.mjs"], cores: 1.5, width: 4 },
 		];
 		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
 		delete env.GOMAXPROCS;
@@ -592,6 +594,8 @@ test("side by side: a step's node --test and Go programs fan out within its core
 			/== changed: wide\nnode --test --test-concurrency=3 a\.test\.mjs b\.test\.mjs GOMAXPROCS=3\nnode --test --test-concurrency=3 c\.test\.mjs GOMAXPROCS=3\nnode tool\.mjs --test GOMAXPROCS=3\nnode --test d\.test\.mjs GOMAXPROCS=3\n== changed: wide passed/,
 		);
 		assert.match(side.stdout, /== changed: thin\nnode --test --test-concurrency=1 e\.test\.mjs GOMAXPROCS=1\n== changed: thin passed/);
+		// A step that mostly waits runs more files at once than its cores.
+		assert.match(side.stdout, /== changed: waits\nnode --test --test-concurrency=4 f\.test\.mjs GOMAXPROCS=4\n== changed: waits passed/);
 		const one = spawnSync("bash", ["-c", planScript(steps)], { cwd, encoding: "utf8", env });
 		assert.equal(one.status, 0, one.stdout);
 		assert.match(one.stdout, /== changed: wide\nnode --test a\.test\.mjs b\.test\.mjs GOMAXPROCS=unset\n/);
