@@ -1228,6 +1228,45 @@ it("carries the run's service tier outside the shared tool identity", () => {
 	).toThrow();
 });
 
+it("carries a chain's origin for the action review only, never to the model (finding 881f1f21)", () => {
+	const f = nativeCompanyContextFixture();
+	const room = { ...f.source("history", randomUUID(), "Room post: keep the price list current."), sequence: 4 };
+	const origin = {
+		runId: randomUUID(),
+		inputs: [f.source("input", randomUUID(), "Keep the price list current."), room],
+		routineIntent: null,
+	};
+	const context = parseCloudNativeCompanyContext({ ...f.context, origin }, f.binding);
+	expect(context.origin).toEqual(origin);
+	expect(Object.hasOwn(parseCloudNativeCompanyContext(f.context, f.binding), "origin")).toBe(false);
+	const routine = { ...origin, inputs: [], routineIntent: "Renew the domains." };
+	expect(parseCloudNativeCompanyContext({ ...f.context, origin: routine }, f.binding).origin).toEqual(routine);
+	// The model's context message never names it: a worker starts blank, and the request is the member's, not the agent's.
+	const prompt = composeCloudNativeCompanyPrompt(context);
+	expect(prompt).not.toContain("price list");
+	expect(Object.hasOwn(JSON.parse(prompt), "origin")).toBe(false);
+	// Refused: an origin with nothing in it, this run itself, another member's input, a cut source, a repeated or
+	// non-request source, an extra key (a coworker's message is never part of it), a long or bad text, and null.
+	const other = { ...f.source("input", randomUUID(), "Not the requester's."), authorUserId: randomUUID() };
+	const cut = f.source("input", randomUUID(), "Cut.");
+	cut.content = { ...cut.content, offset: 1, truncated: true };
+	for (const bad of [
+		{ ...origin, inputs: [] },
+		{ ...origin, runId: f.binding.runId },
+		{ ...origin, runId: "not-a-run" },
+		{ ...origin, inputs: [other] },
+		{ ...origin, inputs: [cut] },
+		{ ...origin, inputs: [origin.inputs[0], origin.inputs[0]] },
+		{ ...origin, inputs: [f.source("job", f.binding.runId, "{}")] },
+		{ ...origin, kind: "worker-completion" },
+		{ ...origin, message: "Check the invoices." },
+		{ ...origin, routineIntent: "x".repeat(16385) },
+		{ ...origin, routineIntent: 1 },
+		null,
+	])
+		expect(() => parseCloudNativeCompanyContext({ ...f.context, origin: bad }, f.binding)).toThrow();
+});
+
 it("names the company's agent folders, and refuses a context that names none", () => {
 	const f = nativeCompanyContextFixture();
 	const coworker = f.context.coworkers[0].id;

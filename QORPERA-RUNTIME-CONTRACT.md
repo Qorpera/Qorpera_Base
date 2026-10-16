@@ -3190,6 +3190,19 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    - Delegation to the company's own agents is denied only when the member said
      no, or when it goes against what they said. When the reviewer cannot tell
      whether the member agreed, it asks with a card.
+   Amended 2026-10-16 (finding 881f1f21: a run woken by its own worker's report
+   was denied its follow-up to that worker, because it had no member request):
+   - A run that carries on the agent's own earlier work (its workers' report,
+     a worker's own run, a machine event or check-in, an office start) and has
+     no request of its own is reviewed against the request that started that
+     work: the member inputs, room posts or routine intent of the chain's first
+     run, found by the platform from the wakes' parents (never from the agent),
+     marked as such. Only a chain of the same agent and requester has one.
+   - It carries only that request, not what the member was answering there, so
+     a chain started by a short reply ("Yes please") reads that reply alone.
+   - A coworker's message is never the request, for its own run or for a chain
+     it started (9.2): the reviewed steps of such a chain (an agent dispatching
+     or steering its worker, say) still have no member request, as before.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
