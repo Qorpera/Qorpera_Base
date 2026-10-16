@@ -606,11 +606,15 @@ has unsaved changes (4a).
   desktop, in its notification area ("Company folder"), whoever holds it.
   - **What is told.** The office service's desktop folder tells each screen, as it reads them: each page of its views'
     commits (how many changes were saved, wait for a member's approval, were not saved because the folder had a newer
-    version, or were not saved); each refusal in the folder service's notices, in the report's words (the same reason
-    and paths again only after a minute); and a drain's refusal (paused, closed, unreadable, unproven, or the paths
-    not saved). A run's views are read when its report is, and at least every 5 s besides. A member's view is read the
-    same way, by a record of its own that no run is shown, until it is read to its end, so a member-held desktop's
-    saves are shown on it alone. A drain's goes to the screen, so the member who took over sees it.
+    version, or were not saved); each refusal in the folder service's notices, in the report's words (one told is
+    told again, the same reason and paths, only after a minute, whatever was told between); and a drain's refusal
+    (paused, closed, unreadable, unproven, or the paths not saved). A run's views are read when its report is, and at
+    least every 5 s besides. A report keeps at most 64 items not shown (saves in a row are one): past that, a view's
+    reads only tell its desktop, from where they told it last (the commit and the notice), and keep nothing; once the
+    report has room, it reads the same again from its own place, and the desktop is told only what comes after. A
+    member's view is read the same way, by a record of its own that no run is shown, until it is read to its end, so
+    a member-held desktop's saves are shown on it alone. A drain's goes to the screen, so the member who took over
+    sees it.
   - **How it reaches the desktop.** The service never enters the desktop. The office guest keeps a screen's last 4
     notices for 2 minutes and, at its next look for a browser request (every 500 ms) once the desktop is ready,
     leaves each, oldest first, in the desktop's session directory (the service's `<runtime>/session`, bound at

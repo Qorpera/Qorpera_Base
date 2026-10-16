@@ -78,7 +78,8 @@ const BOUNDARY_RETRY_MS = 1000;
 /** The least time a drain's boundary is still asked with: the helper takes at least a second. */
 const DRAIN_LAST_ASK_MS = 2000;
 /** A run's report ("How 4f-2 carries the report") reads the core at most once a second, a page of this many units a
- * view, and only while fewer than `REPORT_KEPT` of its items wait to be shown. */
+ * view, into the report only while fewer than `REPORT_KEPT` of its items wait to be shown: past that a read only tells
+ * the desktop, and the report reads the same again once it has room. */
 const REPORT_READ_MS = 1000;
 const REPORT_READ_UNITS = 64;
 const REPORT_KEPT = 64;
@@ -91,7 +92,7 @@ const NOTICES_WAIT_MS = 15000;
  * were read to their end. */
 const NOTICES_AFTER_CLOSE_MS = 90000;
 /** A desktop's views are read for its notifications ("Notifications") at least this often while nothing asks for a
- * report; the same quiet refusal is told again only after `NOTIFY_SAME_MS`. */
+ * report; a quiet refusal told is told again (the same reason and paths) only after `NOTIFY_SAME_MS`. */
 const NOTIFY_READ_MS = 5000;
 const NOTIFY_SAME_MS = 60000;
 
@@ -300,18 +301,22 @@ interface ReportView {
 	readonly view: CompanyComputerFolderView;
 	/** The screen whose desktop is told of what is read. */
 	readonly screenId: string;
-	/** The last quiet refusal told, and when (performance.now()). */
-	told?: { key: string; at: number };
+	/** The quiet refusals told in the last `NOTIFY_SAME_MS`, by reason and paths, and when (performance.now()). */
+	readonly told: Map<string, number>;
 	/** The core's commits: read after the last one read (`after`), until the view is closed and read to its end. */
 	after?: string;
+	/** The last commit the desktop was told of by a read past the report's (`REPORT_KEPT`), while the report has not
+	 * read it yet. */
+	ahead?: string;
 	more: boolean;
 	done: boolean;
 	/** The folder service's notices ("Refusals come from the folder service"): asked after the last one (`after`, in
 	 * the series `nonce`), one ask at a time, until the service no longer holds the view once its commits are done, or
-	 * `until` (performance.now()) passed. */
+	 * `until` (performance.now()) passed. `ahead` is where a read past the report's told the desktop to. */
 	readonly notices: {
 		after: number;
 		nonce: string | null;
+		ahead?: { after: number; nonce: string };
 		more: boolean;
 		done: boolean;
 		until: number;
@@ -806,7 +811,8 @@ export class CompanyComputerDesktopFolders {
 			record.items = record.items.filter((item) => item.n > last);
 		}
 		const reading = this.#readNow(record);
-		if (reading) await within(reading, signal, until, undefined);
+		// A full report's read only tells the desktop: nothing to wait for.
+		if (reading && !full(record)) await within(reading, signal, until, undefined);
 		return reportOf(record);
 	}
 
@@ -829,14 +835,12 @@ export class CompanyComputerDesktopFolders {
 		return record;
 	}
 
-	/** The record's read now, unless one runs, none is due (at most once a second), its views are read to their end, or
-	 * a report holds `REPORT_KEPT` items not shown. */
+	/** The record's read now, unless one runs, none is due (at most once a second), or its views are read to their end. */
 	#readNow(record: RunReport): Promise<void> | undefined {
 		if (
 			!record.reading &&
 			!record.stop.signal.aborted &&
 			record.views.some((entry) => !entry.done || !entry.notices.done) &&
-			record.items.length < REPORT_KEPT &&
 			performance.now() - record.readAt >= REPORT_READ_MS
 		)
 			record.reading = this.#read(record)
@@ -852,18 +856,20 @@ export class CompanyComputerDesktopFolders {
 		return record.reading;
 	}
 
-	/** A page of each view's commits since the last one read, and of its notices, into the run's report. */
+	/** A page of each view's commits since the last one read, and of its notices, into the run's report; for a report
+	 * that holds `REPORT_KEPT` items not shown, a page since the last one told, for the desktop only. */
 	async #read(record: RunReport): Promise<void> {
 		for (const entry of record.views) {
 			if (record.stop.signal.aborted) return;
-			if (!entry.done) await this.#commits(record, entry);
-			if (!entry.notices.done) await this.#notices(record, entry);
+			if (!entry.done) await this.#commits(record, entry, full(record));
+			if (!entry.notices.done) await this.#notices(record, entry, full(record));
 		}
 	}
 
 	/** A refusal, or an answer that is not a page, ends a view's reads; a call with no answer is made again at the next
-	 * read. */
-	async #commits(record: RunReport, entry: ReportView): Promise<void> {
+	 * read. A read `ahead` of the report's tells the desktop only and keeps nothing; the report's read tells only the
+	 * commits after the last one it told. */
+	async #commits(record: RunReport, entry: ReportView, ahead: boolean): Promise<void> {
 		const ended = (): void => {
 			Object.assign(entry, { more: false, done: true });
 			entry.notices.until = performance.now() + NOTICES_AFTER_CLOSE_MS;
@@ -875,7 +881,7 @@ export class CompanyComputerDesktopFolders {
 				{
 					p_view_id: entry.view.viewId,
 					p_pass: entry.view.pass,
-					p_after_commit_id: entry.after ?? null,
+					p_after_commit_id: (ahead ? (entry.ahead ?? entry.after) : entry.after) ?? null,
 					p_limit: REPORT_READ_UNITS,
 				},
 				AbortSignal.any([record.stop.signal, AbortSignal.timeout(LIST_WAIT_MS)]),
@@ -886,17 +892,28 @@ export class CompanyComputerDesktopFolders {
 		}
 		const page = viewCommits(answer, entry.view.viewId);
 		if (!page) return ended();
+		const told: string[] = [];
 		for (const commit of page.commits) {
-			const saved = commit.units.filter((unit) => unit.outcome === "saved").length;
-			if (saved > 0) record.items.push({ n: ++record.next, saved });
+			const outcomes = commit.units.map((unit) => unit.outcome);
+			if (ahead) {
+				told.push(...outcomes);
+				entry.ahead = commit.commitId;
+				continue;
+			}
+			const saved = outcomes.filter((outcome) => outcome === "saved").length;
+			const last = record.items.at(-1);
+			// Saves follow each other on one item that no report was given yet.
+			if (saved > 0 && last && "saved" in last && last.n > record.given)
+				record.items[record.items.length - 1] = { n: last.n, saved: last.saved + saved };
+			else if (saved > 0) record.items.push({ n: ++record.next, saved });
 			for (const unit of commit.units)
 				if (unit.outcome !== "saved") record.items.push({ n: ++record.next, notSaved: reportNotSaved(unit) });
 			entry.after = commit.commitId;
+			if (entry.ahead === undefined) told.push(...outcomes);
+			else if (entry.ahead === commit.commitId) entry.ahead = undefined;
 		}
-		this.#tell(
-			entry.screenId,
-			folderNotice(page.commits.flatMap((commit) => commit.units.map((unit) => unit.outcome))),
-		);
+		this.#tell(entry.screenId, folderNotice(told));
+		if (ahead) return;
 		entry.more = page.more;
 		if (page.closed && !page.more) ended();
 	}
@@ -904,25 +921,36 @@ export class CompanyComputerDesktopFolders {
 	/**
 	 * One ask of a view's notices after the last one, into the run's report: each change set the folder service refused
 	 * whole at a boundary no machine asked for (a commit's paths come with the view's commits). No answer is asked again
-	 * at the next read. Asks of a view go one at a time.
+	 * at the next read. Asks of a view go one at a time. An ask `ahead` of the report's, after the last one told, tells
+	 * the desktop only; the report's ask tells only the notices after that.
 	 */
-	#notices(record: RunReport, entry: ReportView): Promise<void> {
+	#notices(record: RunReport, entry: ReportView, ahead = false): Promise<void> {
 		const notices = entry.notices;
 		notices.asking = notices.asking
 			.then(async () => {
 				if (notices.done || record.stop.signal.aborted) return;
+				const from = ahead ? (notices.ahead ?? notices) : notices;
 				const answer = await this.#helper(
-					{ op: "notices", view: entry.view, after: notices.after, nonce: notices.nonce },
+					{ op: "notices", view: entry.view, after: from.after, nonce: from.nonce },
 					NOTICES_WAIT_MS,
 					record.stop.signal,
 				);
 				const page = answer?.answer === "notices" ? answer : undefined;
+				if (ahead) {
+					if (!page?.nonce) return;
+					for (const notice of page.notices) if ("refused" in notice) this.#toldQuiet(entry, notice);
+					notices.ahead = { after: page.last, nonce: page.nonce };
+					return;
+				}
 				if (page?.nonce) {
+					// Told already up to `told`, unless the service began a new series.
+					const told = notices.ahead?.nonce === page.nonce ? notices.ahead.after : undefined;
 					for (const notice of page.notices)
 						if ("refused" in notice) {
 							this.#quiet(record, entry.view.viewId, notice);
-							this.#toldQuiet(entry, notice);
+							if (told === undefined || notice.n > told) this.#toldQuiet(entry, notice);
 						}
+					if (told === undefined || page.last >= told) notices.ahead = undefined;
 					Object.assign(notices, { after: page.last, nonce: page.nonce, more: page.more });
 				} else notices.more = false;
 				// The service let the view go once it closed, or has kept it past the minute.
@@ -961,12 +989,13 @@ export class CompanyComputerDesktopFolders {
 	}
 
 	/** The desktop is told of a quiet refusal once: the same one again (the same reason and paths) only after
-	 * `NOTIFY_SAME_MS`. */
+	 * `NOTIFY_SAME_MS`, whatever was told between. */
 	#toldQuiet(entry: ReportView, notice: Extract<CompanyComputerFolderNotice, { refused: string }>): void {
 		const key = JSON.stringify([notice.refused, notice.pathCount, notice.paths]);
 		const now = performance.now();
-		if (entry.told?.key === key && now - entry.told.at < NOTIFY_SAME_MS) return;
-		entry.told = { key, at: now };
+		for (const [told, at] of entry.told) if (now - at >= NOTIFY_SAME_MS) entry.told.delete(told);
+		if (entry.told.has(key)) return;
+		entry.told.set(key, now);
 		const { viewId } = entry.view;
 		this.#tell(
 			entry.screenId,
@@ -1012,6 +1041,7 @@ export class CompanyComputerDesktopFolders {
 			record.views.push({
 				view,
 				screenId,
+				told: new Map(),
 				more: false,
 				done: false,
 				notices: {
@@ -1047,6 +1077,11 @@ export class CompanyComputerDesktopFolders {
 			for (const entry of report.paths)
 				if (entry.outcome !== "saved") record.items.push({ n: ++record.next, notSaved: reportNotSaved(entry) });
 	}
+}
+
+/** A run's report that holds `REPORT_KEPT` items not shown: its reads only tell the desktops until it has room. */
+function full(record: RunReport): boolean {
+	return record.reported && record.items.length >= REPORT_KEPT;
 }
 
 /** The report from a run's items not yet shown, with the mark of the last item it holds (from then on given). */
