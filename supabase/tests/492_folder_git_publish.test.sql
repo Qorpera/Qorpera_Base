@@ -203,6 +203,10 @@ begin
 	u2 := jsonb_build_array(pg_temp.del(x), pg_temp.del(lx));
 	r2 := pg_temp.release(v, l2, u2);
 	perform pg_temp.landed(r2, array['saved','saved'], true);
+	-- The key is bound to its lease: the same key and units under another lease are new work, which that lease's X
+	-- does not name, and that lease stays.
+	perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', v, l3, 'git-replay-1', u), '22023');
+	if not pg_temp.leased(l3) then raise exception 'Another lease ended under the key'; end if;
 	u3 := jsonb_build_array(pg_temp.w(g || 'refs/heads/topic/c', pg_temp.stage('git-ref-c')));
 	perform pg_temp.fx(format('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values (%L, %L, %L)',
 		'63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000001', 'test'));
@@ -238,6 +242,10 @@ begin
 	end loop;
 	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', pg_temp.cv(1), l, jsonb_build_array(o)), '22023');
 	perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', pg_temp.cv(1), '{}', 'git-bad-2', jsonb_build_array(xw)),
+		'22023');
+	-- The caller's key is held to the commit's rule, though the commit gets the lease's.
+	perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', pg_temp.cv(1), l, 'short', jsonb_build_array(xw)), '22023');
+	perform pg_temp.raises(format('select pg_temp.publish(%L, %L, %L, %L)', pg_temp.cv(1), l, 'git bad key', jsonb_build_array(xw)),
 		'22023');
 	if not pg_temp.leased(l) then raise exception 'A bad publish ended the lease'; end if;
 	perform pg_temp.release(pg_temp.cv(1), l);
