@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, writeFile } from "node:fs/promises";
-import { createServer, type Server, type Socket } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import type { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -16,6 +16,7 @@ import {
 	type CompanyComputerFolderAnswers,
 	type CompanyComputerFolderBoundary,
 	type CompanyComputerFolderMount,
+	type CompanyComputerFolderNotices,
 	type CompanyComputerFolderRequest,
 	type CompanyComputerFolderRunEvent,
 	type CompanyComputerFolderRunInput,
@@ -23,6 +24,7 @@ import {
 	companyComputerFolderAnswerLogged,
 	companyComputerFolderPaths,
 	isCompanyComputerFolderName,
+	isCompanyComputerFolderNotices,
 	isCompanyComputerFolderReport,
 	isCompanyComputerFolderView,
 	parseCompanyComputerFolderRequest,
@@ -66,6 +68,16 @@ const LAUNCH_STOP_MS = 5000;
 /** A report line of `qorpera-folder command` at most. */
 const COMMAND_REPORT_BYTES = 4096;
 const PROOF_SCHEMA = "qorpera.folder-view-proof/v1";
+/** How long a `notices` ask may take, the relay's start included. */
+const NOTICES_MS = 10000;
+/** The least time between two starts of the relay. */
+const RELAY_RESTART_MS = 1000;
+/** The folder service's frames on a `notices` connection (object-gateway `folder-service/protocol.ts`): a u32
+ * big-endian length of the kind byte and the payload, the kind, then the payload's JSON. */
+const FOLDER_PROTOCOL = 4;
+const FRAME = { hello: 0x48, helloOk: 0x68, notices: 0x51, noticed: 0x71 } as const;
+/** The service's largest frame; a page of notices is about 1 MiB. */
+const FRAME_BYTES = 2 * 1024 * 1024;
 
 export function companyComputerFolderUnit(name: string): string {
 	if (!isCompanyComputerFolderName(name)) throw new Error("INVALID_COMPANY_COMPUTER_FOLDER_NAME");
@@ -103,6 +115,9 @@ export interface CompanyComputerFolderHelperSystem {
 	/** Whether a process is left in the mount namespace with this inode, and that namespace is the command's of this
 	 * mount (`isCompanyComputerCommandNamespace`): nsfs reuses the inodes of namespaces that ended. */
 	namespaceInUse(mntns: number, name: string): Promise<boolean>;
+	/** Runs `qorpera-folder relay` on this socket path (the path must not exist): each connection to it is carried to
+	 * the node's folder service. Settles once the relay exited. */
+	relay(socket: string): Promise<void>;
 }
 
 /** A program that exited 3: the node closed or refused its view, and systemd does not start it again. */
@@ -401,6 +416,7 @@ export interface CompanyComputerFolderHelperOptions {
 	readonly endedPollMs?: number;
 	readonly launchMs?: number;
 	readonly launchStopMs?: number;
+	readonly noticesMs?: number;
 	readonly log?: (line: string) => void;
 }
 
@@ -414,10 +430,14 @@ export class CompanyComputerFolderHelper {
 	readonly #endedPollMs: number;
 	readonly #launchMs: number;
 	readonly #launchStopMs: number;
+	readonly #noticesMs: number;
 	readonly #log: (line: string) => void;
-	/** Each name's requests, and a run's start, run one after another; `list`, `ended` and a command's life wait for
-	 * none. */
+	/** Each name's requests, and a run's start, run one after another; `list`, `ended`, `notices` and a command's life
+	 * wait for none. */
 	readonly #queues = new Map<string, Promise<unknown>>();
+	/** The relay `notices` asks go through while it runs, and when it last started. */
+	#relay: Promise<void> | undefined;
+	#relayAt = Number.NEGATIVE_INFINITY;
 
 	constructor(system: CompanyComputerFolderHelperSystem, options: CompanyComputerFolderHelperOptions = {}) {
 		this.#system = system;
@@ -429,6 +449,7 @@ export class CompanyComputerFolderHelper {
 		this.#endedPollMs = options.endedPollMs ?? ENDED_POLL_MS;
 		this.#launchMs = options.launchMs ?? LAUNCH_MS;
 		this.#launchStopMs = options.launchStopMs ?? LAUNCH_STOP_MS;
+		this.#noticesMs = options.noticesMs ?? NOTICES_MS;
 		this.#log = options.log ?? ((line) => console.error(line));
 	}
 
@@ -440,6 +461,7 @@ export class CompanyComputerFolderHelper {
 			[`${this.#root}/views`, 0o700],
 			[`${this.#root}/state`, 0o700],
 			[`${this.#root}/mounts`, 0o755],
+			[`${this.#root}/relay`, 0o700],
 		] as const) {
 			await mkdir(path, { mode }).catch((error: NodeJS.ErrnoException) => {
 				if (error.code !== "EEXIST") throw error;
@@ -459,7 +481,48 @@ export class CompanyComputerFolderHelper {
 			return this.#list().catch((): CompanyComputerFolderAnswers["list"] => ({ answer: "failed" }));
 		if (request.op === "ended")
 			return this.#ended(request.name).catch((): CompanyComputerFolderAnswers["ended"] => ({ answer: "failed" }));
+		if (request.op === "notices")
+			return this.#notices(request).catch((): CompanyComputerFolderAnswers["notices"] => ({ answer: "unanswered" }));
 		return this.#enqueue(request.name, () => this.#perform(request));
+	}
+
+	/**
+	 * A view's notices from the node's folder service ("Refusals come from the folder service"), asked on its `notices`
+	 * role through the folder program's relay: the view's own id and pass, so the service checks them as it checks the
+	 * mount's. Only the page goes back, never the pass. A service without the role (an older one answers its hello
+	 * "Bad role"), no relay or no answer in time is `unanswered`.
+	 */
+	async #notices(
+		request: Extract<CompanyComputerFolderRequest, { op: "notices" }>,
+	): Promise<CompanyComputerFolderAnswers["notices"]> {
+		const deadline = Date.now() + this.#noticesMs;
+		const connection = await this.#relayConnection(deadline);
+		if (!connection) return { answer: "unanswered" };
+		const page = await askNotices(connection, request, deadline - Date.now());
+		return page ? { answer: "notices", ...page } : { answer: "unanswered" };
+	}
+
+	/** A connection through the relay, which starts on the first ask and again (at most once a second) after it exited;
+	 * undefined when none came by `deadline` (Date.now()). */
+	async #relayConnection(deadline: number): Promise<Socket | undefined> {
+		const socket = `${this.#root}/relay/relay.sock`;
+		for (;;) {
+			if (!this.#relay && Date.now() - this.#relayAt >= RELAY_RESTART_MS) {
+				this.#relayAt = Date.now();
+				// A socket the last relay left would keep this one from listening.
+				const running: Promise<void> = rm(socket, { force: true })
+					.then(() => this.#system.relay(socket))
+					.catch((error: unknown) => this.#log(`folder-helper: relay: ${String(error)}`))
+					.then(() => {
+						if (this.#relay === running) this.#relay = undefined;
+					});
+				this.#relay = running;
+			}
+			const connection = await connected(socket);
+			if (connection) return connection;
+			if (Date.now() >= deadline) return undefined;
+			await delay(Math.min(this.#pollMs, Math.max(0, deadline - Date.now())));
+		}
 	}
 
 	/**
@@ -1017,6 +1080,90 @@ export class CompanyComputerFolderHelper {
 	}
 }
 
+/** A connection to a Unix socket, or undefined when none is made. */
+function connected(path: string): Promise<Socket | undefined> {
+	return new Promise((resolve) => {
+		const socket = createConnection(path);
+		socket.once("error", () => resolve(undefined));
+		socket.once("connect", () => {
+			socket.removeAllListeners("error");
+			// Its asker listens for errors from here on.
+			socket.on("error", () => undefined);
+			resolve(socket);
+		});
+	});
+}
+
+/**
+ * One ask on the folder service's `notices` role: the hello, then, once it is accepted, one `Q` for the notices after
+ * `after`. Resolves to the page its `q` carries, or to undefined on an error frame (a refused view, or a service
+ * without the role), a frame out of turn, a malformed page, the connection's end or `ms`. The connection is closed
+ * after.
+ */
+function askNotices(
+	socket: Socket,
+	request: Extract<CompanyComputerFolderRequest, { op: "notices" }>,
+	ms: number,
+): Promise<CompanyComputerFolderNotices | undefined> {
+	return new Promise((resolve) => {
+		const chunks: Buffer[] = [];
+		let length = 0,
+			accepted = false,
+			done = false;
+		const finish = (page: CompanyComputerFolderNotices | undefined): void => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			socket.destroy();
+			resolve(page);
+		};
+		const timer = setTimeout(() => finish(undefined), Math.max(0, ms));
+		const send = (kind: number, value: unknown): void => {
+			const payload = Buffer.from(JSON.stringify(value));
+			const head = Buffer.alloc(5);
+			head.writeUInt32BE(payload.length + 1, 0);
+			head[4] = kind;
+			socket.write(Buffer.concat([head, payload]));
+		};
+		socket.on("error", () => finish(undefined));
+		socket.on("close", () => finish(undefined));
+		socket.on("data", (chunk: Buffer) => {
+			chunks.push(chunk);
+			length += chunk.length;
+			let buffer = Buffer.concat(chunks, length);
+			while (!done && buffer.length >= 4) {
+				const size = buffer.readUInt32BE(0);
+				if (size === 0 || size - 1 > FRAME_BYTES) return finish(undefined);
+				if (buffer.length < 4 + size) break;
+				const kind = buffer[4];
+				let value: unknown;
+				try {
+					value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(buffer.subarray(5, 4 + size)));
+				} catch {
+					return finish(undefined);
+				}
+				buffer = buffer.subarray(4 + size);
+				if (!accepted && kind === FRAME.helloOk) {
+					accepted = true;
+					send(FRAME.notices, { after: request.after, nonce: request.nonce });
+				} else if (accepted && kind === FRAME.noticed && isCompanyComputerFolderNotices(value))
+					return finish(value);
+				else return finish(undefined);
+			}
+			chunks.length = 0;
+			length = buffer.length;
+			if (length > 0) chunks.push(buffer);
+		});
+		send(FRAME.hello, {
+			protocol: FOLDER_PROTOCOL,
+			environmentId: request.view.environmentId,
+			viewId: request.view.viewId,
+			pass: request.view.pass,
+			role: "notices",
+		});
+	});
+}
+
 /** One request line per connection, one answer line back; a run's connection carries the run after its answer. */
 export function createCompanyComputerFolderHelperServer(helper: CompanyComputerFolderHelper): Server {
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
@@ -1158,6 +1305,18 @@ export function createLinuxCompanyComputerFolderHelperSystem(): CompanyComputerF
 				env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
 				stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
 			}),
+		relay(socket) {
+			return new Promise((resolve) => {
+				// It runs until it fails or the helper stops (its unit's cgroup goes with it); its words go to the journal.
+				const child = spawn(COMPANY_COMPUTER_FOLDER_PROGRAM, ["relay", "--listen", `unix:${socket}`], {
+					cwd: "/",
+					env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+					stdio: ["ignore", "ignore", "inherit"],
+				});
+				child.once("error", () => resolve());
+				child.once("close", () => resolve());
+			});
+		},
 		namespaceInUse(mntns, name) {
 			const wanted = `mnt:[${mntns}]`;
 			// A task that exited: its links and its mount table no longer read (EINVAL opening the table of one that is

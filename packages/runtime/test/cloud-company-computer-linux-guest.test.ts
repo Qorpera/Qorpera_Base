@@ -1654,16 +1654,20 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 /** A path the company folder did not take from the fixture's desktop (F3 4f-2b). */
 const folderConflict = { path: "docs/b.md", outcome: "conflict", reason: "it changed in the company folder meanwhile" };
 
-/** The folder helper as the screen's mount asks it: each request takes the next answer queued for its op. */
+/** The folder helper as the screen's mount asks it: each request takes the next answer queued for its op. The views'
+ * notices it is asked for the run's report (none answered here) go apart from the mount's requests. */
 function folderHelper() {
 	const asked: CompanyComputerFolderRequest[] = [];
+	const noticed: Extract<CompanyComputerFolderRequest, { op: "notices" }>[] = [];
 	const queued = new Map<string, unknown[]>();
 	const ask = vi.fn(async (request: CompanyComputerFolderRequest) => {
-		asked.push(request);
+		if (request.op === "notices") noticed.push(request);
+		else asked.push(request);
 		return queued.get(request.op)?.shift();
 	});
 	return {
 		asked,
+		noticed,
 		ask: ask as unknown as typeof askCompanyComputerFolderHelper,
 		answer: (op: CompanyComputerFolderRequest["op"], ...answers: unknown[]) => {
 			queued.set(op, [...(queued.get(op) ?? []), ...answers]);
@@ -1699,6 +1703,8 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 		h.answer("unmount", { answer: "closed", unmounted: true });
 		await session.endpoint.perform(open, f.lease, f.effect());
 		expect(h.ops()).toEqual(["mount", "list", "list", "unmount", "mount"]);
+		// The closed view's notices are asked once more (F3 4f-2b-2b).
+		expect(h.noticed.map((request) => request.view.viewId)).toEqual([computerId(201)]);
 		expect(displays[0].stop).toHaveBeenCalledOnce();
 		expect(physical.launch).toHaveBeenCalledTimes(2);
 		expect(physical.launch.mock.calls[1][2]).toEqual({ company: { name, epoch: 2 } });

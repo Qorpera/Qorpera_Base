@@ -935,17 +935,41 @@ describe("a run's report of its desktop changes", () => {
 		more,
 		commits: commits.map(({ id, units }) => ({ commitId: computerId(id), units })),
 	});
-	/** The office's clock, moved on past the report's read throttle. */
+	/** The office's clock, moved on past the report's read throttle (or further). */
 	function clock() {
 		const now = performance.now.bind(performance);
 		let skipped = 0;
 		vi.spyOn(performance, "now").mockImplementation(() => now() + skipped);
 		return {
-			skip: () => {
-				skipped += 1000;
+			skip: (ms = 1000) => {
+				skipped += ms;
 			},
 		};
 	}
+	const NONCE = "7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+	/** A page of a view's notices as the helper answers the folder service's: change sets refused whole (the paths
+	 * given, `pathCount` of them in all) from `n` on, then a commit's, which the report takes from the core. */
+	const noticed = (
+		n: number,
+		refused: { reason: string; paths: string[]; pathCount?: number }[],
+		{ more = false }: { more?: boolean } = {},
+	) => ({
+		answer: "notices",
+		nonce: NONCE,
+		notices: [
+			...refused.map(({ reason, paths, pathCount = paths.length }, at) => ({
+				n: n + at,
+				at: 1760000000000,
+				refused: reason,
+				paths,
+				pathCount,
+			})),
+			{ n: n + refused.length, at: 1760000001000, commitId: computerId(70), seq: 7 },
+		],
+		last: n + refused.length,
+		more,
+	});
+	const asks = (f: ReturnType<typeof fixture>) => f.asked.filter((request) => request.op === "notices");
 	async function followed(signal = new AbortController().signal) {
 		const f = fixture();
 		f.folders.follow(run.runId, signal);
@@ -1211,6 +1235,115 @@ describe("a run's report of its desktop changes", () => {
 		t.skip();
 		await expect(report(f)).resolves.toBeUndefined();
 		expect(f.commits.map((args) => args.p_view_id)).toEqual([computerId(101), computerId(102), computerId(101)]);
+	});
+
+	it("reports a change set the folder service refused whole at a quiet boundary, once with its paths, then counted", async () => {
+		const t = clock();
+		const f = await followed();
+		const denied = { reason: "denied", paths: ["docs/a.md", "docs/b.md"], pathCount: 3 };
+		f.answer("notices", noticed(1, [denied], { more: true }));
+		const notSaved = [
+			{ path: "docs/a.md", outcome: "refused" },
+			{ path: "docs/b.md", outcome: "refused" },
+		];
+		const first = await report(f);
+		expect(first?.report).toEqual({
+			saved: 0,
+			notSaved,
+			refused: "the company folder refused 3 changes on this desktop",
+			more: true,
+		});
+		expect(asks(f)).toEqual([{ op: "notices", view: f.view(1), after: 0, nonce: null }]);
+		// The same refusal again, before the run was shown the first: counted on it, its paths not given twice.
+		t.skip();
+		f.answer("notices", noticed(3, [denied]));
+		expect((await report(f))?.report).toEqual({
+			saved: 0,
+			notSaved,
+			refused: "the company folder refused 3 changes on this desktop (2 times)",
+		});
+		expect(asks(f)[1]).toEqual({ op: "notices", view: f.view(1), after: 2, nonce: NONCE });
+		// Once shown, it comes as new.
+		const shown = await report(f);
+		t.skip();
+		f.answer("notices", noticed(5, [denied]));
+		expect((await report(f, shown!.mark))?.report).toEqual({
+			saved: 0,
+			notSaved,
+			refused: "the company folder refused 3 changes on this desktop",
+		});
+		expect(asks(f)[2]).toMatchObject({ after: 4, nonce: NONCE });
+	});
+
+	it.each([
+		["stopped", 1, "the company is paused, so the company folder did not take a change on this desktop"],
+		[
+			"unreadable",
+			2,
+			"the company folder refused 2 changes on this desktop: they used a read that is no longer readable",
+		],
+		[
+			"unproven",
+			0,
+			"the company folder refused changes on this desktop: the desktop's reads could not be shown complete",
+		],
+		["denied", 1, "the company folder refused a change on this desktop"],
+	])("words a change set refused %s at a quiet boundary in its own words", async (reason, count, words) => {
+		const f = await followed();
+		f.answer("notices", noticed(1, [{ reason, paths: ["docs/a.md", "docs/b.md"].slice(0, count) }]));
+		await expect(report(f)).resolves.toMatchObject({ report: { saved: 0, refused: words } });
+	});
+
+	it("asks the run's older view's notices once more when its mount moves on, until the service let the view go", async () => {
+		const t = clock();
+		const f = await followed();
+		// A member takes the screen over: the mount moves to their view, and the run's is asked once more.
+		f.answer("switch", { answer: "switched" });
+		f.answer("notices", noticed(1, [{ reason: "stopped", paths: ["docs/a.md"] }]));
+		await f.hold(member);
+		await vi.waitFor(() => expect(asks(f)).toEqual([{ op: "notices", view: f.view(1), after: 0, nonce: null }]));
+		// The view's commits are read to their end, and the service no longer keeps it: neither is asked again.
+		f.pages.push(page(1, [], { state: "closed" }));
+		f.answer("notices", { answer: "notices", nonce: null, notices: [], last: 0, more: false });
+		const first = await report(f);
+		expect(first?.report).toEqual({
+			saved: 0,
+			notSaved: [{ path: "docs/a.md", outcome: "refused" }],
+			refused: "the company is paused, so the company folder did not take a change on this desktop",
+		});
+		expect(asks(f)[1]).toEqual({ op: "notices", view: f.view(1), after: 2, nonce: NONCE });
+		t.skip();
+		await expect(report(f, first!.mark)).resolves.toBeUndefined();
+		expect(f.commits).toHaveLength(1);
+		expect(asks(f)).toHaveLength(2);
+		// The member's view is not the run's.
+		expect(asks(f).some((request) => request.op === "notices" && request.view.viewId === computerId(102))).toBe(
+			false,
+		);
+	});
+
+	it("asks a view's notices when the run's drain closes it, and one no service answers a minute and a half on", async () => {
+		const t = clock();
+		const f = await followed();
+		f.answer("unmount", { answer: "closed", unmounted: true });
+		await drain(f);
+		await vi.waitFor(() => expect(asks(f)).toHaveLength(1));
+		// A service without the notices role gives no answer: the view's notices are asked at each read.
+		f.pages.push(page(1, [], { state: "closed" }));
+		const first = await report(f);
+		expect(first?.report).toEqual({ saved: 0, refused: CLOSED });
+		expect(asks(f)).toHaveLength(2);
+		t.skip();
+		await expect(report(f, first!.mark)).resolves.toBeUndefined();
+		expect(asks(f)).toHaveLength(3);
+		t.skip(90000);
+		await expect(report(f, first!.mark)).resolves.toBeUndefined();
+		expect(asks(f)).toHaveLength(4);
+		t.skip();
+		await expect(report(f, first!.mark)).resolves.toBeUndefined();
+		expect(asks(f)).toHaveLength(4);
+		expect(f.commits).toHaveLength(1);
+		expect(f.options.at(-1)).toMatchObject({ timeoutMs: 15000 });
 	});
 
 	it("waits for a read until its deadline, and the read goes on for the next ask", async () => {
