@@ -354,7 +354,13 @@ describe("CodeHostJobs", () => {
 			{ path: "code/acme/app/repo.git/packed-refs", outcome: "saved" },
 			{ path: "code/acme/app/repo.git/refs/heads/main", outcome: "conflict" },
 		]);
-		const cases: { publishes: FakeHost["publishes"]; code?: string; detail?: string; count: number; waitMs?: number }[] = [
+		const cases: {
+			publishes: FakeHost["publishes"];
+			code?: string;
+			detail?: string;
+			count: number;
+			waitMs?: number;
+		}[] = [
 			{ publishes: [{ status: 4, stdout: conflict }], code: "CODE_HOST_PUBLISH_REFUSED", count: 1 },
 			{
 				publishes: [{ status: 4, stdout: report([], { refused: "UNPROVEN_READS" }) }],
@@ -363,9 +369,19 @@ describe("CodeHostJobs", () => {
 				count: 1,
 			},
 			// Answered before its release check failed: publishing again would find nothing pending.
-			{ publishes: [{ status: 1, stdout: conflict }, { status: 0, stdout: report([]) }], code: "CODE_HOST_PUBLISH_REFUSED", count: 1 },
+			{
+				publishes: [
+					{ status: 1, stdout: conflict },
+					{ status: 0, stdout: report([]) },
+				],
+				code: "CODE_HOST_PUBLISH_REFUSED",
+				count: 1,
+			},
 			{ publishes: [{ status: 3 }], code: "CODE_HOST_VIEW_CLOSED", count: 1 },
-			{ publishes: [{ status: 1 }, "lost", { status: 0, stdout: "not json\n" }, { status: 0, stdout: saved() }], count: 4 },
+			{
+				publishes: [{ status: 1 }, "lost", { status: 0, stdout: "not json\n" }, { status: 0, stdout: saved() }],
+				count: 4,
+			},
 			{
 				publishes: [{ status: 1, stdout: report([{ path: "code/acme/app/repo.git/HEAD", outcome: "waiting" }]) }],
 				count: 2,
@@ -498,7 +514,9 @@ describe("CodeHostJobs", () => {
 		for (const begin of begins) {
 			const { lxd, control, jobs } = setup();
 			control.gcBegin = () => begin;
-			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), (job, gc) => gc.begin(repository, job.signal))).rejects.toMatchObject({
+			await expect(
+				jobs.run(COMPANY, ENVIRONMENT, signal(), (job, gc) => gc.begin(repository, job.signal)),
+			).rejects.toMatchObject({
 				code: "CODE_HOST_GC_UNANSWERED",
 			});
 			expect(lxd.labels()).not.toContain("publish");
@@ -506,7 +524,9 @@ describe("CodeHostJobs", () => {
 		for (const end of [{ schema: "qorpera.folder-git-gc/v1", state: "blocking", held: 0 }, {}, null]) {
 			const { control, jobs } = setup();
 			control.gcEnd = () => end;
-			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), (job, gc) => gc.end(repository, job.signal))).rejects.toMatchObject({
+			await expect(
+				jobs.run(COMPANY, ENVIRONMENT, signal(), (job, gc) => gc.end(repository, job.signal)),
+			).rejects.toMatchObject({
 				code: "CODE_HOST_GC_UNANSWERED",
 			});
 		}
@@ -660,7 +680,11 @@ describe("codeHostPublishAnswer", () => {
 			[0, '{"paths":{}}\n', "unanswered"],
 		];
 		for (const [status, stdout, answer] of cases)
-			expect([status, stdout, codeHostPublishAnswer(status, Buffer.from(stdout)).answer]).toEqual([status, stdout, answer]);
+			expect([status, stdout, codeHostPublishAnswer(status, Buffer.from(stdout)).answer]).toEqual([
+				status,
+				stdout,
+				answer,
+			]);
 		expect(codeHostPublishAnswer(0, Buffer.from([0xff, 0x0a])).answer).toBe("unanswered");
 		const many = report(Array.from({ length: 25 }, (_, i) => ({ path: `p${i}`, outcome: "not_applied" })));
 		expect(codeHostPublishAnswer(4, Buffer.from(many))).toEqual({
@@ -724,9 +748,9 @@ describe("the code host's scripts", () => {
 		const dir = await mkdtemp(join(tmpdir(), "code-host-views-"));
 		dirs.push(dir);
 		const stubs: Record<string, string> = {
-			systemctl: 'case "$1" in show) printf "%s\\n" "$SHOW" ;; stop) exit "${STOP:-0}" ;; esac',
+			systemctl: 'case "$1" in show) printf "%s\\n" "$SHOW" ;; stop) [ -z "$STOP" ] || exit "$STOP" ;; esac',
 			mountpoint: '[ "$(cat "$STATE/mounts")" -gt 0 ]',
-			umount: '[ -n "${STUCK:-}" ] || echo $(($(cat "$STATE/mounts") - 1)) >"$STATE/mounts"',
+			umount: '[ -n "$STUCK" ] || echo $(($(cat "$STATE/mounts") - 1)) >"$STATE/mounts"',
 			rm: ":",
 			findmnt: 'printf "%b" "$FINDMNT"',
 		};
@@ -738,7 +762,11 @@ describe("the code host's scripts", () => {
 			env: { PATH: `${dir}:/usr/bin:/bin`, STATE: dir, ...env },
 			encoding: "utf8",
 		});
-		return { status: run.status, stdout: run.stdout, log: (await readFile(join(dir, "log"), "utf8")).split("\n").filter(Boolean) };
+		return {
+			status: run.status,
+			stdout: run.stdout,
+			log: (await readFile(join(dir, "log"), "utf8")).split("\n").filter(Boolean),
+		};
 	}
 
 	const unit = "qorpera-code-host-folder.service";
@@ -791,7 +819,9 @@ describe("the code host's scripts", () => {
 				`systemctl show --property=ActiveState,Result,ExecMainCode,ExecMainStatus -- ${unit}`,
 			],
 		});
-		await expect(script(CODE_HOST_FOLDER_STATE, { FINDMNT: "", SHOW: "ActiveState=inactive" })).resolves.toMatchObject({
+		await expect(
+			script(CODE_HOST_FOLDER_STATE, { FINDMNT: "", SHOW: "ActiveState=inactive" }),
+		).resolves.toMatchObject({
 			stdout: "Mount=\nActiveState=inactive\n",
 		});
 	});
