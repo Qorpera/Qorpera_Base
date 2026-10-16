@@ -274,20 +274,23 @@ true; `core.checkStat` minimal; `core.trustctime` false; `core.splitIndex` false
 `url.<relay>.insteadOf` for GitHub (5j). Under root these are defaults that keep honest tools working on the shared
 directory, not walls; the walls are the folder's rules (5b) and the code host's own git (5e).
 
-**The lock protocol, refusals, names and cleanup** are §6's ("Git on the mount"). The folder program serves them
-(5d): an exclusive create of a shared `X.lock` takes the lease and refreshes `X` before `open()` returns, the rename
-over `X` is the publish point inside the syscall (`git pack-refs`' rename of `packed-refs.new`, which the same lease
-guards, onto `packed-refs` too, before it prunes a loose ref), a lock's removal publishes `X`'s pending change, `utime`
-under `repo.git/objects` returns EPERM, and a written file keeps its time in the session's view. The code host's view
-(the platform's) writes the session-local files and every other file no lease covers (`HEAD`, the probe files `git
-init` makes) as plain files its boundary publishes, so it can make a new `repo.git`; a ref, `packed-refs`, `shallow`
-and a ref's log change under their lease for it too. A lease's change set makes only the folders below `repo.git`, so
-the first publish under a lease in a `repo.git` new in the view runs a boundary first, which saves the directory with
-`HEAD` and `config`. A view's machine is never told the path of its own new folder going live, which still shows as the
-same folder: the kernel would drop the folder's entry, and git working in that `repo.git` could no longer name its
-directory (`getcwd` fails). After a publish under a lease the view shows live again every new folder above what it
-published, up to a folder it shows live, even one that still holds the view's own pending files (a new `repo.git`'s
-`refs`, beside its `refs/tags`): a new folder shows nothing live in it, so git would not see the ref it just published.
+**The lock protocol, refusals, names and cleanup** are §6's ("Git on the mount"). The folder program serves them (5d):
+an exclusive create of a shared `X.lock` takes the lease and refreshes `X` before `open()` returns (for `packed-refs` it
+also reads the feed, so git does not pack back a loose ref another session deleted), the rename over `X` is the publish
+point inside the syscall (`git pack-refs`' rename of `packed-refs.new`, which the same lease guards, onto `packed-refs`
+too, before it prunes a loose ref; the lock is then git's until git removes it, and another create of it is EEXIST), a
+lock's removal publishes `X`'s pending change, `utime` under `repo.git/objects` returns EPERM, and a written file keeps
+its time in the session's view. The code host's view (the platform's) writes the session-local files and every other
+file no lease covers (`HEAD`, the probe files `git init` makes) as plain files its boundary publishes, so it can make a
+new `repo.git`; a ref, `packed-refs`, `shallow` and a ref's log change under their lease for it too. A lease's change
+set makes only the folders below `repo.git`, so the first publish under a lease in a `repo.git` new in the view runs a
+boundary first, which saves the directory with `HEAD` and `config`. A view's machine is told its own new folder going
+live, which still shows as the same folder, by a name below it that no folder holds (a control character): it lists the
+folder again, as what the folder holds may change with it, and keeps the folder's entry. Told the folder's own path, the
+kernel would drop that entry, and git working in that `repo.git` could no longer name its directory (`getcwd` fails).
+After a publish under a lease the view shows live again every new folder above what it published, up to a folder it
+shows live, even one that still holds the view's own pending files (a new `repo.git`'s `refs`, beside its `refs/tags`):
+a new folder shows nothing live in it, so git would not see the ref it just published.
 The core enforces the rules (5b, §7 item 9 as amended here):
 
 - `.git` and `repo.git` refused at any depth outside `code/<owner>/<name>/`, accepted inside;
