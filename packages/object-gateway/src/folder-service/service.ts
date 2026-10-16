@@ -96,6 +96,10 @@ export interface FolderServiceOptions {
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
  * everything instead. */
 const RESYNC_OVER = 5_000;
+
+/** A name no folder holds (the Company File refuses a control character). Told below a folder, it drops the machine's
+ * listing of the folder and keeps the folder's own entry: what a view's own new folder going live is told as. */
+export const LISTING_ONLY = "\u0001";
 /** Replaced versions of one path kept readable for files opened before (an engineering bound on memory: a file
  * opened that many versions ago reads ESTALE). They go when the path leaves the view. */
 const SUPERSEDED_PER_PATH = 16;
@@ -1017,6 +1021,10 @@ export class FolderService {
 				if (target !== null && request.create && view.gitTaking.has(target))
 					throw new ProtocolError(ErrorCode.exists, "Another git command is taking this lock");
 				const take = target !== null && request.create && !view.gitLeases.has(target);
+				// A lock whose publish ended its lease (`packed-refs.new`'s rename) is git's until git removes it: another
+				// create of it fails as on a disk, and git tries again.
+				if (target !== null && request.create && view.gitLeases.get(target)?.ended)
+					throw new ProtocolError(ErrorCode.exists, "This git lock is held until git removes it");
 				if (!take) this.#gitGuard(view, request.path);
 				const opened = take ? await this.#gitLock(view, target, open) : await open();
 				view.handles.add(opened.handle);
@@ -1676,13 +1684,16 @@ export class FolderService {
 		return new Set(nodes ? paths.filter((path) => nodes.get(path)?.kind === "folder") : []);
 	}
 
-	/** `changed` but each of the view's own folders (`own`, taken before the change) that still shows as a folder:
-	 * its publish changes nothing the machine shows at that path. Told, the kernel would drop the folder's entry, and a
-	 * program working in it could not name it again until something looked the path up: `getcwd` fails (ENOENT), so
-	 * does git in a new `repo.git` the boundary before its first ref's lease saved (git makes each lock's path
-	 * absolute by it). What changes in the folder is told by its own paths. */
+	/** `changed`, with each of the view's own folders (`own`, taken before the change) that still shows as a folder told
+	 * as `LISTING_ONLY` below it. Told its path, the kernel would drop the folder's entry, and a program working in it
+	 * could not name it again until something looked the path up: `getcwd` fails (ENOENT), so does git in a new
+	 * `repo.git` the boundary before its first ref's lease saved (git makes each lock's path absolute by it). What the
+	 * folder holds may still change with it (a moved folder listed between the feed's round and the settle, or one
+	 * another machine made too, with files in it): the machine lists it again. */
 	#shown(view: View, changed: readonly string[], own: ReadonlySet<string>): string[] {
-		return changed.filter((path) => !own.has(path) || view.pending?.get(path)?.kind !== "folder");
+		return changed.map((path) =>
+			own.has(path) && view.pending?.get(path)?.kind === "folder" ? `${path}/${LISTING_ONLY}` : path,
+		);
 	}
 
 	#push(view: View, changed: readonly string[]): void {
@@ -1932,11 +1943,15 @@ export class FolderService {
 			if (!view.gitLeases.has(packedRefs)) drop.push(packedRefs);
 			view.pending?.drop(drop);
 			this.#push(view, drop);
-			await this.#gitCatchUp(view, [
-				[target, lock.versions.file],
-				[gitReflog(target), lock.versions.reflog],
-				[packedRefs, lock.versions.packedRefs],
-			]);
+			await this.#gitCatchUp(
+				view,
+				[
+					[target, lock.versions.file],
+					[gitReflog(target), lock.versions.reflog],
+					[packedRefs, lock.versions.packedRefs],
+				],
+				target === packedRefs,
+			);
 			return await create();
 		} catch (error) {
 			view.gitLeases.delete(target);
@@ -1948,10 +1963,13 @@ export class FolderService {
 	}
 
 	/** Reads the feed until the view shows each path at its version (null: no file), a few rounds; EEXIST if it does
-	 * not then, so git tries the lock again. */
-	async #gitCatchUp(view: View, want: readonly (readonly [string, string | null])[]): Promise<void> {
+	 * not then, so git tries the lock again. `packing` (`packed-refs`' lock) reads it at least once: git packs the loose
+	 * refs the view lists, and a branch another session deleted under this lock before must be gone from it, not packed
+	 * back. */
+	async #gitCatchUp(view: View, want: readonly (readonly [string, string | null])[], packing = false): Promise<void> {
 		for (let round = 0; ; round++) {
-			if (want.every(([path, version]) => (view.tree?.get(path)?.version ?? null) === version)) return;
+			const shown = want.every(([path, version]) => (view.tree?.get(path)?.version ?? null) === version);
+			if (shown && (round > 0 || !packing)) return;
 			if (round === GIT_CATCH_UP_ROUNDS)
 				throw new ProtocolError(ErrorCode.exists, "The view has not caught up with this git lock yet");
 			this.#queue(view, () => this.#advance(view));

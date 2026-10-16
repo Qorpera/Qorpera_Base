@@ -20,7 +20,7 @@ import {
 	parseRename,
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
-import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
+import { FolderService, LISTING_ONLY, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging, GatewayUploads } from "../src/folder-service/staging.ts";
 import {
 	BRIDGE,
@@ -1062,6 +1062,42 @@ describe("writes through the mount", () => {
 		expect((await view.publish()).paths).toEqual([
 			{ path: "docs/a.md", outcome: "conflict", reason: "version_changed", receipt: expect.any(String) },
 		]);
+	});
+
+	it("tells the machine of the view's own folder going live by a name below it: it lists the folder again, keeps its entry", async () => {
+		const told = (view: ViewHandle): string[] => {
+			const paths: string[] = [];
+			view.subscribe({ change: (message) => paths.push(...message.paths), closed: () => undefined });
+			return paths;
+		};
+		// A moved folder: the machine may have listed it empty between the feed's round and the settle.
+		{
+			const { root, core, open } = await fixture();
+			core.seed([folder("a"), await storeFile(root, "a/x", "x", 1, BIG)]);
+			const view = await open();
+			await view.rename({ from: "a", to: "b", noReplace: false });
+			const paths = told(view);
+			await view.publish();
+			expect(core.entries.has("b/x")).toBe(true);
+			expect(paths).toContain(`b/${LISTING_ONLY}`);
+			expect(paths).not.toContain("b");
+			expect((await view.list("b", undefined)).entries.map((entry) => entry.name)).toEqual(["x"]);
+		}
+		// A folder another machine made too, with a file in it: the machine listed it empty while it was the view's own.
+		{
+			const { root, core, service, open } = await fixture();
+			const view = await open();
+			await view.mkdir("shared");
+			core.write(folder("shared"));
+			core.write(await storeFile(root, "shared/y", "y", 60, BIG));
+			await service.poll();
+			await service.settled();
+			const paths = told(view);
+			await view.publish();
+			expect(paths).toContain(`shared/${LISTING_ONLY}`);
+			expect(paths).not.toContain("shared");
+			expect((await view.list("shared", undefined)).entries.map((entry) => entry.name)).toEqual(["y"]);
+		}
 	});
 
 	it("bases a save on what this view's move published when it names the version the file showed before", async () => {

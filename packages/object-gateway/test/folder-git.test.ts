@@ -698,6 +698,8 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.entries.has(`${packed}.new`)).toBe(false);
 		expect(core.gitLeases.has(packed)).toBe(false);
 		await refused(write(host, `${packed}.new`, lines, true), "NOT_PERMITTED");
+		// The lock is git's until git removes it: another git's create of it fails as on a disk, and that git waits.
+		await refused(write(host, `${packed}.lock`, "", true), "EXISTS");
 		await host.unlink(`${packed}.lock`, undefined);
 		expect(await names(host, R)).not.toContain("packed-refs.lock");
 		await write(host, `${MAIN}.lock`, "", true);
@@ -720,6 +722,20 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.entries.get(packed)?.fileSha256).toBe(hashOf(lines));
 		expect(core.gitLeases.size).toBe(0);
 		expect(core.gitPublishes.map((publish) => publish.published)).toEqual([true, true, false]);
+	});
+
+	it("reads the feed before git packs refs under packed-refs' lock, so a ref another session deleted is not packed back", async () => {
+		const { core, openAs } = await repo(codeHostGrants());
+		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
+		const host = await openAs(CODE_HOST);
+		expect(await names(host, `${R}/refs/heads`)).toEqual(["main", "topic"]);
+		// Another session deleted the loose topic (`git branch -D`); the view has not read the feed since.
+		core.remove(TOPIC);
+		core.remove(TOPIC_LOG);
+		await write(host, `${R}/packed-refs.lock`, "", true);
+		expect(await names(host, `${R}/refs/heads`)).toEqual(["main"]);
+		await host.unlink(`${R}/packed-refs.lock`, undefined);
+		expect(core.gitLeases.size).toBe(0);
 	});
 
 	it("saves an object, or an objects folder, another session published first as it is", async () => {
