@@ -254,7 +254,15 @@ describe("machine command authority", () => {
 			machine: "build-a",
 			executorOwner: "mx-a",
 			providerId: "machine-node",
+			// The boot a start waits for, and who its folder window credits (F3 6d).
+			bootId: f.answer.bootId,
+			runId: f.answer.identity.runId,
+			staffAgentId: f.answer.identity.staffAgentId,
+			requestedByUserId: f.answer.identity.requesterUserId,
 		});
+		// Before the machine's first boot, there is none.
+		f.call.mockResolvedValueOnce({ ...f.answer, bootId: null });
+		expect(await authorizeMachineCommand(f, f.request, f.signal)).toMatchObject({ bootId: null });
 		expect(f.call.mock.calls[0]?.[1]).toMatchObject({
 			p_action: "start",
 			p_detail: { commandHead: "npm ci && npm run test:hosted-db € 😀", notify: true },
@@ -296,6 +304,13 @@ describe("machine command authority", () => {
 		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
 			"MACHINE_COMMAND_AUTHORITY_INVALID",
 		);
+		// Nor is one whose boot is not a boot id.
+		for (const bootId of [undefined, "boot-1", 7]) {
+			f.call.mockResolvedValueOnce({ ...f.answer, bootId });
+			await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
+				"MACHINE_COMMAND_AUTHORITY_INVALID",
+			);
+		}
 	});
 	it("passes a peer's refusal on as the same refusal", async () => {
 		const f = fixture();

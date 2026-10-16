@@ -379,6 +379,35 @@ describe("filled values on one screen", () => {
 		);
 	});
 
+	it("hides text shaped like a hook's signing secret with nothing typed, and not a masked one (E3c-3)", () => {
+		const filled = new CompanyComputerFilledValues();
+		const secret = "whsec_AbCdEfGhIjKlMnOpQrStUvWx0123+/=";
+		expect(filled.current()).toEqual([]);
+		expect(filled.hide(`Signing secret ${secret} Copy`)).toBe("Signing secret [hidden] Copy");
+		expect(filled.hide(`https://x.example/?s=${encodeURIComponent(secret)}&a=1`)).toBe(
+			"https://x.example/?s=[hidden]&a=1",
+		);
+		expect(filled.hideAddress(`https://x.example/hooks?s=${encodeURIComponent(secret).toLowerCase()}`)).toBe(
+			"https://x.example/hooks?[hidden]",
+		);
+		expect(filled.showsDecoded(encodeURIComponent(`https://x.example/?s=${encodeURIComponent(secret)}`))).toBe(true);
+		// Encoded twice or more, the whole secret is hidden, never down to its first escape (whose rest decodes back).
+		const twice = encodeURIComponent(encodeURIComponent(secret));
+		expect(filled.hide(`https://x.example/?s=${twice}&a=1`)).toBe("https://x.example/?s=[hidden]&a=1");
+		expect(filled.hideText(`Moved to https://x.example/?s=${twice}`)).toBe("Moved to https://x.example/?s=[hidden]");
+		expect(filled.hide("whsec_A%252BBCDEFGHIJKLMNOP and whsec_Q%25252FRSTUVWXYZ012345")).toBe(
+			"[hidden] and [hidden]",
+		);
+		// A part of a secret recorded as a value (a refused read keeps what it saw) cuts no secret: the whole one goes first.
+		const partial = new CompanyComputerFilledValues();
+		partial.add("whsec_A", "signing_secret");
+		expect(partial.hideText("whsec_A%252BBCDEFGHIJKLMNOP")).toBe("[hidden]");
+		expect(partial.hide(`Signing secret ${secret} Copy`)).toBe("Signing secret [hidden] Copy");
+		expect(partial.hideText(`Moved to https://x.example/?s=${twice}`)).toBe("Moved to https://x.example/?s=[hidden]");
+		for (const text of ["Signing secret whsec_•••••••• Reveal", "Starts with whsec_", "whsec_... (hidden)"])
+			expect(filled.shows(text), text).toBe(false);
+	});
+
 	it("drops spent codes before it drops a password", () => {
 		let now = 0;
 		const filled = new CompanyComputerFilledValues(() => now);

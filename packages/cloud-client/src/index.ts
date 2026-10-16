@@ -8,7 +8,6 @@ export * from "./cloud-company-computer-start.ts";
 export * from "./cloud-company-computer-view-channel.ts";
 export * from "./cloud-company-computer-viewer.ts";
 export * from "./cloud-company-computer-views.ts";
-export * from "./cloud-file-transfer.ts";
 export * from "./cloud-member-browser-recovery.ts";
 export * from "./cloud-member-company-computer.ts";
 export * from "./cloud-member-company-presence.ts";

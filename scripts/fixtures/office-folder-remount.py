@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Disposable nested-VM proof for Q3: do running office namespaces follow a company folder mount systemd restarts?
 
-The real qorpera-folder program runs under master's mount unit, with only its paths moved to #1047's /run layout and a
-synthetic protocol-3 node on a Unix socket. Office namespaces are started by the runtime's own process gate with the
-runtime's bubblewrap arguments, from a relay that carries every confinement line of master's office unit. This is not
-the office helper or the office application: no plumber, credentials, vsock identity, SQL or model is claimed.
+The real qorpera-folder program runs under master's office mount unit, rendered as the image installer renders it, with
+only its program and a synthetic protocol-4 node on a Unix socket put in. Office namespaces are started by the runtime's
+own process gate with the runtime's bubblewrap arguments, from a relay that carries every confinement line of master's
+office unit. This is not the office helper or the office application: no plumber, credentials, vsock identity, SQL or
+model is claimed.
 """
 import difflib
 import errno
@@ -34,9 +35,11 @@ base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base)
 
 ROOT = Path("/run/qorpera-folder")
-# Not master's unit name, so nothing the image itself carries is shadowed or started.
-UNIT = "qorpera-office-folder-mount@{}.service"
-UNIT_FILE = Path("/run/systemd/system/qorpera-office-folder-mount@.service")
+# Not the office unit's name: an image's own unit in /etc would shadow one of that name in /run, and nothing the image
+# carries is started.
+UNIT = "qorpera-remount-folder-mount@{}.service"
+UNIT_FILE = Path("/run/systemd/system/qorpera-remount-folder-mount@.service")
+IMAGE_UNIT = Path("/etc/systemd/system/qorpera-office-folder-mount@.service")
 OFFICE_UNIT = "qorpera-company-computer.service"
 # The mountpoint's mode while nothing is mounted over it, each measured in its own view; 0700 is #1047's.
 MODES = ("0000", "0700", "0755")
@@ -46,38 +49,32 @@ CHOSEN = ("0000", "0755")
 CONFINEMENT = {"User", "Group", "UMask", "LimitCORE", "PrivateTmp", "PrivateDevices", "ProtectSystem", "ProtectHome", "ProtectProc", "ProcSubset", "ProtectHostname", "ProtectClock", "ProtectKernelTunables", "ProtectKernelLogs", "ProtectKernelModules", "ProtectControlGroups", "NoNewPrivileges", "CapabilityBoundingSet", "AmbientCapabilities", "RestrictNamespaces", "RestrictAddressFamilies", "RestrictSUIDSGID", "LockPersonality", "MemoryMax", "MemorySwapMax", "TasksMax", "CPUQuota", "InaccessiblePaths"}
 # What the office service needs to run the application, not to confine it: recorded as left out.
 OPERATIONAL = {"Type", "StateDirectory", "StateDirectoryMode", "WorkingDirectory", "Environment", "LoadCredential", "ExecStart", "Restart", "RestartSec", "KillMode", "KillSignal", "SendSIGKILL", "TimeoutStopSec", "ReadWritePaths"}
-# Master's mount unit lines that name /etc and /srv, and what they become in #1047's layout (None: dropped).
-MOUNT_LINES = {
-    "ConditionPathExists=/etc/qorpera-folder/mounts/%i.json": "ConditionPathExists=/run/qorpera-folder/views/%i.json",
-    "ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /srv/qorpera-folder": None,
-    "ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /srv/qorpera-folder/%i": None,
-    "ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /etc/qorpera-folder/mounts/%i.json --mountpoint /srv/qorpera-folder/%i": "ExecStart={program} mount --connect unix:{socket} --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid {uid} --owner-gid {gid}",
-    "ExecStopPost=-/usr/bin/umount -l /srv/qorpera-folder/%i": "ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company",
-    # Started by the proof only, never at boot.
-    "[Install]": None,
-    "WantedBy=multi-user.target": None,
-}
+# Master's office mount unit's ExecStart, rendered, and what it becomes: the proof's program and the synthetic node.
+MOUNT_START = "ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid {uid} --owner-gid {gid}"
+PROOF_START = "ExecStart={program} mount --connect unix:{socket} --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid {uid} --owner-gid {gid}"
 SHOWN = ("MainPID", "NRestarts", "ExecMainStatus", "ExecMainCode", "ActiveState", "SubState", "Result")
 
 
-def proof_unit(text, program, node_socket, uid, gid):
-    """Master's mount unit with its paths moved to #1047's layout, the synthetic node's socket, and no [Install]."""
+def rendered_unit(template, uid, gid):
+    """Master's office mount unit as the image installer writes it: each id placeholder once, replaced."""
     if any(type(value) is not int or not 0 < value < 4294967295 for value in (uid, gid)):
         raise ValueError("Invalid mount owner")
-    lines = text.splitlines()
-    for old in MOUNT_LINES:
-        if lines.count(old) != 1:
-            raise ValueError(f"master's mount unit no longer has exactly one line {old!r}")
-    out = []
-    for line in lines:
-        if line not in MOUNT_LINES:
-            out.append(line)
-        elif MOUNT_LINES[line] is not None:
-            out.append(MOUNT_LINES[line].format(program=program, socket=node_socket, uid=uid, gid=gid))
-    for line in out:
-        if not line.startswith("#") and ("/srv/" in line or "/etc/qorpera-folder" in line):
-            raise ValueError(f"an unmoved path is left: {line!r}")
-    return "\n".join(out) + "\n"
+    if template.count("@OFFICE_UID@") != 1 or template.count("@OFFICE_GID@") != 1:
+        raise ValueError("master's office mount unit no longer names each office id once")
+    return template.replace("@OFFICE_UID@", str(uid)).replace("@OFFICE_GID@", str(gid))
+
+
+def proof_unit(template, program, node_socket, uid, gid):
+    """Master's office mount unit, rendered, with only its ExecStart's program and node changed. Started by the proof
+    only, never at boot."""
+    lines = rendered_unit(template, uid, gid).splitlines()
+    start = MOUNT_START.format(uid=uid, gid=gid)
+    if lines.count(start) != 1 or sum(line.startswith("ExecStart=") for line in lines) != 1:
+        raise ValueError(f"master's office mount unit no longer starts with exactly {start!r}")
+    if "[Install]" in lines:
+        raise ValueError("master's office mount unit has an [Install] section")
+    proof = PROOF_START.format(program=program, socket=node_socket, uid=uid, gid=gid)
+    return "\n".join(proof if line == start else line for line in lines) + "\n"
 
 
 def office_lines(text):
@@ -555,7 +552,7 @@ def preflight(directory, fuse):
         seen["officeUnitAgainstMaster"] = list(difflib.unified_diff((directory / "office.service").read_text().splitlines(), installed.splitlines(), "master", office_unit["FragmentPath"], n=0, lineterm=""))
     seen["imageFolder"] = {
         "opt": sorted(os.listdir("/opt/qorpera-folder")) if Path("/opt/qorpera-folder").is_dir() else None,
-        "units": sorted(str(path) for folder in ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system") for path in Path(folder).glob("qorpera-folder*")),
+        "units": sorted(str(path) for folder in ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system") for name in ("qorpera-folder*", "qorpera-office-folder*") for path in Path(folder).glob(name)),
     }
     for path in (ROOT, UNIT_FILE):
         if path.exists():
@@ -564,6 +561,14 @@ def preflight(directory, fuse):
     if office.pw_uid == 0:
         raise RuntimeError("The office account must be unprivileged")
     seen["office"] = {"uid": office.pw_uid, "gid": office.pw_gid}
+    # An image with the folder carries the office mount unit: the proof runs that very unit, under its own name, with
+    # only the program and the node changed.
+    seen["imageMountUnitSha256"] = None
+    if IMAGE_UNIT.exists():
+        installed = IMAGE_UNIT.read_text()
+        seen["imageMountUnitSha256"] = hashlib.sha256(installed.encode()).hexdigest()
+        if installed != rendered_unit((directory / "mount.service").read_text(), office.pw_uid, office.pw_gid):
+            raise RuntimeError(f"The image's {IMAGE_UNIT} is not master's office mount unit as the installer renders it")
     return seen, office
 
 
@@ -644,7 +649,7 @@ def gap_trial(relay, mode, troubles):
         if trial["commandStart"]["started"]:
             started.append(command)
             trial["commandBefore"] = {"look": ask(relay, command, {"op": "look"}, troubles), "write": ask(relay, command, {"op": "write", "path": "gap.txt", "text": "gap"}, troubles)}
-        # A shell that starts in /company, as shell.ts's comment says it will once the folder is mounted.
+        # A shell that starts in /company, as the desktop's Terminal does once the folder is mounted (F3 4f-1b).
         trial["shellAtCompanyStart"] = relay.call("start", name=shell, shape="shell", folder="candidate", view=view, chdir="/company")
         if trial["shellAtCompanyStart"]["started"]:
             started.append(shell)
@@ -688,12 +693,12 @@ LOSS = {
     "closed": ("loss-closed.txt", "closed"),
 }
 LIMITATIONS = [
-    "A synthetic protocol-3 node on a Unix socket: no database, vsock identity, switchable views or plumber",
+    "A synthetic protocol-4 node on a Unix socket: no database, vsock identity, switchable views or plumber",
     "Office namespaces come from the runtime's process gate and mirrored bubblewrap arguments in a relay with the office unit's confinement, not from the office application",
     "Stand-in private surfaces in the proof directory, not the office state directory",
     "Every namespace's program reads requests on a stdin pipe; the command shape is used without display or capture",
     "systemd-run takes the office unit's InaccessiblePaths lines as transient properties, where unit specifiers are not expanded",
-    "The A1 image predates folder-v2: the folder program and the mount unit's lines were pushed in from master",
+    "The folder program is pushed in from this tree, and the mount unit is master's office unit under the proof's own name: an image's own unit is compared byte for byte, never started",
 ]
 
 
@@ -944,21 +949,6 @@ class Proof:
         self.note("officeStartedOverMount", {name: entry for name, (_, entry) in self.over.items()})
         self.note("directAfterKill2", self.ask(self.relay1, "direct", {"op": "read", "path": "before.txt"}))
 
-    def cleared_kill(self):
-        """A third `systemctl kill`, with a drop-in that clears a dead mount before each start: recorded, not checked."""
-        drop_in = UNIT_FILE.parent / f"{self.unit}.d" / "q3-clear.conf"
-        text = f"[Service]\nExecStartPre=-/usr/bin/umount -l {self.point}\n"
-        drop_in.parent.mkdir(mode=0o755, exist_ok=True)
-        self.claimed["dropIn"] = drop_in
-        drop_in.write_text(text)
-        base.run("systemctl", "daemon-reload")
-        restart = self.kill("systemctl", "after3.txt", "after cleared restart")
-        shutil.rmtree(drop_in.parent)
-        self.claimed.pop("dropIn")
-        base.run("systemctl", "daemon-reload")
-        # kill() finds the host served only when NRestarts rose by exactly one.
-        self.note("kill3Cleared", {"dropIn": text, "oneRestart": restart["hostServedAfterSeconds"] is not None, **restart})
-
     def exit_three(self):
         """The node closes the view: the program exits 3, which the unit must not restart."""
         before = show(self.unit)
@@ -990,8 +980,6 @@ class Proof:
                 steps["views"][view] = repr(error)
         if self.node:
             self.node.close()
-        if self.claimed.get("dropIn"):
-            shutil.rmtree(self.claimed["dropIn"].parent, ignore_errors=True)
         if self.claimed.get("unit"):
             UNIT_FILE.unlink(missing_ok=True)
             steps["daemonReload"] = quiet("systemctl", "daemon-reload")
@@ -1021,7 +1009,6 @@ class Proof:
             self.first_kill()
             self.over_mount()
             self.second_kill()
-            self.cleared_kill()
             self.exit_three()
         except Exception as error:
             self.record["error"] = repr(error)
@@ -1044,7 +1031,7 @@ def cleanup(directory):
     """After the proof, or after a proof that was stopped: removes only what this directory's claim names."""
     require_disposable_guest(directory)
     steps = [quiet("systemctl", "stop", f"{directory.name}-{name}.service") for name in ("proof", "relay1", "relay2", "relay3")]
-    units = quiet("systemctl", "list-units", "--all", "--plain", "--no-legend", "qorpera-office-folder-mount@*").get("output", "")
+    units = quiet("systemctl", "list-units", "--all", "--plain", "--no-legend", UNIT.format("*")).get("output", "")
     for unit in (line.split()[0] for line in units.splitlines() if line.strip()):
         steps += [quiet("systemctl", "stop", unit), quiet("systemctl", "reset-failed", unit)]
     claimed = json.loads((directory / "claimed.json").read_text()) if (directory / "claimed.json").exists() else {}
@@ -1077,16 +1064,20 @@ def selftest(office_path, mount_path):
     """Unprivileged checks of the unit rewrite, the office lines, mountinfo reading and the synthetic node's wire.
     Deliberately claims no FUSE, namespace or systemd proof."""
     mount_text = mount_path.read_text()
+    rendered = rendered_unit(mount_text, 1000, 1001)
+    assert "@OFFICE_" not in rendered and "--owner-uid 1000 --owner-gid 1001" in rendered
     lines = proof_unit(mount_text, "/var/lib/qorpera-remount-x/qorpera-folder", "/run/qorpera-remount-x/node.sock", 1000, 1001).splitlines()
     assert "ExecStart=/var/lib/qorpera-remount-x/qorpera-folder mount --connect unix:/run/qorpera-remount-x/node.sock --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid 1000 --owner-gid 1001" in lines
-    assert "ConditionPathExists=/run/qorpera-folder/views/%i.json" in lines and "ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company" in lines
-    assert "[Install]" not in lines and not any(line.startswith("ExecStartPre=/usr/bin/install") for line in lines)
-    # Every other line of master's unit is kept as it is.
-    assert len(lines) == len(mount_text.splitlines()) - 4 and all(line in lines for line in mount_text.splitlines() if line not in MOUNT_LINES)
+    # #1085's line: a dead mount is taken away before each start.
+    assert "ExecStartPre=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company" in lines and "ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company" in lines
+    # Every other line of the rendered unit is kept as it is.
+    assert [line for line in lines if not line.startswith("ExecStart=")] == [line for line in rendered.splitlines() if not line.startswith("ExecStart=")]
     for args in (("1000", 1001), (0, 1001), (1000, 4294967295)):
         assert refused(proof_unit, mount_text, "p", "s", *args)
-    assert refused(proof_unit, mount_text.replace("WantedBy=multi-user.target", ""), "p", "s", 1000, 1001)
-    assert refused(proof_unit, mount_text + "\nReadWritePaths=/srv/other\n", "p", "s", 1000, 1001)
+    assert refused(proof_unit, mount_text.replace("@OFFICE_GID@", "@OFFICE_GID@ @OFFICE_GID@"), "p", "s", 1000, 1001)
+    assert refused(proof_unit, mount_text.replace("--allow-other yes", "--allow-other no"), "p", "s", 1000, 1001)
+    assert refused(proof_unit, mount_text + "ExecStart=/usr/bin/true\n", "p", "s", 1000, 1001)
+    assert refused(proof_unit, mount_text + "\n[Install]\nWantedBy=multi-user.target\n", "p", "s", 1000, 1001)
     office_text = office_path.read_text()
     taken, skipped = office_lines(office_text)
     assert {line.split("=", 1)[0] for line in taken} == CONFINEMENT and {line.split("=", 1)[0] for line in skipped} <= OPERATIONAL
@@ -1146,7 +1137,7 @@ def selftest(office_path, mount_path):
                 conn = socket.socket(socket.AF_UNIX)
                 conn.settimeout(3)
                 conn.connect(str(Path(tmp) / "node.sock"))
-                base.send(conn, "H", {"protocol": 3, "environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass", "role": role, **({"abandon": True} if abandon else {})})
+                base.send(conn, "H", {"protocol": 4, "environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass", "role": role, **({"abandon": True} if abandon else {})})
                 kind, body = base.receive(conn)
                 return conn, kind, json.loads(body)
 
@@ -1160,7 +1151,7 @@ def selftest(office_path, mount_path):
                 return struct.pack(">I", len(header)) + header + data
 
             feed, kind, ok = hello("w", "feed")
-            assert kind == "h" and ok == {"protocol": 3, "viewId": "w", "asOfSeq": 0, "readOnly": False}
+            assert kind == "h" and ok == {"protocol": 4, "viewId": "w", "asOfSeq": 0, "readOnly": False}
             # A heartbeat is a change with no paths.
             kind, body = base.receive(feed)
             assert kind == "c" and json.loads(body) == {"seq": 0, "resync": False, "paths": []}

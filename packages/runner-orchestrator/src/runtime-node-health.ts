@@ -1,15 +1,23 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, statfs } from "node:fs/promises";
 import { type CpuInfo, cpus } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
-import { assertLxdOfficeHostNamespace, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import {
+	assertLxdOfficeHostNamespace,
+	readLxdOfficeProtectedFile,
+	readLxdOfficeProtectedPackageArtifactFile,
+} from "./lxd-office-physical-host.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import type { RuntimeNodeObserverRegistry } from "./runtime-node-observer.ts";
 
+// The first installation (deploy/first-node/NODE-OBSERVER-INSTALLATION.md) runs
+// from this fixed path, with its receipt beside it.
+const INSTALLED_OBSERVER = "/opt/qorpera/node-observer/qorpera-node-observer.cjs",
+	INSTALLED_RECEIPT = "/opt/qorpera/node-observer/installation.json";
 const MAX = Number.MAX_SAFE_INTEGER;
 const METRICS = ["cpu", "memory", "rootFilesystem", "network"] as const;
 const ERRORS = [
@@ -232,8 +240,40 @@ async function kernel(path: string, limit: number): Promise<string> {
 		await file.close();
 	}
 }
-export async function collectRuntimeNodeHealth(signal: AbortSignal): Promise<RuntimeNodeHealth> {
+
+/** The software a sample names. The first installation's receipt names its
+ * package, policy and account. A cut's observer (deploy/agent-exit/ROLLOUT.md
+ * step 4) is one file next to the running one, with no receipt: it names the
+ * SHA-256 of its own root-owned bytes, which its account cannot change. */
+export async function runtimeNodeObserverSoftware(observer: string, policySha256: string): Promise<string> {
+	if (observer !== INSTALLED_OBSERVER)
+		return createHash("sha256")
+			.update(await readLxdOfficeProtectedPackageArtifactFile(observer, 8 * 1024 ** 2))
+			.digest("hex");
+	const installation = officeRecord(
+		JSON.parse(
+			new TextDecoder("utf8", { fatal: true }).decode(await readLxdOfficeProtectedFile(INSTALLED_RECEIPT, 65536)),
+		),
+		["schema", "packageManifestSha256", "policySha256", "uid", "gid", "files"],
+	);
+	if (
+		installation.schema !== "qorpera.node-observer-installation-receipt/v1" ||
+		installation.policySha256 !== policySha256 ||
+		installation.uid !== process.geteuid?.() ||
+		installation.gid !== process.getegid?.()
+	)
+		throw new Error("NODE_HEALTH_INSTALLATION_DIFFERS");
+	return officeSha(installation.packageManifestSha256);
+}
+
+/** The probe is the running observer's own file (`process.argv[1]`), so it
+ * reads the same configuration paths as the observer that started it. */
+export async function collectRuntimeNodeHealth(
+	signal: AbortSignal,
+	observer: string | undefined = process.argv[1],
+): Promise<RuntimeNodeHealth> {
 	if (process.platform !== "linux" || !process.geteuid?.()) throw new Error("NODE_HEALTH_UNPRIVILEGED_LINUX_REQUIRED");
+	if (typeof observer !== "string") throw new Error("NODE_HEALTH_OBSERVER_UNKNOWN");
 	const config = officeRecord(
 		JSON.parse(
 			new TextDecoder("utf8", { fatal: true }).decode(
@@ -244,23 +284,8 @@ export async function collectRuntimeNodeHealth(signal: AbortSignal): Promise<Run
 	);
 	const policy = parseRuntimeNodeInventoryPolicy(config.policy),
 		host = await readRuntimeNodeHost(signal);
-	const installation = officeRecord(
-		JSON.parse(
-			new TextDecoder("utf8", { fatal: true }).decode(
-				await readLxdOfficeProtectedFile("/opt/qorpera/node-observer/installation.json", 65536),
-			),
-		),
-		["schema", "packageManifestSha256", "policySha256", "uid", "gid", "files"],
-	);
 	const policySha256 = officeDigest(policy),
-		observerPackageSha256 = officeSha(installation.packageManifestSha256);
-	if (
-		installation.schema !== "qorpera.node-observer-installation-receipt/v1" ||
-		installation.policySha256 !== policySha256 ||
-		installation.uid !== process.geteuid?.() ||
-		installation.gid !== process.getegid?.()
-	)
-		throw new Error("NODE_HEALTH_INSTALLATION_DIFFERS");
+		observerPackageSha256 = await runtimeNodeObserverSoftware(observer, policySha256);
 	if (host.machineIdSha256 !== policy.host.machineIdSha256) throw new Error("NODE_HEALTH_HOST_DIFFERS");
 	const bootId = officeUuid((await kernel("/proc/sys/kernel/random/boot_id", 64)).trim());
 	const namespace = await assertLxdOfficeHostNamespace(bootId);
@@ -306,18 +331,18 @@ export async function collectRuntimeNodeHealth(signal: AbortSignal): Promise<Run
 	});
 }
 
-export async function collectRuntimeNodeHealthProcess(signal: AbortSignal): Promise<RuntimeNodeHealth> {
+export async function collectRuntimeNodeHealthProcess(
+	signal: AbortSignal,
+	observer: string | undefined = process.argv[1],
+): Promise<RuntimeNodeHealth> {
 	signal.throwIfAborted();
+	if (typeof observer !== "string") throw new Error("NODE_HEALTH_COLLECTION_UNCONFIRMED");
 	return new Promise((resolve, reject) => {
+		// The running observer's own file: the first installation's fixed path, or
+		// the file a cut's drop-in starts. The probe checks its custody itself.
 		const child = spawn(
 			process.execPath,
-			[
-				"--jitless",
-				"--disable-proto=throw",
-				"--disallow-code-generation-from-strings",
-				"/opt/qorpera/node-observer/qorpera-node-observer.cjs",
-				"--health-probe",
-			],
+			["--jitless", "--disable-proto=throw", "--disallow-code-generation-from-strings", observer, "--health-probe"],
 			{ env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "ignore"] },
 		);
 		let failed = false,

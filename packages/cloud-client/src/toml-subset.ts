@@ -27,6 +27,8 @@ export interface TomlSubsetDocument {
 }
 
 const MAX_DEPTH = 8;
+/** How a text that spans lines is written instead, said with each refusal of one (a model's first try often is). */
+const ONE_LINE = 'write it on one line in "double quotes", with \\n for each line break';
 
 function define(target: Record<string, unknown>, key: string, value: unknown): void {
 	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
@@ -232,11 +234,13 @@ class Reader {
 		if (depth > MAX_DEPTH) this.fail("Values are nested too deeply.");
 		const ch = this.text[this.i];
 		if (ch === '"') {
-			if (this.text.startsWith('"""', this.i)) this.fail("Multi-line strings are not used in these files.");
+			if (this.text.startsWith('"""', this.i))
+				this.fail(`Multi-line strings are not used in these files: ${ONE_LINE}.`);
 			return this.basicString();
 		}
 		if (ch === "'") {
-			if (this.text.startsWith("'''", this.i)) this.fail("Multi-line strings are not used in these files.");
+			if (this.text.startsWith("'''", this.i))
+				this.fail(`Multi-line strings are not used in these files: ${ONE_LINE}.`);
 			return this.literalString();
 		}
 		if (ch === "[") return this.array(depth);
@@ -289,7 +293,7 @@ class Reader {
 				run = this.i;
 				continue;
 			}
-			if (code === 0x0a || code === 0x0d) this.fail("A quoted text must close on its line.");
+			if (code === 0x0a || code === 0x0d) this.fail(`A quoted text must close on its line: ${ONE_LINE}.`);
 			if ((code < 0x20 && code !== 0x09) || code === 0x7f)
 				this.fail("A quoted text holds a control character; write it as an escape.");
 			this.i++;
@@ -340,7 +344,7 @@ class Reader {
 				this.i++;
 				return out;
 			}
-			if (code === 0x0a || code === 0x0d) this.fail("A quoted text must close on its line.");
+			if (code === 0x0a || code === 0x0d) this.fail(`A quoted text must close on its line: ${ONE_LINE}.`);
 			if ((code < 0x20 && code !== 0x09) || code === 0x7f) this.fail("A quoted text holds a control character.");
 			this.i++;
 		}

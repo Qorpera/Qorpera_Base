@@ -18,6 +18,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_read",
 	"qorpera_folder_list",
 	"qorpera_folder_commit",
+	"qorpera_folder_memory_commit",
 	"qorpera_folder_record_release",
 	"qorpera_folder_run_view_open",
 	"qorpera_folder_open_upload",
@@ -62,12 +63,20 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 		this.#fetch = options.fetch ?? fetch;
 	}
 
-	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+	call(
+		method: CloudCompanyPathRpc,
+		argumentsValue: Record<string, unknown>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_describe_agent_open_work",
 			"qorpera_record_runtime_observation_batch",
 			"qorpera_record_provider_usage_signal",
 			"qorpera_begin_native_company_execution_v2",
+			// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
+			"qorpera_begin_native_company_execution_v3",
+			"qorpera_bind_native_company_context",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
@@ -97,6 +106,13 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_read",
 			"qorpera_folder_list",
 			"qorpera_folder_commit",
+			// Dormant run-log persistence and trusted per-step protection (memory W1c-3).
+			"qorpera_folder_memory_commit",
+			"qorpera_memory_run_log_place",
+			"qorpera_memory_run_resume",
+			"qorpera_memory_run_resume_record",
+			"qorpera_memory_step_narrow",
+			"qorpera_memory_step_hashes",
 			"qorpera_folder_record_release",
 			// The run's own view, for the node's folder search (F3, 20260929999970).
 			"qorpera_folder_run_view_open",
@@ -139,6 +155,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_memory_view",
 			"qorpera_memory_view_record",
 			"qorpera_memory_branches",
+			// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
+			"qorpera_memory_events_run",
+			"qorpera_memory_compaction_record",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -170,12 +189,16 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				const maximum =
 					response.ok && method === "qorpera_describe_company_run_context"
 						? 1024 * 1024
-						: // A listing page of 200 entries with 4096-byte paths (each character escaped at worst), and a
-							// change set's outcomes.
+						: // A listing page of 200 entries, each with a 4096-byte path (each character escaped at worst,
+							// twice the bytes) and a link's 4095-byte target (control characters escaped as `\u00XX`,
+							// six times).
 							response.ok && method === "qorpera_folder_list"
-							? 2 * 1024 * 1024
+							? 8 * 1024 * 1024
 							: response.ok &&
 									(method === "qorpera_folder_commit" ||
+										method === "qorpera_folder_memory_commit" ||
+										// A classification returns the restricted subset of up to 1,024 complete paths.
+										method === "qorpera_memory_step_narrow" ||
 										method === "qorpera_folder_worker_commit" ||
 										// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
 										// structured files' whole parses, which SQL does not cut.
@@ -185,7 +208,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 										// 2,048 bytes as stored; so do the view, and the branches for up to 8 trees.
 										method === "qorpera_memory_zoom" ||
 										method === "qorpera_memory_view" ||
-										method === "qorpera_memory_branches")
+										method === "qorpera_memory_branches" ||
+										// A page of up to 128 raw events, each a whole message.
+										method === "qorpera_memory_events_run")
 								? 16 * 1024 * 1024
 								: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 									// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
@@ -286,8 +311,14 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						throw new CloudCompanyHeadConflict();
 					// A refusal the database raised (55000, 0A000, P0001, a QRC code, an invalid argument): that transaction
 					// rolled back whole and asking again changes nothing. Never a lost connection (control calls, 4 Oct 2026).
+					// So is a resumed attempt's record that differs from the one its run and assignment already stored
+					// (23505, W5b-2, 20260930340000): the stored record never changes, so the same request fails again.
 					const refused = cloudPostgrestError(value);
-					if (refused && cloudControlRefusalCode(refused.code))
+					if (
+						refused &&
+						(cloudControlRefusalCode(refused.code) ||
+							(method === "qorpera_memory_run_resume_record" && refused.code === "23505"))
+					)
 						throw new CloudControlRpcRefused(refused.code, refused.message, "Company File authority unavailable");
 					throw new CloudRuntimeDiagnosticError(
 						response.status === 401 || response.status === 403
@@ -303,9 +334,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				return value;
 			},
 			signal,
-			// The one-call fence carries what four calls did before a model request. The run's retry decides how long
-			// each attempt waits: 10 s at first, twice as long after one is cut (CloudNativeToolRun.assertActiveWith).
-			method === "qorpera_fence_native_context" ? CLOUD_TOOL_REQUEST_MAX_MS : 3000,
+			// A caller's own budget wins: a shorter stop here would cut the call first, so that budget never applied.
+			// The run-start reads wait in line for the run's job row, up to 4 s (two TESTCO runs, 16 Oct 2026).
+			// Without one, a call stops at 3 s, except the one-call fence, which carries what four calls did before a
+			// model request. The run's retry decides how long each attempt waits: 10 s at first, twice as long after
+			// one is cut (CloudNativeToolRun.assertActiveWith).
+			timeoutMs ?? (method === "qorpera_fence_native_context" ? CLOUD_TOOL_REQUEST_MAX_MS : 3000),
 		);
 	}
 }

@@ -69,19 +69,15 @@ select pg_temp.fx($q$insert into public.qorpera_profile_objects(profile_id, sha2
 	('64600000-0000-4000-8000-000000000010', repeat('b', 64), 1, 'supabase-storage'),
 	('64600000-0000-4000-8000-000000000011', repeat('b', 64), 1, 'supabase-storage') on conflict do nothing$q$);
 
--- Raw object reads and uploads: a member is refused for folder-v2 (the read lease too); a trusted service is not; a
--- snapshot-v1 company is unchanged.
+-- Raw object reads and uploads by hash, and the read lease, are gone on every company (legacy sweep E3, 20260930450000).
 do $$
+declare v_signature text;
 begin
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000002');
-	perform pg_temp.refuses($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000010', repeat('b', 64))$q$);
-	perform pg_temp.refuses($q$select public.qorpera_issue_profile_object_read_lease('64600000-0000-4000-8000-000000000010', repeat('b', 64), 30)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_authorize_profile_object_upload('64600000-0000-4000-8000-000000000010', repeat('c', 64), 1)$q$);
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000011', repeat('b', 64))$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_upload('64600000-0000-4000-8000-000000000011', repeat('c', 64), 1)$q$);
-	perform pg_temp.as_service();
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000010', repeat('b', 64))$q$);
+	foreach v_signature in array array['public.qorpera_authorize_profile_object_download(uuid,text)',
+		'public.qorpera_authorize_profile_object_upload(uuid,text,bigint)',
+		'public.qorpera_issue_profile_object_read_lease(uuid,text,integer)'] loop
+		if to_regprocedure(v_signature) is not null then raise exception '% must be gone', v_signature; end if;
+	end loop;
 end $$;
 
 -- The Storage read policy: a member never reads a folder-v2 object from Storage directly.
@@ -152,14 +148,13 @@ begin
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64))$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_complete_runner_job_v6('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), null, null, null, '{}')$q$);
-	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)', b, '{}'));
 	perform pg_temp.not_refused(format('select public.qorpera_native_office_company_file_source(%L, %L)', s, '{}'));
-	perform pg_temp.not_refused(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)', s, '{}'));
-	-- A job id in capitals names the same job.
-	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)', jsonb_build_object('jobId', upper(b ->> 'jobId')), '{}'));
-	-- A job id in any spelling uuid input accepts names the job; anything else names none.
-	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)',
-		jsonb_build_object('jobId', '{' || replace(b ->> 'jobId', '-', '') || '}'), '{}'));
+	-- The binding check behind these refusals: a job id in any spelling uuid input accepts names the job; anything else
+	-- names none.
+	if not public.qorpera_binding_is_folder_v2(jsonb_build_object('jobId', upper(b ->> 'jobId')))
+		or not public.qorpera_binding_is_folder_v2(jsonb_build_object('jobId', '{' || replace(b ->> 'jobId', '-', '') || '}'))
+		or public.qorpera_binding_is_folder_v2(s) or public.qorpera_binding_is_folder_v2('{"jobId":"not-a-job"}') then
+		raise exception 'A binding names its folder-v2 job in any spelling uuid input accepts, and nothing else'; end if;
 end $$;
 
 -- The old row writer (contract 5.6); the old roster writers went with legacy sweep D1 (20260930330000).

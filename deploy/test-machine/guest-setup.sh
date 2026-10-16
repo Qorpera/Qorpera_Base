@@ -152,6 +152,14 @@ visudo -cf "$sudoers"
 install -m 0440 -o root -g root "$sudoers" /etc/sudoers.d/91-test-machine-runners
 rm -f "$sudoers"
 
+log "the CPU lane's kept slot (5): its lock file root's and read-only"
+# scripts/run-on-node.mjs keeps slot 5 for --front runs and opens a slot's lock file for reading where it can. A client
+# from before that change opens it for writing, so it skips the slot once the file is root's. Changed in place: a run
+# that holds its lock keeps it. /run/lock is a tmpfs, so tmpfiles.d makes the file again at every boot.
+kept=/run/lock/qorpera-test-machine-slot5.lock
+echo "f $kept 0644 root root -" >/etc/tmpfiles.d/qorpera-test-machine.conf
+if [ -e "$kept" ]; then chown root:root "$kept"; chmod 0644 "$kept"; else systemd-tmpfiles --create /etc/tmpfiles.d/qorpera-test-machine.conf; fi
+
 log "versions"
 {
 	echo "os=$(. /etc/os-release; echo "$PRETTY_NAME")"

@@ -7,11 +7,14 @@ import { CodingSecretMask } from "./coding-secret-mask.ts";
 export type CodingCommandKind = "command" | "terminal" | "install";
 
 /** One byte stream's masking (a `CodingSecretMaskStream`): `push` holds back the tail that could still start a
- * value (`pending` raw bytes), and `end` lets it through. */
+ * value (`pending` raw bytes), and `end` lets it through. A new stream takes over at that tail with `resume` and what
+ * `masked` said there, so the executor can pull the tail again on a later read. */
 export interface CodingCommandSecretMask {
 	push(chunk: Uint8Array): Uint8Array;
 	end(): Uint8Array;
 	pending(): number;
+	masked(): number | null;
+	resume(masked: number | null): void;
 }
 
 export interface CodingCommandSecretRequest {

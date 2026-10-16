@@ -54,6 +54,8 @@ export interface CloudRunWorkOptions {
 	 * step lines, after waiting up to SETTLE for missing ones (§5.4).
 	 */
 	lines(r: number, budget: number, signal: AbortSignal): Promise<readonly string[]>;
+	/** Resume's uncertain outcomes, repeated verbatim outside summary folding in every work message. */
+	unfolded?: readonly string[];
 }
 
 /** What Codex lets a fold leave out: the run's own work. */
@@ -97,6 +99,7 @@ export function cloudRunWorkComposer(
 	options: CloudRunWorkOptions,
 ): (request: CloudNativeContextRequest, signal: AbortSignal) => Promise<CloudNativeContextComposition> {
 	const firstStep = options.firstStep ?? 0;
+	const unfolded = [...(options.unfolded ?? [])];
 	if (!Number.isSafeInteger(firstStep) || firstStep < 0) throw new Error("Invalid run work");
 	let thread: string | null = null;
 	/** The items the previous request had, and its model: the reasoning after them is its response's. */
@@ -187,8 +190,8 @@ export function cloudRunWorkComposer(
 				}
 			}
 			let message: string | null = null;
-			if (folded || r > 0) {
-				message = cloudRunWorkMessage(await options.lines(r, RUN_VIEW / 2, signal));
+			if (folded || r > 0 || unfolded.length > 0) {
+				message = cloudRunWorkMessage([...(await options.lines(r, RUN_VIEW / 2, signal)), ...unfolded]);
 				// Codex refuses a larger one, and the run with it.
 				if (Buffer.byteLength(message) > CLOUD_NATIVE_WORK_MESSAGE_BYTES)
 					throw new Error("Run work exceeds its bound");

@@ -592,6 +592,44 @@ describe("LXD Unix client", () => {
 		expect(requests).toEqual([`DELETE ${path}`, `DELETE ${path}`, `DELETE ${path}`]);
 	});
 
+	it("creates and deletes a project, whose answers are synchronous with null or empty metadata", async () => {
+		const project = "qorpera-codehost-0123456789abcdef0123456789abcdef";
+		const path = `/1.0/projects/${project}`;
+		// LXD 6.9: a project's create answers with null metadata, its delete with an empty object.
+		const created = { body: { type: "sync", status: "Success", status_code: 200, metadata: null } };
+		const deleted = { body: { type: "sync", status: "Success", status_code: 200, metadata: {} } };
+		let answer: { status?: number; body: unknown } = created;
+		const requests: string[] = [];
+		const posted: unknown[] = [];
+		const socket = await unixServer((method, url, body) => {
+			requests.push(`${method} ${url}`);
+			if (method === "POST" && url === "/1.0/projects") {
+				posted.push(body);
+				return answer;
+			}
+			if (method === "DELETE" && url === path) return answer;
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		await expect(client.createProject(project, { "features.images": "true" })).resolves.toBeUndefined();
+		answer = { status: 409, body: { type: "error", error_code: 409, error: "The project already exists" } };
+		await expect(client.createProject(project, {})).rejects.toThrow("LXD: The project already exists");
+		answer = deleted;
+		await expect(client.deleteProject(project)).resolves.toBe(true);
+		answer = created;
+		await expect(client.deleteProject(project)).resolves.toBe(true);
+		answer = { status: 404, body: { type: "error", error_code: 404, error: "Project not found" } };
+		await expect(client.deleteProject(project)).resolves.toBe(false);
+		answer = { status: 400, body: { type: "error", error_code: 400, error: "Only empty projects can be removed" } };
+		await expect(client.deleteProject(project)).rejects.toThrow("LXD: Only empty projects can be removed");
+		// No operation is waited for.
+		expect(requests).toEqual([...Array(2).fill("POST /1.0/projects"), ...Array(4).fill(`DELETE ${path}`)]);
+		expect(posted).toEqual([
+			{ name: project, description: "", config: { "features.images": "true" } },
+			{ name: project, description: "", config: {} },
+		]);
+	});
+
 	describe("an exec operation that fails", () => {
 		const name = "qorpera-20000000000040008000000000000001";
 		const agentOffline = "LXD VM agent is not currently running";
@@ -804,6 +842,46 @@ describe("LXD Unix client", () => {
 				group: 0,
 			},
 		});
+	});
+
+	it("waits longer for one command only when asked, within 600 seconds", async () => {
+		const waits: string[] = [];
+		const socket = await unixServer((method, url) => {
+			if (method === "POST" && url.includes("/exec?project="))
+				return {
+					body: {
+						type: "async",
+						status: "Operation created",
+						status_code: 100,
+						operation: `/1.0/operations/operation-${waits.length}`,
+						metadata: {},
+					},
+				};
+			if (method === "GET" && url.includes("/wait?timeout=")) {
+				waits.push(url);
+				return {
+					body: {
+						type: "sync",
+						status: "Success",
+						status_code: 200,
+						metadata: { status: "Success", status_code: 200, err: "", metadata: { return: 0 } },
+					},
+				};
+			}
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, 600);
+		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"]);
+		expect(waits).toEqual([
+			"/1.0/operations/operation-0/wait?timeout=600",
+			"/1.0/operations/operation-1/wait?timeout=30",
+		]);
+		for (const wait of [0, 601, 1.5])
+			await expect(
+				client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, wait),
+			).rejects.toThrow(/^LXD instance command is invalid$/);
+		expect(waits).toHaveLength(2);
 	});
 
 	it("pushes a guest program's bytes as root's file, only into the guest's program folders", async () => {
