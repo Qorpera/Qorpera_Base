@@ -25,6 +25,7 @@ import { LxdOfficeServiceStopJournal } from "./lxd-office-service-stop-journal.t
 import { LxdOfficeStopControl, type LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
 import { officeStopDecode, officeStopHash, readLxdOfficeStopEvidence } from "./lxd-office-stop-evidence.ts";
 import { inspectAndAcknowledgeLxdOfficeStop } from "./lxd-office-stop-inspection.ts";
+import { LxdOfficeStopRetries } from "./lxd-office-stop-retries.ts";
 
 type Client = LxdOfficeBootActivationHistoryClient & LxdOfficeServiceStopClient;
 export interface LxdOfficeServiceStopRegistry {
@@ -38,6 +39,7 @@ type Registry = LxdOfficeServiceStopRegistry;
 interface Ports {
 	client?: Client;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
+	now?: () => number;
 }
 export interface LxdOfficeServiceStopResult {
 	state: "stopped" | "pending" | "unknown" | "failed";
@@ -51,8 +53,8 @@ const pending = new Set<string>();
 
 /** Explicit recovery only, under the lifecycle supervisor's kernel lock.
  * Retain intent before revocation, one command before dispatch, and a fresh
- * SQL challenge before root inspection. Unknown stop submission is observation
- * only. A stopped result is an immutable acknowledgement, not current runtime
+ * SQL challenge before root inspection. Failed or unknown stop attempts may be repeated after durable backoff, under
+ * the same guest claim and nonblocking lock. A stopped result is an immutable acknowledgement, not current runtime
  * admission, successor permission or machine-capacity release. */
 export class LxdOfficeServiceStopWorker {
 	readonly #gate: Pick<LxdOfficePhysicalGate, "policy" | "check">;
@@ -60,12 +62,14 @@ export class LxdOfficeServiceStopWorker {
 	readonly #registry: Registry;
 	readonly #client: Client;
 	readonly #kernelLock;
+	readonly #now;
 	constructor(gate: Pick<LxdOfficePhysicalGate, "policy" | "check">, registry: Registry, ports: Ports = {}) {
 		this.#gate = gate;
 		this.#policy = parseLxdOfficePhysicalPolicy(gate.policy);
 		this.#registry = registry;
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
+		this.#now = ports.now ?? Date.now;
 	}
 	reconcile(intentId: string, request: CompanyComputerLifecycleRequest, caller: AbortSignal) {
 		return this.#reconcile(intentId, request, caller, false);
@@ -282,14 +286,20 @@ export class LxdOfficeServiceStopWorker {
 			checked.throwIfAborted();
 			return checked;
 		};
-		const journal = await LxdOfficeServiceStopJournal.open(root, identity, this.#client);
-		let operation = await journal.observe(await checkedStop(signal));
+		let journal = await LxdOfficeServiceStopJournal.open(root, identity, this.#client);
+		const initialOperation = await journal.observe(await checkedStop(signal));
+		const retries = await LxdOfficeStopRetries.open(root, identity, this.#client, this.#now);
+		const current = await retries.current(await checkedStop(signal));
+		if (current && initialOperation.state === "not_dispatched") throw new Error("unclaimed stop retry");
+		if (current) journal = current;
+		let operation = current ? await journal.observe(await checkedStop(signal)) : initialOperation;
 		const stopControl = new LxdOfficeStopControl(request, command, registry);
 		const result = { intentId, allocationId, transitionId, commandId: command.commandId };
 		const finish = async (
 			receipt: CompanyComputerServiceStopAcknowledgement,
 		): Promise<LxdOfficeServiceStopResult> => {
-			if (operation.state === "not_dispatched") throw new Error("unclaimed stop acknowledgement");
+			if (initialOperation.state === "not_dispatched" && operation.state === "not_dispatched")
+				throw new Error("unclaimed stop acknowledgement");
 			await retain(doneName, { schema: "qorpera.lxd-office-stop-completion/v1", ...result, receipt });
 			return { ...result, state: "stopped", acknowledgedAtMs: receipt.acknowledgedAtMs };
 		};
@@ -297,7 +307,7 @@ export class LxdOfficeServiceStopWorker {
 		if (recovered) return finish(recovered);
 		await absent([doneName]);
 		const name = lxdOfficeGuestPlan(binding).request.name;
-		if (operation.state === "not_dispatched") {
+		const dispatch = async (attempt: LxdOfficeServiceStopJournal) => {
 			await this.#client.pushOfficeServiceStopRequest(
 				binding.project,
 				name,
@@ -314,27 +324,42 @@ export class LxdOfficeServiceStopWorker {
 			);
 			if (staged.uid !== 0 || staged.gid !== 0 || staged.mode !== 0o400 || !staged.content.equals(bytes))
 				throw new Error("stop staging changed");
-			operation = await journal.reconcile(await checkedStop(signal));
-		}
-		const checked = await checkedStop(signal);
+			return attempt.reconcile(await checkedStop(signal));
+		};
+		if (operation.state === "not_dispatched") operation = await dispatch(journal);
 		let file: Awaited<ReturnType<Client["readInstanceFile"]>>;
-		try {
-			file = await this.#client.readInstanceFile(
-				binding.project,
-				name,
-				evidence.initial
-					? "/run/qorpera-office-preparation/service-stop-completion.json"
-					: `/run/qorpera-office-preparation/service-stop-completion-${recovery.activationId}.json`,
-				65536,
-				checked,
-			);
-		} catch {
-			checked.throwIfAborted();
-			return {
-				...result,
-				state:
-					operation.state === "succeeded" || operation.state === "not_dispatched" ? "unknown" : operation.state,
-			};
+		let retried = false;
+		for (;;) {
+			const checked = await checkedStop(signal);
+			try {
+				file = await this.#client.readInstanceFile(
+					binding.project,
+					name,
+					evidence.initial
+						? "/run/qorpera-office-preparation/service-stop-completion.json"
+						: `/run/qorpera-office-preparation/service-stop-completion-${recovery.activationId}.json`,
+					65536,
+					checked,
+				);
+				break;
+			} catch {
+				checked.throwIfAborted();
+				// Completion is the only success evidence. A live invocation is left
+				// alone; failed, forgotten or completion-less attempts can retry.
+				if (operation.state !== "pending" && operation.state !== "not_dispatched") {
+					const retry = await retries.afterFailure(await checkedStop(signal), !retried);
+					if (retry) {
+						retried = true;
+						operation = await dispatch(retry);
+						continue;
+					}
+				}
+				return {
+					...result,
+					state:
+						operation.state === "succeeded" || operation.state === "not_dispatched" ? "unknown" : operation.state,
+				};
+			}
 		}
 		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600 || file.content.length > 65536)
 			throw new Error("stop completion custody");

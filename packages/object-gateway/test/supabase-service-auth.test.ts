@@ -5,6 +5,7 @@ import { SupabaseObjectAuthority } from "../src/supabase-authority.ts";
 
 const projectUrl = "https://project.example.test";
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+const environmentId = "5c1d0b8e-6d4f-4a43-9e8b-2f7a1c3d9e10";
 const authorizationId = "83dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const sha256 = "a".repeat(64);
 // Unsigned synthetic fixtures, never provider credentials.
@@ -16,7 +17,6 @@ const credentials = [
 ];
 
 const objectOperations: Array<{ name: string; call: (authority: SupabaseObjectAuthority) => Promise<unknown> }> = [
-	{ name: "service download", call: (authority) => authority.authorizeServiceDownload(profileId, sha256) },
 	{ name: "upload receipt", call: (authority) => authority.confirmUpload(profileId, sha256, 7) },
 	{
 		name: "delete authorization",
@@ -33,7 +33,7 @@ const objectOperations: Array<{ name: string; call: (authority: SupabaseObjectAu
 ];
 
 const publisherOperations = [
-	"qorpera_stage_member_session_attachment",
+	"qorpera_room_image_commit",
 	"qorpera_claim_connection_file",
 	"qorpera_finish_connection_file",
 	"qorpera_claim_coding_results_file",
@@ -126,10 +126,10 @@ describe.each(credentials)("$name gateway service authority", ({ secretKey, publ
 			publishableKey,
 			fetch: (async (input, init) => {
 				requests.push(new Request(input, init));
-				return Response.json(true);
+				return Response.json({ schema: "qorpera.folder-object-download/v1", profileId, bytes: 7 });
 			}) satisfies typeof fetch,
 		};
-		await new SupabaseObjectAuthority(options).authorizeUpload("member-jwt", profileId, sha256, 7);
+		await new SupabaseObjectAuthority(options).authorizeMemberFolderObject("member-jwt", environmentId, sha256);
 		await new SupabaseMemberCompanyAuthority(options).member(
 			"qorpera_member_folder_writer",
 			"member-jwt",

@@ -37,6 +37,9 @@ pub mod kind {
 	pub const DONE: u8 = b'k';
 	pub const PUBLISH: u8 = b'P';
 	pub const REPORT: u8 = b'p';
+	/// Protocol 3: transfer the mount's durable read log; acknowledge taken and released prefixes.
+	pub const READS: u8 = b'I';
+	pub const READS_OK: u8 = b'i';
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

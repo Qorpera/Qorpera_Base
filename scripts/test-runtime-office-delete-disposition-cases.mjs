@@ -222,7 +222,13 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  const founderStepsDown=`insert into auth.users(id,email) values ('92400000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test');insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) select profile_id,'92400000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test','Co-founder','owner' from public.qorpera_profile_members where user_id='${document.operator.principalId}' and role='owner';update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`;
  await refuse(`begin;reset role;${founderStepsDown}${owner}${dispose()}rollback;`,/Disposition requires company owner or admin/,owner);
  const futureName=readdirSync(new URL('../supabase/migrations/',import.meta.url)).filter(name=>/runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l,r)=>Number(/_v(\d+)\.sql$/.exec(l)[1])-Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
- const futureBundle=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
+ // Its bundle switch only: the migration guards before it are the rollout's, and a later migration may rewrite a body an
+ // older activation's guard reads (legacy sweep F2c puts the coding machines on the folder fence, which v177's guard on
+ // 20260925123000 reads).
+ const futureActivation=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
+ const switchAt=futureActivation.indexOf('-- Keep the predecessor check, insertion and pointer update in one atomic statement.');
+ assert.ok(switchAt>0,'The newest activation has no bundle switch');
+ const futureBundle=futureActivation.slice(switchAt);
  await refuse(`begin;reset role;${futureBundle}${owner}${dispose()}rollback;`,/bundle/,owner);
  assert.equal(auditCount(),0);assert.equal(snapshot(),preservedAdmin);
  console.log('PASS: provider/ordinary session/helper/table/null/identity/phase/digest/revision/privacy/pause/package/membership refusals preserve all rows');

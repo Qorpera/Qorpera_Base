@@ -254,12 +254,12 @@ begin
 		or not has_function_privilege('service_role', 'public.qorpera_folder_workers_company(uuid,integer)', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_folder_worker_due(public.qorpera_runtime_workers)', 'execute') then
 		raise exception 'The drain''s privileges'; end if;
-	-- Every body carries the marker; the legacy drain keeps its text (656 and 832 pin it).
+	-- Every body carries the marker; the legacy drain went in the legacy sweep's F3b (20260930295000).
 	if exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('qorpera_folder_workers_due',
 			'qorpera_folder_workers_company', 'qorpera_folder_worker_due', 'qorpera_folder_worker_ended',
 			'qorpera_folder_worker_revival_pending', 'qorpera_folder_worker_dispatch_payload')
 			and position('20260930003100' in pg_get_functiondef(p.oid)) = 0)
-		or position('20260930003100' in pg_get_functiondef('public.qorpera_drain_worker_wakes(integer)'::regprocedure)) > 0 then
+		or to_regprocedure('public.qorpera_drain_worker_wakes(integer)') is not null then
 		raise exception 'The markers'; end if;
 end $$;
 

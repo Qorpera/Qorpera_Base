@@ -291,10 +291,13 @@ end $$;
 do $$
 declare s jsonb := current_setting('qorpera_test.snapshot_binding')::jsonb; v_fn text;
 begin
-	perform pg_temp.raises_like(format('select pg_temp.send(%L, %L, %L, %L)', s, 'k', 'x', 'progress'), '42501', 'native execution binding is unavailable');
-	perform pg_temp.raises_like(format('select pg_temp.card(%L, %L)', s, extensions.gen_random_uuid()), '42501', 'native execution binding is unavailable');
+	-- Since legacy sweep F1e (20260930248000) the send and the card take the folder path for every job: the binding
+	-- they build names no model (its run has no row), which the folder run check refuses first.
+	perform pg_temp.raises_like(format('select pg_temp.send(%L, %L, %L, %L)', s, 'k', 'x', 'progress'), '22023', 'native tool binding is invalid');
+	perform pg_temp.raises_like(format('select pg_temp.card(%L, %L)', s, extensions.gen_random_uuid()), '22023', 'native tool binding is invalid');
+	-- The rule is the folder core's since legacy sweep F1e: its run check refuses a job outside folder-v2.
 	perform pg_temp.raises_like(format('select public.qorpera_add_agent_review_rule(%L, %L)', s, '{"operationKey":"k","when":"x"}'), '42501',
-		'native execution binding is unavailable');
+		'native tool run is unavailable');
 	foreach v_fn in array array['public.qorpera_folder_append_transcript_event(public.qorpera_execution_runs,uuid,uuid,text,jsonb)',
 		'public.qorpera_folder_send_agent_message(jsonb,text,text,text)', 'public.qorpera_folder_append_interaction_request(jsonb,uuid,jsonb)',
 		'public.qorpera_folder_assert_run_reads(uuid,jsonb,text[])', 'public.qorpera_folder_record_context_view(uuid,jsonb,jsonb)',

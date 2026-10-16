@@ -345,8 +345,9 @@ hooks and mailboxes for its company.
 - **Locks:** E1's functions, entered from the run (`qorpera_folder_run_enter`), in the same order.
 
 E3 comes in three parts: **E3a** address hooks and mailboxes (migration `20260930106000`, SQL test 939), **E3b** GitHub
-and HMAC hooks with a secret the vault makes, and **E3c** Stripe's secret taken from the screen. The coordinator agreed
-the design below on 6 October, with one change: no member pastes a Stripe secret in Settings (§5.5).
+and HMAC hooks with a secret the vault makes (§5.7), and **E3c** Stripe's secret taken from the screen (§5.8; E3c-1, the
+database, is built; E3c-2 to E3c-4 come next). The coordinator agreed the design below on 6 October, with one change: no
+member pastes a Stripe secret in Settings (§5.5).
 
 ### 5.1 The tool
 
@@ -408,16 +409,18 @@ read from the hook row for each answer.
 ### 5.5 Signed hooks (E3b and E3c, agreed)
 
 E3a refused any `proof` but `address`: "A signed hook comes later; use an address hook for now". Since E3b-1 (§5.7) the
-host's path refuses a signed proof with "A signed hook is opened through the vault", and Stripe with "A Stripe hook comes
-later: its secret is taken from Stripe's screen".
+host's path refuses a signed proof with "A signed hook is opened through the vault" (0A000). Since E3c-1 (§5.8) that
+includes Stripe, which until then had its own words ("A Stripe hook comes later: its secret is taken from Stripe's
+screen").
 - **GitHub and HMAC (E3b).** The secret broker makes the secret (32 random bytes). It seals it under the company's vault
   key and creates the hook with its `event_hook` secret (`h<hook id>`, field `signing_secret`) in one transaction, as A1's
   account opening makes a password (`cloud-company-account-vault.ts` `#open`). The agent types it into the service's
   form with the Company Computer's `vault_fill`, which gains a hook source: the hook's `signing_secret`, resealed to the
   computer's boot key as an account's password is. The model never sees it.
-- **Stripe (E3c).** Stripe makes the secret and shows it once. Moving it from the screen into the vault needs a new
-  Company Computer action, the fill's reverse (`vault_capture`). Until it lands, a Stripe hook is refused with a plain
-  reason. Members never copy a token by hand (Jonas, 23 September), so Settings offers no paste for it.
+- **Stripe (E3c, §5.8).** Stripe makes the secret. Its endpoint page shows it behind **Reveal**, as often as anyone
+  asks, and **Roll** replaces it. Moving the secret from that page into the vault needs a new Company Computer action,
+  the fill's reverse (`vault_capture`, §5.8). Until E3c-2 and E3c-3 land, `manage_hook` refuses a Stripe hook with a
+  plain reason. Members never copy a token by hand (Jonas, 23 September), so Settings offers no paste box for it.
 
 ### 5.6 Tests (E3a)
 
@@ -448,7 +451,8 @@ host name, as A1's account sites are ("A site is a host name such as github.com"
 of the receipt's digest, so the same key for another site is other work.
 
 **E3b-1, the database (as built).** E3a's function becomes `qorpera_folder_manage_hook_effect(p_binding, p_request,
-p_vault, …)`, granted to no role, with E3a's order and checks word for word. It has two callers:
+p_vault, …)`, granted to no role, with E3a's order and checks word for word. It has two callers (E3c-1 adds a third, the
+broker's Stripe opening, §5.8):
 - `qorpera_folder_manage_hook`, the host's (name, signature and grants unchanged), passes no vault. A signed proof is
   refused there (0A000), because the runtime sends signed creates to the broker.
 - `qorpera_folder_open_signed_hook`, the broker's, passes the vault. In the hook's own step it inserts the hook's
@@ -469,6 +473,8 @@ company, the environment and the authority's key). `qorpera_fill_event_hook_secr
 It writes `hook_secret_used`. A paused hook's secret is still typed; a removed hook's is not, and W1b's trigger
 (`qorpera_event_hooks_revoke_signing_secret`) revokes it.
 It is not gated by A1's switch (that one is the accounts'), and A1's fill refuses a hook's call as no such account.
+Since E3c-1 it refuses a Stripe hook as it does an address hook (0A000 "This hook has no secret the vault types"): the
+vault takes a Stripe secret from Stripe's page and never types it (§5.8).
 
 **Who may, and the locks.** The three broker functions are granted to `qorpera_secret_broker` only, and run A1's checks
 before any lock: the broker's session and capability, a job of the authority's company, and folder-v2 only ("Hooks need
@@ -481,7 +487,8 @@ keeps E3a's order: the receipt, the company's hook claim (rank 9), the caps and 
 host's:
 - **`manage_hook`** (`cloud-event-tools.ts`) takes `proof` `github` or `hmac-sha256` and `site` (a lowercase host name;
   `github.com` for GitHub unless named, required for HMAC, refused on an address hook). Stripe is still refused, with
-  its reason. The review card names who signs, the site, and that the vault makes a secret nobody sees.
+  its reason, until E3c-2 (§5.8). The review card names who signs, the site, and that the vault makes a secret nobody
+  sees.
 - **The folder client** (`cloud-company-folder-client.ts`) sends a signed create to the company's secret broker
   (`POST /v1/event-hooks`, the runtime's token and the run's lease in `x-qorpera-identity` as on G2-6a's other broker
   routes, 15 s inside the client's 20 s), with the release retry and the same operation key. A host without the broker
@@ -579,6 +586,283 @@ token), `cloud-company-account-fill-box` (a hook's box and an account's never op
 refused, and in the last case the box is emptied; other boxes are refused), `cloud-company-computer-tools` (the hook form
 and its refusals), `cloud-company-computer-native` (the hook route and a host without it) and `cloud-action-review`.
 
+### 5.8 E3c: Stripe hooks, the secret taken from Stripe's screen (agreed 9 October)
+
+E3c comes in four PRs: **E3c-1** the database (migration `20260930344000`, SQL test 419), **E3c-2** the broker and the
+runtime, **E3c-3** the office image, and **E3c-4** the hold (migration `20260930345000`, SQL test 420). The coordinator
+agreed the design on 9 October. E3c-1 is built (below). E3c-2, E3c-3 and E3c-4 ship together in one release; until then
+`manage_hook` refuses a Stripe hook (§5.7, E3b-2).
+
+**What it is for.** An agent opens a Stripe hook with `manage_hook`, adds its URL as an endpoint in Stripe, and then
+moves the endpoint's signing secret (`whsec_…`) from Stripe's page into the vault with `vault_capture`. The model never
+sees the value, no member copies it, and the hook takes deliveries from its first capture on. Until then intake answers
+Stripe's deliveries 409 (`not_ready`, `event-intake.ts:117`), and Stripe keeps retrying them (up to 3 days in live
+mode), so nothing is lost while the hook waits.
+
+**1. Opening a Stripe hook.**
+- `manage_hook`'s `create` takes `proof: stripe`. The site is fixed to `dashboard.stripe.com`, the page the secret is
+  taken from: a `site` the request names must be that one. The create goes to the broker's `/v1/event-hooks` as a
+  GitHub or HMAC one does (E3b-2).
+- No secret exists yet, and a secret row needs `current_version` of at least 1 (`20260828018000`), so the opening stores
+  none. The broker reserves the secret's id and derives the hook's **capture key**, an X25519 key pair, from the
+  company's vault key (HKDF-SHA256, info `qorpera.event-hook-capture/v1`, the reserved id and the environment as salt).
+  The database keeps only the public half.
+- The private half is never stored and never leaves the keyring. `CloudSecretKeyring` gains two methods: one gives the
+  public half for an identity, and one opens a capture box inside a callback, as `use` opens an envelope. Raw key bytes
+  are zeroed after each call.
+- **A stale capture key.** If the company's broker authority or its key changes before a capture, the stored public key
+  is for a key that can no longer open the box. The hook keeps its address, so the agent never removes it or edits the
+  endpoint at Stripe. Instead the broker derives the key again under the current authority and replaces it in one
+  audited step, allowed only while no version of the hook's secret is sealed under the current key. Until then the
+  capture reads answer "The hook's capture key must be made again" (55000). `/v1/event-hooks` takes a `rekey` request
+  for a hook, and `manage_hook` makes it on its own when a capture meets this refusal.
+
+**2. How the guest finds the value, and why it is Stripe's (E3c-3).** The call is
+`computer_browser {action: vault_capture, hook, field: signing_secret, role, name}`. The `role` (a button or link) and
+`name` name Stripe's Reveal control. The call carries no value, so the model cannot supply one. In the office:
+1. **The page:** https, on the hook's site, in the page's own top document, not a frame (`VAULT_CAPTURE_WRONG_SITE`,
+   `VAULT_CAPTURE_IN_FRAME`).
+2. **The hook:** the page's text must show the hook's address, the 43-character path in its URL. This ties the page to
+   this hook's endpoint, so endpoint A's secret is never stored under hook B (`VAULT_CAPTURE_WRONG_HOOK`).
+3. **Nothing shown yet:** if text shaped like a secret (`whsec_` followed by letters, digits, `+`, `/` or `=`) is
+   already on the page, the guest reloads it, and Stripe masks the secret again. If it is still there, it is not
+   Stripe's reveal but text someone put on the page, and the capture is refused (`VAULT_CAPTURE_AMBIGUOUS`).
+4. **The reveal:** a cover goes over the whole page, so the live viewer and any screen capture see the cover, never the
+   value. Then the guest clicks the named control: exactly one, in the top document.
+5. **The read:** the guest waits up to 5 seconds for exactly one secret-shaped value in the page's rendered text
+   (`VAULT_CAPTURE_NOT_SHOWN` for none, `AMBIGUOUS` for two), reads it again 300 ms later, and the two reads must match
+   (`VAULT_CAPTURE_UNSTABLE`).
+6. **A whole value:** a token followed by `…` or `...`, or one with masking characters, is cut off
+   (`VAULT_CAPTURE_PARTIAL`). Until the live run confirms Stripe's length, the check takes 16 to 200 characters after
+   `whsec_`.
+7. **Sealed, then hidden again:** the value is sealed (point 3) and added to the screen's private values
+   (`CompanyComputerFilledValues`), so it is redacted from every snapshot, title and address for the screen's lifetime,
+   as a typed password is. The computer's clipboard is cleared, the page is reloaded so Stripe masks it again, and only
+   then is the cover removed.
+
+A refusal seals and sends nothing. The proof that a value is Stripe's has two parts: the steps above (Stripe's own page
+over TLS, naming this endpoint, with one value that appears only after the guest's click, read twice the same and
+whole), and the first delivery that verifies under it (point 5).
+
+**A shape guard, for every page.** If the model clicks Reveal itself, it must not see the value. So the guest treats any
+secret-shaped text on any page as private, as it treats a filled value: snapshots show it redacted, and page and desktop
+screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also covers E3b's HMAC secrets, which are
+`whsec_` and base64.
+
+**3. From the guest to the broker, sealed and lease-proven as the fill is.**
+- **The key comes from the database, never from the native host,** which could otherwise swap in its own key and read
+  the value. The office reads it through its registry: one new method on the closed list
+  (`cloud-company-computer-registry-http.ts`), `qorpera_native_office_hook_capture` (E3c-1, below). The office service
+  builds that client from what the orchestrator gives the office VM at start (`registryUrl` in `qorpera-office-config`,
+  the credential `qorpera-office-registry`) and posts over https to `<registryUrl>/rest/v1/rpc/<method>`, refusing a URL
+  that is not https or has a path or user info, and checking the server's certificate against the system's store. So
+  the read never passes through the run's native host, which lives in the job guest, reaches the office only through
+  the native gateway (`qorpera-office-native`), and writes neither the office's configuration nor its credentials. The
+  key the office seals to is the one the broker stored. G2's step that takes the office VM's service-role key away must
+  keep this path (a narrower credential, still read by the office directly) and carry the new method.
+- **The box:** A1-3's (`cloud-company-account-fill-box.ts`: an ephemeral X25519 key, HKDF-SHA256, AES-256-GCM), with its
+  own schema and HKDF info (`qorpera.event-hook-capture/v1`), so a capture box never opens as a fill box or the other
+  way round. Associated data `{schema, companyId, companyComputerId, computerGeneration, receiptId, hookId, field}`;
+  payload `{schema, field, value, site, capturedAtMs}`.
+- **The relay:** the office answers the perform with the box beside the content, a key only a `vault_capture` answer may
+  carry, as only a screenshot's may carry `image`. The native host cannot open the box. It posts the binding, the
+  receipt, the call's key and envelope, and the box to the broker's new `POST /v1/event-hook-captures`, which proves the
+  binding with the run's lease first (G2-6a) and asks the database within 15 s.
+- **The broker:**
+  1. reads the capture context (`qorpera_folder_read_hook_capture`): the next version, and the facts the associated data
+     needs;
+  2. rebuilds the associated data from those facts, not from the native host's request;
+  3. opens the box in the keyring, refuses one older than 90 s (60 s skew), and checks the value's shape again;
+  4. opens the current version when the read gives one, and compares the two in constant time (`timingSafeEqual` over
+     equal-length buffers; a length difference is itself "not the same"). The same value stores nothing and answers
+     that version with `unchanged: true`;
+  5. otherwise seals the value at the next version under the company's key with E3b-2's associated data, and stores it
+     (`qorpera_folder_store_hook_capture`) with an audit row `hook_secret_captured`.
+
+  The store is idempotent on the receipt. A version race answers "outcome unconfirmed", and the same receipt asks again.
+  A box cut or changed in transit fails AES-GCM, and nothing is stored. The value and the envelope are zeroed after.
+
+**4. What the agent sees afterwards.**
+- **The tool's answer:** `{action: vault_capture, completed: true, captured: {hook, field: signing_secret, version,
+  unchanged}}`. It never carries the value, and the receipt keeps only that answer.
+- **The review card:** "Read a hook's signing secret off a web page into the vault", naming the hook and the field.
+- **`list_hooks` and Settings:** `signingSecret.ready` turns true, and the card goes from "Waiting for its signing
+  secret" to "Active" (#984). Snapshots of Stripe's page show the value redacted.
+- **The descriptor:** a Stripe hook's `signingSecret` also gives `version`, `capturedAt` and `lastRefusal` (time and
+  reason of the newest delivery refused under the current version), so the agent and Settings see a wrong capture as it
+  happens.
+
+**5. A wrong or partial capture.**
+- **A partial, ambiguous or unstable read** is refused in the guest (point 2), with nothing sealed or sent. A box lost
+  between the office and the broker leaves the receipt executing: the outcome is unknown, and the agent captures again.
+  Reveal repeats, so this costs nothing.
+- **A wrong capture that is stored** is a value that is Stripe's but not this endpoint's. The page check makes this
+  unlikely. The likely case is a test-mode and a live-mode endpoint pointed at one hook: each mode has its own secret,
+  so the rule is one hook per Stripe endpoint, and `manage_hook`'s description says so.
+  - Deliveries are then answered 202 and refused afterwards ("The Stripe signature does not match", body dropped), so
+    those events are lost to us, while Stripe counts them delivered.
+  - The agent sees `lastRefusal`. The fix is to capture again, then resend the refused events from Workbench → the
+    endpoint → **Event deliveries** (the Dashboard resends up to 15 days back, the CLI up to 30). A resent event keeps
+    its id, so one that had verified is answered as a duplicate.
+  - **The proof of a capture** is the first verified delivery. Workbench has no "send test" button, so the agent
+    triggers a real test-mode event, or waits for the next real one.
+- **Stop on the first mismatch (E3c-4).** Losing payment events without a word is the worst case for a company run on
+  Qorpera, so no Stripe hook takes deliveries without this.
+  - The hook keeps the newest secret version that has verified a delivery. When the verifier refuses a delivery with
+    "does not match" under a captured version that has never verified one, it **holds** that version.
+  - While the current version is held, intake answers the hook `not_ready` (409), as before its first capture, so
+    Stripe retries every later delivery. The next capture makes a new version, which is not held, and the retries verify
+    under it. Only the deliveries accepted before the hold are lost: the refused one, and any that raced it. The agent
+    resends those.
+  - The hold shows in `lastRefusal` ("held: the captured secret does not match"), so the agent captures again.
+  - Once a version has verified a delivery, a later mismatch is refused as today and holds nothing. A rolled secret is
+    covered by a new capture, and a forged delivery can no longer stop the hook.
+  - It applies only to versions made by a capture, which is Stripe only. A GitHub or HMAC version is made by the broker,
+    and a new fill does not make a new version, so a hold on one would never lift.
+  - **Accepted risk:** anyone who knows a hook's URL can send one forged delivery that holds a never-verified version,
+    so the hook answers 409 until the next capture. Nothing is lost, because Stripe retries for up to 3 days, and the
+    agent sees the hold. The URL's 43-character path is the only barrier, and once a delivery verifies, the hold no
+    longer applies.
+- **Not chosen: check before storing.** Intake would keep the newest `not_ready` delivery's body and signature, and the
+  broker would check a capture against it. That changes intake for little gain, and a forged held delivery could block a
+  correct capture in the same way.
+
+**6. Stripe's Reveal, Roll and copy buttons.**
+- **Reveal** is the capture's own step. It repeats, so a capture can be redone at any time (§5.5's old "shows it once"
+  was wrong). If the model clicks Reveal itself, the shape guard hides the value.
+- **Roll** makes a new secret. Stripe expires the old one at once or up to 24 hours later, and while both live it signs
+  every delivery with each, one `v1` per secret. Our verifier accepts any matching `v1` (`cloud-event-verification.ts`),
+  so during the overlap the stored copy still verifies, and only the newest needs capturing.
+  - After a roll the agent captures again at once. Rolling with an overlap (for example 1 hour) means no delivery is
+    refused in between; with "expire now", deliveries are refused until the next capture (resend them as in point 5).
+  - We add no roll action: Roll is a click on Stripe's page like any other. A suspected leak means Roll, then capture.
+  - Test mode and live mode are separate endpoints with separate secrets, so each needs its own hook.
+- **Copy** puts the value in the computer's clipboard, where the shape guard still hides it from snapshots, and the
+  capture clears the clipboard. A model that reads the clipboard from a shell, or pastes the value into a file and reads
+  that, gets a text tool result, so the runtime also redacts secret-shaped text in every text tool result that reaches
+  the model: shell output, file reads, page text (E3c-2). A model that pastes it elsewhere on purpose, past these
+  guards, is an agent that already controls the company's Stripe account: the capture keeps the value from the model,
+  from members and from logs, not from an agent signed in to Stripe. The redaction is cheap defence in depth.
+
+**No paste box.** Settings never takes a secret. It shows a Stripe hook's state ("Waiting for its signing secret", then
+"Active", or its last refusal), and the only way a value gets in is the agent's `vault_capture`.
+
+**E3c-1, the database (as built).** Migration `20260930344000`:
+- **The site and the key.** `secret_site`'s check (`20260930160000`) also allows `stripe` with `dashboard.stripe.com`,
+  and a Stripe request that names another site is refused (22023 "A Stripe hook's secret is taken from
+  dashboard.stripe.com"). The new table `qorpera_event_hook_capture_keys`, granted to no role, keeps a Stripe hook's
+  reserved secret id (unique), the broker authority, its key id and the 32-byte public key. The functions that write a
+  key check it with `qorpera_company_computer_fill_key_valid`, which also refuses low-order points.
+- **The opening.** E3b's effect takes a 10th argument, the capture key (the nine-argument one is dropped). Its callers:
+  - `qorpera_folder_open_stripe_hook`, the broker's: the capture key and no envelope. In the hook's own step it inserts
+    the key row, and no secret, version or audit row. The reserved id must be no secret's and no other key row's
+    ("hook secret id is taken"). No reserved id, another key id, an envelope, or a key that is not a valid public key is
+    refused (42501 "hook capture key is unavailable").
+  - `qorpera_folder_open_signed_hook` (GitHub, HMAC): an envelope and no capture key, as before. A Stripe request there
+    brings an envelope and is refused with the same 42501.
+  - `qorpera_folder_manage_hook`, the host's: neither, so a Stripe proof is refused as the other signed ones are (0A000
+    "A signed hook is opened through the vault"). A member's `qorpera_create_event_hook` refuses it with the same words
+    (§6).
+- **The renewal.** `qorpera_folder_describe_hook_capture_key` answers the hook's reserved id, the company, environment
+  and key id the derivation needs, and `current` (the key row was made under this authority and its key).
+  `qorpera_folder_replace_hook_capture_key` takes the new key id and public key and holds the key row FOR UPDATE:
+  - the same authority, key id and public key again answers `replaced: false` and writes nothing;
+  - once a version of the hook's secret is sealed under the authority's current key, it is refused (55000 "This hook's
+    secret was already taken under the current key"): a capture under that key already proved it;
+  - otherwise it replaces the row's authority, key id and public key and writes `hook_capture_key_replaced` (the
+    reserved id, no version), answering `replaced: true`.
+
+  The replace names no expected old key (no compare-and-swap): the key row's lock orders it with the captures, which
+  take the same row FOR UPDATE.
+- **The office's read,** `qorpera_native_office_hook_capture` (service_role only), writes nothing. It runs the office's
+  own check of the call (`qorpera_native_office_operation` 'check': the executing `computer_browser` receipt of exactly
+  this call and the run's screen lease on this computer), then needs a `vault_capture` of `signing_secret` on a
+  `folder-v2` company, a run of a company agent whose requester is an owner or admin, and a live (active or paused)
+  Stripe hook of the run's company. Its capture key must be made under the company's current active authority (else
+  55000 "The hook's capture key must be made again"), and its secret, if any, must not be revoked (55000 "This hook's
+  secret is gone from the vault"). It answers the hook's id, address and site, what the box is bound to (the company,
+  the computer and its generation, the receipt, the field) and the capture public key.
+- **The broker's read and store** share `qorpera_folder_hook_capture_context`, granted to no role: E3b's fill read, step
+  for step, for a capture. It checks the call (22023 "hook secret capture call is malformed"), the run and its requester
+  as `manage_hook` does, the hook (removed: 55000; not Stripe: 0A000 "This hook takes no secret from a page"), the
+  capture key (55000 when it must be made again), the computer the run's screen lease holds at the call's generation,
+  the secret at the reserved id (the hook's own and active, or none before the first capture), and last the receipt.
+  The locks are in that order: the run check with the hook (rank 5, FOR SHARE, so a removal waits), the key row (FOR
+  UPDATE, so one hook's captures take turns and the second reads the first's version), the computer (plain reads), the
+  secret (FOR UPDATE), and the receipt.
+  - `qorpera_folder_read_hook_capture` writes nothing. It answers the next version and the box's associated data, plus
+    `current` (the current version's envelope, when it is sealed under this authority's key, for the broker's compare)
+    and `captured` (this receipt's stored version, when there is one).
+  - `qorpera_folder_store_hook_capture` stores the next version, once per receipt. The first capture makes the secret
+    at the reserved id with E3b's columns (the company's, W1b's name, the hook's purpose, created by the run's
+    requester) at version 1; a later one adds a version and raises `current_version`. It writes `hook_secret_captured`
+    with the run, the receipt and the version, and a unique index keeps that to one per receipt. A replay answers the
+    stored version (`replayed: true`). A version that is no longer the next one, or an insert that meets another, is
+    an outcome the store cannot confirm (40003 "hook secret capture outcome is unconfirmed"), and the broker reads
+    again for the same receipt.
+- **The rest.** `qorpera_valid_office_browser_action` accepts `vault_capture` (`role` a button or link, `name` a
+  non-blank string of at most 512 bytes, `hook` a uuid, `field` `signing_secret`). E3b's fill refuses a Stripe hook
+  (0A000 "This hook has no secret the vault types"). The descriptor's `signingSecret` gains, for a Stripe hook only,
+  `version`, `capturedAt` and `lastRefusal` `{receivedAt, reason}`, served by a partial index on refused deliveries.
+  Empty ones are left out, so a Stripe hook before its first capture, and every GitHub or HMAC hook, keeps exactly
+  `connectorId`, `secretName` and `ready`. The five broker functions are granted to `qorpera_secret_broker` only.
+
+**E3c-2, E3c-3 and E3c-4 ship in one release.**
+- **E3c-2, the broker and the runtime (built):** `manage_hook`'s Stripe create (its E3b-2 refusal goes, and its description says
+  one hook per Stripe endpoint, test and live mode apart); the folder client's new refusal words and its signed-create
+  check (a Stripe create answers `ready: false`, and `version` and `capturedAt` appear only after a capture); the
+  keyring's capture key, and the Stripe opening and `rekey` on `/v1/event-hooks`; `/v1/event-hook-captures`, the native
+  host's relay and the review card; Settings' Stripe state; and the redaction of secret-shaped text in every text tool
+  result that reaches the model. The native host asks the broker for the `rekey` before it sends the office its
+  `vault_capture`, never after, so the office's perform is never repeated; and the redaction cuts `whsec_` secrets
+  from every answer the tool boundary returns, its digest and run log included (a coding child's own shell is not
+  that boundary's).
+- **E3c-3, the office image (built):** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
+  registry method and the perform answer's box. The office reads where the box goes from the database
+  (`qorpera_native_office_hook_capture`), never from the native host. Every way a read ends masks the page again with a
+  reload under the cover; a page that still shows the value has its tab closed. The box is held for the call's answer
+  only once the page shows no check, so a stop answer carries none, and the gateway refuses a done read without one.
+- **E3c-4, the hold** (migration `20260930345000`, SQL test 420): the verifier's finish, intake's readiness and
+  `lastRefusal`'s hold.
+
+**Rollout (the coordinator's; in each PR's "Deploy needed" lines):**
+1. E3c-1's and E3c-4's migrations.
+2. The secret broker, then the vault's nginx on node 1, in the same `:10000` block as E3b's lines:
+   `location = /v1/event-hook-captures` (POST only) through `$qorpera_operations_broker`, checked with `nginx -t`.
+3. The runtime bundle and the office image, together. A Stripe hook opened before the office image can capture just
+   waits: Stripe retries.
+
+**Tests (E3c-1): SQL 419, on 405's office fixture** (924's `folder-v2` company, a live run holding a native screen lease
+on the company's computer), with the company's broker authority:
+- the broker opens a Stripe hook with its capture key (the hook and the key, no secret); a replay answers from the
+  receipt; a GitHub hook opens as before; every refusal writes nothing;
+- the key's description, and its replacement while nothing was taken under it;
+- the office's read refuses any call but a `vault_capture` of a live Stripe hook of the run's company;
+- the first capture (the office's read, the broker's read, the store and its replay); a second stores version 2, and
+  only as the next version;
+- a new broker key: the old capture key is refused until it is replaced, and a key that took a secret stays;
+- while the hook is paused, every refusal of the reads and the store writes nothing (the call, the lease, the authority,
+  the company, the receipt, the envelope, the version, Postgres' own session, a requester who is no longer an owner, a
+  revoked secret); then another capture;
+- the descriptor; the fill refusing a Stripe hook; a removed hook captured no more; the grants, the dropped
+  nine-argument effect, the browser action's capture variant and the marker.
+
+The races (two stores of one version, a replace beside a store) are left to a committed fixture, as 948 is 987's.
+**SQL 987, 939 and 418** take E3c-1's words: a Stripe proof on the host's and the member's paths gets "A signed hook is
+opened through the vault", and the broker's E3b opening refuses one with "hook capture key is unavailable".
+
+**Tests (E3c-2 to E3c-4):**
+- **SQL 420 (E3c-4):** a mismatch under a never-verified captured version holds it, and intake answers 409; the next
+  capture lifts the hold; a mismatch after a verified delivery holds nothing; GitHub and HMAC versions are never held.
+- **TypeScript:** the keyring's capture key (it never exposes raw bytes) and a capture box that never opens as a fill
+  box; the broker route's proof and answers, the constant-time compare, and the native relay; the redaction of
+  secret-shaped text in shell output, file reads and page text; the guest's checks against fixture pages (cut, two
+  tokens, unstable, a frame, the wrong host, no address, a token already shown, the cover); the shape guard in snapshots
+  and screenshots.
+- **Deferred (needs Codex),** a live run against a Stripe sandbox, which also settles what Stripe's page does: the
+  secret's exact length, whether the endpoint page shows the full URL, where the value sits before Reveal, the Reveal
+  control's name, and the 409 retry schedule.
+
 ## 6. E4: hooks and mailboxes in Settings
 
 Settings → Company connections lists hooks and mailboxes beside accounts, as `supabase/CLIENT-CONTRACT.md` already says
@@ -592,14 +876,16 @@ Webhooks and Mailboxes, below the services, on the services' cards. A card shows
 address), purpose, status and last delivery, and who signs a signed hook. Owners and admins also see a webhook's URL to
 copy, and add, pause, resume or remove (after a confirmation). Settings adds address-proven webhooks and mailboxes only:
 a signed hook needs its sender's signing secret, and members never paste one (agents open those, §5.5). No SQL: all
-four calls answer for `folder-v2` since E1.
+four calls answer for `folder-v2` since E1. Next, with E3c-2 (§5.8): a Stripe hook's card shows "Waiting for its
+signing secret", then "Active", or its `lastRefusal`.
 
 E4b (migration 20260930280000, test 418): the member path now says the same. On a `folder-v2` company
 `qorpera_create_event_hook` refuses a Stripe, GitHub or HMAC proof with the host's words (0A000, §5.5), after the
-request's own checks and before any lock, and makes and marks nothing. A signed hook made there would have no secret and
-answer every sender not_ready. Address hooks, mailboxes and the snapshot-v1 branch are unchanged. W1b's member capture of a
-hook's secret stays snapshot-v1's too: on a `folder-v2` company `qorpera_begin_cloud_secret_capture` refuses the
-`event_hook` connector with 0A000 ("A hook's signing secret comes from the vault"), after its own checks and before any
+request's own checks and before any lock, and makes and marks nothing. Since E3c-1 (migration 20260930344000) those
+are "A signed hook is opened through the vault" for Stripe too (test 418 checks it). A signed hook made there would
+have no secret and answer every sender not_ready. Address hooks, mailboxes and the snapshot-v1 branch are unchanged.
+W1b's member capture of a hook's secret stays snapshot-v1's too: on a `folder-v2` company
+`qorpera_begin_cloud_secret_capture` refuses the `event_hook` connector with 0A000 ("A hook's signing secret comes from the vault"), after its own checks and before any
 lock, for a new secret, over the vault's, and for a member's own. Other connectors are unchanged. The runtime contract's
 amendment "events wake agents", item 2, says so (amended 9 October 2026).
 

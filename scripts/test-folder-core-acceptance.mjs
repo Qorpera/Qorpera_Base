@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { expandTestFixture } from "./test-hosted-db.mjs";
 import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 // The folder core's acceptance (deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md, "Core acceptance (C5)"): one line
@@ -23,9 +25,16 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // The hosted run also proves F3 step 3 (deploy/first-node/RUNTIME-FOLDER-WRITES.md), one line per item: the node
 // folder service, as built, takes a machine's writes through its view, stages them through the object gateway's
 // folder service route, and publishes each boundary with the real commit, all through a PostgREST stand-in.
+//
+// And F3 step 4c (RUNTIME-FOLDER-SERVICE.md, "Step 4c: read releases"; RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"), on
+// a database of its own with SQL test 639's company: a company machine's reads, taken through its desktop view as the
+// program logs them, are released to the core with the real release before each boundary's commit, and a read that is
+// no longer readable refuses the boundaries after it.
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_folder_acceptance";
+/** Step 4c's database: a copy of the one above, taken before anything is written to it. */
+const readsDatabase = "qorpera_folder_reads";
 const SERVICE = { role: "service_role" };
 
 /** A SQL literal for one value. */
@@ -282,6 +291,17 @@ const SERVICE_LINES = [
 	"a new folder, a move and deletes publish as the core's units",
 ];
 
+/** F3 step 4c's lines: a company machine's reads, released through its desktop view (RUNTIME-FOLDER-SERVICE.md). */
+const READ_LINES = [
+	"a read a company machine logged is released through its desktop view into the view's read set " +
+		"(and its holder run's) before the boundary's change set, which saves; asked again under the same id, the core " +
+		"replays it",
+	"once the read's folder narrows, the view's boundaries are refused (denied: a read is no longer readable) " +
+		"and save nothing",
+	"a read logged but not released when its folder narrowed refuses the boundary that would release it (unreadable) " +
+		"before any commit, and every later one, under the same release id",
+];
+
 class Report {
 	results = new Map();
 	/** What the company mode's cleanup left in place, and why; and, on the hosted run, whether it kept a member's write. */
@@ -381,6 +401,10 @@ async function hosted(report) {
 	const database = await hostedDatabase(databaseName);
 	let scratch;
 	try {
+		// A copy, not a database made like the first: on a cluster of this script's own that replays the test bootstrap,
+		// whose cluster-wide roles exist by then.
+		database.cluster.drop(readsDatabase);
+		database.cluster.admin(`create database ${readsDatabase} template ${databaseName};`);
 		scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-acceptance-"));
 		const db = new Database(
 			(sql) => database.cluster.psql(databaseName, sql, ["-qAt"]),
@@ -719,6 +743,21 @@ async function hosted(report) {
 			});
 		}
 
+		// F3 step 4c: a company machine's reads through its desktop view, on SQL test 639's company.
+		const reads = new Report("F3-4c", READ_LINES);
+		report.readsReport = reads;
+		try {
+			await machineReads(reads, { cluster: database.cluster, code, objectRoot });
+		} catch (error) {
+			// The first line, and psql's error where it gave one.
+			const lines = (error?.message ?? String(error)).split("\n");
+			const why = lines.find((line) => /\bERROR:/.test(line))?.trim();
+			const detail = `the read releases did not start: ${[lines[0], why].filter(Boolean).join(" ").slice(0, 500)}`;
+			READ_LINES.forEach((_, index) => {
+				if (!reads.results.has(index + 1)) reads.results.set(index + 1, { state: "FAIL", detail });
+			});
+		}
+
 		// The --company mode's own checks, on the company founded here (with --write), so they run on every suite.
 		// While it runs, a member writes a note under its scratch folder before the script's next commits: the cleanup
 		// must leave the folder, and the note, in place.
@@ -737,6 +776,7 @@ async function hosted(report) {
 		report.companyReport = second;
 	} finally {
 		if (scratch) await rm(scratch, { recursive: true, force: true });
+		database.cluster.drop(readsDatabase);
 		database.close();
 	}
 }
@@ -764,7 +804,6 @@ async function serviceWrites(report, context) {
 		store,
 		authority,
 		controlToken: token(),
-		verifierToken: token(),
 		replication,
 		folderServiceObjects: { token: serviceToken, authority },
 	});
@@ -980,6 +1019,248 @@ async function serviceWrites(report, context) {
 		service?.stop();
 		server.closeAllConnections();
 		await new Promise((closed) => server.close(closed));
+		if (!finished || [...report.results.values()].some((r) => r.state === "FAIL"))
+			report.notes.push(...logs.map((line) => `Folder service: ${line}`));
+	}
+}
+
+/** F3 step 4c (RUNTIME-FOLDER-SERVICE.md, "Step 4c: read releases") on a database of its own (`readsDatabase`)
+ * with SQL test 639's company, its fixture committed: a run holds agent A's screen, and the company machine on its
+ * allocation presents the desktop view the core opened for it. The node folder service as built takes the reads the
+ * machine's program logs (the calls the protocol's `I` frame makes) and releases them to the core, as the view, before
+ * each boundary's commit, through `postgrest(db)`. The boundaries make folders only, so nothing is staged. */
+async function machineReads(report, { cluster, code, objectRoot }) {
+	const name = readsDatabase;
+	const ENV = "63200000-0000-4000-8000-000000000020";
+	const OWNER_639 = "63200000-0000-4000-8000-000000000001";
+	const ALLOCATION = "63900000-0000-4000-8000-0000000000e1";
+	const LOG = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+	const logs = [];
+	let core;
+	let service;
+	let view;
+	let finished = false;
+	try {
+		const db = new Database(
+			(sql) => cluster.psql(name, sql, ["-qAt"]),
+			() => cluster.spawnPsql(name, ["-qAt", "-v", "ON_ERROR_STOP=1"]),
+		);
+		const views = expandTestFixture("639_folder_core_views.test.sql", (file) =>
+			readFileSync(join(repositoryRoot, "supabase/tests", file), "utf8"),
+		);
+		const end = views.indexOf("-- A run box: opened by its run");
+		if (end < 0) throw new Error("SQL test 639's run box section moved: update this script");
+		// Two folders the machine reads, and a run holding agent A's screen, with the desktop view the core opened for
+		// it.
+		const out = db.query(`${views.slice(0, end)}
+			create temp table reads_opened(what text primary key, value jsonb not null);
+			do $reads$
+			declare v jsonb; r jsonb := pg_temp.commit('{"kind":"platform"}', 'reads-setup', jsonb_build_array(
+				jsonb_build_object('op','mkdir','path','reads'),
+				jsonb_build_object('op','write','path','reads/r.txt','file',pg_temp.stage('read')),
+				jsonb_build_object('op','mkdir','path','later'),
+				jsonb_build_object('op','write','path','later/l.txt','file',pg_temp.stage('later'))));
+			begin
+				for n in 1..4 loop perform pg_temp.expect(r, n, 'saved'); end loop;
+				v := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+				perform pg_temp.hold(v);
+				insert into reads_opened values ('run', v), ('view', pg_temp.open('computer_desktop',
+					jsonb_build_object('screenId', '63900000-0000-4000-8000-0000000000e4', 'holderRunId', v ->> 'runId')));
+			end $reads$;
+			-- 639 rolls back, so its office never needed the logical computer it names; this commits, and the office's
+			-- deferred foreign key is checked then.
+			set local session_replication_role = replica;
+			insert into public.qorpera_logical_computers(id, profile_id, client_computer_id, display_name, template_key,
+				template_version, capabilities, created_by_user_id, computer_class)
+			select logical_computer_id, profile_id, client_computer_id, 'Reads', 'qorpera-office', 'v1', '["company_substrate"]',
+				created_by_user_id, 'company_computer'
+			from public.qorpera_runtime_offices where id = '63900000-0000-4000-8000-0000000000e0';
+			set local session_replication_role = origin;
+			select '@@reads-' || what || ' ' || value::text from reads_opened;
+			commit;`);
+		const opened = Object.fromEntries(
+			[...out.matchAll(/^@@reads-([a-z]+) (.*)$/gm)].map(([, what, value]) => [what, JSON.parse(value)]),
+		);
+		const { run, view: desktop } = opened;
+		assert(run?.runId && desktop?.viewId && desktop?.pass, `the desktop view was not opened: ${out.slice(-300)}`);
+
+		// The core as built, noting each release and commit the service asks, and what the database said to it.
+		core = new (class extends code.SupabaseFolderCore {
+			calls = [];
+			async noted(call, ask) {
+				this.calls.push(call);
+				try {
+					return await ask();
+				} catch (error) {
+					call.said = error?.said ?? error?.message ?? String(error);
+					throw error;
+				} finally {
+					call.done = true;
+				}
+			}
+			releaseReads(environmentId, actor, releaseId, reads, signal) {
+				return this.noted({ call: "release", releaseId, reads, said: null, done: false }, () =>
+					super.releaseReads(environmentId, actor, releaseId, reads, signal),
+				);
+			}
+			commit(environmentId, actor, operationKey, units, signal) {
+				return this.noted({ call: "commit", key: operationKey, said: null, done: false }, () =>
+					super.commit(environmentId, actor, operationKey, units, signal),
+				);
+			}
+		})({
+			projectUrl: "https://postgrest.acceptance.invalid",
+			secretKey: "acceptance-stand-in",
+			transport: postgrest(db).transport,
+		});
+		const objects = new code.NasObjects({ root: objectRoot, cacheBytes: 64 * 1024 * 1024 });
+		const uploads = {
+			start() {
+				throw new Error("Nothing is staged here: these boundaries make folders only");
+			},
+		};
+		service = new code.FolderService({
+			core,
+			objects,
+			grants: new code.MountGrants([], [], ["acceptance-office"]),
+			staging: new code.FolderStaging(core, uploads, objects),
+			log: (line) => logs.push(line),
+		});
+		// The company machine named after the view's allocation, in a company machine project.
+		const machine = {
+			project: "acceptance-office",
+			name: `qorpera-office-${ALLOCATION.replaceAll("-", "")}`,
+			physicalId: "63900000-0000-4000-8000-0000000000c3",
+		};
+		view = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: desktop.viewId, pass: desktop.pass, role: "io" },
+			{ cid: 3, lookup: "found", machine },
+		);
+		assert(view.writable && view.core, "the desktop view takes writes, as a core view");
+
+		const listed = async (folder) => new Map((await view.list(folder, undefined)).entries.map((e) => [e.name, e]));
+		const live = (path) =>
+			db.json(`select to_jsonb(e) from public.qorpera_folder_entries e where e.environment_id = ${literal(ENV)}
+				and e.key_text = public.qorpera_folder_key(${literal(path)}) and e.kind <> 'claim'`);
+		/** The reads filed for the view (`view`) or its holder run (`run`), as [path, version] pairs. */
+		const recorded = (owner) =>
+			db.json(`select coalesce(jsonb_agg(jsonb_build_array(x ->> 'path', x ->> 'version') order by x ->> 'path'),
+				'[]') from public.qorpera_folder_${owner}_read_records rec, jsonb_array_elements(rec.reads) x
+				where rec.${owner}_id = ${literal(owner === "view" ? desktop.viewId : run.runId)}`);
+		/** A read log entry, as the machine's program logs a read of a listed entry. */
+		const logged = (seq, path, entry) => ({
+			seq,
+			path,
+			version: entry.version,
+			...(entry.authority ? { authority: entry.authority } : {}),
+		});
+		const since = (mark, call) => core.calls.slice(mark).filter((c) => c.call === call);
+		const narrow = (path) =>
+			db.rpc("qorpera_folder_set_resource", {
+				p_environment_id: ENV,
+				p_actor: { kind: "member", userId: OWNER_639 },
+				p_path: path,
+				p_match: "subtree",
+				p_scope: "company_shared",
+				p_policy: "normal",
+			});
+
+		await report.check(1, async () => {
+			const listing = (await listed("reads")).get("r.txt");
+			assert.equal(listing?.version, live("reads/r.txt")?.version, "the view lists the live version");
+			const mark = core.calls.length;
+			assert.deepEqual(
+				await view.reads({ log: LOG, reads: [logged(1, "reads/r.txt", listing)], lost: false }),
+				{ log: LOG, taken: 1, released: 0 },
+				"the read is taken, not released yet",
+			);
+			assert.deepEqual(recorded("view"), [], "nothing is released before a boundary");
+			await view.mkdir("shared/by-reads");
+			const answer = await view.publish();
+			assert(answer.commitId, `the boundary did not save: ${JSON.stringify(answer)}`);
+			assert.deepEqual(answer.paths, [{ path: "shared/by-reads", outcome: "saved" }]);
+			const asked = core.calls.slice(mark);
+			const first = asked.findIndex((c) => c.call === "release");
+			const committed = asked.findIndex((c) => c.call === "commit");
+			assert(first >= 0 && first < committed, "the read is released before the commit");
+			const release = asked[first];
+			const read = [["reads/r.txt", live("reads/r.txt").version]];
+			assert.deepEqual(release.reads.map((r) => [r.path, r.version]), read, "the release carries the logged read");
+			assert.deepEqual(recorded("view"), read, "the view's read set");
+			assert.deepEqual(recorded("run"), read, "its holder run's read set");
+			assert.deepEqual(await view.reads({ log: LOG, reads: [], lost: false }), { log: LOG, taken: 1, released: 1 });
+			const actor = { kind: "view", viewId: desktop.viewId, pass: desktop.pass };
+			const again = await core.releaseReads(ENV, actor, release.releaseId, release.reads);
+			assert.equal(again.replay, true, "asked again under its id, the release is replayed");
+			const receipt = listing.authority ? "the listing's receipt" : "no receipt";
+			return `release ${release.releaseId} (${receipt}) before change set ${answer.seq}`;
+		});
+
+		await report.check(2, async () => {
+			narrow("reads");
+			for (const n of [1, 2]) {
+				const path = `shared/refused-${n}`;
+				const mark = core.calls.length;
+				await view.mkdir(path);
+				assert.deepEqual(await view.publish(), {
+					commitId: null,
+					seq: null,
+					refused: "denied",
+					paths: [{ path, outcome: "refused", reason: "denied" }],
+				});
+				assert.deepEqual(since(mark, "release"), [], "nothing was left to release");
+				const commits = since(mark, "commit").filter((c) => c.done);
+				assert(
+					commits.length > 0 && commits.every((c) => c.said === "A read is no longer readable"),
+					`the commits said: ${JSON.stringify(commits.map((c) => c.said))}`,
+				);
+				assert.equal(live(path), null, `${path} is not saved`);
+			}
+		});
+
+		await report.check(3, async () => {
+			const read = (await listed("later")).get("l.txt");
+			assert.equal(read?.version, live("later/l.txt")?.version, "the view lists the live version");
+			narrow("later");
+			const mark = core.calls.length;
+			assert.deepEqual(await view.reads({ log: LOG, reads: [logged(2, "later/l.txt", read)], lost: false }), {
+				log: LOG,
+				taken: 2,
+				released: 1,
+			});
+			await view.mkdir("shared/refused-3");
+			const refused = {
+				commitId: null,
+				seq: null,
+				refused: "unreadable",
+				paths: [{ path: "shared/refused-3", outcome: "refused", reason: "unreadable", kept: true }],
+			};
+			assert.deepEqual(await view.publish(), refused, "the boundary that would release the read");
+			assert.deepEqual(await view.publish(), refused, "a later boundary");
+			assert.deepEqual(since(mark, "commit"), [], "no commit was asked");
+			const releases = since(mark, "release").filter((c) => c.done);
+			assert(
+				releases.length >= 2 && releases.every((c) => c.said === "A released read is no longer readable"),
+				`the releases said: ${JSON.stringify(releases.map((c) => c.said))}`,
+			);
+			assert.equal(new Set(releases.map((c) => c.releaseId)).size, 1, "asked again under the same release id");
+			assert.deepEqual(await view.reads({ log: LOG, reads: [], lost: false }), { log: LOG, taken: 2, released: 1 });
+			const sets = [...recorded("view"), ...recorded("run")];
+			assert(!sets.some(([path]) => path === "later/l.txt"), "no read set holds the refused read");
+			assert.equal(live("shared/refused-3"), null, "shared/refused-3 is not saved");
+			return `release ${releases[0].releaseId}, asked ${releases.length} times`;
+		});
+		finished = true;
+	} finally {
+		// Let go, the view publishes once more what it still holds (line 3's refused read): that finishes before the
+		// database goes.
+		view?.release();
+		for (let seen = -1, round = 0; core && round < 100; round++) {
+			if (seen === core.calls.length && core.calls.every((c) => c.done)) break;
+			seen = core.calls.length;
+			await new Promise((turn) => setTimeout(turn, 100));
+		}
+		service?.stop();
 		if (!finished || [...report.results.values()].some((r) => r.state === "FAIL"))
 			report.notes.push(...logs.map((line) => `Folder service: ${line}`));
 	}
@@ -1203,6 +1484,10 @@ async function main() {
 	if (report.serviceReport) {
 		process.stdout.write("The folder service's writes through a machine's view (F3 step 3), on the company founded above:\n");
 		failed += report.serviceReport.print();
+	}
+	if (report.readsReport) {
+		process.stdout.write("The folder service's read releases (F3 step 4c), on the views test's company (639):\n");
+		failed += report.readsReport.print();
 	}
 	if (report.companyReport) {
 		process.stdout.write("The --company --write checks, on the company founded above:\n");

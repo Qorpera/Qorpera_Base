@@ -16,6 +16,8 @@ import {
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
+import { CloudFolderRoutineDecision } from "@qorpera/runtime/cloud-folder-routine-decision";
+import { CloudFolderRoutines } from "@qorpera/runtime/cloud-folder-routines";
 import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeCompanyContext } from "@qorpera/runtime/cloud-native-company-context";
 import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -28,7 +30,7 @@ import {
 import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const binding = { runId: randomUUID(), leaseId: randomUUID() } as unknown as CloudNativeToolBinding;
@@ -358,6 +360,33 @@ describe("what the card shows", () => {
 		});
 	});
 
+	it("names Stripe as a Stripe hook's signer and its dashboard as the one site its secret is read from (E3c)", () => {
+		const details = {
+			purpose: "Payments the company takes.",
+			"signed by": "Stripe",
+			site: "dashboard.stripe.com",
+			effect:
+				"Stripe makes the hook's secret; the vault reads it off dashboard.stripe.com, and no one sees it. Only events Stripe signs with it can wake the company's routines",
+		};
+		const stripe = {
+			action: "create",
+			kind: "hook",
+			name: "stripe-live",
+			purpose: "Payments the company takes.",
+			proof: "stripe",
+			operationKey: "k",
+		};
+		expect(describeCloudAction(tool("manage_hook"), stripe)).toEqual({
+			title: "Open a hook",
+			target: "stripe-live",
+			details,
+		});
+		// The site is Stripe's dashboard whatever the call names; the tool refuses any other.
+		expect(describeCloudAction(tool("manage_hook"), { ...stripe, site: "stripe.example.com" }).details).toEqual(
+			details,
+		);
+	});
+
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {
 		const content = `# Q3 plan\n\n- Grow sales\n${"Detail of the plan. ".repeat(4000)}`;
 		const created = describeCloudAction(tool("google_drive_create_file", "connector"), {
@@ -509,16 +538,24 @@ describe("what the card shows for delegation", () => {
 			{ describeToolAuthority: async () => authority },
 			new AbortController().signal,
 		);
-		const control = { call: vi.fn() };
-		// Parsing reads no files: the hiring tools' writers check the files from the arguments alone.
+		// Parsing reads no files: the writers check the files from the arguments alone.
 		const writer = {
 			folder: {} as CloudCompanyFolderClient,
 			operations: {} as CloudNativeToolOperations,
 			identity: run.identity,
 		};
 		const tools = [
-			...cloudRoutineTools(binding, run.identity, control),
-			cloudRoutineDecisionTool(binding, run.identity, control, { decisionOwed: () => true, decided: () => {} }),
+			...cloudRoutineTools(binding, run.identity, undefined, new CloudFolderRoutines({ ...writer, handle: "nora" })),
+			cloudRoutineDecisionTool(binding, run.identity, {
+				decisionOwed: () => true,
+				decided: () => {},
+				folderDecision: new CloudFolderRoutineDecision({
+					...writer,
+					handle: "nora",
+					routineKey: "weekly-sales-report",
+					routineId: "0c1d2e3f-5555-4555-8555-555555555555",
+				}),
+			}),
 			...cloudHiringTools(run.identity, {
 				folderHiring: new CloudFolderHiring(writer),
 				folderGroupChats: new CloudFolderGroupChats(writer),
@@ -531,7 +568,13 @@ describe("what the card shows for delegation", () => {
 		};
 	}
 
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("says when a routine runs in plain words, on the routine's own clock", async () => {
+		// The routine file's check refuses an end that has passed: the card is read on a fixed day before it.
+		vi.useFakeTimers({ now: Date.parse("2026-10-01T08:00:00Z"), toFake: ["Date"] });
 		const parse = await parser();
 		const routine = (trigger: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
 			parse("manage_routine", {

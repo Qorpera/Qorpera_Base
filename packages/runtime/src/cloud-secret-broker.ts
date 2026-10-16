@@ -21,12 +21,16 @@ import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-
 import {
 	type EventHookAnswer,
 	type EventHookAuthority,
+	type EventHookCaptureAnswer,
+	type EventHookCaptureRequest,
+	type EventHookCaptureVersion,
 	type EventHookCreate,
 	type EventHookFillAnswer,
 	type EventHookFillRequest,
 	type EventHookOpening,
 	type EventHookRefusal,
 	type EventHookRequest,
+	type EventHookStripeOpening,
 	EventHookVault,
 } from "./cloud-event-hook-vault.ts";
 import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
@@ -175,6 +179,12 @@ export interface CloudSecretBrokerAuthority {
 	describeSignedHook?: EventHookAuthority["describeSignedHook"];
 	openSignedHook?: EventHookAuthority["openSignedHook"];
 	readEventHookFill?: EventHookAuthority["readEventHookFill"];
+	/** Stripe hooks' captured secrets (E3c-2); without them a Stripe create or capture is refused as unavailable. */
+	openStripeHook?: EventHookAuthority["openStripeHook"];
+	describeHookCaptureKey?: EventHookAuthority["describeHookCaptureKey"];
+	replaceHookCaptureKey?: EventHookAuthority["replaceHookCaptureKey"];
+	readHookCapture?: EventHookAuthority["readHookCapture"];
+	storeHookCapture?: EventHookAuthority["storeHookCapture"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -562,6 +572,8 @@ export class CloudSecretBroker {
 					})
 				: undefined;
 		const { describeSignedHook, openSignedHook, readEventHookFill } = options.authority;
+		const { openStripeHook, describeHookCaptureKey, replaceHookCaptureKey, readHookCapture, storeHookCapture } =
+			options.authority;
 		this.#eventHooks =
 			describeSignedHook && openSignedHook && readEventHookFill
 				? new EventHookVault({
@@ -569,6 +581,11 @@ export class CloudSecretBroker {
 							describeSignedHook: describeSignedHook.bind(options.authority),
 							openSignedHook: openSignedHook.bind(options.authority),
 							readEventHookFill: readEventHookFill.bind(options.authority),
+							openStripeHook: openStripeHook?.bind(options.authority),
+							describeHookCaptureKey: describeHookCaptureKey?.bind(options.authority),
+							replaceHookCaptureKey: replaceHookCaptureKey?.bind(options.authority),
+							readHookCapture: readHookCapture?.bind(options.authority),
+							storeHookCapture: storeHookCapture?.bind(options.authority),
 						},
 						keys: options.keyring,
 					})
@@ -692,6 +709,16 @@ export class CloudSecretBroker {
 	eventHookFill(request: EventHookFillRequest, signal: AbortSignal): Promise<EventHookFillAnswer | EventHookRefusal> {
 		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
 		return this.#eventHooks.fill(request, signal);
+	}
+
+	/** One vault_capture of a Stripe hook's signing secret off the Company Computer's page (E3c-2): the version the
+	 * vault holds after it; the secret never leaves. */
+	eventHookCapture(
+		request: EventHookCaptureRequest,
+		signal: AbortSignal,
+	): Promise<EventHookCaptureAnswer | EventHookRefusal> {
+		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
+		return this.#eventHooks.capture(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -1206,6 +1233,98 @@ export class PostgresCloudSecretBrokerAuthority
 			],
 			signal,
 		);
+	}
+
+	openStripeHook(
+		binding: CloudNativeToolBinding,
+		request: EventHookCreate,
+		opening: EventHookStripeOpening,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_open_stripe_hook($1::uuid,$2::text,$3::jsonb,$4::jsonb,$5::uuid,$6::uuid,$7::uuid,$8::text,$9::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(binding),
+				JSON.stringify(request),
+				opening.secretId,
+				opening.companyId,
+				opening.environmentId,
+				opening.keyId,
+				opening.capturePublicKey,
+			],
+			signal,
+		);
+	}
+
+	describeHookCaptureKey(binding: CloudNativeToolBinding, hookId: string, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_describe_hook_capture_key($1::uuid,$2::text,$3::jsonb,$4::uuid) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding), hookId],
+			signal,
+		);
+	}
+
+	replaceHookCaptureKey(
+		binding: CloudNativeToolBinding,
+		hookId: string,
+		keyId: string,
+		publicKey: string,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_replace_hook_capture_key($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding), hookId, keyId, publicKey],
+			signal,
+		);
+	}
+
+	readHookCapture(request: EventHookFillRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_read_hook_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(request.binding),
+				request.receiptId,
+				request.envelope,
+				createHash("sha256").update(request.idempotencyKey).digest("hex"),
+			],
+			signal,
+		);
+	}
+
+	async storeHookCapture(
+		request: EventHookFillRequest,
+		stored: EventHookCaptureVersion,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		const envelope = Buffer.from(stored.encryptedEnvelope);
+		try {
+			return await this.#rpc(
+				"select public.qorpera_folder_store_hook_capture($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::bigint,$9::uuid,$10::uuid,$11::text,$12::bytea,$13::text) as result",
+				[
+					this.#brokerAuthorityId,
+					this.#brokerCapabilitySha256,
+					JSON.stringify(request.binding),
+					request.receiptId,
+					request.envelope,
+					createHash("sha256").update(request.idempotencyKey).digest("hex"),
+					stored.secretId,
+					stored.version,
+					stored.companyId,
+					stored.environmentId,
+					stored.keyId,
+					envelope,
+					stored.envelopeSha256,
+				],
+				signal,
+			);
+		} finally {
+			// As openSignedHook: a query sent late carries zeros, which the database's envelope check refuses.
+			envelope.fill(0);
+		}
 	}
 
 	setCompanyAccountState(

@@ -228,11 +228,12 @@ end $$;
 do $$
 declare s jsonb := current_setting('qorpera_test.snapshot_binding')::jsonb;
 begin
-	-- The legacy bodies run for snapshot-v1: the legacy run check refuses the hand-made binding in its lease check.
+	-- Since legacy sweep F1c (20260930246000) snapshot-v1 gets the folder bodies too: the folder run check refuses the
+	-- snapshot-v1 binding.
 	perform pg_temp.raises_like(format('select pg_temp.begin(%L, %L, %L)', s, extensions.gen_random_uuid(), 'op-snapshot'), '42501',
-		'native execution binding is unavailable');
+		'native tool run is unavailable');
 	perform pg_temp.raises_like(format('select public.qorpera_complete_native_tool_operation(%L, %L, %L, %L)', s, extensions.gen_random_uuid(),
-		repeat('a', 64), '{}'), '42501', 'native execution binding is unavailable');
+		repeat('a', 64), '{}'), '42501', 'native tool run is unavailable');
 	-- One commit function, never two (PostgREST could not choose).
 	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_folder_commit') <> 1
 		or to_regprocedure('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)') is null then

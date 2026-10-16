@@ -514,6 +514,11 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		expect(wrapper).toContain("wallpaper=${QORPERA_SCREEN_WALLPAPER:?");
 		expect(wrapper).toContain(`\${wallpaper} != "\${screen_state}/wallpaper.png"`);
 		expect(wrapper).toContain(`XDG_CONFIG_HOME="\${screen_state}/config"`);
+		// Caches and thumbnails, of company files too, stay in memory.
+		expect(wrapper).toContain(`cache_dir="\${runtime_dir}/cache"`);
+		expect(wrapper).toContain(`XDG_CACHE_HOME="\${cache_dir}"`);
+		// The company folder only when the office service bound it.
+		expect(wrapper).toContain(`\${QORPERA_COMPANY_FOLDER:-} == /company && -d /company && -x /company`);
 		expect(wrapper).toContain(`/usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "\${wallpaper}"`);
 		expect(wrapper).not.toMatch(/QORPERA_LIVE_COMPANY_ROOT|dataset\/live|qorpera-chrome/);
 		// The desktop follows the company's local day and carries only the office dock.
@@ -796,7 +801,7 @@ printf '\\n' >> "$TEST_LOG"
 		// Extract only the file-writing block; the remaining wrapper needs a real X server.
 		const text = await readFile(wrapper, "utf8");
 		const start = text.indexOf("panel_config=");
-		const end = text.indexOf(`cd "\${workbench_root}"`);
+		const end = text.indexOf(`cd "\${folder_root}"`);
 		// The guest image resolves aliases with GNU realpath; the local double must not.
 		const block = text
 			.slice(start, end)
@@ -807,12 +812,12 @@ printf '\\n' >> "$TEST_LOG"
 		const screenState = join(fixture.root, "screen with spaces");
 		const workbench = join(fixture.root, "workbench dir");
 		await mkdir(workbench);
-		const run = () =>
+		const run = (folderRoot = workbench) =>
 			execute(
 				"/bin/bash",
 				[
 					"-c",
-					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}\n${block}`,
+					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}; folder_root=${JSON.stringify(folderRoot)}\n${block}`,
 				],
 				{ timeout: 3000 },
 			);
@@ -921,6 +926,26 @@ printf '\\n' >> "$TEST_LOG"
 		// No predictable temporary names, and the private write directory is gone.
 		expect(text).not.toMatch(/\.tmp\.\$\$/);
 		expect((await readdir(join(screenState, "config"))).filter((name) => name.startsWith(".qorpera"))).toEqual([]);
+		await expect(stat(join(screenState, "config", "user-dirs.dirs"))).rejects.toMatchObject({ code: "ENOENT" });
+
+		// With the company folder bound, Terminal and Files open in it, and Desktop, Documents and Downloads are it.
+		await run("/company");
+		expect(await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8")).toContain(
+			"Comment=Shell in the company folder\nExec=/usr/local/bin/qorpera-screen-browser terminal\nPath=/company\n",
+		);
+		expect(await readFile(join(config, "panel", "launcher-5", "qorpera-files.desktop"), "utf8")).toContain(
+			"Comment=Files of the company folder\nExec=/usr/local/bin/qorpera-screen-browser files\nPath=/company\n",
+		);
+		expect(await readFile(join(dock, "qorpera-files-running.desktop"), "utf8")).toContain("Path=/company\n");
+		expect(await readFile(join(screenState, "config", "user-dirs.dirs"), "utf8")).toBe(
+			'XDG_DESKTOP_DIR="/company"\nXDG_DOCUMENTS_DIR="/company"\nXDG_DOWNLOAD_DIR="/company"\n',
+		);
+		// A later start without it takes the usual folders back.
+		await run();
+		expect(await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8")).toContain(
+			`Path=${workbench}\n`,
+		);
+		await expect(stat(join(screenState, "config", "user-dirs.dirs"))).rejects.toMatchObject({ code: "ENOENT" });
 
 		// Something inside the desktop planted directories where files belong (and at
 		// the old predictable temporary names). Looks are skipped; the desktop still gets

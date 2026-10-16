@@ -557,8 +557,8 @@ begin
 	if v_state <> 'ok' then raise exception 'The tool call after the company row: %', v_state; end if;
 end $$;
 
--- H. Snapshot-v1 control for the direct lease check: its legacy body takes the company row FOR UPDATE (the gc fence), so
--- it waits for a holder of a snapshot-v1 company's row; the folder body never would.
+-- H. Snapshot-v1 control for the direct lease check. Since legacy sweep F1c (20260930246000) every company gets the
+-- folder body, so the check no longer takes a snapshot-v1 company's row (the gc fence): it never waits for its holder.
 do $$
 declare v_state text;
 begin
@@ -569,12 +569,12 @@ begin
 		'64800000-0000-4000-8000-0000000000e6', '64800000-0000-4000-8000-0000000000e3', '64800000-0000-4000-8000-0000000000e2',
 		'64800000-0000-4000-8000-0000000000e4', '64800000-0000-4000-8000-0000000000e5', '64800000-0000-4000-8000-0000000000e7',
 		'64800000-0000-4000-8000-0000000000e1', 'openai', 'codex-cli'));
-	if not pg_temp.waits_for('fence_one', 'fence_two') then
-		raise exception 'The snapshot-v1 lease check must take its company row (the legacy body)'; end if;
-	perform dblink_exec('fence_two', 'rollback');
+	if not pg_temp.finishes_unblocked('fence_one', 'fence_two') then
+		raise exception 'The snapshot-v1 lease check must not take its company row (the folder body)'; end if;
 	v_state := pg_temp.outcome('fence_one');
-	-- The fixture has no runner row, so the legacy body then refuses the runner's generation.
-	if v_state not like '42501 %' then raise exception 'The snapshot-v1 lease check after the company row: %', v_state; end if;
+	-- The fixture has no runner row, so the folder body refuses the runner's generation.
+	if v_state not like '42501 %' then raise exception 'The snapshot-v1 lease check beside the company row: %', v_state; end if;
+	perform dblink_exec('fence_two', 'rollback');
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

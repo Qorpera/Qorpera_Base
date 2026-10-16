@@ -99,8 +99,6 @@ async function fixture() {
 					throw new Error("invalid completion");
 				receipt.state = "completed";
 				receipt.result = structuredClone(input.result);
-				receipt.outputSnapshotId = input.outputSnapshotId ?? null;
-				receipt.proposalId = input.proposalId ?? null;
 				return structuredClone({
 					run_id: binding.runId,
 					receipt_id: input.receiptId,
@@ -555,23 +553,6 @@ it("requires a durable Company revision when the operation declares one", async 
 	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
 });
 
-it("binds a durable revision on completion and on restart replay", async () => {
-	const f = await fixture();
-	const outputSnapshotId = randomUUID();
-	f.perform.mockResolvedValueOnce({ content: { kind: "text", value: "changed" }, outputSnapshotId });
-	const operation = { ...f.operation, requiresCompanyRevision: true };
-	await expect(f.execute({ operation })).resolves.toEqual({ kind: "text", value: "changed" });
-	expect(f.control.completeToolOperation.mock.calls[0][1].outputSnapshotId).toBe(outputSnapshotId);
-	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).resolves.toMatchObject({
-		value: "changed",
-	});
-	[...f.ledger.values()][0].outputSnapshotId = null;
-	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
-		"outcome unconfirmed",
-	);
-	expect(f.perform).toHaveBeenCalledTimes(1);
-});
-
 it("rejects a completion response with different stored content", async () => {
 	const f = await fixture();
 	const complete = f.control.completeToolOperation.getMockImplementation();
@@ -657,49 +638,60 @@ it("counts a concurrently joined operation as replays, not additional effects", 
 	expect(f.perform).toHaveBeenCalledTimes(1);
 });
 
-it("keeps a canonical proposal proposed on cached and durable replay regardless of payload claims", async () => {
+it("keeps a parked folder change proposed on a cached replay regardless of payload claims", async () => {
 	const f = await fixture();
 	const observed = observe(f.binding.assignmentId);
 	const operation = { ...f.operation, requiresCompanyRevision: true };
-	const proposalId = randomUUID();
+	const folderCommitId = randomUUID();
 	f.perform.mockResolvedValueOnce({
 		content: { kind: "json", value: { state: "succeeded", receiptId: randomUUID() } },
-		proposalId,
+		folderCommitId,
+		proposed: true,
 	});
-	for (const executor of [f.operations, f.operations, new CloudNativeToolOperations(f.run, f.control)]) {
+	for (const executor of [f.operations, f.operations]) {
 		const span = observed.observability.start("connector");
 		await f.execute({ operation, observation: span }, executor);
 		expect(span.result).toMatchObject({
 			status: "proposed",
 			receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+			errorCategory: "protected_path",
 		});
 	}
-	expect(f.control.completeToolOperation.mock.calls[0][1].proposalId).toBe(proposalId);
-	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.control.completeFolderToolOperation.mock.calls[0][1]).toMatchObject({ folderCommitId });
+	expect(f.control.completeFolderToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
 	expect(f.perform).toHaveBeenCalledTimes(1);
 });
 
 it.each(["succeeded", "proposed"] as const)("preserves %s when subsequent grant release is denied", async (outcome) => {
 	const f = await fixture();
 	const observed = observe(f.binding.assignmentId);
+	// The proposed case is a folder writer's change parked for a member's review.
+	const operation = { ...f.operation, requiresCompanyRevision: outcome === "proposed" };
+	const errorCategory = outcome === "proposed" ? "protected_path" : null;
 	if (outcome === "proposed")
 		f.perform.mockResolvedValueOnce({
 			content: { kind: "text", value: "PRIVATE_RESULT" },
-			proposalId: randomUUID(),
+			folderCommitId: randomUUID(),
+			proposed: true,
 		});
 	f.authorize
 		.mockResolvedValueOnce(undefined)
 		.mockResolvedValueOnce(undefined)
 		.mockRejectedValue(new Error("PRIVATE_GRANT_REVOKED"));
 	const first = observed.observability.start("connector");
-	await expect(f.execute({ observation: first })).rejects.toThrow("Cloud tool operation outcome unconfirmed");
-	expect(first.result).toMatchObject({ status: outcome, errorCategory: null });
+	await expect(f.execute({ operation, observation: first })).rejects.toThrow(
+		"Cloud tool operation outcome unconfirmed",
+	);
+	expect(first.result).toMatchObject({ status: outcome, errorCategory });
 	const replay = observed.observability.start("connector");
-	await expect(f.execute({ observation: replay })).rejects.toThrow("Cloud tool operation outcome unconfirmed");
+	await expect(f.execute({ operation, observation: replay })).rejects.toThrow(
+		"Cloud tool operation outcome unconfirmed",
+	);
 	expect(replay.result).toMatchObject({
 		status: outcome === "succeeded" ? "replayed" : "proposed",
 		receiptId: first.result?.receiptId,
-		errorCategory: null,
+		errorCategory,
 	});
 	await observed.observability.close();
 	for (const span of [first, replay])
@@ -713,7 +705,8 @@ it.each(["succeeded", "proposed"] as const)("preserves %s when subsequent grant 
 			}),
 		);
 	expect(f.perform).toHaveBeenCalledTimes(1);
-	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	const completed = outcome === "proposed" ? f.control.completeFolderToolOperation : f.control.completeToolOperation;
+	expect(completed).toHaveBeenCalledTimes(1);
 	expect(JSON.stringify(observed.rows)).not.toContain("PRIVATE");
 });
 
@@ -1073,6 +1066,12 @@ it("completes a folder writer's receipt with its commit, and replays it from the
 	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
 		"outcome unconfirmed",
 	);
+	// Nor is one naming none, for an operation that needs a revision.
+	Object.assign([...f.ledger.values()][0], { outputSnapshotId: null, folderCommitId: null });
+	await expect(f.execute({ operation }, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+	expect(f.perform).toHaveBeenCalledTimes(1);
 });
 
 it("refuses a folder commit it cannot complete, or a completion naming another commit", async () => {
@@ -1132,26 +1131,14 @@ it("accepts a folder-v2 completion that needed no commit", async () => {
 	await expect(f.execute()).resolves.toEqual({ kind: "json", value: { changed: true } });
 });
 
-it("refuses a folder commit beside another revision, or on an operation that declared none", async () => {
-	const two = await fixture();
-	expect(two.operations.completesFolderCommits).toBe(true);
-	two.perform.mockResolvedValueOnce({
-		content: { kind: "text", value: "saved" },
-		outputSnapshotId: randomUUID(),
-		folderCommitId: randomUUID(),
-	});
-	await expect(two.execute({ operation: { ...two.operation, requiresCompanyRevision: true } })).rejects.toThrow(
-		"outcome unconfirmed",
-	);
-	expect(two.perform).toHaveBeenCalledTimes(1);
+it("refuses a folder commit on an operation that declared none", async () => {
 	const none = await fixture();
+	expect(none.operations.completesFolderCommits).toBe(true);
 	none.perform.mockResolvedValueOnce({ content: { kind: "text", value: "saved" }, folderCommitId: randomUUID() });
 	await expect(none.execute()).rejects.toThrow("outcome unconfirmed");
 	expect(none.perform).toHaveBeenCalledTimes(1);
-	for (const f of [two, none]) {
-		expect(f.control.completeFolderToolOperation).not.toHaveBeenCalled();
-		expect(f.control.completeToolOperation).not.toHaveBeenCalled();
-	}
+	expect(none.control.completeFolderToolOperation).not.toHaveBeenCalled();
+	expect(none.control.completeToolOperation).not.toHaveBeenCalled();
 	const { completeFolderToolOperation: _, ...legacy } = none.control;
 	expect(new CloudNativeToolOperations(none.run, legacy).completesFolderCommits).toBe(false);
 });
