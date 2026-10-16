@@ -19,6 +19,7 @@ import {
 	verifyLxdOfficeCodePackageProvisionReceipt,
 	verifyLxdOfficeCodePackageProvisionRequest,
 } from "../../packages/runner-orchestrator/src/lxd-office-code-package-provision-verification.ts";
+import { OFFICE_IMAGE_FOLDER_MOUNT_UNIT } from "../../packages/runner-orchestrator/src/lxd-office-image-installation.ts";
 import { inspectOfficeImageDependencies } from "../../packages/runner-orchestrator/src/lxd-office-image-installation-host.ts";
 import {
 	officeCanonical,
@@ -104,15 +105,23 @@ export async function loadOfficeCodePackageMaterial(id: string, packetSha: strin
 		"capabilityRevision",
 		"targetManifestSha256",
 	]);
+	const base = await read("base-manifest.json", 1024 ** 2);
+	// A base that carries the company folder's mount template comes with it (F3 4e-2). The verifier binds the template
+	// to the base's bytes and refuses one a base does not carry.
+	const baseArtifacts = (packageDecode(base) as { artifacts?: unknown } | null)?.artifacts;
+	const folder =
+		Array.isArray(baseArtifacts) &&
+		baseArtifacts.some((artifact) => artifact?.file === `${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`);
 	const verified = verifyLxdOfficeCodePackageProvision(
 		packet.envelope,
 		req.plan,
 		trusted,
 		{
-			base: await read("base-manifest.json", 1024 ** 2),
+			base,
 			target: await read("target-manifest.json", 1024 ** 2),
 			baseInstallationReceipt: await read("base-installation.json", 1024 ** 2),
 			baseMountTemplate: await read("base-mount-template", 65536),
+			...(folder ? { baseFolderMountTemplate: await read("base-folder-mount-template", 65536) } : {}),
 		},
 		reset,
 	);

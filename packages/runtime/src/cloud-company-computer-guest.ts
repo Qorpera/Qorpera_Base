@@ -23,10 +23,18 @@ import {
 	fillCompanyAccountBox,
 } from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
+import type { CompanyComputerHookCaptureTarget } from "./cloud-company-computer-effect-control.ts";
+import type { CompanyComputerGuestEffectInput } from "./cloud-company-computer-endpoint.ts";
+import {
+	type CompanyComputerHookCaptureBoxes,
+	CompanyHookCaptureRefusedError,
+	captureCompanyHookSecret,
+} from "./cloud-company-computer-hook-capture.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
 import {
 	companyComputerPrivateFieldMasks,
+	companyComputerSecretShapes,
 	readCompanyComputerPrivateValues,
 	redactCompanyComputerSnapshot,
 } from "./cloud-company-computer-private-fields.ts";
@@ -35,10 +43,16 @@ import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.t
 import {
 	COMPANY_COMPUTER_SITE_STOP_CODES,
 	COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	type CompanyComputerSiteStopReason,
 	CompanyComputerSiteStops,
 	readCompanyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
-import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
+import {
+	type CompanyComputerAction,
+	companyComputerCaptureHeldBack,
+	parseCompanyComputerAction,
+} from "./cloud-company-computer-tools.ts";
+import { sealEventHookCapture } from "./cloud-event-hook-capture-box.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 
@@ -398,6 +412,18 @@ function companyComputerSiteRefusal(action: string, tabId: string | undefined): 
 	};
 }
 
+/** A tab showing a secret nothing can hide again goes, with the secret in it. The agent's next action is told its tab
+ * closed (never moved to another tab), and the window keeps a tab, as at start. The answer is why it could not, if so. */
+export async function closeCompanyComputerShowingTab(context: BrowserContext, page: Page): Promise<unknown> {
+	try {
+		if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
+		await page.close();
+		return undefined;
+	} catch (error) {
+		return error;
+	}
+}
+
 /** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
  * value holds whitespace itself; 0 when there is none. */
 export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
@@ -422,6 +448,14 @@ export class CompanyComputerGuestAutomation {
 	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
 	readonly #filled: CompanyComputerFilledValues;
 	readonly #siteStops: CompanyComputerSiteStops;
+	readonly #capture?: (signal: AbortSignal, until: number) => Promise<string | undefined>;
+	/** Where a vault_capture's box goes (E3c-3), as this office reads it from the database for that one call. */
+	readonly #captureTarget?: (
+		input: CompanyComputerGuestEffectInput,
+		signal: AbortSignal,
+	) => Promise<CompanyComputerHookCaptureTarget>;
+	/** The boxes vault_captures sealed, each kept for its call's answer only (the session's, outliving this automation). */
+	readonly #captures?: CompanyComputerHookCaptureBoxes;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -439,6 +473,13 @@ export class CompanyComputerGuestAutomation {
 		filled?: CompanyComputerFilledValues;
 		/** The sites this computer stopped on (A1-4c), shared by its screens. */
 		siteStops?: CompanyComputerSiteStops;
+		/** The company folder's boundary before a capture is published (F3 4d): why it is held back, or nothing. */
+		capture?: (signal: AbortSignal, until: number) => Promise<string | undefined>;
+		captureTarget?: (
+			input: CompanyComputerGuestEffectInput,
+			signal: AbortSignal,
+		) => Promise<CompanyComputerHookCaptureTarget>;
+		captures?: CompanyComputerHookCaptureBoxes;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -454,14 +495,18 @@ export class CompanyComputerGuestAutomation {
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
 		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
+		this.#capture = options.capture;
+		this.#captureTarget = options.captureTarget;
+		this.#captures = options.captures;
 	}
 
 	/**
 	 * No picture while a page shows a secret the vault typed: as text, in its title or address, or in a box that is
 	 * not marked private (a "show password" that made a new box). The page is read; it is never told the value.
+	 * Nor while it shows text shaped like a hook's signing secret (E3c-3), so every page is read, a fresh screen's too.
+	 * Its text is read as the browser draws it too, so a value split across nodes or shadow roots is seen whole.
 	 */
 	async #assertFilledNotShown(page: Page): Promise<void> {
-		if (this.#filled.current().length === 0) return;
 		for (const frame of page.frames()) {
 			let shown: unknown;
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -477,13 +522,82 @@ export class CompanyComputerGuestAutomation {
 						interface Root {
 							querySelectorAll(selector: string): Iterable<Node>;
 						}
+						/** A node as the browser draws it: an element (1) or text (3). */
+						interface Drawn {
+							readonly nodeType: number;
+							readonly nodeName?: string;
+							readonly textContent: string | null;
+							readonly childNodes?: Iterable<Drawn>;
+							readonly shadowRoot?: { readonly childNodes?: Iterable<Drawn> } | null;
+							assignedNodes?(options: { flatten: boolean }): Iterable<Drawn>;
+						}
+						interface Rect {
+							readonly top: number;
+							readonly bottom: number;
+							readonly left: number;
+							readonly right: number;
+						}
 						const global = globalThis as unknown as {
-							document: Root & { title: string; documentElement: { innerText?: string } | null };
+							document: Root & {
+								title: string;
+								documentElement: { innerText?: string } | null;
+								body?: { readonly childNodes?: Iterable<Drawn> } | null;
+								createRange?(): { selectNodeContents(node: Drawn): void; getClientRects(): ArrayLike<Rect> };
+							};
 							location: { href: string };
+							getComputedStyle?(node: unknown): { readonly visibility: string; readonly display: string };
 						};
 						const document = global.document;
+						const range = document.createRange?.();
+						// The text again as the browser draws it, read as the hook capture reads it
+						// (cloud-company-computer-hook-capture.ts): open shadow roots and slots in place, and a piece of text
+						// continues the one before it when no box's edge but a plain inline one comes between them or when it
+						// starts where that one ends, on its line, so a value split across nodes, roots or slots is seen whole.
+						// Past 4 MB the read stops; the check then refuses anyway.
+						let drawn = "";
+						let end: Rect | undefined;
+						let broken = true;
+						const read = (nodes: Iterable<Drawn> | undefined, shown: boolean): void => {
+							for (const node of nodes ?? []) {
+								if (drawn.length > 4_000_000) return;
+								if (node.nodeType === 1) {
+									const style = global.getComputedStyle?.(node);
+									const edge =
+										node.nodeName === "BR" ||
+										!/^(inline|contents|none)$|^ruby/.test(style?.display ?? "inline");
+									broken ||= edge;
+									read(
+										node.shadowRoot?.childNodes ?? node.assignedNodes?.({ flatten: true }) ?? node.childNodes,
+										(style?.visibility ?? "visible") === "visible",
+									);
+									broken ||= edge;
+								}
+								if (node.nodeType !== 3 || !shown) continue;
+								range?.selectNodeContents(node);
+								const rects = range?.getClientRects() ?? [];
+								const first = rects[0];
+								if (range && !first) continue;
+								const touching =
+									end !== undefined &&
+									first !== undefined &&
+									first.top < end.bottom &&
+									end.top < first.bottom &&
+									Math.abs(first.left - end.right) <= 1;
+								drawn += `${broken && !touching ? "\n" : ""}${node.textContent ?? ""}`;
+								broken = false;
+								end = rects[rects.length - 1];
+							}
+						};
+						const body = document.body;
+						if (body)
+							read(body.childNodes, (global.getComputedStyle?.(body).visibility ?? "visible") === "visible");
 						// Everything the page shows, or null past 4 MB of it (more than this check reads): then no picture.
-						const parts = [document.title, global.location.href, document.documentElement?.innerText ?? ""];
+						const parts = [
+							document.title,
+							global.location.href,
+							document.documentElement?.innerText ?? "",
+							drawn,
+						];
 						let size = parts.reduce((total, part) => total + part.length, 0);
 						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
 						const roots: Root[] = [document];
@@ -630,6 +744,8 @@ export class CompanyComputerGuestAutomation {
 		lease: CompanyComputerScreenLease,
 		effect: CompanyComputerEffectContext,
 		operation: CompanyComputerOperation,
+		/** `performance.now()` by which the reply must be on its way back to the run. */
+		replyBy?: number,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		assertCompanyComputerScreenBinding(lease.binding, this.#binding);
@@ -736,14 +852,14 @@ export class CompanyComputerGuestAutomation {
 					}),
 				);
 				await this.#assertFilledNotShown(page);
-				return this.#publish(png, lease, effect, "browser", operation);
+				return this.#publish(png, lease, effect, "browser", operation, replyBy);
 			}
 			// A site this computer stopped on is never acted on again (A1-4c): a person continues there. A page that
 			// shows such a check now stops it before anything is clicked or typed, whatever its address; going to
 			// another site stays open. The refusal is the call's answer, so the agent reads why and can go on to mark
 			// the account (an error would reach it only as an unconfirmed outcome).
 			const actedOn = page.url();
-			if (["navigate", "click", "fill", "press", "vault_fill"].includes(action.action)) {
+			if (["navigate", "click", "fill", "press", "vault_fill", "vault_capture"].includes(action.action)) {
 				const showing = await readCompanyComputerSiteStop(page);
 				if (showing) this.#siteStops.add(actedOn, showing);
 				if (
@@ -753,6 +869,10 @@ export class CompanyComputerGuestAutomation {
 				)
 					return companyComputerSiteRefusal(action.action, this.#tabIds.get(page));
 			}
+			// A vault_capture's box, held for the call's answer only once the page shows no check (a stop answer has none).
+			let captured: Readonly<Record<string, string>> | undefined;
+			// A check a vault_capture's click brought up, recorded before the reload that masks the value again.
+			const captureStop: { reason?: CompanyComputerSiteStopReason } = {};
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
 			else if (action.action === "click" || action.action === "fill") {
@@ -818,18 +938,11 @@ export class CompanyComputerGuestAutomation {
 				try {
 					await fillCompanyAccountBox(page, box, opened);
 				} catch (error) {
-					// Typed where nothing can empty it: the tab goes, with the value in it. The agent's next action is told
-					// its tab closed (never moved to another tab), and the window keeps a tab, as at start.
-					let cause: unknown;
-					if (error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST") {
-						const context = this.#browser.context;
-						try {
-							if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
-							await page.close();
-						} catch (closeError) {
-							cause = closeError;
-						}
-					}
+					// Typed where nothing can empty it: the tab goes, with the value in it.
+					const cause =
+						error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST"
+							? await closeCompanyComputerShowingTab(this.#browser.context, page)
+							: undefined;
 					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
 					throw new CompanyComputerActionFailedError(
 						new Error(
@@ -837,6 +950,62 @@ export class CompanyComputerGuestAutomation {
 							cause === undefined ? undefined : { cause },
 						),
 					);
+				}
+			} else if (action.action === "vault_capture") {
+				// A Stripe hook's signing secret, read off its page into the vault (E3c-3). Where the box goes this office
+				// reads from the database itself (the native host could name a key of its own); the one value the named
+				// control shows is read while the page is covered, and sealed to it. The agent, the screen and the native
+				// host never see the value; the box leaves only in this call's answer, to the vault.
+				const read = this.#captureTarget;
+				if (!read || !this.#captures) throw new CompanyComputerActionNotStartedError("VAULT_CAPTURE_UNAVAILABLE");
+				const receipt = { receiptId: effect.receiptId, idempotencyKey: effect.idempotencyKey };
+				const target = await read({ operation, identity: effect.identity, lease, receipt }, signal).catch(
+					(error: unknown) => {
+						throw new CompanyComputerActionNotStartedError("VAULT_CAPTURE_UNAVAILABLE", { cause: error });
+					},
+				);
+				const control = page.getByRole(action.role, { name: action.name, exact: true });
+				if ((await this.#pageCall(() => control.count())) !== 1)
+					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
+				signal.throwIfAborted();
+				const field = action.field;
+				try {
+					// Every value the page shows is hidden from then on, wherever the agent would see it.
+					const value = await captureCompanyHookSecret(
+						page,
+						control,
+						target,
+						(shown) => this.#filled.add(shown, field),
+						undefined,
+						async () => {
+							captureStop.reason = await readCompanyComputerSiteStop(page);
+							if (captureStop.reason) this.#siteStops.add(page.url(), captureStop.reason);
+							return captureStop.reason !== undefined;
+						},
+					);
+					captured = sealEventHookCapture({ value, site: target.site }, target.capturePublicKey, {
+						companyId: target.companyId,
+						companyComputerId: target.companyComputerId,
+						computerGeneration: target.computerGeneration,
+						receiptId: target.receiptId,
+						hookId: target.hookId,
+						field: target.field,
+					});
+				} catch (error) {
+					const reason = error instanceof CompanyHookCaptureRefusedError ? error.reason : "VAULT_CAPTURE_FAILED";
+					// A check the click brought up: the call's answer is the stop (below), with no box.
+					if (reason !== "VAULT_CAPTURE_STOPPED" || !captureStop.reason) {
+						// Shown where nothing can mask it again: the tab goes, with the secret in it.
+						const cause =
+							reason === "VAULT_CAPTURE_NOT_HIDDEN"
+								? await closeCompanyComputerShowingTab(this.#browser.context, page)
+								: undefined;
+						// The reason, never the value: another error's message may quote the page.
+						throw new CompanyComputerActionFailedError(
+							new Error(reason, cause === undefined ? undefined : { cause }),
+						);
+					}
 				}
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -853,7 +1022,7 @@ export class CompanyComputerGuestAutomation {
 			};
 			if (action.action !== "snapshot") {
 				// The action happened; what the page shows now stops the agent, in the call's answer.
-				const stop = await stopAt();
+				const stop = captureStop.reason ?? (await stopAt());
 				if (stop)
 					return {
 						kind: "json",
@@ -876,7 +1045,9 @@ export class CompanyComputerGuestAutomation {
 				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
 				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
 				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
-				const hidden = [...before, ...after, ...this.#filled.current()];
+				// Text shaped like a hook's signing secret is hidden as a typed secret is (E3c-3), whoever revealed it.
+				const filled = [...this.#filled.current(), ...companyComputerSecretShapes(full)];
+				const hidden = [...before, ...after, ...filled];
 				const cut =
 					full.length <= 20_480 || hidden.length === 0
 						? 20_480
@@ -889,9 +1060,7 @@ export class CompanyComputerGuestAutomation {
 				// the cut, and its first 16 KB is returned.
 				const aria = cut < 16_384 ? full : full.slice(0, cut);
 				const snapshot = await this.#pageCall(async () => {
-					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
-						filled: this.#filled.current(),
-					}).replace(
+					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], { filled }).replace(
 						/(\/url: )([^\n]*)/g,
 						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
 					);
@@ -917,6 +1086,7 @@ export class CompanyComputerGuestAutomation {
 					},
 				};
 			}
+			if (captured) this.#captures?.hold(effect.receiptId, captured);
 			return { kind: "json", value: { action: action.action, tabId: this.#tabIds.get(page)!, completed: true } };
 		}
 		if (action.kind === "shell" && action.action !== undefined) {
@@ -964,7 +1134,7 @@ export class CompanyComputerGuestAutomation {
 			await this.#assertNoPrivateValueShown(signal);
 			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
 			await this.#assertNoPrivateValueShown(signal);
-			return this.#publish(png, lease, effect, "desktop", operation);
+			return this.#publish(png, lease, effect, "desktop", operation, replyBy);
 		}
 		// Desktop input reaches the same browser window: none while a shown tab is on a site the computer stopped on, or
 		// shows such a check now (A1-4c). Moving the pointer only looks.
@@ -1081,6 +1251,7 @@ export class CompanyComputerGuestAutomation {
 		effect: CompanyComputerEffectContext,
 		surface: "browser" | "desktop",
 		operation: CompanyComputerOperation,
+		replyBy?: number,
 	): Promise<CompanyComputerToolContent> {
 		if (
 			bytes.length < 33 ||
@@ -1107,6 +1278,11 @@ export class CompanyComputerGuestAutomation {
 		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, effect.signal));
 		await companyComputerActionCheck(this.#browser?.assertActive(effect.signal) ?? Promise.resolve());
 		effect.signal.throwIfAborted();
+		// The desktop's reads are released and its changes published before the picture reaches the run (F3 4d); the
+		// last four seconds stay for the publish.
+		const held = await this.#capture?.(effect.signal, (replyBy ?? performance.now() + 10_000) - 4000);
+		effect.signal.throwIfAborted();
+		if (held) return companyComputerCaptureHeldBack(this.#binding.screenId, surface, held);
 		const digest = createHash("sha256").update(bytes).digest("hex");
 		const asset = await this.#screenshots.publish(Uint8Array.from(bytes), lease, effect, operation);
 		if (

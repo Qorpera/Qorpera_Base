@@ -1,5 +1,6 @@
 import { createConnection } from "node:net";
 import { isUuid } from "@qorpera/contracts";
+import { COMPANY_COMPUTER_SHELL_LINE_LIMIT } from "./cloud-company-computer-shell-host.ts";
 
 /**
  * The office service's door to the folder helper (qorpera-office-folder-helper.socket): the root helper that mounts
@@ -28,6 +29,15 @@ export function companyComputerFolderPaths(name: string, root = COMPANY_COMPUTER
 
 /** Longest request line: a view is three values of at most 256 bytes. */
 export const COMPANY_COMPUTER_FOLDER_REQUEST_BYTES = 4096;
+/** Longest line of a run, either way (its `run` request with the command, a write, an output chunk): the shell
+ * host's. */
+export const COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES = COMPANY_COMPUTER_SHELL_LINE_LIMIT;
+/** A run's output comes in chunks of at most this many bytes, and its writes go in them; the shell host's. */
+export const COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES = 65536;
+/** Where a command's tree is attached in the shell's root; the shell links `/company` to its `company` child. */
+export const COMPANY_COMPUTER_COMMAND_MOUNT = "/run/qorpera-company";
+/** Linux's largest pid (`PID_MAX_LIMIT` on 64-bit). */
+const PID_MAXIMUM = 4194304;
 /** Longest answer line: a boundary's report lists every changed path. */
 export const COMPANY_COMPUTER_FOLDER_ANSWER_BYTES = 16 * 1024 * 1024;
 /** A boundary's publish runs at most this long by default, and never longer than the maximum. */
@@ -46,7 +56,32 @@ export type CompanyComputerFolderRequest =
 	| { readonly op: "mount" | "switch"; readonly name: string; readonly view: CompanyComputerFolderView }
 	| { readonly op: "boundary" | "unmount"; readonly name: string; readonly final: boolean; readonly timeoutMs: number }
 	| { readonly op: "drop"; readonly name: string }
-	| { readonly op: "list" };
+	| { readonly op: "ended"; readonly name: string }
+	| { readonly op: "list" }
+	/** Runs `command` with Bash, as the shell host does, in the namespaces of the office shell whose pid namespace's
+	 * init is `shellPid` (initial pid namespace), with the command mount's tree at `/company`. Its connection stays
+	 * open for the command's life (`startCompanyComputerFolderRun`). */
+	| {
+			readonly op: "run";
+			readonly name: string;
+			readonly shellPid: number;
+			readonly network: boolean;
+			readonly command: string;
+	  };
+
+/** What the office service sends on a run's connection once it started: the shell host's `write` and `stop`. */
+export type CompanyComputerFolderRunInput =
+	| { readonly t: "write"; readonly data: string; readonly end: boolean }
+	| { readonly t: "stop" };
+
+/** What the helper sends on a run's connection after `started`: the shell host's `out` (base64) and `exit`, then
+ * `ended` once no process is left in the command's mount namespace (background jobs and programs that left its
+ * process group included), and then the connection ends. An `exit` with neither a code nor a signal: the command's
+ * end was not seen, or it failed after its start, before its program ran (the helper's log says why). */
+export type CompanyComputerFolderRunEvent =
+	| { readonly t: "out"; readonly data: string }
+	| { readonly t: "exit"; readonly code: number | null; readonly signal: string | null }
+	| { readonly t: "ended" };
 
 /** What `qorpera-folder publish --json` prints: each changed path's outcome, or the boundary's refusal. */
 export interface CompanyComputerFolderReport {
@@ -99,6 +134,15 @@ export interface CompanyComputerFolderAnswers {
 	readonly unmount: (CompanyComputerFolderBoundary & { readonly unmounted: boolean }) | { readonly answer: "unknown" };
 	/** `failed`: something of the mount stayed; it is still listed and can be dropped again. */
 	readonly drop: { readonly answer: "dropped" | "unknown" | "failed" };
+	/** `started`: the command runs, and its events follow. `unknown`: no mount of that name. `refused`: the mount ran
+	 * a command already (a command's mount is its own). `closed`: its view is closed (the program exited 3). `failed`:
+	 * the mount is not served, or the command did not start (the shell is not the office account's, or a step
+	 * failed); the helper's log says why. Nothing but `started` ran anything. */
+	readonly run: { readonly answer: "started" | "unknown" | "refused" | "closed" | "failed" };
+	/** Whether a process is left in the mount namespace of the mount's command, from its state folder, so a helper
+	 * started again still answers. `unknown`: no mount of that name, or its command never started, which then ran
+	 * nothing: the helper lets a command run only once its namespace is in the state folder. */
+	readonly ended: { readonly answer: "ended" | "running" | "unknown" | "failed" };
 	readonly list:
 		| { readonly answer: "list"; readonly mounts: readonly CompanyComputerFolderMount[] }
 		| {
@@ -147,6 +191,32 @@ export function parseCompanyComputerFolderRequest(line: string): CompanyComputer
 			return exactKeys(value, ["op", "name"]) && isCompanyComputerFolderName(value.name)
 				? { op: "drop", name: value.name }
 				: undefined;
+		case "ended":
+			return exactKeys(value, ["op", "name"]) &&
+				isCompanyComputerFolderName(value.name) &&
+				value.name.startsWith("command-")
+				? { op: "ended", name: value.name }
+				: undefined;
+		case "run":
+			// Only a command's mount runs a command. The folder program's launcher takes no NUL byte, and pid 1 is the
+			// VM's init, never an office shell's.
+			return exactKeys(value, ["op", "name", "shellPid", "network", "command"]) &&
+				isCompanyComputerFolderName(value.name) &&
+				value.name.startsWith("command-") &&
+				Number.isSafeInteger(value.shellPid) &&
+				(value.shellPid as number) > 1 &&
+				(value.shellPid as number) <= PID_MAXIMUM &&
+				typeof value.network === "boolean" &&
+				typeof value.command === "string" &&
+				!value.command.includes("\0")
+				? {
+						op: "run",
+						name: value.name,
+						shellPid: value.shellPid as number,
+						network: value.network,
+						command: value.command,
+					}
+				: undefined;
 		case "mount":
 		case "switch":
 			return exactKeys(value, ["op", "name", "view"]) &&
@@ -178,13 +248,15 @@ export function parseCompanyComputerFolderRequest(line: string): CompanyComputer
 /**
  * Ask the folder helper one request. Resolves to its answer, or to undefined when none came (no helper, a closed
  * connection, a malformed answer or the deadline): the caller treats that as a boundary or mount with no answer.
+ * A run has a connection of its own (`startCompanyComputerFolderRun`).
  */
-export function askCompanyComputerFolderHelper<Request extends CompanyComputerFolderRequest>(
+export function askCompanyComputerFolderHelper<Request extends Exclude<CompanyComputerFolderRequest, { op: "run" }>>(
 	request: Request,
 	options: { socket?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<CompanyComputerFolderAnswer<Request["op"]> | undefined> {
 	const line = `${JSON.stringify(request)}\n`;
 	if (
+		(request as CompanyComputerFolderRequest).op === "run" ||
 		Buffer.byteLength(line) > COMPANY_COMPUTER_FOLDER_REQUEST_BYTES ||
 		parseCompanyComputerFolderRequest(line.trimEnd()) === undefined ||
 		options.signal?.aborted
@@ -233,6 +305,177 @@ export function askCompanyComputerFolderHelper<Request extends CompanyComputerFo
 	});
 }
 
+/** The office service's side of one run. */
+export interface CompanyComputerFolderRun {
+	/** The helper's answer to the `run` request, or undefined when none came (no helper, a closed connection, a
+	 * malformed line or the deadline). The connection is closed then, and the helper stops a command that started. */
+	readonly answer: Promise<CompanyComputerFolderAnswer<"run"> | undefined>;
+	/** Settles once the connection closed: after `ended`, or early (the helper went, a malformed line, `close()`). */
+	readonly closed: Promise<void>;
+	/** Bytes for the command's input, and whether the input ends there. */
+	write(data: Uint8Array, end: boolean): void;
+	/** The shell host's stop: SIGTERM to the command's process group, SIGKILL 2 s later. */
+	stop(): void;
+	/** Closes the connection. The helper stops a command that still runs, and still records when it ended. */
+	close(): void;
+}
+
+/**
+ * Runs a command through the folder helper, on a connection of its own that stays open for the command's life. After
+ * a `started` answer, `onEvent` gets its output, its exit, and `ended` once no process is left in its mount
+ * namespace; the connection closes after `ended`. Writes and a stop sent before the answer wait for the start.
+ */
+export function startCompanyComputerFolderRun(
+	request: Extract<CompanyComputerFolderRequest, { op: "run" }>,
+	onEvent: (event: CompanyComputerFolderRunEvent) => void,
+	options: { socket?: string; timeoutMs?: number } = {},
+): CompanyComputerFolderRun {
+	const line = `${JSON.stringify(request)}\n`;
+	if (
+		Buffer.byteLength(line) > COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES ||
+		parseCompanyComputerFolderRequest(line.trimEnd())?.op !== "run"
+	)
+		return {
+			answer: Promise.resolve(undefined),
+			closed: Promise.resolve(),
+			write: () => undefined,
+			stop: () => undefined,
+			close: () => undefined,
+		};
+	const socket = createConnection(options.socket ?? COMPANY_COMPUTER_FOLDER_HELPER_SOCKET);
+	let answered = false,
+		resolveAnswer: (answer: CompanyComputerFolderAnswer<"run"> | undefined) => void = () => undefined;
+	const answer = new Promise<CompanyComputerFolderAnswer<"run"> | undefined>((resolve) => {
+		resolveAnswer = resolve;
+	});
+	const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+	const close = (): void => {
+		if (!answered) {
+			answered = true;
+			resolveAnswer(undefined);
+		}
+		clearTimeout(timer);
+		socket.destroy();
+	};
+	const timer = setTimeout(close, options.timeoutMs ?? 90000);
+	const send = (input: CompanyComputerFolderRunInput): void => {
+		if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify(input)}\n`);
+	};
+	const take = (text: string): void => {
+		if (!answered) {
+			const reply = parseCompanyComputerFolderAnswer("run", text);
+			if (!reply) return void close();
+			answered = true;
+			clearTimeout(timer);
+			resolveAnswer(reply);
+			// Any other answer ran nothing; the helper ends the connection.
+			if (reply.answer !== "started") socket.destroy();
+			return;
+		}
+		const event = parseCompanyComputerFolderRunEvent(text);
+		if (!event) return void close();
+		onEvent(event);
+		if (event.t === "ended") socket.destroy();
+	};
+	const chunks: Buffer[] = [];
+	let length = 0;
+	socket.on("error", close);
+	socket.on("end", close);
+	socket.on("data", (chunk: Buffer) => {
+		let rest = chunk;
+		for (let newline = rest.indexOf(0x0a); newline >= 0 && !socket.destroyed; newline = rest.indexOf(0x0a)) {
+			if (length + newline > COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES) return close();
+			chunks.push(rest.subarray(0, newline));
+			rest = rest.subarray(newline + 1);
+			let text: string;
+			try {
+				text = new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks));
+			} catch {
+				return close();
+			}
+			chunks.length = 0;
+			length = 0;
+			take(text);
+		}
+		if (socket.destroyed || !rest.length) return;
+		length += rest.length;
+		if (length > COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES) return close();
+		chunks.push(rest);
+	});
+	socket.write(line);
+	return {
+		answer,
+		closed,
+		write(data, end) {
+			const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+			for (let offset = 0; offset < bytes.length; offset += COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES)
+				send({
+					t: "write",
+					data: bytes.subarray(offset, offset + COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES).toString("base64"),
+					end: end && offset + COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES >= bytes.length,
+				});
+			if (end && !bytes.length) send({ t: "write", data: "", end: true });
+		},
+		stop: () => send({ t: "stop" }),
+		close,
+	};
+}
+
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+/** An `out` event's or a write's data at most: a 64 KiB chunk in base64, as the shell host allows. */
+const RUN_DATA_CHARS = 90000;
+
+/** The helper's events on a run's connection, exactly as it sends them. */
+export function parseCompanyComputerFolderRunEvent(line: string): CompanyComputerFolderRunEvent | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(line);
+	} catch {
+		return undefined;
+	}
+	if (!isRecord(value)) return undefined;
+	switch (value.t) {
+		case "out":
+			return exactKeys(value, ["t", "data"]) &&
+				typeof value.data === "string" &&
+				value.data.length <= RUN_DATA_CHARS &&
+				BASE64.test(value.data)
+				? { t: "out", data: value.data }
+				: undefined;
+		case "exit":
+			return exactKeys(value, ["t", "code", "signal"]) &&
+				(value.code === null ||
+					(Number.isSafeInteger(value.code) && (value.code as number) >= 0 && (value.code as number) <= 255)) &&
+				(value.signal === null || (typeof value.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(value.signal)))
+				? { t: "exit", code: value.code as number | null, signal: value.signal as string | null }
+				: undefined;
+		case "ended":
+			return exactKeys(value, ["t"]) ? { t: "ended" } : undefined;
+		default:
+			return undefined;
+	}
+}
+
+/** The office service's lines on a run's connection after its request, exactly as it sends them. */
+export function parseCompanyComputerFolderRunInput(line: string): CompanyComputerFolderRunInput | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(line);
+	} catch {
+		return undefined;
+	}
+	if (!isRecord(value)) return undefined;
+	if (value.t === "stop") return exactKeys(value, ["t"]) ? { t: "stop" } : undefined;
+	return value.t === "write" &&
+		exactKeys(value, ["t", "data", "end"]) &&
+		typeof value.data === "string" &&
+		value.data.length <= RUN_DATA_CHARS &&
+		BASE64.test(value.data) &&
+		typeof value.end === "boolean"
+		? { t: "write", data: value.data, end: value.end }
+		: undefined;
+}
+
 /** The plain answers each request may get, besides a boundary's and a list's. */
 const PLAIN: Record<CompanyComputerFolderRequest["op"], readonly string[]> = {
 	mount: ["mounted", "held", "closed", "unanswered", "failed", "invalid"],
@@ -240,6 +483,8 @@ const PLAIN: Record<CompanyComputerFolderRequest["op"], readonly string[]> = {
 	boundary: ["unknown", "invalid"],
 	unmount: ["unknown", "invalid"],
 	drop: ["dropped", "unknown", "failed", "invalid"],
+	run: ["started", "unknown", "refused", "closed", "failed", "invalid"],
+	ended: ["ended", "running", "unknown", "failed", "invalid"],
 	list: ["failed", "invalid"],
 };
 

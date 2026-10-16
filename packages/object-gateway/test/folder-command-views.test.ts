@@ -17,6 +17,7 @@ import {
 	folder,
 	hashOf,
 	OFFICE,
+	PROFILE,
 	v,
 } from "./folder-service-fixtures.ts";
 
@@ -93,9 +94,10 @@ describe("shell commands' views", () => {
 	});
 
 	it("serves a command's view to its own company machine alone, and publishes it when asked", async () => {
-		const access = companyGrants().coreAccess({ kind: "computer_shell_command", machineId: ALLOCATION });
+		const command = { kind: "computer_shell_command", companyId: PROFILE, codingMachineId: null };
+		const access = companyGrants().coreAccess({ ...command, machineId: ALLOCATION });
 		expect(access).toMatchObject({ write: true, quietMs: DESKTOP_QUIET_MS, command: true });
-		expect(companyGrants().coreAccess({ kind: "computer_shell_command", machineId: null })).toBeUndefined();
+		expect(companyGrants().coreAccess({ ...command, machineId: null })).toBeUndefined();
 		const { core, open, cmd } = await company();
 		const otherOffice: BridgeInfo = {
 			cid: 91,

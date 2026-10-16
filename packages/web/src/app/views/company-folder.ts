@@ -1,11 +1,12 @@
-import type {
-	CloudMemberFolderBy,
-	CloudMemberFolderChangeSet,
-	CloudMemberFolderClient,
-	CloudMemberFolderEntry,
-	CloudMemberFolderFeedPosition,
-	CloudMemberFolderFile,
-	CloudMemberFolderVersion,
+import {
+	CLOUD_MEMBER_FOLDER_PAGE,
+	type CloudMemberFolderBy,
+	type CloudMemberFolderChangeSet,
+	type CloudMemberFolderClient,
+	type CloudMemberFolderEntry,
+	type CloudMemberFolderFeedPosition,
+	type CloudMemberFolderFile,
+	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { button, fmtBytes, h, icon, replace } from "../../ui/dom.ts";
@@ -285,7 +286,7 @@ export class CompanyFolderBrowser {
 	async #enter(dir: string): Promise<void> {
 		this.#close();
 		await this.#load(dir);
-		this.#list.querySelector<HTMLElement>(".files-row-main")?.focus();
+		this.#list.querySelector<HTMLElement>("button.files-row-main")?.focus();
 	}
 
 	#sorted(): CloudMemberFolderEntry[] {
@@ -295,7 +296,7 @@ export class CompanyFolderBrowser {
 			.filter((item) => !query || baseName(item.path).toLocaleLowerCase(this.#locale).includes(query))
 			.sort(
 				(a, b) =>
-					(a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1) ||
+					Number(a.kind !== "folder") - Number(b.kind !== "folder") ||
 					collator.compare(baseName(a.path), baseName(b.path)),
 			);
 	}
@@ -331,24 +332,7 @@ export class CompanyFolderBrowser {
 		const items = this.#sorted();
 		this.#list.classList.toggle("is-fresh", fresh);
 		const rows = items.map((item, index) => {
-			const name = baseName(item.path),
-				folder = item.kind === "folder";
-			const row = h(
-				"li",
-				{ class: `files-row${this.#opened?.path === item.path ? " is-open" : ""}` },
-				h(
-					"button",
-					{
-						type: "button",
-						class: "files-row-main",
-						"data-path": item.path,
-						onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
-					},
-					h("span", { class: `files-kind ${folder ? "is-folder" : "is-file"}` }, icon(folder ? "folder" : "file")),
-					h("span", { class: "files-name" }, name),
-					h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : ""),
-				),
-			);
+			const row = item.target === null ? this.#entryRow(item) : this.#linkRow(item.path, item.target);
 			row.style.setProperty("--row", String(Math.min(index, 14)));
 			return row;
 		});
@@ -364,6 +348,42 @@ export class CompanyFolderBrowser {
 			);
 		replace(this.#list, ...rows);
 		this.#more.hidden = this.#next === null;
+	}
+
+	/** A folder's row opens it in the list; a file's opens it in the preview. */
+	#entryRow(item: CloudMemberFolderEntry): HTMLElement {
+		const folder = item.kind === "folder";
+		return h(
+			"li",
+			{ class: `files-row${this.#opened?.path === item.path ? " is-open" : ""}` },
+			h(
+				"button",
+				{
+					type: "button",
+					class: "files-row-main",
+					"data-path": item.path,
+					onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
+				},
+				h("span", { class: `files-kind ${folder ? "is-folder" : "is-file"}` }, icon(folder ? "folder" : "file")),
+				h("span", { class: "files-name" }, baseName(item.path)),
+				h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : ""),
+			),
+		);
+	}
+
+	/** A link names its target and is never followed: its row shows where it points and opens nothing. */
+	#linkRow(path: string, target: string): HTMLElement {
+		return h(
+			"li",
+			{ class: "files-row is-link" },
+			h(
+				"div",
+				{ class: "files-row-main", "data-path": path },
+				h("span", { class: "files-kind is-link" }, icon("link")),
+				h("span", { class: "files-name" }, baseName(path)),
+				h("span", { class: "files-target", title: t("Link to {target}", { target }) }, `→ ${target}`),
+			),
+		);
 	}
 
 	// ---- following changes ------------------------------------------------------
@@ -397,7 +417,7 @@ export class CompanyFolderBrowser {
 				reset = true;
 				break;
 			}
-			const page = await this.#client!.changes(position, 500, this.#signal());
+			const page = await this.#client!.changes(position, CLOUD_MEMBER_FOLDER_PAGE, this.#signal());
 			this.#live();
 			if (page.resync || !page.next) {
 				reset = true;
@@ -618,7 +638,7 @@ export class CompanyFolderBrowser {
 	#what(version: CloudMemberFolderVersion): string {
 		switch (version.op) {
 			case "write":
-				return t("Changed");
+				return version.target !== null ? t("Link to {target}", { target: version.target }) : t("Changed");
 			case "mkdir":
 				return t("Created");
 			case "delete":
