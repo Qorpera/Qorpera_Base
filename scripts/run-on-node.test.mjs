@@ -16,6 +16,7 @@ import {
 	firstTaking,
 	growScript,
 	includeRules,
+	joinRecords,
 	MACHINES,
 	parseArgs,
 	parseStatus,
@@ -34,6 +35,7 @@ import {
 	suiteCommand,
 	treeDigest,
 	WIDE_SLOTS,
+	wholeBlocks,
 	workingTreeFiles,
 } from "./run-on-node.mjs";
 
@@ -201,6 +203,138 @@ test("--cores runs changed's steps side by side and is only for changed", () => 
 	assert.throws(() => parseArgs(["--cores"]), /--cores needs a value/);
 	assert.throws(() => parseArgs(["--cores", "4", "test"]), /--cores is for changed/);
 	assert.throws(() => parseArgs(["--cores", "4", "--", "true"]), /--cores is for changed/);
+});
+
+test("--parts splits changed over the machines, at most one part each, and is only for changed", () => {
+	assert.equal(parseArgs(["changed"]).parts, null);
+	const options = parseArgs(["--front", "--cores", "6", "--parts", "2", "changed"]);
+	assert.deepEqual([options.parts, options.cores, options.front, options.plain], [2, 6, true, true]);
+	assert.equal(parseArgs(["--parts", "1", "changed"]).parts, 1);
+	for (const value of ["0", "x", "1.5", String(MACHINES.length + 1), "-2", "10"])
+		assert.throws(() => parseArgs(["--parts", value, "changed"]), /Invalid --parts/, value);
+	assert.throws(() => parseArgs(["--parts"]), /--parts needs a value/);
+	assert.throws(() => parseArgs(["--parts", "2", "test"]), /--parts is for changed/);
+	assert.throws(() => parseArgs(["--parts", "2", "--", "true"]), /--parts is for changed/);
+});
+
+test("--fail-fast is only for changed, and a fail-fast run still speaks for the suite", () => {
+	assert.equal(parseArgs(["changed"]).failFast, false);
+	const options = parseArgs(["--front", "--cores", "6", "--parts", "2", "--fail-fast", "changed"]);
+	assert.deepEqual([options.failFast, options.parts, options.plain], [true, 2, true]);
+	assert.throws(() => parseArgs(["--fail-fast", "test"]), /--fail-fast is for changed/);
+	assert.throws(() => parseArgs(["--fail-fast", "--", "true"]), /--fail-fast is for changed/);
+});
+
+test("a run in parts passes only when every part passed; a part that ran no steps never lets another's result stand for it", () => {
+	const order = ["lint", "hosted-db", "runtime", "scripts", "runner-orchestrator"];
+	const part = (k, result, extra = {}) => ({
+		machine: k === 1 ? "node02" : "node01",
+		run: `20261016T030000-1-ab-p${k}`,
+		runner: `ci0${k}`,
+		exitCode: result === "passed" ? 0 : 1,
+		result,
+		...extra,
+	});
+	const common = { order, source: { head: "abc" }, lane: "cpu", changed: { steps: order }, elapsedSeconds: 301 };
+	const passed = joinRecords([part(1, "passed"), part(2, "passed")], common);
+	assert.deepEqual(
+		{ ...passed, parts: passed.parts.map((one) => one.run) },
+		{
+			schema: "qorpera.run-on-node/v1",
+			machine: "node02+node01",
+			run: "20261016T030000-1-ab-p1+20261016T030000-1-ab-p2",
+			runner: "ci01+ci02",
+			source: { head: "abc" },
+			lane: "cpu",
+			changed: { steps: order },
+			elapsedSeconds: 301,
+			exitCode: 0,
+			result: "passed",
+			parts: ["20261016T030000-1-ab-p1", "20261016T030000-1-ab-p2"],
+		},
+	);
+	// One part's machine died or its session was cut (ssh 255, no status read back): the run fails as the harness's,
+	// whether the other part passed or failed a step, and names no failed step.
+	const died = part(2, "setup-failed", { exitCode: 255, runner: null });
+	const diedBeside = (other) => {
+		const run = joinRecords([other, died], common);
+		return [run.result, run.exitCode, run.failedSteps, run.runner];
+	};
+	assert.deepEqual(diedBeside(part(1, "passed")), ["setup-failed", 255, undefined, "ci01+none"]);
+	const failedBeside = diedBeside(part(1, "failed", { failedSteps: ["hosted-db"] }));
+	assert.deepEqual(failedBeside, ["setup-failed", 255, undefined, "ci01+none"]);
+	assert.deepEqual(joinRecords([part(1, "install-failed", { exitCode: 90 }), part(2, "passed")], common).result, "install-failed");
+	// The part that went worst gives the run its result and exit code, in either order of the parts: the harness's own
+	// failure (a queue that timed out; no result read back) before npm ci or the build, and that before a failed step.
+	const bothOrders = (a, b) => {
+		const runs = [joinRecords([a, b], common), joinRecords([b, a], common)];
+		return runs.map((run) => [run.result, run.exitCode, run.failedSteps]);
+	};
+	const install = part(1, "install-failed", { exitCode: 90 });
+	const timedOut = part(2, "setup-failed", { exitCode: 94, runner: null });
+	const noResult = part(2, "unknown", { exitCode: 0, runner: null });
+	const failedStep = part(2, "failed", { failedSteps: ["hosted-db"] });
+	const twice = (result, exitCode) => [
+		[result, exitCode, undefined],
+		[result, exitCode, undefined],
+	];
+	assert.deepEqual(bothOrders(install, timedOut), twice("setup-failed", 94));
+	assert.deepEqual(bothOrders(install, died), twice("setup-failed", 255));
+	assert.deepEqual(bothOrders(failedStep, died), twice("setup-failed", 255));
+	assert.deepEqual(bothOrders(noResult, timedOut), twice("setup-failed", 94));
+	assert.deepEqual(bothOrders(install, noResult), twice("unknown", 1));
+	assert.deepEqual(bothOrders(install, failedStep), twice("install-failed", 90));
+	// A part with no result (exit 0, no runner) is no pass, and the run exits non-zero.
+	const unknown = joinRecords([part(1, "passed"), part(2, "unknown", { exitCode: 0, runner: null })], common);
+	assert.deepEqual([unknown.result, unknown.exitCode], ["unknown", 1]);
+	// One part failed a step: that step. Both did: every failed step, in plan order.
+	const one = joinRecords([part(1, "passed"), part(2, "failed", { failedSteps: ["hosted-db"] })], common);
+	assert.deepEqual([one.result, one.exitCode, one.failedSteps], ["failed", 1, ["hosted-db"]]);
+	const both = joinRecords([part(1, "failed", { failedSteps: ["runner-orchestrator"] }), part(2, "failed", { failedSteps: ["scripts", "lint"] })], common);
+	assert.deepEqual([both.result, both.failedSteps], ["failed", ["lint", "scripts", "runner-orchestrator"]]);
+	// A failed part that names no step was cut off mid-way: the run names none either, as a single run cut off does, so
+	// no list of known reds can pass it.
+	const cut = joinRecords([part(1, "failed", { failedSteps: ["hosted-db"] }), part(2, "failed", { exitCode: 255 })], common);
+	assert.deepEqual([cut.result, cut.exitCode, cut.failedSteps], ["failed", 1, undefined]);
+	// --fail-fast: a part the other's failure stopped names the steps it stopped; both lists in plan order.
+	const stopped = joinRecords(
+		[part(1, "failed", { stoppedSteps: ["runner-orchestrator"] }), part(2, "failed", { failedSteps: ["hosted-db"], stoppedSteps: ["scripts", "runtime"] })],
+		{ ...common, failFast: true },
+	);
+	assert.deepEqual(
+		[stopped.result, stopped.exitCode, stopped.failedSteps, stopped.stoppedSteps, stopped.failFast],
+		["failed", 1, ["hosted-db"], ["runtime", "scripts", "runner-orchestrator"], true],
+	);
+	assert.equal(joinRecords([part(1, "failed", { stoppedSteps: ["runtime"] }), part(2, "failed", { exitCode: 255 })], common).stoppedSteps, undefined);
+	assert.equal(one.stoppedSteps, undefined);
+	// Each part's own record is kept; with no runner in any part, none.
+	assert.deepEqual(one.parts.map((record) => record.result), ["passed", "failed"]);
+	assert.equal(joinRecords([part(1, "setup-failed", { runner: null }), part(2, "setup-failed", { runner: null })], common).runner, null);
+});
+
+test("a run in parts prints each part's output a whole step at a time, so steps of two parts never interleave", () => {
+	const writes = [];
+	const out = wholeBlocks((text) => writes.push(text));
+	out.push("== run-on-node: in slot 1 of 5\n== changed: li");
+	out.push("nt\nchecked 10 files\n");
+	assert.deepEqual(writes, ["== run-on-node: in slot 1 of 5\n"]);
+	out.push("== changed: lint passed in 2 s\n== changed: runtime\n ✓ one\n");
+	assert.deepEqual(writes.splice(0), ["== run-on-node: in slot 1 of 5\n", "== changed: lint\nchecked 10 files\n== changed: lint passed in 2 s\n"]);
+	// Another step's end, or a line that only mentions this one's, stays in the block; the end may follow output
+	// that had no newline.
+	out.push("== changed: lint passed in 1 s\nit said == changed: runtime FAILED after 3 s, twice\nlast words== changed: runtime FAILED after 40 s\nafter");
+	assert.deepEqual(writes.splice(0), [
+		"== changed: runtime\n ✓ one\n== changed: lint passed in 1 s\nit said == changed: runtime FAILED after 3 s, twice\nlast words== changed: runtime FAILED after 40 s\n",
+	]);
+	// The plan's own lines are not steps.
+	out.push("\n== changed: side by side within 6 cores: at most 1 tasks\n== changed: scripts\n ✓ two\n");
+	assert.deepEqual(writes.splice(0), ["after\n", "== changed: side by side within 6 cores: at most 1 tasks\n"]);
+	// What is left at the end (a step cut off, a last line without its newline) is handed on.
+	out.push("cut");
+	out.end();
+	assert.deepEqual(writes.splice(0), ["== changed: scripts\n ✓ two\ncut"]);
+	out.end();
+	assert.deepEqual(writes, []);
 });
 
 test("a --front --cores run takes up to three slots, one such run per machine; any other --cores run keeps its slot's cores", () => {
