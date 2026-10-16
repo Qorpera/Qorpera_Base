@@ -457,11 +457,12 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			expect(await readlink(join(second.worktree, "latest"))).toBe("README.md");
 			expect(await second.git("status", "--porcelain")).toBe("");
 
-			// A hard link out of a git object store is EXDEV (mount.rs `git_objects`), so a local clone copies instead.
+			// A hard link out of a git object store is EXDEV (mount.rs `git_objects`), so a local clone copies instead (of
+			// w1: the repository's HEAD stays at main).
 			const commit = (await second.git("rev-parse", "HEAD")).trim();
 			const object = join(second.company, R, "objects", commit.slice(0, 2), commit.slice(2));
 			await expect(link(object, join(second.worktree, "object"))).rejects.toMatchObject({ code: "EXDEV" });
-			await second.git("clone", "-q", join(second.company, R), "copy");
+			await second.git("clone", "-q", "-b", "w1", join(second.company, R), "copy");
 			expect(await second.git("-C", "copy", "log", "--format=%s")).toBe("link\nfirst\n");
 			expect(await readlink(join(second.worktree, "copy", "latest"))).toBe("README.md");
 			expect(await second.git("-C", "copy", "fsck", "--no-progress", "--no-dangling")).toBe("");
