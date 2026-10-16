@@ -1822,9 +1822,10 @@ export class FolderService {
 	 * (NOT_PERMITTED); a folder is made or removed freely (git makes a ref's folders before it locks it). A
 	 * session-local file (but by the code host) or an alternates file is never changed here (git.ts). */
 	#gitGuard(view: View, path: string): GitLock | undefined {
-		if (gitRefused(path, view.identity?.kind === "code_host"))
+		const host = view.identity?.kind === "code_host";
+		if (gitRefused(path, host))
 			throw new ProtocolError(ErrorCode.notPermitted, "Git keeps this file on the machine, or refuses it");
-		if (!gitSharedPath(path)) return undefined;
+		if (!gitSharedPath(path, host)) return undefined;
 		for (const [target, lock] of view.gitLeases) if (gitGuarded(target).includes(path)) return lock;
 		if (view.pending?.get(path)?.kind === "folder") return undefined;
 		throw new ProtocolError(ErrorCode.notPermitted, "Git changes this file only under its lock");
@@ -1833,7 +1834,8 @@ export class FolderService {
 	/** A link's new name is never a shared git file, under its lock or not, nor one git keeps on the machine: git makes
 	 * no link in its directory, and a lock's publish carries files only (git.ts). */
 	#gitNoLink(view: View, path: string): void {
-		if (gitRefused(path, view.identity?.kind === "code_host") || gitSharedPath(path))
+		const host = view.identity?.kind === "code_host";
+		if (gitRefused(path, host) || gitSharedPath(path, host))
 			throw new ProtocolError(ErrorCode.notPermitted, "Git keeps no link here");
 	}
 

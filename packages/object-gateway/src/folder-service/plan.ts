@@ -98,7 +98,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 
 	for (const [path, node] of nodes) {
 		if (node.kind === "gone") continue;
-		if (unpublished(path)) {
+		if (unpublished(path, view.codeHost)) {
 			keep.add(path);
 			continue;
 		}
@@ -148,7 +148,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 	const deletes: (Item & { kind: "delete" })[] = [];
 	for (const [path, ref] of removed) {
 		// A git directory's shared file goes only with its lease (git.ts): a removal without one is dropped.
-		if (removedFolder(path) || gitSharedPath(path)) continue;
+		if (removedFolder(path) || gitSharedPath(path, view.codeHost)) continue;
 		const inside = [...removed].filter(([p]) => below(p, path));
 		// A folder's removal takes everything in it as of its position: a file in it whose live version is not the one
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
@@ -179,7 +179,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		if (absorbed.has(create) || gitObjectPath(create.path)) continue;
 		const inside = [...nodes].filter(([p]) => below(p, create.path));
 		const eligible = inside.every(([p, n]) => {
-			if (unpublished(p)) return true;
+			if (unpublished(p, view.codeHost)) return true;
 			if (n.kind === "gone" || n.origin) return false;
 			return n.kind === "folder" || [...news, ...links].some((i) => i.path === p && i.expected === undefined);
 		});

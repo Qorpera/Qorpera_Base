@@ -151,9 +151,10 @@ export function neverPublished(name: string): boolean {
 }
 
 /** A path in a place never published: a lock, swap, backup or trash name, or inside a trash folder; in a git
- * directory, what git has not finished, and its shared files, which only their lease publishes (git.ts). */
-export function unpublished(path: string): boolean {
-	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path);
+ * directory, what git has not finished, and its shared files, which only their lease publishes (git.ts; fewer in the
+ * code host's view, `codeHost`). */
+export function unpublished(path: string, codeHost: boolean): boolean {
+	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path, codeHost);
 }
 
 const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
@@ -253,6 +254,11 @@ export class PendingView {
 		this.#codeHost = codeHost;
 	}
 
+	/** Whether this is the code host's view (git.ts `gitShared`, `gitRefused`). */
+	get codeHost(): boolean {
+		return this.#codeHost;
+	}
+
 	/** The service atomically moves this overlay, including open handles, onto a successor desktop's live tree. */
 	rebind(live: () => ViewTree, seq: () => number): void {
 		this.#live = live;
@@ -285,7 +291,7 @@ export class PendingView {
 	get unsaved(): boolean {
 		if (this.#removed.size > 0) return true;
 		for (const [path, node] of this.#nodes) {
-			if (node.kind === "gone" || unpublished(path)) continue;
+			if (node.kind === "gone" || unpublished(path, this.#codeHost)) continue;
 			const origin = node.origin;
 			if (!origin || origin.path !== path) return true;
 			if (node.kind === "file" && (node.content !== undefined || node.executable !== origin.entry?.executable))
@@ -479,7 +485,7 @@ export class PendingView {
 	#hiddenBelow(path: string): boolean {
 		const key = folderKey(path);
 		for (const [p, node] of this.#nodes)
-			if (node.kind !== "gone" && !unpublished(p) && folderKey(p).startsWith(`${key}/`)) return true;
+			if (node.kind !== "gone" && !unpublished(p, this.#codeHost) && folderKey(p).startsWith(`${key}/`)) return true;
 		return false;
 	}
 
@@ -907,7 +913,8 @@ export class PendingView {
 		checkMove(from, to);
 		const live = source.kind === "live" || source.node.origin !== undefined;
 		// A live entry's move is published as one: it never goes where nothing is published.
-		if (live && unpublished(to)) fail(ErrorCode.notHere, "A published path cannot go where nothing is published");
+		if (live && unpublished(to, this.#codeHost))
+			fail(ErrorCode.notHere, "A published path cannot go where nothing is published");
 		if (source.kind === "node" && source.node.kind === "file" && source.node.origin) {
 			// A file open for writing cannot move: what it writes after would be a change to a moved file.
 			if (source.node.open > 0) fail(ErrorCode.busy, "The file is open for writing");
@@ -928,7 +935,11 @@ export class PendingView {
 				throw new PublishFirst("replacing a folder with changes inside it");
 		} else {
 			// A name never published renamed only in case to a published one is a new name there too.
-			if (folderKey(from) !== folderKey(to) || (unpublished(from) && !unpublished(to))) this.#newName(to, from);
+			if (
+				folderKey(from) !== folderKey(to) ||
+				(unpublished(from, this.#codeHost) && !unpublished(to, this.#codeHost))
+			)
+				this.#newName(to, from);
 			if (this.#freedFolder(to)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
 			// Moves that take each other's places (a swap, a ring) publish one at a time.
 			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
@@ -980,9 +991,13 @@ export class PendingView {
 		// elsewhere what the view removed at its new name. (One renamed from a name never published replaced nothing.)
 		const fresh = node.kind !== "folder" && node.origin === undefined ? node : undefined;
 		const lets =
-			fresh && (target !== undefined || folderKey(from) !== folderKey(to) || unpublished(from) || unpublished(to));
+			fresh &&
+			(target !== undefined ||
+				folderKey(from) !== folderKey(to) ||
+				unpublished(from, this.#codeHost) ||
+				unpublished(to, this.#codeHost));
 		if (fresh && lets) this.#release(fresh);
-		const take = fresh !== undefined && !unpublished(to);
+		const take = fresh !== undefined && !unpublished(to, this.#codeHost);
 		const replaces = target ? this.#replaced(target, to, options.toBase, take) : undefined;
 		// Then `from` is hidden if the live folder still shows what the node holds there.
 		for (const [path] of moved) this.#unset(path);
@@ -1050,13 +1065,19 @@ export class PendingView {
 		// folder at its path is no sibling, and does not show: in the core it is the same path, whose unit this one's
 		// would need the version of, or a new folder this name would go into, so it publishes first. A name never
 		// published is no unit: it folds with nothing.
-		if (unpublished(path)) return;
+		if (unpublished(path, this.#codeHost)) return;
 		let at = "";
 		for (const name of path.split("/")) {
 			at = join(at, name);
 			const key = folderKey(at);
 			for (const [p, node] of this.#nodes)
-				if (p !== at && p !== except && node.kind !== "gone" && !unpublished(p) && folderKey(p) === key)
+				if (
+					p !== at &&
+					p !== except &&
+					node.kind !== "gone" &&
+					!unpublished(p, this.#codeHost) &&
+					folderKey(p) === key
+				)
 					throw new PublishFirst("a new name at a path a pending one spells otherwise");
 		}
 	}
@@ -1184,7 +1205,7 @@ export class PendingView {
 	/** The removal of a live file or link at `path` (in any case) that a new one made there replaces instead: it leaves
 	 * the removals, and the live one stays hidden. A name never published replaces nothing: it is no unit. */
 	#takeRemoved(path: string): LiveRef | undefined {
-		if (unpublished(path)) return undefined;
+		if (unpublished(path, this.#codeHost)) return undefined;
 		const key = folderKey(path);
 		for (const [p, ref] of this.#removed)
 			if (ref.kind !== "folder" && folderKey(p) === key) {

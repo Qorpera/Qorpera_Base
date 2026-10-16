@@ -109,27 +109,46 @@ export function gitAlternates(rest: string): boolean {
 	return file === "objects/info/alternates" || file === "objects/info/http-alternates";
 }
 
+/** A file or folder a lease guards (`rest` is below `repo.git/`), with its lock: a ref (`refs/**`, and `refs`),
+ * `packed-refs`, `shallow`, and a ref's log (`logs/refs/**`, and `logs/refs`). Sessions race on these. */
+export function gitLeased(rest: string): boolean {
+	const file = rest.endsWith(".lock") ? rest.slice(0, -".lock".length) : rest;
+	return (
+		file === "refs" ||
+		file.startsWith("refs/") ||
+		file === "packed-refs" ||
+		file === "shallow" ||
+		file === "logs/refs" ||
+		file.startsWith("logs/refs/")
+	);
+}
+
 /** A shared file other sessions change (`rest` is below `repo.git/`): everything in the git directory but objects, the
- * workers' own files and the session-local ones. */
-export function gitShared(rest: string): boolean {
+ * workers' own files and the session-local ones. In the code host's view (`codeHost`) only what a lease guards: the
+ * code host is the platform, which the core gives no git rule (5b, 446200), so it writes the rest (`HEAD`, the probe
+ * files `git init` makes) as plain files, published at its boundary. */
+export function gitShared(rest: string, codeHost = false): boolean {
 	return (
 		rest !== "" &&
 		!gitObject(rest) &&
 		rest !== "worktrees" &&
 		!rest.startsWith("worktrees/") &&
-		!gitSessionLocal(rest)
+		!gitSessionLocal(rest) &&
+		(!codeHost || gitLeased(rest))
 	);
 }
 
-/** A shared file or folder of a git directory, by its full path: only a lease publishes it, never a boundary. */
-export function gitSharedPath(path: string): boolean {
+/** A shared file or folder of a git directory, by its full path, in the code host's view (`codeHost`) or a session's:
+ * only a lease publishes it, never a boundary. */
+export function gitSharedPath(path: string, codeHost: boolean): boolean {
 	const place = gitPlace(path);
-	return place.kind === "git" && gitShared(place.rest);
+	return place.kind === "git" && gitShared(place.rest, codeHost);
 }
 
 /** The shared file `X` a lock `path` (`X.lock`) stands for, where `X` is a ref (`refs/**`), `packed-refs` or
  * `shallow`: the lock's exclusive create takes the core's lease on `X`, its rename onto `X` publishes, and its removal
- * gives the lease back. The core leases nothing else (5b): `HEAD` is the platform's, so its lock is refused here. */
+ * gives the lease back. The core leases nothing else (5b): `HEAD` is the platform's, so a session's lock on it is
+ * refused here, and the code host writes it as a plain file (`gitShared`). */
 export function gitLockTarget(path: string): string | null {
 	const place = gitPlace(path);
 	if (place.kind !== "git" || !place.rest.endsWith(".lock")) return null;
