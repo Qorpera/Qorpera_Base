@@ -519,6 +519,53 @@ has unsaved changes (4a).
   above), and shows it to the member who took over as a notification on that member's desktop. A stop ends the office
   service and its desktops, so a stop's report is the log's alone (review round 13).
 
+### How 4f-2 carries the report
+
+- **Saves come from the core.** `qorpera_folder_view_commits` (4f-2a, migration `20260930495000`) lists a desktop
+  view's commits in the order they were made, after a cursor (the last commit shown), with the view's pass, also once
+  the view is closed. Each carries its seq (null when it saved nothing), who made it, its run (none once the view is
+  detached), and all its units' outcomes as the commit recorded them, so every changed path reaches the report. A
+  conflict's run version is kept on the commit's receipt as a conflict copy (P17), so its commit id and unit say
+  where it is. A page holds at most the limit's units (1000, a commit's most, by default) and never splits a commit;
+  `more` says the next page follows. Only the service role calls it. The office service's desktop folder
+  (`cloud-company-computer-desktop-folder.ts`) holds the pass of every view it opens, keeps per view the id of the
+  last commit it showed, and reads the ones since when it builds a report. Its registry
+  (`cloud-company-computer-registry-http.ts`) names the function.
+- **Refusals come from the folder service.** A change set refused whole makes no commit. The folder service sends each
+  quiet boundary's answer as a notification on the connection of the helper that holds the mount (the refusal, its
+  reason and the change set's paths, or the commit; never a pass), and the helper passes it to the office service on
+  its socket. The office service keeps a view's refusals since its last report; a refusal asked again with the same
+  reason and paths is kept once, with how many times.
+- **The holder run's next tool result, whatever its tool.** Every tool result of a native run is built in one place,
+  the native tool boundary (`cloud-native-tool-boundary.ts`, `#result`). For a run whose computer session has held a
+  screen, it first asks the office service for the run's report, through the run's computer endpoint
+  (`HttpCompanyComputerNativeEndpoint`, a new `folder_report` operation under that run's holder credential), and adds
+  the report to the result: a desktop action's result, a refused action's and any other tool's (a `company_read`, a
+  connector's call) alike. So a quiet save the folder service publishes after the desktop action returned reaches the
+  run's next result, whatever the run calls next. The office service builds a run's report from the views it opened
+  for that run: their commits since the last one shown and the refusals since.
+  - Each ask names the last report the boundary put into a result. The office service drops only what was shown, so
+    a report whose result was never built is given again.
+  - Nothing is added when nothing is new. An ask with no answer within a second adds nothing, and the report waits
+    for the next result.
+  - A report that does not fit into the result's room (`MAX_CLOUD_TOOL_RESULT_BYTES`) says so, and the rest goes into
+    the next result.
+- **A drain's report.** At a takeover the office service keeps, under the id of the run that held the desktop, the old
+  view's commits since the last one shown and the drain boundary's answer, refusals included. The same ask puts them
+  into that run's next tool result, whatever its tool (while the member holds the screen the run's desktop actions are
+  refused, and a refused one's result carries it too). The office service drops them when the run ends.
+- **Notifications.** Each report is also a desktop notification: `notify-send` run as the office account in the
+  desktop's session (its `DBUS_SESSION_BUS_ADDRESS`), shown by xfce4-notifyd. It says how many paths were saved,
+  refused or conflicted, and why a publish was refused. A drain's report is a notification on the desktop of the
+  member who took over, and a member-held desktop's saves are notifications on it alone (no run gets them). The image
+  needs `libnotify-bin` and `xfce4-notifyd` (draft PR #1225).
+- **Slices.** 4f-2a: the SQL and its test (`434_folder_view_commits.test.sql`), and this design. 4f-2b: the folder
+  service's notifications, the helper passing them on, the office service's reports, `folder_report` and
+  notifications, the native tool boundary's ask, and their tests. Those include a report in a tool result that is not
+  a desktop action's (a quiet save refused after the desktop action returned, reported in the run's next
+  `company_read`), and a drain's report in the next result of the run that held the desktop, whatever its tool. Its
+  proof on the test machine needs an image with #1225's packages.
+
 ## Slices
 
 Each is its own PR with an exact-head review. 4a, 4b and 4c can be built side by side; 4d needs all three and 4b-2; 4e
