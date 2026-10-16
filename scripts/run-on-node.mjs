@@ -43,6 +43,8 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --machine NAME             run on this machine only (node02, node01)
          --front                    wait at the front of the CPU lane's queue, ahead of every run without it
                                     (pr-loop's batch runs, which test every approved head at once)
+         --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
+                                    first and alone (default: one step at a time); the run still takes one slot
          --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own,
                                     comparing file contents (for checkouts made fresh per run, such as
                                     pr-loop's merged trees)
@@ -134,6 +136,7 @@ export function parseArgs(argv) {
 		machine: null,
 		tree: null,
 		front: false,
+		cores: null,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -148,10 +151,14 @@ export function parseArgs(argv) {
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
 		else if (flag === "--front") options.front = true;
-		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine" || flag === "--tree") {
+		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine" || flag === "--tree" || flag === "--cores") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--cores") {
+				if (!/^[1-9][0-9]?$/.test(value)) throw new Error(`Invalid --cores ${value}`);
+				options.cores = Number(value);
+			}
 			else if (flag === "--tree") {
 				// Never NAME.lock: that is the lock file of the base copy NAME.
 				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) || value.endsWith(".lock")) throw new Error(`Invalid --tree ${value}`);
@@ -176,6 +183,7 @@ export function parseArgs(argv) {
 	let suite = null;
 	let command;
 	let extra = [];
+	if (options.cores && rest[0] !== "changed") throw new Error("--cores is for changed");
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -695,7 +703,7 @@ async function main() {
 			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
-		options.command = ["bash", "-c", planScript(plan.steps)];
+		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores })];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
@@ -881,6 +889,7 @@ async function main() {
 		runner: status.runner ?? null,
 		lane: options.quick ? "quick" : "cpu",
 		...(options.front ? { front: true } : {}),
+		...(options.cores ? { cores: options.cores } : {}),
 		cpuSlot: status.slot ? Number(status.slot) : null,
 		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
 		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,

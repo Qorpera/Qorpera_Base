@@ -16,6 +16,7 @@ export const COMPANY: Record<string, string> = {
 	"Folder path": "Mappesti",
 	"History of {name}": "Historik for {name}",
 	History: "Historik",
+	"Link to {target}": "Link til {target}",
 	"Moved away": "Flyttet væk",
 	"Moved here from {path}": "Flyttet hertil fra {path}",
 	"Moved here": "Flyttet hertil",
