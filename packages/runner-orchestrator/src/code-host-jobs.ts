@@ -180,6 +180,14 @@ function repositoryOf(value: unknown): CloudCodingRepository {
 		throw new CodeHostRefusal("CODE_HOST_BASE_IS_A_WORKER_BRANCH", [base]);
 	return repository;
 }
+/** The code area's folder path, `code/<owner>/<name>`, lower-case: GitHub ignores case in both, the folder keeps one
+ * entry per case-folded name and a guest's lookup is exact, so every spelling of a repository must reach the same
+ * path (as 5b's machine key, `lower(owner/name)`). Both are ASCII, where this is the folder's key. GitHub and the
+ * credential's claim keep the repository as claimed. */
+export function codeAreaPath(repository: CloudCodingRepository): string {
+	const { owner, name } = parseCloudCodingRepository(repository);
+	return `code/${owner.toLowerCase()}/${name.toLowerCase()}`;
+}
 function tail(text: string): string {
 	return text.length > 2000 ? text.slice(-2000) : text;
 }
@@ -204,7 +212,7 @@ class Run {
 		this.layout = layout;
 		this.repository = repository;
 		this.directory = directory;
-		this.area = `code/${repository.owner}/${repository.name}`;
+		this.area = codeAreaPath(repository);
 		this.code = `${layout.companyRoot}/${this.area}`;
 		this.repo = `${this.code}/repo.git`;
 		this.main = `${this.code}/main`;
@@ -333,7 +341,7 @@ class Run {
 			admin = workerId ? `${this.repo}/worktrees/${workerId}` : undefined;
 		const directories = [
 			`${this.layout.companyRoot}/code`,
-			`${this.layout.companyRoot}/code/${this.repository.owner}`,
+			posix.dirname(this.code),
 			this.code,
 			this.repo,
 			`${this.repo}/objects`,
@@ -687,6 +695,37 @@ export async function readCodeAreaBase(job: CodeHostJob, value: CloudCodingRepos
 	});
 }
 
+export interface CodeAreaState {
+	/** The base ref's commit, or null before the first seed. */
+	base: string | null;
+	/** main/ is at the base: a seed of the same base would change nothing. */
+	ready: boolean;
+	/** The commit asked about is in repo.git. */
+	holds: boolean;
+	restored: string[];
+}
+
+/** What a session's attach needs to know before it seeds: the code area's base, whether main/ is at it, and whether
+ * the session's base commit is already there. */
+export async function inspectCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; commit: string },
+): Promise<CodeAreaState> {
+	const input = closed(value, ["repository", "commit"]);
+	const repository = repositoryOf(input.repository),
+		commit = sha(input.commit);
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded) return { base: null, ready: false, holds: false, restored: run.restored };
+		const base = await run.ref(`refs/heads/${repository.baseBranch}`);
+		const ready =
+			area.main === "present" &&
+			base !== null &&
+			(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${base}\n`)) === true;
+		return { base, ready, holds: await run.isCommit(run.repo, commit), restored: run.restored };
+	});
+}
+
 export interface CodeWorktree {
 	repository: CloudCodingRepository;
 	workerId: string;
@@ -748,32 +787,62 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 export interface CodeBranchExport {
 	repository: CloudCodingRepository;
 	workerId: string;
-	branch: string;
+	/** The session's base, which GitHub holds: the bundle leaves out what it reaches. */
+	baseSha: string;
+	/** The commit the session submitted: its branch's head, or a commit the branch still reaches. */
+	headSha: string;
 }
 
-/** A complete bundle of the session's own branch and nothing else, for `coding-git.ts` (fsck, ancestry, push). */
+/** The session's submitted commit as `refs/heads/qorpera/coding/<workerId>`, without what baseSha reaches, for
+ * `coding-git.ts` (which fetches the bundle's prerequisites from GitHub, then fsck, ancestry and push); no bundle when
+ * the commit has nothing beyond baseSha, so there is nothing to push. Made in a scratch repository on the code host's
+ * disk that borrows the code area's objects: the code area gets no ref of the export's. */
 export async function exportCodeBranch(
 	job: CodeHostJob,
 	value: CodeBranchExport,
 	options: { maximumBytes: number },
-): Promise<{ headSha: string; bundle: Buffer }> {
-	const input = closed(value, ["repository", "workerId", "branch"]);
+): Promise<{ headSha: string; bundle: Buffer | null }> {
+	const input = closed(value, ["repository", "workerId", "baseSha", "headSha"]);
 	const repository = repositoryOf(input.repository),
-		workerId = workerIdOf(input.workerId);
+		workerId = workerIdOf(input.workerId),
+		baseSha = sha(input.baseSha),
+		headSha = sha(input.headSha);
 	if (!Number.isSafeInteger(options?.maximumBytes) || options.maximumBytes < 1)
 		throw new Error("INVALID_CODE_HOST_JOB");
-	if (input.branch !== `qorpera/coding/${workerId}`)
-		throw new CodeHostRefusal("CODE_HOST_EXPORT_NOT_SESSION_BRANCH", [String(input.branch)]);
-	const ref = `refs/heads/${input.branch}`;
+	const ref = `refs/heads/qorpera/coding/${workerId}`;
 	return withJob(job, repository, async (run) => {
 		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		const headSha = await run.ref(ref);
-		if (!headSha) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
-		const file = `${run.directory}/export.bundle`;
-		await run.gitOk(run.repo, ["bundle", "create", "--quiet", file, ref], "CODE_HOST_EXPORT_FAILED");
-		// The branch may have moved since it was read; the bundle must hold what was read.
-		const heads = await run.gitOk(run.repo, ["bundle", "list-heads", file], "CODE_HOST_EXPORT_FAILED");
-		if (heads.toString("utf8") !== `${headSha} ${ref}\n`) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const branch = await run.ref(ref);
+		if (!branch) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
+		if (!(await run.isCommit(run.repo, baseSha))) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+		// The branch may have moved on since the session submitted; it must still hold what was submitted.
+		if (!(await run.isCommit(run.repo, headSha))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", headSha, branch]);
+		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(held.stderr));
+		const beyond = await run.gitOk(
+			run.repo,
+			["rev-list", "--max-count=1", headSha, `^${baseSha}`],
+			"CODE_HOST_EXPORT_FAILED",
+		);
+		if (!beyond.length) return { headSha, bundle: null };
+		const scratch = `${run.directory}/export.git`,
+			file = `${run.directory}/export.bundle`;
+		await run.gitOk(
+			scratch,
+			["init", "--quiet", "--bare", "--template=", "--ref-format=files", scratch],
+			"CODE_HOST_EXPORT_FAILED",
+		);
+		const borrowed = await run.sh('printf "%s\\n" "$2" >"$1"', [
+			`${scratch}/objects/info/alternates`,
+			`${run.repo}/objects`,
+		]);
+		if (borrowed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(borrowed.stderr));
+		await run.gitOk(scratch, ["update-ref", "--no-deref", ref, headSha, ZERO], "CODE_HOST_EXPORT_FAILED");
+		await run.gitOk(scratch, ["bundle", "create", "--quiet", file, ref, `^${baseSha}`], "CODE_HOST_EXPORT_FAILED");
+		const heads = await run.gitOk(scratch, ["bundle", "list-heads", file], "CODE_HOST_EXPORT_FAILED");
+		if (heads.toString("utf8") !== `${headSha} ${ref}\n`)
+			throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", "the bundle does not hold the submitted commit");
 		const counted = await run.sh('exec wc -c <"$1"', [file]),
 			size = Number(counted.stdout.toString("utf8").trim());
 		if (counted.status !== 0 || !Number.isSafeInteger(size)) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED");
@@ -787,7 +856,7 @@ export async function exportCodeBranch(
 /** The core's gc lease block for one code area, through the job's code_host view (5b):
  * `qorpera_folder_git_gc_begin`, polled until no lease is held, and `qorpera_folder_git_gc_end`. */
 export interface CodeHostGcBlock {
-	/** `repository` is the code area's folder path, `code/<owner>/<name>`. */
+	/** `repository` is the code area's folder path, `codeAreaPath`'s `code/<owner>/<name>`. */
 	begin(repository: string, signal: AbortSignal): Promise<{ state: "blocking"; held: number } | { state: "busy" }>;
 	end(repository: string, signal: AbortSignal): Promise<void>;
 }

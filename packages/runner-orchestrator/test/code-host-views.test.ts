@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { CODE_HOST_INSTANCE, type CodeHostLease, codeHostProject } from "../src/code-host.ts";
 import type { CodeHostGcBlock, CodeHostJob } from "../src/code-host-jobs.ts";
+import type { CodeAreaBroker } from "../src/code-host-seed.ts";
 import {
 	CODE_HOST_FOLDER_CLEAN,
 	CODE_HOST_FOLDER_PUBLISH,
@@ -727,6 +728,81 @@ describe("CodeHostJobs", () => {
 				expect(() => setup(options)).toThrow("INVALID_CODE_HOST_JOBS");
 			}
 		expect(() => setup({ mountWaitMs: 3_600_000, pollMs: 1 })).not.toThrow();
+	});
+
+	it("attaches and exports a session in a job on its company's view, and checks the session before any view opens", async () => {
+		const { lxd, control, jobs, host } = setup();
+		const broker: CodeAreaBroker = {
+			journalRoot: "/nonexistent",
+			assertAuthorized: async () => {
+				throw new Error("not reached");
+			},
+			withRepositoryToken: async () => {
+				throw new Error("not reached");
+			},
+		};
+		const session = {
+			companyId: COMPANY,
+			environmentId: ENVIRONMENT,
+			repository: { host: "github.com" as const, owner: "acme", name: "app", baseBranch: "main" },
+			workerId: randomUUID(),
+			baseSha: "a".repeat(40),
+		};
+		for (const bad of [
+			{ ...session, extra: 1 },
+			{ ...session, headSha: "b".repeat(40) },
+			{ ...session, companyId: "not-a-uuid" },
+			{ ...session, environmentId: undefined },
+			{ ...session, workerId: "worker" },
+			{ ...session, workerId: undefined },
+			{ ...session, baseSha: "main" },
+			{ ...session, baseSha: "A".repeat(40) },
+			{ ...session, baseSha: 7 },
+		])
+			await expect(jobs.attach(bad as typeof session, broker, signal())).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		await expect(
+			jobs.attach({ ...session, repository: { ...session.repository, owner: "../x" } }, broker, signal()),
+		).rejects.toThrow("INVALID_CODING_REPOSITORY");
+		for (const bad of [
+			session,
+			{ ...session, headSha: "main" },
+			{ ...session, headSha: "b".repeat(39) },
+			{ ...session, headSha: null },
+			{ ...session, baseSha: "main", headSha: "b".repeat(40) },
+			{ ...session, workerId: "worker", headSha: "b".repeat(40) },
+		])
+			await expect(
+				jobs.export(bad as typeof session & { headSha: string }, { maximumBytes: 1024 }, signal()),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(lxd.execs).toEqual([]);
+		expect(control.calls).toEqual([]);
+
+		// The job's first command is its scratch directory; a code host that cannot make it publishes nothing.
+		const ran: string[] = [];
+		host.job = async (argv) => {
+			ran.push(argv.join(" "));
+			return output(1, "", "mkdir: No space left on device");
+		};
+		await expect(jobs.attach(session, broker, signal())).rejects.toMatchObject({
+			code: "CODE_HOST_SCRATCH_UNAVAILABLE",
+		});
+		await expect(
+			jobs.export({ ...session, headSha: "b".repeat(40) }, { maximumBytes: 1024 }, signal()),
+		).rejects.toMatchObject({ code: "CODE_HOST_SCRATCH_UNAVAILABLE" });
+		expect(ran).toHaveLength(2);
+		for (const command of ran)
+			expect(command).toMatch(/^\/usr\/bin\/mkdir -m 0700 -- \/var\/lib\/qorpera-code-host\/[0-9a-f-]{36}$/);
+		expect(lxd.labels()).toEqual([
+			...["clean", "view", "start", "state", ran[0], "clean"],
+			...["clean", "view", "start", "state", ran[1], "clean"],
+		]);
+		expect(lxd.labels(OTHER)).toEqual([]);
+		expect(control.methods()).toEqual([
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_close",
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_close",
+		]);
 	});
 });
 
