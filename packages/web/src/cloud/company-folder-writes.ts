@@ -1,8 +1,9 @@
-import type {
-	CloudMemberFolderClient,
-	CloudMemberFolderEntry,
-	CloudMemberFolderUnit,
-	CloudMemberFolderUnitResult,
+import {
+	CLOUD_MEMBER_FOLDER_PAGE,
+	type CloudMemberFolderClient,
+	type CloudMemberFolderEntry,
+	type CloudMemberFolderUnit,
+	type CloudMemberFolderUnitResult,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import {
 	COMPANY_STATE_FILE_MAX_BYTES,
@@ -44,7 +45,7 @@ export class WebCompanyFolderRejectedError extends Error {
 }
 
 /** A folder listing page; a company's agents or group chats fit in a few. */
-const LIST_PAGE = 1000;
+const LIST_PAGE = CLOUD_MEMBER_FOLDER_PAGE;
 const MAX_LISTED = 10_000;
 /** Tries of a new folder whose name turned out to be taken (by another writer since the listing). */
 const CREATE_TRIES = 3;

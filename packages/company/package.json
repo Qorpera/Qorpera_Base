@@ -10,10 +10,6 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
-		"./company-runtime-lock": {
-			"types": "./dist/company-runtime-lock.d.ts",
-			"import": "./dist/company-runtime-lock.js"
-		},
 		"./company-staff": {
 			"types": "./dist/company-staff.d.ts",
 			"import": "./dist/company-staff.js"
@@ -23,7 +19,7 @@
 	"scripts": {
 		"clean": "shx rm -rf dist",
 		"build": "tsgo -p tsconfig.build.json",
-		"test": "vitest --run",
+		"test": "vitest --run --passWithNoTests",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"devDependencies": {
