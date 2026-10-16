@@ -128,18 +128,17 @@ select pg_temp.s5b_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uui
 	$old$	else
 		v_hook_actor := p_actor;
 	end if;
-
-	-- The lock set:$old$,
+$old$,
 	$new$	else
 		v_hook_actor := p_actor;
 	end if;
 	-- 20260930446200 (step 5b): who git's rules see (qorpera_folder_git_refusal). The platform and a code host's view
-	-- have none; a member restores; every other actor is a session, and only a coding view names its worker.
+	-- have none; a member restores; every other actor is a session, and only a coding view names its worker. Read
+	-- before a test machine's credits (C1B §8), which change neither the actor's kind nor the view.
 	v_git_class := case when v_actor_kind = 'platform' or v_view.kind = 'code_host' then 'platform'
 		when v_actor_kind = 'member' then 'member' else 'session' end;
 	v_git_worker := case when v_view.kind = 'coding_session' then v_view.worker_id end;
-
-	-- The lock set:$new$,
+$new$,
 	$old$			v_ok := false; v_reason := 'reserved';
 		end if;
 $old$,
