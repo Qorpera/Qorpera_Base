@@ -1,9 +1,9 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- A deleted folder-v2 company's bytes are removed only under a durable, exact deletion authorization (20260821009000,
--- 20260913000200): the service role cannot call the retired post-delete RPC; an unknown authorization is refused for a
--- catalogued object; a cleanup lease that holds nothing authorizes nothing; the live deleted-company cleanup lease
--- authorizes the deletion and the catalog row stays until storage confirms; finalize removes it once and is idempotent
--- (ported from snapshot-v1 in the legacy sweep).
+-- 20260913000200): an unknown authorization is refused for a catalogued object; a cleanup lease that holds nothing
+-- authorizes nothing; the live deleted-company cleanup lease authorizes the deletion and the catalog row stays until
+-- storage confirms; finalize removes it once and is idempotent (ported from snapshot-v1 in the legacy sweep; the
+-- retired post-delete RPC went with legacy sweep E1, 20260930400000).
 
 -- The company is deleted and purged, as 922 does it; its folder objects' catalog rows outlive the purge as the
 -- deleted-company cleanup's queue.
@@ -50,9 +50,6 @@ declare
 	v_authorization jsonb;
 	v_authorization_id uuid;
 begin
-	perform pg_temp.base_assert(not has_function_privilege('service_role',
-		'public.qorpera_confirm_profile_object_deletion(uuid,text,bigint,text,uuid)', 'EXECUTE'),
-		'service role can call the retired post-delete authorization RPC');
 	perform pg_temp.base_error(format('select public.qorpera_describe_profile_object_deletion_authorization(%L, %L, %L, %s, %L)',
 		'19000000-0000-4000-8000-000000000098', '92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend),
 		'55000', 'object deletion authorization is unavailable');

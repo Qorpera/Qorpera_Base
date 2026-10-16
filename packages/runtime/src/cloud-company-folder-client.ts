@@ -1912,8 +1912,37 @@ export class CloudCompanyFolderClient {
 		);
 	}
 
+	/** The platform's own run-log or run-tree batch (memory W1c-3). Staging and the structured parser are the ordinary
+	 * folder path; this entry point adds the log's current location and, for derived tree blocks, their generations.
+	 * It carries no model-call receipt or review. SQL decides the run's own-log exception and all file rules. */
+	async memoryCommitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		preconditions: {
+			readonly runLog: { readonly run: string; readonly path: string };
+			readonly runGenerations?: readonly { readonly runId: string; readonly generation: number }[];
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		if (preconditions.runLog.run !== this.#actor.runId) throw new Error("Run log belongs to another run");
+		const runLog = { run: preconditions.runLog.run, path: parseCloudCompanyPath(preconditions.runLog.path) };
+		const runGenerations = preconditions.runGenerations?.map(({ runId, generation }) => {
+			if (!UUID.test(runId) || !Number.isSafeInteger(generation) || generation < 0)
+				throw new Error("Invalid run log generation");
+			return { runId, generation };
+		});
+		return this.#commitStaged(
+			"qorpera_folder_memory_commit",
+			{ p_preconditions: { runLog, ...(runGenerations === undefined ? {} : { runGenerations }) } },
+			operationKey,
+			changeSet,
+			{},
+			signal,
+		);
+	}
+
 	async #commitStaged(
-		method: "qorpera_folder_commit" | "qorpera_folder_worker_commit",
+		method: "qorpera_folder_commit" | "qorpera_folder_worker_commit" | "qorpera_folder_memory_commit",
 		extra: Record<string, unknown>,
 		operationKey: string,
 		changeSet: CloudCompanyFolderStagedChangeSet,
