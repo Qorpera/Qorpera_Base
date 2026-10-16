@@ -6,8 +6,7 @@
 -- account, and one check where runs are created refuses anything else. The base owner (…001) has a login and Alice's
 -- live run on it; the contributor (…002) connects one here; the viewer (…003) never has one. (634 covers a folder
 -- commit of a coworker run paid by another member's login, and of a coding session whose owner is not its requester;
--- 656 §4 a coworker wake's payer as qorpera_starter_sponsor chooses it; neither covers the rest. A coding session's
--- dispatch through qorpera_manage_agent_worker is not checked here: folder-v2 refuses it.)
+-- 656 §4 a coworker wake's payer as qorpera_starter_sponsor chooses it; neither covers the rest.)
 
 do $$
 declare v_function text;

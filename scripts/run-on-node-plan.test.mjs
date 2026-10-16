@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { beside, describePlan, planChanged, planScript, RUNNER_ORCHESTRATOR_WAITING, STEPS } from "./run-on-node-plan.mjs";
+import { beside, describePlan, planChanged, planScript, RUNNER_ORCHESTRATOR_WAITING, RUNTIME_WAITING, STEPS } from "./run-on-node-plan.mjs";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -218,49 +218,56 @@ function filesUnder(root, directory = root) {
 	});
 }
 
-test("runner-orchestrator's two vitest runs together run every test file of the package exactly once", () => {
-	const root = join(repositoryRoot, "packages/runner-orchestrator");
-	for (const file of RUNNER_ORCHESTRATOR_WAITING) {
-		assert.ok(existsSync(join(root, file)), file);
-		// A plain path, so --exclude's glob matches only that file.
-		assert.match(file, /^[a-z0-9/._-]+$/);
-	}
-	// vitest's default include, which the package's configuration keeps.
-	const files = filesUnder(root).filter((file) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
-	assert.ok(files.length > RUNNER_ORCHESTRATOR_WAITING.length);
-	const step = STEPS.find((candidate) => candidate.name === "runner-orchestrator");
-	const runs = [...step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)].map(([, args]) => args.trim());
-	assert.equal(runs.length, 2);
-	const rest = runs.find((args) => args.startsWith("--exclude "));
-	const waiting = runs.find((args) => args !== rest);
-	const excluded = [...rest.matchAll(/--exclude (\S+)/g)].map(([, file]) => file);
-	assert.equal(rest, excluded.map((file) => `--exclude ${file}`).join(" "));
-	const filters = waiting.split(" ");
-	assert.deepEqual(set(excluded), set(RUNNER_ORCHESTRATOR_WAITING));
-	assert.deepEqual(set(filters), set(RUNNER_ORCHESTRATOR_WAITING));
-	for (const file of files) {
-		// --exclude drops the file at that exact path; a filter keeps every file whose path contains it, in lower case.
-		const inRest = !excluded.includes(file);
-		const inWaiting = filters.some((filter) => file.toLowerCase().includes(filter.toLowerCase()));
-		assert.equal(Number(inRest) + Number(inWaiting), 1, file);
-	}
-});
+// Each step that runs the files that mostly wait beside the rest of its package (the step is named after the
+// package), with the files that then run on their own, each in a vitest of its own.
+for (const [name, waiting, alone] of [
+	["runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING, []],
+	["runtime", RUNTIME_WAITING, ["test/cloud-coding-command-guest.test.ts"]],
+]) {
+	test(`${name}'s vitest runs together run every test file of the package exactly once`, () => {
+		const root = join(repositoryRoot, "packages", name);
+		for (const file of [...waiting, ...alone]) {
+			assert.ok(existsSync(join(root, file)), file);
+			// A plain path, so --exclude's glob matches only that file.
+			assert.match(file, /^[a-z0-9/._-]+$/);
+		}
+		// vitest's default include, which the package's configuration keeps.
+		const files = filesUnder(root).filter((file) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
+		assert.ok(files.length > waiting.length + alone.length);
+		const step = STEPS.find((candidate) => candidate.name === name);
+		const runs = [...step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)].map(([, args]) => args.trim());
+		// The rest, the files that mostly wait, and each file that runs alone.
+		assert.equal(runs.length, 2 + alone.length);
+		const rest = runs.find((args) => args.startsWith("--exclude "));
+		const excluded = [...rest.matchAll(/--exclude (\S+)/g)].map(([, file]) => file);
+		assert.equal(rest, excluded.map((file) => `--exclude ${file}`).join(" "));
+		assert.deepEqual(set(excluded), set([...waiting, ...alone]));
+		const filtered = runs.filter((args) => args !== rest).map((args) => args.split(" "));
+		assert.deepEqual(filtered.map(set), [set(waiting), ...alone.map((file) => [file])]);
+		for (const file of files) {
+			// --exclude drops the file at that exact path; a filter keeps every file whose path contains it, in lower case.
+			const inRest = !excluded.includes(file);
+			const inFiltered = filtered.filter((filters) => filters.some((filter) => file.toLowerCase().includes(filter.toLowerCase())));
+			assert.equal(Number(inRest) + inFiltered.length, 1, file);
+		}
+	});
 
-test("runner-orchestrator fails before running anything when a file it runs beside the rest is missing", () => {
-	const step = STEPS.find((candidate) => candidate.name === "runner-orchestrator");
-	assert.equal(spawnSync("bash", ["-c", step.commands[0]], { cwd: repositoryRoot }).status, 0);
-	const root = mkdtempSync(join(tmpdir(), "runner-orchestrator-waiting-"));
-	try {
-		mkdirSync(join(root, "packages/runner-orchestrator/test"), { recursive: true });
-		for (const file of RUNNER_ORCHESTRATOR_WAITING.slice(1)) writeFileSync(join(root, "packages/runner-orchestrator", file), "");
-		const result = spawnSync("bash", ["-c", planScript([step])], { cwd: root, encoding: "utf8" });
-		assert.equal(result.status, 1, result.stdout);
-		assert.ok(result.stdout.includes(`== runner-orchestrator: ${RUNNER_ORCHESTRATOR_WAITING[0]} is missing`), result.stdout);
-		assert.match(result.stdout, /runner-orchestrator FAILED/);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
+	test(`${name} fails before running anything when a file it runs beside the rest is missing`, () => {
+		const step = STEPS.find((candidate) => candidate.name === name);
+		assert.equal(spawnSync("bash", ["-c", step.commands[0]], { cwd: repositoryRoot }).status, 0);
+		const root = mkdtempSync(join(tmpdir(), `${name}-waiting-`));
+		try {
+			mkdirSync(join(root, `packages/${name}/test`), { recursive: true });
+			for (const file of waiting.slice(1)) writeFileSync(join(root, `packages/${name}`, file), "");
+			const result = spawnSync("bash", ["-c", planScript([step])], { cwd: root, encoding: "utf8" });
+			assert.equal(result.status, 1, result.stdout);
+			assert.ok(result.stdout.includes(`== ${name}: ${waiting[0]} is missing`), result.stdout);
+			assert.ok(result.stdout.includes(`== changed: ${name} FAILED`), result.stdout);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+}
 
 test("beside runs two commands at once, prints the second's output after the first's, and fails when either fails", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "plan-beside-"));
