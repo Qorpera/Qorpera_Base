@@ -51,6 +51,27 @@ const FUSE = "--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unc
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
+/** Runs `second` beside `first` and fails when either fails. `second`'s output waits in a file and is printed after
+ * `first`'s, under `label`. */
+export const beside = (first, second, label) =>
+	`out=$(mktemp) && { ( ${second} ) >"$out" 2>&1 & pid=$!; ${first}; a=$?; wait $pid; b=$?; echo "== ${label} (ran beside)"; cat "$out"; rm -f "$out"; [ $a = 0 ] && [ $b = 0 ]; }`;
+
+/** Runner-orchestrator test files that spend nearly all their time waiting on real deadlines and timeouts, not on
+ * CPU: about 250 s of the step's file time for about 8 s of CPU (15 Oct). They run as a second vitest beside the rest
+ * of the package, which excludes them by these same names, so every test file runs once. A name that matches no file
+ * fails the step, so a rename never drops tests. */
+export const RUNNER_ORCHESTRATOR_WAITING = [
+	"test/lxd-office-preparation-execution.test.ts",
+	"test/lxd-office-preparation-transport.test.ts",
+	"test/company-machine-host.test.ts",
+	"test/lxd-login-gateway.test.ts",
+	"test/lxd-office-inspection.test.ts",
+	"test/orchestrator-wake.test.ts",
+	"test/coding-executor-host.test.ts",
+	"test/lxd-provider-concurrency.test.ts",
+	"test/orchestrator.test.ts",
+];
+
 /** Paths that never need a test: prose, and the switched-off workflows. */
 const QUIET = [/\.md$/, /^docs-audit\//, /^LICENSE$/, /^\.github\//];
 /** Paths every package reads: every step. */
@@ -188,7 +209,7 @@ export const STEPS = [
 	},
 	{
 		name: "runner-orchestrator",
-		why: "packages/runner-orchestrator and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml)",
+		why: "packages/runner-orchestrator and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest",
 		seconds: 588,
 		paths: [
 			/^packages\/runner-orchestrator\//,
@@ -197,9 +218,17 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\//,
 			/^packages\/cloud-client\/src\//,
 		],
-		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s.
-		cores: 1.2,
-		commands: [vitest("runner-orchestrator")],
+		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s as one vitest. Since the files that mostly wait
+		// run beside the rest, the same CPU (689 s) takes about 400 s (402 s in pr-loop's one run so far): about 1.7.
+		cores: 1.7,
+		commands: [
+			`(cd packages/runner-orchestrator && for file in ${RUNNER_ORCHESTRATOR_WAITING.join(" ")}; do [ -f "$file" ] || { echo "== runner-orchestrator: $file is missing"; exit 1; }; done)`,
+			beside(
+				vitest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING.map((file) => ` --exclude ${file}`).join("")),
+				vitest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING.map((file) => ` ${file}`).join("")),
+				"runner-orchestrator: the files that mostly wait",
+			),
+		],
 	},
 	{
 		name: "folder-program",

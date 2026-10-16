@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
-import { describePlan, planChanged, planScript, STEPS } from "./run-on-node-plan.mjs";
+import { fileURLToPath } from "node:url";
+import { beside, describePlan, planChanged, planScript, RUNNER_ORCHESTRATOR_WAITING, STEPS } from "./run-on-node-plan.mjs";
+
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Step names as a sorted set: the tests check which steps run; STEPS fixes their order. */
 const names = (files) => planChanged(files).steps.map((step) => step.name).sort();
@@ -289,5 +292,88 @@ test("deploy-shell fails when any script, not only the last, has a syntax error"
 		assert.match(result.stdout, /deploy-shell FAILED/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/** Every file under `directory`, by its path from `root`, outside node_modules and .git (vitest's default exclude). */
+function filesUnder(root, directory = root) {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		if (entry.name === "node_modules" || entry.name === ".git") return [];
+		const path = join(directory, entry.name);
+		return entry.isDirectory() ? filesUnder(root, path) : [relative(root, path)];
+	});
+}
+
+test("runner-orchestrator's two vitest runs together run every test file of the package exactly once", () => {
+	const root = join(repositoryRoot, "packages/runner-orchestrator");
+	for (const file of RUNNER_ORCHESTRATOR_WAITING) {
+		assert.ok(existsSync(join(root, file)), file);
+		// A plain path, so --exclude's glob matches only that file.
+		assert.match(file, /^[a-z0-9/._-]+$/);
+	}
+	// vitest's default include, which the package's configuration keeps.
+	const files = filesUnder(root).filter((file) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
+	assert.ok(files.length > RUNNER_ORCHESTRATOR_WAITING.length);
+	const step = STEPS.find((candidate) => candidate.name === "runner-orchestrator");
+	const runs = [...step.commands.join("\n").matchAll(/vitest\/dist\/cli\.js --run([^)]*)\)/g)].map(([, args]) => args.trim());
+	assert.equal(runs.length, 2);
+	const rest = runs.find((args) => args.startsWith("--exclude "));
+	const waiting = runs.find((args) => args !== rest);
+	const excluded = [...rest.matchAll(/--exclude (\S+)/g)].map(([, file]) => file);
+	assert.equal(rest, excluded.map((file) => `--exclude ${file}`).join(" "));
+	const filters = waiting.split(" ");
+	assert.deepEqual(set(excluded), set(RUNNER_ORCHESTRATOR_WAITING));
+	assert.deepEqual(set(filters), set(RUNNER_ORCHESTRATOR_WAITING));
+	for (const file of files) {
+		// --exclude drops the file at that exact path; a filter keeps every file whose path contains it, in lower case.
+		const inRest = !excluded.includes(file);
+		const inWaiting = filters.some((filter) => file.toLowerCase().includes(filter.toLowerCase()));
+		assert.equal(Number(inRest) + Number(inWaiting), 1, file);
+	}
+});
+
+test("runner-orchestrator fails before running anything when a file it runs beside the rest is missing", () => {
+	const step = STEPS.find((candidate) => candidate.name === "runner-orchestrator");
+	assert.equal(spawnSync("bash", ["-c", step.commands[0]], { cwd: repositoryRoot }).status, 0);
+	const root = mkdtempSync(join(tmpdir(), "runner-orchestrator-waiting-"));
+	try {
+		mkdirSync(join(root, "packages/runner-orchestrator/test"), { recursive: true });
+		for (const file of RUNNER_ORCHESTRATOR_WAITING.slice(1)) writeFileSync(join(root, "packages/runner-orchestrator", file), "");
+		const result = spawnSync("bash", ["-c", planScript([step])], { cwd: root, encoding: "utf8" });
+		assert.equal(result.status, 1, result.stdout);
+		assert.ok(result.stdout.includes(`== runner-orchestrator: ${RUNNER_ORCHESTRATOR_WAITING[0]} is missing`), result.stdout);
+		assert.match(result.stdout, /runner-orchestrator FAILED/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("beside runs two commands at once, prints the second's output after the first's, and fails when either fails", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "plan-beside-"));
+	try {
+		const run = (first, second) =>
+			spawnSync("bash", ["-c", `set -u\n${beside(first, second, "second")}`], {
+				cwd,
+				encoding: "utf8",
+				env: { ...process.env, TMPDIR: cwd },
+				timeout: 20_000,
+			});
+		// Each waits for the other's file, so both end only when they run at the same time.
+		const together = run(
+			"touch first; until [ -e second ]; do sleep 0.01; done; echo first ran",
+			"touch second; until [ -e first ]; do sleep 0.01; done; echo second ran",
+		);
+		assert.equal(together.status, 0, together.stdout);
+		assert.equal(together.stdout, "first ran\n== second (ran beside)\nsecond ran\n");
+		// The second's output file is removed.
+		assert.deepEqual(readdirSync(cwd).sort(), ["first", "second"]);
+		const firstFails = run("echo first ran; false", "echo second ran");
+		assert.equal(firstFails.status, 1);
+		assert.equal(firstFails.stdout, "first ran\n== second (ran beside)\nsecond ran\n");
+		const secondFails = run("echo first ran", "echo second ran; exit 3");
+		assert.equal(secondFails.status, 1);
+		assert.equal(secondFails.stdout, "first ran\n== second (ran beside)\nsecond ran\n");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
 	}
 });

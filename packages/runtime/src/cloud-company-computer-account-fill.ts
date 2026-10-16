@@ -1,6 +1,10 @@
 import type { Locator, Page } from "playwright-core";
 import type { CompanyAccountFill } from "./cloud-company-account-fill-box.ts";
-import { COMPANY_COMPUTER_PRIVATE_VALUE, companyComputerUrlForms } from "./cloud-company-computer-private-fields.ts";
+import {
+	COMPANY_COMPUTER_PRIVATE_VALUE,
+	COMPANY_COMPUTER_SECRET_SHAPE,
+	companyComputerUrlForms,
+} from "./cloud-company-computer-private-fields.ts";
 
 /* The office's last step of a company account fill (A1-3): the value the vault sealed to this computer,
  * already opened, goes into one box of one page and nowhere else. The page must be the account's website
@@ -173,6 +177,7 @@ const MAX_FILLED = 64;
  * The secrets the vault typed on one screen, kept by the office service for as long as it runs (a screen's tabs
  * outlive the runs that drive them). Every snapshot, title, address and tab name the agent gets hides them, and
  * no screenshot is taken while a page shows one. The values never leave this process: pages are read, never told.
+ * Text shaped like a hook's signing secret is hidden the same way, whoever put it on the page (E3c-3).
  */
 export class CompanyComputerFilledValues {
 	readonly #values = new Map<string, number>();
@@ -214,7 +219,6 @@ export class CompanyComputerFilledValues {
 	 * case): a redirect that wraps an address encodes it again. A value's spellings already match one encoding.
 	 */
 	showsDecoded(text: string): boolean {
-		if (this.current().length === 0) return false;
 		let layer = text;
 		for (let depth = 0; ; depth++) {
 			if (this.shows(layer)) return true;
@@ -244,14 +248,21 @@ export class CompanyComputerFilledValues {
 		return this.showsDecoded(hidden) ? COMPANY_COMPUTER_PRIVATE_VALUE : hidden;
 	}
 
-	/** Each value's spellings as patterns; an authenticator code only as a number of its own. */
+	/**
+	 * Any text shaped like a hook's signing secret (E3c-3), typed by the vault or not, first: hidden whole, so a part of
+	 * one recorded as a value cannot cut it and leave the rest. Then each value's spellings as patterns; an
+	 * authenticator code only as a number of its own.
+	 */
 	#forms(): RegExp[] {
-		return this.current().flatMap((value) => {
-			const code = /^\d+$/.test(value);
-			return [...new Set([value, ...companyComputerUrlForms(value)])].map(
-				(form) => new RegExp(code ? `(?<!\\d)${form}(?!\\d)` : form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
-			);
-		});
+		return [
+			new RegExp(COMPANY_COMPUTER_SECRET_SHAPE.source, "g"),
+			...this.current().flatMap((value) => {
+				const code = /^\d+$/.test(value);
+				return [...new Set([value, ...companyComputerUrlForms(value)])].map(
+					(form) => new RegExp(code ? `(?<!\\d)${form}(?!\\d)` : form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
+				);
+			}),
+		];
 	}
 }
 
