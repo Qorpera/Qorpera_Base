@@ -2301,6 +2301,9 @@ describe("housekeeping of a member's machines", () => {
 	});
 });
 
+/** The folder model's wait for a machine's boot to finish. */
+const SETTLED = ["/usr/bin/systemctl", "is-system-running", "--wait"];
+
 /** The fixture on the folder model: the session's views, the folder service's boundary, its repositories and the guest
  * agent, faked. `repositories` false leaves the executor's default: none, at /company. */
 async function folderFixture(repositories = true) {
@@ -2358,6 +2361,7 @@ async function folderFixture(repositories = true) {
 	return {
 		...f,
 		host,
+		folder,
 		executor,
 		views,
 		boundary,
@@ -2475,9 +2479,9 @@ describe("a coding session on the folder model", () => {
 			uid: 200000,
 			baseSha: f.baseSha,
 		});
-		// The machine runs and its LXD agent answers. The host plugs, configures, seeds and leases nothing in the guest:
-		// the view (faked here) brings the guest agent and the folder program.
-		expect(f.execs()).toEqual([["/usr/bin/true"]]);
+		// The machine runs, its LXD agent answers and its boot has finished. The host plugs, configures, seeds and leases
+		// nothing in the guest: the view (faked here) brings the guest agent and the folder program.
+		expect(f.execs()).toEqual([["/usr/bin/true"], SETTLED]);
 		expect(f.client.replaceInstanceDevices).not.toHaveBeenCalled();
 		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
 		expect(mocked.seedFetch).not.toHaveBeenCalled();
@@ -2559,6 +2563,94 @@ describe("a coding session on the folder model", () => {
 		expect(f.attachments.get(f.claim.workerId)).not.toBe(token);
 		expect(f.views.attach.mock.calls.at(-1)?.[0].attachmentToken).toBe(f.attachments.get(f.claim.workerId));
 		expect(mocked.resolveBase).toHaveBeenCalledTimes(1);
+	});
+	/** The session's next turn on `host`. */
+	const nextTurn = async (
+		f: Awaited<ReturnType<typeof folderFixture>>,
+		host: LxdCodingExecutorHost,
+		sequence: number,
+	) => {
+		host.endTurn(f.claim);
+		f.renew(f.claim);
+		f.claim.sequence = sequence;
+		f.sequences.set(f.claim.workerId, sequence);
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+	};
+	it("attaches only once the machine's boot has finished, waited for once per boot", async () => {
+		// Live 2026-10-16 (P3 phase A run 4): attached while its fresh machine was still booting, a session's first mount
+		// ran out of its attachment's minute before the folder program started.
+		const f = await folderFixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let finish!: () => void;
+		const booted = new Promise<void>((done) => {
+			finish = done;
+		});
+		const waited = vi.fn();
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			waited(command);
+			await booted;
+		});
+		const prepared = f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await vi.waitFor(() => expect(waited).toHaveBeenCalledWith(SETTLED));
+		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
+		finish();
+		await prepared;
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(1);
+		expect(f.views.attach).toHaveBeenCalledTimes(1);
+		// The same boot is not waited for again.
+		await nextTurn(f, f.host, 2);
+		expect(waited).toHaveBeenCalledTimes(1);
+		// A new boot is, and one that finished degraded (a unit failed: systemctl exits 1) has finished too.
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			waited(command);
+			throw new Error("LXD instance command failed");
+		});
+		f.files.set("/proc/sys/kernel/random/boot_id", {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from(`${randomUUID()}\n`),
+		});
+		await nextTurn(f, f.host, 3);
+		expect(waited).toHaveBeenCalledTimes(2);
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(3);
+		await nextTurn(f, f.host, 4);
+		expect(waited).toHaveBeenCalledTimes(2);
+	});
+	it("attaches anyway once a boot is still unfinished at the limit, and waits for it again on the next turn", async () => {
+		const f = await folderFixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		const waited = vi.fn();
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			waited(command);
+			await new Promise((_done, fail) =>
+				signal!.addEventListener("abort", () => fail(signal!.reason), { once: true }),
+			);
+		});
+		const impatient = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, bootSettleTimeoutMs: 50 });
+		await impatient.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(waited).toHaveBeenCalledTimes(1);
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(1);
+		expect(f.views.attach).toHaveBeenCalledTimes(1);
+		await nextTurn(f, impatient, 2);
+		expect(waited).toHaveBeenCalledTimes(2);
+		expect(f.views.attach).toHaveBeenCalledTimes(2);
+	});
+	it("fails the turn before its attach when the machine's LXD agent drops out during the wait", async () => {
+		const f = await folderFixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			throw new Error("LXD instance agent not running");
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			/^LXD instance agent not running$/,
+		);
+		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
+		expect(f.views.attach).not.toHaveBeenCalled();
 	});
 	it("attaches a session under its view's attachment after the executor restarted, while the machine's boot is the same", async () => {
 		const f = await folderFixture();

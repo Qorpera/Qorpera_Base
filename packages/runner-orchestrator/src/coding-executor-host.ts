@@ -150,6 +150,9 @@ export interface LxdCodingExecutorHostOptions {
 	/** How long a freshly started guest may take to bring up its agent and
 	 * watchdog timer (default 120 s). */
 	guestReadyTimeoutMs?: number;
+	/** On the folder model, how long a turn waits at most for a boot of its machine to finish before it attaches the
+	 * session (default 180 s). */
+	bootSettleTimeoutMs?: number;
 	/** How long LXD's agent may take to mount a hot-plugged session (default 30 s). */
 	attachTimeoutMs?: number;
 	/** How long one machine's keeper step (observe, keep, renew) may take (default 15 s). */
@@ -310,6 +313,10 @@ const CODING_ATTACH_LEASE_MARGIN_MS = 15_000;
  * stuck machine never holds up a pass: with a pass every 10 s, every guest lease
  * (45 s) is renewed at least every 30 s. */
 const CODING_KEEP_MACHINE_MS = 15_000;
+/** A session's first mount has less than its attachment's minute, and a machine still booting (a fresh machine's
+ * first boot starts the image's services and sets up its new machine id) can take longer than that just to start the
+ * guest agent: a turn waits this long at most for the boot to finish before it attaches. */
+const CODING_BOOT_SETTLE_MS = 180_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, the machine's plan followed a new policy after this turn
@@ -422,6 +429,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	#released: CodingKeepOutcome[] = [];
 	/** Per machine, the boot whose storage helper this process has checked against its pin. */
 	readonly #helperBoots = new Map<string, string>();
+	/** Per machine, the boot this process has seen finish (the folder model). */
+	readonly #settledBoots = new Map<string, string>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -1155,9 +1164,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return { vmId: machine.machineId, baseSha };
 	}
 	/** The folder model's readiness: the machine runs this plan and its LXD agent answers, waited for (bounded) while
-	 * it starts. Returns the boot id. The session's view writes the guest agent and folder program the executor carries
-	 * when it attaches (coding-folder-views.ts); the image's own checks (its helpers, watchdog timer and self-update) are
-	 * step 5h's. */
+	 * it starts, and its boot has finished (#bootSettled). Returns the boot id. The session's view writes the guest agent
+	 * and folder program the executor carries when it attaches (coding-folder-views.ts); the image's own checks (its
+	 * helpers, watchdog timer and self-update) are step 5h's. */
 	async #folderReady(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<string> {
 		const client = this.#options.client,
 			name = lxdCodingMachineName(machine.machineId);
@@ -1185,7 +1194,38 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const bootId = boot.content.toString("utf8").trim();
 		if (boot.uid !== 0 || boot.gid !== 0 || boot.mode !== 0o444 || !isUuid(bootId))
 			throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
+		await this.#bootSettled(machine, name, bootId, signal);
 		return bootId;
+	}
+	/** Waits until systemd in the machine has finished this boot (`systemctl is-system-running --wait`), once per boot
+	 * and for at most CODING_BOOT_SETTLE_MS, so the session's attachment starts its minute on a machine that answers in
+	 * time. A boot that finished degraded (a unit failed) has finished too. Past the limit the session is attached
+	 * anyway, and the next turn on this boot waits again. */
+	async #bootSettled(
+		machine: Readonly<LxdCodingMachineBinding>,
+		name: string,
+		bootId: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (this.#settledBoots.get(machine.machineId) === bootId) return;
+		const settled = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(this.#options.bootSettleTimeoutMs ?? CODING_BOOT_SETTLE_MS),
+		]);
+		try {
+			await this.#options.client.execInstance(
+				machine.project,
+				name,
+				["/usr/bin/systemctl", "is-system-running", "--wait"],
+				settled,
+			);
+		} catch (error) {
+			signal.throwIfAborted();
+			if (settled.aborted) return;
+			// It exits non-zero once the boot has finished in any state but running (degraded, maintenance).
+			if (!(error instanceof Error && error.message === "LXD instance command failed")) throw error;
+		}
+		this.#settledBoots.set(machine.machineId, bootId);
 	}
 	/** A folder session on one boot, where the NAS model names the configuration it installed: the folder model
 	 * installs none. */
@@ -2528,6 +2568,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (slept.state !== "suspended" || slept.machineId !== entry.machineId)
 			throw new Error("CODING_MACHINE_SLEEP_UNCONFIRMED");
 		this.#helperBoots.delete(entry.machineId);
+		this.#settledBoots.delete(entry.machineId);
 		// Asleep, no session is attached: each ends with what it stopped. All are recorded; the first failure is reported.
 		for (const { workerId, attachmentToken } of member ? entry.attached : [])
 			try {
