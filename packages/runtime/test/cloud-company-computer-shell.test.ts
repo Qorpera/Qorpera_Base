@@ -5,6 +5,7 @@ import {
 	type CompanyComputerCommandFolderEvent,
 	type CompanyComputerCommandFolderStatus,
 	type CompanyComputerCommandFolders,
+	type CompanyComputerCommandInherit,
 	type CompanyComputerCommandRelease,
 } from "@qorpera/runtime/cloud-company-computer-command-folder";
 import { CompanyComputerActionFailedError } from "@qorpera/runtime/cloud-company-computer-leases";
@@ -730,10 +731,32 @@ class StandInFolder {
 	);
 	readonly stop = vi.fn(() => this.status === "running");
 	readonly write = vi.fn((_data: Uint8Array, _end: boolean) => this.status === "running");
+	/** A release hands out the paths not saved kept so far with its answer. */
 	readonly release = vi.fn(
-		async (_signal: AbortSignal, _until: number): Promise<CompanyComputerCommandRelease> =>
-			this.answers.shift() ?? { released: true },
+		async (_signal: AbortSignal, _until: number): Promise<CompanyComputerCommandRelease> => ({
+			...(this.answers.shift() ?? { released: true }),
+			...this.#take(),
+		}),
 	);
+	/** What each take-in answers in turn; then `inherited`. */
+	inherits: CompanyComputerCommandInherit[] = [];
+	readonly inherit = vi.fn(
+		async (_receiptId: string, _signal: AbortSignal, _until: number): Promise<CompanyComputerCommandInherit> =>
+			this.inherits.shift() ?? { inherited: true },
+	);
+	/** The paths not saved no run was shown yet. */
+	kept: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> = {};
+	readonly takeReport = vi.fn(() => this.#take());
+	readonly restoreReport = vi.fn((report: Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved">) => {
+		const notSaved = [...(report.notSaved ?? []), ...(this.kept.notSaved ?? [])];
+		const more = (report.moreNotSaved ?? 0) + (this.kept.moreNotSaved ?? 0);
+		this.kept = { ...(notSaved.length ? { notSaved } : {}), ...(more ? { moreNotSaved: more } : {}) };
+	});
+	#take(): Pick<CompanyComputerCommandRelease, "notSaved" | "moreNotSaved"> {
+		const report = this.kept;
+		this.kept = {};
+		return report;
+	}
 	out(text: string): void {
 		this.event({ t: "out", data: Buffer.from(text).toString("base64") });
 	}
@@ -778,12 +801,13 @@ function folderFixture(options: { init?: number | null } = {}) {
 		await vi.waitFor(() => expect(folders[keys - 1]?.start).toHaveBeenCalled());
 		return { sessionId, folder: folders[keys - 1] };
 	};
-	/** `null`: a read with no run. */
-	const read = (sessionId: string, runId: string | null = SHELL_RUN, waitMs = 0) =>
+	/** `null`: a read with no run. `receiptId`: the reading action's. */
+	const read = (sessionId: string, runId: string | null = SHELL_RUN, waitMs = 0, receiptId?: string) =>
 		shell.result({
 			sessionId,
 			waitMs,
 			...(runId === null ? {} : { runId }),
+			...(receiptId === undefined ? {} : { receiptId }),
 			until: performance.now() + 30000,
 			signal,
 		});
@@ -813,8 +837,9 @@ describe("a shell command in the company folder", () => {
 			state: "running",
 			output: "hello\n",
 		});
-		// The boundary has until two seconds before the reply is due.
+		// The boundary has until two seconds before the reply is due; its paths not saved come with it.
 		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 2000);
+		expect(folder.inherit).not.toHaveBeenCalled();
 		// Nothing new since: no boundary is asked.
 		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "" });
 		expect(folder.release).toHaveBeenCalledTimes(1);
@@ -878,6 +903,108 @@ describe("a shell command in the company folder", () => {
 		// Another run never sees the exit before the folder released it.
 		expect(f.shell.list(OTHER_RUN).commands[0]).not.toHaveProperty("exitCode");
 		expect(await f.read(sessionId)).toMatchObject({ state: "exited", exitCode: 2, output: "three\n" });
+	});
+
+	it("shows another run the released output once it took in the command's reads by its own action", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("npm run build");
+		folder.answer({ ran: true });
+		folder.out("one\n");
+		const until = performance.now() + 30000;
+		const read = (receiptId: string) =>
+			f.shell.result({ sessionId, waitMs: 0, runId: OTHER_RUN, receiptId, until, signal: f.signal });
+		folder.kept = { notSaved: [{ path: "a.txt", outcome: "conflict" }] };
+		expect(await read("receipt-2")).toEqual({
+			sessionId,
+			state: "running",
+			output: "one\n",
+			notSaved: [{ path: "a.txt", outcome: "conflict" }],
+		});
+		// The boundary leaves the take-in its time; its paths not saved come once the take-in answers.
+		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 5000);
+		expect(folder.inherit).toHaveBeenCalledWith("receipt-2", f.signal, until - 2000);
+		expect(folder.release.mock.invocationCallOrder[0]).toBeLessThan(folder.inherit.mock.invocationCallOrder[0]);
+		// Nothing new since the boundary: none is asked, but the new action takes in the reads all the same.
+		expect(await read("receipt-3")).toEqual({ sessionId, state: "running", output: "" });
+		expect(folder.release).toHaveBeenCalledTimes(1);
+		expect(folder.inherit).toHaveBeenLastCalledWith("receipt-3", f.signal, until - 2000);
+		// The shell has one read cursor: output another run read does not come again to the run that started it.
+		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "" });
+		// A take-in the core refused shows nothing, and puts the paths not saved back for a run that may read them.
+		folder.out("two\n");
+		const message = "this command's output reaches only runs of the agent and member it was started for";
+		folder.inherits.push({ inherited: false, heldBack: message });
+		folder.kept = { notSaved: [{ path: "b.txt", outcome: "refused" }] };
+		expect(await read("receipt-4")).toEqual({
+			sessionId,
+			state: "running",
+			output: "",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message },
+		});
+		expect(folder.restoreReport).toHaveBeenLastCalledWith({ notSaved: [{ path: "b.txt", outcome: "refused" }] });
+		expect(folder.kept).toEqual({ notSaved: [{ path: "b.txt", outcome: "refused" }] });
+		expect(await f.read(sessionId)).toEqual({
+			sessionId,
+			state: "running",
+			output: "two\n",
+			notSaved: [{ path: "b.txt", outcome: "refused" }],
+		});
+		// A release held back for the other run holds back its output and its paths not saved, and asks for no take-in.
+		folder.out("three\n");
+		const unanswered = "the company folder did not answer before the reply's deadline; read again";
+		folder.answers.push({ released: false, heldBack: unanswered });
+		folder.kept = { notSaved: [{ path: "c.txt", outcome: "conflict" }] };
+		expect(await read("receipt-5")).toEqual({
+			sessionId,
+			state: "running",
+			output: "",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message: unanswered },
+		});
+		expect(folder.kept).toEqual({ notSaved: [{ path: "c.txt", outcome: "conflict" }] });
+		expect(folder.inherit).toHaveBeenCalledTimes(3);
+		// A take-in that stops with its caller puts them back too.
+		const stopped = new Error("caller stopped");
+		folder.inherit.mockRejectedValueOnce(stopped);
+		await expect(read("receipt-6")).rejects.toBe(stopped);
+		expect(folder.kept).toEqual({ notSaved: [{ path: "c.txt", outcome: "conflict" }] });
+	});
+
+	it("shows another run only the paths not saved its take-in covers, though a later boundary answers meanwhile", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("node build.js");
+		folder.answer({ ran: true });
+		folder.out("one\n");
+		folder.kept = { notSaved: [{ path: "a.txt", outcome: "conflict" }] };
+		let taken: (answer: CompanyComputerCommandInherit) => void = () => undefined;
+		folder.inherit.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					taken = resolve;
+				}),
+		);
+		const read = f.shell.result({ sessionId, waitMs: 0, runId: OTHER_RUN, receiptId: "receipt-2", signal: f.signal });
+		await vi.waitFor(() => expect(folder.inherit).toHaveBeenCalledTimes(1));
+		// While the take-in is asked, the command reads more, writes a path named from it, and ends: its final boundary
+		// reports that path, from reads this take-in may not cover.
+		folder.out("two\n");
+		folder.event({ t: "exit", code: 1, signal: null });
+		folder.kept = { notSaved: [{ path: "from-two.txt", outcome: "refused" }] };
+		taken({ inherited: true });
+		expect(await read).toEqual({
+			sessionId,
+			state: "running",
+			output: "one\n",
+			notSaved: [{ path: "a.txt", outcome: "conflict" }],
+		});
+		expect(folder.kept).toEqual({ notSaved: [{ path: "from-two.txt", outcome: "refused" }] });
+		// The final boundary's path comes with its own output, to a read the next boundary answers.
+		expect(await f.read(sessionId)).toEqual({
+			sessionId,
+			state: "exited",
+			exitCode: 1,
+			output: "two\n",
+			notSaved: [{ path: "from-two.txt", outcome: "refused" }],
+		});
 	});
 
 	it("ends a command that never ran in the folder with why", async () => {

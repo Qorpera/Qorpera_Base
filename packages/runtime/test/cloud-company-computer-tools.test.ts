@@ -426,13 +426,15 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await expect(harness.call("computer_shell", { kind: "shell", action: "list" }, "test:2")).resolves.toMatchObject({
 			kind: "json",
 		});
-		// Offline unless the model asks; the run asking goes with the wait, as only it sees a folder command's output.
+		// Offline unless the model asks; the run asking goes with the wait, as only it, or another run that took in a
+		// folder command's reads by this action's receipt, sees that command's output.
 		expect(settle.mock.calls[0]).toEqual([
 			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000, network: false },
 			{ kind: "json", value: { sessionId: computerId(90) } },
 			expect.any(AbortSignal),
 			expect.any(Number),
 			harness.run.identity.runId,
+			computerId(10),
 		]);
 		waited.resolve({ kind: "json", value: { sessionId: computerId(90), state: "running", output: "" } });
 		await expect(reply).resolves.toEqual({

@@ -528,7 +528,15 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(shells[0].start.mock.calls.map(([input]) => input.network)).toEqual([false, true]);
 		// The reply's deadline goes with the read: a company folder command settles its folder before it.
 		expect(shells[0].result).toHaveBeenCalledWith(
-			expect.objectContaining({ runId: f.run.identity.runId, until: expect.any(Number) }),
+			expect.objectContaining({
+				runId: f.run.identity.runId,
+				receiptId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				until: expect.any(Number),
+			}),
+		);
+		// The read's receipt is its action's own, by which another run would take in a folder command's reads.
+		expect((shells[0].result.mock.calls[0][0] as { receiptId?: string }).receiptId).toBe(
+			shells[0].start.mock.calls[0][0].key,
 		);
 		await session.endpoint.perform(f.operation({ kind: "shell", action: "list" }), f.lease, f.effect());
 		expect(shells[0].list).toHaveBeenCalledWith(f.run.identity.runId);

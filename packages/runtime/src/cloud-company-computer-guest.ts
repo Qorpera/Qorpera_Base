@@ -360,8 +360,11 @@ export interface CompanyComputerGuestShell {
 	result(input: {
 		sessionId: string;
 		waitMs: number;
-		/** The run asking: a company folder command shows its output only to the run that started it. */
+		/** The run asking: a company folder command shows its output to the run that started it, and to another run once
+		 * that one took in the command's reads. */
 		runId?: string;
+		/** The effect receipt of the action that reads: another run takes in a company folder command's reads by it. */
+		receiptId?: string;
 		/** When the reply is due (performance.now()); a company folder command settles its folder before then. */
 		until?: number;
 		signal: AbortSignal;
@@ -1239,8 +1242,10 @@ export class CompanyComputerGuestAutomation {
 		signal: AbortSignal,
 		/** `performance.now()` by which the reply must be on its way back to the run. */
 		replyBy: number,
-		/** The run asking, which sees a company folder command's output only if it started it. */
+		/** The run asking, which sees a company folder command's output if it started it, or once it took in its reads. */
 		runId?: string,
+		/** The action's effect receipt, by which another run takes in a company folder command's reads. */
+		receiptId?: string,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		if (action.kind !== "shell" || action.action === undefined || action.action === "list" || !this.#shell)
@@ -1256,6 +1261,7 @@ export class CompanyComputerGuestAutomation {
 				Math.min(action.action === "stop" ? 4000 : action.waitMs, Math.floor(replyBy - performance.now())),
 			),
 			...(runId === undefined ? {} : { runId }),
+			...(receiptId === undefined ? {} : { receiptId }),
 			until: replyBy,
 			signal,
 		});
