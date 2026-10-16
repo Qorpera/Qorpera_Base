@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloudCodingSessionLayout, parseCloudCodingNasPolicy } from "@qorpera/contracts";
+import { CODING_GUEST, cloudCodingSessionLayout, parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodingMachineUnavailable, type CodingSessionClaim, type CodingTurnState } from "../src/coding-executor.ts";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../src/coding-executor-host.ts";
 import type { CodingFolderControl } from "../src/coding-folder-control.ts";
 import type { CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
-import type { CodingFolderViews } from "../src/coding-folder-views.ts";
+import { CodingFolderViews } from "../src/coding-folder-views.ts";
 import { CodingHostLeases, judgeCodingHostLease } from "../src/coding-host-lease.ts";
 import {
 	type CodingMachineReconcileOptions,
@@ -24,7 +24,7 @@ import {
 	lxdCodingSessionStorage,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
-import type { LxdInstanceExecStreamClient, LxdInstanceRecord } from "../src/lxd-client.ts";
+import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient, LxdInstanceRecord } from "../src/lxd-client.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const mocked = vi.hoisted(() => ({
@@ -41,8 +41,10 @@ const mocked = vi.hoisted(() => ({
 	startOperation: vi.fn(),
 	keptCommand: vi.fn(),
 	guestCancel: vi.fn(),
+	guestQuiesce: vi.fn(),
 	guestStop: vi.fn(),
 	guestStatus: vi.fn(),
+	guestMount: vi.fn(),
 	folderTransports: [] as Record<string, unknown>[],
 	leaseTransports: [] as { scope: { workerId: string; turn: number; requestId: string }; open: boolean }[],
 	commandTransports: [] as {
@@ -83,9 +85,12 @@ vi.mock("../src/coding-folder-command-transport.ts", () => ({
 vi.mock("../src/coding-guest-client.ts", () => ({
 	LxdCodingGuestClient: class {
 		cancel = mocked.guestCancel;
+		quiesce = mocked.guestQuiesce;
 		stopSession = mocked.guestStop;
 		status = mocked.guestStatus;
+		mount = mocked.guestMount;
 	},
+	CodingGuestRefused: class extends Error {},
 }));
 vi.mock("../src/coding-machine.ts", async (original) => ({
 	...(await original<typeof import("../src/coding-machine.ts")>()),
@@ -2304,6 +2309,7 @@ async function folderFixture(repositories = true) {
 	mocked.startOperation.mockResolvedValue(startOperationId);
 	mocked.guestStatus.mockResolvedValue({ commands: [] });
 	mocked.guestCancel.mockResolvedValue({});
+	mocked.guestQuiesce.mockResolvedValue({});
 	mocked.guestStop.mockResolvedValue({});
 	const views = {
 		attach: vi.fn<CodingFolderViews["attach"]>(async () => ({ viewId })),
@@ -2320,17 +2326,82 @@ async function folderFixture(repositories = true) {
 		export: vi.fn<CodingFolderRepositories["export"]>(async () => Buffer.from("bundle")),
 	};
 	const onMount = vi.fn();
-	const host = new LxdCodingExecutorHost({
-		...f.options,
-		folder: {
-			views,
-			control: { boundary },
-			client: {} as LxdInstanceExecStreamClient,
-			...(repositories ? { repositories: sessionRepositories } : {}),
-			onMount,
+	const folder = {
+		views,
+		control: { boundary },
+		client: {} as LxdInstanceExecStreamClient,
+		...(repositories ? { repositories: sessionRepositories } : {}),
+		onMount,
+	};
+	const host = new LxdCodingExecutorHost({ ...f.options, folder });
+	/** An executor process whose views are real ones over `records`, as `real` makes them; each call is the next. */
+	const executor = (real: Awaited<ReturnType<typeof realViews>>) =>
+		new LxdCodingExecutorHost({
+			...f.options,
+			folder: { ...folder, views: real.views(), control: { boundary: real.boundary } },
+		});
+	return {
+		...f,
+		host,
+		executor,
+		views,
+		boundary,
+		repositories: sessionRepositories,
+		onMount,
+		startOperationId,
+		viewId,
+		cwd,
+	};
+}
+
+/** Real views, recorded in a folder of their own, over a faked core and folder service, and a machine that has the
+ * agent and the folder program already (the guest agent's mount is `mocked.guestMount`). */
+async function realViews() {
+	const parent = await realpath(await mkdtemp(join(tmpdir(), "coding-host-views-")));
+	roots.push(parent);
+	const root = join(parent, "folder-views"),
+		viewId = randomUUID(),
+		pass = "P".repeat(43),
+		agent = "// the guest agent\n",
+		program = "the folder program";
+	const opens: Record<string, unknown>[] = [],
+		closes: Record<string, unknown>[] = [];
+	const control = {
+		async call(method: string, args: Record<string, unknown>) {
+			if (method === "qorpera_folder_view_open") {
+				opens.push(args);
+				return { schema: "qorpera.folder-view/v1", viewId, pass, leaseUntil: "2026-10-16T01:00:00Z" };
+			}
+			if (method !== "qorpera_folder_view_close") throw new Error(`Unexpected method ${method}`);
+			closes.push(args);
+			return { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" };
 		},
-	});
-	return { ...f, host, views, boundary, repositories: sessionRepositories, onMount, startOperationId, viewId, cwd };
+	};
+	const boundary = vi.fn<CodingFolderControl["boundary"]>(async (machine, final) => ({
+		machine,
+		reads: "released",
+		views: final.map((id) => ({ viewId: id, unsaved: 0 })),
+	}));
+	const client = {
+		async execInstanceStream() {
+			const stdout = `${hash(agent)}  ${CODING_GUEST.agent}\n${hash(program)}  ${CODING_GUEST.folderProgram}\n`;
+			return { exitCode: 0, stdout: Buffer.from(stdout), stderr: Buffer.alloc(0) };
+		},
+		async pushInstanceProgram() {
+			throw new Error("Unexpected push");
+		},
+	} as unknown as LxdInstanceExecStreamClient & LxdInstanceProgramClient;
+	mocked.guestMount.mockResolvedValue({ mount: "mounted" });
+	const views = () =>
+		new CodingFolderViews({
+			control,
+			folder: { boundary },
+			client,
+			agent: Buffer.from(agent),
+			program: Buffer.from(program),
+			records: { root },
+		});
+	return { root, viewId, pass, opens, closes, boundary, views };
 }
 
 describe("a coding session on the folder model", () => {
@@ -2569,7 +2640,7 @@ describe("a coding session on the folder model", () => {
 		expect(f.execs()).toEqual([]);
 		expect(mocked.refresh).not.toHaveBeenCalled();
 	});
-	it("takes a released session off: its commands cancelled through the guest agent, its view ended, the session stopped", async () => {
+	it("takes a released session off: its commands cancelled through the guest agent, the session quiet, its view ended, the session stopped", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
@@ -2594,12 +2665,16 @@ describe("a coding session on the folder model", () => {
 				expect.any(AbortSignal),
 			],
 		]);
+		const request = { schema: "qorpera.coding-guest-session/v1", workerId: f.claim.workerId };
+		expect(mocked.guestQuiesce.mock.calls).toEqual([[request, expect.any(AbortSignal)]]);
 		expect(f.views.end.mock.calls).toEqual([[f.claim.workerId, expect.any(AbortSignal)]]);
-		expect(mocked.guestStop.mock.calls).toEqual([
-			[{ schema: "qorpera.coding-guest-session/v1", workerId: f.claim.workerId }, expect.any(AbortSignal)],
-		]);
-		// Its commands stop before the view's final boundary saves what they left; the session stops after that.
-		expect(mocked.guestCancel.mock.invocationCallOrder[0]).toBeLessThan(f.views.end.mock.invocationCallOrder[0]!);
+		expect(mocked.guestStop.mock.calls).toEqual([[request, expect.any(AbortSignal)]]);
+		// Its commands stop, and then nothing of it runs, before the view's final boundary saves what they left; the
+		// session stops after that.
+		expect(mocked.guestCancel.mock.invocationCallOrder[0]).toBeLessThan(
+			mocked.guestQuiesce.mock.invocationCallOrder[0]!,
+		);
+		expect(mocked.guestQuiesce.mock.invocationCallOrder[0]).toBeLessThan(f.views.end.mock.invocationCallOrder[0]!);
 		expect(f.views.end.mock.invocationCallOrder[0]).toBeLessThan(mocked.guestStop.mock.invocationCallOrder[0]!);
 		expect(new Set(f.calls("qorpera_authorize_coding_machine_custody").map((args) => args.p_intent))).toEqual(
 			new Set(["detach"]),
@@ -2631,6 +2706,84 @@ describe("a coding session on the folder model", () => {
 		expect(mocked.guestStop).toHaveBeenCalledTimes(1);
 		// Still attached in SQL: a later pass takes it off again.
 		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([]);
+	});
+	it("keeps the view of a session the guest can't confirm quiet, its cancel failed or not, and fails the take-off", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: randomUUID(), state: "running" }] });
+		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
+		mocked.guestCancel.mockRejectedValue(new Error("LXD exec stream failed"));
+		mocked.guestQuiesce.mockRejectedValue(new Error("CODING_GUEST_SESSION_STILL_RUNNING"));
+		f.state.release.set(f.claim.workerId, "ARCHIVED");
+		f.state.listed = [f.entry()];
+		f.call.mockClear();
+		expect(await pass(f)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: f.claim.workerId,
+				step: "detach",
+				state: "failed",
+				code: "CODING_GUEST_SESSION_STILL_RUNNING",
+			},
+		]);
+		expect(mocked.guestCancel).toHaveBeenCalledTimes(1);
+		expect(mocked.guestQuiesce).toHaveBeenCalledTimes(1);
+		// Its view stays mounted, and nothing of it is saved or removed while something of it may still write.
+		expect(f.views.end).not.toHaveBeenCalled();
+		expect(mocked.guestStop).not.toHaveBeenCalled();
+		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([]);
+	});
+	it("fails a take-off whose view's record can't be read, before the session stops", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.views.end.mockRejectedValueOnce(new Error("CODING_FOLDER_VIEW_RECORD_FAILED"));
+		f.state.release.set(f.claim.workerId, "ARCHIVED");
+		f.state.listed = [f.entry()];
+		f.call.mockClear();
+		expect(await pass(f)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: f.claim.workerId,
+				step: "detach",
+				state: "failed",
+				code: "CODING_FOLDER_VIEW_RECORD_FAILED",
+			},
+		]);
+		// The session keeps its mount for the next pass, which ends its view by the record.
+		expect(mocked.guestStop).not.toHaveBeenCalled();
+		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([]);
+	});
+	it("ends a released session's view after the executor restarted, by its record, before the session stops", async () => {
+		const f = await folderFixture();
+		const real = await realViews();
+		// The executor before the restart attached the session and showed it its view.
+		const before = f.executor(real);
+		await before.prepareWorkspace(f.claim, f.turn(), f.signal);
+		before.endTurn(f.claim);
+		expect(real.opens).toHaveLength(1);
+		expect(mocked.guestMount.mock.calls[0]?.[0]).toMatchObject({
+			workerId: f.claim.workerId,
+			view: { viewId: real.viewId, pass: real.pass },
+		});
+		f.state.release.set(f.claim.workerId, "ARCHIVED");
+		f.state.listed = [f.entry()];
+		real.boundary.mockClear();
+		expect(await pass({ ...f, host: f.executor(real) })).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: f.claim.workerId,
+				step: "detach",
+				state: "done",
+				code: "ARCHIVED",
+			},
+		]);
+		expect(real.boundary.mock.calls).toEqual([[f.machine.machineId, [real.viewId], expect.any(AbortSignal)]]);
+		expect(real.closes).toEqual([{ p_view_id: real.viewId, p_pass: real.pass }]);
+		expect(mocked.guestQuiesce.mock.invocationCallOrder[0]).toBeLessThan(real.boundary.mock.invocationCallOrder[0]!);
+		expect(real.boundary.mock.invocationCallOrder[0]).toBeLessThan(mocked.guestStop.mock.invocationCallOrder[0]!);
+		expect(await readdir(real.root)).toEqual([]);
 	});
 	it("only ends the view of a released session whose machine is not running", async () => {
 		const f = await folderFixture();
@@ -2678,7 +2831,17 @@ describe("a coding session on the folder model", () => {
 				expect.any(AbortSignal),
 			],
 		]);
-		// The power-off ends the guest's session: nothing is taken off in it.
+		// Then nothing of the session runs, its user manager included; the power-off ends the guest's session: nothing is
+		// taken off in it.
+		expect(mocked.guestQuiesce.mock.calls).toEqual([
+			[{ schema: "qorpera.coding-guest-session/v1", workerId: f.claim.workerId }, expect.any(AbortSignal)],
+		]);
+		expect(mocked.guestCancel.mock.invocationCallOrder[0]).toBeLessThan(
+			mocked.guestQuiesce.mock.invocationCallOrder[0]!,
+		);
+		expect(mocked.guestQuiesce.mock.invocationCallOrder[0]).toBeLessThan(
+			f.views.endMachine.mock.invocationCallOrder[0]!,
+		);
 		expect(mocked.guestStop).not.toHaveBeenCalled();
 		expect(f.execs()).toEqual([["/usr/bin/systemctl", "stop", "qorpera-coding.slice"], ["/usr/bin/sync"]]);
 		expect(f.views.endMachine.mock.calls).toEqual([[f.machine.machineId, expect.any(AbortSignal)]]);
@@ -2716,5 +2879,52 @@ describe("a coding session on the folder model", () => {
 		expect(f.calls("qorpera_record_coding_machine_error")).toEqual([
 			expect.objectContaining({ p_stage: "sleep", p_code: "CODING_FOLDER_VIEW_UNSAVED" }),
 		]);
+	});
+	it.each([
+		[
+			"a session the guest can't confirm quiet",
+			"CODING_GUEST_SESSION_STILL_RUNNING",
+			() => mocked.guestQuiesce.mockRejectedValue(new Error("CODING_GUEST_SESSION_STILL_RUNNING")),
+		],
+		[
+			"views whose records can't be read",
+			"CODING_FOLDER_VIEW_RECORD_FAILED",
+			(f: Awaited<ReturnType<typeof folderFixture>>) =>
+				f.views.endMachine.mockRejectedValue(new Error("CODING_FOLDER_VIEW_RECORD_FAILED")),
+		],
+	])("puts the machine to sleep with %s, and reports the step failed", async (_label, code, fail) => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.call.mockClear();
+		fail(f);
+		f.state.listed = [f.entry({ sleepDue: true })];
+		expect(await f.host.housekeep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, step: "sleep", state: "failed", code },
+		]);
+		expect(f.views.endMachine).toHaveBeenCalledTimes(1);
+		expect(reconciled()).toEqual(["running", "stopped"]);
+		expect(f.calls("qorpera_suspend_coding_machine")).toHaveLength(1);
+		expect(f.calls("qorpera_record_coding_session_detached")).toHaveLength(1);
+		expect(f.calls("qorpera_record_coding_machine_error")).toEqual([
+			expect.objectContaining({ p_stage: "sleep", p_code: code }),
+		]);
+	});
+	it("ends a sleeping machine's views after the executor restarted, by their records, before the power-off", async () => {
+		const f = await folderFixture();
+		const real = await realViews();
+		await f.executor(real).prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(real.opens).toHaveLength(1);
+		f.state.listed = [f.entry({ sleepDue: true })];
+		real.boundary.mockClear();
+		mocked.reconcile.mockClear();
+		expect(await f.executor(real).housekeep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, step: "sleep", state: "done" },
+		]);
+		expect(real.boundary.mock.calls).toEqual([[f.machine.machineId, [real.viewId], expect.any(AbortSignal)]]);
+		expect(real.closes).toEqual([{ p_view_id: real.viewId, p_pass: real.pass }]);
+		expect(mocked.guestQuiesce.mock.invocationCallOrder[0]).toBeLessThan(real.boundary.mock.invocationCallOrder[0]!);
+		expect(real.boundary.mock.invocationCallOrder[0]).toBeLessThan(mocked.reconcile.mock.invocationCallOrder[0]!);
+		expect(reconciled()).toEqual(["stopped"]);
+		expect(await readdir(real.root)).toEqual([]);
 	});
 });
