@@ -1,16 +1,10 @@
 # Artifact cleanup operations
 
-Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can create, inspect, cancel, and retry plans through authenticated RPCs, but cannot read Storage paths or delete objects.
+The artifact GC worker (`functions/artifact-gc-worker`) is a service-owned cleanup. Each run has four phases: a deleted company's Storage entries, folder-v2 objects, the deletion authorizations a crashed run left, and the catalog rows of deleted companies. Members cannot read Storage paths or delete objects. (The snapshot-v1 artifact cleanup plans and the company object GC went with legacy sweep E1, migration `20260930400000`.)
 
 ## Safety boundary
 
-- A plan requires owner or admin access, an expired artifact recovery grace, no active hold, no retained substrate reference, an independently verified reachability closure for every live profile root, and a current restore proof for the candidate artifact. Historical roots do not require weekly full-content restore proofs.
-- Creating a plan quarantines the artifact and snapshots only objects that are exclusive at that point. The plan cannot run for 24 hours, so it can be reviewed and cancelled before deletion starts.
-- The worker rechecks the profile safety proof when it claims a plan. Claim decisions and root, retention, index, and substrate writes serialize on the same profile row, closing the READ COMMITTED write-skew window. While a plan is deleting, new profile object roots and graph completion are fenced.
-- Before each object batch, objects referenced by another completed root are changed to `retained` and are never sent to Storage removal.
-- Immediately before every Storage batch, the worker revalidates and renews the exact plan lease. It then commits a service-only deletion authorization for the exact object, size, backend, and lease before asking the backend to remove bytes. The catalog is finalized only after backend success. Outstanding authorizations fence cancellation and lease release and are reconciled before any new profile-object cleanup claim, so ambiguous or partial failures retry idempotently without a post-cancel deletion window. (The deleted-company Storage phase below runs first; it has its own ledger and buckets.)
-- Completion is refused while a pending plan entry or an acknowledged Storage row still exists. Audit receipts contain counts and state transitions, not object paths.
-- Active deletion cannot be cancelled. If the worker disappears, an owner or admin can cancel only after the lease plus a one-minute stale-request grace has expired, which lifts the profile fence without accepting a late worker acknowledgement.
+- Before each object batch of a deleted company, the worker renews that company's cleanup lease. It then commits a service-only deletion authorization for the exact object, size, backend, and lease before asking the backend to remove bytes. The catalog is finalized only after backend success. Outstanding authorizations are reconciled before any new profile-object cleanup claim, so ambiguous or partial failures retry idempotently. While a company has an outstanding authorization, new profile object roots and graph completion are refused. (The deleted-company Storage phase below runs first; it has its own ledger and buckets.)
 - Deleting a profile leaves its immutable object-catalog rows as a durable cleanup queue. Independent deleted-profile leases allow the service worker to reclaim those bytes without restoring the deleted company or weakening the gateway's exact-lease check.
 - Folder-v2 objects (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md §9) have their own phase, which runs before the phases that can return early and has its own error handling. It runs only while `qorpera_folder_gc_enabled()` says so and the gateway is configured: it sweeps expired upload intents, claims up to 25 objects unreferenced for 24 hours under a new lease (each marked, so every new reference to it is refused as a conflict), and calls the gateway's `DELETE /v1/folder-gc/<profileId>/<sha256>` for each. The gateway moves the NAS file into `<root>/.quarantine/`, removes the Storage replica, and asks the database to finish; the catalog row goes only if nothing roots the object again, otherwise the file is put back and replicated again. A busy gateway (503), or the phase's 60-second budget (checked before each object), stops the phase for this run; any other failure leaves the object's mark to expire in 10 minutes. The gateway's own scan settles what an interrupted lane left in quarantine. The phase's switch is off: `update public.qorpera_folder_gc_settings set enabled = true;` is refused until `qorpera_verify_company_path_file` refuses folder-v2.
 - A deleted company's credential capsules and identity recovery backups have no catalog row. The company deletion finisher records them in `qorpera_company_storage_deletions` right before the purge (company delete D5a). The worker's first phase claims up to 100 entries (entries that keep failing last), removes a capsule object or empties the company's recovery prefix, and completes each entry; a failed entry is offered again. A name under the prefix that is not a recovery object stops that prefix before anything more is removed, and the entry keeps failing until an operator looks. The table has no API grants; only the finisher's capture and the worker's two service-role functions change it.
@@ -32,7 +26,7 @@ The production runbook, with a counts-only dry run, the key and the folder phase
 3. Generate a dedicated random worker invocation key. Store it only in the Edge
    Function secret and Vault. It is deliberately separate from the function's
    internal Supabase service credential and must never appear in a desktop
-   bundle, repository, logs, or plan rows.
+   bundle, repository, logs, or database rows.
 4. When any catalog row uses `nas-object-gateway`, configure
    `QORPERA_OBJECT_GATEWAY_URL` and `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN` on
    the function. The control token authorizes deletion requests only; the
@@ -69,21 +63,19 @@ select cron.schedule(
 Monitor aggregate state without selecting object entries:
 
 ```sql
-select status, count(*) as plan_count
-from public.qorpera_artifact_gc_plans
-group by status
-order by status;
+select 'deletion authorizations outstanding' as queue, count(*) as rows
+from public.qorpera_profile_object_deletion_authorizations
+union all
+select 'deleted-profile GC leases', count(*) from public.qorpera_deleted_profile_object_gc_leases;
 ```
 
-- A growing `retrying` count indicates a transient Storage, proof-coverage, or completion-visibility problem.
-- A `deleting` plan with an expired lease is claimable by the next invocation. After the additional one-minute stale-request grace, an owner or admin can cancel it to recover a profile when the worker cannot be restored.
-- After eight failed claims, the plan becomes `failed`. An owner or admin can explicitly request a manual retry after the cause is resolved.
-- Do not manually mark entries deleted, alter plan counts, or delete metadata rows. Recovery must resume through the worker so Storage state is checked before completion.
-- Cancelling the five-minute cron stops new claims. It does not invalidate active five-minute leases; wait for those leases to expire before incident analysis.
+- An outstanding authorization is finished by the next run, before it claims anything new. One that stays means its backend keeps failing, and every run answers 503 "Authorized object reconciliation failed" until it is fixed.
+- Do not manually delete authorizations or catalog rows. Recovery must resume through the worker so Storage state is checked before completion.
+- Cancelling the five-minute cron stops new claims. It does not invalidate active leases; wait for those leases to expire before incident analysis.
 
 NAS objects are removed only through the trusted object gateway. Qorpera
-Computers use the lease-scoped runner broker and never receive NAS filesystem
-authority, the gateway control token, or database service credentials.
+Computers never receive NAS filesystem authority, the gateway control token, or
+database service credentials.
 
 Folder-v2 GC state, without object names:
 

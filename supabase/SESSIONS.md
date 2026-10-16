@@ -88,6 +88,12 @@ forked one is corruption.
 - `qorpera_renew_session_turn` / `qorpera_complete_session_turn` — lease
   upkeep and completion, claimant-scoped.
 
+Legacy sweep D14 (20260930413000) dropped the turn claim and the v2
+renewal and completion, with the quarantine, status and recovery calls and
+the rest of the hosted primary's executor. A folder-v2 company has no head
+snapshot to pin: its conversations are rooms, and their runs are execution
+runs.
+
 Outputs continue through the existing session-event and trail mechanisms; the
 queue governs only who may produce them.
 
@@ -122,6 +128,8 @@ claimable again.
 - `qorpera_renew_wake` / `qorpera_complete_wake` — lease upkeep and
   completion, claimant-scoped.
 
+Legacy sweep D14 (20260930413000) dropped these three with the turn claim.
+
 Manual "run now" is founder intent recorded as its own cloud run. Every
 autonomous occurrence is likewise admitted in the cloud before a computer is
 selected. An unreachable control plane leaves the occurrence pending; it never
@@ -131,8 +139,9 @@ never become new work after artifact/history retention expires.
 
 ## Execution dispatch
 
-The session-turn and wake claim RPCs above remain compatibility primitives for
-the temporary desktop adapter. They are not the deployed cloud scheduler. The
+The session-turn and wake claim RPCs above were compatibility primitives for
+the temporary desktop adapter, and legacy sweep D14 dropped them. They were
+never the deployed cloud scheduler. The
 normative architecture is [CLOUD-CONTROL-PLANE.md](CLOUD-CONTROL-PLANE.md), and
 provider authorization is tracked separately in
 [PROVIDER-CAPABILITY-MATRIX.md](PROVIDER-CAPABILITY-MATRIX.md).

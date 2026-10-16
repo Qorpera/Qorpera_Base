@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import {
+	baseCopyCompare,
 	CLOSED,
 	CPU_SLOTS,
 	candidateMachines,
 	customTarget,
 	describeProbes,
+	FRONT,
 	firstTaking,
 	includeRules,
 	MACHINES,
@@ -18,6 +20,7 @@ import {
 	probeAll,
 	probeScript,
 	pruneScript,
+	QUICK_SLOTS,
 	RUNNERS,
 	rankMachines,
 	runOrder,
@@ -68,6 +71,9 @@ test("options, install default and extra arguments", () => {
 	assert.deepEqual([parseArgs(["--no-install", "test"]).install, parseArgs(["--no-install", "test"]).build], [false, false]);
 	assert.throws(() => parseArgs(["--base", "--octopus", "changed"]), /Invalid --base/);
 	assert.equal(parseArgs(["--base", "origin/release/runtime-v150", "changed"]).base, "origin/release/runtime-v150");
+	assert.equal(parseArgs(["--tree", "pr-loop", "changed"]).tree, "pr-loop");
+	assert.equal(parseArgs(["changed"]).tree, null);
+	for (const bad of ["../x", "a/b", ".hidden", "", "pr-loop.lock"]) assert.throws(() => parseArgs(["--tree", bad, "changed"]), /Invalid --tree/);
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
@@ -112,8 +118,8 @@ test("each run takes a free runner user and installs and runs as that user", () 
 	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
 });
 
-test("at most three runs execute at once, in arrival order, with two vitest workers each", () => {
-	assert.equal(CPU_SLOTS, 3);
+test("at most five runs execute at once, in arrival order, with two vitest workers each", () => {
+	assert.equal(CPU_SLOTS, 5);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
 	// The queue ticket sorts by arrival and stays locked by its waiting run (fd 7); only the first ticket
 	// may take a slot; a ticket nobody holds belongs to a dead run and is dropped, whatever its pid became.
@@ -126,15 +132,124 @@ test("at most three runs execute at once, in arrival order, with two vitest work
 	assert.match(script, /\{ exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
 	// A killed run's leftovers under the runner user are ended once its lock is held.
 	assert.match(script, /sudo -n pkill -KILL -u "\$runner"/);
-	assert.match(script, /for candidate in \$\(seq 1 3\); do/);
-	assert.match(script, /waiting for a slot \(3 runs at a time\), queue position \$position/);
+	assert.match(script, /for candidate in \$\(seq 1 5\); do/);
+	assert.match(script, /waiting for a slot in the CPU lane \(5 runs at a time\), queue position \$position/);
+	assert.match(script, /in slot \$slot of 5 in the CPU lane \(/);
 	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
-	// vCPUs / 3 workers per run (2 on 6 vCPUs, 4 on 12), at least 1.
-	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 3 > 0 \? \$\(nproc\) \/ 3 : 1 \)\)/);
-	for (const [cpus, workers] of [[6, 2], [10, 3], [12, 4], [2, 1]])
-		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 3 > 0 ? ${cpus} / 3 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
+	// vCPUs / 5 workers per run (2 on 10 or 12 vCPUs), at least 1.
+	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 5 > 0 \? \$\(nproc\) \/ 5 : 1 \)\)/);
+	for (const [cpus, workers] of [[6, 1], [10, 2], [12, 2], [2, 1]])
+		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 5 > 0 ? ${cpus} / 5 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
 	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
+});
+
+test("a hosted-db run narrowed with --only takes the quick lane", () => {
+	assert.equal(QUICK_SLOTS, 1);
+	assert.equal(parseArgs(["hosted-db", "--", "--only", "001"]).quick, true);
+	assert.equal(parseArgs(["hosted-db", "--", "--only=001"]).quick, true);
+	assert.equal(parseArgs(["--machine", "node01", "hosted-db", "--", "--scripts", "--only", "001,002"]).quick, true);
+	assert.equal(parseArgs(["hosted-db"]).quick, false);
+	assert.equal(parseArgs(["hosted-db", "--", "--scripts"]).quick, false);
+	assert.equal(parseArgs(["changed"]).quick, false);
+	assert.equal(parseArgs(["test"]).quick, false);
+	assert.equal(parseArgs(["npm:test:scripts", "--", "--only", "001"]).quick, false);
+	assert.equal(parseArgs(["--", "npm", "run", "test:hosted-db", "--", "--only", "001"]).quick, false);
+});
+
+test("a quick run queues for the quick slots only, a normal run for the CPU slots only, with the same logic", () => {
+	const base = { run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	const quick = runScript({ ...base, quick: true });
+	const cpu = runScript({ ...base, quick: false });
+	assert.equal(spawnSync("bash", ["-n", "-c", quick]).status, 0);
+	assert.match(quick, /ticket=\/run\/lock\/qorpera-test-machine-quick-queue\/\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
+	assert.match(quick, /for t in \/run\/lock\/qorpera-test-machine-quick-queue\/\*; do/);
+	assert.match(quick, /position=\$\(ls \/run\/lock\/qorpera-test-machine-quick-queue \| sort/);
+	assert.match(quick, /\{ exec 9>"\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	assert.match(quick, /for candidate in \$\(seq 1 1\); do/);
+	assert.match(quick, /waiting for a slot in the quick lane \(1 run at a time\), queue position \$position/);
+	assert.match(quick, /in slot \$slot of 1 in the quick lane \(/);
+	assert.doesNotMatch(quick, /qorpera-test-machine-(queue|slot)|CPU lane/);
+	assert.match(cpu, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
+	assert.match(cpu, /exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
+	assert.doesNotMatch(cpu, /quick/);
+	// Only the lane's names and slot count differ; the runner user and everything after the slot are shared.
+	const neutral = (script, lane, slots) =>
+		script
+			.replaceAll(`qorpera-test-machine-${lane}queue`, "QUEUE")
+			.replaceAll(`qorpera-test-machine-${lane}slot`, "SLOT")
+			.replaceAll(`seq 1 ${slots}`, "seq 1 N")
+			.replace(/in the (quick|CPU) lane \(\d+ runs? at a time\)/, "LANE")
+			.replace(/of \d+ in the (quick|CPU) lane/, "LANE");
+	assert.equal(neutral(quick, "quick-", QUICK_SLOTS), neutral(cpu, "", CPU_SLOTS));
+	for (const script of [quick, cpu]) {
+		assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
+		assert.match(script, /if \[ "\$position" = 1 \]; then/);
+		assert.match(script, /-ge 7200 \] && \{ echo "== run-on-node: no slot free for two hours"; exit 94; \}/);
+	}
+});
+
+test("--cores runs changed's steps side by side and is only for changed", () => {
+	assert.equal(parseArgs(["changed"]).cores, null);
+	const options = parseArgs(["--front", "--cores", "6", "changed"]);
+	assert.deepEqual([options.cores, options.front, options.plain], [6, true, true]);
+	for (const value of ["0", "x", "1.5", "100", "-2"]) assert.throws(() => parseArgs(["--cores", value, "changed"]), /Invalid --cores/, value);
+	assert.throws(() => parseArgs(["--cores"]), /--cores needs a value/);
+	assert.throws(() => parseArgs(["--cores", "4", "test"]), /--cores is for changed/);
+	assert.throws(() => parseArgs(["--cores", "4", "--", "true"]), /--cores is for changed/);
+});
+
+test("a --front run waits ahead of every other run in the CPU lane, front runs among themselves by arrival", () => {
+	assert.equal(parseArgs(["changed"]).front, false);
+	assert.equal(parseArgs(["--front", "--tree", "pr-loop", "--no-status", "changed"]).front, true);
+	assert.equal(parseArgs(["--front", "hosted-db"]).front, true);
+	assert.throws(() => parseArgs(["--front", "hosted-db", "--", "--only", "001"]), /--front is for the CPU lane/);
+	const base = { run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	const front = runScript({ ...base, front: true });
+	const normal = runScript(base);
+	assert.equal(spawnSync("bash", ["-n", "-c", front]).status, 0);
+	assert.equal(FRONT, "0-");
+	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
+	assert.match(front, /in slot \$slot of 5 in the CPU lane from the front of its queue \(/);
+	assert.doesNotMatch(normal, /queue\/0-|front/);
+	// Only the ticket's name and the slot line differ: the same slot wait, the same position-1 rule.
+	assert.equal(front.replace("queue/0-$(date", "queue/$(date").replace(" from the front of its queue", ""), normal);
+	// The wait's own order (ls | sort, then the ticket's line): front tickets first, in any collation, then the rest.
+	const dir = mkdtempSync(join(tmpdir(), "run-on-node-queue-"));
+	try {
+		for (const name of ["1760650000000000000-900", "0-1760650000000000002-12", "1760640000000000000-31", "0-1760650000000000001-7777"])
+			writeFileSync(join(dir, name), "");
+		for (const locale of ["C", "C.UTF-8", "en_US.UTF-8"]) {
+			const sorted = spawnSync("bash", ["-c", `ls ${shellQuote(dir)} | sort`], { encoding: "utf8", env: { ...process.env, LC_ALL: locale } });
+			assert.deepEqual(
+				sorted.stdout.trim().split("\n"),
+				["0-1760650000000000001-7777", "0-1760650000000000002-12", "1760640000000000000-31", "1760650000000000000-900"],
+				locale,
+			);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a front run goes to the machine with the fewest runs in its slots and front runs waiting, however long its queue", () => {
+	const idle = (name) => ({ name, busy: 0, waiting: 0, quickBusy: 0, quickWaiting: 0, arriving: 0, frontWaiting: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
+	const names = (probes, front) => rankMachines(probes, false, false, front).map((probe) => probe.name);
+	// The first batch's probe (15 Oct, 23:18Z): node02 had a free slot behind 12 waiting runs.
+	const probes = [{ ...idle("node02"), busy: 4, waiting: 12, quickBusy: 1 }, { ...idle("node01"), busy: 5, waiting: 6 }];
+	assert.deepEqual(runOrder(probes, false, false, true), ["node02", "node01"]);
+	assert.deepEqual(runOrder(probes, false, false), ["node01", "node02"]);
+	// Front runs already waiting count against a machine; copies still arriving queue behind the front run.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4, waiting: 2, frontWaiting: 2 }, { ...idle("node01"), busy: 5, waiting: 9, arriving: 3 }], true), [
+		"node01",
+		"node02",
+	]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5 }, { ...idle("node01"), busy: 5 }], true), ["node02", "node01"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5 }, { ...idle("node01"), closed: true }], true), ["node02"]);
+	assert.equal(
+		describeProbes([{ ...idle("node02"), busy: 5, waiting: 3, frontWaiting: 1 }]),
+		"node02 5/5 slots busy, 3 waiting (1 at the front), quick 0/1",
+	);
 });
 
 test("one test machine per node, each with its own address and so its own host key", () => {
@@ -169,13 +284,13 @@ test("--machine picks one machine; QORPERA_TEST_MACHINE* replaces the list", () 
 });
 
 test("a run goes to the machine with the most free slots; ties keep list order; silent machines drop out", () => {
-	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
-	const names = (probes, pinned = false) => rankMachines(probes, pinned).map((probe) => probe.name);
+	const idle = (name) => ({ name, busy: 0, waiting: 0, quickBusy: 0, quickWaiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
+	const names = (probes, pinned = false, quick = false) => rankMachines(probes, pinned, quick).map((probe) => probe.name);
 	assert.deepEqual(names([idle("node02"), idle("node01")]), ["node02", "node01"]);
 	assert.deepEqual(names([{ ...idle("node02"), busy: 2 }, { ...idle("node01"), busy: 1 }]), ["node01", "node02"]);
 	assert.deepEqual(names([{ ...idle("node02"), busy: 1 }, { ...idle("node01"), busy: 1 }]), ["node02", "node01"]);
 	// Both full: the shorter queue.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 4 }, { ...idle("node01"), busy: 3, waiting: 1 }]), [
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5, waiting: 4 }, { ...idle("node01"), busy: 5, waiting: 1 }]), [
 		"node01",
 		"node02",
 	]);
@@ -183,35 +298,51 @@ test("a run goes to the machine with the most free slots; ties keep list order; 
 	assert.deepEqual(names([{ ...idle("node02"), busy: 1, waiting: 2 }, { ...idle("node01"), busy: 2 }]), ["node01", "node02"]);
 	assert.deepEqual(names([{ ...idle("node02"), arriving: 2 }, { ...idle("node01"), busy: 1 }]), ["node01", "node02"]);
 	// A free slot beats a queue, whatever the load.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 1, load: 0.5 }, { ...idle("node01"), busy: 2, load: 9 }]), [
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5, waiting: 1, load: 0.5 }, { ...idle("node01"), busy: 2, load: 9 }]), [
 		"node01",
 		"node02",
 	]);
 	assert.deepEqual(names([idle("node02"), { name: "node01", unreachable: "connect failed: No route to host" }]), ["node02"]);
 	assert.deepEqual(names([{ name: "node02", unreachable: "a" }, { name: "node01", unreachable: "b" }]), []);
 	// A closed machine takes no automatic runs, however free; a run that names it still goes there.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 5 }, { ...idle("node01"), closed: true }]), ["node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4, waiting: 5 }, { ...idle("node01"), closed: true }]), ["node02"]);
 	assert.deepEqual(names([{ ...idle("node01"), closed: true }], true), ["node01"]);
 	assert.deepEqual(names([{ ...idle("node01"), closed: true }]), []);
 	// So does a machine whose setup has not finished.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3 }, { ...idle("node01"), setUp: false }]), ["node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4 }, { ...idle("node01"), setUp: false }]), ["node02"]);
 	assert.deepEqual(names([{ ...idle("node01"), setUp: false }], true), ["node01"]);
 	assert.equal(
-		describeProbes([{ ...idle("node02"), busy: 3, waiting: 2 }, { name: "node01", unreachable: "no answer in 12 s" }]),
-		"node02 3/3 slots busy, 2 waiting; node01 unreachable (no answer in 12 s)",
+		describeProbes([{ ...idle("node02"), busy: 5, waiting: 2 }, { name: "node01", unreachable: "no answer in 12 s" }]),
+		"node02 5/5 slots busy, 2 waiting, quick 0/1; node01 unreachable (no answer in 12 s)",
 	);
 	assert.equal(
-		describeProbes([{ ...idle("node01"), closed: true, busy: 1, arriving: 2 }]),
-		"node01 closed, 1/3 slots busy, 0 waiting, 2 arriving",
+		describeProbes([{ ...idle("node01"), closed: true, busy: 1, arriving: 2, quickBusy: 1, quickWaiting: 2 }]),
+		"node01 closed, 1/5 slots busy, 0 waiting, 2 arriving, quick 1/1 + 2 waiting",
 	);
-	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/3 slots busy, 0 waiting");
+	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/5 slots busy, 0 waiting, quick 0/1");
+});
+
+test("a quick run goes to the machine with the free quick slot, however full its CPU slots", () => {
+	const idle = (name) => ({ name, busy: 0, waiting: 0, quickBusy: 0, quickWaiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
+	const names = (probes, quick) => rankMachines(probes, false, quick).map((probe) => probe.name);
+	const probes = [{ ...idle("node02"), quickBusy: 1 }, { ...idle("node01"), busy: 5, waiting: 4, arriving: 1 }];
+	assert.deepEqual(names(probes, true), ["node01", "node02"]);
+	assert.deepEqual(runOrder(probes, false, true), ["node01", "node02"]);
+	// Any other run ranks by the CPU lane, as before.
+	assert.deepEqual(names(probes, false), ["node02", "node01"]);
+	assert.deepEqual(runOrder(probes, false, false), ["node02", "node01"]);
+	// A quick run waiting in a quick queue counts against it; arriving copies count against the CPU lane only.
+	assert.deepEqual(names([{ ...idle("node02"), quickBusy: 1, quickWaiting: 1 }, { ...idle("node01"), quickBusy: 1 }], true), ["node01", "node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), arriving: 3 }, idle("node01")], true), ["node02", "node01"]);
+	// Closed machines stay out of a quick run's choice too.
+	assert.deepEqual(names([{ ...idle("node02"), closed: true }, { ...idle("node01"), quickBusy: 1 }], true), ["node01"]);
 });
 
 test("machines that did not answer are tried only when no answering machine is open; closed ones never unless named", () => {
 	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
 	const silent = (name) => ({ name, unreachable: "Connection timed out during banner exchange" });
 	// An open machine that answered takes the run, even a full one: its failure is then the run's real error.
-	assert.deepEqual(runOrder([silent("node02"), { ...idle("node01"), busy: 3, waiting: 2 }], false), ["node01"]);
+	assert.deepEqual(runOrder([silent("node02"), { ...idle("node01"), busy: 4, waiting: 2 }], false), ["node01"]);
 	assert.deepEqual(runOrder([idle("node02"), idle("node01")], false), ["node02", "node01"]);
 	// A slow probe alone does not fail a run: the copy's own connection decides.
 	assert.deepEqual(runOrder([silent("node02"), silent("node01")], false), ["node02", "node01"]);
@@ -232,7 +363,7 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 		});
 	const timing = { graceMs: 150, timeoutMs: 1500 };
 	const free = { busy: 1, waiting: 0, arriving: 0, closed: false, setUp: true };
-	const full = { busy: 3, waiting: 4, arriving: 0, closed: false, setUp: true };
+	const full = { busy: 4, waiting: 4, arriving: 0, closed: false, setUp: true };
 
 	let started = Date.now();
 	let probes = await probeAll(machines, asker({ node02: { ms: 10, value: free } }), timing);
@@ -252,6 +383,16 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, closed: true } } }), timing);
 	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, setUp: false } } }), timing);
+	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
+	// A quick run's grace starts at a free quick slot, whatever the CPU slots.
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, quickBusy: 0, quickWaiting: 0 } } }), { ...timing, quick: true });
+	assert.equal(probes[1].unreachable, "no answer within 0.15 s of node02's");
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, quickBusy: 1, quickWaiting: 0 } } }), { ...timing, quick: true });
+	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
+	// A front run's grace starts at a slot free ahead of the queue, however long the queue.
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, busy: 3, frontWaiting: 0 } } }), { ...timing, front: true });
+	assert.equal(probes[1].unreachable, "no answer within 0.15 s of node02's");
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, busy: 4, frontWaiting: 1 } } }), { ...timing, front: true });
 	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
 });
 
@@ -297,8 +438,20 @@ test("the probe reads the locks the run script takes and counts runs still being
 	assert.match(probe, /5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"/);
 	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/\*; do/);
-	assert.match(probe, /for i in \$\(seq 1 3\); do/);
+	assert.match(probe, /for i in \$\(seq 1 5\); do \{ flock -n 5 \|\| busy=\$\(\(busy \+ 1\)\); \}/);
 	assert.match(probe, /\[ -e \/etc\/qorpera-test-machine-closed \] && closed=1; \[ -e \/etc\/qorpera-test-machine-versions \] && setup=1/);
+	// The quick lane's slots and queue, which a quick run's script takes, are counted apart.
+	const quick = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", quick: true });
+	assert.match(quick, /exec 9>"\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"/);
+	assert.match(probe, /for i in \$\(seq 1 1\); do \{ flock -n 5 \|\| quick_busy=\$\(\(quick_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-quick-slot"\$i\.lock"; done/);
+	assert.match(quick, /ticket=\/run\/lock\/qorpera-test-machine-quick-queue\//);
+	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-quick-queue\/\*; do \{ flock -n 5 \|\| quick_waiting=\$\(\(quick_waiting \+ 1\)\); \}/);
+	assert.match(probe, /echo "busy=\$busy waiting=\$waiting quick_busy=\$quick_busy quick_waiting=\$quick_waiting arriving=/);
+	// A front run's ticket, which only a front run's script takes, is counted again on its own.
+	const front = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", front: true });
+	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-/);
+	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/0-\*; do \{ flock -n 5 \|\| front_waiting=\$\(\(front_waiting \+ 1\)\); \} 2>\/dev\/null 5<"\$t"; done/);
+	assert.match(probe, / arriving=\$arriving front_waiting=\$front_waiting /);
 	// The copy marker: made by the run's first SSH call, dropped once it holds a queue ticket, pruned by name.
 	// Arithmetic expansion drops the padding BSD wc adds.
 	assert.match(probe, /arriving=\$\(\( \$\(find \/home\/tester\/arriving -maxdepth 1 -type f -mmin -10 2>\/dev\/null \| wc -l\) \)\)/);
@@ -331,26 +484,41 @@ test(
 			});
 		try {
 			mkdirSync(join(dir, "qorpera-test-machine-queue"));
+			mkdirSync(join(dir, "qorpera-test-machine-quick-queue"));
 			mkdirSync(join(dir, "arriving"));
 			writeFileSync(join(dir, "versions"), "os=test\n");
 			await hold(join(dir, "qorpera-test-machine-slot1.lock"));
 			writeFileSync(join(dir, "qorpera-test-machine-slot3.lock"), "");
 			await hold(join(dir, "qorpera-test-machine-queue", "1-live"));
 			writeFileSync(join(dir, "qorpera-test-machine-queue", "2-dead"), "");
+			await hold(join(dir, "qorpera-test-machine-quick-slot1.lock"));
+			await hold(join(dir, "qorpera-test-machine-quick-queue", "1-live"));
+			await hold(join(dir, "qorpera-test-machine-quick-queue", "2-live"));
+			writeFileSync(join(dir, "qorpera-test-machine-quick-queue", "3-dead"), "");
 			writeFileSync(join(dir, "arriving", "20261003T060000-1-a"), "");
 			const stale = join(dir, "arriving", "20261003T050000-2-b");
 			writeFileSync(stale, "");
 			utimesSync(stale, new Date(Date.now() - 20 * 60_000), new Date(Date.now() - 20 * 60_000));
-			const listing = () => [dir, join(dir, "qorpera-test-machine-queue"), join(dir, "arriving")].map((d) => readdirSync(d).sort());
+			const listing = () =>
+				[dir, join(dir, "qorpera-test-machine-queue"), join(dir, "qorpera-test-machine-quick-queue"), join(dir, "arriving")].map((d) =>
+					readdirSync(d).sort(),
+				);
 			const before = listing();
 			const result = spawnSync("bash", ["-c", probeScript(paths(dir))], { encoding: "utf8" });
 			assert.equal(result.status, 0, result.stderr);
 			assert.equal(result.stderr, "");
 			const answer = parseStatus(result.stdout);
 			assert.deepEqual([answer.busy, answer.waiting, answer.arriving, answer.closed, answer.setup], ["1", "1", "1", "0", "1"]);
+			assert.deepEqual([answer.quick_busy, answer.quick_waiting], ["1", "2"]);
+			assert.equal(answer.front_waiting, "0");
 			assert.match(answer.cpus, /^[1-9][0-9]*$/);
 			// Slot 2 was never made, and nothing else appeared or went.
 			assert.deepEqual(listing(), before);
+			// A live front ticket counts as waiting and as front; a dead one as neither.
+			await hold(join(dir, "qorpera-test-machine-queue", "0-1760650000000000001-7"));
+			writeFileSync(join(dir, "qorpera-test-machine-queue", "0-1760650000000000002-8"), "");
+			const front = ask(dir);
+			assert.deepEqual([front.waiting, front.front_waiting], ["2", "1"]);
 			writeFileSync(join(dir, "closed"), "resize to 12 vCPU\n");
 			assert.equal(ask(dir).closed, "1");
 			const empty = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));
@@ -362,6 +530,7 @@ test(
 				writeFileSync(join(empty, "versions"), "os=test\n");
 				const ready = ask(empty);
 				assert.deepEqual([ready.busy, ready.waiting, ready.arriving, ready.closed, ready.setup], ["0", "0", "0", "0", "1"]);
+				assert.deepEqual([ready.quick_busy, ready.quick_waiting], ["0", "0"]);
 				assert.deepEqual(readdirSync(empty), ["versions"]);
 			} finally {
 				rmSync(empty, { recursive: true, force: true });
@@ -456,6 +625,50 @@ function files(root) {
 	walk(root);
 	return out.sort();
 }
+
+test("a shared base copy compares contents: another checkout's same-size, same-mtime file is never reused", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const when = new Date("2026-10-14T21:00:00Z");
+		const checkout = (name, bytes) => {
+			mkdirSync(join(temporary, name));
+			writeFileSync(join(temporary, name, "f.ts"), bytes);
+			utimesSync(join(temporary, name, "f.ts"), when, when);
+			return join(temporary, name);
+		};
+		const first = checkout("first", "aaaa\n");
+		const second = checkout("second", "bbbb\n");
+		const treeDir = join(temporary, "tree");
+		const refresh = (runDir, shared) => {
+			const line = runScript({ run: "R", runDir, treeDir, shared, files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" })
+				.split("\n")
+				.find((l) => l.includes("base copy refresh"));
+			const result = spawnSync("bash", ["-c", line]);
+			assert.equal(result.status, 0, result.stderr?.toString());
+		};
+		const upload = (root, runDir, shared) => {
+			const rsync = spawnSync("rsync", ["-a", ...baseCopyCompare(shared), `--copy-dest=${treeDir}/`, `${root}/`, `${runDir}/`]);
+			assert.equal(rsync.status, 0, rsync.stderr?.toString());
+		};
+		mkdirSync(treeDir);
+		refresh(first, true);
+		assert.equal(readFileSync(join(treeDir, "f.ts"), "utf8"), "aaaa\n");
+
+		upload(second, join(temporary, "run"), true);
+		assert.equal(readFileSync(join(temporary, "run/f.ts"), "utf8"), "bbbb\n");
+		refresh(join(temporary, "run"), true);
+		assert.equal(readFileSync(join(treeDir, "f.ts"), "utf8"), "bbbb\n");
+
+		// Why: rsync's quick check alone takes the base copy's bytes for the other checkout's file. A checkout's own
+		// base copy keeps the quick check.
+		upload(first, join(temporary, "quick"), false);
+		assert.equal(readFileSync(join(temporary, "quick/f.ts"), "utf8"), "bbbb\n");
+		assert.deepEqual(baseCopyCompare(false), []);
+		assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /--checksum/);
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
+});
 
 test("the copied tree is exactly what git sees, and the digest covers untracked contents", () => {
 	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));

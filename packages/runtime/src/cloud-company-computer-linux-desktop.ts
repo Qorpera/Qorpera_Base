@@ -9,6 +9,10 @@ import {
 	type CompanyComputerScope,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import {
+	type CompanyComputerDesktopCompany,
+	openCompanyComputerFolderParent,
+} from "./cloud-company-computer-desktop-folder.ts";
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
@@ -174,9 +178,11 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 		await assertCompanyComputerLinuxHost(this.#options.limits, signal);
 	}
 
+	/** With `company`, the desktop binds that mount's parent and finds the company folder at `/company`. */
 	async launch(
 		binding: CompanyComputerScreenBinding,
 		signal: AbortSignal,
+		options: { company?: CompanyComputerDesktopCompany } = {},
 	): Promise<CompanyComputerScreenSessionHandle> {
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#options.scope);
@@ -192,7 +198,7 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 			connections: new Set(),
 		};
 		this.#desktops.set(binding.screenOrdinal, desktop);
-		desktop.pending = this.#launch(desktop, signal);
+		desktop.pending = this.#launch(desktop, signal, options.company);
 		try {
 			return await cloudToolRequest(() => desktop.pending!, new AbortController().signal, 15000);
 		} catch (error) {
@@ -201,7 +207,11 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 		}
 	}
 
-	async #launch(desktop: Desktop, request: AbortSignal): Promise<CompanyComputerScreenSessionHandle> {
+	async #launch(
+		desktop: Desktop,
+		request: AbortSignal,
+		company: CompanyComputerDesktopCompany | undefined,
+	): Promise<CompanyComputerScreenSessionHandle> {
 		const binding = desktop.binding;
 		const lifetime = AbortSignal.any([desktop.stop.signal, this.#stop.signal]);
 		const startup = AbortSignal.any([request, lifetime]);
@@ -305,7 +315,25 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				await assertCompanyComputerImageArtifact(path, directory);
 				args.push("--ro-bind", path, path);
 			}
+			// LibreOffice's registry links into /etc/libreoffice; without it LibreOffice cannot start. An image without
+			// LibreOffice has none.
+			if (await lstat("/etc/libreoffice").catch(() => undefined)) {
+				await assertCompanyComputerImageArtifact("/etc/libreoffice", true);
+				args.push("--ro-bind", "/etc/libreoffice", "/etc/libreoffice");
+			}
 			args.push("--symlink", "../usr/lib/os-release", "/etc/os-release");
+			if (company) {
+				// The mount's parent, not its mountpoint: a mount made again under it reaches this desktop (Q3, #1007).
+				files.push(await openCompanyComputerFolderParent(company.name));
+				args.push(
+					"--bind-fd",
+					"9",
+					"/run/qorpera-company",
+					"--symlink",
+					"/run/qorpera-company/company",
+					"/company",
+				);
+			}
 			for (const [name, value] of Object.entries({
 				HOME: "/home/qorpera",
 				PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -315,6 +343,7 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				QORPERA_SCREEN_STATE_ROOT: "/screen-state",
 				QORPERA_SCREEN_RUNTIME_ROOT: "/run/qorpera",
 				QORPERA_SCREEN_WALLPAPER: `/screen-state/${binding.screenId}/wallpaper.png`,
+				...(company ? { QORPERA_COMPANY_FOLDER: "/company" } : {}),
 			}))
 				args.push("--setenv", name, value);
 			args.push("--chdir", layout.workbenchRoot, "--remount-ro", "/");

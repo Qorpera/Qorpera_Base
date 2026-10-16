@@ -22,14 +22,19 @@ import {
 	connectorReturnLocation,
 } from "./cloud-connector-oauth.ts";
 import {
+	EVENT_HOOK_CAPTURE_REQUEST_SCHEMA,
 	EVENT_HOOK_FILL_REQUEST_SCHEMA,
 	EVENT_HOOK_REQUEST_SCHEMA,
 	type EventHookAnswer,
+	type EventHookCaptureAnswer,
+	type EventHookCaptureRequest,
 	type EventHookFillAnswer,
 	type EventHookFillRequest,
 	type EventHookRefusal,
 	type EventHookRequest,
 	parseEventHookAnswer,
+	parseEventHookCaptureAnswer,
+	parseEventHookCaptureRequest,
 	parseEventHookFillAnswer,
 	parseEventHookFillRequest,
 	parseEventHookRequest,
@@ -49,8 +54,10 @@ import {
 	type CloudSecretCaptureRequest,
 	type CloudSecretDescriptor,
 	type CloudSecretOperationRequest,
+	type CodingEnvironmentRequest,
 	type CodingRepositoryCredentialRequest,
 	parseCloudSecretAccountLabel,
+	parseCodingEnvironmentRequest,
 	parseCodingRepositoryCredentialRequest,
 } from "./cloud-secret-broker.ts";
 import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
@@ -189,6 +196,18 @@ function parseRepositoryCredentialRequest(value: unknown): CodingRepositoryCrede
 		leaseToken: input.leaseToken,
 		executorOwner: input.executorOwner,
 		repository: input.repository,
+	});
+}
+
+function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentRequest {
+	const input = record(value, "Coding environment request");
+	exact(input, ["schema", "workerId", "leaseToken", "executorOwner"], "Coding environment request");
+	if (input.schema !== "qorpera.coding-environment-request/v1")
+		throw new Error("Coding environment request is invalid");
+	return parseCodingEnvironmentRequest({
+		workerId: input.workerId,
+		leaseToken: input.leaseToken,
+		executorOwner: input.executorOwner,
 	});
 }
 
@@ -429,10 +448,10 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** Connector OAuth flows (Step 7); absent means the OAuth routes answer 404. */
 	readonly oauth?: CloudConnectorOAuthFlows;
 	/** The coding executor's own bearer for `/v1/repository-credentials`
-	 * (bundle v88; credential `qorpera-cloud-secret-coding-executor`). Distinct
-	 * from the runtime token every guest holds; absent means the route answers
-	 * 404. The runtime token never opens that route, and this token never opens
-	 * `/v1/operations`. */
+	 * (bundle v88) and `/v1/coding-environment` (5j-3); credential
+	 * `qorpera-cloud-secret-coding-executor`. Distinct from the runtime token
+	 * every guest holds; absent means both routes answer 404. The runtime token
+	 * never opens those routes, and this token never opens `/v1/operations`. */
 	readonly codingExecutorToken?: string;
 	/** The lease proof every runtime-token route asks before it serves a run binding (G2-6a). Absent, those routes
 	 * refuse every request. */
@@ -466,7 +485,9 @@ interface RequestScope {
  * member ticket; operation execution additionally requires a private service
  * token and the database's current run/grant/receipt authorization; a coding
  * executor's repository token requires the executor's own separate token and
- * the database's current session lease, repository grant and connection grant.
+ * the database's current session lease, repository grant and connection grant,
+ * and a coding session's environment requires that same token and the
+ * session's current lease.
  */
 export class HttpCloudSecretBrokerService {
 	/** One company's broker, or the shared vault's companies (Vault By Default). */
@@ -783,6 +804,15 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
+			// An agent's vault_capture of a Stripe hook's secret (E3c-2): the office's box, sealed to the hook's capture
+			// key, which only the vault opens. Same token, routing and lease proof; inside the client's 20 s.
+			if (path === "/v1/event-hook-captures" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+				const captureRequest = parseEventHookCaptureRequest(await readRequest(request));
+				await this.#proven(request, captureRequest.binding);
+				const answer = await scope.broker.eventHookCapture(captureRequest, AbortSignal.timeout(15_000));
+				response(reply, 200, answer as unknown as JsonValue);
+				return;
+			}
 			// A member's sign-in to the vault (Stateless Compute step 1, change 2B). The login
 			// gateway chooser names `<origin>/v1/model-logins/<company>/`; the web client's edge
 			// function posts its unchanged sign-in request there, server to server, with the
@@ -914,6 +944,21 @@ export class HttpCloudSecretBrokerService {
 					AbortSignal.timeout(10_000),
 				);
 				response(reply, 200, { schema: credential.schema, token: credential.token });
+				return;
+			}
+			// A coding session's environment (5j-3), under the same gate as the
+			// repository token: only the executor's own bearer, the kernel's lease
+			// check behind it, and an answer that is never cached.
+			if (
+				path === "/v1/coding-environment" &&
+				this.#codingExecutorToken !== undefined &&
+				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
+			) {
+				const environment = await scope.broker.codingEnvironment(
+					parseCodingEnvironmentHttpRequest(await readRequest(request)),
+					AbortSignal.timeout(10_000),
+				);
+				response(reply, 200, { schema: environment.schema, environment: { ...environment.environment } });
 				return;
 			}
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
@@ -1190,6 +1235,47 @@ export class HttpCloudSecretBrokerClient {
 				}
 			},
 			// Past the broker's 15 s, inside the tool call's 30 s, leaving the office time to type.
+			20_000,
+			signal,
+		);
+	}
+
+	/** One vault_capture of a Stripe hook's secret (E3c-2): the office's sealed box in, the version the vault holds
+	 * after it out, or the database's refusal. */
+	async eventHookCapture(
+		request: EventHookCaptureRequest,
+		signal: AbortSignal,
+	): Promise<EventHookCaptureAnswer | EventHookRefusal> {
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await this.#fetch(
+					`${this.#origin}/v1/event-hook-captures?company=${this.#companyId}`,
+					{
+						method: "POST",
+						redirect: "error",
+						headers: {
+							authorization: `Bearer ${this.#runtimeToken}`,
+							"x-qorpera-identity": this.#holder(),
+							"content-type": "application/json",
+						},
+						body: cloudToolJsonText({ schema: EVENT_HOOK_CAPTURE_REQUEST_SCHEMA, ...request }),
+						signal: requestSignal,
+					},
+				);
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					throw new Error("Cloud secret broker rejected the event hook capture");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+				try {
+					return parseEventHookCaptureAnswer(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+				} catch {
+					throw new Error("Cloud secret broker returned invalid data");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			// Past the broker's 15 s, inside the tool call's 30 s, after the office read the page.
 			20_000,
 			signal,
 		);

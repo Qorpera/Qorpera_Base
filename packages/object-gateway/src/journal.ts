@@ -104,7 +104,7 @@ export class ObjectGatewayJournal {
 		await this.#sync(dirname(path));
 	}
 
-	async list(section: "pending" | "leases"): Promise<string[]> {
+	async list(section: "pending"): Promise<string[]> {
 		const directory = join(this.#root, section);
 		await this.#directory(directory);
 		const entries = await readdir(directory, { withFileTypes: true });
@@ -144,8 +144,7 @@ export class ObjectGatewayJournal {
 	}
 
 	#path(key: string): string {
-		if (!/^(?:pending|leases|revocations|clock)\/[a-z0-9-]{1,160}$/.test(key))
-			throw new Error("Gateway journal key is invalid");
+		if (!/^pending\/[a-z0-9-]{1,160}$/.test(key)) throw new Error("Gateway journal key is invalid");
 		return join(this.#root, `${key}.json`);
 	}
 

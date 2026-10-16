@@ -1958,11 +1958,10 @@ describe("hooks (E3a)", () => {
 			expect(eventHook).toHaveBeenCalledTimes(1);
 		}
 		const stripe = fixture(noSql, {
-			eventHook: async () =>
-				brokerRefusal("0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"),
+			eventHook: async () => brokerRefusal("22023", "A Stripe hook's secret is taken from dashboard.stripe.com"),
 		});
 		await expect(stripe.client.manageHook(GITHUB, signal())).resolves.toEqual({
-			refused: "A Stripe hook comes later: its secret is taken from Stripe's screen",
+			refused: "A Stripe hook's secret is taken from dashboard.stripe.com",
 		});
 		// A refusal the model has no words for is the database's error.
 		const malformed = fixture(noSql, { eventHook: async () => brokerRefusal("22023", "Hook request is invalid") });
@@ -2027,6 +2026,36 @@ describe("hooks (E3a)", () => {
 				"Company folder response is invalid",
 			);
 		}
+	});
+
+	it("opens a Stripe hook with no secret yet, and refuses an answer that says it has one (E3c-2)", async () => {
+		const STRIPE = {
+			...GITHUB,
+			name: "stripe-payments",
+			proof: "stripe",
+			site: "dashboard.stripe.com",
+			operationKey: "st-1",
+		} as const;
+		const opened = (f: Fixture, ready: boolean) => ({
+			...receipt(
+				f,
+				"create",
+				hook(f, {
+					name: STRIPE.name,
+					proof: "stripe",
+					signingSecret: { ...SECRET, ready },
+					address: ADDRESS,
+					path: PATH,
+				}),
+			),
+			secretSite: STRIPE.site,
+		});
+		const f: Fixture = fixture(noSql, { eventHook: async () => opened(f, false) });
+		await expect(f.client.manageHook(STRIPE, signal())).resolves.toMatchObject({
+			secretSite: "dashboard.stripe.com",
+		});
+		const ready: Fixture = fixture(noSql, { eventHook: async () => opened(ready, true) });
+		await expect(ready.client.manageHook(STRIPE, signal())).rejects.toThrow("Company folder response is invalid");
 	});
 });
 
@@ -2120,5 +2149,47 @@ describe("releases", () => {
 		await expect(client.release(randomUUID(), [{ ...named, version: "v1" }], sha("out"), signal())).rejects.toThrow(
 			"Invalid Company folder release",
 		);
+	});
+});
+
+describe("interface change notes (I10)", () => {
+	const answer = (noted: unknown) => ({ schema: "qorpera.interface-change-notes/v1", noted });
+
+	it("notes the run's changes as a run effect, asks again after a deadlock, and checks the answer", async () => {
+		let tries = 0;
+		const { client, calls, binding } = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return answer(2);
+		});
+		await expect(client.noteInterfaceChanges(signal())).resolves.toBe(2);
+		// The run's binding and an empty request, as the run effect takes them: no folder actor.
+		const call = { method: "qorpera_folder_note_interface_changes", args: { p_binding: binding, p_request: {} } };
+		expect(calls).toEqual([call, call]);
+		const none = fixture(() => answer(0));
+		await expect(none.client.noteInterfaceChanges(signal())).resolves.toBe(0);
+		for (const wrong of [
+			answer(-1),
+			answer(1.5),
+			answer("1"),
+			answer(null),
+			answer(true),
+			{ schema: "qorpera.interface-change-notes/v1" },
+			{ ...answer(1), extra: 1 },
+			{ ...answer(1), schema: "qorpera.interface-change-note/v1" },
+		]) {
+			const f = fixture(() => wrong);
+			await expect(f.client.noteInterfaceChanges(signal()), JSON.stringify(wrong)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+		// SQL's refusals as folder errors: the run stopped, or it may no longer write.
+		const stopped = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(stopped.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "stopped" });
+		const gone = fixture(() => {
+			throw sqlError("42501", "Run is unavailable");
+		});
+		await expect(gone.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "unavailable" });
 	});
 });

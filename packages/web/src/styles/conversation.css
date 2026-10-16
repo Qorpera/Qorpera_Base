@@ -77,6 +77,7 @@
 .message-progress .bubble { padding: 7px 11px; color: #343432; }
 .pending-queued .bubble { opacity: .7; }
 .pending-failed .bubble { outline: 1px solid var(--danger); }
+.message-erased .bubble { font-style: italic; opacity: .7; }
 .message-author, .message-caption { padding: 0 12px; font-size: 11px; font-weight: 500; color: var(--text-muted); overflow-wrap: anywhere; }
 .message-author { font-weight: 600; }
 .message-caption { margin-top: -3px; }
@@ -309,6 +310,18 @@
 .review-reasons li + li { margin-top: 2px; }
 /* The answer closes the card: its buttons are the last thing in it. */
 .action-review-card .review-answer { margin-top: 12px; }
+/* A page an agent asks to save, as it would look (Interfaces I10): the page itself in a frame, one block under another,
+ * cut off at a fixed height and faded there. Nothing in it can be used. */
+.review-preview { position: relative; max-height: 420px; margin: 10px 0 0; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+.review-preview::after { content: ""; position: absolute; inset: auto 0 0; height: 36px; background: linear-gradient(transparent, var(--bg)); pointer-events: none; }
+.review-preview figcaption { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.review-preview-page:empty { display: none; }
+.review-preview-page + .review-preview-page { border-top: 1px solid var(--border); }
+.review-preview .interface { height: auto; }
+.review-preview .interface-head { min-height: 44px; padding: 0 12px; }
+.review-preview .interface-page { overflow: visible; padding: 12px; }
+.review-preview .interface-block { grid-column: span 6; }
+.review-preview .interface-live { display: none; }
 /* An email to approve wears the thread's email card (email-draft-card.ts), read-only. */
 .review-email { overflow-wrap: anywhere; }
 .review-email .review-email-body { padding: 13px 16px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
@@ -901,6 +914,15 @@
 .peer-group > .peer-chip { padding-inline: 4px; }
 .peer-group > .peer-chip.figure-only { padding: 3px; }
 .conversation-note { flex: none; align-self: center; max-width: min(80%, 560px); margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; text-align: center; overflow-wrap: anywhere; }
+/* An agent's change to the interfaces or tables (I10): a note's line, with a small Undo beside it. */
+.interface-change { display: flex; flex: none; flex-wrap: wrap; align-self: center; align-items: baseline; justify-content: center; gap: 2px 8px; max-width: min(80%, 560px); margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; text-align: center; overflow-wrap: anywhere; outline: none; }
+.interface-change:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
+.interface-change-undo { padding: 1px 7px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text); font: inherit; font-size: 12px; font-weight: 500; line-height: 16px; cursor: pointer; transition: background-color 120ms ease; }
+.interface-change-undo:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.interface-change-undo:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.interface-change-undo:disabled { color: var(--text-muted); cursor: default; }
+.interface-change-status { flex-basis: 100%; }
+.interface-change-status.failed { color: var(--danger); }
 .pair-transcript { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); outline: none; animation: pair-enter 160ms ease both; }
 @keyframes pair-enter { from { opacity: 0; } to { opacity: 1; } }
 .pair-header { padding: 0 14px; }

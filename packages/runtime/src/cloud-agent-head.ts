@@ -16,7 +16,8 @@
  * out.
  */
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import { type CloudCompanyPathGateway, CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import type { CloudFolderNotebookGateway } from "./cloud-folder-notebooks.ts";
 import type { CloudAgentMemoryBlock } from "./cloud-memory-tools.ts";
 import {
 	type CloudNativeCompanyContext,
@@ -55,7 +56,7 @@ type Candidate =
 /** The vision file for the company head, or null when there is none. A file a trusted read cannot hold as text (over
  * 32 KiB, or not UTF-8) is named with the size that read found. */
 export async function readCloudAgentHeadVision(
-	gateway: Pick<CloudCompanyPathGateway, "readTrusted">,
+	gateway: Pick<CloudFolderNotebookGateway, "readTrusted">,
 	signal: AbortSignal,
 ): Promise<CloudAgentHeadVision | null> {
 	try {

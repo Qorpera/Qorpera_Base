@@ -414,16 +414,23 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
 ## Step 4b: shell commands
 
 In slice 4b the core opens a view of its own for an offline shell command (`computer_shell_command`, migration
-`20260930183000`; RUNTIME-COMPANY-FOLDER-C1B.md §8), and the folder service serves it:
+`20260930183000`; RUNTIME-COMPANY-FOLDER-C1B.md §8), and from slice 4b-2 for a networked one too (migration
+`20260930342000`), and the folder service serves it:
 
 - **Which machine.** Like a desktop's: only to the company machine named after the view's allocation, read-write.
-- **Publishing.** Only when the machine asks, or before a change that needs what is pending published first: no quiet
-  period. The command's last call sends `P` with `final: true`. The final publishes everything the view has pending as
-  one change set, or an empty one when nothing is, and the core closes the view with it, whether it saved anything or
-  not: the report says `closed`, and the view is closed on every connection. A path still waiting (a file open for
-  writing) holds the whole final back, with nothing committed: each path stays pending, and the machine asks again. A
-  final from any other view is `BAD_REQUEST`; one on a view that has closed otherwise is `VIEW_CLOSED` with why it
-  closed.
+- **Publishing.** While the command runs, as a desktop's (slice 4b-2; the contract's 14 October 2026 amendment, item
+  3): 2 s after its last change (`DESKTOP_QUIET_MS`), each boundary releasing the reads first (Step 4c), and when the
+  machine asks, or before a change that needs what is pending published first. A view no machine holds publishes on
+  no quiet period: a change that waited behind a boundary and lands after the last connection left starts none, and a
+  quiet period that ended while the view was held, but waited behind a boundary while its last connection left,
+  publishes nothing (not even a boundary that got no answer is asked again). Its changes wait for the boundary its
+  machine asks. The command's last call sends `P` with `final: true`, and a quiet period still to come ends with
+  it: a command that ends inside its quiet period publishes once, final. The final publishes everything the view has
+  pending as one change set, or an empty one when nothing is, and the core closes the view with it, whether it saved
+  anything or not: the report says `closed`, and the view is closed on every connection. A path still waiting (a file
+  open for writing) holds the whole final back, with nothing committed: each path stays pending, and the machine asks
+  again. A final from any other view is `BAD_REQUEST`; one on a view that has closed otherwise is `VIEW_CLOSED` with
+  why it closed.
 - **No answer.** A final whose commit got no answer is asked again, final, under its key and as the actor it was asked
   as, before anything else; until then the report says each path's save did not get through yet. The core may have
   applied it, and so closed the view, and a renewal may then close the view here before the answer comes, while the
@@ -444,16 +451,19 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   after any final refused for good, the office service closes that view itself (slice 4d,
   RUNTIME-FOLDER-COMPANY-MACHINES.md).
 - **The command's end.** Once the command's end is recorded (C1B §8), the core saves only the final. A change set it
-  refuses whole stays pending, so the final carries it.
+  refuses whole (a quiet period's included) stays pending, so the final carries it.
 - **Kept for the final.** A command's view that its own machine has held is kept when its last connection leaves: its
-  pending changes stay, nothing is published, and its lease is still renewed, until the final closes it or the core
-  does, or a boundary of it is refused for good (then it is dropped: Step 4c, "Kept"). Its renewals always say nothing
-  is unsaved (no seat waits on a command).
+  pending changes stay, nothing is published (its quiet period ends with the connection), and its lease is still
+  renewed, until the final closes it or the core does, or a boundary of it is refused for good (then it is dropped:
+  Step 4c, "Kept"). Its renewals always say nothing is unsaved (no seat waits on a command).
 - **Tests.** `packages/object-gateway/test/folder-command-views.test.ts`, with the stand-in core, which saves only the
   final of a view whose command ended, closes the view with the final, and answers a replay on a closed view given its
-  pass, as the core does. Among them: a final refused whole, empty or not; a final whose answers were all lost while
-  a renewal closed the view, after its tries or between them, asked again on the same connection and on a new one; and
-  a final refused once a renewal closed the view between its ask and its answer.
+  pass, as the core does. Among them: a running command's changes published after its quiet period, its reads released
+  first; a command that ends inside its quiet period, published once, final, its final held back or not; a view let go
+  or kept with no connection, which its quiet period does not publish, nor a change or a quiet period that waited
+  behind a boundary while its last connection left; a final refused whole, empty or not; a final
+  whose answers were all lost while a renewal closed the view, after its tries or between them, asked again on the
+  same connection and on a new one; and a final refused once a renewal closed the view between its ask and its answer.
 
 ## Step 4c: read releases
 
@@ -469,8 +479,8 @@ with the view as the actor before anything made from them is published (RUNTIME-
   has them. A batch that leaves a gap is not taken, and the machine sends it again from `taken`. A path is never empty,
   so the program logs no listing of the root (slice 4c-2): a company-wide view opens only when its actor reads the
   root resource (C1b-3 §2).
-- **Reads before writes.** The service releases only the entries it holds, and a desktop's view publishes on its own
-  quiet period. So a machine has a read's entry taken (an answer with `taken` at or past its `seq`) before it sends
+- **Reads before writes.** The service releases only the entries it holds, and a desktop's view, or a running
+  command's, publishes on its own quiet period. So a machine has a read's entry taken (an answer with `taken` at or past its `seq`) before it sends
   any change made after that read, on any of its connections, and before `P`: a change that arrived first could be
   published with the read not released.
 - **Releases.** Each boundary (a quiet publish, a `P`, the last connection leaving) first releases the reads the core
