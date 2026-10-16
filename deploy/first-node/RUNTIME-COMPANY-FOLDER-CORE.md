@@ -108,7 +108,7 @@ C1 inventories every caller and records one decision for each:
   directly, so it gets its own `folder-v2` branch.
 - **Refuses:** it writes company state as rows with no file behind them.
   Examples:
-  - `qorpera_manage_agent_routine` (20260922151000:201);
+  - `qorpera_manage_agent_routine` (20260922151000:201; dropped in legacy sweep D6, 20260930335000);
   - the review-rule RPCs (20260926130000:190,227) for `scope = 'company'`
     only. Personal rules and an agent's Ask first rule
     (`qorpera_add_agent_review_rule`, :806) stay rows, as contract 5.6 says;
@@ -917,7 +917,9 @@ With G1–G4 in place, GC for `folder-v2` takes no company fence and needs no
 company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 20260821009000:335-352) stays for `snapshot-v1`. From C1, today's GC
 (`qorpera_claim_company_object_gc`, 20260913000100:68-130) never claims a
-`folder-v2` company's objects.
+`folder-v2` company's objects. (Legacy sweep E1, 20260930400000, dropped that
+GC and the artifact GC plans; the gate now sees only outstanding deletion
+authorizations.)
 
 ### Erasure
 

@@ -112,7 +112,8 @@ begin
 	v_id := pg_temp.i9c_made(r);
 	if r ->> 'schema' <> 'qorpera.interface-offer/v1' or (r -> 'offer') - 'id' - 'at' <> jsonb_build_object(
 			'table', '93800000-0000-4000-8000-000000000001', 'folder', 'tables/offers', 'key', '["t1"]'::jsonb, 'column', 'owner',
-			'from', pg_temp.i9c_user(2), 'was', pg_temp.i9c_user(2), 'to', pg_temp.i9c_user(4), 'state', 'open', 'closedAt', null)
+			'from', pg_temp.i9c_user(2), 'was', pg_temp.i9c_user(2), 'to', pg_temp.i9c_user(4), 'state', 'open', 'agent', null,
+			'closedAt', null)
 		or r -> 'offer' ->> 'at' is null then
 		raise exception 'An offer: %', r; end if;
 	-- The file is as it was.
@@ -139,13 +140,13 @@ begin
 		'That changed while you were looking.');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t3', null, 5)), 'changed');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t2', 2, 5)), 'changed');
-	-- Only a needs_yes member column; an area's supervisor waits for consent records (its owner is offered like any).
+	-- Only a needs_yes member column; an area's supervisor and owner are offered like any (20260930371000, I9b).
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', null, 4, 'helper')), 'column',
 		'Only a member column that needs a yes can be offered.');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', null, 4, 'task')), 'column');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', null, 4, 'nobody')), 'column');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('Sales', null, 4, 'supervisor',
-		'86400000-0000-4000-8000-000000000012')), 'column');
+		'86400000-0000-4000-8000-000000000012')), 'gone', 'This row is gone.');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('Sales', null, 4, 'owner',
 		'86400000-0000-4000-8000-000000000012')), 'gone', 'This row is gone.');
 	-- A row or a table that isn't there.
@@ -298,7 +299,7 @@ begin
 		or (select jsonb_agg(o ->> 'id') from jsonb_array_elements(r -> 'offers') o) <> jsonb_build_array(v_three, v_two, v_one)
 		or (r -> 'offers' -> 1) - 'id' - 'at' <> jsonb_build_object('table', '93800000-0000-4000-8000-000000000001',
 			'folder', 'tables/moved', 'key', '["t2"]'::jsonb, 'column', 'owner', 'from', pg_temp.i9c_user(4),
-			'was', pg_temp.i9c_user(4), 'to', pg_temp.i9c_user(2), 'state', 'open', 'closedAt', null) then
+			'was', pg_temp.i9c_user(4), 'to', pg_temp.i9c_user(2), 'state', 'open', 'agent', null, 'closedAt', null) then
 		raise exception 'The list: %', r; end if;
 	if pg_temp.i9c_list(1) <> r then raise exception 'The owner''s list: %', pg_temp.i9c_list(1); end if;
 	perform pg_temp.i9c_error(pg_temp.i9c_list(99), '42501');

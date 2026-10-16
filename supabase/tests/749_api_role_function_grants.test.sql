@@ -24,23 +24,18 @@ insert into grants_expected(signature, authenticated, service_role) values
 	('public.qorpera_reserve_execution_sponsor_authority(uuid)', false, false),
 	('public.qorpera_quarantine_runner_model_requests(uuid, text)', false, false),
 	('public.qorpera_append_runner_audit(uuid, uuid, uuid, text, jsonb, uuid)', false, false),
-	('public.qorpera_append_artifact_gc_audit(public.qorpera_artifact_gc_plans, text, jsonb, uuid)', false, false),
 	('public.qorpera_ensure_current_company_substrate(uuid, uuid, uuid, uuid, uuid)', false, false),
-	('public.qorpera_artifact_gc_initial_guard_ready(uuid)', false, false),
 	('public.qorpera_object_root_creator(text, uuid)', false, false),
 	('public.qorpera_object_root_has_current_proof(text, uuid)', false, false),
 	('public.qorpera_object_graph_objects_available(uuid)', false, false),
-	('public.qorpera_profile_reachability_coverage_ready(uuid)', false, false),
 	('public.qorpera_provider_execution_enabled(text, text, text)', false, false),
 	('public.qorpera_current_email_verified()', false, false),
 	('public.qorpera_runner_session_valid(uuid, text)', false, false),
-	('public.qorpera_artifact_gc_plan_json(public.qorpera_artifact_gc_plans)', false, false),
 	('public.qorpera_runner_json(public.qorpera_runners)', false, false),
 	('public.qorpera_execution_run_json(public.qorpera_execution_runs)', false, false),
 	('public.qorpera_execution_work_json(public.qorpera_runner_job_claims)', false, false),
 	('public.qorpera_artifact_json(public.qorpera_artifacts)', false, false),
 	('public.qorpera_artifact_index_json(public.qorpera_artifact_indexes)', false, false),
-	('public.qorpera_artifact_retention_hold_json(public.qorpera_artifact_retention_holds)', false, false),
 	('public.qorpera_object_reachability_graph_json(public.qorpera_object_reachability_graphs)', false, false),
 	('public.qorpera_object_restore_proof_json(public.qorpera_object_restore_proofs)', false, false),
 	('public.qorpera_runner_job_json(public.qorpera_runner_jobs)', false, false),
@@ -65,7 +60,7 @@ insert into grants_expected(signature, authenticated, service_role) values
 do $$
 declare v_row record; v_function regprocedure; v_owner oid; v_acl aclitem[];
 begin
-	perform pg_temp.grants_assert((select count(*) from grants_expected) = 42, 'the suite covers all 42 functions');
+	perform pg_temp.grants_assert((select count(*) from grants_expected) = 37, 'the suite covers all 37 functions');
 	for v_row in select * from grants_expected order by signature loop
 		-- A signature that no longer resolves fails here rather than passing quietly.
 		v_function := v_row.signature::regprocedure;
