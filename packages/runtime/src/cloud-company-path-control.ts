@@ -298,8 +298,14 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						throw new CloudCompanyHeadConflict();
 					// A refusal the database raised (55000, 0A000, P0001, a QRC code, an invalid argument): that transaction
 					// rolled back whole and asking again changes nothing. Never a lost connection (control calls, 4 Oct 2026).
+					// So is a resumed attempt's record that differs from the one its run and assignment already stored
+					// (23505, W5b-2, 20260930340000): the stored record never changes, so the same request fails again.
 					const refused = cloudPostgrestError(value);
-					if (refused && cloudControlRefusalCode(refused.code))
+					if (
+						refused &&
+						(cloudControlRefusalCode(refused.code) ||
+							(method === "qorpera_memory_run_resume_record" && refused.code === "23505"))
+					)
 						throw new CloudControlRpcRefused(refused.code, refused.message, "Company File authority unavailable");
 					throw new CloudRuntimeDiagnosticError(
 						response.status === 401 || response.status === 403

@@ -56,7 +56,8 @@ function operationKey(value: unknown): string {
 }
 
 /** Uses the run's live authority for retries. A lost record reply repeats the same request, never a rediscovered
- * list; SQL's per-assignment row replays it even after new steps have committed. No model argument chooses a binding. */
+ * list; SQL's per-assignment row replays it even after new steps have committed. A different request for that row is
+ * refused (23505, `CloudControlRpcRefused`) and never asked again. No model argument chooses a binding. */
 export class CloudRunResumeRpc implements CloudRunResumePort {
 	readonly #run: Pick<CloudNativeToolRun, "binding" | "retry">;
 	readonly #control: CloudCompanyPathControl;
