@@ -1608,9 +1608,10 @@ export class FolderService {
 				if (!page.more) break;
 			}
 		} finally {
+			const own = this.#ownFolders(view, changed);
 			view.pending?.liveChanged(changed);
 			this.#gitSettle(view);
-			if (!told) this.#push(view, changed);
+			if (!told) this.#push(view, this.#shown(view, changed, own));
 		}
 	}
 
@@ -1667,6 +1668,21 @@ export class FolderService {
 		this.#gitSettle(view);
 		this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
 		this.#push(view, changed);
+	}
+
+	/** The view's own folders among `paths`: those it made or moved, still pending. */
+	#ownFolders(view: View, paths: readonly string[]): Set<string> {
+		const nodes = view.pending?.nodes();
+		return new Set(nodes ? paths.filter((path) => nodes.get(path)?.kind === "folder") : []);
+	}
+
+	/** `changed` but each of the view's own folders (`own`, taken before the change) that still shows as a folder:
+	 * its publish changes nothing the machine shows at that path. Told, the kernel would drop the folder's entry, and a
+	 * program working in it could not name it again until something looked the path up: `getcwd` fails (ENOENT), so
+	 * does git in a new `repo.git` the boundary before its first ref's lease saved (git makes each lock's path
+	 * absolute by it). What changes in the folder is told by its own paths. */
+	#shown(view: View, changed: readonly string[], own: ReadonlySet<string>): string[] {
+		return changed.filter((path) => !own.has(path) || view.pending?.get(path)?.kind !== "folder");
 	}
 
 	#push(view: View, changed: readonly string[]): void {
@@ -3287,6 +3303,7 @@ export class FolderService {
 				if (!saved.has(parent)) keepAll.add(parent);
 			}
 		const before = [...pending.nodes().keys()];
+		const own = this.#ownFolders(view, before);
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
 		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file or link kept
 		// keeps the removal it holds, and so that one's.
@@ -3295,7 +3312,7 @@ export class FolderService {
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.
 		if (!pending.unsaved) view.unsavedSince = undefined;
-		this.#push(view, [...new Set([...paths, ...before])]);
+		this.#push(view, this.#shown(view, [...new Set([...paths, ...before])], own));
 	}
 
 	/** Renews the intents that root the bytes of pending files, each after 10 minutes. One the core lets lapse is
