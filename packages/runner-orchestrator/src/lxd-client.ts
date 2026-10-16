@@ -27,6 +27,10 @@ import { NodeWebSocket } from "./node-websocket.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
+/** The folder program is about 1.5 MiB. */
+const MAX_INSTANCE_PROGRAM_BYTES = 16 * 1024 * 1024;
+/** One file directly in the guest agent's or the folder program's folder (LxdInstanceProgramClient). */
+const GUEST_PROGRAM_PATH = /^\/opt\/qorpera-(guest|folder)\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_EXEC_STREAM_INPUT_BYTES = 64 * 1024;
 const MAX_EXEC_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
 /** LXD starts the command once all three are connected, and gives up after 10 seconds. */
@@ -207,6 +211,21 @@ export interface LxdInstanceExecStreamClient {
 		request: LxdExecStreamRequest,
 		signal?: AbortSignal,
 	): Promise<LxdExecStreamResult>;
+}
+
+/** A program the executor writes into a coding machine (F3 5g-4: the guest agent and the folder program), as bytes:
+ * root's file, of the given mode, at a path under `/opt/qorpera-guest/` or `/opt/qorpera-folder/` whose folder
+ * exists. LXD writes the file in place, and a running program's file can't be written: the caller writes beside it and
+ * renames over it. Separate from the runner mocks, like the capabilities above. */
+export interface LxdInstanceProgramClient {
+	pushInstanceProgram(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer,
+		mode: number,
+		signal?: AbortSignal,
+	): Promise<void>;
 }
 
 /** A coding machine's session folders are its only devices that change after
@@ -1270,6 +1289,7 @@ function projectPath(path: string, project: string): string {
 export class LxdUnixClient
 	implements
 		LxdInstanceExecStreamClient,
+		LxdInstanceProgramClient,
 		LxdInstanceDeviceClient,
 		LxdInstanceDeviceUpdateClient,
 		LxdOfficeConfigurationClient,
@@ -2575,6 +2595,36 @@ export class LxdUnixClient
 			"POST",
 			projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
 			payload,
+			{
+				"content-type": "application/octet-stream",
+				"x-lxd-type": "file",
+				"x-lxd-uid": "0",
+				"x-lxd-gid": "0",
+				"x-lxd-mode": mode.toString(8).padStart(4, "0"),
+				"x-lxd-modify-perm": "uid,gid,mode",
+			},
+			signal,
+		);
+		envelopeMetadata(result);
+	}
+
+	async pushInstanceProgram(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer,
+		mode: number,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (!GUEST_PROGRAM_PATH.test(path)) throw new Error("LXD instance program path is invalid");
+		if (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o777)
+			throw new Error("LXD instance program mode is invalid");
+		if (!Buffer.isBuffer(content) || content.byteLength < 1 || content.byteLength > MAX_INSTANCE_PROGRAM_BYTES)
+			throw new Error("LXD instance program exceeds the supported size");
+		const result = await this.#requestPayload(
+			"POST",
+			projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
+			content,
 			{
 				"content-type": "application/octet-stream",
 				"x-lxd-type": "file",

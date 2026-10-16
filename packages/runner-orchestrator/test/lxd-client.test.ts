@@ -41,13 +41,14 @@ async function unixServer(
 		const chunks: Buffer[] = [];
 		request.on("data", (chunk: Buffer) => chunks.push(chunk));
 		request.on("end", () => {
-			const encoded = Buffer.concat(chunks).toString("utf-8");
+			const raw = Buffer.concat(chunks);
+			const encoded = raw.toString("utf-8");
 			const body =
 				request.headers["content-type"] === "application/json"
 					? encoded
 						? (JSON.parse(encoded) as unknown)
 						: null
-					: Buffer.from(encoded, "utf-8");
+					: raw;
 			const result = handle(request.method ?? "", request.url ?? "", body, request.headers);
 			response.writeHead(result.status ?? 200, { "content-type": "application/json", ...result.headers });
 			response.end(JSON.stringify(result.body));
@@ -803,6 +804,68 @@ describe("LXD Unix client", () => {
 				group: 0,
 			},
 		});
+	});
+
+	it("pushes a guest program's bytes as root's file, only into the guest's program folders", async () => {
+		const requests: Array<{ url: string; body: unknown; headers: IncomingHttpHeaders }> = [];
+		const socket = await unixServer((method, url, body, headers) => {
+			requests.push({ url, body, headers });
+			if (method === "POST" && url.includes("/files?path=")) {
+				return { body: { type: "sync", status: "Success", status_code: 200, metadata: {} } };
+			}
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		const name = "qorpera-coding-machine-20000000000040008000000000000001";
+		// Past the 256 KiB text file's bound, and not UTF-8.
+		const program = Buffer.alloc(300 * 1024, 0xff);
+
+		await client.pushInstanceProgram(
+			"qorpera-coding",
+			name,
+			"/opt/qorpera-folder/qorpera-folder.1d7e0a9c.new",
+			program,
+			0o555,
+		);
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).toMatchObject({
+			url: `/1.0/instances/${name}/files?path=%2Fopt%2Fqorpera-folder%2Fqorpera-folder.1d7e0a9c.new&project=qorpera-coding`,
+			headers: {
+				"content-type": "application/octet-stream",
+				"x-lxd-type": "file",
+				"x-lxd-uid": "0",
+				"x-lxd-gid": "0",
+				"x-lxd-mode": "0555",
+				"x-lxd-modify-perm": "uid,gid,mode",
+			},
+		});
+		expect(Buffer.compare(requests[0]?.body as Buffer, program)).toBe(0);
+
+		const push = (path: string, content: Buffer = program, mode = 0o444) =>
+			client.pushInstanceProgram("qorpera-coding", name, path, content, mode);
+		await push("/opt/qorpera-guest/agent.mjs.3c2b.new");
+		expect(requests).toHaveLength(2);
+		for (const path of [
+			"/opt/qorpera-guest",
+			"/opt/qorpera-guest/",
+			"/opt/qorpera-guest/.agent.mjs",
+			"/opt/qorpera-guest/sub/agent.mjs",
+			"/opt/qorpera-guest/../../etc/passwd",
+			"/opt/qorpera-other/agent.mjs",
+			"/etc/qorpera-guest/agent.mjs",
+			"/opt/qorpera-guest/agent.mjs\n",
+		])
+			await expect(push(path)).rejects.toThrow("LXD instance program path is invalid");
+		await expect(push("/opt/qorpera-guest/agent.mjs", program, 0o1777)).rejects.toThrow(
+			"LXD instance program mode is invalid",
+		);
+		await expect(push("/opt/qorpera-guest/agent.mjs", Buffer.alloc(0))).rejects.toThrow(
+			"LXD instance program exceeds the supported size",
+		);
+		await expect(push("/opt/qorpera-guest/agent.mjs", Buffer.alloc(16 * 1024 * 1024 + 1))).rejects.toThrow(
+			"LXD instance program exceeds the supported size",
+		);
+		expect(requests).toHaveLength(2);
 	});
 });
 

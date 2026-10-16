@@ -38,6 +38,16 @@ export class CodingControlBusy extends Error {
 		super("CODING_CONTROL_BUSY");
 	}
 }
+/** The kernel answered a call and refused it, in words the control keeps for its method (a folder view's refusals,
+ * F3 5g-4): the call changed nothing. Every other refusal stays unconfirmed. */
+export class CodingControlRefused extends Error {
+	/** The kernel's own message. */
+	readonly reason: string;
+	constructor(reason: string) {
+		super("CODING_CONTROL_REFUSED");
+		this.reason = reason;
+	}
+}
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
