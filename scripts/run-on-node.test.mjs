@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -14,9 +27,11 @@ import {
 	describeProbes,
 	FRONT,
 	firstTaking,
+	GROW_MEMORY_MIB,
 	growScript,
 	includeRules,
 	joinRecords,
+	KEPT_SLOTS,
 	MACHINES,
 	parseArgs,
 	parseStatus,
@@ -124,8 +139,9 @@ test("each run takes a free runner user and installs and runs as that user", () 
 	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
 });
 
-test("at most five runs execute at once, in arrival order, with two vitest workers each", () => {
+test("at most five runs execute at once, four without --front, in arrival order, with two vitest workers each", () => {
 	assert.equal(CPU_SLOTS, 5);
+	assert.equal(KEPT_SLOTS, 1);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
 	// The queue ticket sorts by arrival and stays locked by its waiting run (fd 7); only the first ticket
 	// may take a slot; a ticket nobody holds belongs to a dead run and is dropped, whatever its pid became.
@@ -133,13 +149,18 @@ test("at most five runs execute at once, in arrival order, with two vitest worke
 	assert.match(script, /if \[ "\$position" = 1 \]; then/);
 	assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
 	assert.doesNotMatch(script, /kill -0/);
-	// A lock file that cannot be opened skips that candidate instead of reusing the previous descriptor.
-	assert.match(script, /\{ exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	// A lock file that cannot be opened skips that candidate instead of reusing the previous descriptor. A slot's file
+	// is opened for reading first: the kept slot's is root's and read-only.
+	assert.match(
+		script,
+		/lock="\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"; \{ exec 9<"\$lock" \|\| exec 9>"\$lock"; \} 2>\/dev\/null \|\| continue/,
+	);
 	assert.match(script, /\{ exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
 	// A killed run's leftovers under the runner user are ended once its lock is held.
 	assert.match(script, /sudo -n pkill -KILL -u "\$runner"/);
-	assert.match(script, /for candidate in \$\(seq 1 5\); do/);
-	assert.match(script, /waiting for a slot in the CPU lane \(5 runs at a time\), queue position \$position/);
+	// Without --front, slots 1-4: the fifth is kept for --front runs.
+	assert.match(script, /for candidate in \$\(seq 1 4\); do/);
+	assert.match(script, /waiting for a slot in the CPU lane \(4 runs at a time, 1 more slot kept for --front runs\), queue position \$position/);
 	assert.match(script, /in slot \$slot of 5 in the CPU lane \(/);
 	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
@@ -171,23 +192,26 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 	assert.match(quick, /ticket=\/run\/lock\/qorpera-test-machine-quick-queue\/\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
 	assert.match(quick, /for t in \/run\/lock\/qorpera-test-machine-quick-queue\/\*; do/);
 	assert.match(quick, /position=\$\(ls \/run\/lock\/qorpera-test-machine-quick-queue \| sort/);
-	assert.match(quick, /\{ exec 9>"\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
+	assert.match(
+		quick,
+		/lock="\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"; \{ exec 9<"\$lock" \|\| exec 9>"\$lock"; \} 2>\/dev\/null \|\| continue/,
+	);
 	assert.match(quick, /for candidate in \$\(seq 1 1\); do/);
 	assert.match(quick, /waiting for a slot in the quick lane \(1 run at a time\), queue position \$position/);
 	assert.match(quick, /in slot \$slot of 1 in the quick lane \(/);
 	assert.doesNotMatch(quick, /qorpera-test-machine-(queue|slot)|CPU lane/);
 	assert.match(cpu, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
-	assert.match(cpu, /exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
+	assert.match(cpu, /lock="\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
 	assert.doesNotMatch(cpu, /quick/);
-	// Only the lane's names and slot count differ; the runner user and everything after the slot are shared.
+	// Only the lane's names and slot counts differ; the runner user and everything after the slot are shared.
 	const neutral = (script, lane, slots) =>
 		script
 			.replaceAll(`qorpera-test-machine-${lane}queue`, "QUEUE")
 			.replaceAll(`qorpera-test-machine-${lane}slot`, "SLOT")
 			.replaceAll(`seq 1 ${slots}`, "seq 1 N")
-			.replace(/in the (quick|CPU) lane \(\d+ runs? at a time\)/, "LANE")
+			.replace(/in the (quick|CPU) lane \([^)]*\)/, "LANE")
 			.replace(/of \d+ in the (quick|CPU) lane/, "LANE");
-	assert.equal(neutral(quick, "quick-", QUICK_SLOTS), neutral(cpu, "", CPU_SLOTS));
+	assert.equal(neutral(quick, "quick-", QUICK_SLOTS), neutral(cpu, "", CPU_SLOTS - KEPT_SLOTS));
 	for (const script of [quick, cpu]) {
 		assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
 		assert.match(script, /if \[ "\$position" = 1 \]; then/);
@@ -405,9 +429,19 @@ test("a --front run waits ahead of every other run in the CPU lane, front runs a
 	assert.equal(FRONT, "0-");
 	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
 	assert.match(front, /in slot \$slot of 5 in the CPU lane from the front of its queue \(/);
-	assert.doesNotMatch(normal, /queue\/0-|front/);
-	// Only the ticket's name and the slot line differ: the same slot wait, the same position-1 rule.
-	assert.equal(front.replace("queue/0-$(date", "queue/$(date").replace(" from the front of its queue", ""), normal);
+	assert.doesNotMatch(normal.replace("kept for --front runs", ""), /queue\/0-|front/);
+	// It tries every slot, the kept one first; any other run only those before it.
+	assert.match(front, /for candidate in \$\(seq 5 -1 1\); do/);
+	assert.match(front, /waiting for a slot in the CPU lane \(5 runs at a time\), queue position \$position/);
+	// Only the ticket's name, the slots it tries and the lines that say so differ: the same slot wait, the same position-1 rule.
+	assert.equal(
+		front
+			.replace("queue/0-$(date", "queue/$(date")
+			.replace(" from the front of its queue", "")
+			.replace("seq 5 -1 1", "seq 1 4")
+			.replace("(5 runs at a time)", "(4 runs at a time, 1 more slot kept for --front runs)"),
+		normal,
+	);
 	// The wait's own order (ls | sort, then the ticket's line): front tickets first, in any collation, then the rest.
 	const dir = mkdtempSync(join(tmpdir(), "run-on-node-queue-"));
 	try {
@@ -444,6 +478,17 @@ test("a front run goes to the machine with the fewest runs in its slots and fron
 		describeProbes([{ ...idle("node02"), busy: 5, waiting: 3, frontWaiting: 1 }]),
 		"node02 5/5 slots busy, 3 waiting (1 at the front), quick 0/1",
 	);
+	// The kept slot counts for front runs only: four busy runs, one of them in the kept slot, leave a run without
+	// --front one slot on node02 and none on node01; a front run one on each.
+	const kept = [
+		{ ...idle("node01"), busy: 4 },
+		{ ...idle("node02"), busy: 4, keptBusy: 1 },
+	];
+	assert.deepEqual(runOrder(kept, false, false), ["node02", "node01"]);
+	assert.deepEqual(names(kept, true), ["node01", "node02"]);
+	// A machine whose four other slots are busy has none for a run without --front, however free the kept one.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4 }, { ...idle("node01"), busy: 4, keptBusy: 1, waiting: 0 }], false), ["node01", "node02"]);
+	assert.equal(describeProbes([kept[1]]), "node02 4/5 slots busy (1 kept for --front runs), 0 waiting, quick 0/1");
 });
 
 test("one test machine per node, each with its own address and so its own host key", () => {
@@ -628,15 +673,26 @@ test("the probe reads the locks the run script takes and counts runs still being
 	assert.match(readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8"), /\| tee \/etc\/qorpera-test-machine-versions\n$/);
 	assert.equal(spawnSync("bash", ["-n", "-c", probe]).status, 0);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
-	assert.match(script, /exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
+	assert.match(script, /lock="\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"; \{ exec 9<"\$lock" \|\| exec 9>"\$lock"; \}/);
 	assert.match(probe, /5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"/);
+	// The kept slot, which is counted in busy too, is counted again on its own.
+	assert.match(
+		probe,
+		/kept_busy=0; for i in \$\(seq 5 5\); do \{ flock -n 5 \|\| kept_busy=\$\(\(kept_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"; done/,
+	);
+	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy closed=/);
+	// guest-setup.sh makes the kept slot's lock file root's and read-only, now and at every boot.
+	const setup = readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8");
+	assert.match(setup, /^kept=\/run\/lock\/qorpera-test-machine-slot5\.lock$/m);
+	assert.match(setup, /^echo "f \$kept 0644 root root -" >\/etc\/tmpfiles\.d\/qorpera-test-machine\.conf$/m);
+	assert.match(setup, /chown root:root "\$kept"; chmod 0644 "\$kept"/);
 	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/\*; do/);
 	assert.match(probe, /for i in \$\(seq 1 5\); do \{ flock -n 5 \|\| busy=\$\(\(busy \+ 1\)\); \}/);
 	assert.match(probe, /\[ -e \/etc\/qorpera-test-machine-closed \] && closed=1; \[ -e \/etc\/qorpera-test-machine-versions \] && setup=1/);
 	// The quick lane's slots and queue, which a quick run's script takes, are counted apart.
 	const quick = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", quick: true });
-	assert.match(quick, /exec 9>"\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"/);
+	assert.match(quick, /lock="\/run\/lock\/qorpera-test-machine-quick-slot\$candidate\.lock"; \{ exec 9<"\$lock" \|\| exec 9>"\$lock"; \}/);
 	assert.match(probe, /for i in \$\(seq 1 1\); do \{ flock -n 5 \|\| quick_busy=\$\(\(quick_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-quick-slot"\$i\.lock"; done/);
 	assert.match(quick, /ticket=\/run\/lock\/qorpera-test-machine-quick-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-quick-queue\/\*; do \{ flock -n 5 \|\| quick_waiting=\$\(\(quick_waiting \+ 1\)\); \}/);
@@ -704,10 +760,14 @@ test(
 			const answer = parseStatus(result.stdout);
 			assert.deepEqual([answer.busy, answer.waiting, answer.arriving, answer.closed, answer.setup], ["1", "1", "1", "0", "1"]);
 			assert.deepEqual([answer.quick_busy, answer.quick_waiting], ["1", "2"]);
-			assert.equal(answer.front_waiting, "0");
+			assert.deepEqual([answer.front_waiting, answer.kept_busy], ["0", "0"]);
 			assert.match(answer.cpus, /^[1-9][0-9]*$/);
-			// Slot 2 was never made, and nothing else appeared or went.
+			// Slot 2 was never made, and nothing else appeared or went: not the kept slot's file either.
 			assert.deepEqual(listing(), before);
+			// A run in the kept slot counts as busy and as kept.
+			await hold(join(dir, "qorpera-test-machine-slot5.lock"));
+			const kept = ask(dir);
+			assert.deepEqual([kept.busy, kept.kept_busy], ["2", "1"]);
 			// A live front ticket counts as waiting and as front; a dead one as neither.
 			await hold(join(dir, "qorpera-test-machine-queue", "0-1760650000000000001-7"));
 			writeFileSync(join(dir, "qorpera-test-machine-queue", "0-1760650000000000002-8"), "");
@@ -724,7 +784,7 @@ test(
 				writeFileSync(join(empty, "versions"), "os=test\n");
 				const ready = ask(empty);
 				assert.deepEqual([ready.busy, ready.waiting, ready.arriving, ready.closed, ready.setup], ["0", "0", "0", "0", "1"]);
-				assert.deepEqual([ready.quick_busy, ready.quick_waiting], ["0", "0"]);
+				assert.deepEqual([ready.quick_busy, ready.quick_waiting, ready.kept_busy], ["0", "0", "0"]);
 				assert.deepEqual(readdirSync(empty), ["versions"]);
 			} finally {
 				rmSync(empty, { recursive: true, force: true });
@@ -745,6 +805,12 @@ test(
 		const slot = (n) => join(locks, `qorpera-test-machine-slot${n}.lock`);
 		const cores = join(locks, "cores");
 		const allStarted = join(locks, "all-started");
+		// The machine's available memory as grow reads it, replaced whole so it never reads half a file.
+		const meminfo = join(locks, "meminfo");
+		const memory = (mib) => {
+			writeFileSync(`${meminfo}.tmp`, `MemTotal:       16303428 kB\nMemFree:          812344 kB\nMemAvailable:   ${String(mib * 1024).padStart(8)} kB\n`);
+			renameSync(`${meminfo}.tmp`, meminfo);
+		};
 		const holders = new Map();
 		const sessions = [];
 		const hold = (file) =>
@@ -776,7 +842,7 @@ test(
 						"set -uo pipefail",
 						`exec 9>${shellQuote(slot(1))}; flock -n 9 || exit 3`,
 						`per=2; want=${want}; cores_file=${shellQuote(cores)}; echo "$per" >"$cores_file"`,
-						growScript({ locks, allStarted }),
+						growScript({ locks, allStarted, meminfo }),
 						"exec 4> >(grow)",
 						"echo started",
 						// The session lasts until the test ends its stdin.
@@ -796,6 +862,7 @@ test(
 		};
 		try {
 			mkdirSync(queue);
+			memory(8192);
 			for (const n of [2, 3, 4, 5]) await hold(slot(n));
 			// An earlier front run and an owner's run wait; a dead ticket sorts first.
 			const earlier = join(queue, `${FRONT}1000000000000000000-1`);
@@ -824,11 +891,12 @@ test(
 			first.child.stdin.end();
 			await first.ended;
 			assert.deepEqual([free(slot(1)), free(slot(3)), tickets(), existsSync(cores), existsSync(owner)], [true, true, [], false, true]);
-			// Two slots free at once: it takes both at once, stops waiting, and holds them until its session ends.
+			// Two slots free at once: it takes both, the higher first, one a turn, stops waiting, and holds them until its
+			// session ends.
 			await release(slot(2));
 			const second = session(3);
-			await until("slots 2 and 3", () => second.out.includes("slot 3 too: 3 slots, 6 cores\n"));
-			assert.match(second.out, /== run-on-node: slot 2 too: 2 slots, 4 cores\n/);
+			await until("slots 3 and 2", () => second.out.includes("slot 2 too: 3 slots, 6 cores\n"));
+			assert.match(second.out, /== run-on-node: slot 3 too: 2 slots, 4 cores\n== run-on-node: slot 2 too: 3 slots, 6 cores\n/);
 			assert.equal(readFileSync(cores, "utf8"), "6\n");
 			await until("its ticket gone", () => tickets().length === 0);
 			assert.deepEqual([free(slot(2)), free(slot(3))], [false, false]);
@@ -849,9 +917,95 @@ test(
 			assert.equal(readFileSync(cores, "utf8"), "2\n");
 			third.child.stdin.end();
 			await third.ended;
+			// Under GROW_MEMORY_MIB available it takes no slot and leaves the queue, so the runs behind it need not wait
+			// for it; with enough again it rejoins and takes the free slot.
+			assert.equal(GROW_MEMORY_MIB, 2048);
+			rmSync(allStarted);
+			memory(2047);
+			const fourth = session(3);
+			await until("the low-memory stop", () => fourth.out.includes("== run-on-node: 2047 MiB available, under 2048: no more slots until there is more\n"));
+			assert.deepEqual(tickets(), []);
+			await sleep(3_000);
+			assert.doesNotMatch(fourth.out, /too/);
+			assert.equal(fourth.out.split("under 2048").length, 2);
+			assert.deepEqual([free(slot(3)), readFileSync(cores, "utf8"), existsSync(owner)], [true, "2\n", true]);
+			memory(2048);
+			await until("slot 3", () => fourth.out.includes("== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
+			assert.match(fourth.out, /== run-on-node: 2048 MiB available again: waiting for more slots\n== run-on-node: slot 3 too/);
+			assert.equal(readFileSync(cores, "utf8"), "4\n");
+			// Still one short of three: it waits for one more, with its ticket back.
+			assert.equal(tickets().length, 1);
+			fourth.child.stdin.end();
+			await fourth.ended;
+			assert.deepEqual([free(slot(3)), tickets(), existsSync(cores)], [true, [], false]);
+			// Two slots free at once, and under GROW_MEMORY_MIB once it has taken the first: it reads the memory again
+			// before each slot, so it takes no second.
+			await release(slot(2));
+			const fifth = session(3);
+			await until("slot 3", () => fifth.out.includes("== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
+			memory(2047);
+			await until("the low-memory stop", () => fifth.out.includes("== run-on-node: 2047 MiB available, under 2048: no more slots until there is more\n"));
+			assert.doesNotMatch(fifth.out, /slot 2 too/);
+			assert.deepEqual([free(slot(2)), readFileSync(cores, "utf8"), tickets()], [true, "4\n", []]);
+			fifth.child.stdin.end();
+			await fifth.ended;
+			assert.deepEqual([free(slot(2)), free(slot(3)), tickets(), existsSync(cores)], [true, true, [], false]);
 		} finally {
 			for (const child of [...holders.values(), ...sessions]) child.kill("SIGKILL");
 			rmSync(locks, { recursive: true, force: true });
+		}
+	},
+);
+
+test(
+	"only a front run takes the kept slot, and first; a slot's lock file is opened for reading, so a read-only one still locks",
+	{ skip: flockNoFork ? false : "no util-linux flock(1) here; the test machines have it" },
+	async () => {
+		const dir = mkdtempSync(join(tmpdir(), "run-on-node-kept-"));
+		const slot = (n) => join(dir, `qorpera-test-machine-slot${n}.lock`);
+		const holders = new Map();
+		const hold = (file) =>
+			new Promise((resolvePromise, reject) => {
+				const child = spawn("flock", ["--nonblock", "--no-fork", file, "sh", "-c", "echo held; exec sleep 60"], { stdio: ["ignore", "pipe", "inherit"] });
+				holders.set(file, child);
+				child.stdout.once("data", () => resolvePromise());
+				child.once("exit", (code) => reject(new Error(`lock holder for ${file} exited ${code}`)));
+			});
+		// The lines of a run's script that try the slots, on this directory's lock files: they print the slot taken.
+		const tries = (front) => {
+			const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", front });
+			const start = script.indexOf("\t\tfor candidate in $(seq");
+			const lines = script.slice(start, script.indexOf("\t\tdone\n", start) + "\t\tdone".length).replaceAll("/run/lock/", `${dir}/`);
+			assert.match(lines, /flock -n 9; then slot=\$candidate; break; fi/);
+			return () => {
+				const result = spawnSync("bash", ["-c", `slot=""\n${lines}\necho "$slot"`], { encoding: "utf8" });
+				assert.equal(result.status, 0, result.stderr);
+				return result.stdout.trim();
+			};
+		};
+		const front = tries(true);
+		const normal = tries(false);
+		try {
+			// The kept slot's file as guest-setup.sh leaves it, not writable by the runs (root's 0644; here 0444).
+			writeFileSync(slot(5), "");
+			chmodSync(slot(5), 0o444);
+			assert.deepEqual([front(), normal(), existsSync(slot(1))], ["5", "1", true]);
+			// With the kept slot busy, a front run takes the highest free one, making its file.
+			await hold(slot(5));
+			assert.deepEqual([front(), existsSync(slot(4))], ["4", true]);
+			// Every other slot busy: a run without --front takes none, however free the kept one.
+			for (const n of [1, 2, 3, 4]) await hold(slot(n));
+			assert.deepEqual([front(), normal()], ["", ""]);
+			const kept = holders.get(slot(5));
+			const exited = new Promise((resolvePromise) => kept.once("exit", resolvePromise));
+			kept.kill("SIGKILL");
+			await exited;
+			assert.deepEqual([front(), normal()], ["5", ""]);
+			// A client from before the change opens a slot's file for writing, which a user other than root cannot here.
+			if (process.getuid?.() !== 0) assert.notEqual(spawnSync("bash", ["-c", `exec 9>${shellQuote(slot(5))}`]).status, 0);
+		} finally {
+			for (const child of holders.values()) child.kill("SIGKILL");
+			rmSync(dir, { recursive: true, force: true });
 		}
 	},
 );
