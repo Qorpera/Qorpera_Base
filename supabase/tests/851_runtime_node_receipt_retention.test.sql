@@ -3,6 +3,8 @@ begin;
 -- days are kept, oldest first deleted, each receipt with its inventory row, in calls of at most 500; the
 -- computer-hour meter's position holds the cut back; every run records its outcome in a private status row;
 -- pg_cron runs it every five minutes, off the minutes of the other five-minute jobs; no API role reaches it.
+-- Since 20260930485000 the purge also deletes node health receipts (tested in 670; none here, so it answers
+-- healthReceipts 0) and a run makes at most 30 calls and stops after 20 seconds.
 create function pg_temp.ok(p_value boolean, p_message text) returns void language plpgsql as $$
 begin if p_value is distinct from true then raise exception '%', p_message; end if; end $$;
 create function pg_temp.claims(p_role text) returns void language sql as $$
@@ -83,14 +85,15 @@ begin
 	v_waited := clock_timestamp() - v_started;
 	perform dblink_exec('meter_holder', 'rollback');
 	perform dblink_disconnect('meter_holder');
-	if v_result ->> 'stopped' <> 'lock_timeout' or v_result ->> 'calls' <> '0' or v_result ->> 'observations' <> '0' then
+	if v_result ->> 'stopped' <> 'lock_timeout' or v_result ->> 'calls' <> '0' or v_result ->> 'observations' <> '0'
+		or v_result ->> 'healthReceipts' <> '0' then
 		raise exception 'A lock timeout did not end the run cleanly: %', v_result; end if;
 	if v_waited < interval '0.9 seconds' or v_waited > interval '3 seconds' then
 		raise exception 'The purge waited % for a lock, not about a second', v_waited; end if;
 	-- The run is recorded all the same; with nothing purged there is no cut yet.
 	if not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
 			where ran_at >= v_started and stopped = 'lock_timeout' and calls = 0 and observations = 0 and inventories = 0
-				and cutoff is null and held_by_meter is null and held_by_meter_since is null) then
+				and health_receipts = 0 and cutoff is null and held_by_meter is null and held_by_meter_since is null) then
 		raise exception 'A lock-timed-out run was not recorded'; end if;
 end
 $$;
@@ -141,7 +144,8 @@ begin
 	-- The 7 oldest of node A: old-12000 down to old-11994, of which 4 have inventory.
 	v_result := pg_temp.purge(7);
 	if v_result - 'cutoff' <> jsonb_build_object('schema', 'qorpera.runtime-node-receipt-retention/v1', 'busy', false,
-			'observations', 7, 'inventories', 4, 'moreEligible', true, 'heldByMeter', false, 'retentionDays', 7)
+			'observations', 7, 'inventories', 4, 'healthReceipts', 0, 'moreEligible', true, 'heldByMeter', false,
+			'retentionDays', 7)
 		or (v_result ->> 'cutoff')::timestamptz <> now() - interval '7 days' then
 		raise exception 'The first call differs: %', v_result; end if;
 	if exists (select 1 from public.qorpera_runtime_node_observation_receipts
@@ -156,7 +160,7 @@ begin
 		raise exception 'The purge left lock_timeout at % for its caller', current_setting('lock_timeout'); end if;
 	v_result := pg_temp.purge(500);
 	if v_result ->> 'observations' <> '500' or v_result ->> 'inventories' <> '250' or v_result -> 'moreEligible' <> 'true'::jsonb
-		or pg_temp.receipts('85100000-0000-4000-8000-00000000000a') <> 12021 - 507 then
+		or v_result ->> 'healthReceipts' <> '0' or pg_temp.receipts('85100000-0000-4000-8000-00000000000a') <> 12021 - 507 then
 		raise exception 'A full call differs: %', v_result; end if;
 end
 $$;
@@ -166,16 +170,24 @@ $$;
 update public.qorpera_computer_hour_meter set metered_until = now() - interval '10 days';
 do $$
 declare v_result jsonb; v_runs integer := 0; v_total integer := 0; v_kept bigint; v_inventories bigint; v_stopped text;
+	v_started timestamptz; v_elapsed interval;
 begin
 	select count(*) into v_kept from public.qorpera_runtime_node_observation_receipts
 	where observed_at >= now() - interval '11 days';
 	select count(*) into v_inventories from public.qorpera_runtime_node_inventory_receipts;
-	-- A run makes at most ten calls of 500 (or stops on its one-second budget), all full here.
+	-- A run makes at most 30 calls of 500 and stops after 20 seconds (checked between calls): it takes all
+	-- 7,175 in 15 calls, 14 full and one short (with node A's 3,586 inventory rows and node B's two), unless
+	-- its time budget stops it first, after full calls.
+	v_started := clock_timestamp();
 	v_result := pg_temp.run();
-	v_stopped := case when (v_result ->> 'calls')::integer = 10 then 'call_limit' else 'time_budget' end;
-	if (v_result ->> 'calls')::integer not between 1 and 10
-		or (v_result ->> 'observations')::integer <> 500 * (v_result ->> 'calls')::integer
-		or v_result ->> 'stopped' <> v_stopped
+	v_elapsed := clock_timestamp() - v_started;
+	v_stopped := v_result ->> 'stopped';
+	if not (v_stopped = 'done' and v_result ->> 'calls' = '15' and v_result ->> 'observations' = '7175'
+				and v_result ->> 'inventories' = '3588'
+			or v_stopped = 'time_budget' and v_elapsed >= interval '20 seconds'
+				and (v_result ->> 'calls')::integer between 1 and 14
+				and (v_result ->> 'observations')::integer = 500 * (v_result ->> 'calls')::integer)
+		or v_result ->> 'healthReceipts' <> '0'
 		or v_result -> 'heldByMeter' <> 'true'::jsonb
 		or (v_result ->> 'cutoff')::timestamptz <> now() - interval '11 days' then
 		raise exception 'One run exceeded its bound or ignored the meter: %', v_result; end if;
@@ -183,6 +195,7 @@ begin
 	if not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
 			where stopped = v_stopped and calls = (v_result ->> 'calls')::integer
 				and observations = (v_result ->> 'observations')::bigint and inventories = (v_result ->> 'inventories')::bigint
+				and health_receipts = 0
 				and cutoff = now() - interval '11 days' and held_by_meter and held_by_meter_since = now() - interval '4 days') then
 		raise exception 'The held run was not recorded: %',
 			(select to_jsonb(status) from public.qorpera_runtime_node_receipt_retention_status status); end if;
@@ -240,7 +253,9 @@ begin
 	-- Nothing left: one short call, nothing deleted.
 	v_result := pg_temp.run();
 	if v_result ->> 'calls' <> '1' or v_result ->> 'observations' <> '0' or v_result ->> 'inventories' <> '0'
-		or v_result ->> 'stopped' <> 'done' then
+		or v_result ->> 'healthReceipts' <> '0' or v_result ->> 'stopped' <> 'done'
+		or not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
+			where stopped = 'done' and calls = 1 and observations = 0 and inventories = 0 and health_receipts = 0) then
 		raise exception 'An idle run differs: %', v_result; end if;
 end
 $$;
