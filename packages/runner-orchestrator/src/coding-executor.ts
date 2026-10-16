@@ -40,8 +40,9 @@ export class CodingControlBusy extends Error {
 }
 /** The kernel refused the call (SQLSTATE 42501, or 22023 for a coding session's folder view) and rolled its transaction
  * back whole: an answer, unlike an unconfirmed call. A control rejects with this only for the folder view open and
- * close: a test machine's boot acts on the open's (F3 6d), a coding session's attach fails with its view's (F3 5g-4),
- * and the code host's open (5e-3b) fails on it as on any other error. */
+ * close, and a test machine's take-in of reads: a test machine's boot acts on the open's (F3 6d) and the take-in's
+ * (6d-3b), a coding session's attach fails with its view's (F3 5g-4), and the code host's open (5e-3b) fails on it as
+ * on any other error. */
 export class CodingControlRefused extends Error {
 	/** The refusal's `qorpera.*` detail, when it gave one. */
 	readonly detail: string | null;

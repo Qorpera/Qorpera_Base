@@ -299,7 +299,10 @@ them. Step 6 builds that as follows:
    into that run (`qorpera_folder_run_inherit_view_reads`): the receipts of `machine_run`, `machine_read` and
    `machine_cancel`, the notify continuation and a worker's read. Output can show what any command on the machine read,
    so whoever sees it takes in what the machine read. This also covers a run whose command ran while its job was not
-   leased (rule 1 reaches only leased jobs).
+   leased (rule 1 reaches only leased jobs). The executor asks for it after the boundary releases the reads, through
+   `qorpera_folder_test_machine_inherit_reads` (6d-3b), for the placement, boot and run its command's authority names.
+   That takes in the newest view of the placement, so a boot without `/company` takes in what an earlier boot of the
+   same disk was served.
 4. **Boundaries come after reads.** A boundary (below) is answered only after every recorded read of the machine is
    released. A boundary with no answer holds the output back: the model gets nothing from the machine until it is
    answered.
