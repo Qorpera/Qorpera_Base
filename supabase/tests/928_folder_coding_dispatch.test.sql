@@ -1,7 +1,7 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- C3a (migration 20260930077000, deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (C3)"): a coding session
 -- dispatched on folder-v2, through manage_worker's folder entry (qorpera_folder_worker_commit) with its brief.md. A1's
--- twelve cases from 396 (snapshot-v1, deleted with the old core): the six refusals, in qorpera_manage_agent_worker's order
+-- twelve cases from 396 (snapshot-v1, deleted with the old core): the six refusals, in the old worker writer's order
 -- and words, as rule refusals that write nothing; the worker, its session, its first turn and event; no wake; a replay;
 -- an in-house worker beside it; a second session that queues and is cancelled. Then: a coding follow-up; a coding
 -- session's turn claimed, begun, authorized, submitted and completed on folder-v2, its turn's wake carrying the

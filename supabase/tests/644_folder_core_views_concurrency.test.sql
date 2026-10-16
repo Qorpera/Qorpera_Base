@@ -684,6 +684,84 @@ begin
 		is distinct from 'closed' then raise exception 'The final closes its view'; end if;
 end $$;
 
+-- M. A coding view's commit checks its own read set and its machine's at rank 10 without writing them (20260930445000),
+-- so it holds no read-set row while it waits for its session at the anchor step. A commit that re-stamped a moved pair
+-- there would close a cycle: qorpera_keep_coding_attachments holds the session FOR UPDATE and waits to mark the machine
+-- busy, and a release holds the machine FOR SHARE and waits for the pair (40P01). The session archived in C comes back;
+-- its view releases P (code) under resource X, so the view's set and the machine's both hold (X, grant), and X moves
+-- without P becoming unreadable.
+set session_replication_role = replica;
+update public.qorpera_coding_sessions set archived_at = null, archived_by = null, attachment_until = clock_timestamp() + interval '30 minutes'
+where worker_id = '64400000-0000-4000-8000-0000000000c1';
+set session_replication_role = origin;
+create function pg_temp.open_coding(p_name text) returns void language sql as $$
+	select set_config('qorpera_test.' || p_name, public.qorpera_folder_view_open('64400000-0000-4000-8000-000000000020', '{"kind":"platform"}',
+		'coding_session', jsonb_build_object('workerId','64400000-0000-4000-8000-0000000000c1',
+			'attachmentToken','64400000-0000-4000-8000-0000000000c3'))::text, false)
+$$;
+select pg_temp.open_coding('coding2');
+do $$
+declare e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('coding2'), 'code') -> 'entry';
+	v_x public.qorpera_company_path_resources%rowtype;
+begin
+	if e -> 'authority' is null then raise exception 'The coding view reads code/: %', e; end if;
+	perform public.qorpera_folder_record_release('64400000-0000-4000-8000-000000000020', pg_temp.vactor('coding2'), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('b', 64));
+	select * into v_x from public.qorpera_company_path_resources where id = (e -> 'authority' ->> 'resourceId')::uuid;
+	if not exists (select 1 from public.qorpera_coding_machine_reads where coding_machine_id = '64400000-0000-4000-8000-0000000000c2'
+		and resource_id = v_x.id and resource_revision = v_x.authority_revision)
+		or not exists (select 1 from public.qorpera_folder_view_reads where view_id = (pg_temp.vactor('coding2') ->> 'viewId')::uuid
+			and resource_id = v_x.id and resource_revision = v_x.authority_revision) then
+		raise exception 'The release lands in the view''s set and the machine''s: %', e; end if;
+	-- A narrower resource beside P bumps X.
+	perform public.qorpera_folder_set_resource('64400000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"64400000-0000-4000-8000-000000000001"}', concat_ws('/', nullif(v_x.path, ''), 'moved-aside'),
+		'subtree', 'company_shared', 'normal');
+	if (select authority_revision from public.qorpera_company_path_resources where id = v_x.id) <= v_x.authority_revision then
+		raise exception 'X must move'; end if;
+end $$;
+-- Connections: view_one is the release (B), view_two the attachment renewal (A), view_three the save (C).
+do $$
+declare v_release text; v_busy text; v_save text; r jsonb;
+	e jsonb := public.qorpera_folder_read('64400000-0000-4000-8000-000000000020', pg_temp.vactor('coding2'), 'code/in-flight') -> 'entry';
+begin
+	-- B takes the machine FOR SHARE, as the release does before it writes the machine's set.
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', $q$select 1 from public.qorpera_coding_machines where id = '64400000-0000-4000-8000-0000000000c2'
+		for share$q$) as t(x integer);
+	-- A, as qorpera_keep_coding_attachments: the session FOR UPDATE, then the machine's busy mark, which waits for B.
+	perform dblink_exec('view_two', 'begin');
+	perform * from dblink('view_two', $q$select 1 from public.qorpera_coding_sessions where worker_id = '64400000-0000-4000-8000-0000000000c1'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('view_two', $q$update public.qorpera_coding_machines set busy_at = clock_timestamp()
+		where id = '64400000-0000-4000-8000-0000000000c2'$q$);
+	if not pg_temp.waits_for('view_two', 'view_one') or not pg_temp.waits_at('view_two', 'public.qorpera_coding_machines') then
+		raise exception 'The busy mark did not wait for the machine''s share lock'; end if;
+	-- C saves through the view: past its check of the moved pair, it waits for A at its anchor step.
+	perform dblink_send_query('view_three', pg_temp.sql_commit(pg_temp.vactor('coding2'), 'machine-read-save',
+		'[{"op":"mkdir","path":"code/machine-read"}]'));
+	if not pg_temp.waits_for('view_three', 'view_two') or not pg_temp.waits_at('view_three', 'public.qorpera_coding_sessions') then
+		raise exception 'The coding save did not wait at its anchor step'; end if;
+	-- B releases a path under X in the same transaction: the save holds no row it writes, so it finishes.
+	perform dblink_send_query('view_one', format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)',
+		'64400000-0000-4000-8000-000000000020', pg_temp.vactor('coding2'), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('c', 64)));
+	if not pg_temp.finishes_unblocked('view_one', 'view_three') then raise exception 'The release waited for the save'; end if;
+	v_release := pg_temp.outcome('view_one');
+	perform dblink_exec('view_one', 'commit');
+	v_busy := pg_temp.outcome('view_two');
+	perform dblink_exec('view_two', 'commit');
+	begin
+		r := pg_temp.result('view_three');
+	exception when others then v_save := sqlstate || ' ' || sqlerrm;
+	end;
+	if v_release <> 'ok' or v_busy <> 'ok' or v_save is not null or r -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then
+		raise exception 'Release %, busy mark %, save % %', v_release, v_busy, v_save, r; end if;
+	if not exists (select 1 from public.qorpera_coding_machine_read_records rec, jsonb_array_elements(rec.reads) x
+		where rec.coding_machine_id = '64400000-0000-4000-8000-0000000000c2' and x ->> 'path' = 'code/in-flight') then
+		raise exception 'The release lands in the machine''s set'; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['view_one','view_two','view_three']) name;
 
 -- The committed fixture leaves the shared suite database.
@@ -696,6 +774,8 @@ delete from public.qorpera_folder_authority_changes where environment_id = '6440
 delete from public.qorpera_folder_run_reads where environment_id = '64400000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_run_read_records where environment_id = '64400000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_run_releases where environment_id = '64400000-0000-4000-8000-000000000020';
+delete from public.qorpera_coding_machine_reads where environment_id = '64400000-0000-4000-8000-000000000020';
+delete from public.qorpera_coding_machine_read_records where environment_id = '64400000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_journal where environment_id = '64400000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_path_versions where environment_id = '64400000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020';

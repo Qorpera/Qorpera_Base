@@ -34,7 +34,7 @@ describe("object authority transport boundary", () => {
 				return Response.json(true);
 			},
 		});
-		await authority.authorizeUpload("synthetic-human-token", profileId, sha256, 17);
+		await authority.confirmUpload(profileId, sha256, 17);
 		await authority.readLegacyObject(profileId, sha256);
 		await authority.writeReplica(profileId, sha256, Buffer.from("immutable fixture"));
 		await authority.removeReplica(profileId, sha256);
@@ -63,7 +63,7 @@ describe("object authority transport boundary", () => {
 					{ headers: kind === "declared" ? { "content-length": "1048577" } : {} },
 				),
 		});
-		await expect(authority.authorizeUpload("synthetic-human-token", profileId, sha256, 1)).rejects.toMatchObject({
+		await expect(authority.confirmUpload(profileId, sha256, 1)).rejects.toMatchObject({
 			status: 503,
 		});
 		expect(cancel).toHaveBeenCalledOnce();
@@ -89,7 +89,7 @@ describe("object authority transport boundary", () => {
 			requestTimeoutMs: 20,
 			fetch: async () => new Response(new ReadableStream<Uint8Array>({ cancel }), { status }),
 		});
-		await expect(authority.authorizeUpload("synthetic-human-token", profileId, sha256, 1)).rejects.toMatchObject({
+		await expect(authority.confirmUpload(profileId, sha256, 1)).rejects.toMatchObject({
 			status,
 			unavailable: false,
 		});
@@ -122,7 +122,7 @@ describe("object authority transport boundary", () => {
 			requestTimeoutMs: 20,
 			fetch: async () => transport,
 		});
-		await expect(authority.authorizeUpload("synthetic-human-token", profileId, sha256, 1)).rejects.toMatchObject({
+		await expect(authority.confirmUpload(profileId, sha256, 1)).rejects.toMatchObject({
 			status: 503,
 		});
 		const cancel = vi.fn();

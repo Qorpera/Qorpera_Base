@@ -159,7 +159,6 @@ async function gateway() {
 			memberFolderObjects: authority,
 			nativeObjects: { token: nativeToken, folder: authority },
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -196,11 +195,7 @@ async function gateway() {
 				headers: { authorization: `Bearer ${memberToken}` },
 			}),
 	};
-	const profileRead = (company: Company) =>
-		fetch(`${origin}/v1/profile-objects/${companies[company].companyId}/${sha256}`, {
-			headers: { authorization: "Bearer synthetic-verifier" },
-		});
-	return { authority, journal, replication, state, routes, profileRead };
+	return { authority, journal, replication, state, routes };
 }
 
 type Route = "folder read" | "folder write" | "member read";
@@ -309,16 +304,6 @@ describe("one company's database state and the shared circuit", () => {
 			expect(state.replicas.size).toBe(2);
 		},
 	);
-
-	it.each(["55P03", "40P01", "40001"])("keeps a %s on a profile read a plain 503", async (code) => {
-		// The lock conflict stays circuit-neutral (ObjectLockConflict).
-		const { authority, profileRead, state } = await gateway();
-		state.fail = { company: "a", respond: async () => postgrest(code) };
-		const refused = await profileRead("a");
-		expect(refused.status).toBe(503);
-		expect(await refused.json()).toEqual({ error: "Object dependency is unavailable" });
-		expect(authority.health().api.status).not.toBe("unavailable");
-	});
 
 	it.each([
 		// PostgREST's own 409: the garbage collector's write fence, which lasts until its deletion ends.
@@ -549,7 +534,6 @@ describe("member presence route and the caller's own abort", () => {
 				store: {} as never,
 				authority: {} as never,
 				controlToken: "synthetic-control",
-				verifierToken: "synthetic-verifier",
 				memberPresence: authority,
 			}),
 		);
