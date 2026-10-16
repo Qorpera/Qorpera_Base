@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-125 functions, grouped for navigation. Signatures: see the migration that defines each.
+119 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -139,7 +139,7 @@ they answer 42501 "native host call is refused".
   folder-v2 is saved as before.
 
 
-### Credentials, provider connections, identity recovery (15)
+### Credentials, provider connections, identity recovery (17)
 
 - `qorpera_begin_chatgpt_plan_sign_in` (20260928329830, switched off): begins a
   ChatGPT plan sign-in ("Continue with ChatGPT") for the caller's own member
@@ -229,7 +229,7 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (9)
+### Objects, artifacts, retention (6)
 
 A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
 answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
@@ -364,7 +364,6 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
 - `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
 - `qorpera_close_shared_session`
 - `qorpera_configure_session_execution`
-- `qorpera_ensure_member_private_staff_session`
 - `qorpera_ensure_staff_session`
 - `qorpera_list_session_inputs`
 - `qorpera_list_session_turn_requests`
@@ -383,7 +382,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
-### Execution, sponsors, runners, computers (28)
+### Execution, sponsors, runners, computers (27)
 
 - `qorpera_cancel_runner_job`
 - `qorpera_cancel_worker_run(p_run_id)` — a member's Stop of an in-house worker's own run (no conversation), by run id: the job's creator (the member whose work dispatched the worker) or an owner or admin, through `qorpera_cancel_runner_job`; returns the control below (20260930002800)
