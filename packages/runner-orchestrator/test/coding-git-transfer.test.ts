@@ -13,7 +13,8 @@ function fixture() {
 		headSha = "f".repeat(40);
 	const helper = Buffer.from("reviewed git helper"),
 		config = Buffer.from("bound guest configuration");
-	const bundle = Buffer.alloc(32772, 42);
+	// Two seed chunks (192 KiB and 4 bytes), seven 32 KiB export chunks.
+	const bundle = Buffer.alloc(196612, 42);
 	const files = new Map<string, Buffer>();
 	const receipt: CodingGitTransferReceipt = {
 		schema: "qorpera.coding-git-receipt/v1",
@@ -35,8 +36,12 @@ function fixture() {
 		execInstance: vi.fn<LxdInspectableClient["execInstance"]>(async (_project, _name, args) => {
 			if (args[2] === "export") {
 				receipt.action = "export";
-				files.set(`/var/lib/qorpera-coding/${workerId}/git/${transferId}/000000.bundle`, bundle.subarray(0, 32768));
-				files.set(`/var/lib/qorpera-coding/${workerId}/git/${transferId}/000001.bundle`, bundle.subarray(32768));
+				receipt.chunkCount = 7;
+				for (let index = 0; index < 7; index++)
+					files.set(
+						`/var/lib/qorpera-coding/${workerId}/git/${transferId}/${String(index).padStart(6, "0")}.bundle`,
+						bundle.subarray(index * 32768, (index + 1) * 32768),
+					);
 			}
 		}),
 		readInstanceFile: vi.fn<LxdInspectableClient["readInstanceFile"]>(async (_project, _name, path, maximum) => {
@@ -101,8 +106,25 @@ describe("protected LXD coding Git byte transfer", () => {
 		expect(f.client.pushInstanceFile.mock.calls).toHaveLength(3);
 		for (const call of f.client.pushInstanceFile.mock.calls) {
 			expect(call[4]).toBe(0o444);
-			expect(Buffer.byteLength(call[3])).toBeLessThan(65536);
+			expect(Buffer.byteLength(call[3])).toBeLessThanOrEqual(262144);
 		}
+		// Seed chunks are as large as an LXD file push and are never read back;
+		// the guest checks each one and the whole digest.
+		const chunks = f.client.pushInstanceFile.mock.calls.slice(1);
+		expect(chunks.map((call) => call[2])).toEqual([
+			`/var/lib/qorpera-coding/${f.workerId}/git/${f.transferId}/000000.base64`,
+			`/var/lib/qorpera-coding/${f.workerId}/git/${f.transferId}/000001.base64`,
+		]);
+		expect(chunks.map((call) => call[3].length)).toEqual([262144, 8]);
+		expect(Buffer.concat(chunks.map((call) => Buffer.from(call[3], "base64"))).equals(f.bundle)).toBe(true);
+		expect(f.client.readInstanceFile.mock.calls.some((call) => call[2].endsWith(".base64"))).toBe(false);
+		// The guest imports the whole seed in one command: it may take 600 s.
+		expect(f.client.execInstance.mock.calls.map((call) => call[4])).toEqual([undefined, 600]);
+	});
+	it("refuses a seed receipt that counts the chunks of another size", async () => {
+		const f = fixture();
+		f.receipt.chunkCount = 7;
+		await expect(f.transfer.seed(f.transferId, f.headSha, f.bundle, f.signal)).rejects.toThrow("RECEIPT_CHANGED");
 	});
 	it("reads protected export chunks and verifies total length and digest", async () => {
 		const f = fixture();

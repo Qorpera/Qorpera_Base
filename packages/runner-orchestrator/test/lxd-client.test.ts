@@ -844,6 +844,46 @@ describe("LXD Unix client", () => {
 		});
 	});
 
+	it("waits longer for one command only when asked, within 600 seconds", async () => {
+		const waits: string[] = [];
+		const socket = await unixServer((method, url) => {
+			if (method === "POST" && url.includes("/exec?project="))
+				return {
+					body: {
+						type: "async",
+						status: "Operation created",
+						status_code: 100,
+						operation: `/1.0/operations/operation-${waits.length}`,
+						metadata: {},
+					},
+				};
+			if (method === "GET" && url.includes("/wait?timeout=")) {
+				waits.push(url);
+				return {
+					body: {
+						type: "sync",
+						status: "Success",
+						status_code: 200,
+						metadata: { status: "Success", status_code: 200, err: "", metadata: { return: 0 } },
+					},
+				};
+			}
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, 600);
+		await client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"]);
+		expect(waits).toEqual([
+			"/1.0/operations/operation-0/wait?timeout=600",
+			"/1.0/operations/operation-1/wait?timeout=30",
+		]);
+		for (const wait of [0, 601, 1.5])
+			await expect(
+				client.execInstance("coding", "qorpera-coding-x", ["/usr/bin/true"], undefined, wait),
+			).rejects.toThrow(/^LXD instance command is invalid$/);
+		expect(waits).toHaveLength(2);
+	});
+
 	it("pushes a guest program's bytes as root's file, only into the guest's program folders", async () => {
 		const requests: Array<{ url: string; body: unknown; headers: IncomingHttpHeaders }> = [];
 		const socket = await unixServer((method, url, body, headers) => {
