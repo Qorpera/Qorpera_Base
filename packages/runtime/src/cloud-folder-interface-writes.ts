@@ -60,6 +60,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import {
 	args,
+	cloudFolderRefusal,
 	OPERATION_KEY,
 	operationKey,
 	released,
@@ -1308,6 +1309,7 @@ export function cloudInterfaceWriteTools(options: {
 			},
 		},
 		parseArguments: (value) => parseSave(value) as unknown as JsonValue,
+		refused: cloudFolderRefusal,
 		// The review's card says what the call changes, from the files it replaces: released with them before it is shown.
 		async prepare(value, context) {
 			const request = value as unknown as { operationKey: string; files: SaveFile[] };
@@ -1370,6 +1372,7 @@ export function cloudInterfaceWriteTools(options: {
 				},
 				// The folder core decides at the commit, under this call's receipt.
 				authorize: async () => {},
+				refused: cloudFolderRefusal,
 				perform: async (_operation, { receiptId, signal }) => {
 					// The commit's operation key for the model's: fixed length, and distinct per tool.
 					const key = `save_interface:${sha256hex(request.operationKey)}`;
@@ -1440,6 +1443,7 @@ export function cloudInterfaceWriteTools(options: {
 			},
 		},
 		parseArguments: (value) => parseTableWrite(value),
+		refused: cloudFolderRefusal,
 		async execute(value, context) {
 			const request = value as { table: string; operationKey: string; set: Cells[]; remove: Cells[] };
 			writable();
@@ -1516,6 +1520,7 @@ export function cloudInterfaceWriteTools(options: {
 				},
 				// The folder core decides at the commit, under this call's receipt.
 				authorize: async () => {},
+				refused: cloudFolderRefusal,
 				perform: async (_operation, { receiptId, signal }) => {
 					// The commit's operation key for the model's: fixed length, and distinct per tool.
 					const key = `table_write:${sha256hex(request.operationKey)}`;

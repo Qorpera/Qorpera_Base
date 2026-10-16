@@ -33,7 +33,7 @@ import {
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
-import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import type { CloudRuntimeErrorCategory, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /*
@@ -244,6 +244,43 @@ function mutationText(
 	});
 }
 
+const STALE_REASONS = new Set(["exists", "missing", "version_changed", "unseen_change"]);
+const PARENT_REASONS = new Set(["parent_missing", "folder_missing"]);
+const DENIED_REASONS = new Set([
+	"denied",
+	"review_required",
+	"review_denied",
+	"not_a_writer",
+	"owners_only",
+	"rows_not_writable",
+	"claim",
+]);
+
+/** Why a folder-v2 change's answer says it changed nothing, as the call's observation names it (contract, Minimum
+ * operational observability: refused work never looks like success): a file tool's, a save's or a row write's
+ * `state`, or an apply's `outcome`, `not_applied`, by its own reason or else its first file's that was not saved.
+ * Nothing for a saved, parked, unchanged or partly saved change. Read from the answer alone, which is all a replay has. */
+export function cloudFolderRefusal(content: CloudToolContent): CloudRuntimeErrorCategory | undefined {
+	// Any JSON value: a field that is not there, or a value that is not an object, reads as undefined.
+	type Part = { state?: unknown; outcome?: unknown; reason?: unknown; files?: unknown; notSaved?: unknown } | null;
+	let whole: Part;
+	try {
+		whole = (content.kind === "text" ? JSON.parse(content.value) : content.value) as Part;
+	} catch {
+		return undefined;
+	}
+	if ((whole?.state ?? whole?.outcome) !== "not_applied") return undefined;
+	const why = (row: Part): CloudRuntimeErrorCategory | undefined => {
+		const reason = typeof row?.reason === "string" ? row.reason : undefined;
+		if (row?.outcome === "conflict" || (reason && STALE_REASONS.has(reason))) return "stale_version";
+		if (reason && PARENT_REASONS.has(reason)) return "parent_missing";
+		if (row?.outcome === "denied" || (reason && DENIED_REASONS.has(reason))) return "authority_unavailable";
+		return reason || row?.outcome === "refused" || row?.outcome === "blocked" ? "invalid_arguments" : undefined;
+	};
+	const unsaved = [whole?.files, whole?.notSaved].flatMap((rows) => (Array.isArray(rows) ? (rows as Part[]) : []));
+	return [whole, ...unsaved].map(why).find((category) => category !== undefined) ?? "invalid_arguments";
+}
+
 /** The five tools for a folder-v2 run. `operations` takes the receipts of its changes. */
 export function cloudFolderFileTools(options: {
 	folder: CloudCompanyFolderClient;
@@ -327,6 +364,7 @@ export function cloudFolderFileTools(options: {
 			},
 			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
+			refused: cloudFolderRefusal,
 			perform: async (_operation, { receiptId, signal }) => {
 				// The commit's operation key for the model's: fixed length, and distinct per tool.
 				const key = `${tool}:${createHash("sha256").update(request.operationKey).digest("hex")}`;
@@ -596,6 +634,7 @@ export function cloudFolderFileTools(options: {
 					text: input.text,
 				};
 			},
+			refused: cloudFolderRefusal,
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string | null; text: string };
 				context.observation?.update({ inputBytes: Buffer.byteLength(input.text) });
@@ -669,6 +708,7 @@ export function cloudFolderFileTools(options: {
 					);
 				return { path: path(input.path, false), operationKey: operationKey(input.operationKey) };
 			},
+			refused: cloudFolderRefusal,
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string };
 				return change("company_mkdir", input, { path: input.path }, [{ op: "mkdir", path: input.path }], context);
@@ -697,6 +737,7 @@ export function cloudFolderFileTools(options: {
 					expectedVersion: version(input.expectedVersion, false),
 				};
 			},
+			refused: cloudFolderRefusal,
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string };
 				const review = context.actionReviewId;
