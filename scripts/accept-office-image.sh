@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
 # F3 4e: the cold-boot acceptance of an office image, A1's verifier (guest-proof-v3) ported. On a node's host the image
 # is copied into a throwaway project and booted once as a fresh VM with no profile and no network card. From inside it
-# proves KVM and Secure Boot, the office account (uid/gid 20045), the installation receipt and package manifest the
-# image's labels name, the office service disabled and never started, empty credentials, no JWT- or Supabase-secret-
-# shaped string on its disk, the unconfigured services refused, and Chromium's sandbox. Only the VM, the image copy and
-# the throwaway project are deleted. sign-office-image-provenance.mjs signs the evidence with the build's. See
-# deploy/first-node/OFFICE-IMAGE-PRODUCTION.md.
+# proves KVM and Secure Boot, the office account (the physical policy's workbench uid/gid), the installation receipt and
+# package manifest the image's labels name, the office service disabled and never started, empty credentials, no JWT-
+# or Supabase-secret-shaped string on its disk, the unconfigured services refused, and Chromium's sandbox. Only the VM,
+# the image copy and the throwaway project are deleted. sign-office-image-provenance.mjs signs the evidence with the
+# build's. See deploy/first-node/OFFICE-IMAGE-PRODUCTION.md.
 #
 # As root on node01's host:
-#   bash scripts/accept-office-image.sh --hostname <node01's hostname> --evidence <new file> [--pool qorpera-vm] \
-#     [--root-size 80GiB] <image fingerprint> <its project> </dev/null
+#   bash scripts/accept-office-image.sh --hostname <node01's hostname> --policy <the physical policy> \
+#     --evidence <new file> [--pool qorpera-vm] [--root-size 80GiB] <image fingerprint> <its project> </dev/null
 set -euo pipefail
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
-usage="usage: accept-office-image.sh --hostname <host> --evidence <new file> [--pool <name>] [--root-size <N>GiB] \
-<fingerprint> <project>"
+usage="usage: accept-office-image.sh --hostname <host> --policy <file> --evidence <new file> [--pool <name>] \
+[--root-size <N>GiB] <fingerprint> <project>"
 host=''
+policy=''
 evidence=''
 pool=qorpera-vm
 root_size=80GiB
 positional=()
 while (($#)); do
 	case $1 in
-	--hostname | --evidence | --pool | --root-size)
+	--hostname | --policy | --evidence | --pool | --root-size)
 		(($# >= 2)) && [[ -n $2 ]] || fail "$usage"
 		case $1 in
 		--hostname) host=$2 ;;
+		--policy) policy=$2 ;;
 		--evidence) evidence=$2 ;;
 		--pool) pool=$2 ;;
 		--root-size) root_size=$2 ;;
@@ -39,19 +41,24 @@ while (($#)); do
 		;;
 	esac
 done
-((${#positional[@]} == 2)) && [[ -n $host && -n $evidence ]] || fail "$usage"
+((${#positional[@]} == 2)) && [[ -n $host && -n $policy && -n $evidence ]] || fail "$usage"
 fingerprint=${positional[0]}
 project=${positional[1]}
 [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || fail "the image is named by its full fingerprint"
 [[ $project =~ ^[a-z][a-z0-9-]{0,62}$ && $pool =~ ^[a-z][a-z0-9-]{0,62}$ ]] || fail "invalid project or pool name"
-# The image's root is the build's: the VM's may not be smaller.
-[[ $root_size =~ ^[1-9][0-9]{1,3}GiB$ ]] && ((${root_size%GiB} >= 24 && ${root_size%GiB} <= 2048)) ||
-	fail "the root size is 24GiB to 2048GiB"
+# The image's root is the build's: the VM's may not be smaller, nor larger than a guest's (1 TiB).
+[[ $root_size =~ ^[1-9][0-9]{1,3}GiB$ ]] && ((${root_size%GiB} >= 24 && ${root_size%GiB} <= 1024)) ||
+	fail "the root size is 24GiB to 1024GiB"
 evidence=$(realpath -m -- "$evidence")
 for file in "$evidence" "$evidence.png"; do
 	[[ ! -e $file && ! -L $file ]] || fail "$file exists"
 done
 [[ -d $(dirname "$evidence") ]] || fail "$evidence has no directory"
+# The office account must be the policy's workbench account, as build-office-image-production.sh takes it.
+[[ -f $policy && ! -L $policy ]] || fail "no policy at $policy"
+office_id=$(jq -er 'select(.schema == "qorpera.lxd-office-physical-policy/v2") | .workbench
+	| select(.uid == .gid and (.uid | type == "number" and . == floor and . >= 1 and . <= 2147483647)) | .uid' \
+	"$policy" 2>/dev/null) || fail "$policy is not a physical policy whose workbench uid and gid are one id"
 
 [[ $(id -u) == 0 ]] || fail "run as root on node01's host"
 [[ $(hostname) == "$host" ]] || fail "this machine is $(hostname), not $host"
@@ -182,7 +189,8 @@ import uuid
 
 P = pathlib.Path
 ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': '/nonexistent', 'LANG': 'C', 'LC_ALL': 'C'}
-UID = GID = 20045
+# The policy's workbench account, the fourth argument; main refuses without it.
+UID = GID = int(sys.argv[4]) if len(sys.argv) == 5 and re.fullmatch(r'[1-9][0-9]{0,9}', sys.argv[4]) else -1
 OFFICE = 'qorpera-company-computer.service'
 SERVICES = [OFFICE, 'qorpera-company-computer-preparation.service']
 PRIVATE = 'run-qorpera\\x2doffice-private.mount'
@@ -593,9 +601,9 @@ def browser_proof(root):
 
 
 def main():
-    need(len(sys.argv) == 4 and SHA.fullmatch(sys.argv[1]) and SHA.fullmatch(sys.argv[2]) and UUID.fullmatch(sys.argv[3]),
-         'arguments: receipt sha256, package manifest sha256, VM UUID')
-    receipt, manifest, product_uuid = sys.argv[1:]
+    need(len(sys.argv) == 5 and SHA.fullmatch(sys.argv[1]) and SHA.fullmatch(sys.argv[2]) and UUID.fullmatch(sys.argv[3])
+         and UID > 0, 'arguments: receipt sha256, package manifest sha256, VM UUID, office uid')
+    receipt, manifest, product_uuid = sys.argv[1:4]
     result = {'schema': 'qorpera.office-image-cold-boot-proof/v1', 'passed': False, 'guest': identity(product_uuid)}
     account()
     result['unitsBefore'] = never_started()
@@ -628,11 +636,12 @@ if __name__ == '__main__':
         sys.exit(1)
 EOF
 proof_status=0
-la exec "$vm" -- /usr/bin/python3 -I -c "$guest_proof" "$receipt" "$manifest" "$uuid" >"$work/guest.json" ||
+la exec "$vm" -- /usr/bin/python3 -I -c "$guest_proof" "$receipt" "$manifest" "$uuid" "$office_id" >"$work/guest.json" ||
 	proof_status=$?
-jq -e --arg receipt "$receipt" --arg manifest "$manifest" --arg uuid "$uuid" \
+jq -e --arg receipt "$receipt" --arg manifest "$manifest" --arg uuid "$uuid" --argjson id "$office_id" \
 	'.passed == true and .guest.productUuid == $uuid and .closureBefore.receiptSha256 == $receipt
-	and .closureBefore.packageManifestSha256 == $manifest and .secretScan.hits == []' \
+	and .closureBefore.packageManifestSha256 == $manifest and .closureBefore.uid == $id and .closureBefore.gid == $id
+	and .secretScan.hits == []' \
 	"$work/guest.json" >/dev/null || fail "the guest proof failed (exit $proof_status): $(head -c 8192 "$work/guest.json")"
 tested=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 la file pull "$vm$(jq -r .browser.screenshotPath "$work/guest.json")" "$work/screenshot.png"

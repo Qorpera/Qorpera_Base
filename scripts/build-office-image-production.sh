@@ -4,20 +4,23 @@
 # build VM has no network card and lives in the given project and pool; only it and a base copy this run made are
 # deleted. The image is published there with A1's labels and stays. The evidence names the clean commit, the
 # installation receipt (the policy's bootstrapSha256) and the image; accept-office-image.sh and
-# sign-office-image-provenance.mjs take it from there. See deploy/first-node/OFFICE-IMAGE-PRODUCTION.md.
+# sign-office-image-provenance.mjs take it from there. The image's office account is the workbench account of the
+# physical policy it will be pinned into. See deploy/first-node/OFFICE-IMAGE-PRODUCTION.md.
 #
 # As root on node01's host, from a clean checkout:
 #   bash scripts/build-office-image-production.sh --hostname <node01's hostname> --folder-program <built qorpera-folder> \
-#     --evidence <new file> [--project qofleet01] [--pool qorpera-vm] [--root-size 80GiB] </dev/null
+#     --policy <the physical policy> --evidence <new file> [--project qofleet01] [--pool qorpera-vm] [--root-size 80GiB] \
+#     </dev/null
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$repo/scripts/office-image-recipe.sh"
-usage="usage: build-office-image-production.sh --hostname <host> --folder-program <file> --evidence <new file> \
-[--project <name>] [--pool <name>] [--root-size <N>GiB]"
+usage="usage: build-office-image-production.sh --hostname <host> --folder-program <file> --policy <file> \
+--evidence <new file> [--project <name>] [--pool <name>] [--root-size <N>GiB]"
 host=''
 folder_program=''
+policy=''
 evidence=''
 project=qofleet01
 pool=qorpera-vm
@@ -27,6 +30,7 @@ while (($#)); do
 	case $1 in
 	--hostname) host=$2 ;;
 	--folder-program) folder_program=$2 ;;
+	--policy) policy=$2 ;;
 	--evidence) evidence=$2 ;;
 	--project) project=$2 ;;
 	--pool) pool=$2 ;;
@@ -35,14 +39,22 @@ while (($#)); do
 	esac
 	shift 2
 done
-[[ -n $host && -n $folder_program && -n $evidence ]] || fail "$usage"
+[[ -n $host && -n $folder_program && -n $policy && -n $evidence ]] || fail "$usage"
 [[ $project =~ ^[a-z][a-z0-9-]{0,62}$ && $pool =~ ^[a-z][a-z0-9-]{0,62}$ ]] || fail "invalid project or pool name"
-# Whole GiB: at least the candidate's 24 GiB, at most a policy's largest root disk.
-[[ $root_size =~ ^[1-9][0-9]{1,3}GiB$ ]] && ((${root_size%GiB} >= 24 && ${root_size%GiB} <= 2048)) ||
-	fail "the root size is 24GiB to 2048GiB"
+# Whole GiB: at least the candidate's 24 GiB, at most a guest's largest root disk (parseLxdOfficeGuestBinding, 1 TiB).
+[[ $root_size =~ ^[1-9][0-9]{1,3}GiB$ ]] && ((${root_size%GiB} >= 24 && ${root_size%GiB} <= 1024)) ||
+	fail "the root size is 24GiB to 1024GiB"
 evidence=$(realpath -m -- "$evidence")
 [[ ! -e $evidence && ! -L $evidence && -d $(dirname "$evidence") ]] || fail "$evidence exists or has no directory"
 [[ $evidence != "$(realpath -- "$repo")"/* ]] || fail "the evidence must go outside the checkout"
+# The office account is the policy's workbench account. Preparation sends policy.workbench.uid/gid into the guest,
+# whose preparation service runs as the office account and must be them (cloud-company-computer-preparation.ts), and
+# the guest mounts the workbench with no id shift. The recipe gives the account one id.
+[[ -f $policy && ! -L $policy ]] || fail "no policy at $policy"
+office_id=$(jq -er 'select(.schema == "qorpera.lxd-office-physical-policy/v2") | .workbench
+	| select(.uid == .gid and (.uid | type == "number" and . == floor and . >= 1 and . <= 2147483647)) | .uid' \
+	"$policy" 2>/dev/null) || fail "$policy is not a physical policy whose workbench uid and gid are one id"
+workbench=$(jq -r '.workbench.mountPoint' "$policy")
 
 [[ $(id -u) == 0 ]] || fail "run as root on node01's host"
 [[ $(hostname) == "$host" ]] || fail "this machine is $(hostname), not $host"
@@ -55,10 +67,12 @@ evidence=$(realpath -m -- "$evidence")
 [[ $(dpkg --print-architecture) == amd64 ]] || fail "the recipe pins x86_64 downloads"
 lxc --force-local project show "$project" </dev/null >/dev/null || fail "no LXD project $project"
 lxc --force-local storage show "$pool" </dev/null >/dev/null || fail "no storage pool $pool"
+# The workbench backing is the office account's too, as the provider host requires (lxd-office-physical-host.ts).
+[[ $(findmnt -n -o FSTYPE --mountpoint "$workbench" </dev/null) =~ ^nfs4?$ &&
+	$(stat -c %u:%g:%a -- "$workbench") == "$office_id:$office_id:700" ]] ||
+	fail "the workbench $workbench is not an NFS mount owned by $office_id:$office_id, mode 0700"
 recipe="$repo/deploy/lxd-company-computer-guest/office-image-dependencies.json"
 base=$(jq -er '.base.fingerprint | select(test("^[0-9a-f]{64}$"))' "$recipe")
-# The office account of A1, the last production generation.
-office_id=20045
 
 # The image is this commit's only if nothing in the checkout differs from it.
 clean_commit() {
@@ -169,8 +183,9 @@ jq -e --argjson id "$office_id" --arg package "$package" --arg spec "$(sha256sum
 office_image_seal
 # A1's labels, for people: nothing reads them. No alias: a policy names the image by fingerprint.
 jq -n --arg vm "$vm" --arg commit "$commit" --arg base "$base" --arg package "$package" --arg receipt "$receipt" \
+	--argjson id "$office_id" \
 	'{source: {type: "instance", name: $vm}, public: false, auto_update: false, profiles: [], aliases: [],
-	properties: {description: "Qorpera production office 4e uid/gid 20045 \($commit[0:9])", os: "Ubuntu",
+	properties: {description: "Qorpera production office 4e uid/gid \($id) \($commit[0:9])", os: "Ubuntu",
 	release: "resolute", architecture: "x86_64", "qorpera.purpose": "production-office-4e",
 	"qorpera.packageManifestSha256": $package, "qorpera.baseFingerprint": $base, "qorpera.sourceCommit": $commit,
 	"qorpera.installationReceiptSha256": $receipt}}' >"$work/publish.json"

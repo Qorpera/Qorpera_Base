@@ -8,24 +8,30 @@ import { isDeepStrictEqual } from "node:util";
 /** F3 4e: the office image's provenance. `--generate-key <dir>` makes the
  * ed25519 signing key once, as root on the node's host, and prints only its
  * public half. `sign` holds the production build's evidence against the
- * cold-boot acceptance's, signs the statement lxd-office-image-provenance.ts
- * verifies, and writes the fields a physical policy pins. The private key is
+ * cold-boot acceptance's and the physical policy the image is pinned into,
+ * signs the statement lxd-office-image-provenance.ts verifies, and writes the
+ * fields a physical policy pins and that policy with them. The private key is
  * read once and never printed. See deploy/first-node/OFFICE-IMAGE-PRODUCTION.md. */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEY_FILE = "office-image-signing.pem";
-const OFFICE_ID = 20045;
+// The largest office account the image installer takes (lxd-office-image-installation.ts imageId).
+const OFFICE_ID_MAX = 2147483647;
 const GIB = 1024 ** 3;
+// A guest's largest root disk (lxd-office-guest.ts parseLxdOfficeGuestBinding).
+const ROOT_MAX = 1024 * GIB;
 const FLAGS = {
 	"--build": "build",
 	"--acceptance": "acceptance",
+	"--policy": "policy",
 	"--key": "key",
 	"--out": "out",
 	"--repository": "repository",
 };
-const REQUIRED = ["build", "acceptance", "key", "out"];
+const REQUIRED = ["build", "acceptance", "policy", "key", "out"];
 const USAGE = `Usage: node scripts/sign-office-image-provenance.mjs --generate-key <new or private directory>
        node scripts/sign-office-image-provenance.mjs sign --build <build-office-image-production.sh evidence> \\
-         --acceptance <accept-office-image.sh evidence> --key <ed25519 private key PEM> --out <new directory> \\
+         --acceptance <accept-office-image.sh evidence> --policy <the physical policy> \\
+         --key <ed25519 private key PEM> --out <new directory> \\
          [--repository <https URL, default https://github.com/Qorpera/Qorpera_Base.git>]
 `;
 const OFFICE_UNIT = {
@@ -64,7 +70,7 @@ function parseArguments(argv) {
 	const { protocol, username, password, hash: fragment, search } = repository;
 	if (protocol !== "https:" || username || password || fragment || search || repository.toString() !== options.repository)
 		fail("OFFICE_IMAGE_SIGNING_ARGUMENTS_INVALID");
-	for (const key of ["build", "acceptance", "key", "out"]) options[key] = resolve(options[key]);
+	for (const key of REQUIRED) options[key] = resolve(options[key]);
 	return options;
 }
 async function generateKey(directory) {
@@ -125,7 +131,7 @@ async function loadVerifier() {
 		stdin: {
 			contents: [
 				'export { officeCanonical, officeDigest, verifyLxdOfficeImageProvenance } from "./packages/runner-orchestrator/src/lxd-office-image-provenance.ts";',
-				'export { assertLxdOfficePhysicalImage } from "./packages/runner-orchestrator/src/lxd-office-physical-policy.ts";',
+				'export { assertLxdOfficePhysicalImage, lxdOfficePhysicalPolicySha256, parseLxdOfficePhysicalPolicy } from "./packages/runner-orchestrator/src/lxd-office-physical-policy.ts";',
 			].join("\n"),
 			resolveDir: root,
 			loader: "ts",
@@ -161,9 +167,9 @@ function checkEvidence(build, acceptance) {
 	b(typeof build.commit === "string" && /^[0-9a-f]{40}$/.test(build.commit), "commit");
 	b(build.tree === "clean", "tree");
 	b(sha(build.baseFingerprint), "baseFingerprint");
-	b(build.uid === OFFICE_ID && build.gid === OFFICE_ID, "uid");
+	b(count(build.uid, 1, OFFICE_ID_MAX) && build.gid === build.uid, "uid");
 	for (const field of ["installationReceiptSha256", "packageManifestSha256", "specSha256", "folderProgramSha256", "recipeSha256"]) b(sha(build[field]), field);
-	b(count(build.rootDiskBytes, 24 * GIB, 2048 * GIB) && build.rootDiskBytes % GIB === 0 && build.rootSize === `${build.rootDiskBytes / GIB}GiB`, "rootDiskBytes");
+	b(count(build.rootDiskBytes, 24 * GIB, ROOT_MAX) && build.rootDiskBytes % GIB === 0 && build.rootSize === `${build.rootDiskBytes / GIB}GiB`, "rootDiskBytes");
 	b(build.network === "none", "network");
 	b(isDeepStrictEqual(build.officeUnit, OFFICE_UNIT), "officeUnit");
 	const image = build.image;
@@ -184,7 +190,7 @@ function checkEvidence(build, acceptance) {
 	a(Number.isFinite(testedAt) && new Date(testedAt).toISOString() === tested && testedAt <= Date.now() + 5 * 60 * 1000, "testedAt");
 	a(acceptance.bootMode === "uefi-secureboot" && acceptance.network === "none", "bootMode");
 	a(isDeepStrictEqual(acceptance.virtualMachine?.profiles, []) && isDeepStrictEqual(Object.keys(acceptance.virtualMachine?.devices ?? {}), ["root"]), "virtualMachine");
-	a(count(acceptance.rootDiskBytes, 24 * GIB, 2048 * GIB), "rootDiskBytes");
+	a(count(acceptance.rootDiskBytes, 24 * GIB, ROOT_MAX), "rootDiskBytes");
 	const guest = acceptance.guest;
 	a(guest?.schema === "qorpera.office-image-cold-boot-proof/v1" && guest.passed === true, "guest.passed");
 	a(guest.guest?.virtualization === "kvm" && guest.guest.firmware === "uefi" && guest.guest.secureBoot === true, "guest.guest");
@@ -193,7 +199,7 @@ function checkEvidence(build, acceptance) {
 	const office = guest.unitsBefore?.[SERVICES[0]] ?? {};
 	a(isDeepStrictEqual(Object.fromEntries(Object.keys(OFFICE_UNIT).map((key) => [key, office[key]])), OFFICE_UNIT), "guest.unitsBefore");
 	a(isDeepStrictEqual(guest.closureBefore, guest.closureAfter), "guest.closureAfter");
-	a(guest.closureBefore?.uid === OFFICE_ID && guest.closureBefore.gid === OFFICE_ID, "guest.closureBefore.uid");
+	a(count(guest.closureBefore?.uid, 1, OFFICE_ID_MAX) && guest.closureBefore.gid === guest.closureBefore.uid, "guest.closureBefore.uid");
 	for (const custody of ["custodyBefore", "custodyAfter"]) a(guest[custody]?.empty === true && guest[custody].credentials?.entries === 0, `guest.${custody}`);
 	a(isDeepStrictEqual(Object.keys(guest.aptMasks ?? {}).sort(), [...APT_MASKS].sort()), "guest.aptMasks");
 	a(isDeepStrictEqual(guest.secretScan?.hits, []) && count(guest.secretScan.filesScanned, 1, Number.MAX_SAFE_INTEGER), "guest.secretScan");
@@ -208,17 +214,39 @@ function checkEvidence(build, acceptance) {
 	// One image: the one built, labelled and booted.
 	both(isDeepStrictEqual(acceptance.image, image) && image.project === build.project, "image");
 	both(acceptance.rootDiskBytes >= build.rootDiskBytes, "rootDiskBytes");
+	both(guest.closureBefore.uid === build.uid, "uid");
 	both(guest.closureBefore.receiptSha256 === build.installationReceiptSha256, "installationReceiptSha256");
 	both(guest.closureBefore.packageManifestSha256 === build.packageManifestSha256, "packageManifestSha256");
 	both(guest.closureBefore.specSha256 === build.specSha256, "specSha256");
 }
+/** The physical policy the image is pinned into, as the orchestrator parses
+ * it. Its workbench account is the image's office account: preparation sends
+ * it into the guest, whose preparation service runs as the office account
+ * and must be it, and the guest mounts the workbench with no id shift. */
+function checkPolicy(v, value, build) {
+	const p = (ok, field) => {
+		if (!ok) fail(`OFFICE_IMAGE_SIGNING_POLICY_INCONSISTENT: ${field}`);
+	};
+	let policy;
+	try {
+		policy = v.parseLxdOfficePhysicalPolicy(value);
+	} catch {
+		fail("OFFICE_IMAGE_SIGNING_POLICY_INVALID");
+	}
+	p(policy.workbench.uid === build.uid && policy.workbench.gid === build.gid, "workbench");
+	p(policy.host.architecture === build.image.architecture, "host.architecture");
+	// The image's virtual size is the build VM's root.
+	p(policy.guest.rootDiskBytes >= build.rootDiskBytes, "guest.rootDiskBytes");
+}
 async function signImage(options) {
 	const build = await readEvidence(options.build);
 	const acceptance = await readEvidence(options.acceptance);
+	const current = await readEvidence(options.policy);
 	checkEvidence(build.value, acceptance.value);
 	const { privateKey, verificationKeySpki, keyId } = await loadSigningKey(options.key);
 	const { module: v, dispose } = await loadVerifier();
 	try {
+		checkPolicy(v, current.value, build.value);
 		const image = build.value.image;
 		const statement = {
 			schema: "qorpera.lxd-office-image-provenance/v1",
@@ -251,7 +279,7 @@ async function signImage(options) {
 		const statementSha256 = v.officeDigest(statement);
 		// The fields of a physical policy (lxd-office-physical-policy.ts) that name this image. Its root disk may not be smaller
 		// than the build's: the image's virtual size is the build VM's root.
-		const policy = {
+		const fields = {
 			schema: "qorpera.office-image-policy-fields/v1",
 			keyId,
 			guest: { imageFingerprint: image.fingerprint, bootstrapSha256: build.value.installationReceiptSha256 },
@@ -259,10 +287,15 @@ async function signImage(options) {
 			image: { bytes: image.bytes, guestPackageManifestSha256: build.value.packageManifestSha256, statementSha256, verificationKeySpki },
 			minimumRootDiskBytes: build.value.rootDiskBytes,
 		};
+		// The given policy with only those fields changed: the policy to install.
+		const policy = { ...current.value, guest: { ...current.value.guest, ...fields.guest }, image: fields.image };
+		let providerPolicySha256;
 		const confirm = (value) => {
 			try {
 				v.verifyLxdOfficeImageProvenance(value, verificationKeySpki, statementSha256);
-				v.assertLxdOfficePhysicalImage(policy, value);
+				const parsed = v.parseLxdOfficePhysicalPolicy(policy);
+				v.assertLxdOfficePhysicalImage(parsed, value);
+				providerPolicySha256 = v.lxdOfficePhysicalPolicySha256(parsed);
 			} catch {
 				fail("OFFICE_IMAGE_SIGNING_UNCONFIRMED");
 			}
@@ -276,7 +309,8 @@ async function signImage(options) {
 		const files = [
 			["statement.json", json(statement)],
 			["office-image-provenance.json", json(envelope)],
-			["policy-image.json", json(policy)],
+			["policy-image.json", json(fields)],
+			["policy.json", json(policy)],
 		];
 		for (const [file, text] of files) await writeFile(join(options.out, file), text, { mode: 0o400, flag: "wx" });
 		// Re-read what was written: the envelope must verify on its own.
@@ -287,6 +321,7 @@ async function signImage(options) {
 				imageFingerprint: image.fingerprint,
 				statementSha256,
 				keyId,
+				providerPolicySha256,
 				buildEvidenceSha256: hash(build.bytes),
 				acceptanceEvidenceSha256: statement.acceptance.evidenceSha256,
 			}),

@@ -47,14 +47,25 @@ A lost key means a new key, a new signature and a policy with the new SPKI.
 
 ```sh
 sudo bash scripts/build-office-image-production.sh --hostname <node01's hostname> \
-  --folder-program <built qorpera-folder> --evidence /root/office-image/build.json </dev/null
+  --folder-program <built qorpera-folder> --policy /etc/qorpera/office-provider/policy.json \
+  --evidence /root/office-image/build.json </dev/null
 ```
 
-`--project` (`qofleet01`), `--pool` (`qorpera-vm`) and `--root-size` (`80GiB`, 24 to 2048 GiB) have A1's defaults.
+`--project` (`qofleet01`), `--pool` (`qorpera-vm`) and `--root-size` (`80GiB`, 24 to 1024 GiB, a guest's largest root
+in `parseLxdOfficeGuestBinding`) have A1's defaults.
+
+`--policy` is the physical policy the image will be pinned into: `qofleet01`'s installed one. The image's office
+account (`qorpera-office`) gets its workbench account, `workbench.uid`, as both uid and gid. Preparation sends
+`workbench.uid`/`gid` into the guest (`lxd-office-preparation-worker.ts`); the guest's preparation service runs as the
+office account and refuses any other ids (`cloud-company-computer-preparation.ts`); and the guest mounts the workbench
+with no id shift. A policy whose workbench uid and gid differ is refused: the recipe makes the account with one id, so
+that needs a recipe change first (a question for 9f).
 
 It refuses: not root, another hostname, a test machine, no KVM or `vhost_vsock`, a remote LXD, a missing project or
-pool, a dirty checkout, a folder program that is not the pinned build, and an evidence path that exists or lies inside
-the checkout.
+pool, a dirty checkout, a folder program that is not the pinned build, an evidence path that exists or lies inside the
+checkout, a policy that is not `qorpera.lxd-office-physical-policy/v2` with one workbench id, and a workbench
+(`workbench.mountPoint`) that is not an NFS mount owned by that id with mode `0700`, as the provider host requires
+(`lxd-office-physical-host.ts`).
 
 1. It finds the base [`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json)
    pins, by its full fingerprint, in the host's LXD. Only when the project cannot see it, it copies it in (and deletes
@@ -77,16 +88,20 @@ the checkout.
 
 The evidence (`qorpera.office-image-build/v1`, written `0444` only on success, and printed between
 `OFFICE_IMAGE_PRODUCTION_EVIDENCE_BEGIN` and `OFFICE_IMAGE_PRODUCTION_EVIDENCE_END`) names the host, the commit and
-`tree: clean`, the base, project, pool and root size, the office ids, the receipt's and spec's sha256, the published
-image's record, the recipe and package manifest sha256, the apt closure, the dependency measurements, the toolbox, the
-office unit's state, the folder program's sha256 and the folder's unit files.
+`tree: clean`, the base, project, pool and root size, the office ids (the policy's), the receipt's and spec's sha256,
+the published image's record, the recipe and package manifest sha256, the apt closure, the dependency measurements, the
+toolbox, the office unit's state, the folder program's sha256 and the folder's unit files.
 
 ### 3. Cold-boot acceptance (PROD CHANGE: a project and a VM while it runs)
 
 ```sh
 sudo bash scripts/accept-office-image.sh --hostname <node01's hostname> \
-  --evidence /root/office-image/acceptance.json <image fingerprint> qofleet01 </dev/null
+  --policy /etc/qorpera/office-provider/policy.json --evidence /root/office-image/acceptance.json \
+  <image fingerprint> qofleet01 </dev/null
 ```
+
+`--policy` is the build's; the office account it proves is the policy's workbench account. `--root-size` is 24 to
+1024 GiB, at least the build's.
 
 1. It checks the image as `inspectOfficeImage` does, and reads the receipt and package manifest sha256 from its labels.
 2. It creates its own project, `qoa-<random>`, copies the image there, and creates a VM with no profile and only its
@@ -94,7 +109,7 @@ sudo bash scripts/accept-office-image.sh --hostname <node01's hostname> \
 3. It boots it once and checks it has no link but `lo`. Inside, as root, A1's verifier (guest-proof-v3) proves:
    - KVM, UEFI and Secure Boot: exactly one `SecureBoot` variable, the global one, set to 1; the SMBIOS product UUID is
      this VM's;
-   - the office account, 20045: locked, sharing no id, running nothing;
+   - the office account, with the policy's workbench uid and gid: locked, sharing no id, running nothing;
    - the office, preparation, private-mount and folder helper units loaded, unmodified and never started, the office
      service disabled, and no folder mount;
    - every file of the installation receipt, and its measured dependencies;
@@ -121,29 +136,35 @@ that file's sha256 and a reason, so a changed file fails again. Never allow by d
 
 ```sh
 sudo node scripts/sign-office-image-provenance.mjs sign --build /root/office-image/build.json \
-  --acceptance /root/office-image/acceptance.json --key /etc/qorpera-office-signing/office-image-signing.pem \
-  --out /root/office-image/signed
+  --acceptance /root/office-image/acceptance.json --policy /etc/qorpera/office-provider/policy.json \
+  --key /etc/qorpera-office-signing/office-image-signing.pem --out /root/office-image/signed
 ```
 
 It changes nothing in LXD. It holds the two evidence files against each other: one image (the same record in the same
-project), the same receipt, package manifest and spec, the build's labels, and an acceptance root no smaller than the
-build's. Then it signs the `qorpera.lxd-office-image-provenance/v1` statement over its canonical JSON. The statement's
-`evidenceSha256` is the acceptance file's sha256. It checks the envelope with the repository's own
-`verifyLxdOfficeImageProvenance` and `assertLxdOfficePhysicalImage`, writes `statement.json`,
-`office-image-provenance.json` (the envelope) and `policy-image.json` (each `0400`) into a new `0700` directory, and
-checks the written envelope again. A refusal is one `OFFICE_IMAGE_SIGNING_*` code, naming the field it refused.
+project), the same receipt, package manifest and spec, the build's labels, the same office account (one id, the guest's
+the build's), and an acceptance root no smaller than the build's, at most 1024 GiB. It parses `--policy` (the build's)
+as the orchestrator does (`parseLxdOfficePhysicalPolicy`) and holds it against the build: its workbench uid and gid are
+the office account's, its `host.architecture` is the image's, and its `guest.rootDiskBytes` is no smaller than the
+build's root. Then it signs the `qorpera.lxd-office-image-provenance/v1` statement over its canonical JSON. The
+statement's `evidenceSha256` is the acceptance file's sha256. It checks the envelope with the repository's own
+`verifyLxdOfficeImageProvenance` and `assertLxdOfficePhysicalImage`, against the new policy, writes `statement.json`,
+`office-image-provenance.json` (the envelope), `policy-image.json` and `policy.json` (each `0400`) into a new `0700`
+directory, and checks the written envelope again. It prints the new policy's `providerPolicySha256`
+(`lxdOfficePhysicalPolicySha256`). A refusal is one `OFFICE_IMAGE_SIGNING_*` code, naming the field it refused.
 
 ### 5. Pin the image (PROD CHANGE)
 
 `policy-image.json` holds the fields of a physical policy (`lxd-office-physical-policy.ts`) that name the image:
 `guest.imageFingerprint`, `guest.bootstrapSha256`, `host.architecture`, and `image.bytes`,
-`image.guestPackageManifestSha256`, `image.statementSha256` and `image.verificationKeySpki`. The policy's
-`guest.rootDiskBytes` must be at least its `minimumRootDiskBytes`.
+`image.guestPackageManifestSha256`, `image.statementSha256` and `image.verificationKeySpki`, and the smallest
+`guest.rootDiskBytes` it boots in, `minimumRootDiskBytes`. `policy.json` is `--policy` with only those `guest` and
+`image` fields replaced.
 
-As for A1 (its policy preparation, then `installOfficeFleetService` and the provider's enrolment): write those fields
-into `qofleet01`'s policy, install it as `policy.json` with the envelope as `provenance.json` under
-`/etc/qorpera/office-provider` (the office installation's documents; the spec pins the policy's sha256), and install the
-fleet service. Review the policy's diff before applying it.
+As for A1 (its policy preparation, then `installOfficeFleetService` and the provider's enrolment): review the diff of
+the signer's `policy.json` against the installed one (only `guest.imageFingerprint`, `guest.bootstrapSha256` and
+`image` change), install it as `policy.json` (`0444`) with the envelope as `provenance.json` under
+`/etc/qorpera/office-provider` (the office installation's documents; the spec's `providerPolicySha256` is the one the
+signer printed), and install the fleet service.
 
 Add the new fingerprint to node-tidy's `keepFingerprints` before its 48 hours run out, and keep A1's there for the
 rollback.
@@ -156,10 +177,11 @@ the new image only after nothing names it.
 
 ## What it does not cover
 
-- The workbench account of `qofleet01`'s policy (A1: 20048) is the host's; the image's office account is 20045 inside
-  the guest, as in A1 (the P2 candidate, the remount harness and the image's rendered mount unit were proven with
-  20045). The cold-boot acceptance attaches no workbench disk, but production mounts the host's `workbenchSource` at
-  `/var/lib/qorpera-office` with no shift (`lxd-office-guest.ts`, `devices.workbench`). So the first office start on
-  node01 is the first check of that pair: watch that start.
+- A configured preparation. The cold-boot acceptance attaches no workbench and sends no preparation request, so the
+  first office start on node01 is the first one with this image. The ids it compares are one by construction: the
+  builder gives the office account the policy's workbench id and checks the workbench backing has it, the acceptance
+  proves the guest's account has it, and the signer refuses a policy with any other. A1's image has 20045, while
+  `qofleet01`'s policy names 20048 as its workbench account; built from that policy, the new image's account is 20048.
+  Watch that first start.
 - The build evidence's sha256 is printed by the signer, not signed; the statement signs the acceptance's.
 - node02, and any image but the office's.
