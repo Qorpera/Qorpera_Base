@@ -15,6 +15,7 @@ import {
 import {
 	CLOUD_RUN_LOG_BLOCK_BYTES,
 	CLOUD_RUN_LOG_FIELD_BYTES,
+	CLOUD_RUN_LOG_PATHS,
 	CLOUD_RUN_LOG_READS_BYTES,
 	CLOUD_RUN_LOG_STEP_BYTES,
 	CloudRunLog,
@@ -26,6 +27,7 @@ import {
 	CloudRunLogUnavailable,
 	type CloudRunTreeBlock,
 	cloudRunLogPaths,
+	cloudRunLogStepPaths,
 	recordCloudRunLogRelease,
 } from "@qorpera/runtime/cloud-run-log";
 import { CloudRunLogRpcProtection } from "@qorpera/runtime/cloud-run-log-protection";
@@ -35,7 +37,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const companyId = randomUUID();
 const conversationId = randomUUID();
 const ROOT = `agents/scout/sessions/${conversationId}`;
-const KEYS = ["j", "tool", "call", "args", "args_bytes", "args_hash", "result", "reads", "releases", "text", "at"];
+const KEYS = [
+	"j",
+	"tool",
+	"call",
+	"args",
+	"args_bytes",
+	"args_hash",
+	"result",
+	"reads",
+	"releases",
+	"paths",
+	"text",
+	"at",
+];
 
 function sha(text: string): string {
 	return createHash("sha256").update(text).digest("hex");
@@ -669,6 +684,8 @@ describe("a run's work log", () => {
 			result: JSON.parse(envelope("Prices: 12 EUR")),
 			reads: [{ path: released.path, version: released.version }],
 			releases: [expect.any(String)],
+			// Its arguments' path: a read's path stays with the reads copy.
+			paths: ["sales/prices.md"],
 			text: "Checking the prices.",
 			at: "2026-10-06T09:12:03Z",
 		});
@@ -770,15 +787,16 @@ describe("a run's work log", () => {
 		expect(Object.keys(small!)).toEqual(KEYS);
 	});
 
-	it("fits a step with very many release parts into 41 KiB: the copies give way, never the release ids", async () => {
+	it("fits a step with very many release parts into 49 KiB: the copies give way, never the release ids", async () => {
 		const { folder, log, signal } = runLog();
+		// Past qorpera_company_path_valid's 4,096 bytes: no company path, so the line names none.
 		const args = { path: "p".repeat(9000) };
 		const argumentsText = JSON.stringify(args);
 		const reads = Array.from({ length: 400 }, (_, index) => read(`sales/${index}.md`));
 		const parts = (count: number) =>
 			Array.from({ length: count }, (_, index) => ({ releaseId: randomUUID(), reads: index ? [] : reads }));
-		const some = parts(100);
-		const many = parts(700);
+		const some = parts(300);
+		const many = parts(1000);
 		for (const releases of [some, many]) {
 			log.agentText("t".repeat(9000));
 			log.finish(step(log, "company_search", args), envelope("r".repeat(7900)), releases);
@@ -805,6 +823,7 @@ describe("a run's work log", () => {
 			reads_cut: true,
 			text: "",
 			releases: many.map((release) => release.releaseId),
+			paths: [],
 			result: JSON.parse(envelope("r".repeat(7900))),
 		});
 		expect((second!.args as string).length).toBeGreaterThan(0);
@@ -815,6 +834,83 @@ describe("a run's work log", () => {
 			[first!.args, first!.text],
 			[second!.args, ""],
 		]);
+	});
+
+	it("names its arguments' paths on a pending line, adds its result's when finished, never its reads", async () => {
+		const { folder, log, signal } = runLog();
+		const j = step(log, "company_move", { from: "/company/sales/a.md", to: "sales/b.md", paths: ["sales/a.md", 7] });
+		await log.precommit(j, signal);
+		const pending = folder.all()[0]!;
+		expect(pending).toMatchObject({ result: null, reads: [] });
+		expect(new Set(pending.paths as string[])).toEqual(new Set(["sales/a.md", "sales/b.md"]));
+		expect(pending.paths).toHaveLength(2);
+		log.finish(
+			j,
+			envelope("Moved"),
+			[{ releaseId: randomUUID(), reads: [read("sales/read.md")] }],
+			["/company/sales/b.md", "sales/c.md"],
+		);
+		await log.flush(signal);
+		const line = folder.all()[0]!;
+		expect(line).toMatchObject({ reads: [expect.objectContaining({ path: "sales/read.md" })] });
+		expect(new Set(line.paths as string[])).toEqual(new Set(["sales/a.md", "sales/b.md", "sales/c.md"]));
+		expect(line.paths).toHaveLength(3);
+	});
+
+	it("strips /company/ from a step's paths, names each once, and leaves out strings no company path can be", () => {
+		const nul = `a${String.fromCharCode(0)}b`;
+		const lone = `a${String.fromCharCode(0xd800)}b`;
+		const args = JSON.stringify({ path: "/company/a.md", paths: ["a.md", "", "/company/", nul, "x".repeat(4097)] });
+		const paths = cloudRunLogStepPaths(args, ["b.md", "/company/a.md", lone, "é".repeat(2048)], ["c.md", "a.md"]);
+		expect(new Set(paths)).toEqual(new Set(["a.md", "b.md", "é".repeat(2048), "c.md"]));
+		expect(paths).toHaveLength(4);
+		expect(cloudRunLogStepPaths(args, [], [])).toEqual(["a.md"]);
+		expect(() => cloudRunLogStepPaths("{}", [7 as never], [])).toThrow("paths_invalid");
+	});
+
+	it("keeps up to 1,024 paths and 8 KiB of them on a public line", async () => {
+		const many = Array.from({ length: CLOUD_RUN_LOG_PATHS }, (_, index) => `p/${index}`);
+		const long = ["a".repeat(4096), "b".repeat(4089)];
+		expect(Buffer.byteLength(JSON.stringify(long))).toBe(CLOUD_RUN_LOG_FIELD_BYTES);
+		for (const [paths, narrow] of [
+			[many, false],
+			[[...many, "p/x"], true],
+			[long, false],
+			[[long[0]!, `${long[1]}b`], true],
+		] as const) {
+			const { folder, log, signal } = runLog();
+			log.finish(step(log, "company_read", {}), envelope("x"), [], paths);
+			await log.flush(signal);
+			const [line] = folder.all();
+			expect(line!.narrow === true).toBe(narrow);
+			if (!narrow) expect(line!.paths).toEqual(paths);
+		}
+	});
+
+	it.each([
+		{
+			by: "its arguments",
+			args: { paths: Array.from({ length: 1025 }, (_, index) => `OVERFLOW/${index}.md`) },
+			result: [],
+		},
+		{
+			by: "its result",
+			args: { path: "sales/a.md" },
+			result: [`OVERFLOW/${"a".repeat(4087)}`, `OVERFLOW/${"b".repeat(4087)}`],
+		},
+	])("writes a step narrow when $by name too many paths, and every step after it", async ({ args, result }) => {
+		const { folder, log, signal } = runLog();
+		log.finish(step(log, "company_read"), envelope("before"), []);
+		await log.flush(signal);
+		const j = step(log, "company_write", args);
+		await log.precommit(j, signal);
+		// A pending line names only its arguments' paths: one whose result overflows is public until it is finished.
+		expect(folder.all()[1]!.narrow === true).toBe(result.length === 0);
+		log.finish(j, envelope("Written"), [], result);
+		log.finish(step(log, "company_list", { path: "sales" }), envelope("AFTER"), []);
+		await log.flush(signal);
+		expect(folder.all().map((line) => line.narrow === true)).toEqual([false, true, true]);
+		expect(JSON.stringify(folder.commits)).not.toMatch(/OVERFLOW|Written|AFTER/);
 	});
 
 	it("starts a new block at 16 steps, and before a block passes 64 KiB", async () => {

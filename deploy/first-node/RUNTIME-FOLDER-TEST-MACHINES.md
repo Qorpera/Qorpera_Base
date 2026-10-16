@@ -193,6 +193,9 @@ mount propagation proof for a container started before the mount came up.
 - **Item 8's caches** stay on the machine's disk: "The folder program keeps item 8's caches on the machine." Step 6
   uses that part of the program as whichever slice builds it first leaves it (step 5's plan: "whichever of it and 5d
   lands first builds the program's part, and the other reuses it"). 6e, which retires the copy to the machine's disk, waits for it.
+  5d builds that part for worktrees, and item 8's plan
+  ([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)) extends it; there a test machine's cache is
+  one per machine, in the folder 6d's guest gives (`--cache-dir`).
 - **The toolbox** (item 7): "Agents' own machines and test machines start from a base image that carries it." 6c adds
   to `build-machine-image.sh` what today's image lacks of 4e's list (`tsc` and `tsx`, uv, ripgrep, fd, sqlite3, zip and
   LibreOffice), with `fuse3` and the folder program, in a new image generation. The image tests are 4e's: every
