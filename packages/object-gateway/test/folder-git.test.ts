@@ -698,11 +698,17 @@ describe("the lock protocol in the folder service", () => {
 			core.releases
 				.filter((r) => r.viewId === SESSIONS.second.viewId)
 				.flatMap((r) => r.reads.map((read) => read.path));
-		const publish = core.gitPublish.bind(core);
+		// The other view's reads the core had when each git change reached it (a ref's update, a lease's release with units).
 		const atPublish: string[][] = [];
+		const publish = core.gitPublish.bind(core);
 		core.gitPublish = async (...args) => {
 			atPublish.push(otherReads());
 			return publish(...args);
+		};
+		const release = core.gitLeaseRelease.bind(core);
+		core.gitLeaseRelease = async (...args) => {
+			if (args[3] !== null) atPublish.push(otherReads());
+			return release(...args);
 		};
 		// git on the machine read a branch's log through the other view.
 		await other.read({ path: MAIN_LOG, version: v(102), offset: 0, length: 10 });
