@@ -9,6 +9,7 @@ import {
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
+import { CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
@@ -440,7 +441,18 @@ it("says which changes were not applied and why", async () => {
 				{ unit: 5, op: "write", path: "docs/b.md", outcome: "conflict", reason: "exists" },
 			]),
 	});
-	const result = parse(await f.apply.execute({ proposalId: MIXED }, f.context));
+	// An apply that saved nothing is observed as denied with why, never as succeeded (P5 pass 2 finding 1).
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async () => {},
+	});
+	const observed = async (x: typeof f, proposalId: string) => {
+		const span = observability.start("apply_proposal");
+		const answer = parse(await x.apply.execute({ proposalId }, { ...x.context, observation: span }));
+		return { answer, observed: [span.result?.status, span.result?.errorCategory] };
+	};
+	const { answer: result, observed: mixed } = await observed(f, MIXED);
+	expect(mixed).toEqual(["succeeded", null]);
 	expect(result).toMatchObject({
 		outcome: "applied",
 		saved: 1,
@@ -463,7 +475,8 @@ it("says which changes were not applied and why", async () => {
 		apply: () =>
 			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "conflict", reason: "exists" }]),
 	});
-	const none = parse(await g.apply.execute({ proposalId: HIRE }, g.context));
+	const { answer: none, observed: stale } = await observed(g, HIRE);
+	expect(stale).toEqual(["denied", "stale_version"]);
 	expect(none).toMatchObject({ outcome: "not_applied", saved: 0, notSaved: [{ path: "agents/mira" }] });
 	expect(none.hired).toBeUndefined();
 	// The commit is still the receipt's: nothing was saved, and the receipt says so.
@@ -473,7 +486,8 @@ it("says which changes were not applied and why", async () => {
 		apply: () =>
 			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "denied", reason: "review_required" }]),
 	});
-	const decided = parse(await h.apply.execute({ proposalId: HIRE }, h.context));
+	const { answer: decided, observed: gone } = await observed(h, HIRE);
+	expect(gone).toEqual(["denied", "invalid_arguments"]);
 	expect(decided).toMatchObject({
 		outcome: "not_applied",
 		saved: 0,
@@ -481,6 +495,7 @@ it("says which changes were not applied and why", async () => {
 	});
 	expect(decided.notSaved).toBeUndefined();
 	expect(h.operationControl.completeFolderToolOperation.mock.calls[0]?.[1]).toMatchObject({ folderCommitId: COMMIT });
+	await observability.close();
 });
 
 it("refuses before any receipt when the proposal is no longer open, or the call has no approval", async () => {
