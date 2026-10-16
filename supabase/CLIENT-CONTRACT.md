@@ -234,15 +234,13 @@ they answer 42501 "native host call is refused".
 A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
 answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
 with legacy sweep E1 (20260930400000).
+The raw object reads and uploads by hash and the read lease went with legacy sweep E3 (20260930450000).
 
 - `qorpera_append_object_reachability_entries`
-- `qorpera_authorize_profile_object_download`
-- `qorpera_authorize_profile_object_upload`
 - `qorpera_begin_object_reachability_graph`
 - `qorpera_complete_object_reachability_graph`
 - `qorpera_create_object_restore_proof`
 - `qorpera_get_object_reachability_graph`
-- `qorpera_issue_profile_object_read_lease`
 - `qorpera_profile_object_writes_allowed`
 
 
