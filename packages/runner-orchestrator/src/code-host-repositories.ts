@@ -3,13 +3,14 @@ import type { CloudCodingRepository } from "@qorpera/contracts";
 import { codeAreaPath } from "./code-host-jobs.ts";
 import type { CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs, CodeHostSession } from "./code-host-views.ts";
-import type { CodingFolderRepositories, CodingFolderRepositorySession } from "./coding-folder-repositories.ts";
+import {
+	CODING_FOLDER_COMPANY_ROOT,
+	type CodingFolderRepositories,
+	type CodingFolderRepositorySession,
+} from "./coding-folder-repositories.ts";
 
 /** The largest bundle a session's export hands the broker's push: the NAS path's cap (coding-git-transfer.ts). */
 export const CODE_HOST_EXPORT_MAXIMUM_BYTES = 64 * 1024 ** 2;
-
-/** Where a coding machine mounts its session's view of the company folder. */
-const GUEST_COMPANY_ROOT = "/company";
 
 /** The coding sessions' repositories on the folder path (F3 step 5g-6b). A session works in its own locked worktree
  * of its company's code area, `/company/code/<owner>/<name>/worktrees/<workerId>` (lower-case, `codeAreaPath`) on
@@ -26,7 +27,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	async prepare(session: CodingFolderRepositorySession, signal: AbortSignal): Promise<{ cwd: string }> {
 		const value = codeHostSession(session);
 		await this.#jobs.attach(value, codeAreaBroker(session), signal);
-		return { cwd: `${GUEST_COMPANY_ROOT}/${codeAreaPath(value.repository)}/worktrees/${value.workerId}` };
+		return { cwd: `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(value.repository)}/worktrees/${value.workerId}` };
 	}
 
 	/** The session's branch at `headSha` as a thin bundle over its base, or null when the branch is still at its base. */

@@ -40,7 +40,8 @@ export interface CodingFolderRepositories {
 	export(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<Buffer | null>;
 }
 
-/** Where a session's commands start until 5g-6b: the company folder itself. */
+/** Where a coding machine mounts its session's view of the company folder, and where the session's commands start
+ * when the executor has no code hosts. */
 export const CODING_FOLDER_COMPANY_ROOT = "/company";
 
 /** Phase A's repositories: none. Commands start at the company folder, and a finished turn has nothing to push. */
