@@ -11,8 +11,9 @@ const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, .
 	"qorpera_authorize_machine_command", "qorpera_native_binding_proven"]);
 
 /** Calls whose refusal (SQLSTATE 42501) the caller acts on: a test machine's folder view open, which the executor
- * answers with a boot without /company (F3 6d). The code host's open (F3 5e-3b) is the same call; it fails on a
- * refusal as on any other failure (`CODE_HOST_VIEW_UNAVAILABLE`). */
+ * answers with a boot without /company, or with a move to a new disk when the open refused its disk (F3 6d). The
+ * code host's open (F3 5e-3b) is the same call; it fails on a refusal as on any other failure
+ * (`CODE_HOST_VIEW_UNAVAILABLE`). */
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
