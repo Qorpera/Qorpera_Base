@@ -62,8 +62,6 @@ begin
 			'public.qorpera_reject_runtime_bundle_mutation()'::regprocedure,
 			'public.qorpera_guard_native_launch_replacement()'::regprocedure,
 			'public.qorpera_coding_session_turn_guard()'::regprocedure,
-			'public.qorpera_guard_legacy_company_computer_teardown()'::regprocedure,
-			'public.qorpera_guard_torn_down_legacy_company_computer()'::regprocedure,
 			'public.qorpera_guard_office_delete_disposition()'::regprocedure);
 	if v_unexpected is not null then
 		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
@@ -80,8 +78,6 @@ begin
 		('qorpera_reject_runtime_bundle_mutation', '42501', 'Runtime bundles are immutable'),
 		('qorpera_guard_native_launch_replacement', '42501', 'Native launch provenance is immutable'),
 		('qorpera_coding_session_turn_guard', '55000', 'A coding turn is history and cannot be removed'),
-		('qorpera_guard_legacy_company_computer_teardown', '42501', 'Legacy company computer teardown evidence is immutable'),
-		('qorpera_guard_torn_down_legacy_company_computer', null, null),
 		('qorpera_guard_office_delete_disposition', '42501', 'Office delete disposition is immutable')) as guard(name, state, message)
 	loop
 		execute format('create trigger purge_guard before delete on purge_guard_probe for each row execute function public.%I()', v_guard.name);

@@ -186,8 +186,11 @@ mapfile -t tools < <(jq -r '.npm[] | "\(.name)@\(.version)"' "$recipe")
 HOME="$work" PATH="$work/node/bin:$PATH" npm_config_update_notifier=false npm install --global --prefix "$work/npm-prefix" \
 	--cache "$deps/npm-cache" --ignore-scripts --no-fund --no-audit "${tools[@]}"
 
-# The office package (INSTALLATION.md) and the toolbox probe.
-node scripts/package-company-computer.mjs --out "$push/package" >/dev/null
+# The company folder's program, built in its pinned Rust image; the packager refuses any program but the one
+# deploy/folder-service/folder-program-linux-x64.json pins. Then the office package (INSTALLATION.md) with the folder,
+# and the toolbox probe.
+node scripts/build-folder-program.mjs --out "$work/qorpera-folder" >"$work/folder-record.json"
+node scripts/package-company-computer.mjs --out "$push/package" --folder-program "$work/qorpera-folder" >/dev/null
 node --input-type=module -e '
 import { build } from "esbuild";
 await build({ absWorkingDir: process.argv[1], entryPoints: ["packages/runtime/test/fixtures/company-computer-linux-toolbox-probe.ts"],
@@ -266,6 +269,18 @@ lx exec "$vm" -- systemctl show qorpera-company-computer.service --property Load
 	--property InactiveExitTimestampMonotonic,ExecMainStartTimestampMonotonic >"$work/office-unit"
 [[ $(sort "$work/office-unit" | tr '\n' ' ') == "ActiveState=inactive ExecMainStartTimestampMonotonic=0 InactiveExitTimestampMonotonic=0 LoadState=loaded UnitFileState=disabled " ]] ||
 	fail "the office unit is not installed, disabled and never started: $(tr '\n' ' ' <"$work/office-unit")"
+# The company folder's units have no [Install]: the helper's socket starts with the office service, and the helper
+# starts one mount per computer. None has started.
+lx exec "$vm" -- systemctl list-unit-files --no-legend --no-pager 'qorpera-office-folder-*' >"$work/folder-unit-files"
+[[ $(awk '{print $1, $2}' "$work/folder-unit-files" | sort | tr '\n' ' ') == "qorpera-office-folder-helper.service static qorpera-office-folder-helper.socket static qorpera-office-folder-mount@.service static " ]] ||
+	fail "the company folder's unit files: $(tr '\n' ' ' <"$work/folder-unit-files")"
+for unit in qorpera-office-folder-helper.socket qorpera-office-folder-helper.service; do
+	[[ $(lx exec "$vm" -- systemctl show "$unit" --property ActiveState,InactiveExitTimestampMonotonic | sort | tr '\n' ' ') == \
+		"ActiveState=inactive InactiveExitTimestampMonotonic=0 " ]] || fail "$unit has started"
+done
+lx exec "$vm" -- sha256sum /opt/qorpera-folder/qorpera-folder >"$work/folder-program"
+[[ $(awk '{print $1}' "$work/folder-program") == $(jq -r .sha256 "$repo/deploy/folder-service/folder-program-linux-x64.json") ]] ||
+	fail "the installed folder program is not the pinned one"
 
 # Seal: nothing of the build stays in the image, and the next boot is a new machine.
 lx exec "$vm" -- rm -rf /root/push "$probe"
@@ -294,6 +309,7 @@ jq -n --slurpfile measured "$work/measured.json" --slurpfile probe "$work/probe.
 	--arg recipe "$(sha256sum "$recipe" | awk '{print $1}')" \
 	--arg package "$(sha256sum "$push/package/manifest.json" | awk '{print $1}')" \
 	--arg closure "$(wc -l <"$work/wanted")" --rawfile root "$work/root-toolbox.txt" --rawfile office "$work/office-unit" \
+	--arg folder "$(awk '{print $1}' "$work/folder-program")" --rawfile folderUnits "$work/folder-unit-files" \
 	--rawfile denials "$work/apparmor-denials" --slurpfile fuseStdio "$work/fusermount3-stdio.json" \
 	--rawfile fuseProfile "$work/fusermount3-profile" --rawfile fuseDenials "$work/fusermount3-denials" \
 	'{base: $base, candidate: $candidate, staged: (if $staged == "" then null else $staged end), recipeSha256: $recipe,
@@ -304,5 +320,6 @@ jq -n --slurpfile measured "$work/measured.json" --slurpfile probe "$work/probe.
 	fusermount3AsRoot: {kernel: ($fuseProfile | split("\n")[0]), appArmor: ($fuseProfile | split("\n")[1]),
 		stdio: $fuseStdio[0], appArmorDenials: ($fuseDenials | split("\n") | map(select(. != "")))},
 	officeUnit: ($office | split("\n") | map(select(. != "") | split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries),
+	folderProgramSha256: $folder, folderUnitFiles: ($folderUnits | split("\n") | map(select(. != "") | split(" ") | map(select(. != "")))),
 	network: "none"}' >"$work/evidence.json"
 echo "Office image candidate $candidate from base $base${staged:+, staged at $staged/img.tar.gz}"

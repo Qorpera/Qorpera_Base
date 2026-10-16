@@ -5,9 +5,20 @@ node health receipts and the `qorpera_runtime_node_health(node_id)` and
 `qorpera_runtime_node_health_history(node_id, before_time, before_id, limit)`
 queries. These measurements never authorize admission or release capacity.
 
-The unprivileged installed observer starts one fixed child process per sample.
-It checks protected machine identity, boot/mount namespace, inventory policy and
-the installed package receipt before reporting:
+The unprivileged observer starts one child process per sample: its own file
+(`process.argv[1]`) with `--health-probe`, so the child reads the same
+configuration as the observer. It checks protected machine identity, boot/mount
+namespace and inventory policy, and names its software, before reporting. The
+first installation (`/opt/qorpera/node-observer/qorpera-node-observer.cjs`) is
+named by its installed package receipt, which must name the policy and the
+observer's account. A cut's observer file (`deploy/agent-exit/ROLLOUT.md` step
+4) has no receipt and is named by the SHA-256 of its own bytes, read only when
+the file and every directory above it are root-owned and not group- or
+world-writable. Until v180 the probe always ran the first installation's path,
+which the cuts' observers do not use, so every sample was
+`COLLECTION_UNCONFIRMED`. Run by hand, a failed probe prints
+`NODE_HEALTH_COLLECTION_UNCONFIRMED` and the closed code that stopped it, never
+an error's text or a path; the observer ignores the probe's stderr. It reports:
 
 - CPU busy basis points over a one-second sample of Node's OS CPU time counters,
   summed across CPUs and excluding idle time; the original interval is retained.
