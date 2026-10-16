@@ -1,9 +1,9 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Fewer pg_cron runs (20260930483000): the follow-up step every 10 seconds, the erasure drain every 30 seconds, node
 -- receipt retention hourly, and one daily cleanup of every qorpera job's run log. The follow-up step asks whether a
--- company's follow-ups may run once per company with marks (it asked once per mark). Last, the three jobs' steps are
--- timed with nothing to do, the old follow-up step beside the new one, and then each run on a fresh connection as
--- production's pg_cron runs it (printed, not checked).
+-- company's follow-ups may run once per company with marks (it asked once per mark). Last, the three jobs' runs are
+-- timed on a fresh connection each, as production's pg_cron runs them, and their steps with nothing to do in this
+-- session, the old follow-up step beside the new one (printed, not checked).
 
 reset role;
 
@@ -134,7 +134,40 @@ select current_setting('qorpera_test.fq_open') as fq_open \gset
 \echo 668 company checks: :fq_open
 reset track_functions;
 
--- 3. The timing with nothing to do (the test marks gone, the company running again): the old and new follow-up steps in
+-- 3. A run as production's pg_cron makes it (cron.use_background_workers off): a fresh connection for each run, the step
+--    in its own transaction (rolled back here), then the connection closes. Each job's run 10 times, an empty run
+--    (select 1) beside them; the cost a minute is the runs a minute times the mean run (printed only). This comes before
+--    4, whose retention runs hold the retention status row until this transaction ends.
+do $$
+declare v_start timestamptz; v_ms jsonb := '{}'; v_total double precision; c_rounds constant integer := 10;
+	v_job record;
+begin
+	for v_job in select * from (values ('empty', '1'),
+		('follow-ups', 'public.qorpera_folder_follow_up_step()'),
+		('erasure', 'public.qorpera_folder_erasure_step()'),
+		('retention', 'public.qorpera_run_runtime_node_receipt_retention()')) j(name, call) loop
+		v_total := 0;
+		for i in 1 .. c_rounds loop
+			v_start := clock_timestamp();
+			perform dblink_connect('fq_cron', 'dbname=' || current_database());
+			perform dblink_exec('fq_cron', 'begin');
+			perform * from dblink('fq_cron', format('select (%s)::text', v_job.call)) as t(v text);
+			perform dblink_exec('fq_cron', 'rollback');
+			perform dblink_disconnect('fq_cron');
+			v_total := v_total + extract(epoch from clock_timestamp() - v_start);
+		end loop;
+		v_ms := v_ms || jsonb_build_object(v_job.name, round((1000 * v_total / c_rounds)::numeric, 1));
+	end loop;
+	perform set_config('qorpera_test.fq_cron', format('ms a run %s; ms a minute: follow-ups %s -> %s, erasure %s -> %s, retention %s -> %s',
+		v_ms, round(30 * (v_ms ->> 'follow-ups')::numeric), round(6 * (v_ms ->> 'follow-ups')::numeric),
+		round(12 * (v_ms ->> 'erasure')::numeric), round(2 * (v_ms ->> 'erasure')::numeric),
+		round(0.2 * (v_ms ->> 'retention')::numeric, 1), round((v_ms ->> 'retention')::numeric / 60, 1)), true);
+end
+$$;
+select current_setting('qorpera_test.fq_cron') as fq_cron \gset
+\echo 668 cron runs: :fq_cron
+
+-- 4. The timing with nothing to do (the test marks gone, the company running again): the old and new follow-up steps in
 --    turn, the erasure step and a retention run, 20 times each (printed only).
 delete from public.qorpera_folder_follow_up_marks where environment_id = '92400000-0000-4000-8000-000000000020';
 delete from public.qorpera_company_execution_pauses where profile_id = (select profile_id from public.qorpera_company_files
@@ -166,37 +199,5 @@ end
 $$;
 select current_setting('qorpera_test.fq_ms') as fq_ms \gset
 \echo 668 timing: :fq_ms
-
--- 4. A run as production's pg_cron makes it (cron.use_background_workers off): a fresh connection for each run, the step
---    in its own transaction (rolled back here), then the connection closes. Each job's run 10 times, an empty run
---    (select 1) beside them; the cost a minute is the runs a minute times the mean run (printed only).
-do $$
-declare v_start timestamptz; v_ms jsonb := '{}'; v_total double precision; c_rounds constant integer := 10;
-	v_job record;
-begin
-	for v_job in select * from (values ('empty', '1'),
-		('follow-ups', 'public.qorpera_folder_follow_up_step()'),
-		('erasure', 'public.qorpera_folder_erasure_step()'),
-		('retention', 'public.qorpera_run_runtime_node_receipt_retention()')) j(name, call) loop
-		v_total := 0;
-		for i in 1 .. c_rounds loop
-			v_start := clock_timestamp();
-			perform dblink_connect('fq_cron', 'dbname=' || current_database());
-			perform dblink_exec('fq_cron', 'begin');
-			perform * from dblink('fq_cron', format('select (%s)::text', v_job.call)) as t(v text);
-			perform dblink_exec('fq_cron', 'rollback');
-			perform dblink_disconnect('fq_cron');
-			v_total := v_total + extract(epoch from clock_timestamp() - v_start);
-		end loop;
-		v_ms := v_ms || jsonb_build_object(v_job.name, round((1000 * v_total / c_rounds)::numeric, 1));
-	end loop;
-	perform set_config('qorpera_test.fq_cron', format('ms a run %s; ms a minute: follow-ups %s -> %s, erasure %s -> %s, retention %s -> %s',
-		v_ms, round(30 * (v_ms ->> 'follow-ups')::numeric), round(6 * (v_ms ->> 'follow-ups')::numeric),
-		round(12 * (v_ms ->> 'erasure')::numeric), round(2 * (v_ms ->> 'erasure')::numeric),
-		round(0.2 * (v_ms ->> 'retention')::numeric, 1), round((v_ms ->> 'retention')::numeric / 60, 1)), true);
-end
-$$;
-select current_setting('qorpera_test.fq_cron') as fq_cron \gset
-\echo 668 cron runs: :fq_cron
 
 rollback;
