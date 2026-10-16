@@ -1,6 +1,18 @@
 import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CODING_GUEST, type CodingGuestRequests } from "@qorpera/contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingFolderBoundary } from "../src/coding-folder-control.ts";
 import { CodingFolderViewRefused, CodingFolderViews } from "../src/coding-folder-views.ts";
@@ -35,6 +47,12 @@ const PROGRAM = Buffer.from("the folder program");
 const NAME = lxdCodingMachineName(MACHINE);
 const CLOSED = { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" };
 const INSTALL_UNCONFIRMED = "CODING_FOLDER_GUEST_INSTALL_UNCONFIRMED";
+const RECORD_FAILED = "CODING_FOLDER_VIEW_RECORD_FAILED";
+
+const roots: string[] = [];
+afterEach(() => {
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 const binding = (machineId: string) =>
 	codingMachineFixture({ machineId, companyId: COMPANY, environmentId: ENVIRONMENT, memberUserId: MEMBER });
@@ -133,6 +151,8 @@ function fixture({ installed = true }: { installed?: boolean } = {}) {
 		close: [] as Scripted<unknown>[],
 		closeAfter: CLOSED as Scripted<unknown>,
 		boundary: released,
+		/** Whether the node's coding storage is unmounted, as each use of the records checks before and after. */
+		unmounted: (() => false) as () => boolean,
 	};
 	const done = (exitCode: number, stdout = "") => ({ exitCode, stdout: Buffer.from(stdout), stderr: Buffer.alloc(0) });
 	const client: LxdInstanceExecStreamClient & LxdInstanceProgramClient = {
@@ -206,10 +226,20 @@ function fixture({ installed = true }: { installed?: boolean } = {}) {
 			return script.boundary(machine, final);
 		},
 	};
-	const options = { control, folder, client, agent: AGENT, program: PROGRAM, retryMs: 1 };
+	// The records' folder is made in a parent that exists, as on the storage.
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "coding-folder-views-")));
+	roots.push(parent);
+	const records = {
+		root: join(parent, "folder-views"),
+		async assert() {
+			if (script.unmounted()) throw new Error("CODING_STORAGE_UNMOUNTED");
+		},
+	};
+	const options = { control, folder, client, agent: AGENT, program: PROGRAM, records, retryMs: 1 };
 	return {
 		views: new CodingFolderViews(options),
 		options,
+		root: records.root,
 		script,
 		events,
 		files,
@@ -377,6 +407,14 @@ describe("CodingFolderViews", () => {
 				const at = fixture();
 				expect(await failure(at.views.attach(asked, until, live()))).toBe("CODING_FOLDER_VIEW_REQUEST_INVALID");
 				expect(at.events).toEqual([]);
+			}
+		});
+
+		it("takes a deadline in a fraction of a millisecond, or past a timer's range", async () => {
+			for (const until of [later() + 0.5, Date.now() + 2 ** 33]) {
+				const at = fixture();
+				await expect(at.views.attach(session(), until, live())).resolves.toEqual({ viewId: VIEWS[0] });
+				expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
 			}
 		});
 
@@ -695,7 +733,7 @@ describe("CodingFolderViews", () => {
 			}
 		});
 
-		it("reports whether the core confirmed the close, and never rejects", async () => {
+		it("reports whether the core confirmed the close, and forgets the view either way", async () => {
 			const cases: [Scripted<unknown>[], number, boolean][] = [
 				[[new CodingControlBusy()], 2, true],
 				[[new Error("CODING_CONTROL_UNCONFIRMED")], 2, true],
@@ -723,20 +761,34 @@ describe("CodingFolderViews", () => {
 			await expect(bounded.end(WORKER, live())).resolves.toMatchObject({ viewId: VIEWS[0], closed: false });
 			expect(misanswered.closes.length).toBeGreaterThan(1);
 			await expect(bounded.end(WORKER, live())).resolves.toBeUndefined();
-			// A caller that already stopped: one try, and the view is left to lapse with its lease.
+		});
+
+		it("rejects with the caller's reason once the caller stopped, keeping the view's record for a later end", async () => {
+			const reason = new Error("the executor is stopping");
 			const at = fixture();
 			await at.views.attach(session(), later(), live());
-			at.script.close.push(new CodingControlBusy());
+			at.events.splice(0);
 			const stopped = new AbortController();
-			stopped.abort(new Error("the executor is stopping"));
-			await expect(at.views.end(WORKER, stopped.signal)).resolves.toEqual({
+			stopped.abort(reason);
+			await expect(at.views.end(WORKER, stopped.signal)).rejects.toBe(reason);
+			expect(at.events).toEqual([]);
+			// Stopped during its close: one try, and the record stays.
+			const stopping = new AbortController();
+			at.script.close.push(() => {
+				stopping.abort(reason);
+				return new CodingControlBusy();
+			});
+			await expect(at.views.end(WORKER, stopping.signal)).rejects.toBe(reason);
+			expect(at.events.splice(0)).toEqual(["boundary", "close"]);
+			expect(readdirSync(at.root)).toEqual([`${WORKER}.json`]);
+			await expect(at.views.end(WORKER, live())).resolves.toEqual({
 				workerId: WORKER,
 				viewId: VIEWS[0],
 				saved: true,
-				closed: false,
+				closed: true,
 			});
-			expect(at.closes).toHaveLength(1);
-			await expect(at.views.end(WORKER, live())).resolves.toBeUndefined();
+			expect(at.events).toEqual(["boundary", "close"]);
+			expect(readdirSync(at.root)).toEqual([]);
 		});
 	});
 
@@ -786,6 +838,138 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.endMachine(OTHER_MACHINE, live())).resolves.toEqual([]);
 			await expect(at.views.endMachine("not-a-uuid", live())).resolves.toEqual([]);
 			expect(at.events).toEqual([]);
+		});
+	});
+
+	describe("records", () => {
+		it("records each view it holds, until it ends: a restarted executor shows it again, or ends it", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			await at.views.attach(session({ workerId: WORKER_2, attachmentToken: TOKEN_2, uid: 200002 }), later(), live());
+			expect(statSync(at.root).mode & 0o7777).toBe(0o700);
+			expect(readdirSync(at.root).sort()).toEqual([`${WORKER}.json`, `${WORKER_2}.json`]);
+			const record = join(at.root, `${WORKER}.json`);
+			expect(statSync(record).mode & 0o7777).toBe(0o600);
+			expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({
+				schema: "qorpera.coding-folder-view-held/v1",
+				workerId: WORKER,
+				machineId: MACHINE,
+				attachmentToken: TOKEN,
+				viewId: VIEWS[0],
+				pass: PASSES[0],
+			});
+			at.events.splice(0);
+			// The executor restarts: its next instance has only the records.
+			const restarted = new CodingFolderViews(at.options);
+			await expect(restarted.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			expect(at.events.splice(0)).toEqual(["sha256sum", "mount"]);
+			expect(at.mounts.at(-1)?.view).toEqual({ environmentId: ENVIRONMENT, viewId: VIEWS[0], pass: PASSES[0] });
+			await expect(new CodingFolderViews(at.options).end(WORKER, live())).resolves.toEqual({
+				workerId: WORKER,
+				viewId: VIEWS[0],
+				saved: true,
+				closed: true,
+			});
+			expect(at.events.splice(0)).toEqual(["boundary", "close"]);
+			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
+			expect(at.closes.at(-1)).toEqual({ p_view_id: VIEWS[0], p_pass: PASSES[0] });
+			expect(readdirSync(at.root)).toEqual([`${WORKER_2}.json`]);
+			await expect(new CodingFolderViews(at.options).endMachine(MACHINE, live())).resolves.toEqual([
+				{ workerId: WORKER_2, viewId: VIEWS[1], saved: true, closed: true },
+			]);
+			expect(at.events).toEqual(["boundary", "close"]);
+			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[1]] });
+			expect(at.closes.at(-1)).toEqual({ p_view_id: VIEWS[1], p_pass: PASSES[1] });
+			expect(readdirSync(at.root)).toEqual([]);
+		});
+
+		it("ends a restarted executor's old view before a new attachment's", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			const restarted = new CodingFolderViews(at.options);
+			await expect(restarted.attach(session({ attachmentToken: TOKEN_2 }), later(), live())).resolves.toEqual({
+				viewId: VIEWS[1],
+			});
+			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
+			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
+			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
+			expect(JSON.parse(readFileSync(join(at.root, `${WORKER}.json`), "utf8"))).toMatchObject({
+				attachmentToken: TOKEN_2,
+				viewId: VIEWS[1],
+				pass: PASSES[1],
+			});
+		});
+
+		it("closes a view it could not record, never showing it", async () => {
+			const at = fixture();
+			at.script.unmounted = () => at.opens.length > 0;
+			expect(await failure(at.views.attach(session(), later(), live()))).toBe(RECORD_FAILED);
+			expect(at.events).toEqual(["sha256sum", "boundary", "open", "close"]);
+			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
+			expect(at.mounts).toEqual([]);
+		});
+
+		it("fails closed while the storage is unmounted, and ends the view once it is back", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			at.boundaries.splice(0);
+			at.script.unmounted = () => true;
+			expect(await failure(at.views.attach(session(), later(), live()))).toBe(RECORD_FAILED);
+			expect(at.events.splice(0)).toEqual(["sha256sum"]);
+			expect(await failure(at.views.end(WORKER, live()))).toBe(RECORD_FAILED);
+			expect(at.events.splice(0)).toEqual([]);
+			// A machine's end still saves what its views have pending, before it rejects.
+			expect(await failure(at.views.endMachine(MACHINE, live()))).toBe(RECORD_FAILED);
+			expect(at.events.splice(0)).toEqual(["boundary"]);
+			expect(at.boundaries).toEqual([{ machine: MACHINE, final: [] }]);
+			expect(at.closes).toEqual([]);
+			at.script.unmounted = () => false;
+			await expect(at.views.end(WORKER, live())).resolves.toMatchObject({ viewId: VIEWS[0], closed: true });
+		});
+
+		it("fails closed on a record that is not one", async () => {
+			const valid = {
+				schema: "qorpera.coding-folder-view-held/v1",
+				workerId: WORKER,
+				machineId: MACHINE,
+				attachmentToken: TOKEN,
+				viewId: VIEWS[0],
+				pass: PASSES[0],
+			};
+			const { pass: _, ...passless } = valid;
+			const records: [string, string, number][] = [
+				["not JSON", "{", 0o600],
+				["another schema", JSON.stringify({ ...valid, schema: "qorpera.coding-folder-view-held/v2" }), 0o600],
+				["another session's", JSON.stringify({ ...valid, workerId: WORKER_2 }), 0o600],
+				["an extra key", JSON.stringify({ ...valid, extra: true }), 0o600],
+				["no pass", JSON.stringify(passless), 0o600],
+				["a pass that is not one", JSON.stringify({ ...valid, pass: "A".repeat(42) }), 0o600],
+				["an id not in lower case", JSON.stringify({ ...valid, viewId: VIEWS[0].toUpperCase() }), 0o600],
+				["readable by others", JSON.stringify(valid), 0o644],
+			];
+			for (const [label, text, mode] of records) {
+				const at = fixture();
+				await at.views.endMachine(OTHER_MACHINE, live());
+				writeFileSync(join(at.root, `${WORKER}.json`), text);
+				chmodSync(join(at.root, `${WORKER}.json`), mode);
+				expect(await failure(at.views.end(WORKER, live())), label).toBe(RECORD_FAILED);
+				expect(await failure(at.views.attach(session(), later(), live())), label).toBe(RECORD_FAILED);
+				expect(await failure(at.views.endMachine(MACHINE, live())), label).toBe(RECORD_FAILED);
+				expect(at.events, label).toEqual(["sha256sum", "boundary"]);
+				expect(at.opens, label).toEqual([]);
+				expect(at.closes, label).toEqual([]);
+			}
+		});
+
+		it("refuses records anywhere but an absolute, normal folder below /", () => {
+			const { options } = fixture();
+			for (const root of ["", "relative/folder-views", "/srv/../folder-views", "/srv/folder-views/", "/", 7])
+				expect(
+					() => new CodingFolderViews({ ...options, records: { root: root as string } }),
+					String(root),
+				).toThrow("Invalid coding folder view records");
 		});
 	});
 

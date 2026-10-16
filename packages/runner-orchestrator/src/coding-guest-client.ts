@@ -6,6 +6,7 @@ import {
 	type CodingGuestOutputAnswer,
 	type CodingGuestRefusal,
 	type CodingGuestRequests,
+	type CodingGuestSessionQuiescedAnswer,
 	type CodingGuestSessionStoppedAnswer,
 	type CodingGuestStatusAnswer,
 	type CodingGuestVerb,
@@ -26,13 +27,14 @@ const INVALID = "CODING_GUEST_ANSWER_INVALID";
 const LINE_BYTES = 131072;
 /** Node's own message when the agent crashed; never read. */
 const STDERR_BYTES = 16384;
-/** Each verb's whole call. The agent waits up to 60 s for its session's lock (mount, run, stop-session), up to 20 s
- * for a folder program's mount, and up to 30 s for each systemctl call; `output` adds the request's own wait. */
+/** Each verb's whole call. The agent waits up to 60 s for its session's lock (mount, run, quiesce, stop-session), up
+ * to 20 s for a folder program's mount, and up to 30 s for each systemctl call; `output` adds the request's own wait. */
 const CALL_MS: Readonly<Record<CodingGuestVerb, number>> = Object.freeze({
 	mount: 120000,
 	run: 120000,
 	output: 30000,
 	cancel: 60000,
+	quiesce: 120000,
 	"stop-session": 120000,
 	status: 60000,
 });
@@ -79,6 +81,12 @@ export class LxdCodingGuestClient {
 	}
 	async cancel(request: CodingGuestRequests["cancel"], signal: AbortSignal): Promise<CodingGuestCommandAnswer> {
 		return (await this.#call("cancel", request, signal)).answer;
+	}
+	async quiesce(
+		request: CodingGuestRequests["quiesce"],
+		signal: AbortSignal,
+	): Promise<CodingGuestSessionQuiescedAnswer> {
+		return (await this.#call("quiesce", request, signal)).answer;
 	}
 	async stopSession(
 		request: CodingGuestRequests["stop-session"],

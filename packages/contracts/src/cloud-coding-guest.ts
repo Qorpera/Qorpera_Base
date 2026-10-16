@@ -40,12 +40,13 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
 	maxStatusCommands: 256,
 });
 
-export type CodingGuestVerb = "mount" | "run" | "output" | "cancel" | "stop-session" | "status";
+export type CodingGuestVerb = "mount" | "run" | "output" | "cancel" | "quiesce" | "stop-session" | "status";
 export const CODING_GUEST_VERBS: readonly CodingGuestVerb[] = /* @__PURE__ */ Object.freeze([
 	"mount",
 	"run",
 	"output",
 	"cancel",
+	"quiesce",
 	"stop-session",
 	"status",
 ]);
@@ -93,7 +94,7 @@ export interface CodingGuestCancelRequest {
 	readonly workerId: string;
 	readonly commandId: string;
 }
-/** `stop-session` and `status`. */
+/** `quiesce`, `stop-session` and `status`. */
 export interface CodingGuestSessionRequest {
 	readonly schema: "qorpera.coding-guest-session/v1";
 	readonly workerId: string;
@@ -103,6 +104,7 @@ export interface CodingGuestRequests {
 	run: CodingGuestRunRequest;
 	output: CodingGuestOutputRequest;
 	cancel: CodingGuestCancelRequest;
+	quiesce: CodingGuestSessionRequest;
 	"stop-session": CodingGuestSessionRequest;
 	status: CodingGuestSessionRequest;
 }
@@ -143,6 +145,11 @@ export interface CodingGuestOutputAnswer extends CodingGuestCommand {
 	readonly bytes: number;
 	readonly gap: number;
 }
+/** Nothing of the session runs any more (its commands, its user manager), and its view is still mounted. */
+export interface CodingGuestSessionQuiescedAnswer {
+	readonly schema: "qorpera.coding-guest-session-quiesced/v1";
+	readonly workerId: string;
+}
 export interface CodingGuestSessionStoppedAnswer {
 	readonly schema: "qorpera.coding-guest-session-stopped/v1";
 	readonly workerId: string;
@@ -150,7 +157,8 @@ export interface CodingGuestSessionStoppedAnswer {
 export interface CodingGuestStatusAnswer {
 	readonly schema: "qorpera.coding-guest-status/v1";
 	readonly workerId: string;
-	/** The newest commands first, at most CODING_GUEST.maxStatusCommands. */
+	/** Every running command, then the newest of the rest; at most CODING_GUEST.maxStatusCommands. The agent refuses
+	 * rather than leave a running command out. */
 	readonly commands: readonly CodingGuestCommand[];
 }
 export interface CodingGuestAnswers {
@@ -158,6 +166,7 @@ export interface CodingGuestAnswers {
 	run: CodingGuestCommandAnswer;
 	output: CodingGuestOutputAnswer;
 	cancel: CodingGuestCommandAnswer;
+	quiesce: CodingGuestSessionQuiescedAnswer;
 	"stop-session": CodingGuestSessionStoppedAnswer;
 	status: CodingGuestStatusAnswer;
 }
@@ -211,6 +220,7 @@ const REQUEST_KEYS: Record<CodingGuestVerb, string> = {
 	run: "command,commandId,cwd,environment,gid,schema,timeoutMs,uid,workerId",
 	output: "commandId,maxBytes,offset,schema,waitMs,workerId",
 	cancel: "commandId,schema,workerId",
+	quiesce: "schema,workerId",
 	"stop-session": "schema,workerId",
 	status: "schema,workerId",
 };
@@ -219,6 +229,7 @@ const REQUEST_SCHEMAS: Record<CodingGuestVerb, string> = {
 	run: "qorpera.coding-guest-run/v1",
 	output: "qorpera.coding-guest-output/v1",
 	cancel: "qorpera.coding-guest-cancel/v1",
+	quiesce: "qorpera.coding-guest-session/v1",
 	"stop-session": "qorpera.coding-guest-session/v1",
 	status: "qorpera.coding-guest-session/v1",
 };
@@ -368,10 +379,12 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 			gap,
 		}) as never;
 	}
-	if (verb === "stop-session") {
+	if (verb === "quiesce" || verb === "stop-session") {
+		const schema =
+			verb === "quiesce" ? "qorpera.coding-guest-session-quiesced/v1" : "qorpera.coding-guest-session-stopped/v1";
 		const input = object(value, "schema,workerId", error);
-		if (input.schema !== "qorpera.coding-guest-session-stopped/v1") throw new Error(error);
-		return Object.freeze({ schema: "qorpera.coding-guest-session-stopped/v1", workerId }) as never;
+		if (input.schema !== schema) throw new Error(error);
+		return Object.freeze({ schema, workerId }) as never;
 	}
 	const input = object(value, "commands,schema,workerId", error);
 	if (

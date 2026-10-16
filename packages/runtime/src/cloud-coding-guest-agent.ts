@@ -35,6 +35,7 @@ import {
 	type CodingGuestOutputRequest,
 	type CodingGuestRequests,
 	type CodingGuestRunRequest,
+	type CodingGuestSessionQuiescedAnswer,
 	type CodingGuestSessionRequest,
 	type CodingGuestSessionStoppedAnswer,
 	type CodingGuestStatusAnswer,
@@ -1096,30 +1097,76 @@ export async function cancelCodingGuestCommand(
 	return Object.freeze({ schema: "qorpera.coding-guest-command/v1", workerId: request.workerId, ...now });
 }
 
-/** `status`: the session's commands, the newest first. */
+/** `status`: every command of the session that still runs, then the newest of the rest, at most maxStatusCommands.
+ * Each command without an outcome is observed, however old, so none that runs is left out; more running than one
+ * answer holds is refused. */
 export async function readCodingGuestStatus(
 	request: CodingGuestSessionRequest,
 	ports: CodingGuestAgentPorts = {},
 ): Promise<CodingGuestStatusAnswer> {
 	const at = settle(ports);
 	const session = places(at, request.workerId);
-	const listed: { name: string; mtimeMs: number }[] = [];
+	const open: { name: string; mtimeMs: number }[] = [];
+	const ended: { name: string; mtimeMs: number; seen?: CodingGuestCommand }[] = [];
 	for (const name of (await missing(() => readdir(session.commands))) ?? []) {
 		if (!COMPACT.test(name) || !isUuid(dashed(name))) continue;
 		const intent = await missing(() => lstat(join(session.commands, name, "intent.json")));
-		if (intent?.isFile()) listed.push({ name, mtimeMs: intent.mtimeMs });
+		if (!intent?.isFile()) continue;
+		const outcome = await missing(() => lstat(join(session.commands, name, "outcome.json")));
+		(outcome?.isFile() ? ended : open).push({ name, mtimeMs: intent.mtimeMs });
 	}
-	listed.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	const newest = (a: { name: string; mtimeMs: number }, b: { name: string; mtimeMs: number }) =>
+		b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 	const commands: CodingGuestCommand[] = [];
-	for (const { name } of listed.slice(0, CODING_GUEST.maxStatusCommands)) {
+	for (const entry of open.sort(newest)) {
+		const commandId = dashed(entry.name);
+		const seen = Object.freeze(await observe(at, commandPlaces(at, session, commandId), commandId));
+		if (seen.state === "running") commands.push(seen);
+		else ended.push({ ...entry, seen });
+	}
+	if (commands.length > CODING_GUEST.maxStatusCommands) throw new Error("CODING_GUEST_STATUS_OVERFLOW");
+	for (const { name, seen } of ended.sort(newest).slice(0, CODING_GUEST.maxStatusCommands - commands.length)) {
 		const commandId = dashed(name);
-		commands.push(Object.freeze(await observe(at, commandPlaces(at, session, commandId), commandId)));
+		commands.push(seen ?? Object.freeze(await observe(at, commandPlaces(at, session, commandId), commandId)));
 	}
 	return Object.freeze({
 		schema: "qorpera.coding-guest-status/v1",
 		workerId: request.workerId,
 		commands: Object.freeze(commands),
 	});
+}
+
+/** Stops the session's commands and its user manager, which lingers no more; answers the units that must have ended
+ * and the session's user. */
+async function stopSessionWork(
+	at: Agent,
+	session: Places,
+): Promise<{ user: { uid: number; gid: number } | undefined; units: string[] }> {
+	const user = await readSessionUser(session);
+	const userManager = user ? `user@${user.uid}.service` : undefined;
+	await ignore(at.system(TOOLS.systemctl, ["stop", session.slice]));
+	if (user && userManager) {
+		await ignore(at.system(TOOLS.loginctl, ["disable-linger", `qorpera-${user.uid}`]));
+		await ignore(at.system(TOOLS.systemctl, ["stop", userManager]));
+	}
+	return { user, units: [session.slice, ...(userManager ? [userManager] : [])] };
+}
+
+/** `quiesce`: ends everything the session runs (its commands, its user manager and what that started) and keeps its
+ * view mounted, so the view's final boundary comes after the last write anything of the session makes. A later `mount`
+ * brings the user manager back. Refuses while anything of it still runs. */
+export async function quiesceCodingGuestSession(
+	request: CodingGuestSessionRequest,
+	ports: CodingGuestAgentPorts = {},
+): Promise<CodingGuestSessionQuiescedAnswer> {
+	const at = settle(ports);
+	const session = places(at, request.workerId);
+	await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
+		const { units } = await stopSessionWork(at, session);
+		for (const unit of units)
+			if (LIVE.has((await unitState(at, unit)).active)) throw new Error("CODING_GUEST_SESSION_STILL_RUNNING");
+	});
+	return Object.freeze({ schema: "qorpera.coding-guest-session-quiesced/v1", workerId: request.workerId });
 }
 
 /** `stop-session`: ends everything the session runs, then removes its view, mount, network and files. Its user stays,
@@ -1132,15 +1179,9 @@ export async function stopCodingGuestSession(
 	const at = settle(ports);
 	const session = places(at, request.workerId);
 	await locked(at, session.lock, "CODING_GUEST_SESSION_BUSY", async () => {
-		const user = await readSessionUser(session);
-		const userManager = user ? `user@${user.uid}.service` : undefined;
-		await ignore(at.system(TOOLS.systemctl, ["stop", session.slice]));
-		if (user && userManager) {
-			await ignore(at.system(TOOLS.loginctl, ["disable-linger", `qorpera-${user.uid}`]));
-			await ignore(at.system(TOOLS.systemctl, ["stop", userManager]));
-		}
+		const { user, units } = await stopSessionWork(at, session);
 		await ignore(at.system(TOOLS.systemctl, ["stop", session.folderUnit]));
-		for (const unit of [session.slice, ...(userManager ? [userManager] : []), session.folderUnit])
+		for (const unit of [...units, session.folderUnit])
 			if (LIVE.has((await unitState(at, unit)).active)) throw new Error("CODING_GUEST_SESSION_STILL_RUNNING");
 		await ignore(
 			at.system(TOOLS.systemctl, ["reset-failed", session.folderUnit, `qorpera-coding-${session.worker}-*.service`]),
@@ -1343,6 +1384,7 @@ export async function runCodingGuestAgent(
 			line = read.answer;
 			bytes = read.bytes;
 		} else if (verb === "cancel") line = await cancelCodingGuestCommand(await readRequest("cancel", input), ports);
+		else if (verb === "quiesce") line = await quiesceCodingGuestSession(await readRequest("quiesce", input), ports);
 		else if (verb === "stop-session")
 			line = await stopCodingGuestSession(await readRequest("stop-session", input), ports);
 		else line = await readCodingGuestStatus(await readRequest("status", input), ports);
