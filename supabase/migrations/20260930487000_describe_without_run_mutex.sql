@@ -19,12 +19,15 @@
 -- check, direct SQL with no request.path) keeps qorpera_native_tool_locked_run, and a request.path set by hand gains
 -- nothing inside any of them: only describe's own reads skip the mutex.
 --
--- The plain read is qorpera_folder_native_run_plain: the locked check's lookups and refusals in its order, with no row
--- lock (the binding; the job's folder-v2 Company File, 42501; the stop, 55000; the company folder, 42501; the run's
--- resolve and its wake authority; a plain exists for each row the run entry requires, which are the company, the
--- requester's membership, the agent, and the room with its two memberships or the routine, 42501; then the lease, the
--- job lease and the run's model). It returns the same run row. It does not read the budget row, which exists for every
--- admitted run.
+-- The plain read is qorpera_folder_native_run_plain: the locked check's lookups and refusals in its order, without the
+-- run mutex and without the locked check's other row locks (the binding; the job's folder-v2 Company File, 42501; the
+-- stop, 55000; the company folder, 42501; the run's resolve and its wake authority; a plain exists for each row the run
+-- entry requires, which are the company, the requester's membership, the agent, and the room with its two memberships
+-- or the routine, 42501; then the lease, the job lease and the run's model). It returns the same run row. It does not
+-- read the budget row, which exists for every admitted run. One lock stays, as in the locked check: for a wake run, the
+-- lease check's sponsor test (qorpera_provider_autonomous_authority, 20260906000700) takes the provider connection FOR
+-- SHARE. That is an authorization lock and is kept, so a routine's refresh can still wait behind a transaction that
+-- updates that connection, but no longer behind the run's own tool steps.
 --
 -- Why a plain read is safe for these callers: describe reads only the binding, the job, the run, the lease, the
 -- runner, the assignment, the company's stop and folder, the resolved actor and the admitted bundle. A run's own steps
@@ -57,7 +60,7 @@ begin
 		raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
 	v_resolved := public.qorpera_folder_run_resolve(v_file.environment_id, v_file.profile_id, v_actor);
 	-- The rows the run entry requires (its resolve's targets, the requester's membership and the company row), in
-	-- the entry's rank and table order, each read without a lock.
+	-- the entry's rank and table order, each read without the entry's row lock.
 	for v_target in
 		select t ->> 'tbl' as tbl, lower(t ->> 'key') as key, coalesce((t ->> 'required')::boolean, false) as required
 		from jsonb_array_elements(coalesce(v_resolved -> 'lockTargets', '[]'::jsonb) || jsonb_build_array(
@@ -91,8 +94,10 @@ begin
 	return public.qorpera_folder_native_run_current(p_binding);
 end $$;
 comment on function public.qorpera_folder_native_run_plain(jsonb) is
-	'The run check of qorpera_native_tool_locked_run as plain reads: the same lookups, refusals and run row, with no row '
-	'lock and no budget row. Only qorpera_describe_native_tool_authority calls it, as the entry point. 20260930487000.';
+	'The run check of qorpera_native_tool_locked_run as plain reads: the same lookups, refusals and run row, without the '
+	'run mutex (no budget row) or the locked check''s other row locks; a wake run''s sponsor test still takes the '
+	'provider connection FOR SHARE. Only qorpera_describe_native_tool_authority calls it, as the entry point. '
+	'20260930487000.';
 revoke all on function public.qorpera_folder_native_run_plain(jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 

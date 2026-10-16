@@ -208,8 +208,10 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
 
 The mutex orders a run's tool steps. Since 20260930487000 the host's describe refresh
 (`qorpera_describe_native_tool_authority` as the entry point, through the native host or PostgREST) reads without it,
-through `qorpera_folder_native_run_plain`, which locks no row. Describe reads only rows that admission, completion,
-renewal, resume and handoff write, and none of those ever took the mutex, so it never ordered describe against them.
+through `qorpera_folder_native_run_plain`, which takes neither the mutex nor the locked check's other row locks. One
+lock stays, as in the locked check: for a wake run, the sponsor test takes the provider connection FOR SHARE (an
+authorization lock, kept). Describe reads only rows that admission, completion, renewal, resume and handoff write, and
+none of those ever took the mutex, so it never ordered describe against them.
 Every write still takes it, and so do the context fence and any function that calls describe as its run check (test 674).
 
 ### 5.3 New functions

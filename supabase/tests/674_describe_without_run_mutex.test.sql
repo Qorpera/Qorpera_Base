@@ -69,8 +69,9 @@ create function pg_temp.j_calls() returns bigint[] language sql as $$
 	from unnest(array['qorpera_folder_native_run_plain', 'qorpera_folder_tool_run']) with ordinality as n(name, ordinal)
 $$;
 
--- 1. The helper is the database owner's only, names no budget row and takes no row lock; only describe calls it (this
---    test's own pg_temp functions aside).
+-- 1. The helper is the database owner's only, and its own body names no budget row and locks no row (the source check
+--    sees only this body: the sponsor test it reaches for a wake run still takes the provider connection FOR SHARE, as
+--    in the locked check); only describe calls it (this test's own pg_temp functions aside).
 do $$
 declare v_helper pg_proc;
 begin
