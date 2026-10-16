@@ -38,6 +38,17 @@ export class CodingControlBusy extends Error {
 		super("CODING_CONTROL_BUSY");
 	}
 }
+/** The kernel refused the call (SQLSTATE 42501) and rolled its transaction back whole: an answer, unlike an
+ * unconfirmed call. `detail` is the refusal's `qorpera.*` detail, when it gave one. A control rejects with this only
+ * for the folder view open: a test machine's boot acts on it (F3 6d), and the code host's open (5e-3b) fails on it as
+ * on any other error. */
+export class CodingControlRefused extends Error {
+	readonly detail: string | null;
+	constructor(detail: string | null) {
+		super("CODING_CONTROL_REFUSED");
+		this.detail = detail;
+	}
+}
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */

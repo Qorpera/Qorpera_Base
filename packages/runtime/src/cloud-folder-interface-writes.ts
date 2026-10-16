@@ -60,6 +60,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import {
 	args,
+	cloudFolderRefusal,
 	OPERATION_KEY,
 	operationKey,
 	released,
@@ -145,12 +146,14 @@ function canonical(value: unknown): string {
 	return JSON.stringify(sorted(value)) ?? "null";
 }
 
-/** A text as the boundary's plain one-line refusal takes it: curly quotes straightened, anything else replaced. */
+/** A text as the boundary's plain one-line refusal takes it: curly quotes and dashes straightened, anything else
+ * replaced. */
 const plain = (text: string): string =>
 	text
 		.replace(/\s+/g, " ")
 		.replace(/[“”]/g, '"')
 		.replace(/[‘’]/g, "'")
+		.replace(/[–—]/g, "-")
 		.replace(/[^\x20-\x7e\xc0-\xff]/g, "?");
 
 /** A text cut to `bytes` UTF-8 bytes, marked when cut. */
@@ -526,7 +529,7 @@ async function planSave(
 		const holder = at.of && at.name ? holders.get(`${at.of}/${at.name}`) : undefined;
 		let ownersOnly = false;
 		if (at.of && at.name && holder) {
-			if (holder.entry?.kind === "file") {
+			if (holder.entry && holder.entry.kind !== "folder") {
 				block(item, "not_a_folder");
 				continue;
 			}
@@ -551,7 +554,7 @@ async function planSave(
 		else if (ownersOnly) block(item, "owners_only");
 		else if (current.kind === "absent") {
 			if (file.expectedVersion !== null) block(item, "missing");
-		} else if (current.entry.kind === "folder") block(item, "not_a_file");
+		} else if (current.entry.kind !== "file") block(item, "not_a_file");
 		else if (file.expectedVersion === null) block(item, "exists");
 		else if (current.entry.version !== file.expectedVersion) block(item, "version_changed");
 		else {
@@ -873,9 +876,9 @@ const BLOCKED_NEXT: Readonly<Record<Blocked, string>> = {
 	exists: `Nothing was saved. A file is already at a path you gave no version for: ${READ_AGAIN}.`,
 	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
 	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
-	not_a_file: "Nothing was saved. A path you gave is a folder, not a file.",
+	not_a_file: "Nothing was saved. A path you gave is a folder or a link, not a file.",
 	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file, not a folder: choose another name.",
+		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
 	folder_missing:
 		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
 	owners_only:
@@ -1281,7 +1284,7 @@ export function cloudInterfaceWriteTools(options: {
 	const saveInterface: CloudNativeTool = {
 		name: "save_interface" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
-		description: `Save interfaces and tables: up to ${SAVE_FILES} files as one change. A file is an interface's interfaces/<name>/interface.toml, a table's tables/<name>/table.toml, a README.md in either folder, or interfaces/order.md. Give each file's whole new text, with its version from your read as expectedVersion, or null for a file that does not exist yet. A new interface or table is a new folder; its id is a new random UUID you make. A table's rows are written with table_write, never here, and a new table starts with no rows. To make another interface the main one, include the old main's interface.toml with main = false. Change a table's columns in steps its rows fit: add a required column as optional, fill it with table_write, then make it required; to remove a column, make it optional and empty it in every row with table_write, then remove it. A change of buttons, of who sees or edits an interface, of a table's columns or of who writes its rows runs only with the automatic review's approval. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when everything was saved.`,
+		description: `Save interfaces and tables: up to ${SAVE_FILES} files as one change. A file is an interface's interfaces/<name>/interface.toml, a table's tables/<name>/table.toml, a README.md in either folder, or interfaces/order.md. Give each file's whole new text, with its version from your read as expectedVersion, or null for a file that does not exist yet. A new interface or table is a new folder; its id is a new random lowercase UUID (version 4) you make. An interface.toml has format = "qorpera.interface/v0", an [interface] with its id and name, and one or more [[view]]s, each with a name and its [[view.block]]s: a block of kind "text" can hold its own text, and most other kinds show the source named in from, like "table:<name>"; company_read of an existing interface.toml shows the rest. The files are strict TOML: a text is one line in double quotes, with \\n for each line break, and there are no multi-line strings, dotted keys or bare dates. A table's rows are written with table_write, never here, and a new table starts with no rows. To make another interface the main one, include the old main's interface.toml with main = false. Change a table's columns in steps its rows fit: add a required column as optional, fill it with table_write, then make it required; to remove a column, make it optional and empty it in every row with table_write, then remove it. A change of buttons, of who sees or edits an interface, of a table's columns or of who writes its rows runs only with the automatic review's approval. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when everything was saved.`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1306,6 +1309,7 @@ export function cloudInterfaceWriteTools(options: {
 			},
 		},
 		parseArguments: (value) => parseSave(value) as unknown as JsonValue,
+		refused: cloudFolderRefusal,
 		// The review's card says what the call changes, from the files it replaces: released with them before it is shown.
 		async prepare(value, context) {
 			const request = value as unknown as { operationKey: string; files: SaveFile[] };
@@ -1368,6 +1372,7 @@ export function cloudInterfaceWriteTools(options: {
 				},
 				// The folder core decides at the commit, under this call's receipt.
 				authorize: async () => {},
+				refused: cloudFolderRefusal,
 				perform: async (_operation, { receiptId, signal }) => {
 					// The commit's operation key for the model's: fixed length, and distinct per tool.
 					const key = `save_interface:${sha256hex(request.operationKey)}`;
@@ -1438,6 +1443,7 @@ export function cloudInterfaceWriteTools(options: {
 			},
 		},
 		parseArguments: (value) => parseTableWrite(value),
+		refused: cloudFolderRefusal,
 		async execute(value, context) {
 			const request = value as { table: string; operationKey: string; set: Cells[]; remove: Cells[] };
 			writable();
@@ -1514,6 +1520,7 @@ export function cloudInterfaceWriteTools(options: {
 				},
 				// The folder core decides at the commit, under this call's receipt.
 				authorize: async () => {},
+				refused: cloudFolderRefusal,
 				perform: async (_operation, { receiptId, signal }) => {
 					// The commit's operation key for the model's: fixed length, and distinct per tool.
 					const key = `table_write:${sha256hex(request.operationKey)}`;

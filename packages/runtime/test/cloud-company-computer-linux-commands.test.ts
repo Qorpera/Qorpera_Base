@@ -32,7 +32,7 @@ function command(): Parameters<CompanyComputerGuestCommands["run"]>[0] {
 		program: "/bin/bash",
 		args: ["--noprofile", "--norc", "-c", "true"],
 		environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-		workingDirectory: layout.workbenchRoot,
+		workingDirectory: "/home/qorpera",
 		timeoutMs: 5000,
 		maxOutputBytes: 16384,
 		signal: new AbortController().signal,

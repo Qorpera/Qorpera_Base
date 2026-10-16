@@ -145,15 +145,21 @@ const manifest = [
 ];
 const compose = (patch = {}) => exchange({ schema: "qorpera.native-context-composition/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", model: "offline-probe", items: manifest, ...patch });
 const contextEvidence = { agent: null, reviewer: null };
-// Memory compactor (M1b-4b): a fresh tool-less thread in the same app-server, opened at closing or during the turn.
+// Memory compactor (M1b-4b): a fresh tool-less thread in the same app-server, opened at the opening (settle), during
+// the turn or at closing.
 const compacting = mode.startsWith("compact") || mode === "review-compact";
+// The modes whose compactor turns reply; compact-opening composes the agent's request too.
+const compactReplies = mode === "compact" || mode === "compact-opening" || mode === "compact-gate";
 const compactThreadId = "thread_compact";
+// Each compactor thread has its own id, as Codex gives it: the first thread_compact, the later ones numbered.
+const compactThreadIds = [];
 let compactReplied;
 const compactReply1 = new Promise((resolve) => { compactReplied = resolve; });
-const compactEvidence = { compactThreads: [], compactTurns: [], prewarms: [], composed: null, fenced: [], refused: null, interrupt: null };
+// order: the compactor's and the agent's thread starts, as this app-server answered them.
+const compactEvidence = { compactThreads: [], compactTurns: [], prewarms: [], composed: null, fenced: [], refused: null, interrupt: null, order: [], mainPrewarm: null };
 let compactAt;
-const compactWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...compactEvidence, mainThread: threadParameters }));
-const compactCompleted = (status, error = null) => write({ method: "turn/completed", params: { threadId: compactThreadId, turn: { id: compactAt.turnId, status, error } } });
+const compactWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...compactEvidence, mainThread: threadParameters, mainTurn: turnParameters, agent: contextEvidence.agent }));
+const compactCompleted = (status, error = null) => write({ method: "turn/completed", params: { threadId: compactAt.threadId, turn: { id: compactAt.turnId, status, error } } });
 const compactReply = (line) => {
 	write({ method: "item/agentMessage/delta", params: { ...compactAt, delta: "LINE " } });
 	write({ method: "item/agentMessage/delta", params: { ...compactAt, delta: line } });
@@ -203,12 +209,15 @@ async function handle(message) {
 		if (mode === "fence-before-bind") fence([], { turnId: "", purpose: "prewarm" }).catch(() => undefined);
 		if (mode === "tool-before-bind")
 			write({ id: "early_tool", method: "item/tool/call", params: { threadId, turnId, callId: "early", namespace: "qorpera", tool: "read_document", arguments: {} } });
-	} else if (message.method === "thread/start" && compacting && threadParameters && message.params.dynamicTools?.length === 0) {
+	} else if (message.method === "thread/start" && compacting && message.params.dynamicTools?.length === 0) {
 		compactEvidence.compactThreads.push(message.params);
+		compactEvidence.order.push("compact-thread");
 		// Codex starts a thread's prewarm in the background: here the reviewer's lands while a compactor thread starts.
 		if (mode === "review-compact") reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
-		compactEvidence.prewarms.push(await fence([], { threadId: compactThreadId, turnId: "", purpose: "prewarm" }));
-		write({ id: message.id, result: { thread: { id: compactThreadId } } });
+		const id = compactThreadIds.length === 0 ? compactThreadId : `${compactThreadId}_${compactThreadIds.length + 1}`;
+		compactThreadIds.push(id);
+		compactEvidence.prewarms.push(await fence([], { threadId: id, turnId: "", purpose: "prewarm" }));
+		write({ id: message.id, result: { thread: { id } } });
 	} else if (message.method === "thread/start" && mode.startsWith("review") && threadParameters) {
 		reviewEvidence.reviewerThread = message.params;
 		if (mode === "review-compact") writeFileSync(`${evidencePath}.review-started`, "");
@@ -237,17 +246,18 @@ async function handle(message) {
 			threadId: reviewThreadId, turnId: reviewTurnId, callId: "verdict_1", namespace: "qorpera", tool: "review_verdict",
 			arguments: { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" },
 		} });
-	} else if (message.method === "turn/start" && compacting && message.params.threadId === compactThreadId) {
+	} else if (message.method === "turn/start" && compacting && compactThreadIds.includes(message.params.threadId)) {
 		const turn = compactEvidence.compactTurns.push(message.params);
-		compactAt = { threadId: compactThreadId, turnId: `turn_compact_${turn}` };
+		compactAt = { threadId: message.params.threadId, turnId: `turn_compact_${turn}` };
 		write({ id: message.id, result: { turn: { id: compactAt.turnId } } });
-		write({ method: "turn/started", params: { threadId: compactThreadId, turn: { id: compactAt.turnId } } });
-		if (mode === "compact") compactEvidence.composed = await compose(compactAt);
+		write({ method: "turn/started", params: { threadId: compactAt.threadId, turn: { id: compactAt.turnId } } });
+		if (compactReplies) compactEvidence.composed = await compose(compactAt);
 		compactEvidence.fenced.push(await fence([], compactAt));
-		if (mode === "compact") {
+		if (compactReplies) {
 			// The thread's cumulative usage: each reply used what it grew by since the one before.
 			tokenUpdate(usage(turn === 1 ? { inputTokens: 500, cachedInputTokens: 100, outputTokens: 40 } : { inputTokens: 1200, cachedInputTokens: 600, outputTokens: 70 }), compactAt);
 			compactReply(String(turn));
+			compactReplied();
 		} else if (mode === "compact-tool") {
 			// The compactor has no tools; a model that reaches for one is refused.
 			write({ id: "compact_tool", method: "item/tool/call", params: { ...compactAt, callId: "compact_call", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" } } });
@@ -281,6 +291,13 @@ async function handle(message) {
 			}));
 		}
 		if (mode === "prewarm-before-thread") await fence([], { turnId: "", purpose: "prewarm" });
+		if (mode === "compact-gate") {
+			// A compactor call arrives while the agent's thread starts; its prewarm, sent meanwhile, is the agent's.
+			writeFileSync(`${evidencePath}.main-starting`, "");
+			while (!existsSync(`${evidencePath}.continue`)) await new Promise((resolve) => setTimeout(resolve, 5));
+			compactEvidence.mainPrewarm = await fence([], { turnId: "", purpose: "prewarm" });
+		}
+		if (compacting) compactEvidence.order.push("main-thread");
 		write({ id: message.id, result: { thread: { id: threadId } } });
 	} else if (message.method === "turn/start") {
 		turnParameters = message.params;
@@ -296,7 +313,7 @@ async function handle(message) {
 		write({ id: message.id, result: { turn: { id: turnId } } });
 		if (mode !== "notify-first") write(notification);
 		// A company run's request is composed too: its evidence keeps the reply (the prompt cache key a run sets).
-		if (mode.startsWith("context-") || mode === "review-context" || mode === "company-context") {
+		if (mode.startsWith("context-") || mode === "review-context" || mode === "company-context" || mode === "compact-opening") {
 			contextEvidence.agent = await compose(mode === "context-wrong-turn" ? { turnId: "other_turn" } : {});
 			if (mode.startsWith("context-")) writeFileSync(evidencePath, JSON.stringify({ context: contextEvidence }));
 		}
@@ -429,6 +446,8 @@ async function handle(message) {
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });
 			if (mode === "callback-flood") done();
 		} else {
+			// The compactor's thread replies during the agent's turn.
+			if (mode === "compact-gate") await compactReply1;
 			// Just under the 1 MiB wire limit: one line over many pipe reads, split inside 3-byte characters.
 			if (mode === "large-line") write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "\u20ac".repeat(349_000) } });
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
@@ -485,7 +504,7 @@ async function handle(message) {
 		if (mode === "review-compact") await compactReply1;
 		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, context: contextEvidence, compact: compactEvidence, mainThread: threadParameters, reply: message, mainFenced }));
 		done();
-	} else if (message.method === "turn/interrupt" && mode.startsWith("compact") && message.params.threadId === compactThreadId) {
+	} else if (message.method === "turn/interrupt" && mode.startsWith("compact") && compactThreadIds.includes(message.params.threadId)) {
 		compactEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });
 		compactWrite();

@@ -13,7 +13,6 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
-import { CARGO_BUILD } from "./folder-program-artifact.mjs";
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
 /** The function tests the old workflows ran (web-client and step2-lxd), and the artifact GC worker's (its folder phase,
@@ -45,9 +44,8 @@ const WEB_RELEASE_CONFIG = JSON.stringify({
 export const RUST_IMAGE =
 	"rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082";
 /** Node for the folder program's run against the folder service: the same Debian release as RUST_IMAGE, so the
- * program built there runs here. */
-export const NODE_IMAGE = "node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6";
-const FUSE = "--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined";
+ * program built there runs here. The full image, not slim: its git and python3 use the mounted folder's links. */
+export const NODE_IMAGE = "node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
@@ -119,25 +117,33 @@ const ANY = [/./];
 /** Starts on any path that is not web-only. */
 const NOT_WEB_ONLY = Symbol("not web-only");
 
-/** Ordered steps. `build`: needs npm run build:web-sdk first (script tests and the web import it). */
+/** Ordered steps. `build`: needs npm run build:web-sdk first (script tests and the web import it). `alone`: commands
+ * that need the tree to themselves, run after `commands` one step at a time, but first in a side-by-side run
+ * (planScript). `cores`: the step's mean busy cores at 2 vitest workers, its PostgreSQL containers included (node01,
+ * 16 Oct), which a side-by-side run packs by (default 1). `seconds`: its median in pr-loop's full runs (15 Oct), so a side-by-side run starts the longest
+ * first. `workers`: a side-by-side run's vitest workers for the step (default: the slot's, 2 on a test machine). */
 export const STEPS = [
 	{
 		name: "lint",
 		why: "biome over the repository (npm run check)",
 		paths: ANY,
-		commands: ["npx biome check --error-on-warnings ."],
+		// Reads every file: a file another step is writing could fail it.
+		commands: [],
+		alone: ["npx biome check --error-on-warnings ."],
 	},
 	{
 		name: "typecheck",
 		why: "root and member-web tsgo (root-typecheck.yml ran on every PR)",
 		paths: ANY,
-		commands: ["npx tsgo --noEmit", "npx tsgo -p packages/member-web/tsconfig.json"],
+		commands: [],
+		alone: ["npx tsgo --noEmit", "npx tsgo -p packages/member-web/tsconfig.json"],
 	},
 	{
 		name: "checks",
 		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, migration custom settings, connector catalog, runtime bundle",
 		paths: ANY,
-		commands: [
+		commands: [],
+		alone: [
 			"npm run check:pinned-deps",
 			"npm run check:ts-imports",
 			"npm run check:cloud-boundaries",
@@ -150,6 +156,7 @@ export const STEPS = [
 	{
 		name: "web",
 		why: "the web client and what it consumes (web-client.yml)",
+		seconds: 61,
 		paths: [
 			/^packages\/web\//,
 			/^packages\/member-web\/ui\//,
@@ -158,13 +165,18 @@ export const STEPS = [
 			/^scripts\/web-deployment/,
 		],
 		build: true,
+		cores: 2,
 		commands: [
 			"npm run typecheck --workspace packages/web",
 			"npm test --workspace packages/web",
 			`node --test ${FUNCTION_TESTS.slice(0, 4).join(" ")} scripts/web-deployment.test.mjs`,
-			// The release build measures its source from git and refuses uncommitted changes. The run copy has
-			// no .git, so the step commits it into a throwaway repository for the build and removes it after.
-			// This checks bundling and the release configuration; the snapshot commit is never deployed.
+		],
+		// The release build measures its source from git and refuses uncommitted changes. The run copy has
+		// no .git, so the step commits it into a throwaway repository for the build and removes it after.
+		// This checks bundling and the release configuration; the snapshot commit is never deployed. A file
+		// another step writes meanwhile would dirty the tree, and the build rewrites the built packages other
+		// steps import: alone.
+		alone: [
 			"git init -q && git add -A && git -c user.name=run-on-node -c user.email=run-on-node@invalid commit -qm snapshot",
 			`QORPERA_WEB_CONFIG_JSON='${WEB_RELEASE_CONFIG}' npm run build:release --workspace packages/web; built=$?; rm -rf .git; exit $built`,
 		],
@@ -196,12 +208,14 @@ export const STEPS = [
 	{
 		name: "runtime",
 		why: "every change that is not web-only (runtime-release-train.yml): all tests, then the coding command supervisor; the files that mostly wait run beside the rest",
+		seconds: 154,
 		paths: NOT_WEB_ONLY,
 		commands: [...besideTheRest("runtime", RUNTIME_WAITING, [RUNTIME_GUEST]), vitest("runtime", ` ${RUNTIME_GUEST}`)],
 	},
 	{
 		name: "scripts",
 		why: "every change that is not web-only: all script tests, packaging and pins included (runtime-release-train.yml, step2-lxd.yml)",
+		seconds: 31,
 		paths: NOT_WEB_ONLY,
 		build: true,
 		commands: ["node --test scripts/*.test.mjs"],
@@ -209,12 +223,15 @@ export const STEPS = [
 	{
 		name: "object-gateway",
 		why: "packages/object-gateway",
+		seconds: 30,
 		paths: [/^packages\/object-gateway\//],
+		cores: 0.4,
 		commands: [vitest("object-gateway")],
 	},
 	{
 		name: "runner-orchestrator",
 		why: "packages/runner-orchestrator and what its tests read: deploy files, runtime and cloud-client sources, runtime fixtures (step2-lxd.yml); the files that mostly wait run beside the rest",
+		seconds: 588,
 		paths: [
 			/^packages\/runner-orchestrator\//,
 			/^deploy\//,
@@ -222,22 +239,29 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\//,
 			/^packages\/cloud-client\/src\//,
 		],
+		// Mostly waits on its tests' deadlines: 1.16 cores over 602 s as one vitest. Since the files that mostly wait
+		// run beside the rest, the same CPU (689 s) takes about 400 s (402 s in pr-loop's one run so far): about 1.7.
+		// Side by side, the rest is the whole run's critical path, CPU-bound at 2 workers (634 s of a 651 s run, 16 Oct):
+		// 4 workers, packed as 3 cores so hosted-db still starts beside it.
+		cores: 3,
+		workers: 4,
 		commands: besideTheRest("runner-orchestrator", RUNNER_ORCHESTRATOR_WAITING),
 	},
 	{
 		name: "folder-program",
-		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image, then the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
+		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image and, beside them, the release build, its check against the build record and the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
+		seconds: 89,
 		paths: [
 			/^crates\/qorpera-folder\//,
 			/^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/,
 			/^deploy\/folder-service\/folder-program-linux-x64\.json$/,
-			/^scripts\/folder-program-artifact\.mjs$/,
+			/^scripts\/folder-program-(artifact|step)\.mjs$/,
 		],
-		// Crates are cached in a named volume between runs; the built program passes between the two containers in
-		// a volume of this run's own, removed at the end.
-		commands: [
-			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
-		],
+		// Compiled crates stay in a volume of the runner user's own between runs (scripts/folder-program-step.mjs). Its
+		// containers' CPU, read from their cgroups (node02, 16 Oct): 90 CPU seconds over 98 s with the crates emptied,
+		// 32 over 80 s with them kept.
+		cores: 1,
+		commands: ["node scripts/folder-program-step.mjs"],
 	},
 	{
 		name: "functions",
@@ -248,9 +272,14 @@ export const STEPS = [
 	{
 		name: "deploy-node",
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
+		seconds: 121,
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
+		// node --test runs its files side by side, the agent exit's root proof in a file of its own. The step mostly waits
+		// (14 CPU seconds over 139 s), but `cores` is 2 so that a side-by-side run that fans out within a step's cores
+		// still runs the proof beside the rest.
+		cores: 2,
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs deploy/agent-exit/qorpera-agent-exit-proof.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
@@ -264,6 +293,7 @@ export const STEPS = [
 	{
 		name: "hosted-db",
 		why: "migrations, SQL tests and the PostgreSQL scripts with their inputs (hosted-db.yml)",
+		seconds: 240,
 		paths: [
 			/^supabase\/(?!functions\/)/,
 			/^scripts\/test-hosted-db/,
@@ -291,6 +321,7 @@ export const STEPS = [
 		],
 		// Those two import the runtime's TypeScript, which imports built packages.
 		build: true,
+		cores: 2.6,
 		// One PostgreSQL and one migration replay for the SQL tests and every script (scripts/test-hosted-db.mjs).
 		commands: ["node --test scripts/test-hosted-db.test.mjs", "node scripts/test-hosted-db.mjs --scripts"],
 	},
@@ -301,11 +332,13 @@ export const STEPS = [
 		// holds 5,000 paths (about 2.5 min with its setup).
 		name: "folder-core-load",
 		why: "one folder-v2 company under pooled load with the production role timeouts on a real disk: its runs' fences, reads, writes, releases and subtree deletes, a stop, narrowing, wakes, GC and rank-0 writers; fails on a deadlock, a leak, a lost parent or bytes, an unexpected failure or a call over the result fence",
+		seconds: 121,
 		paths: [
 			/^supabase\/migrations\//,
 			/^supabase\/tests\/648_folder_core_run_fence_concurrency\.test\.sql$/,
 			/^scripts\/load-folder-core\./,
 		],
+		cores: 1.6,
 		commands: ["node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check"],
 	},
 ];
@@ -341,16 +374,49 @@ export function planChanged(files) {
 			reason: whole.length
 				? `shared configuration or packages every package reads: ${sample(whole)}`
 				: `no rule knows: ${sample(unmapped)}`,
-			steps: STEPS.map((step) => ({ name: step.name, why: step.why, files: [], commands: step.commands })),
+			steps: STEPS.map((step) => ({ ...planned(step), files: [] })),
 			build: true,
 		};
 	const chosen = STEPS.filter((step) => steps.has(step.name)).map((step) => ({
-		name: step.name,
-		why: step.why,
+		...planned(step),
 		files: steps.get(step.name),
-		commands: step.commands,
 	}));
 	return { full: false, reason: null, steps: chosen, build: STEPS.some((step) => step.build && steps.has(step.name)) };
+}
+
+/** What planScript and splitPlan need of a step. */
+function planned(step) {
+	return {
+		name: step.name,
+		why: step.why,
+		commands: step.commands,
+		alone: step.alone ?? [],
+		cores: step.cores ?? 1,
+		seconds: step.seconds ?? 0,
+		workers: step.workers ?? null,
+		build: step.build ?? false,
+	};
+}
+
+/** A plan's steps in at most `parts` groups, for runs on different machines at once (run-on-node.mjs --parts): by CPU
+ * work (`seconds` × `cores`), the most first, each step to the group with the least work so far, then the fewest steps,
+ * so no group is empty while there are steps for it. Every step is in exactly one group. A group keeps the plan's
+ * order, and needs the build if one of its steps does. */
+export function splitPlan(steps, parts) {
+	const work = (step) => (step.seconds ?? 0) * (step.cores ?? 1);
+	const groups = Array.from({ length: Math.min(parts, steps.length) }, () => ({ indexes: [], work: 0 }));
+	const heaviest = steps.map((_, i) => i).sort((a, b) => work(steps[b]) - work(steps[a]) || a - b);
+	for (const i of heaviest) {
+		const lightest = groups.reduce((best, group) =>
+			group.work < best.work || (group.work === best.work && group.indexes.length < best.indexes.length) ? group : best,
+		);
+		lightest.indexes.push(i);
+		lightest.work += work(steps[i]);
+	}
+	return groups.map(({ indexes }) => {
+		const chosen = indexes.sort((a, b) => a - b).map((i) => steps[i]);
+		return { steps: chosen, build: chosen.some((step) => step.build) };
+	});
 }
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */
@@ -364,20 +430,183 @@ function sample(files) {
 	return files.length > 3 ? `${files.slice(0, 3).join(", ")} and ${files.length - 3} more` : files.join(", ");
 }
 
-/** Every step runs, even after another failed; the exit code is 1 if any failed. */
-export function planScript(steps) {
+/** Keeps a side-by-side step's fan-out within its cores, rounded up: its `node --test` runs that many test files at
+ * once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code on that many
+ * threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs RUNNERS), and the
+ * steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that npm or a script
+ * starts keeps node's default. A step with `workers` runs its vitests with that many workers, not the slot's, unless
+ * the run set its own (`stepWorkers` false). */
+function narrow(step, stepWorkers) {
+	const width = Math.max(1, Math.ceil(step.cores ?? 1));
+	return `export GOMAXPROCS=${width}; ${step.workers && stepWorkers ? `export VITEST_MAX_WORKERS=${step.workers}; ` : ""}node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
+}
+
+/** A side-by-side run started by run-on-node.mjs makes this file in its directory once every step has started, so the
+ * run stops waiting for more slots: the steps still running need no more cores than they have. */
+export const ALL_STARTED = ".run-on-node-all-started";
+
+/** A --fail-fast run's part stops once run-on-node.mjs makes this file in its directory: another part failed. */
+export const STOP = ".run-on-node-stop";
+
+/** The processes under awk's `tree` (pids), those included, from `ps -e -o pid= -o ppid=`. */
+const DESCENDANTS =
+	'BEGIN { n = split(tree, t, " "); for (k = 1; k <= n; k++) seen[t[k]] = 1 } { pid[NR] = $1; parent[NR] = $2 } END { do { grown = 0; for (j = 1; j <= NR; j++) if (!(pid[j] in seen) && (parent[j] in seen)) { seen[pid[j]] = 1; grown = 1 } } while (grown); for (p in seen) printf "%s ", p }';
+
+/** Of `docker inspect` lines (id, /name, bind sources), the containers the processes under awk's `tree` made: hosted-db's
+ * are named after the process that started them (test-hosted-db.mjs buildContainerName: qorpera-hosted-db-PID-HEX), and
+ * folder-program's and the agent-exit proof's bind a path in the run's directory (`here`, `real` without symlinks),
+ * which no other run uses (run-on-node.mjs: runs/RUN). */
+const OWNED =
+	'BEGIN { n = split(tree, t, " "); for (k = 1; k <= n; k++) mine[t[k]] = 1 } { name = substr($2, 2); split(name, p, "-"); hit = index(name, "qorpera-hosted-db-") == 1 && (p[4] in mine); for (k = 3; k <= NF; k++) if ($k == here || $k == real || index($k, here "/") == 1 || index($k, real "/") == 1) hit = 1; if (hit) print $1 }';
+
+/** Every step runs, even after another failed; the exit code is 1 if any failed. Without `cores`, one step at a time in
+ * plan order, each running its `alone` commands after its others.
+ *
+ * With `cores`, side by side: first every step's `alone` commands, one step at a time with nothing else running; then
+ * the rest of every step, the longest (`seconds`) first, each starting once the running steps' `cores` leave room for
+ * it within `cores` (one always runs), its fan-out within its own (`narrow`). A step runs its rest even when its
+ * `alone` part failed, and passes only if both passed. Its output is printed whole when it ends, with its own time. A
+ * step whose rest ends without a result (its worker killed, or the result not written) fails.
+ *
+ * Under run-on-node.mjs, the file QORPERA_RUN_CORES_FILE holds the cores the run's slots give it, more as further
+ * slots free: the budget is the smaller of that and `cores`, read again every second. A value it cannot read keeps
+ * the budget where it was, from one core. `stepWorkers` false: a VITEST_MAX_WORKERS the run was given (run-on-node.mjs
+ * --env) wins over the steps' `workers`.
+ *
+ * `failFast` (run-on-node.mjs --fail-fast, for pr-loop's batch runs, which are bisected when they fail): after the first
+ * failed step, or once the file STOP is in the run's directory, no step starts, and the steps running side by side are
+ * ended, their whole process trees and the containers those made (OWNED); the run lists them as stopped. One step at a
+ * time, the shortest (`seconds`) run first and a step that has started runs to its end. */
+export function planScript(steps, { cores = null, stepWorkers = true, failFast = false } = {}) {
+	const halted = `{ [ -n "$failed" ] || [ -e ${STOP} ]; }`;
+	const fail = failFast
+		? [
+				`if [ -n "$failed$stopped" ]; then [ -n "$failed" ] && echo "== changed: failed:$failed"; [ -n "$stopped" ] && echo "== changed: stopped (--fail-fast):$stopped"; { echo "failed_steps=$(echo $failed | tr ' ' ,)"; echo "stopped_steps=$(echo $stopped | tr ' ' ,)"; } >>.run-on-node-status; exit 1; fi`,
+				'echo "== changed: all steps passed"',
+			]
+		: [
+				// The failed step names reach the run record (and the GitHub status) through the status file.
+				'if [ -n "$failed" ]; then echo "== changed: failed:$failed"; echo "failed_steps=$(echo $failed | tr \' \' ,)" >>.run-on-node-status; exit 1; fi',
+				'echo "== changed: all steps passed"',
+			];
+	// A failure shows soonest with the shortest steps first (a stable sort: plan order among equals).
+	const order = failFast ? [...steps].sort((a, b) => (a.seconds ?? 0) - (b.seconds ?? 0)) : steps;
+	if (!cores)
+		return [
+			"set -u",
+			"failed=''",
+			...(failFast ? ["stopped=''"] : []),
+			...order.flatMap((step) => {
+				const run = [
+					`echo "== changed: ${step.name}"`,
+					"started=$(date +%s)",
+					// && and not set -e: errexit is ignored inside an if condition, so a failed first command would pass.
+					`if ( ${[...step.commands, ...(step.alone ?? [])].join(" && ")} ); then echo "== changed: ${step.name} passed in $(( $(date +%s) - started )) s"; else echo "== changed: ${step.name} FAILED after $(( $(date +%s) - started )) s"; failed="$failed ${step.name}"; fi`,
+				];
+				return failFast ? [`if ${halted}; then stopped="$stopped ${step.name}"; else`, ...run, "fi"] : run;
+			}),
+			...fail,
+		].join("\n");
+	const limit = Math.round(cores * 100);
+	const indexed = steps.map((step, i) => ({ step, i }));
+	const rest = indexed
+		.filter(({ step }) => step.commands.length)
+		.sort((a, b) => (b.step.seconds ?? 0) - (a.step.seconds ?? 0) || a.i - b.i)
+		.map(({ i }) => i);
 	return [
 		"set -u",
 		"failed=''",
-		...steps.flatMap((step) => [
-			`echo "== changed: ${step.name}"`,
-			"started=$(date +%s)",
-			// && and not set -e: errexit is ignored inside an if condition, so a failed first command would pass.
-			`if ( ${step.commands.join(" && ")} ); then echo "== changed: ${step.name} passed in $(( $(date +%s) - started )) s"; else echo "== changed: ${step.name} FAILED after $(( $(date +%s) - started )) s"; failed="$failed ${step.name}"; fi`,
+		...(failFast ? ["stopped=''"] : []),
+		'out=$(mktemp -d); trap \'rm -rf "$out"\' EXIT',
+		`names=(${steps.map((step) => step.name).join(" ")})`,
+		// Hundredths of a core; each step's exit code and seconds so far.
+		`need=(${steps.map((step) => Math.round((step.cores ?? 1) * 100)).join(" ")})`,
+		`code=(${steps.map(() => 0).join(" ")})`,
+		`seconds=(${steps.map(() => 0).join(" ")})`,
+		// Each part is a subshell, so a command's own exit ends only its part. A rest fans out within its step's cores.
+		...indexed.flatMap(({ step, i }) => [
+			...(step.alone?.length ? [`alone_${i}() ( ${step.alone.join(" && ")} )`] : []),
+			...(step.commands.length ? [`rest_${i}() ( ${narrow(step, stepWorkers)}; ${step.commands.join(" && ")} )`] : []),
 		]),
-		// The failed step names reach the run record (and the GitHub status) through the status file.
-		'if [ -n "$failed" ]; then echo "== changed: failed:$failed"; echo "failed_steps=$(echo $failed | tr \' \' ,)" >>.run-on-node-status; exit 1; fi',
-		'echo "== changed: all steps passed"',
+		'report() { echo "== changed: ${names[$1]}"; cat "$out/$1.log"; if [ "${code[$1]}" = 0 ]; then echo "== changed: ${names[$1]} passed in ${seconds[$1]} s"; else echo "== changed: ${names[$1]} FAILED after ${seconds[$1]} s"; failed="$failed ${names[$1]}"; fi; }',
+		...indexed
+			.filter(({ step }) => step.alone?.length)
+			.map(({ step, i }) => {
+				const run = `started=$(date +%s); alone_${i} >"$out/${i}.log" 2>&1; code[${i}]=$?; seconds[${i}]=$(( $(date +%s) - started ))`;
+				if (!failFast) return `${run}${step.commands.length ? "" : `; report ${i}`}`;
+				// A failed alone part fails its step at once. A step with a rest whose alone part did not run is stopped
+				// with the steps not started (stop).
+				return step.commands.length
+					? `if ! ${halted}; then ${run}; [ "\${code[${i}]}" = 0 ] || report ${i}; fi`
+					: `if ${halted}; then stopped="$stopped ${step.name}"; else ${run}; report ${i}; fi`;
+			}),
+		// The rest's end (exit code, seconds) appears in one rename, so the loop never reads half of it.
+		'start() { ( s=$(date +%s); "rest_$1" >>"$out/$1.log" 2>&1; c=$?; echo "$c $(( $(date +%s) - s ))" >"$out/$1.end.tmp" && mv "$out/$1.end.tmp" "$out/$1.end" ) & pid[$1]=$!; began[$1]=$(date +%s); }',
+		// A worker is alive while /proc shows it running (not a zombie) as this shell's child, so its pid handed out
+		// again to another process does not count.
+		'alive() { local _pid _comm state parent; { read -r _pid _comm state parent _ <"/proc/$1/stat"; } 2>/dev/null && [ "$state" != Z ] && [ "$parent" = "$BASHPID" ]; }',
+		...(failFast
+			? [
+					// Docker runs a step's containers outside its process tree: a killed docker client leaves its container
+					// running, and a shell as a container's PID 1 ignores the TERM the client passes on.
+					`drop_containers() { docker ps -aq 2>/dev/null | xargs -r docker inspect --format '{{.Id}} {{.Name}}{{range .Mounts}} {{.Source}}{{end}}' 2>/dev/null | awk -v tree="$1" -v here="$PWD" -v real="$(pwd -P)" '${OWNED}' | xargs -r docker rm -f -v >/dev/null 2>&1; }`,
+					// Ends the running steps: their process trees, frozen (SIGSTOP) a pass at a time until a pass finds no new
+					// process, as a frozen one starts none; then TERM, and KILL after 10 s. The containers they made (OWNED)
+					// are removed right after the TERM, so their clients end with them, and again once the trees are gone, for
+					// one whose start was under way. The steps not started are stopped too.
+					"stop() {",
+					'\tlocal i tree="" more',
+					'\tfor i in $running; do tree="$tree ${pid[i]}"; done',
+					'\tif [ -n "${tree// }" ]; then',
+					"\t\tfor _ in 1 2 3 4 5 6 7 8; do",
+					"\t\t\tkill -STOP $tree 2>/dev/null",
+					`\t\t\tmore=$(ps -e -o pid= -o ppid= | awk -v tree="$tree" '${DESCENDANTS}')`,
+					'\t\t\t[ "$(wc -w <<<"$more")" = "$(wc -w <<<"$tree")" ] && break; tree=$more',
+					"\t\tdone",
+					"\t\tkill -TERM $tree 2>/dev/null; kill -CONT $tree 2>/dev/null",
+					'\t\tdrop_containers "$tree"',
+					`\t\tfor _ in $(seq 20); do ps -o stat= -p "$(echo $tree | tr ' ' ,)" | grep -qv '^Z' || break; sleep 0.5; done`,
+					"\t\tkill -KILL $tree 2>/dev/null",
+					'\t\tfor i in $running; do wait "${pid[i]}" 2>/dev/null; echo "== changed: ${names[i]} stopped after $(( seconds[i] + $(date +%s) - began[i] )) s (--fail-fast)"; stopped="$stopped ${names[i]}"; done',
+					'\t\tdrop_containers "$tree"',
+					"\tfi",
+					'\tfor i in $pending; do [ "${code[i]}" = 0 ] && stopped="$stopped ${names[i]}"; done',
+					'\trunning=""; pending=""',
+					"}",
+				]
+			: []),
+		// The runner user's tasks count against its 512-task limit (run-on-node.mjs RUNNERS): the run reports its peak.
+		`pending="${rest.join(" ")}"; running=""; used=0; tick=0; tasks=0; least=""`,
+		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0`,
+		'while [ -n "${pending// }${running// }" ]; do',
+		...(failFast ? [`\tif ${halted}; then stop; break; fi`] : []),
+		`\thave=""; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && { read -r have <"$QORPERA_RUN_CORES_FILE"; } 2>/dev/null; [[ "$have" =~ ^[1-9][0-9]?$ ]] && budget=$(( have * 100 < ${limit} ? have * 100 : ${limit} )); [ "$budget" -gt "$top" ] && top=$budget`,
+		'\tleft=""',
+		"\tfor i in $pending; do",
+		'\t\tif [ -z "${running// }" ] || [ $(( used + need[i] )) -le "$budget" ]; then start "$i"; running="$running $i"; used=$(( used + need[i] )); else left="$left $i"; fi',
+		"\tdone",
+		`\tpending=$left; [ -z "\${pending// }" ] && [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && [ ! -e ${ALL_STARTED} ] && : >${ALL_STARTED}`,
+		"\tsleep 1; tick=$(( tick + 1 ))",
+		"\tif [ $(( tick % 5 )) = 1 ]; then",
+		'\t\tn=$(ps -L -u "$(id -u)" --no-headers 2>/dev/null | wc -l); [ "$n" -gt "$tasks" ] && tasks=$n',
+		"\t\tm=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo); [ -z \"$least\" ] || [ \"$m\" -lt \"$least\" ] && least=$m",
+		"\tfi",
+		'\tstill=""',
+		"\tfor i in $running; do",
+		// A worker with a result ends right after its rename, so wait returns at once; reaped, it has written all it ever
+		// will. One killed, or one that could not write its result, fails its step with its exit code and frees its cores.
+		'\t\tif [ -e "$out/$i.end" ] || ! alive "${pid[i]}"; then',
+		'\t\t\twait "${pid[i]}"; w=$?; c=""; s=""; [ -e "$out/$i.end" ] && read -r c s <"$out/$i.end"',
+		'\t\t\tif [[ $c =~ ^[0-9]+$ && $s =~ ^[0-9]+$ ]]; then seconds[i]=$(( seconds[i] + s )); [ "${code[i]}" = 0 ] && code[i]=$c;',
+		'\t\t\telse echo "== changed: ${names[i]}: its worker ended (exit $w) without a result" >>"$out/$i.log"; seconds[i]=$(( seconds[i] + $(date +%s) - began[i] )); code[i]=1; fi',
+		'\t\t\treport "$i"; used=$(( used - need[i] ))',
+		'\t\telse still="$still $i"; fi',
+		"\tdone",
+		"\trunning=$still",
+		"done",
+		"wait",
+		`echo "== changed: side by side within ${cores} cores\${QORPERA_RUN_CORES_FILE:+ (at most $(( top / 100 )) from its slots)}: at most $tasks tasks of the runner user, at least \${least:-?} MiB available"`,
+		...fail,
 	].join("\n");
 }
 

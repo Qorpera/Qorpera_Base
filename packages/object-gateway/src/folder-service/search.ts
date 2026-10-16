@@ -10,7 +10,9 @@ import { byteOrder, type TreeEntry, type ViewTree } from "./view-tree.ts";
  * company folder here, on its node, with the view its run opened, so a folder shared with only some agents is
  * searched exactly for them.
  *
- * Literal text in the lines of text files, or in the names of files and folders, in the order a machine lists them.
+ * Literal text in the lines of text files, or in the names of files, folders and links, in the order a machine lists
+ * them. A link is found by its name only, never by its target, and never walked through (protocol 4; below it the
+ * search leaves links out).
  * One call is one page of the search: it answers when its hits fill the answer, when it has drawn on as many paths as
  * one answer carries, or after about two seconds of work, with where to go on. There is no end the search stops at.
  * The node's event loop serves every machine on the node, so a page gives it a turn every few milliseconds, and no
@@ -46,7 +48,7 @@ const AHEAD = 8;
 
 export interface SearchHit {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	/** The line's number, from 1; 0 for a name. */
 	readonly line: number;
 	/** The line around its match; empty for a name (the path is the hit). */
@@ -55,11 +57,13 @@ export interface SearchHit {
 	 * run show only the hits before it. */
 	readonly version: string;
 	readonly offset: number;
+	/** A link's target, as written (a name hit on a link). */
+	readonly target?: string;
 }
 
 export interface SearchRead {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	readonly version: string;
 	readonly authority?: CoreReceipt;
 }
@@ -78,6 +82,8 @@ export interface SearchAnswer {
 
 export interface SearchSource {
 	readonly tree: ViewTree;
+	/** Links are found (protocol 4); otherwise they are left out. */
+	readonly links?: boolean;
 	/** Up to `length` bytes of a file's version from `offset`. */
 	read(entry: TreeEntry, offset: number, length: number): Promise<Buffer>;
 	readonly now: () => number;
@@ -209,7 +215,15 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 	};
 	/** Adds a hit, or says the answer is full. */
 	const hit = (entry: TreeEntry, line: number, text: string, offset = 0): boolean => {
-		const shown = { path: entry.path, kind: entry.kind, line, text, version: entry.version, offset };
+		const shown: SearchHit = {
+			path: entry.path,
+			kind: entry.kind,
+			line,
+			text,
+			version: entry.version,
+			offset,
+			...(entry.kind === "symlink" ? { target: entry.target } : {}),
+		};
 		const bytes = Buffer.byteLength(JSON.stringify(shown));
 		if (hits.length > 0 && hitBytes + bytes > HITS_BYTES) return false;
 		hits.push(shown);
@@ -255,6 +269,8 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 
 	for (let entry = pull(); entry; entry = pull()) {
 		await turn();
+		// A link below protocol 4 is not there: never drawn on, nor where a page goes on from.
+		if (entry.kind === "symlink" && !source.links) continue;
 		// A page ends once it has moved the search on: never before its first entry.
 		if (examined > 0 && (reads.length >= READS_PER_ANSWER || readBytes >= READS_BYTES || source.now() >= deadline))
 			return answer(at(entry));

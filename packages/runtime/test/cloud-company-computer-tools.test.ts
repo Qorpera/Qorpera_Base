@@ -40,7 +40,10 @@ afterEach(async () => {
 	for (const close of cleanup.splice(0)) await close();
 });
 
-function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] = ["browser", "desktop", "shell"]) {
+function toolHarness(
+	capabilities: readonly ("browser" | "desktop" | "shell")[] = ["browser", "desktop", "shell"],
+	offlineShells?: Set<string>,
+) {
 	const run = computerRun();
 	const order: string[] = [];
 	const screens: CompanyComputerScreenLeaseControl = {
@@ -89,7 +92,14 @@ function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] 
 			return output.content;
 		}),
 	};
-	const session = createCompanyComputerTools({ run, scope: computerScope(), screens, endpoint, operations });
+	const session = createCompanyComputerTools({
+		run,
+		scope: computerScope(),
+		screens,
+		endpoint,
+		operations,
+		...(offlineShells ? { offlineShells } : {}),
+	});
 	cleanup.push(session.close);
 	const call = (name: string, action: JsonValue, operationKey = "test:1") => {
 		const tool = session.tools.find((entry) => entry.name === name);
@@ -416,17 +426,53 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await expect(harness.call("computer_shell", { kind: "shell", action: "list" }, "test:2")).resolves.toMatchObject({
 			kind: "json",
 		});
+		// Offline unless the model asks; the run asking goes with the wait, as only it, or another run that took in a
+		// folder command's reads by this action's receipt, sees that command's output.
 		expect(settle.mock.calls[0]).toEqual([
-			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000 },
+			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000, network: false },
 			{ kind: "json", value: { sessionId: computerId(90) } },
 			expect.any(AbortSignal),
 			expect.any(Number),
+			harness.run.identity.runId,
+			computerId(10),
 		]);
 		waited.resolve({ kind: "json", value: { sessionId: computerId(90), state: "running", output: "" } });
 		await expect(reply).resolves.toEqual({
 			kind: "json",
 			value: { sessionId: computerId(90), state: "running", output: "" },
 		});
+	});
+
+	it("adds each offline command the run started to its offline commands, and never a networked one (F3 4d)", async () => {
+		const offlineShells = new Set<string>();
+		const harness = toolHarness(["shell"], offlineShells);
+		let session = 90;
+		harness.automation.perform.mockImplementation(async () => ({
+			kind: "json",
+			value: { sessionId: computerId(session++) },
+		}));
+		await harness.call("computer_shell", { kind: "shell", action: "start", command: "npm test", waitMs: 0 }, "t:1");
+		await harness.call(
+			"computer_shell",
+			{ kind: "shell", action: "start", command: "npm publish", waitMs: 0, network: true },
+			"t:2",
+		);
+		await harness.call(
+			"computer_shell",
+			{ kind: "shell", action: "start", command: "make", waitMs: 0, network: false },
+			"t:3",
+		);
+		// The office gets the start the review saw: offline filled in unless the model asked.
+		expect(vi.mocked(harness.operations.execute).mock.calls.map(([options]) => options.operation.arguments)).toEqual([
+			{ kind: "shell", action: "start", command: "npm test", waitMs: 0, network: false },
+			{ kind: "shell", action: "start", command: "npm publish", waitMs: 0, network: true },
+			{ kind: "shell", action: "start", command: "make", waitMs: 0, network: false },
+		]);
+		expect([...offlineShells]).toEqual([computerId(90), computerId(92)]);
+		// A reply without a session id adds nothing.
+		harness.automation.perform.mockResolvedValueOnce({ kind: "json", value: { state: "refused" } });
+		await harness.call("computer_shell", { kind: "shell", action: "start", command: "ls", waitMs: 0 }, "t:4");
+		expect(offlineShells.size).toBe(2);
 	});
 
 	it("keeps a cancelled shell wait from leaving an unresolved resource behind", async () => {
@@ -634,6 +680,9 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(variants).toEqual(["start", "read", "write", "stop", "stop", "list"]);
 		expect(shell.description).not.toContain("15 seconds");
 		expect(shell.description).toContain("public internet");
+		// F3 4d: commands run in the company folder, offline unless the start asks for the network.
+		expect(shell.description).toContain("with the company folder at /company");
+		expect(shell.description).toContain("unless start sets network: true");
 		// One idle rule: only a busy shell keeps the machine awake; the next run is told what sleep stopped.
 		expect(shell.description).toContain(
 			"Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake",
@@ -654,59 +703,26 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		},
 	);
 
-	// From the deleted file transfer classes' tests (legacy removal, step C): the guest still parses every transfer.
-	it.each(["/etc/passwd", "../secret", "a/../b", "a//b", "a/./b", "a\\b", "a\0b", "a/", "x".repeat(256)])(
-		"rejects a transfer path outside the workbench: %j",
-		(path) => {
-			expect(() =>
-				parseCompanyComputerAction({
-					kind: "transfer",
-					action: "export",
-					source: { realm: "company_computer", path },
-					destination: { realm: "object_storage" },
-					mediaType: "text/plain",
-				}),
-			).toThrow();
-			expect(() =>
-				parseCompanyComputerAction({
-					kind: "transfer",
-					action: "import",
-					source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-					destination: { realm: "company_computer", path },
-				}),
-			).toThrow();
-		},
-	);
-
-	it("keeps a transfer's literal names and refuses implicit realms, raw hashes and extra flags", () => {
-		const exported = {
-			kind: "transfer",
-			action: "export",
-			source: { realm: "company_computer", path: 'output/`quote` $(value) "name".bin' },
-			destination: { realm: "object_storage" },
-			mediaType: "application/octet-stream",
-		};
-		const imported = {
-			kind: "transfer",
-			action: "import",
-			source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-			destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
-		};
-		expect(parseCompanyComputerAction(exported)).toEqual(exported);
-		expect(parseCompanyComputerAction(imported)).toEqual(imported);
-		for (const bad of [
-			{ ...exported, source: { realm: "member_device", path: "selected" } },
-			{ ...exported, source: { ...exported.source, realm: "isolated_worker" } },
-			{ ...exported, destination: { realm: "isolated_worker" } },
-			...["member_device", "company_file", "isolated_worker", "company_computer"].map((realm) => ({
-				...imported,
-				source: { ...imported.source, realm },
-			})),
-			{ ...imported, destination: { ...imported.destination, realm: "isolated_worker" } },
-			{ ...imported, source: { realm: "object_storage", sha256: "a".repeat(64) } },
-			{ ...imported, overwrite: true },
+	// F3 4f: the company folder at /company replaced the transfer tool; no capability offers it, and no guest parses one.
+	it("offers no file transfer and parses none", () => {
+		for (const capabilities of [["shell"], ["browser", "desktop", "shell"]] as const)
+			expect(toolHarness(capabilities).session.tools.map((tool) => tool.name)).not.toContain("computer_transfer");
+		for (const transfer of [
+			{
+				kind: "transfer",
+				action: "export",
+				source: { realm: "company_computer", path: "reports/a.bin" },
+				destination: { realm: "object_storage" },
+				mediaType: "application/octet-stream",
+			},
+			{
+				kind: "transfer",
+				action: "import",
+				source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+				destination: { realm: "company_computer", path: "inbox/a.bin" },
+			},
 		])
-			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow();
+			expect(() => parseCompanyComputerAction(transfer)).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});
 
 	it("reads a vault_fill as a box, an account and a field, never a value", () => {

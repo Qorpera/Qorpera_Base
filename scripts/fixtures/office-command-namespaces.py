@@ -15,6 +15,11 @@ capabilities to zero, sets no-new-privs, adds a seccomp filter (no CLONE_NEWUSER
 address families only), starts in /company and execs the command. A is the only process that joins the shell's
 namespaces as root, and it never joins the user namespace; B joins the user namespace only after it is unprivileged.
 
+Each mode runs twice. Kind "fixture" runs this file's A and B, which report B's state at each step. Kind "launcher"
+runs the real launcher in their place, `qorpera-folder command`, started as the folder helper starts it (the command's
+stdio on fds 0 to 2, its reports on fd 3, the helper's go on fd 4), and checks the same command from outside and from
+inside; before it, a start whose go pipe ends without a G must run nothing.
+
 This closes the owner-rule gap round 1 found (c' amendment, coordinator 15 Oct): under plain (c) the command ran as the
 office account in the initial user namespace, the *parent* of the shell's, so user_namespaces(7) rule 3 gave it every
 capability over the namespaces the shell's user namespace owns -- zero cap sets notwithstanding. (c') makes it a member
@@ -22,7 +27,7 @@ of the shell's user namespace instead, like the shell's own commands, so no rule
 
 State only, no attack code (coordinator, 14 Oct), and no live attempt to change the filter or to join a namespace
 from the command (15 Oct): the setns refusal is shown on the installed program, and live with setns(-1, 0), which
-names no namespace (the filter answers EPERM; without it the kernel answers EBADF). A synthetic protocol-3 node backs a
+names no namespace (the filter answers EPERM; without it the kernel answers EBADF). A synthetic protocol-4 node backs a
 real qorpera-folder mount. The shell and the starter run under keys copied from the real office and helper unit
 files, and a networked command's namespace gets the real plumb's veth, address, route and filter. No SQL, model,
 vsock provenance or production request authorization is claimed.
@@ -50,6 +55,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -101,7 +107,7 @@ X32_SYSCALL_BIT = 0x40000000
 AF_UNIX, AF_INET, AF_INET6, AF_PACKET, AF_NETLINK, AF_VSOCK = 1, 2, 10, 17, 16, 40  # Linux numbers
 OFFICE_FAMILIES = (AF_UNIX, AF_INET, AF_INET6, AF_NETLINK)
 # The folder protocol of crates/qorpera-folder/src/proto.rs; the program refuses a hello answered with another.
-PROTOCOL = 3
+PROTOCOL = 4
 # The paths inside the shell's root: the company mount's parent (as a desktop binds it), the share the shell and the
 # command write their records to, and the fixture itself.
 COMPANY_PARENT = "/run/qorpera-company"
@@ -240,6 +246,17 @@ def propagation(mountinfo, point):
         fields = line.split(" ")
         if fields[4] == point:
             found = [field for field in fields[6:fields.index("-")] if ":" in field]
+    return found
+
+
+def top_mount(mountinfo, point):
+    """The device and root of the top mount at `point` in a mountinfo text (the last one there), or None: the helper's
+    `ended` tells a command's namespace by the root of what is mounted at its mount parent."""
+    found = None
+    for line in mountinfo.splitlines():
+        fields = line.split(" ")
+        if fields[4] == point:
+            found = [fields[2], fields[3]]
     return found
 
 
@@ -692,13 +709,101 @@ def install_seccomp(program):
     syscall("seccomp", 1, 0, ctypes.byref(prog))  # SECCOMP_SET_MODE_FILTER; no-new-privs is already set
 
 
-def start_starter(directory, shell, mode, helper_unit):
+def start_starter(directory, shell, mode, helper_unit, kind):
+    """kind "fixture" runs this file's A and B; kind "launcher" runs the real `qorpera-folder command` in their place."""
     control = directory / "control"
-    argv = [sys.executable, str(directory / "probe.py"), "starter", str(shell["pid"]), mode, str(control), str(directory / "mount")]
+    argv = [sys.executable, str(directory / "probe.py"), "starter" if kind == "fixture" else "launcher", str(shell["pid"]),
+            mode, str(control), str(directory / "mount")]
+    if kind == "launcher":
+        argv.append(str(directory / "qorpera-folder"))
     properties = unit_properties(helper_unit, HELPER_KEYS) + ["RuntimeMaxSec=170"]
     unit = f"qorpera-cmdns-starter-{mode}"
     start_unit(unit, properties, argv)
     return {"unit": unit, "properties": properties, **await_record(control, "starter", "ready")}
+
+
+def spawn_launcher(program, argv, output):
+    """Starts the real launcher as the helper does: the command's stdio on fds 0 to 2, the report pipe on fd 3 and the
+    go pipe on fd 4. Returns A's pid, the report pipe's read end and the go pipe's write end."""
+    reports, report_end = os.pipe()
+    go_end, go = os.pipe()
+    launcher = os.fork()
+    if launcher == 0:
+        try:
+            null = os.open("/dev/null", os.O_RDONLY)
+            # Each source above every target first, so no dup2 overwrites one; dup2 makes each target inheritable, and
+            # every other fd here is close-on-exec (PEP 446).
+            sources = [fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10) for fd in (null, output, output, report_end, go_end)]
+            for target, source in enumerate(sources):
+                os.dup2(source, target)
+            os.execv(program, argv)
+        finally:
+            os._exit(127)
+    os.close(report_end)
+    os.close(go_end)
+    return launcher, reports, go
+
+
+def read_reports(reports, first_only):
+    """The launcher's report lines: the first one, or all of them until the pipe's end."""
+    data = b""
+    while not (first_only and b"\n" in data) and (chunk := os.read(reports, 4096)):
+        data += chunk
+    lines = data.split(b"\n")[:1] if first_only else [line for line in data.split(b"\n") if line]
+    found = []
+    for line in lines:
+        try:
+            found.append(json.loads(line))
+        except ValueError:
+            found.append({"t": "unreadable", "line": line.decode(errors="replace")})
+    return found
+
+
+def launcher_main(shell, mode, control, tree, program):
+    """The starter unit's top process stands in for the helper's long-running process, as in starter_main, but starts
+    the real launcher as the helper does: `qorpera-folder command` with the command's stdio on fds 0 to 2, the report
+    pipe on fd 3 and the go pipe on fd 4. First a start the top does not let go: it reads the start report, waits, and
+    ends the go pipe without a G, as a helper that could not record the command does; that command must never run (the
+    probe looks for its file, which this unit can't see). Then the run itself: the launcher is A, and the B it forks
+    execs this file's command once the top wrote G. The top keeps the report pipe's read end open, as the helper does
+    while a run lasts."""
+    control = Path(control)
+    output = os.open(control / "launcher-output.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    start = [program, "command", "--shell-pid", str(shell), "--tree", tree,
+             "--network", "yes" if mode == "networked" else "no", "--", "/usr/bin/python3"]
+    def tree_at_start(started):
+        # What a helper's `ended` reads between the start report and the go: the started namespace's own mount table.
+        if started.get("t") != "started":
+            return None
+        return top_mount(Path(f"/proc/{started['pid']}/mountinfo").read_text(), COMPANY_PARENT)
+
+    launcher, reports, go = spawn_launcher(
+        program, start + ["-c", f"open('{SHARE}/withheld-ran', 'w').close()"], output)
+    started = read_reports(reports, True)[0]
+    trees = [tree_at_start(started)]
+    # Long enough for the command to run, had it been let go.
+    time.sleep(1)
+    os.close(go)
+    exit_code = os.waitstatus_to_exitcode(os.waitpid(launcher, 0)[1])
+    withheld = {"started": started, "after": read_reports(reports, False), "exit": exit_code,
+                "commandAlive": alive(started["pid"]) if started.get("t") == "started" else None}
+    os.close(reports)
+
+    launcher, reports, go = spawn_launcher(program, start + [PROBE, "command", mode], output)
+    os.close(output)
+    started = read_reports(reports, True)[0]
+    trees.append(tree_at_start(started))
+    if started.get("t") == "started":
+        os.write(go, b"G")
+    os.close(go)
+    if started.get("t") != "started":
+        emit(control / "starter-done.json", {"error": f"launcher: {started}",
+                                             "output": (control / "launcher-output.log").read_text(errors="replace")})
+        raise RuntimeError(f"launcher: {started}")
+    emit(control / "starter-ready.json", {"kind": "launcher", "topPid": os.getpid(), "aPid": launcher, "started": started,
+                                          "withheld": withheld, "treeAtStart": trees})
+    while True:
+        time.sleep(1)
 
 
 def starter_main(shell, mode, control, tree):
@@ -717,7 +822,7 @@ def starter_main(shell, mode, control, tree):
         if "error" in info:
             emit(control / "starter-done.json", info)
             raise RuntimeError(info["error"])
-        emit(control / "starter-ready.json", {"topPid": os.getpid(), "aPid": a_pid, **info})
+        emit(control / "starter-ready.json", {"kind": "fixture", "topPid": os.getpid(), "aPid": a_pid, **info})
         while True:
             time.sleep(1)
 
@@ -903,10 +1008,25 @@ def settled(check, seconds):
 
 
 # --- The probe: root in the disposable guest, standing in for the office host and the node. ---
-def probe(directory, mode):
+LIMITATIONS = {
+    "fixture": ["The starter runs under the helper unit's keys as a stand-in for the helper's per-command child"],
+    "launcher": [
+        "The starter's top process runs under the helper unit's keys as a stand-in for the helper's own process; A and B "
+        "are the real `qorpera-folder command`, started as the helper starts it",
+        "B's state between the drop and its join of the shell's user namespace can't be seen from outside the launcher: "
+        "the fixture kind shows that order, and the launcher stops if a capability is left after the drop",
+        "The launcher's filter bytes are pinned by the crate's test the_filter_is_the_one_the_proof_installed to the "
+        "program the fixture kind installs and checks; this kind shows the setns refusal live",
+    ],
+}
+
+
+def probe(directory, mode, kind):
     require_disposable_guest(directory)
     if mode not in ("offline", "networked"):
         raise ValueError("Unknown mode")
+    if kind not in ("fixture", "launcher"):
+        raise ValueError("Unknown starter kind")
     started = int(time.time())
     if not Path("/dev/fuse").exists():
         raise RuntimeError("Image must already provide /dev/fuse")
@@ -932,11 +1052,11 @@ def probe(directory, mode):
     helper_unit = (directory / "helper.service").read_text()
     children = []
     units = ["qorpera-cmdns-shell", f"qorpera-cmdns-starter-{mode}"]
-    record = {"result": "failed", "mode": mode, "office": {"uid": office_uid, "gid": office_gid},
+    record = {"result": "failed", "mode": mode, "kind": kind, "office": {"uid": office_uid, "gid": office_gid},
               "initialUser": os.readlink("/proc/self/ns/user"),
               "limitations": ["Synthetic Unix-socket folder service; no database, vsock identity or request authorization",
                               "The shell is the real bwrap sandbox under the office unit's keys, not a running office application",
-                              "The starter runs under the helper unit's keys as a stand-in for the helper's per-command child"]}
+                              *LIMITATIONS[kind]]}
 
     def start_folder():
         log = open(directory / f"mount-{len(children)}.log", "w")
@@ -960,11 +1080,16 @@ def probe(directory, mode):
         record["shellOutside"] = {"pid": s, "uid": status(s)["Uid"].split(), "caps": caps_of(s), "ns": ns_links(s),
                                   "nsOwner": ns_owners(s), "usernsChain": userns_chain(s), "cgroup": _cgroup_path(s),
                                   "tmpDevIno": [tmp.st_dev, tmp.st_ino],
-                                  "lsm": Path(f"/proc/{s}/attr/current").read_text().strip()}
-        record["helperPropagation"] = propagation(Path("/proc/self/mountinfo").read_text(), str(mount))
+                                  "lsm": Path(f"/proc/{s}/attr/current").read_text().strip(),
+                                  "tree": top_mount(Path(f"/proc/{s}/mountinfo").read_text(), COMPANY_PARENT)}
+        helper_mounts = Path("/proc/self/mountinfo").read_text()
+        record["helperPropagation"] = propagation(helper_mounts, str(mount))
+        record["helperTree"] = top_mount(helper_mounts, str(mount))
 
-        starter = start_starter(directory, shell, mode, helper_unit)
+        starter = start_starter(directory, shell, mode, helper_unit, kind)
         record["starter"] = starter
+        if kind == "launcher":
+            record["withheldRan"] = (share / "withheld-ran").exists()
         command = eventually(lambda: find_command(office_uid), 20)
         record["command"] = await_record(share, "command", "report")
         a_pid, top_pid = starter["aPid"], starter["topPid"]
@@ -1000,7 +1125,17 @@ def probe(directory, mode):
         record["afterHelperRestart"] = {"command": alive(command), "setsidChild": bool(setsid) and all(alive(p) for p in setsid),
                                         "starterA": alive(a_pid), "top": alive(top_pid)}
 
-        # The office's stop kills the shell's cgroup, now holding A, the command and its setsid child.
+        if kind == "launcher":
+            # A run's stop, as the helper sends it: SIGTERM to A, which sends the command's process group SIGTERM, then
+            # SIGKILL two seconds later, and ends. A is root and the command the office account, so this needs the helper
+            # unit's CAP_KILL. The setsid child left the group: it lasts until the office's stop.
+            os.kill(a_pid, signal.SIGTERM)
+            settled(lambda: not alive(command) and not alive(a_pid), 10)
+            record["afterLauncherStop"] = {"command": alive(command), "starterA": alive(a_pid),
+                                           "setsidChild": bool(setsid) and all(alive(p) for p in setsid)}
+
+        # The office's stop kills the shell's cgroup, now holding A, the command and its setsid child (with the launcher,
+        # only the setsid child is left by then).
         begun = time.monotonic()
         run("systemctl", "stop", "qorpera-cmdns-shell.service", timeout=100)
         record["stopSeconds"] = round(time.monotonic() - begun, 2)
@@ -1028,6 +1163,8 @@ def probe(directory, mode):
                 except (OSError, ValueError) as error:
                     record["records"][path.name] = {"unreadable": repr(error)}
         record["mountLogs"] = [p.read_text() for p in sorted(directory.glob("mount-*.log"))]
+        if (control / "launcher-output.log").exists():
+            record["launcherOutput"] = (control / "launcher-output.log").read_text(errors="replace")
         kernel = run("journalctl", "-k", "--no-pager", "--since", f"@{started}", "-n", "100", check=False)
         record["kernelDenials"] = [line for line in kernel.splitlines() if "DENIED" in line or "apparmor=" in line or "SECCOMP" in line]
         record["units"] = {unit: run("journalctl", "--no-pager", "-n", "30", "-u", f"{unit}.service", check=False) for unit in units}
@@ -1047,8 +1184,7 @@ def checks_for(record, node_errors):
     helper_shared = [f for f in record["helperPropagation"] or [] if f.startswith("shared:")]
     company = c["propagation"].get(COMPANY_PARENT) or []
     restart, stop = record["afterHelperRestart"], record["afterOfficeStop"]
-    chain, dropped = co["usernsChain"], st["bAfterDrop"]
-    program = seccomp_command_program(OFFICE_FAMILIES)
+    chain = co["usernsChain"]
     checks = {
         # The coordinator's four state checks (14 Oct): the shell's capabilities, the shell's cgroup and both stops,
         # no new user namespace and no clone3, and a working loopback (with the network checks below).
@@ -1066,12 +1202,7 @@ def checks_for(record, node_errors):
         "uidGidMapEqualShell": c["uidMap"] == ss["uidMap"] and c["gidMap"] == ss["gidMap"] and bool(c["uidMap"]),
         # A uid-0 exec gains nothing, and the bit can't be cleared.
         "securebitsNoRootLocked": c["securebits"] == SECUREBITS_LOCKED_NOROOT,
-        # The installed filter is the program interpreted here, and it answers setns EPERM by its number alone, before
-        # any argument: a namespace fd of any type (0 included) and a pidfd alike.
-        "setnsRefusedByFilter": st["filterSha256"] == program_digest(program) and all(
-            run_bpf(program, AUDIT_ARCH_X86_64, NR["setns"], arg) == 0x00050000 | errno.EPERM
-            for arg in (0, 3, CLONE_NEWUSER, CLONE_NEWNET, CLONE_NEWNS)),
-        # And it is in the process that runs the command: its own setns(-1, 0), which names no namespace, gets the
+        # The filter is in the process that runs the command: its own setns(-1, 0), which names no namespace, gets the
         # filter's EPERM, not the kernel's EBADF.
         "setnsRefusedLive": c["setnsBadFd"] == errno.EPERM,
         # The owner rule (user_namespaces(7)): the command is a member of every user namespace that owns one of its
@@ -1079,9 +1210,6 @@ def checks_for(record, node_errors):
         # runs from its own user namespace up to the initial one, and every owner is on it.
         "ownerRuleNeverParent": bool(chain) and chain[0] == co["user"] and chain[-1] == initial
                                 and all(co["nsOwner"][name].get("userns") in chain for name in COMMAND_NAMESPACES),
-        # B held no capability when it joined: the office account's ids in the initial user namespace, nothing permitted.
-        "unprivilegedBeforeJoin": dropped["user"] == initial and dropped["uid"] == [office["uid"]] * 3
-                                  and all(dropped["caps"][key] == "0" * 16 for key in ("CapPrm", "CapEff", "CapAmb")),
         # Ids, namespace owners and the fds at exec.
         "capInhEqualShell": c["caps"]["CapInh"] == ss["caps"]["CapInh"],
         "seccompFiltered": c["seccomp"] == "2",
@@ -1090,7 +1218,7 @@ def checks_for(record, node_errors):
         "mountNsIsCommandsOwn": c["ns"]["mnt"] != so["ns"]["mnt"],
         "mountNsOwnedByInitialUserns": co["nsOwner"]["mnt"] == initial_owner,
         "sharesShellPidUtsIpcCgroup": all(c["ns"][name] == so["ns"][name] for name in ("pid", "uts", "ipc", "cgroup")),
-        "inShellPidNs": len(co["nspid"]) == 2 and int(co["nspid"][-1]) == c["pid"] == st["bShellPid"],
+        "inShellPidNs": len(co["nspid"]) == 2 and int(co["nspid"][-1]) == c["pid"],
         "parentIsStarterA": co["ppid"] == st["aPid"],
         "onlyStdioAtExec": c["execFds"] == [0, 1, 2, 3],
         # The company folder, /tmp and the start directory.
@@ -1102,6 +1230,41 @@ def checks_for(record, node_errors):
         "vsockRefused": c["vsock"] == errno.EAFNOSUPPORT,
         "fixtureProtocolClean": not node_errors,
     }
+    if st["kind"] == "fixture":
+        program, dropped = seccomp_command_program(OFFICE_FAMILIES), st["bAfterDrop"]
+        checks.update({
+            "bReportedCommandPid": c["pid"] == st["bShellPid"],
+            # The installed filter is the program interpreted here, and it answers setns EPERM by its number alone,
+            # before any argument: a namespace fd of any type (0 included) and a pidfd alike.
+            "setnsRefusedByFilter": st["filterSha256"] == program_digest(program) and all(
+                run_bpf(program, AUDIT_ARCH_X86_64, NR["setns"], arg) == 0x00050000 | errno.EPERM
+                for arg in (0, 3, CLONE_NEWUSER, CLONE_NEWNET, CLONE_NEWNS)),
+            # B held no capability when it joined: the office account's ids in the initial user namespace, nothing
+            # permitted.
+            "unprivilegedBeforeJoin": dropped["user"] == initial and dropped["uid"] == [office["uid"]] * 3
+                                      and all(dropped["caps"][key] == "0" * 16 for key in ("CapPrm", "CapEff", "CapAmb")),
+        })
+    else:
+        # The launcher's start report names the command it started: its pid in the initial pid namespace (the one the
+        # helper sees), and the mount namespace it made for it.
+        started = st["started"]
+        checks["launcherReportedStart"] = started["pid"] == co["pid"] and f"mnt:[{started['mntns']}]" == c["ns"]["mnt"]
+        # The launcher's own stop ends the command's group and then itself; a process that left the group stays.
+        checks["launcherStopEndedGroup"] = record["afterLauncherStop"] == {"command": False, "starterA": False,
+                                                                           "setsidChild": True}
+        # A start that was not let go (the go pipe ended without a G): A stopped B before its exec, said why and
+        # failed, and the command never ran.
+        w = st["withheld"]
+        checks["launcherWithoutGoRanNothing"] = (
+            w["started"].get("t") == "started" and w["exit"] == 1 and w["commandAlive"] is False
+            and w["after"] == [{"t": "failed", "error": "the helper did not let the command start"}]
+            and record["withheldRan"] is False)
+        # Review round 2 of #1157: an `ended` asked between the start report and the go reads the started namespace's
+        # own mount table, so the command's tree is attached there by the report (in both starts), not after the go;
+        # the shell's own table, which the namespace began as, has something else there.
+        checks["launcherTreeAtStart"] = (
+            record["helperTree"] is not None and st["treeAtStart"] == [record["helperTree"]] * 2
+            and so["tree"] != record["helperTree"])
     if record["mode"] == "networked":
         checks.update({
             "sharesComputerNetns": c["ns"]["net"] == so["ns"]["net"],
@@ -1149,7 +1312,7 @@ def run_bpf(program, arch, nr, arg0):
             raise AssertionError(f"unknown BPF op {code:#x}")
 
 
-def synthetic_record(mode):
+def synthetic_record(mode, kind):
     # bwrap's --disable-userns makes two user namespaces: the outer one (owned by the office account, a child of the
     # initial one) owns the shell's other namespaces, and the shell itself runs in the inner one, mapped 990 -> 990.
     initial, outer, inner = "user:[4026531837]", "user:[4026532300]", "user:[4026532301]"
@@ -1179,21 +1342,32 @@ def synthetic_record(mode):
     cgroup = "/system.slice/qorpera-cmdns-shell.service"
     shell_state = {"uid": [990] * 3, "gid": [990] * 3, "groups": [65534], "uidMap": maps, "gidMap": maps,
                    "ns": dict(shell_ns), "caps": dict(caps), "securebits": 0}
-    dropped = {"user": initial, "uid": [990] * 3, "gid": [990] * 3, "caps": {**caps, "CapBnd": "00000000002010c3"}}
-    record = {"mode": mode, "office": {"uid": 990, "gid": 990}, "initialUser": initial, "command": command,
+    if kind == "fixture":
+        dropped = {"user": initial, "uid": [990] * 3, "gid": [990] * 3, "caps": {**caps, "CapBnd": "00000000002010c3"}}
+        starter = {"kind": kind, "aPid": 300, "topPid": 299, "bShellPid": 7, "bAfterDrop": dropped,
+                   "bInside": {"user": inner, "uid": [990] * 3, "gid": [990] * 3},
+                   "filterSha256": program_digest(seccomp_command_program(OFFICE_FAMILIES))}
+    else:
+        starter = {"kind": kind, "aPid": 300, "topPid": 299, "started": {"t": "started", "pid": 301, "mntns": 4026532310},
+                   "withheld": {"started": {"t": "started", "pid": 297, "mntns": 4026532309}, "exit": 1,
+                                "after": [{"t": "failed", "error": "the helper did not let the command start"}],
+                                "commandAlive": False},
+                   "treeAtStart": [["0:52", "/tmp/qorpera-cmdns/mount"]] * 2}
+    record = {"mode": mode, "kind": kind, "office": {"uid": 990, "gid": 990}, "initialUser": initial, "command": command,
               "shell": {"pid": 200, "state": shell_state},
               "shellOutside": {"caps": dict(caps), "ns": shell_ns, "nsOwner": owners, "usernsChain": [inner, outer, initial],
-                               "cgroup": cgroup, "tmpDevIno": [40, 1]},
-              "helperPropagation": ["shared:41"],
-              "starter": {"aPid": 300, "topPid": 299, "bShellPid": 7, "bAfterDrop": dropped,
-                          "bInside": {"user": inner, "uid": [990] * 3, "gid": [990] * 3},
-                          "filterSha256": program_digest(seccomp_command_program(OFFICE_FAMILIES))},
-              "commandOutside": {"cgroup": cgroup, "nspid": ["301", "7"], "ppid": 300, "setsidChildren": [302],
+                               "cgroup": cgroup, "tmpDevIno": [40, 1], "tree": None},
+              "helperPropagation": ["shared:41"], "helperTree": ["0:52", "/tmp/qorpera-cmdns/mount"],
+              "starter": starter,
+              "commandOutside": {"pid": 301, "cgroup": cgroup, "nspid": ["301", "7"], "ppid": 300, "setsidChildren": [302],
                                  "user": inner, "nsOwner": command_owners, "usernsChain": [inner, outer, initial]},
               "starterA": {"user": initial, "uid": ["0"] * 4, "cgroup": cgroup},
               "remount": {"list": ["after.txt", "before.txt", "from-command.txt"]}, "nodeHasCommandWrite": True,
               "afterHelperRestart": {"command": True, "setsidChild": True, "starterA": True, "top": False},
               "afterOfficeStop": {"command": False, "setsidChild": False, "starterA": False}}
+    if kind == "launcher":
+        record["afterLauncherStop"] = {"command": False, "starterA": False, "setsidChild": True}
+        record["withheldRan"] = False
     if mode == "networked":
         record["filterInCommandNetns"] = True
     return record
@@ -1236,6 +1410,7 @@ def selftest():
     assert propagation(mountinfo, "/run/x") == []
     assert propagation(mountinfo, "/run/x/company") == ["master:42", "propagate_from:40"]
     assert propagation(mountinfo, "/run/y") is None
+    assert top_mount(mountinfo, "/run/x") == ["0:7", "/"] and top_mount(mountinfo, "/run/y") is None
 
     # The mount point's walk: a link or a missing name is refused, and so is any empty, `.` or `..` name. O_PATH is
     # Linux's, where the proof runs; elsewhere only the names are checked.
@@ -1257,8 +1432,8 @@ def selftest():
             except AssertionError as error:
                 assert str(error) == bad, error
 
-    for mode in ("offline", "networked"):
-        record = synthetic_record(mode)
+    for mode, kind in ((mode, kind) for mode in ("offline", "networked") for kind in ("fixture", "launcher")):
+        record = synthetic_record(mode, kind)
         checks = checks_for(record, [])
         assert all(checks.values()), [name for name, ok in checks.items() if not ok]
         flips = {
@@ -1274,12 +1449,10 @@ def selftest():
             "idsEqualShellCommand": lambda r: (r["command"].update(uid=[0] * 3), r["shell"]["state"].update(uid=[0] * 3)),
             "uidGidMapEqualShell": lambda r: r["command"].update(gidMap=["         0        990          1"]),
             "securebitsNoRootLocked": lambda r: r["command"].update(securebits=SECBIT_NOROOT),
-            "setnsRefusedByFilter": lambda r: r["starter"].update(filterSha256="0" * 64),
             "setnsRefusedLive": lambda r: r["command"].update(setnsBadFd=errno.EBADF),
             # Plain (c), the gap this check is for: the command in the initial user namespace, the parent of the user
             # namespace that owns the shell's pid, uts, ipc and cgroup namespaces.
             "ownerRuleNeverParent": lambda r: r["commandOutside"].update(user="user:[4026531837]", usernsChain=["user:[4026531837]"]),
-            "unprivilegedBeforeJoin": lambda r: r["starter"]["bAfterDrop"]["caps"].update(CapEff="0000000000200000"),
             "capInhEqualShell": lambda r: r["command"]["caps"].update(CapInh="0000000000000001"),
             "seccompFiltered": lambda r: r["command"].update(seccomp="0"),
             "commandIsOffice": lambda r: r["command"].update(groups=[990]),
@@ -1297,6 +1470,20 @@ def selftest():
             "startsInCompany": lambda r: r["command"].update(cwd="/"),
             "vsockRefused": lambda r: r["command"].update(vsock=0),
         }
+        if kind == "fixture":
+            flips.update({
+                "bReportedCommandPid": lambda r: r["starter"].update(bShellPid=8),
+                "setnsRefusedByFilter": lambda r: r["starter"].update(filterSha256="0" * 64),
+                "unprivilegedBeforeJoin": lambda r: r["starter"]["bAfterDrop"]["caps"].update(CapEff="0000000000200000"),
+            })
+        else:
+            flips["launcherReportedStart"] = lambda r: r["starter"]["started"].update(mntns=4026532302)
+            # A launcher without CAP_KILL: its SIGTERM and SIGKILL to the office account's group fail, and it waits on.
+            flips["launcherStopEndedGroup"] = lambda r: r["afterLauncherStop"].update(command=True, starterA=True)
+            # A launcher that runs the command at the end of the go pipe as if it were the go.
+            flips["launcherWithoutGoRanNothing"] = lambda r: r.update(withheldRan=True)
+            # Round 2's launcher, which attached the tree after the go: at the report the namespace had the shell's.
+            flips["launcherTreeAtStart"] = lambda r: r["starter"].update(treeAtStart=[None, None])
         if mode == "networked":
             flips.update({
                 "sharesComputerNetns": lambda r: r["command"]["ns"].update(net="net:[1]"),
@@ -1332,11 +1519,11 @@ def selftest():
             with socket.socket(socket.AF_UNIX) as client:
                 client.settimeout(2)
                 client.connect(str(folder / "node.sock"))
-                hello = b'H{"protocol":3,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
+                hello = b'H{"protocol":4,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
                 for byte in struct.pack(">I", len(hello)) + hello:
                     client.sendall(bytes([byte]))
                 kind, body = receive(client)
-                assert kind == "h" and json.loads(body) == {"protocol": 3, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
+                assert kind == "h" and json.loads(body) == {"protocol": 4, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
                 send(client, "L", {"path": ""})
                 kind, body = receive(client)
                 assert kind == "l" and json.loads(body)["entries"][0]["name"] == "before.txt"
@@ -1360,12 +1547,15 @@ def selftest():
 if __name__ == "__main__":
     action = sys.argv[1]
     if action == "probe":
-        probe(Path(sys.argv[2]), sys.argv[3])
+        probe(Path(sys.argv[2]), sys.argv[3], sys.argv[4])
     elif action == "cleanup":
         cleanup(Path(sys.argv[2]))
-    elif action == "starter":
+    elif action in ("starter", "launcher"):
         try:
-            starter_main(int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5])
+            if action == "starter":
+                starter_main(int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5])
+            else:
+                launcher_main(int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
         except Exception as error:
             done = Path(sys.argv[4]) / "starter-done.json"
             if not done.exists():

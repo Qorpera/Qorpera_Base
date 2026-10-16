@@ -346,7 +346,8 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				...(company ? { QORPERA_COMPANY_FOLDER: "/company" } : {}),
 			}))
 				args.push("--setenv", name, value);
-			args.push("--chdir", layout.workbenchRoot, "--remount-ro", "/");
+			// It starts in its home; the screen session moves into /company when the folder is there (F3 4f-1b).
+			args.push("--chdir", "/home/qorpera", "--remount-ro", "/");
 			startup.throwIfAborted();
 			const launched = spawnCompanyComputerLinuxProcess({
 				args,

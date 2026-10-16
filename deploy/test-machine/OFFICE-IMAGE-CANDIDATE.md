@@ -10,14 +10,18 @@ From a clean, pushed checkout:
 
 ```sh
 node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
-  bash scripts/build-office-image-candidate.sh [--stage] </dev/null
+  bash scripts/build-office-image-candidate.sh [--stage] [--office-id <N>] </dev/null
 ```
 
-It needs the default `--install` (esbuild and the packaged Playwright come from `npm ci`). It refuses any machine but
-`qorpera-testvm-node01`, a remote LXD, a base that is not the staged split image named by
-[`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json), and less than
-32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module. Before it creates
+It needs the default `--install` (esbuild and the packaged Playwright come from `npm ci`) and Docker for the folder
+program. It refuses any machine but `qorpera-testvm-node01`, a remote LXD, a base that is not the staged split image
+named by [`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json), and less
+than 32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module. Before it creates
 the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM never pushes a test run out of memory.
+
+`--office-id` is the office account's uid and gid, 20048 by default. A node prepares an office only as its policy's
+workbench account, and `qofleet01`'s policy names 20048; the production build reads it there
+([`OFFICE-IMAGE-PRODUCTION.md`](../first-node/OFFICE-IMAGE-PRODUCTION.md)). This test machine has no policy.
 
 ## What it does
 
@@ -33,8 +37,10 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
    `/usr/lib/qorpera-chromium`, uv, mise and `fd`. It masks the self-update units and turns swap off for good. Then
    it runs every toolbox check as root, and `fusermount3 --version`: FUSE is root's (the folder helper mounts), so it
    is not in the toolbox.
-4. The office package installer runs from the checkout's package ([`INSTALLATION.md`](../lxd-company-computer-guest/INSTALLATION.md)):
-   `--measure-dependencies`, a spec for uid and gid 20045 (the A1 office account), `--check`, then `--apply`. It
+4. The test machine builds the company folder's program in its pinned Rust image, and the package carries it with the
+   helper and their units (`--folder-program`; the packager takes only the pinned build). The office package installer
+   runs from that package ([`INSTALLATION.md`](../lxd-company-computer-guest/INSTALLATION.md)):
+   `--measure-dependencies`, a spec for the office account's uid and gid (`--office-id`), `--check`, then `--apply`. It
    leaves the office service disabled.
 5. The toolbox probe (`packages/runtime/test/fixtures/company-computer-linux-toolbox-probe.ts`) runs as the office
    account in a `systemd-run` unit carrying the installed office unit's 31 confinement and limit settings. It starts a
@@ -47,6 +53,8 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
    evidence only.
 6. It checks that the office service is still installed, disabled and never started. The node's activation starts it
    (preparation, then the service-start request); its credentials exist only once preparation writes them for a boot.
+   The folder's helper socket, helper service and mount template are static and never started, and the installed
+   folder program is the pinned one.
 7. It removes the build inputs, cleans cloud-init and the journal, stops the VM and publishes the candidate in the
    claimed project.
 
@@ -64,11 +72,11 @@ them.
 The evidence between `OFFICE_IMAGE_CANDIDATE_EVIDENCE_BEGIN` and `OFFICE_IMAGE_CANDIDATE_EVIDENCE_END` gives the base
 and candidate fingerprints, the stage path, the recipe and package manifest hashes, the size of the apt closure, the
 installer's dependency measurements, the toolbox's first lines as root and from the shell, root's `fusermount3`
-version, the AppArmor denials while the probe ran, the `fusermount3` record as root, and the office unit's state.
+version, the AppArmor denials while the probe ran, the `fusermount3` record as root, the office unit's state, the
+folder program's sha256 and the folder's unit files.
 
 ## What it does not cover
 
-- Until 4e-2, the image has no folder program, helper or folder units.
 - Why `fusermount3 --version` printed nothing from a computer's shell (and exited 0) in an earlier candidate. On
   node01's test machine itself it prints through Node's stdio. The `fusermount3` record as root narrows it down;
   any change to the shell host or to an AppArmor profile is product design, outside this slice.

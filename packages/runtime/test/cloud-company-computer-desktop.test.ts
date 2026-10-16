@@ -809,15 +809,18 @@ printf '\\n' >> "$TEST_LOG"
 		expect(start).toBeGreaterThan(0);
 		expect(end).toBeGreaterThan(start);
 		expect(block).not.toContain("/usr/bin/realpath");
+		// Without the company folder Terminal and Files open in the desktop's home, never in the workbench (F3 4f-1b).
+		expect(text).toMatch(/\nfolder_root=\$\{desktop_home\}\n/);
+		expect(text).not.toMatch(/folder_root=\$\{workbench_root\}|company workbench/);
 		const screenState = join(fixture.root, "screen with spaces");
-		const workbench = join(fixture.root, "workbench dir");
-		await mkdir(workbench);
-		const run = (folderRoot = workbench) =>
+		const home = join(fixture.root, "home dir");
+		await mkdir(home);
+		const run = (folderRoot = home) =>
 			execute(
 				"/bin/bash",
 				[
 					"-c",
-					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}; folder_root=${JSON.stringify(folderRoot)}\n${block}`,
+					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; folder_root=${JSON.stringify(folderRoot)}\n${block}`,
 				],
 				{ timeout: 3000 },
 			);
@@ -868,7 +871,7 @@ printf '\\n' >> "$TEST_LOG"
 			);
 		}
 		const terminal = await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8");
-		expect(terminal).toContain(`Path=${workbench}\nIcon=${join(dock, "terminal-idle.png")}\n`);
+		expect(terminal).toContain(`Path=${home}\nIcon=${join(dock, "terminal-idle.png")}\n`);
 		// Only the initial idle copy is managed; every reusable source is outside.
 		expect(await readdir(join(config, "panel", "launcher-6"))).toEqual(["qorpera-browser.desktop"]);
 		expect((await readdir(dock)).filter((name) => name.startsWith("qorpera-browser")).sort()).toEqual([
@@ -904,7 +907,7 @@ printf '\\n' >> "$TEST_LOG"
 			for (const part of selector.replace("{", "").split(",")) expect(part.trim()).toMatch(/^\.xfce4-panel\b/);
 		// Files and Terminal go through the dock helper, which restores an existing window first.
 		expect(await readFile(join(config, "panel", "launcher-5", "qorpera-files.desktop"), "utf8")).toContain(
-			`Exec=/usr/local/bin/qorpera-screen-browser files\nPath=${workbench}\n`,
+			`Exec=/usr/local/bin/qorpera-screen-browser files\nPath=${home}\n`,
 		);
 		expect(terminal).toContain("Exec=/usr/local/bin/qorpera-screen-browser terminal\n");
 		expect(await readFile(join(config, "panel", "launcher-6", "qorpera-browser.desktop"), "utf8")).toContain(
@@ -918,7 +921,7 @@ printf '\\n' >> "$TEST_LOG"
 		expect(terminalrc).toContain("ColorBackground=#12141a\n");
 		expect(await readFile(rc, "utf8")).toContain("PS1=");
 		const prompt = await execute("/bin/bash", ["--rcfile", rc, "-i", "-c", 'printf %s "$PS1"'], {
-			env: { HOME: workbench, PATH: "/usr/bin:/bin" },
+			env: { HOME: home, PATH: "/usr/bin:/bin" },
 			timeout: 3000,
 		});
 		expect(prompt.stdout).toContain("\\w");
@@ -943,7 +946,7 @@ printf '\\n' >> "$TEST_LOG"
 		// A later start without it takes the usual folders back.
 		await run();
 		expect(await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8")).toContain(
-			`Path=${workbench}\n`,
+			`Comment=Shell in the home folder\nExec=/usr/local/bin/qorpera-screen-browser terminal\nPath=${home}\n`,
 		);
 		await expect(stat(join(screenState, "config", "user-dirs.dirs"))).rejects.toMatchObject({ code: "ENOENT" });
 

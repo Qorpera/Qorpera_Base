@@ -201,6 +201,39 @@ describe("reads and listings", () => {
 		await expect(client.read("istanbul.md", signal())).resolves.toMatchObject({ entry: { path: "İstanbul.md" } });
 	});
 
+	it("parses a link with the target it holds, and refuses a target out of the core's bounds or on another kind", async () => {
+		const link = (target?: unknown) => ({ ...folderEntry("docs/latest"), kind: "symlink", target });
+		const answers = [
+			link("../reports/q3 plan.md"),
+			link("x".repeat(4095)),
+			link(""),
+			link("é".repeat(2048)),
+			link(7),
+			link(),
+			{ ...folderEntry("docs"), target: "plan.md" },
+			{ ...folderEntry("docs/plan.md", stagedFile("hi")), target: "plan.md" },
+		].map((entry) => ({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: true, entry }));
+		const { client } = fixture(() => answers.shift());
+		await expect(client.read("docs/latest", signal())).resolves.toEqual({
+			asOfSeq: 9,
+			entry: {
+				path: "docs/latest",
+				kind: "symlink",
+				version: expect.any(String),
+				seq: 7,
+				updatedAt: "2026-09-29T12:00:00.123456+00:00",
+				authority: RECEIPT,
+				target: "../reports/q3 plan.md",
+			},
+		});
+		const longest = await client.read("docs/latest", signal());
+		expect(longest.entry).toMatchObject({ kind: "symlink", target: "x".repeat(4095) });
+		// An empty target, one of 4,096 bytes, one that is not text, a link without one, and a target on a folder or a
+		// file are not answers.
+		for (let i = 0; i < 6; i++)
+			await expect(client.read("docs/latest", signal())).rejects.toThrow("Company folder response is invalid");
+	});
+
 	it("reads a file's text, checked against its entry", async () => {
 		const text = "Første linje\n";
 		const file = stagedFile(text);
@@ -209,6 +242,7 @@ describe("reads and listings", () => {
 			"big.md": folderEntry("big.md", { ...file, bytes: 10_000 }),
 			folder: folderEntry("folder"),
 			"binary.bin": folderEntry("binary.bin", stagedFile("\u0000", "application/octet-stream")),
+			latest: { ...folderEntry("latest"), kind: "symlink", target: "a.md" },
 		};
 		const { client, stored } = fixture((_method, args) => {
 			const entry = entries[args.p_path as string];
@@ -218,6 +252,10 @@ describe("reads and listings", () => {
 		await expect(client.readText("a.md", 1024, signal())).resolves.toMatchObject({ text, entry: { path: "a.md" } });
 		await expect(client.readText("missing.md", 1024, signal())).resolves.toBeNull();
 		await expect(client.readText("folder", 1024, signal())).rejects.toBeInstanceOf(CloudCompanyPathNotText);
+		// A link is not followed: no text, whatever it names.
+		await expect(client.readText("latest", 1024, signal())).rejects.toThrow(
+			new CloudCompanyPathNotText("Company folder path is a link"),
+		);
 		await expect(client.readText("big.md", 1024, signal())).rejects.toBeInstanceOf(CloudCompanyPathNotText);
 		// Bytes that are not the entry's are refused, whatever they say.
 		stored.set(sha("\u0000"), Uint8Array.of(0xff));
@@ -270,6 +308,23 @@ describe("reads and listings", () => {
 			["t", null, 200, true],
 			["t", "t/199", 200, true],
 		]);
+	});
+
+	it("pages a code area by names only code/ holds, its cursor one of them (20260930446100)", async () => {
+		const first = Array.from({ length: 200 }, (_, index) => `code/acme/a%${String(index).padStart(3, "0")}`);
+		const pages = [
+			{
+				schema: "qorpera.folder-list/v1",
+				asOfSeq: 5,
+				entries: first.map((path) => folderEntry(path)),
+				next: "code/acme/a%199",
+			},
+			{ schema: "qorpera.folder-list/v1", asOfSeq: 6, entries: [folderEntry("code/acme/con:x")], next: null },
+		];
+		const { client, calls } = fixture(() => pages.shift());
+		const all = await client.listAll("code/acme", { recursive: true, maxEntries: 201 }, signal());
+		expect(all.entries.map((entry) => entry.path)).toEqual([...first, "code/acme/con:x"]);
+		expect(calls.map((call) => call.args.p_after)).toEqual([null, "code/acme/a%199"]);
 	});
 
 	it("stops a whole listing at the caller's bound", async () => {
@@ -726,6 +781,50 @@ describe("commits", () => {
 		).rejects.toThrow("Invalid Company File path");
 		expect(calls).toEqual([]);
 		expect(bytes.put).not.toHaveBeenCalled();
+	});
+
+	it("takes the names only code/ holds there, a new folder's contents by their joined paths, as SQL does", async () => {
+		const { client, calls } = fixture((_method, args) =>
+			saved((args.p_units as Record<string, unknown>[]).map((unit) => ({ op: unit.op, path: unit.path as string }))),
+		);
+		const result = await client.commit(
+			"tool-call-5:code",
+			[
+				{ op: "mkdir", path: "code/acme/app/main/a%b" },
+				{
+					op: "new_folder",
+					path: "code/acme/app/main/c:d",
+					contents: [
+						{ path: "CON.txt", kind: "folder" },
+						{ path: "CON.txt/50%", kind: "file", content: { text: "x" } },
+					],
+				},
+			],
+			{},
+			signal(),
+		);
+		expect(result.units.map((unit) => unit.outcome)).toEqual(["saved", "saved"]);
+		expect(calls[0]!.args.p_units).toEqual([
+			{ op: "mkdir", path: "code/acme/app/main/a%b" },
+			{
+				op: "new_folder",
+				path: "code/acme/app/main/c:d",
+				contents: [
+					{ path: "CON.txt", kind: "folder" },
+					{ path: "CON.txt/50%", kind: "file", file: stagedFile("x", "text/plain") },
+				],
+			},
+		]);
+		// Elsewhere they stay refused, inside a new folder too, before anything is sent.
+		for (const unit of [
+			{ op: "mkdir", path: "docs/a%b" },
+			{ op: "new_folder", path: "docs/x", contents: [{ path: "c:d", kind: "folder" }] },
+			{ op: "new_folder", path: "docs/x", contents: [{ path: "", kind: "folder" }] },
+		] as const)
+			await expect(client.commit("tool-call-5:docs", [unit], {}, signal())).rejects.toThrow(
+				"Invalid Company File path",
+			);
+		expect(calls).toHaveLength(1);
 	});
 
 	it("stages by content and media type, and names text by its path", async () => {
@@ -1268,6 +1367,37 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			// A cursor comes with more, and is the last listed id.
 			page({ moreProposals: 2 }),
 			page({ moreProposals: 2, nextCursor: "5b0c2d3e-9999-4999-8999-999999999999" }),
+		]) {
+			answers.push(bad);
+			await expect(client.agentProposals({}, signal()), JSON.stringify(bad)).rejects.toThrow(/invalid/);
+		}
+	});
+
+	it("lists a view's links: a new folder's link with its target, and a link's own unit at its path", async () => {
+		const contains = [
+			{ path: "agents/nora/agent.md", kind: "file" },
+			{ path: "agents/nora/latest", kind: "symlink", target: "../../docs/b.md" },
+		];
+		const linked = [
+			{ ...units[0], items: 2, contains },
+			{ unit: 2, op: "symlink", path: "docs/latest" },
+		];
+		const answers: unknown[] = [page({ proposals: [proposal({ units: linked, unitCount: 2, moreUnits: 0 })] })];
+		const { client } = fixture(() => answers.shift());
+		const { proposals } = await client.agentProposals({}, signal());
+		expect(proposals[0]?.units).toEqual([
+			{ ...units[0], items: 2, contains, to: null },
+			{ unit: 2, op: "symlink", path: "docs/latest", to: null, items: null, contains: [], structured: [] },
+		]);
+		const withItem = (item: Record<string, unknown>) =>
+			page({ proposals: [proposal({ units: [{ ...units[0], contains: [item] }, units[1]] })] });
+		for (const bad of [
+			// A link's item carries its target, of 1 to 4,095 bytes; no other item has one.
+			withItem({ path: "agents/nora/latest", kind: "symlink" }),
+			withItem({ path: "agents/nora/latest", kind: "symlink", target: "" }),
+			withItem({ path: "agents/nora/latest", kind: "symlink", target: "x".repeat(4096) }),
+			withItem({ path: "agents/nora/agent.md", kind: "file", target: "x" }),
+			withItem({ path: "agents/nora/docs", kind: "folder", target: "x" }),
 		]) {
 			answers.push(bad);
 			await expect(client.agentProposals({}, signal()), JSON.stringify(bad)).rejects.toThrow(/invalid/);
