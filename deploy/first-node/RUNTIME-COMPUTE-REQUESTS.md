@@ -43,9 +43,11 @@ its two sources:
   creation, and its state the one members see: `waiting`, `starting`,
   `running`, `stopping`, `stopped` or `deleting`. A waiting machine has its
   `queuePosition` in the shared line of waiting machines (earliest `wantedAt`
-  first) and its `reason`: `COMPUTER_HOURS_EXHAUSTED` when the company has no
-  hours left, otherwise the node's last refusal or `NODE_CAPACITY_EXHAUSTED`.
-  Both are null in every other state. The details also carry the name, size
+  first) and its `reason`, the node's last refusal or `NODE_CAPACITY_EXHAUSTED`.
+  While the company has no computer hours left, its waiting machine's `reason`
+  is `COMPUTER_HOURS_EXHAUSTED` and its `queuePosition` is null: it holds no
+  place in line until hours are available. Both are null in every other state.
+  The details also carry the name, size
   (`cpuMillis`, `memoryBytes`, `diskBytes`), lifetime, desired state, starting
   run and last error.
 - `coding_machine`: each unreleased coding-machine allocation (a coding worker's
@@ -59,7 +61,10 @@ A machine's `placements` hold its current allocation and node demand in the
 same shape as the other kinds, and `details.allocationId` names that
 allocation. A machine waiting in line without a node has an empty list and a
 null `allocationId`: it is on no node, so `qorpera_runtime_node_computers` does
-not list it and no node's `pendingRequests` counts it. Unlike the other kinds,
+not list it and no node's `pendingRequests` counts it. A waiting machine that
+is asleep on a node (waiting for capacity to wake) keeps its placement there:
+its `placements` name that node, and the node's inventory reports it (for
+example as `suspended`). Unlike the other kinds,
 machine records are current only: a removed company machine or a released coding
 allocation leaves the list. The response's `machineCoverage`
 (`current_company_machines_and_unreleased_coding_machines`) says what the kind
