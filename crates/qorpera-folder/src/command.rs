@@ -13,6 +13,12 @@
 //! SECBIT_NOROOT, holds no capabilities, sets no_new_privs and the command filter, and execs in `/company`. A stays to
 //! report the start and the end on fd 3, and to stop the command.
 //!
+//! B attaches nothing and runs nothing of the command's until the helper lets it: A reports the command's pid and mount
+//! namespace (`started`), and lets B go on only after the helper answers `G` on fd 4, which it does once that namespace
+//! is on record. A helper that gives up on the start, or goes, closes fd 4: A then kills B and reaps it, and B, which
+//! waits on a pipe only A writes, ends by itself if A was killed. So a command never runs that the helper can't account
+//! for.
+//!
 //! Joining a user namespace needs a single-threaded process with an fs of its own (`userns_install`). This program
 //! starts no thread, and B is forked from A without CLONE_FS, so B makes every step from the fork to the exec itself.
 
@@ -40,6 +46,9 @@ const START_DEADLINE: Duration = Duration::from_secs(20);
 const STOP_GRACE: Duration = Duration::from_secs(2);
 /// Where the helper reads reports. In B it is the start pipe, so it closes at the exec.
 const REPORTS: RawFd = 3;
+/// Where the helper lets the command run: one `G`, once it recorded the command's mount namespace. Without it (end of
+/// file, or the helper gone) A stops B before the exec.
+const GO: RawFd = 4;
 
 const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
 const X32_SYSCALL_BIT: u32 = 0x4000_0000;
@@ -56,7 +65,8 @@ pub struct Request {
 	pub argv: Vec<CString>,
 }
 
-/// One report line on fd 3.
+/// One report line on fd 3. `Started` comes before the exec, when B is ready to run (its pid and mount namespace are
+/// the command's), and `Failed` may come after it.
 enum Report<'a> {
 	Started { pid: libc::pid_t, mntns: u64 },
 	Exit { code: Option<i32>, signal: Option<String> },
@@ -121,6 +131,30 @@ fn read_at(dir: &OwnedFd, name: &CStr, limit: usize) -> Result<Vec<u8>, String> 
 		return Err(format!("{} is over {limit} bytes", name.to_string_lossy()));
 	}
 	Ok(bytes)
+}
+
+/// Sets this thread's fs uid, which the kernel's file permission checks use, and checks it took: setfsuid returns the
+/// previous fs uid either way, and an invalid id (`u32::MAX`) changes nothing, so the second call reads it back.
+fn set_fsuid(uid: u32) -> Result<(), String> {
+	// SAFETY: setfsuid changes only the calling thread's fs uid, and the launcher has one thread.
+	let now = unsafe {
+		libc::setfsuid(uid);
+		libc::setfsuid(u32::MAX)
+	};
+	if now as u32 != uid {
+		return Err(format!("set the fs uid to {uid}"));
+	}
+	Ok(())
+}
+
+/// A file only its owner may read, such as `/proc/<pid>/environ` (0400, the process's own uid): A holds no CAP_DAC_*,
+/// so it opens it with the owner's fs uid and then takes root's back. The kernel's ptrace check on the same open passes
+/// on CAP_SYS_PTRACE, which the fs uid doesn't touch.
+fn read_as(dir: &OwnedFd, name: &CStr, limit: usize, uid: u32) -> Result<Vec<u8>, String> {
+	set_fsuid(uid)?;
+	let read = read_at(dir, name, limit);
+	set_fsuid(0)?;
+	read
 }
 
 fn stat_of(fd: &OwnedFd, step: &str) -> Result<libc::stat, String> {
@@ -301,7 +335,7 @@ fn prepare(request: &Request) -> Result<Prepared, String> {
 	}
 	let overflow = (overflow_id(&proc, c"sys/kernel/overflowuid")?, overflow_id(&proc, c"sys/kernel/overflowgid")?);
 	let cgroup = parse_cgroup(&String::from_utf8_lossy(&read_at(&shell, c"cgroup", 65536)?))?;
-	let env = parse_environ(&read_at(&shell, c"environ", ENVIRON_LIMIT)?)?;
+	let env = parse_environ(&read_as(&shell, c"environ", ENVIRON_LIMIT, uid)?)?;
 	let root = open_at(&shell, c"root", libc::O_PATH | libc::O_DIRECTORY)?;
 	let mut namespaces = Vec::new();
 	let kinds = [
@@ -444,6 +478,8 @@ struct Child<'a> {
 	network: bool,
 	start: RawFd,
 	ack: RawFd,
+	/// A's end of the ack pipe, which B closes first: once A is gone, B's read of the ack sees end of file.
+	answer: RawFd,
 	program: &'a CStr,
 	argv: Vec<*const libc::c_char>,
 	env: Vec<*const libc::c_char>,
@@ -464,7 +500,8 @@ fn fail(start: RawFd, error: &str) -> ! {
 /// user namespace until the drop, and only then a member of the shell's user namespace. The start pipe takes fd 3
 /// first: B never uses its copy of the helper's report pipe, and fd 3 closes at the exec.
 fn child(c: &Child) -> ! {
-	// SAFETY: dup3 of a live fd.
+	// SAFETY: close and dup3 of live fds.
+	unsafe { libc::close(c.answer) };
 	if unsafe { libc::dup3(c.start, REPORTS, libc::O_CLOEXEC) } == -1 {
 		fail(c.start, &os("keep the start pipe"));
 	}
@@ -491,7 +528,8 @@ fn child_steps(c: &Child) -> Result<std::convert::Infallible, String> {
 		if !c.network {
 			loopback_up()?;
 		}
-		// A reads this mount namespace's inode through its own /proc, then answers.
+		// A reads this mount namespace's inode through its own /proc and reports it, and answers once the helper let the
+		// command go. Until then B has attached nothing and runs only this program.
 		cvt(libc::write(REPORTS, b"U".as_ptr().cast(), 1), "report the mount namespace")?;
 		let mut ack = 0u8;
 		if libc::read(c.ack, (&raw mut ack).cast(), 1) != 1 {
@@ -513,7 +551,8 @@ fn child_steps(c: &Child) -> Result<std::convert::Infallible, String> {
 		cvt(libc::syscall(libc::SYS_mount_setattr, p.tree.as_raw_fd(), empty, flags, &raw const attr, size), "make the command's tree a slave")?;
 		drop(target);
 		// Only stdio, the start pipe and the shell's user namespace stay open. The namespace's fd closes once B joined,
-		// and the pipe at the exec. Fds 0 to 3 were open before A opened anything, so the namespace's is above them.
+		// and the pipe at the exec. Fds 0 to 4 were open before A opened anything, so the namespace's is above them, and
+		// the helper's fd 4 closes here.
 		let user = p.user.as_raw_fd() as libc::c_uint;
 		if user > REPORTS as libc::c_uint + 1 {
 			cvt(libc::syscall(libc::SYS_close_range, REPORTS as libc::c_uint + 1, user - 1, 0), "close every other fd")?;
@@ -624,17 +663,20 @@ pub fn signal_name(signal: libc::c_int) -> String {
 }
 
 /// Starts the command and reports on fd 3 until it ends. Returns the exit code: 0 once its end was reported, 1 when it
-/// failed to start (reported too), 2 when fds 0 to 3 are not all open.
+/// failed to start (reported too), 2 when fds 0 to 4 are not all open.
 pub fn run(request: &Request) -> u8 {
 	// SAFETY: prctl with integer arguments: only root with CAP_SYS_PTRACE may read this process's memory or fds.
 	unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
 	// SAFETY: F_GETFD only reads an fd's flags.
-	if (0..=REPORTS).any(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1) {
-		eprintln!("qorpera-folder command: fds 0 to 3 must be open (the command's stdio, and the reports)");
+	if (0..=GO).any(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1) {
+		eprintln!("qorpera-folder command: fds 0 to 4 must be open (the command's stdio, the reports and the go)");
 		return 2;
 	}
-	// SAFETY: sets the close-on-exec flag of an open fd.
-	unsafe { libc::fcntl(REPORTS, libc::F_SETFD, libc::FD_CLOEXEC) };
+	// SAFETY: sets the close-on-exec flag of open fds.
+	unsafe {
+		libc::fcntl(REPORTS, libc::F_SETFD, libc::FD_CLOEXEC);
+		libc::fcntl(GO, libc::F_SETFD, libc::FD_CLOEXEC);
+	}
 	// Stderr is the command's: a failure goes only to the reports.
 	match start(request) {
 		Ok(code) => code,
@@ -677,6 +719,7 @@ fn start(request: &Request) -> Result<u8, String> {
 		network: request.network,
 		start: start_write.as_raw_fd(),
 		ack: ack_read.as_raw_fd(),
+		answer: ack_write.as_raw_fd(),
 		program: &request.argv[0],
 		argv,
 		env,
@@ -725,20 +768,24 @@ fn signal_group(b: libc::pid_t, signal: libc::c_int) {
 	}
 }
 
-/// Kills and reaps B after a failed start.
+/// Kills and reaps B after a failed start, then reports it: once the helper reads `failed`, B is gone. B never exec'd,
+/// so its process group is B alone.
 fn abandon(b: libc::pid_t, error: &str) -> u8 {
-	report(Report::Failed(error));
 	signal_group(b, libc::SIGKILL);
 	// SAFETY: waits on A's own child.
 	unsafe { libc::waitpid(b, std::ptr::null_mut(), 0) };
+	report(Report::Failed(error));
 	1
 }
 
-/// Waits for B's start, then for its end, and stops it on SIGTERM as the shell host does.
+/// Waits for B's start, then for its end, and stops it on SIGTERM as the shell host does. B's start is in three steps:
+/// its mount namespace, reported as `started`; the helper's `G`, after which A lets B go on; and the exec, which closes
+/// B's end of the start pipe. A failure before the exec, after `started` too, is reported as `failed`.
 fn supervise(b: libc::pid_t, proc: &OwnedFd, start: &OwnedFd, ack: OwnedFd, signals: &OwnedFd) -> u8 {
 	let deadline = Instant::now() + START_DEADLINE;
 	let mut message = Vec::new();
-	let mut mntns = None;
+	let mut reported = false;
+	let mut released = false;
 	let mut starting = true;
 	let mut end: Option<(Option<i32>, Option<String>)> = None;
 	let mut kill_at: Option<Instant> = None;
@@ -759,9 +806,11 @@ fn supervise(b: libc::pid_t, proc: &OwnedFd, start: &OwnedFd, ack: OwnedFd, sign
 		let mut fds = [
 			libc::pollfd { fd: if starting { start.as_raw_fd() } else { -1 }, events: libc::POLLIN, revents: 0 },
 			libc::pollfd { fd: signals.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+			// After the go, the helper's end of fd 4 is of no more use: a helper that goes then changes nothing here.
+			libc::pollfd { fd: if starting && !released { GO } else { -1 }, events: libc::POLLIN, revents: 0 },
 		];
-		// SAFETY: polls two pollfds in a live array. EINTR only means poll again.
-		unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
+		// SAFETY: polls three pollfds in a live array. EINTR only means poll again.
+		unsafe { libc::poll(fds.as_mut_ptr(), 3, timeout) };
 		let now = Instant::now();
 		if fds[0].revents != 0 {
 			let mut chunk = [0u8; 512];
@@ -778,18 +827,30 @@ fn supervise(b: libc::pid_t, proc: &OwnedFd, start: &OwnedFd, ack: OwnedFd, sign
 						(libc::fstatat(proc.as_raw_fd(), path.as_ptr(), &mut st, 0) == 0).then_some(st.st_ino)
 					};
 					let Some(inode) = inode else { return abandon(b, &os("read the command's mount namespace")) };
-					mntns = Some(inode);
-					// SAFETY: one byte from a live buffer; B waits for it.
-					unsafe { libc::write(ack.as_raw_fd(), b"A".as_ptr().cast(), 1) };
+					report(Report::Started { pid: b, mntns: inode });
+					reported = true;
 				}
 			} else if n == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
 				// The exec closed B's end of the start pipe, or B ended.
 				starting = false;
-				match (message.as_slice(), mntns) {
-					(b"U", Some(mntns)) => report(Report::Started { pid: b, mntns }),
+				match (message.as_slice(), released) {
+					(b"U", true) => {}
 					([b'U', b'E', error @ ..] | [b'E', error @ ..], _) => return abandon(b, &String::from_utf8_lossy(error)),
 					_ => return abandon(b, "the command's starter ended before the exec"),
 				}
+			}
+		}
+		if fds[2].revents != 0 {
+			let mut go = 0u8;
+			// SAFETY: reads one byte into a live buffer.
+			let n = unsafe { libc::read(GO, (&raw mut go).cast(), 1) };
+			if n == 1 && go == b'G' && reported {
+				released = true;
+				// SAFETY: one byte from a live buffer; B waits for it.
+				unsafe { libc::write(ack.as_raw_fd(), b"A".as_ptr().cast(), 1) };
+			} else if n != -1 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+				// End of file: the helper gave up on the start, or went. Anything else is not its answer.
+				return abandon(b, "the helper did not let the command start");
 			}
 		}
 		if fds[1].revents != 0 {

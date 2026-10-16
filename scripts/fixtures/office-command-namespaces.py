@@ -17,7 +17,8 @@ namespaces as root, and it never joins the user namespace; B joins the user name
 
 Each mode runs twice. Kind "fixture" runs this file's A and B, which report B's state at each step. Kind "launcher"
 runs the real launcher in their place, `qorpera-folder command`, started as the folder helper starts it (the command's
-stdio on fds 0 to 2, its reports on fd 3), and checks the same command from outside and from inside.
+stdio on fds 0 to 2, its reports on fd 3, the helper's go on fd 4), and checks the same command from outside and from
+inside; before it, a start whose go pipe ends without a G must run nothing.
 
 This closes the owner-rule gap round 1 found (c' amendment, coordinator 15 Oct): under plain (c) the command ran as the
 office account in the initial user namespace, the *parent* of the shell's, so user_namespaces(7) rule 3 gave it every
@@ -710,44 +711,78 @@ def start_starter(directory, shell, mode, helper_unit, kind):
     return {"unit": unit, "properties": properties, **await_record(control, "starter", "ready")}
 
 
-def launcher_main(shell, mode, control, tree, program):
-    """The starter unit's top process stands in for the helper's long-running process, as in starter_main, but starts
-    the real launcher as the helper does: `qorpera-folder command` with the command's stdio on fds 0 to 2 and the report
-    pipe on fd 3. The launcher is A, and the B it forks execs this file's command. The top reads the first report and
-    keeps the pipe's read end open, as the helper does while a run lasts."""
-    control = Path(control)
-    reader, writer = os.pipe()
-    output = os.open(control / "launcher-output.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    argv = [program, "command", "--shell-pid", str(shell), "--tree", tree,
-            "--network", "yes" if mode == "networked" else "no", "--", "/usr/bin/python3", PROBE, "command", mode]
+def spawn_launcher(program, argv, output):
+    """Starts the real launcher as the helper does: the command's stdio on fds 0 to 2, the report pipe on fd 3 and the
+    go pipe on fd 4. Returns A's pid, the report pipe's read end and the go pipe's write end."""
+    reports, report_end = os.pipe()
+    go_end, go = os.pipe()
     launcher = os.fork()
     if launcher == 0:
         try:
             null = os.open("/dev/null", os.O_RDONLY)
-            # dup2 makes each target inheritable; every other fd here is close-on-exec (PEP 446).
-            for source, target in ((null, 0), (output, 1), (output, 2)):
+            # Each source above every target first, so no dup2 overwrites one; dup2 makes each target inheritable, and
+            # every other fd here is close-on-exec (PEP 446).
+            sources = [fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10) for fd in (null, output, output, report_end, go_end)]
+            for target, source in enumerate(sources):
                 os.dup2(source, target)
-            if writer == 3:
-                os.set_inheritable(3, True)
-            else:
-                os.dup2(writer, 3)
             os.execv(program, argv)
         finally:
             os._exit(127)
-    os.close(writer)
+    os.close(report_end)
+    os.close(go_end)
+    return launcher, reports, go
+
+
+def read_reports(reports, first_only):
+    """The launcher's report lines: the first one, or all of them until the pipe's end."""
+    data = b""
+    while not (first_only and b"\n" in data) and (chunk := os.read(reports, 4096)):
+        data += chunk
+    lines = data.split(b"\n")[:1] if first_only else [line for line in data.split(b"\n") if line]
+    found = []
+    for line in lines:
+        try:
+            found.append(json.loads(line))
+        except ValueError:
+            found.append({"t": "unreadable", "line": line.decode(errors="replace")})
+    return found
+
+
+def launcher_main(shell, mode, control, tree, program):
+    """The starter unit's top process stands in for the helper's long-running process, as in starter_main, but starts
+    the real launcher as the helper does: `qorpera-folder command` with the command's stdio on fds 0 to 2, the report
+    pipe on fd 3 and the go pipe on fd 4. First a start the top does not let go: it reads the start report, waits, and
+    ends the go pipe without a G, as a helper that could not record the command does; that command must never run (the
+    probe looks for its file, which this unit can't see). Then the run itself: the launcher is A, and the B it forks
+    execs this file's command once the top wrote G. The top keeps the report pipe's read end open, as the helper does
+    while a run lasts."""
+    control = Path(control)
+    output = os.open(control / "launcher-output.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    start = [program, "command", "--shell-pid", str(shell), "--tree", tree,
+             "--network", "yes" if mode == "networked" else "no", "--", "/usr/bin/python3"]
+    launcher, reports, go = spawn_launcher(
+        program, start + ["-c", f"open('{SHARE}/withheld-ran', 'w').close()"], output)
+    started = read_reports(reports, True)[0]
+    # Long enough for the command to run, had it been let go.
+    time.sleep(1)
+    os.close(go)
+    exit_code = os.waitstatus_to_exitcode(os.waitpid(launcher, 0)[1])
+    withheld = {"started": started, "after": read_reports(reports, False), "exit": exit_code,
+                "commandAlive": alive(started["pid"]) if started.get("t") == "started" else None}
+    os.close(reports)
+
+    launcher, reports, go = spawn_launcher(program, start + [PROBE, "command", mode], output)
     os.close(output)
-    line = b""
-    while b"\n" not in line and (chunk := os.read(reader, 4096)):
-        line += chunk
-    try:
-        started = json.loads(line.split(b"\n")[0])
-    except ValueError:
-        started = {"t": "unreadable", "line": line.decode(errors="replace")}
+    started = read_reports(reports, True)[0]
+    if started.get("t") == "started":
+        os.write(go, b"G")
+    os.close(go)
     if started.get("t") != "started":
         emit(control / "starter-done.json", {"error": f"launcher: {started}",
                                              "output": (control / "launcher-output.log").read_text(errors="replace")})
         raise RuntimeError(f"launcher: {started}")
-    emit(control / "starter-ready.json", {"kind": "launcher", "topPid": os.getpid(), "aPid": launcher, "started": started})
+    emit(control / "starter-ready.json", {"kind": "launcher", "topPid": os.getpid(), "aPid": launcher, "started": started,
+                                          "withheld": withheld})
     while True:
         time.sleep(1)
 
@@ -1031,6 +1066,8 @@ def probe(directory, mode, kind):
 
         starter = start_starter(directory, shell, mode, helper_unit, kind)
         record["starter"] = starter
+        if kind == "launcher":
+            record["withheldRan"] = (share / "withheld-ran").exists()
         command = eventually(lambda: find_command(office_uid), 20)
         record["command"] = await_record(share, "command", "report")
         a_pid, top_pid = starter["aPid"], starter["topPid"]
@@ -1193,6 +1230,13 @@ def checks_for(record, node_errors):
         # The launcher's own stop ends the command's group and then itself; a process that left the group stays.
         checks["launcherStopEndedGroup"] = record["afterLauncherStop"] == {"command": False, "starterA": False,
                                                                            "setsidChild": True}
+        # A start that was not let go (the go pipe ended without a G): A stopped B before its exec, said why and
+        # failed, and the command never ran.
+        w = st["withheld"]
+        checks["launcherWithoutGoRanNothing"] = (
+            w["started"].get("t") == "started" and w["exit"] == 1 and w["commandAlive"] is False
+            and w["after"] == [{"t": "failed", "error": "the helper did not let the command start"}]
+            and record["withheldRan"] is False)
     if record["mode"] == "networked":
         checks.update({
             "sharesComputerNetns": c["ns"]["net"] == so["ns"]["net"],
@@ -1276,7 +1320,10 @@ def synthetic_record(mode, kind):
                    "bInside": {"user": inner, "uid": [990] * 3, "gid": [990] * 3},
                    "filterSha256": program_digest(seccomp_command_program(OFFICE_FAMILIES))}
     else:
-        starter = {"kind": kind, "aPid": 300, "topPid": 299, "started": {"t": "started", "pid": 301, "mntns": 4026532310}}
+        starter = {"kind": kind, "aPid": 300, "topPid": 299, "started": {"t": "started", "pid": 301, "mntns": 4026532310},
+                   "withheld": {"started": {"t": "started", "pid": 297, "mntns": 4026532309}, "exit": 1,
+                                "after": [{"t": "failed", "error": "the helper did not let the command start"}],
+                                "commandAlive": False}}
     record = {"mode": mode, "kind": kind, "office": {"uid": 990, "gid": 990}, "initialUser": initial, "command": command,
               "shell": {"pid": 200, "state": shell_state},
               "shellOutside": {"caps": dict(caps), "ns": shell_ns, "nsOwner": owners, "usernsChain": [inner, outer, initial],
@@ -1291,6 +1338,7 @@ def synthetic_record(mode, kind):
               "afterOfficeStop": {"command": False, "setsidChild": False, "starterA": False}}
     if kind == "launcher":
         record["afterLauncherStop"] = {"command": False, "starterA": False, "setsidChild": True}
+        record["withheldRan"] = False
     if mode == "networked":
         record["filterInCommandNetns"] = True
     return record
@@ -1402,6 +1450,8 @@ def selftest():
             flips["launcherReportedStart"] = lambda r: r["starter"]["started"].update(mntns=4026532302)
             # A launcher without CAP_KILL: its SIGTERM and SIGKILL to the office account's group fail, and it waits on.
             flips["launcherStopEndedGroup"] = lambda r: r["afterLauncherStop"].update(command=True, starterA=True)
+            # A launcher that runs the command at the end of the go pipe as if it were the go.
+            flips["launcherWithoutGoRanNothing"] = lambda r: r.update(withheldRan=True)
         if mode == "networked":
             flips.update({
                 "sharesComputerNetns": lambda r: r["command"]["ns"].update(net="net:[1]"),

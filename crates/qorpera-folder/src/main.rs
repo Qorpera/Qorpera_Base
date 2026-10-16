@@ -42,9 +42,10 @@ shell's root) in the namespaces and cgroup of the office shell <pid>, with the h
 /run/qorpera-company (the shell links /company to its company child), as the office account in the shell's user
 namespace (a member, never its parent) with the shell's capability bounding set, no capabilities, SECBIT_NOROOT
 locked, no_new_privs and the command filter. --network no gives it its own network with only lo.
-Fds 0 to 2 become the command's; fd 3 gets one JSON line when it starts ({\"t\":\"started\",\"pid\",\"mntns\"}), ends
-({\"t\":\"exit\",\"code\",\"signal\"}) or fails ({\"t\":\"failed\",\"error\"}). SIGTERM stops it as the shell host does.
-Exit codes: 0 its end was reported, 1 failed (reported on fd 3), 2 usage or fds 0 to 3 not open.";
+Fds 0 to 2 become the command's; fd 3 gets one JSON line when it is ready to run ({\"t\":\"started\",\"pid\",\"mntns\"}),
+ends ({\"t\":\"exit\",\"code\",\"signal\"}) or fails ({\"t\":\"failed\",\"error\"}, after started too). The command runs
+only after the caller writes G on fd 4; end of file there before it stops the start. SIGTERM stops it as the shell host
+does. Exit codes: 0 its end was reported, 1 failed (reported on fd 3), 2 usage or fds 0 to 4 not open.";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;

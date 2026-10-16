@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, link, lstat, mkdir, readdir, readlink, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	COMPANY_COMPUTER_COMMAND_MOUNT,
@@ -58,6 +58,8 @@ const POLL_MS = 200;
 const ENDED_POLL_MS = 1000;
 /** How long `qorpera-folder command` may take to report its start; it gives up itself after 20 s. */
 const LAUNCH_MS = 30000;
+/** How long a launcher that was not let go may take to kill its command's starter and exit, before it is killed. */
+const LAUNCH_STOP_MS = 5000;
 /** A report line of `qorpera-folder command` at most. */
 const COMMAND_REPORT_BYTES = 4096;
 const PROOF_SCHEMA = "qorpera.folder-view-proof/v1";
@@ -92,8 +94,8 @@ export interface CompanyComputerFolderHelperSystem {
 	/** Runs the folder program once. `code` is null when it did not exit by itself in time; `stdout` is undefined when
 	 * it printed more than an answer can carry. */
 	publish(args: readonly string[], timeoutMs: number): Promise<{ code: number | null; stdout: Buffer | undefined }>;
-	/** Starts `qorpera-folder command` with these arguments. Its stdin, stdout and stderr are the command's, and fd 3
-	 * carries its reports; all four are pipes. */
+	/** Starts `qorpera-folder command` with these arguments. Its stdin, stdout and stderr are the command's, fd 3
+	 * carries its reports, and fd 4 the helper's go; all five are pipes. */
 	launch(args: readonly string[]): ChildProcess;
 	/** Whether a process is left in the mount namespace with this inode, and that namespace is the command's of this
 	 * mount (`isCompanyComputerCommandNamespace`): nsfs reuses the inodes of namespaces that ended. */
@@ -194,8 +196,45 @@ export function isCompanyComputerCommandNamespace(
 	return top?.root.replace(/\/\/deleted$/, "").endsWith(`/mounts/${name}`) ?? false;
 }
 
-/** What `qorpera-folder command` reports on fd 3: the command's start (with its mount namespace's inode), its exit,
- * or why it did not start. */
+/** How many passes a look for a namespace's processes takes before it gives up, answering in use, while processes
+ * keep being forked meanwhile. */
+const SCAN_PASSES = 50;
+
+/** A look at a machine's processes: the last pid it gave, the pids there now, and whether a process is in the
+ * namespace looked for (false when it is gone; an error when that cannot be known). */
+export interface CompanyComputerProcessScan {
+	lastPid(): Promise<number>;
+	pids(): Promise<readonly number[]>;
+	inside(pid: number): Promise<boolean>;
+}
+
+/**
+ * Whether a process is in a namespace that only grows by fork (the command's filter refuses setns, and it holds no
+ * capability in the initial user namespace). One list of the processes is not enough: one can fork while it is read,
+ * then exit before it is looked at, and its child came after the list. Pids are given in a cycle, so each pass after
+ * the first looks again at the pids given during the one before, until a pass during which none was given: a process
+ * then in the namespace was there through that pass, or forked during an earlier one. An error is no answer.
+ */
+export async function companyComputerNamespaceInUse(scan: CompanyComputerProcessScan): Promise<boolean> {
+	let from: number | undefined,
+		to = await scan.lastPid();
+	for (let pass = 0; pass < SCAN_PASSES; pass++) {
+		for (const pid of await scan.pids()) {
+			// After the first pass, only the pids after `from` up to `to`, in their cycle.
+			const look = from === undefined || (from < to ? pid > from && pid <= to : pid > from || pid <= to);
+			if (look && (await scan.inside(pid))) return true;
+		}
+		const last = await scan.lastPid();
+		if (last === to) return false;
+		from = to;
+		to = last;
+	}
+	return true;
+}
+
+/** What `qorpera-folder command` reports on fd 3: the command ready to run (its pid and its mount namespace's inode;
+ * it runs once the helper writes `G` on fd 4), its exit, or why it did not start (also after `started`, when it failed
+ * before its program ran). */
 export type CompanyComputerFolderCommandReport =
 	| { readonly t: "started"; readonly pid: number; readonly mntns: number }
 	| { readonly t: "exit"; readonly code: number | null; readonly signal: string | null }
@@ -234,7 +273,9 @@ export function parseCompanyComputerFolderCommandReport(line: string): CompanyCo
 }
 
 /** A command mount's record of its command (`command.json` in its state folder): the command's mount namespace, null
- * while it starts and for good if it never did, and whether no process is left in it. */
+ * while it starts and for good if it never did, and whether no process is left in it. The helper lets the launcher run
+ * the command only once its namespace is recorded here, so a null one never ran anything, whatever happened to the
+ * helper meanwhile. */
 interface CommandRecord {
 	readonly mntns: number | null;
 	readonly ended: boolean;
@@ -287,6 +328,7 @@ export interface CompanyComputerFolderHelperOptions {
 	readonly pollMs?: number;
 	readonly endedPollMs?: number;
 	readonly launchMs?: number;
+	readonly launchStopMs?: number;
 	readonly log?: (line: string) => void;
 }
 
@@ -299,6 +341,7 @@ export class CompanyComputerFolderHelper {
 	readonly #pollMs: number;
 	readonly #endedPollMs: number;
 	readonly #launchMs: number;
+	readonly #launchStopMs: number;
 	readonly #log: (line: string) => void;
 	/** Each name's requests, and a run's start, run one after another; `list`, `ended` and a command's life wait for
 	 * none. */
@@ -313,6 +356,7 @@ export class CompanyComputerFolderHelper {
 		this.#pollMs = options.pollMs ?? POLL_MS;
 		this.#endedPollMs = options.endedPollMs ?? ENDED_POLL_MS;
 		this.#launchMs = options.launchMs ?? LAUNCH_MS;
+		this.#launchStopMs = options.launchStopMs ?? LAUNCH_STOP_MS;
 		this.#log = options.log ?? ((line) => console.error(line));
 	}
 
@@ -754,6 +798,12 @@ export class CompanyComputerFolderHelper {
 			request.command,
 		]);
 		const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+		const exited = new Promise<void>((resolve) => {
+			child.once("exit", () => resolve());
+			child.once("error", () => resolve());
+		});
+		const go = child.stdio[4] as Writable | null | undefined;
+		go?.on("error", () => undefined);
 		let exit: { readonly code: number | null; readonly signal: string | null } | undefined;
 		// The first report decides the start; the launcher sends its exit report last.
 		const first = await new Promise<CompanyComputerFolderCommandReport | undefined>((resolve) => {
@@ -807,19 +857,34 @@ export class CompanyComputerFolderHelper {
 			reports.on("error", () => decide(undefined));
 			reports.once("end", () => decide(undefined));
 		});
-		if (first?.t === "started") {
-			await this.#writeRecord(name, { mntns: first.mntns, ended: false }, true).catch((error: unknown) =>
-				this.#log(`folder-helper: run ${name}: its record: ${String(error)}`),
-			);
+		// The command runs only once its mount namespace is on record: then `ended` can always answer for it.
+		const recorded =
+			first?.t === "started" &&
+			(await this.#writeRecord(name, { mntns: first.mntns, ended: false }, true).then(
+				() => true,
+				(error: unknown) => {
+					this.#log(`folder-helper: run ${name}: its record: ${String(error)}`);
+					return false;
+				},
+			));
+		if (first?.t === "started" && recorded && go) {
+			// A launcher that gave up meanwhile reports its failure and exits; the run then ends with no exit code.
+			go.end("G");
 			this.#log(`folder-helper: run ${name}: started`);
 			return { answer: "started", child, mntns: first.mntns, closed, exit: () => exit };
 		}
-		// A launcher that reported its failure exits by itself; any other is stopped. Its pipes drain so it can go.
-		if (first?.t !== "failed") child.kill("SIGKILL");
+		// Without the go, the launcher kills and reaps its command's starter, which ran nothing of the command's, and
+		// exits. One that does not exit in time is killed: the starter, which waits for an answer only the launcher
+		// writes, then ends by itself before it runs anything. Its pipes drain so it can go.
+		go?.destroy();
 		child.stdout?.resume();
 		child.stderr?.resume();
+		if (!(await Promise.race([exited.then(() => true), delay(this.#launchStopMs).then(() => false)]))) {
+			child.kill("SIGKILL");
+			await exited;
+		}
 		this.#log(
-			`folder-helper: run ${name}: failed: ${first?.t === "failed" ? JSON.stringify(first.error) : "no start report"}`,
+			`folder-helper: run ${name}: failed: ${first?.t === "failed" ? JSON.stringify(first.error) : first?.t === "started" ? "its record was not written" : "no start report"}`,
 		);
 		return { answer: "failed" };
 	}
@@ -1010,30 +1075,39 @@ export function createLinuxCompanyComputerFolderHelperSystem(): CompanyComputerF
 			spawn(COMPANY_COMPUTER_FOLDER_PROGRAM, args, {
 				cwd: "/",
 				env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
-				stdio: ["pipe", "pipe", "pipe", "pipe"],
+				stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
 			}),
-		async namespaceInUse(mntns, name) {
+		namespaceInUse(mntns, name) {
 			const wanted = `mnt:[${mntns}]`;
+			// A task that exited: its links and its mount table no longer read (EINVAL opening the table of one that is
+			// exiting). Any other error is no answer.
+			const gone = (error: unknown): undefined => {
+				if (!["ENOENT", "ESRCH", "EINVAL"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+				return undefined;
+			};
 			// Undefined when the task's link does not read (it exited, or it is a leader whose other threads still run).
 			const inside = async (task: string): Promise<boolean | undefined> => {
-				const target = await readlink(`${task}/ns/mnt`).catch(() => undefined);
+				const target = await readlink(`${task}/ns/mnt`).catch(gone);
 				if (target !== wanted) return target === undefined ? undefined : false;
-				const entries = await readCompanyComputerLinuxMetadata(`${task}/mountinfo`, 1048576)
-					.then(parseCompanyComputerMountinfo)
-					.catch(() => undefined);
-				return entries !== undefined && isCompanyComputerCommandNamespace(entries, name);
+				const table = await readCompanyComputerLinuxMetadata(`${task}/mountinfo`, 1048576).catch(gone);
+				return table !== undefined && isCompanyComputerCommandNamespace(parseCompanyComputerMountinfo(table), name);
 			};
-			for (const pid of await readdir("/proc")) {
-				if (!/^[1-9][0-9]*$/.test(pid)) continue;
-				let found = await inside(`/proc/${pid}`);
-				if (found === undefined)
-					for (const tid of await readdir(`/proc/${pid}/task`).catch((): string[] => [])) {
-						if (tid !== pid) found = await inside(`/proc/${pid}/task/${tid}`);
-						if (found !== undefined) break;
-					}
-				if (found) return true;
-			}
-			return false;
+			return companyComputerNamespaceInUse({
+				lastPid: async () =>
+					integer((await readCompanyComputerLinuxMetadata("/proc/sys/kernel/ns_last_pid", 64)).trim(), 4194304),
+				pids: async () => (await readdir("/proc")).filter((pid) => /^[1-9][0-9]*$/.test(pid)).map(Number),
+				async inside(pid) {
+					let found = await inside(`/proc/${pid}`);
+					if (found === undefined)
+						for (const tid of await readdir(`/proc/${pid}/task`).catch(
+							(error: unknown): string[] => gone(error) ?? [],
+						)) {
+							if (tid !== String(pid)) found = await inside(`/proc/${pid}/task/${tid}`);
+							if (found !== undefined) break;
+						}
+					return found === true;
+				},
+			});
 		},
 	};
 }

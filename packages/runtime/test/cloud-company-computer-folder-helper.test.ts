@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createConnection, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	COMPANY_COMPUTER_FOLDER_MOUNTPOINT_MODE,
 	COMPANY_COMPUTER_FOLDER_PROGRAM,
@@ -10,9 +12,11 @@ import {
 	type CompanyComputerFolderHelperOptions,
 	type CompanyComputerFolderHelperSystem,
 	type CompanyComputerFolderUnitState,
+	type CompanyComputerProcessScan,
 	companyComputerFolderBoundaryAnswer,
 	companyComputerFolderProgram,
 	companyComputerFolderUnit,
+	companyComputerNamespaceInUse,
 	createCompanyComputerFolderHelperServer,
 	isCompanyComputerCommandNamespace,
 	parseCompanyComputerFolderCommandReport,
@@ -170,7 +174,10 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 	}
 	launch(args: readonly string[]) {
 		this.launches.push([...args]);
-		return spawn(process.execPath, [this.launcher, ...args], { cwd: "/", stdio: ["pipe", "pipe", "pipe", "pipe"] });
+		return spawn(process.execPath, [this.launcher, ...args], {
+			cwd: "/",
+			stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+		});
 	}
 	/** The stand-in reports the command's process group as its mount namespace. */
 	async namespaceInUse(mntns: number) {
@@ -185,32 +192,63 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 
 /**
  * `qorpera-folder command` as the helper sees it: the command on its stdin, stdout and stderr, its reports on fd 3,
+ * the helper's go on fd 4 (the command runs after a G; an end of file before it kills the command unrun and fails),
  * and SIGTERM stops the command's process group. Some shell pids stand for a launcher that goes wrong: one that
- * reports its failure, one that reports garbage, one that never reports and one that exits without a report.
+ * reports its failure, one that reports garbage, one that never reports, one that exits without a report, one that
+ * neither reports nor heeds the go, and one that started its command but withholds the report (it notes the
+ * command's pid next to itself).
  */
 const LAUNCHER = `
 import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 const args = process.argv.slice(2);
 const split = args.indexOf("--");
 const shell = Number(args[args.indexOf("--shell-pid") + 1]);
 const reports = createWriteStream(null, { fd: 3 });
 const report = (value) => reports.write(JSON.stringify(value) + "\\n");
+const go = createReadStream(null, { fd: 4 });
+// One with no command yet just exits when the go ends.
+const leave = () => go.on("end", () => process.exit(1));
 if (shell === 4000001) {
 	report({ t: "failed", error: "the shell is not the office account's" });
 	reports.end(() => process.exit(1));
 } else if (shell === 4000002) {
 	reports.write("not a report\\n");
+	leave();
 	setInterval(() => undefined, 1000);
-} else if (shell === 4000003) setInterval(() => undefined, 1000);
-else if (shell === 4000004) reports.end(() => process.exit(1));
+} else if (shell === 4000003) {
+	leave();
+	setInterval(() => undefined, 1000);
+} else if (shell === 4000004) reports.end(() => process.exit(1));
+else if (shell === 4000005) setInterval(() => undefined, 1000);
 else {
-	// The command must not hold the reports.
-	const child = spawn("/bin/sh", ["-c", 'exec 3>&- "$0" "$@"', ...args.slice(split + 1)], { detached: true, stdio: "inherit" });
-	child.on("spawn", () => report({ t: "started", pid: child.pid, mntns: child.pid }));
+	// The command waits at its gate (its fd 3) for the go, and holds neither the reports nor the go when it runs.
+	const child = spawn("/bin/sh", ["-c", 'read -r _ <&3 || exit 1; exec 3>&- 4>&- "$0" "$@"', ...args.slice(split + 1)], {
+		detached: true,
+		stdio: ["inherit", "inherit", "inherit", "pipe"],
+	});
+	const kill = () => {
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch {}
+	};
+	child.on("spawn", () => {
+		if (shell === 4000006) writeFileSync(join(dirname(process.argv[1]), "withheld.pid"), String(child.pid));
+		else report({ t: "started", pid: child.pid, mntns: child.pid });
+	});
+	let released = false;
+	go.on("data", (bytes) => {
+		if (released) return;
+		if (bytes[0] === 0x47) {
+			released = true;
+			child.stdio[3].end("\\n");
+		} else kill();
+	});
+	go.on("end", () => released || kill());
 	child.on("exit", (code, signal) => {
-		report({ t: "exit", code, signal });
-		reports.end(() => process.exit(0));
+		report(released ? { t: "exit", code, signal } : { t: "failed", error: "the helper did not let the command start" });
+		reports.end(() => process.exit(released ? 0 : 1));
 	});
 	process.on("SIGTERM", () => {
 		const signal = (name) => {
@@ -671,9 +709,9 @@ describe("the folder helper's runs", () => {
 		for (const name of names)
 			expect(await context.helper.answer({ op: "mount", name, view: VIEW })).toEqual({ answer: "mounted" });
 		const ended = (name: string) => askCompanyComputerFolderHelper({ op: "ended", name }, { socket });
-		const record = async (name: string) =>
+		const commandState = async (name: string) =>
 			JSON.parse(await readFile(join(context.paths(name).state, "command.json"), "utf8"));
-		return { ...context, socket, ended, record };
+		return { ...context, socket, ended, commandState };
 	}
 	function start(socket: string, command: string, extra: Partial<Run> = {}) {
 		const events: CompanyComputerFolderRunEvent[] = [];
@@ -690,7 +728,7 @@ describe("the folder helper's runs", () => {
 	}
 
 	it("starts the command with the launcher, relays its output and exit, and ends once nothing is left", async () => {
-		const { socket, system, paths, ended, record } = await running();
+		const { socket, system, paths, ended, commandState } = await running();
 		const command = "echo out; echo err >&2; exit 7";
 		const { run, events, output } = start(socket, command);
 		expect(await run.answer).toEqual({ answer: "started" });
@@ -714,7 +752,7 @@ describe("the folder helper's runs", () => {
 				command,
 			],
 		]);
-		expect(await record(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
 		expect(await mode(join(paths(COMMAND).state, "command.json"))).toBe(0o600);
 		expect(await ended(COMMAND)).toEqual({ answer: "ended" });
 	});
@@ -752,7 +790,7 @@ describe("the folder helper's runs", () => {
 	});
 
 	it("ends only once the command's background jobs are gone, and `ended` answers running until then", async () => {
-		const { socket, ended, record } = await running();
+		const { socket, ended, commandState } = await running();
 		const lingering = start(socket, "(sleep 1.5 </dev/null >/dev/null 2>&1 &); echo done");
 		expect(await lingering.run.answer).toEqual({ answer: "started" });
 		await vi.waitFor(() => expect(lingering.events.some((event) => event.t === "exit")).toBe(true), {
@@ -761,11 +799,11 @@ describe("the folder helper's runs", () => {
 		});
 		expect(lingering.output()).toBe("done\n");
 		expect(await ended(COMMAND)).toEqual({ answer: "running" });
-		expect(await record(COMMAND)).toEqual({ mntns: expect.any(Number), ended: false });
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: false });
 		await lingering.run.closed;
 		expect(lingering.events.at(-1)).toEqual({ t: "ended" });
 		expect(await ended(COMMAND)).toEqual({ answer: "ended" });
-		expect(await record(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
 	});
 
 	it("runs nothing on a mount that is not there, ran a command already, is closed or is not served", async () => {
@@ -789,33 +827,95 @@ describe("the folder helper's runs", () => {
 	});
 
 	it("keeps the claim of a command that did not start, so the mount runs none and never ends", async () => {
-		const { socket, logs, ended, record } = await running();
+		const { socket, logs, ended, commandState } = await running();
 		const failed = start(socket, "true", { shellPid: 4000001 });
 		expect(await failed.run.answer).toEqual({ answer: "failed" });
 		await failed.run.closed;
 		expect(logs).toContain(`folder-helper: run ${COMMAND}: failed: "the shell is not the office account's"`);
-		expect(await record(COMMAND)).toEqual({ mntns: null, ended: false });
+		expect(await commandState(COMMAND)).toEqual({ mntns: null, ended: false });
 		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
 		expect(await start(socket, "true").run.answer).toEqual({ answer: "refused" });
 	});
 
+	it("keeps the claim a helper left that stopped before its go, and ends one whose namespace it recorded", async () => {
+		const { socket, system, paths, ended, commandState } = await running([COMMAND, SECOND]);
+		// A helper that stopped before it recorded the namespace never let its command run.
+		const left = (name: string, mntns: number | null) =>
+			writeFile(join(paths(name).state, "command.json"), `${JSON.stringify({ mntns, ended: false })}\n`, {
+				mode: 0o600,
+			});
+		await left(COMMAND, null);
+		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
+		expect(await start(socket, "true").run.answer).toEqual({ answer: "refused" });
+		// One that stopped after it: the command ran or not, and ends once nothing is left in that namespace.
+		await left(SECOND, 4000007);
+		expect(await ended(SECOND)).toEqual({ answer: "ended" });
+		expect(await commandState(SECOND)).toEqual({ mntns: 4000007, ended: true });
+		expect(system.launches).toEqual([]);
+	});
+
 	it("fails a launcher that reports garbage, nothing, or nothing in time, and stops it", async () => {
-		const { socket, logs, record } = await running([COMMAND, SECOND, THIRD], { launchMs: 300 });
+		const FOURTH = companyComputerFolderName("command", "66666666-7777-4888-9999-eeeeeeeeeeee");
+		const { socket, logs, commandState } = await running([COMMAND, SECOND, THIRD, FOURTH], {
+			launchMs: 300,
+			launchStopMs: 300,
+		});
 		for (const [name, shellPid] of [
 			[COMMAND, 4000002],
 			[SECOND, 4000004],
 			[THIRD, 4000003],
+			// It does not exit when the go ends: it is killed.
+			[FOURTH, 4000005],
 		] as const) {
 			const launch = start(socket, "true", { name, shellPid });
 			expect(await launch.run.answer).toEqual({ answer: "failed" });
 			await launch.run.closed;
 			expect(logs).toContain(`folder-helper: run ${name}: failed: no start report`);
-			expect(await record(name)).toEqual({ mntns: null, ended: false });
+			expect(await commandState(name)).toEqual({ mntns: null, ended: false });
 		}
 	});
 
+	it("never lets a command run whose start came too late, and its launcher stops it unrun", async () => {
+		const { base, socket, logs, ended, commandState } = await running([COMMAND], { launchMs: 300 });
+		const marker = join(base, "ran");
+		const launch = start(socket, `touch ${marker}`, { shellPid: 4000006 });
+		expect(await launch.run.answer).toEqual({ answer: "failed" });
+		await launch.run.closed;
+		// The helper answers once its launcher is gone, and the launcher goes once its command is.
+		const pid = Number(await readFile(join(base, "withheld.pid"), "utf8"));
+		expect(() => process.kill(-pid, 0)).toThrow();
+		await vi.waitFor(
+			() => expect(logs).toContain(`folder-helper: run ${COMMAND}: "the helper did not let the command start"`),
+			{ timeout: 5000, interval: 20 },
+		);
+		expect(logs).toContain(`folder-helper: run ${COMMAND}: failed: no start report`);
+		await delay(200);
+		expect(await gone(marker)).toBe(true);
+		expect(await commandState(COMMAND)).toEqual({ mntns: null, ended: false });
+		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
+	});
+
+	it("never lets a command run whose mount namespace it could not record", async () => {
+		const { base, socket, system, logs, paths } = await running();
+		const marker = join(base, "ran");
+		const launch = system.launch.bind(system);
+		system.launch = (args) => {
+			// The state folder goes after the claim: the namespace's record cannot be written.
+			rmSync(paths(COMMAND).state, { recursive: true });
+			writeFileSync(paths(COMMAND).state, "");
+			return launch(args);
+		};
+		const run = start(socket, `touch ${marker}`);
+		expect(await run.run.answer).toEqual({ answer: "failed" });
+		await run.run.closed;
+		expect(logs).toContain(`folder-helper: run ${COMMAND}: failed: its record was not written`);
+		expect(logs.some((line) => line.startsWith(`folder-helper: run ${COMMAND}: its record: `))).toBe(true);
+		await delay(200);
+		expect(await gone(marker)).toBe(true);
+	});
+
 	it("stops the command when the asker leaves or sends a malformed line, and still answers its end", async () => {
-		const { socket, ended, record } = await running([COMMAND, SECOND]);
+		const { socket, ended, commandState } = await running([COMMAND, SECOND]);
 		const sleeper = start(socket, "sleep 30");
 		expect(await sleeper.run.answer).toEqual({ answer: "started" });
 		sleeper.run.close();
@@ -823,7 +923,7 @@ describe("the folder helper's runs", () => {
 			timeout: 5000,
 			interval: 50,
 		});
-		expect(await record(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
 		const request: Run = { op: "run", name: SECOND, shellPid: 4242, network: true, command: "sleep 30" };
 		const connection = createConnection(socket);
 		connection.on("error", () => undefined);
@@ -946,6 +1046,91 @@ describe("the folder helper's runs", () => {
 				COMMAND,
 			),
 		).toBe(false);
+	});
+
+	/** A machine's processes (pid: in the namespace or not) and its last pid; `when` changes them as a pid is looked at. */
+	function machine(processes: ReadonlyArray<readonly [number, boolean]>, last: number) {
+		const table = new Map(processes);
+		const looked: number[] = [];
+		let next: ((pid: number) => void) | undefined;
+		const scan: CompanyComputerProcessScan = {
+			lastPid: async () => last,
+			pids: async () => [...table.keys()],
+			async inside(pid) {
+				looked.push(pid);
+				const change = next;
+				next = undefined;
+				change?.(pid);
+				return table.get(pid) ?? false;
+			},
+		};
+		const fork = (pid: number, inside: boolean) => {
+			table.set(pid, inside);
+			last = pid;
+		};
+		const when = (change: (pid: number) => void) => {
+			next = change;
+		};
+		return { scan, table, looked, fork, when };
+	}
+
+	it("finds a process forked while it looked whose parent exited before it was looked at", async () => {
+		const quiet = machine(
+			[
+				[400, false],
+				[500, false],
+			],
+			600,
+		);
+		expect(await companyComputerNamespaceInUse(quiet.scan)).toBe(false);
+		expect(quiet.looked).toEqual([400, 500]);
+		const forked = machine(
+			[
+				[400, true],
+				[500, false],
+			],
+			600,
+		);
+		forked.when((pid) => {
+			forked.fork(601, true);
+			forked.table.delete(pid);
+		});
+		expect(await companyComputerNamespaceInUse(forked.scan)).toBe(true);
+		expect(forked.looked).toEqual([400, 500, 601]);
+		// Pids given in a cycle: the next pass looks only at those given during the one before, across the wrap.
+		const wrapped = machine(
+			[
+				[400, false],
+				[32000, false],
+			],
+			32766,
+		);
+		wrapped.when(() => {
+			wrapped.fork(32767, false);
+			wrapped.fork(301, false);
+		});
+		expect(await companyComputerNamespaceInUse(wrapped.scan)).toBe(false);
+		expect(wrapped.looked).toEqual([400, 32000, 32767, 301]);
+	});
+
+	it("answers in use while processes keep being forked, and no answer when a process cannot be looked at", async () => {
+		let last = 1000;
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => last++,
+				pids: async () => [10],
+				inside: async () => false,
+			}),
+		).toBe(true);
+		await expect(
+			companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				pids: async () => [4],
+				inside: async () => {
+					throw new Error("EACCES");
+				},
+			}),
+		).rejects.toThrow("EACCES");
 	});
 });
 

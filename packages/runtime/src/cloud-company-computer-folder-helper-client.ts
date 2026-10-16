@@ -55,7 +55,8 @@ export interface CompanyComputerFolderView {
 export type CompanyComputerFolderRequest =
 	| { readonly op: "mount" | "switch"; readonly name: string; readonly view: CompanyComputerFolderView }
 	| { readonly op: "boundary" | "unmount"; readonly name: string; readonly final: boolean; readonly timeoutMs: number }
-	| { readonly op: "drop" | "ended"; readonly name: string }
+	| { readonly op: "drop"; readonly name: string }
+	| { readonly op: "ended"; readonly name: string }
 	| { readonly op: "list" }
 	/** Runs `command` with Bash, as the shell host does, in the namespaces of the office shell whose pid namespace's
 	 * init is `shellPid` (initial pid namespace), with the command mount's tree at `/company`. Its connection stays
@@ -76,7 +77,7 @@ export type CompanyComputerFolderRunInput =
 /** What the helper sends on a run's connection after `started`: the shell host's `out` (base64) and `exit`, then
  * `ended` once no process is left in the command's mount namespace (background jobs and programs that left its
  * process group included), and then the connection ends. An `exit` with neither a code nor a signal: the command's
- * end was not seen. */
+ * end was not seen, or it failed after its start, before its program ran (the helper's log says why). */
 export type CompanyComputerFolderRunEvent =
 	| { readonly t: "out"; readonly data: string }
 	| { readonly t: "exit"; readonly code: number | null; readonly signal: string | null }
@@ -139,7 +140,8 @@ export interface CompanyComputerFolderAnswers {
 	 * failed); the helper's log says why. Nothing but `started` ran anything. */
 	readonly run: { readonly answer: "started" | "unknown" | "refused" | "closed" | "failed" };
 	/** Whether a process is left in the mount namespace of the mount's command, from its state folder, so a helper
-	 * started again still answers. `unknown`: no mount of that name, or its command never started. */
+	 * started again still answers. `unknown`: no mount of that name, or its command never started, which then ran
+	 * nothing: the helper lets a command run only once its namespace is in the state folder. */
 	readonly ended: { readonly answer: "ended" | "running" | "unknown" | "failed" };
 	readonly list:
 		| { readonly answer: "list"; readonly mounts: readonly CompanyComputerFolderMount[] }
