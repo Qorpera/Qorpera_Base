@@ -95,7 +95,9 @@ test("628's fixture is cut before its checks and keeps three leased runs, the he
 	assert.ok(!sql.includes("-- 1. Without a machine executor"));
 	assert.ok(!sql.includes("pg_temp.mc_"));
 	assert.ok(sql.includes("create function p4.mc_start("), "628's helpers live in schema p4");
-	assert.equal(sql.split("pg_temp.p4_lease_sha()").length - 1, 3);
+	// The digest's function: its definition, and the three runs' lease digests it stands in for.
+	assert.equal(sql.split("pg_temp.p4_lease_sha()").length - 1, 4);
+	assert.ok(!sql.includes("repeat('3', 64)"));
 	assert.ok(sql.includes("'project','qtm-0123abcd','name'"));
 	assert.ok(!sql.includes("'project','machines','name'"));
 	for (const [name, sha] of [["alice", "1"], ["bob", "2"], ["carol", "3"]])
