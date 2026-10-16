@@ -342,11 +342,10 @@ begin
 	-- The slow holder reads the approval and runs the action ...
 	perform pg_temp.base_assert(public.qorpera_await_action_review(v_binding, (v_record ->> 'reviewId')::uuid, false)
 		->> 'state' = 'approved', 'A slow holder still uses the approval');
-	-- ... so the repeat the wake asks for, from another run, has nothing left to do.
-	update public.qorpera_action_reviews set consumed_run_id = extensions.gen_random_uuid()
-	where id = (v_record ->> 'reviewId')::uuid;
+	-- ... so the repeat the wake asks for has nothing left to do: the run the answer woke is told it was used (677,
+	-- 20260930489000). The holder's own next call of it is reviewed afresh.
 	perform pg_temp.base_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
-		'argumentSha256', repeat('c', 64))) ->> 'state' = 'used', 'A redundant wake finds its action already done');
+		'argumentSha256', repeat('c', 64))) ->> 'state' = 'review', 'Only the run the answer woke is told it was used');
 end
 $$;
 
