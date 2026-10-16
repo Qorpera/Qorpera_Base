@@ -187,7 +187,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 				LANG: "C.UTF-8",
 			}))
 				args.push("--setenv", name, value);
-			args.push("--chdir", this.#layout.workbenchRoot, "--remount-ro", "/");
+			args.push("--chdir", "/home/qorpera", "--remount-ro", "/");
 			signal.throwIfAborted();
 			const launched = spawnCompanyComputerLinuxProcess({
 				args,
@@ -273,7 +273,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			input.args.some((arg) => typeof arg !== "string" || arg.includes("\0")) ||
 			Buffer.byteLength(JSON.stringify(input.args)) > 20000 ||
 			(input.stdin !== undefined && (typeof input.stdin !== "string" || Buffer.byteLength(input.stdin) > 16384)) ||
-			input.workingDirectory !== this.#layout.workbenchRoot ||
+			input.workingDirectory !== "/home/qorpera" ||
 			!isDeepStrictEqual(input.environment, {
 				// A shell command gets no display (see #execute).
 				...(input.program === "/usr/bin/xdotool"
@@ -371,7 +371,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 					program: "/usr/bin/scrot",
 					args: ["--silent", "/qorpera-capture/screen.png"],
 					environment: {},
-					workingDirectory: this.#layout.workbenchRoot,
+					workingDirectory: "/home/qorpera",
 					timeoutMs: 5000,
 					maxOutputBytes: 4096,
 					signal,

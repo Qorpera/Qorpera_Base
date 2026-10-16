@@ -1210,7 +1210,7 @@ export class CompanyComputerGuestAutomation {
 					PATH: "/usr/local/bin:/usr/bin:/bin",
 					LANG: "C.UTF-8",
 				},
-				workingDirectory: this.#layout.workbenchRoot,
+				workingDirectory: "/home/qorpera",
 				timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
 				maxOutputBytes: 16_384,
 				signal,

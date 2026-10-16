@@ -57,9 +57,12 @@ export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;
 /** Finished commands remembered for a later read or list. */
 const FINISHED_KEPT = 64;
 const LISTED = 40;
-/** Where every command starts. The company folder mount will replace this with `/company`. */
-export function companyComputerShellWorkingDirectory(layout: CompanyComputerGuestLayout): string {
-	return layout.workbenchRoot;
+/**
+ * Where the shell starts: its home. With the company folder, the folder launcher starts every command in `/company`
+ * (F3 4d); without it, a command starts here (F3 4f-1b: never the workbench).
+ */
+export function companyComputerShellWorkingDirectory(): string {
+	return "/home/qorpera";
 }
 /** Image configuration a shell may read. Nothing here holds a secret; missing entries are skipped. */
 const SHELL_IMAGE_FILES = [
@@ -1015,7 +1018,7 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 					"/run/qorpera-company/company",
 					"/company",
 				);
-			args.push("--chdir", companyComputerShellWorkingDirectory(layout), "--remount-ro", "/");
+			args.push("--chdir", companyComputerShellWorkingDirectory(), "--remount-ro", "/");
 			lifetime.throwIfAborted();
 			launched = spawnCompanyComputerLinuxProcess({
 				args,
