@@ -3,23 +3,30 @@ import {
 	type CloudMemberFolderBy,
 	type CloudMemberFolderChangeSet,
 	type CloudMemberFolderClient,
+	type CloudMemberFolderCommit,
 	type CloudMemberFolderEntry,
 	type CloudMemberFolderFeedPosition,
 	type CloudMemberFolderFile,
+	type CloudMemberFolderUnit,
 	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
+import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { button, fmtBytes, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
- * the file browser Jonas approved for #386, read only until member writes (P31). A breadcrumb, one list of folders
- * and files, and a preview beside it with the file's history; the company's recent changes on the clock button. The
- * folder's hint (P30) nudges a sync from the feed, and a slow poll backs it up. */
+ * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
+ * with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
+ * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
+ * poll backs it up. */
 
-type Client = Pick<CloudMemberFolderClient, "list" | "read" | "readFile" | "pathHistory" | "history" | "changes">;
+type Client = Pick<
+	CloudMemberFolderClient,
+	"list" | "read" | "readFile" | "pathHistory" | "history" | "changes" | "commit"
+>;
 
 /** What the page needs from the product: the folder, its hint, and the company's lifetime. */
 export interface CompanyFolderSource {
@@ -36,10 +43,14 @@ export interface CompanyFolderPeople {
 	readonly staff: readonly { readonly id: string; readonly displayName: string }[];
 }
 
-/** An open file: its text or a picture's object URL when it has a preview, at the latest version or an older one. */
+/** An open file, with its text or a picture's object URL when it has a preview, or an open link, which shows its target
+ * and is never followed; at the latest version or an older one. */
 interface Opened {
 	readonly path: string;
-	readonly file: CloudMemberFolderFile;
+	/** A file's content; null for a link. */
+	readonly file: CloudMemberFolderFile | null;
+	/** A link's target; null for a file. */
+	readonly target: string | null;
 	/** Set when an older version is shown instead of the latest. */
 	readonly version?: CloudMemberFolderVersion;
 	text?: string;
@@ -100,6 +111,8 @@ export class CompanyFolderBrowser {
 	readonly #when: Intl.DateTimeFormat;
 	readonly #root = h("div", { class: "files-root" });
 	readonly #status = h("div", { class: "files-status", role: "status" });
+	/** The restores whose answer was lost, each with its Try again; no other message or sync clears them. */
+	readonly #retries = h("div", { class: "files-retries", role: "status" });
 	readonly #crumbs = h("nav", { class: "files-crumbs", "aria-label": t("Folder path") });
 	readonly #list = h("ul", { class: "files-list", "aria-label": t("Files") });
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
@@ -123,6 +136,8 @@ export class CompanyFolderBrowser {
 	/** Where the feed is followed from: everything up to it is on screen. */
 	#position: CloudMemberFolderFeedPosition | null = null;
 	#opened: Opened | null = null;
+	/** A restore whose answer was lost, by path, until it or another restore there has an answer. */
+	readonly #lost = new Map<string, { key: string; unit: CloudMemberFolderUnit; version: string }>();
 	#busy = false;
 	#disposed = false;
 
@@ -169,6 +184,7 @@ export class CompanyFolderBrowser {
 				),
 			),
 			this.#status,
+			this.#retries,
 			this.#root,
 		);
 		host.addEventListener(
@@ -332,7 +348,7 @@ export class CompanyFolderBrowser {
 		const items = this.#sorted();
 		this.#list.classList.toggle("is-fresh", fresh);
 		const rows = items.map((item, index) => {
-			const row = item.target === null ? this.#entryRow(item) : this.#linkRow(item.path, item.target);
+			const row = this.#entryRow(item);
 			row.style.setProperty("--row", String(Math.min(index, 14)));
 			return row;
 		});
@@ -350,12 +366,16 @@ export class CompanyFolderBrowser {
 		this.#more.hidden = this.#next === null;
 	}
 
-	/** A folder's row opens it in the list; a file's opens it in the preview. */
+	/** A folder's row opens it in the list; a file's or a link's opens it in the preview. A link names its target and
+	 * is never followed: its row shows where it points. */
 	#entryRow(item: CloudMemberFolderEntry): HTMLElement {
 		const folder = item.kind === "folder";
+		const kind = folder ? "folder" : item.target !== null ? "link" : "file";
 		return h(
 			"li",
-			{ class: `files-row${this.#opened?.path === item.path ? " is-open" : ""}` },
+			{
+				class: `files-row${item.target !== null ? " is-link" : ""}${this.#opened?.path === item.path ? " is-open" : ""}`,
+			},
 			h(
 				"button",
 				{
@@ -364,24 +384,15 @@ export class CompanyFolderBrowser {
 					"data-path": item.path,
 					onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
 				},
-				h("span", { class: `files-kind ${folder ? "is-folder" : "is-file"}` }, icon(folder ? "folder" : "file")),
+				h("span", { class: `files-kind is-${kind}` }, icon(kind)),
 				h("span", { class: "files-name" }, baseName(item.path)),
-				h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : ""),
-			),
-		);
-	}
-
-	/** A link names its target and is never followed: its row shows where it points and opens nothing. */
-	#linkRow(path: string, target: string): HTMLElement {
-		return h(
-			"li",
-			{ class: "files-row is-link" },
-			h(
-				"div",
-				{ class: "files-row-main", "data-path": path },
-				h("span", { class: "files-kind is-link" }, icon("link")),
-				h("span", { class: "files-name" }, baseName(path)),
-				h("span", { class: "files-target", title: t("Link to {target}", { target }) }, `→ ${target}`),
+				item.target !== null
+					? h(
+							"span",
+							{ class: "files-target", title: t("Link to {target}", { target: item.target }) },
+							`→ ${item.target}`,
+						)
+					: h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : ""),
 			),
 		);
 	}
@@ -467,36 +478,42 @@ export class CompanyFolderBrowser {
 		await this.#load(dir);
 	}
 
-	/** The open file at its latest version, when it changed; an earlier version on screen stays. */
+	/** The open file or link at its latest version, when it changed; an earlier version on screen stays. */
 	async #refreshOpened(): Promise<void> {
 		const opened = this.#opened;
 		if (!opened || opened.version) return;
 		const read = await this.#client!.read(opened.path, this.#signal());
 		this.#live();
-		if (!read.entry?.file) {
+		const entry = read.entry;
+		if (!entry || (!entry.file && entry.target === null)) {
 			this.#close();
 			this.#say(t("{name} is no longer in this folder.", { name: baseName(opened.path) }));
 			return;
 		}
-		if (read.entry.file.fileSha256 !== opened.file.fileSha256 || read.entry.file.bytes !== opened.file.bytes)
-			await this.#open(read.entry, true);
+		if (
+			entry.target !== opened.target ||
+			entry.file?.fileSha256 !== opened.file?.fileSha256 ||
+			entry.file?.bytes !== opened.file?.bytes
+		)
+			await this.#open(entry, true);
 	}
 
 	// ---- the preview ------------------------------------------------------------
 
 	async #open(entry: CloudMemberFolderEntry, refresh = false): Promise<void> {
-		if (!entry.file) return;
+		if (!entry.file && entry.target === null) return;
 		if (!refresh && this.#opened?.path === entry.path && !this.#opened.version) return;
-		await this.#show({ path: entry.path, file: entry.file });
+		await this.#show({ path: entry.path, file: entry.file, target: entry.target });
 	}
 
-	/** Reads what has a preview, and draws the preview. */
+	/** Reads what has a preview, and draws the preview. A link's is its target: nothing is read. */
 	async #show(opened: Opened): Promise<void> {
 		const type = IMAGE_TYPES[extension(opened.path)];
 		if (
-			type
+			opened.file &&
+			(type
 				? opened.file.bytes <= MAX_PREVIEW_IMAGE_BYTES
-				: opened.file.bytes <= MAX_PREVIEW_TEXT_BYTES && !BINARY.has(extension(opened.path))
+				: opened.file.bytes <= MAX_PREVIEW_TEXT_BYTES && !BINARY.has(extension(opened.path)))
 		) {
 			const bytes = await this.#client!.readFile(opened.file, this.#signal());
 			this.#live();
@@ -559,33 +576,44 @@ export class CompanyFolderBrowser {
 				"is-open",
 				row.querySelector<HTMLElement>(".files-row-main")?.dataset.path === opened.path,
 			);
+		const file = opened.file;
 		let body: HTMLElement;
 		if (opened.image) body = h("img", { class: "files-image", src: opened.image, alt: name });
 		else if (opened.text !== undefined)
 			body = MARKDOWN.has(extension(opened.path))
 				? h("div", { class: "files-doc" }, markdown(opened.text))
 				: h("pre", { class: "files-text" }, opened.text);
+		else if (!file)
+			body = h(
+				"div",
+				{ class: "files-blank" },
+				icon("link"),
+				h("span", { class: "files-link-target" }, t("Link to {target}", { target: opened.target ?? "" })),
+			);
 		else
 			body = h(
 				"div",
 				{ class: "files-blank" },
 				icon("file"),
 				h("span", null, t("There's no preview for this file.")),
-				h("small", null, fmtBytes(opened.file.bytes)),
+				h("small", null, fmtBytes(file.bytes)),
 			);
 		const actions: HTMLElement[] = [
-			opened.file.bytes <= MAX_DOWNLOAD_BYTES
-				? button(
-						[icon("download"), t("Download")],
-						() => void this.#run(() => this.#download(opened.path, opened.file)),
-					)
-				: h(
-						"span",
-						{ class: "files-note" },
-						t("{size}: too large to download here.", { size: fmtBytes(opened.file.bytes) }),
-					),
 			button([icon("clock"), t("History")], () => void this.#run(() => this.#showHistory(opened.path))),
 		];
+		if (file)
+			actions.unshift(
+				file.bytes <= MAX_DOWNLOAD_BYTES
+					? button(
+							[icon("download"), t("Download")],
+							() => void this.#run(() => this.#download(opened.path, file)),
+						)
+					: h(
+							"span",
+							{ class: "files-note" },
+							t("{size}: too large to download here.", { size: fmtBytes(file.bytes) }),
+						),
+			);
 		if (opened.version) {
 			const path = opened.path;
 			actions.unshift(
@@ -609,12 +637,13 @@ export class CompanyFolderBrowser {
 	async #reopen(path: string): Promise<void> {
 		const read = await this.#client!.read(path, this.#signal());
 		this.#live();
-		if (!read.entry?.file) {
+		const entry = read.entry;
+		if (!entry || (!entry.file && entry.target === null)) {
 			this.#close();
 			this.#say(t("{name} is no longer in this folder.", { name: baseName(path) }));
 			return;
 		}
-		await this.#show({ path, file: read.entry.file });
+		await this.#show({ path, file: entry.file, target: entry.target });
 	}
 
 	async #download(path: string, file: CloudMemberFolderFile): Promise<void> {
@@ -652,7 +681,8 @@ export class CompanyFolderBrowser {
 		}
 	}
 
-	/** A file's versions, newest first, each with who and when; an older one opens in place of the latest. */
+	/** A path's versions, newest first, each with who and when; an older one opens in place of the latest, and any but
+	 * the one there now is restored. A file's and a link's versions on one path list together. */
 	async #showHistory(
 		path: string,
 		before: string | null = null,
@@ -661,8 +691,12 @@ export class CompanyFolderBrowser {
 		const page = await this.#client!.pathHistory(path, before, HISTORY_PAGE, this.#signal());
 		this.#live();
 		const versions = [...shown, ...page.items];
-		const rows = versions.map((version) =>
-			h(
+		// The newest version is what the path holds now, unless it was deleted or moved away.
+		const latest = versions[0];
+		const current = latest && ["write", "copy", "move_in"].includes(latest.op) ? latest.version : null;
+		const rows = versions.map((version) => {
+			const held = version.file !== null || version.target !== null;
+			return h(
 				"li",
 				{ class: "folder-history-row" },
 				h(
@@ -671,9 +705,10 @@ export class CompanyFolderBrowser {
 					h("span", null, this.#what(version)),
 					h("small", null, `${this.#who(version.by)} · ${this.#when.format(new Date(version.at))}`),
 				),
-				version.file ? this.#viewButton(path, version, version.file) : null,
-			),
-		);
+				held ? this.#viewButton(path, version) : null,
+				held && version.version !== current ? this.#restoreButton(path, version) : null,
+			);
+		});
 		const title = t("History of {name}", { name: baseName(path) });
 		this.#panel(
 			title,
@@ -689,15 +724,94 @@ export class CompanyFolderBrowser {
 	}
 
 	/** Opens an earlier version in place of the latest; its name says which. */
-	#viewButton(path: string, version: CloudMemberFolderVersion, file: CloudMemberFolderFile): HTMLButtonElement {
-		const control = button(t("View"), () => void this.#run(() => this.#show({ path, file, version })), {
-			small: true,
-		});
+	#viewButton(path: string, version: CloudMemberFolderVersion): HTMLButtonElement {
+		const control = button(
+			t("View"),
+			() => void this.#run(() => this.#show({ path, file: version.file, target: version.target, version })),
+			{ small: true },
+		);
 		control.setAttribute(
 			"aria-label",
 			t("View the version from {when}", { when: this.#when.format(new Date(version.at)) }),
 		);
 		return control;
+	}
+
+	#restoreButton(path: string, version: CloudMemberFolderVersion): HTMLButtonElement {
+		const control = button(t("Restore"), () => void this.#run(() => this.#restore(path, version)), { small: true });
+		control.setAttribute(
+			"aria-label",
+			t("Restore the version from {when}", { when: this.#when.format(new Date(version.at)) }),
+		);
+		return control;
+	}
+
+	/** Saves an earlier version as the path's latest, through the member commit route (RUNTIME-FOLDER-LINKS.md, LK6): a
+	 * file's as a write of its reference, a link's as a link to its target. It replaces what the path holds now at the
+	 * version just read, a file or a link; a folder there now is left alone. */
+	async #restore(path: string, version: CloudMemberFolderVersion): Promise<void> {
+		// This version's restore whose answer was lost is sent again as it was, not as a new change set.
+		const lost = this.#lost.get(path);
+		if (lost?.version === version.version) {
+			await this.#commitRestore(path, lost.key, lost.unit, lost.version);
+			return;
+		}
+		const read = await this.#client!.read(path, this.#signal());
+		this.#live();
+		const now = read.entry;
+		if (now?.kind === "folder") {
+			this.#say(t("{name} is a folder now, so this version can't be restored.", { name: baseName(path) }));
+			return;
+		}
+		const expected = now ? { expectedVersion: now.version } : {};
+		const unit: CloudMemberFolderUnit = version.file
+			? { op: "write", path, file: version.file, ...expected }
+			: { op: "symlink", path, target: version.target ?? "", ...expected };
+		await this.#commitRestore(path, `web:folder-restore:${crypto.randomUUID()}`, unit, version.version);
+	}
+
+	/** Sends a restore; when its answer is lost, trying again sends the same change set, which the core answers once. */
+	async #commitRestore(path: string, key: string, unit: CloudMemberFolderUnit, version: string): Promise<void> {
+		const name = baseName(path);
+		let answer: CloudMemberFolderCommit;
+		try {
+			answer = await this.#client!.commit(key, [unit], this.#signal());
+		} catch {
+			this.#live();
+			this.#lost.set(path, { key, unit, version });
+			this.#drawRetries();
+			return;
+		}
+		this.#live();
+		this.#lost.delete(path);
+		this.#drawRetries();
+		const result = answer.units[0];
+		if (result?.outcome === "saved") {
+			this.#say(t("Restored {name}.", { name }));
+			await this.#reopen(path);
+		} else if (result?.outcome === "conflict") {
+			this.#say(t("{name} changed in the meantime, so it was not restored.", { name }));
+			await this.#showHistory(path);
+		} else if (result?.outcome === "denied") this.#say(t("You may not change {name}.", { name }));
+		else
+			this.#say(
+				withProblems(
+					t("{name} could not be restored.", { name }),
+					(result?.problems ?? []).map((problem) => problem.message),
+				),
+			);
+	}
+
+	#drawRetries(): void {
+		replace(
+			this.#retries,
+			...[...this.#lost].flatMap(([path, { key, unit, version }]) => [
+				h("span", null, t("{name} could not be restored just now.", { name: baseName(path) })),
+				button(t("Try again"), () => void this.#run(() => this.#commitRestore(path, key, unit, version)), {
+					small: true,
+				}),
+			]),
+		);
 	}
 
 	/** The company's change sets, newest first, with the files in each this member may read. */
@@ -721,7 +835,7 @@ export class CompanyFolderBrowser {
 							h(
 								"li",
 								null,
-								item.kind === "file" && item.op !== "delete" && item.op !== "move_out"
+								item.kind !== "folder" && item.op !== "delete" && item.op !== "move_out"
 									? h(
 											"button",
 											{
@@ -750,15 +864,16 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	/** Opens a file's folder and the file, when it is still there. */
+	/** Opens a file's or a link's folder and the file or link, when it is still there. */
 	async #goTo(path: string): Promise<void> {
 		const read = await this.#client!.read(path, this.#signal());
 		this.#live();
-		if (!read.entry?.file) {
+		const entry = read.entry;
+		if (!entry || (!entry.file && entry.target === null)) {
 			this.#say(t("{name} is no longer in this folder.", { name: baseName(path) }));
 			return;
 		}
 		if (parentOf(path) !== this.#dir) await this.#load(parentOf(path));
-		await this.#show({ path, file: read.entry.file });
+		await this.#show({ path, file: entry.file, target: entry.target });
 	}
 }

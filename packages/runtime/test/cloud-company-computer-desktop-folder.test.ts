@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import {
 	CompanyComputerDesktopFolders,
 	checkCompanyComputerFolderParent,
-	closeCompanyComputerDesktopFolderView,
+	closeCompanyComputerFolderView,
 	openCompanyComputerDesktopFolderView,
 	openCompanyComputerFolderParent,
 } from "@qorpera/runtime/cloud-company-computer-desktop-folder";
@@ -225,7 +225,7 @@ describe("a desktop's folder view", () => {
 	it("closes a view with its pass and never fails the caller", async () => {
 		const f = http(refused("Folder view is invalid"));
 		await expect(
-			closeCompanyComputerDesktopFolderView(f.registry, {
+			closeCompanyComputerFolderView(f.registry, {
 				environmentId: binding.environmentId,
 				viewId: computerId(30),
 				pass: "a-pass",
@@ -599,7 +599,7 @@ describe("a drain's and a capture's boundary", () => {
 		]);
 	});
 
-	it("asks again past no answer, an invalid one, one too late and the run check, until a final answer", async () => {
+	it("asks again past no answer, an invalid one, one too late, the run check and a change kept, until a final answer", async () => {
 		const f = await mounted();
 		f.answer(
 			"unmount",
@@ -607,13 +607,26 @@ describe("a drain's and a capture's boundary", () => {
 			{ answer: "invalid" },
 			{ answer: "unanswered", unmounted: false },
 			{ ...refusal("run_ended"), unmounted: false },
+			// Refused with no reason while it keeps a path: the core did not answer the commit.
+			{
+				answer: "refused",
+				report: {
+					commitId: null,
+					seq: null,
+					paths: [
+						{ path: "docs/a.md", outcome: "conflict" },
+						{ path: "docs/b.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+					],
+				},
+				unmounted: false,
+			},
 			{ answer: "closed", unmounted: true },
 		);
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		const drained = drain(f);
-		await vi.advanceTimersByTimeAsync(5000);
+		await vi.advanceTimersByTimeAsync(6000);
 		await drained;
-		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount", "unmount", "unmount"]);
+		expect(f.ops()).toEqual(["mount", "unmount", "unmount", "unmount", "unmount", "unmount", "unmount"]);
 		expect(f.logged).toEqual([`office-folder: drain ${name}: {"answer":"closed","unmounted":true}`]);
 		expect(f.closed).toHaveLength(1);
 		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
@@ -638,6 +651,23 @@ describe("a drain's and a capture's boundary", () => {
 			expect(f.folders.mounted(binding.screenId)).toBeUndefined();
 		},
 	);
+
+	it("takes a boundary that settled every path it planned as final, though it did not save them all", async () => {
+		const f = await mounted();
+		f.answer("unmount", {
+			answer: "refused",
+			report: { ...report, paths: [{ path: "docs/a.md", outcome: "conflict" }] },
+			unmounted: false,
+		});
+		f.answer("drop", { answer: "dropped" });
+		await drain(f);
+		expect(f.ops()).toEqual(["mount", "unmount", "drop"]);
+		expect(f.logged).toEqual([
+			`office-folder: drain ${name}: {"answer":"refused","unmounted":false,"refused":null,"commitId":"commit-1","seq":7,"outcomes":{"conflict":1}}`,
+		]);
+		expect(f.closed).toHaveLength(1);
+		expect(f.folders.mounted(binding.screenId)).toBeUndefined();
+	});
 
 	it("takes a mount the helper no longer knows of as gone", async () => {
 		const f = await mounted();

@@ -8,9 +8,9 @@ import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
 	COMPANY_COMPUTER_FOLDER_ROOT,
-	type CompanyComputerFolderAnswer,
 	type CompanyComputerFolderRequest,
 	type CompanyComputerFolderView,
+	companyComputerFolderAnswerLogged,
 	companyComputerFolderName,
 	companyComputerFolderPaths,
 	isCompanyComputerFolderView,
@@ -65,21 +65,40 @@ const CAPTURE_REFUSED = "the company folder refused the screen's view";
 export const COMPANY_COMPUTER_CAPTURE_RESTARTED =
 	"the company folder was restarted on this screen; take the screenshot again";
 
-/**
- * Open a desktop's view for whoever now holds its screen (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines").
- * A core that does not answer is asked again until `until` (performance.now()); then the folder is unavailable. A
- * refusal is final, with the core's reason when it is one the registry passes on. The pass is never logged.
- */
-export async function openCompanyComputerDesktopFolderView(
+/** Open a desktop's view for whoever now holds its screen, as `openCompanyComputerFolderView` opens one. */
+export function openCompanyComputerDesktopFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	request: { environmentId: string; screenId: string; holder: CompanyComputerScreenHolder },
 	signal: AbortSignal,
 	until: number,
 ): Promise<CompanyComputerFolderView | CompanyComputerFolderRefusal> {
-	const anchor =
+	const anchor: Readonly<Record<string, string>> =
 		request.holder.kind === "run"
 			? { screenId: request.screenId, holderRunId: request.holder.runId }
 			: { screenId: request.screenId, holderUserId: request.holder.userId };
+	return openCompanyComputerFolderView(
+		registry,
+		{ environmentId: request.environmentId, kind: "computer_desktop", anchor },
+		signal,
+		until,
+	);
+}
+
+/**
+ * Open a desktop's or a shell command's view (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines"). A core that
+ * does not answer is asked again until `until` (performance.now()); then the folder is unavailable. A refusal is
+ * final, with the core's reason when it is one the registry passes on. The pass is never logged.
+ */
+export async function openCompanyComputerFolderView(
+	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
+	request: {
+		environmentId: string;
+		kind: "computer_desktop" | "computer_shell_command";
+		anchor: Readonly<Record<string, string>>;
+	},
+	signal: AbortSignal,
+	until: number,
+): Promise<CompanyComputerFolderView | CompanyComputerFolderRefusal> {
 	for (;;) {
 		signal.throwIfAborted();
 		const remaining = Math.floor(until - performance.now());
@@ -91,8 +110,8 @@ export async function openCompanyComputerDesktopFolderView(
 				{
 					p_environment_id: request.environmentId,
 					p_opener: { kind: "platform" },
-					p_kind: "computer_desktop",
-					p_anchor: anchor,
+					p_kind: request.kind,
+					p_anchor: request.anchor,
 				},
 				AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
 			);
@@ -116,9 +135,9 @@ export async function openCompanyComputerDesktopFolderView(
 	}
 }
 
-/** Close a desktop's view the office no longer mounts. Best effort: an open view also ends with its lease, or at
+/** Close a view the office no longer mounts. Best effort: an open view also ends with its lease, and a desktop's at
  * the screen's next open. */
-export async function closeCompanyComputerDesktopFolderView(
+export async function closeCompanyComputerFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	view: CompanyComputerFolderView,
 ): Promise<void> {
@@ -348,7 +367,7 @@ export class CompanyComputerDesktopFolders {
 			if (answer !== "held") break;
 			mounted = true;
 		}
-		await closeCompanyComputerDesktopFolderView(this.#registry, view);
+		await closeCompanyComputerFolderView(this.#registry, view);
 		return UNAVAILABLE;
 	}
 
@@ -363,7 +382,7 @@ export class CompanyComputerDesktopFolders {
 		if (answer?.answer !== "unknown" && !(answer && "unmounted" in answer && answer.unmounted)) return false;
 		const view = folder.view;
 		Object.assign(folder, { mounted: false, view: undefined, holder: undefined });
-		if (view) await closeCompanyComputerDesktopFolderView(this.#registry, view);
+		if (view) await closeCompanyComputerFolderView(this.#registry, view);
 		return true;
 	}
 
@@ -399,7 +418,7 @@ export class CompanyComputerDesktopFolders {
 			else if (folder.view) {
 				const view = folder.view;
 				Object.assign(folder, { view: undefined, holder: undefined });
-				await closeCompanyComputerDesktopFolderView(this.#registry, view);
+				await closeCompanyComputerFolderView(this.#registry, view);
 			}
 		}).catch(() => undefined);
 	}
@@ -419,8 +438,9 @@ export class CompanyComputerDesktopFolders {
 	/**
 	 * A drain's boundary on the screen's mount, after its desktop stopped and before the drain's acknowledgement
 	 * ("Drains and stops"): the mount's last changes are published, then it goes and its view closes. A boundary with no
-	 * answer, or refused in a way a retry gets past (QRC01, the run check), is asked again until `until`
-	 * (performance.now()); then the drain fails, and the mount stays for the stop control. Every other answer is final,
+	 * answer, refused in a way a retry gets past (QRC01, the run check), or refused with no reason while it keeps a path
+	 * (the core did not answer the commit, or a path still waits) is asked again until `until` (performance.now()); then
+	 * the drain fails, and the mount stays for the stop control. Every other answer is final,
 	 * the pause's included: a mount still there after it goes without another boundary, and none of its refused changes
 	 * carry into the next holder's view. The answer is logged with the drain. `still` is asked when the request's turn
 	 * comes: a desktop started meanwhile keeps the mount.
@@ -461,13 +481,17 @@ export class CompanyComputerDesktopFolders {
 					!answer ||
 					answer.answer === "invalid" ||
 					answer.answer === "unanswered" ||
-					(answer.answer === "refused" && answer.report.refused === "run_ended")
+					(answer.answer === "refused" &&
+						(answer.report.refused === "run_ended" ||
+							(answer.report.refused === undefined && answer.report.paths.some((entry) => entry.kept))))
 				) {
 					await pause(Math.min(BOUNDARY_RETRY_MS, until - performance.now()), signal);
 					continue;
 				}
 				answered = true;
-				this.#log(`office-folder: drain ${folder.name}: ${JSON.stringify(drainLogged(answer))}`);
+				this.#log(
+					`office-folder: drain ${folder.name}: ${JSON.stringify(companyComputerFolderAnswerLogged(answer))}`,
+				);
 				if (answer.answer === "unknown" || answer.unmounted) {
 					folder.mounted = false;
 					break;
@@ -566,7 +590,7 @@ export class CompanyComputerDesktopFolders {
 	async #gone(folder: Folder): Promise<void> {
 		const view = folder.view;
 		Object.assign(folder, { mounted: false, view: undefined, holder: undefined, refused: undefined });
-		if (view) await closeCompanyComputerDesktopFolderView(this.#registry, view);
+		if (view) await closeCompanyComputerFolderView(this.#registry, view);
 	}
 
 	/**
@@ -589,30 +613,6 @@ export class CompanyComputerDesktopFolders {
 function sameHolder(a: CompanyComputerScreenHolder | undefined, b: CompanyComputerScreenHolder): boolean {
 	if (a?.kind === "run") return b.kind === "run" && a.runId === b.runId;
 	return a?.kind === "member" && b.kind === "member" && a.userId === b.userId;
-}
-
-/** A drain's answer as the office logs it ("The report"): the commit and how many paths had each outcome. No path
- * and no reason, which are the company's; the helper's words pass only when they are plain names. */
-function drainLogged(answer: CompanyComputerFolderAnswer<"unmount">): Record<string, unknown> {
-	const report = "report" in answer ? answer.report : undefined;
-	const outcomes = new Map<string, number>();
-	for (const { outcome } of report?.paths ?? []) outcomes.set(word(outcome), (outcomes.get(word(outcome)) ?? 0) + 1);
-	return {
-		answer: answer.answer,
-		...("unmounted" in answer ? { unmounted: answer.unmounted } : {}),
-		...(report
-			? {
-					refused: report.refused === undefined ? null : word(report.refused),
-					commitId: report.commitId === null || /^[\w-]{1,64}$/.test(report.commitId) ? report.commitId : "other",
-					seq: report.seq,
-					outcomes: Object.fromEntries(outcomes),
-				}
-			: {}),
-	};
-}
-
-function word(value: string): string {
-	return /^[a-z_]{1,32}$/.test(value) ? value : "other";
 }
 
 /** The work's answer, or `late` once `until` (performance.now()) passes; the work goes on either way. */
@@ -662,3 +662,5 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 		signal.addEventListener("abort", abort, { once: true });
 	});
 }
+
+export { within as companyComputerFolderWithin };

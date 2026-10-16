@@ -7,6 +7,7 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "../../pa
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
+import { type CodeHostPolicy, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
@@ -51,9 +52,15 @@ interface Config {
 	 * ever true: each boot gets a company folder view through the node's folder
 	 * service, whose control socket fences its commands' windows and output. */
 	machines: { policy: CompanyMachinePolicy; helperSha256: string; previousHelperSha256s: string[]; folder: boolean } | null;
+	/** The companies' code hosts on this node (F3 step 5e): the same block as
+	 * the node inventory policy's `codeHosts`, so the node's observer accepts
+	 * exactly the VMs this executor makes. Absent: this executor never makes a
+	 * code host project or VM. */
+	codeHost: Readonly<CodeHostPolicy> | null;
 }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "machines"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -84,8 +91,8 @@ function broker(value: unknown): Config["broker"] {
 export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
 	const keys = Object.keys(config).sort().join();
-	const optional = keys.split(",").filter((key) => key === "broker" || key === "machines");
-	if (keys.split(",").filter((key) => key !== "broker" && key !== "machines").join() !== CONFIG_KEYS ||
+	const optional = keys.split(",").filter((key) => OPTIONAL_CONFIG_KEYS.has(key));
+	if (keys.split(",").filter((key) => !OPTIONAL_CONFIG_KEYS.has(key)).join() !== CONFIG_KEYS ||
 		new Set(optional).size !== optional.length ||
 		config.schema !== "qorpera.coding-executor-service/v7" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
@@ -145,10 +152,18 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		if (policy.providerId !== vmPolicy.providerId) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 		machines = { policy, helperSha256: entry.helperSha256, previousHelperSha256s: previous as string[], folder: entry.folder === true };
 	}
+	let codeHost: Config["codeHost"] = null;
+	if (config.codeHost !== undefined) {
+		try {
+			codeHost = parseCodeHostPolicy(config.codeHost);
+		} catch {
+			throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+		}
+	}
 	return {
 		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
-		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines,
+		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines, codeHost,
 	};
 }
 
@@ -206,6 +221,13 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
+	}) : undefined;
+	const codeHosts = config.codeHost ? new LxdCodeHosts({
+		client: new LxdUnixClient(), policy: config.codeHost,
+		log: (event) => event.event === "code-host-error"
+			? console.error(JSON.stringify({ event: event.event, step: event.step, project: event.project,
+				...(event.error === undefined ? {} : { code: errorCode(event.error) }) }))
+			: console.log(JSON.stringify(event)),
 	}) : undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
@@ -341,13 +363,26 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(10_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines]);
+		// Code hosts: once at start, every one an earlier executor left started
+		// stops, and one made under another policy goes; each starts again on its
+		// company's next job.
+		const hosting = (async () => {
+			if (!codeHosts) return;
+			try {
+				console.log(JSON.stringify({ event: "code-host", step: "housekept", stopped: await codeHosts.housekeep(stop.signal) }));
+			} catch (error) {
+				if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-host-error", step: "housekeep", code: errorCode(error) }));
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting]);
 	} finally {
 		stop.abort();
 		await executor?.drain();
 		// A take-off the keeper started settles before the process ends.
 		for (const outcome of await host.settled())
 			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
+		// Each code host stops once its jobs end.
+		await codeHosts?.close();
 		await commands.close();
 		await peerCommands.close();
 		process.off("SIGTERM", shutdown);

@@ -35,7 +35,7 @@ do $$
 declare
 	v_a text := current_setting('qorpera_test.rpc_profile_a');
 	v_env text := current_setting('qorpera_test.rpc_environment_a');
-	v_expected integer := 13;
+	v_expected integer := 12;
 	v_case record;
 	v_sql text;
 	v_retset boolean;
@@ -72,10 +72,9 @@ begin
 			('qorpera_profile_object_writes_allowed(uuid)', format('public.qorpera_profile_object_writes_allowed(%L)', v_a)),
 			-- environment-keyed reads
 			('qorpera_get_company_file(uuid)', format('public.qorpera_get_company_file(%L)', v_env)),
-			('qorpera_list_shared_sessions(uuid)', format('public.qorpera_list_shared_sessions(%L)', v_env)),
+			('qorpera_list_shared_sessions_page(uuid, timestamp with time zone, uuid, integer)', format('public.qorpera_list_shared_sessions_page(%L, null, null, 100)', v_env)),
 			-- writes
-			('qorpera_invite_profile_member(uuid, text, public.qorpera_profile_role)', format('public.qorpera_invite_profile_member(%L, %L, ''contributor'')', v_a, 'cross-account@example.test')),
-			('qorpera_create_shared_session(uuid, text, text, uuid)', format('public.qorpera_create_shared_session(%L, ''Hijack'', null, null)', v_env))
+			('qorpera_invite_profile_member(uuid, text, public.qorpera_profile_role)', format('public.qorpera_invite_profile_member(%L, %L, ''contributor'')', v_a, 'cross-account@example.test'))
 		) as t(sig, call)
 	loop
 		v_oid := to_regprocedure(v_case.sig);

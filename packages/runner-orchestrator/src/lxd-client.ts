@@ -151,6 +151,23 @@ export interface LxdClient {
 	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
 }
 
+export interface LxdProjectRecord {
+	name: string;
+	config: Readonly<Record<string, string>>;
+	/** LXD's `used_by`: the URL of everything in the project. */
+	usedBy: readonly string[];
+}
+
+/** A node's code hosts (code-host.ts): the coding executor makes each company's project itself, on first use. */
+export interface LxdCodeHostClient
+	extends Pick<LxdClient, "getInstance" | "createInstance" | "setInstancePower" | "execInstance" | "deleteInstance"> {
+	getProject(name: string, signal?: AbortSignal): Promise<LxdProjectRecord | undefined>;
+	createProject(name: string, config: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<void>;
+	/** True when it existed. LXD refuses a project that holds anything but its default profile. */
+	deleteProject(name: string, signal?: AbortSignal): Promise<boolean>;
+	listProjectNames(signal?: AbortSignal): Promise<string[]>;
+}
+
 export interface LxdInstanceFile {
 	content: Buffer;
 	uid: number;
@@ -689,7 +706,7 @@ function officeCodePackageMaximum(file: string, write: boolean): number {
 	if (file === "original-preparation.json") return COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
 	if (file === "trust.json") return 4096;
 	if (["base-manifest.json", "target-manifest.json", "base-installation.json"].includes(file)) return 1024 ** 2;
-	if (file === "base-mount-template") return 65536;
+	if (["base-mount-template", "base-folder-mount-template"].includes(file)) return 65536;
 	if (["bootstrap.cjs", "measure.cjs"].includes(file)) return 16 * 1024 ** 2;
 	if (COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.some((name) => file === `artifacts/${name}`)) return 32 * 1024 ** 2;
 	if (new RegExp(`^challenge-${CODE_PACKAGE_UUID}\\.json$`).test(file)) return 65536;
@@ -1207,6 +1224,16 @@ function instance(value: unknown): LxdInstanceRecord {
 	};
 }
 
+function projectRecord(value: unknown): LxdProjectRecord {
+	const input = record(value, "LXD project");
+	if (typeof input.name !== "string") throw new Error("LXD project is invalid");
+	return {
+		name: input.name,
+		config: stringRecord(input.config, "LXD project config"),
+		usedBy: strings(input.used_by ?? [], "LXD project used by"),
+	};
+}
+
 function instanceState(value: unknown): LxdInstanceStateRecord {
 	const input = record(value, "LXD instance state");
 	if (typeof input.status !== "string" || typeof input.status_code !== "number") {
@@ -1415,6 +1442,7 @@ async function pipeInput(
 
 export class LxdUnixClient
 	implements
+		LxdCodeHostClient,
 		LxdInstanceExecStreamClient,
 		LxdInstanceExecPipeClient,
 		LxdInstanceDeviceClient,
@@ -3263,6 +3291,47 @@ export class LxdUnixClient
 			signal,
 		);
 		await this.#waitForOperation(result, signal);
+	}
+
+	async getProject(name: string, signal?: AbortSignal): Promise<LxdProjectRecord | undefined> {
+		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
+		const result = await this.#request("GET", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
+		if (result.status === 404) return undefined;
+		return projectRecord(envelopeMetadata(result));
+	}
+
+	async createProject(name: string, config: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<void> {
+		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
+		const result = await this.#request(
+			"POST",
+			"/1.0/projects",
+			{ name, description: "", config: { ...config } },
+			signal,
+		);
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's create answers synchronously, with null metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
+	}
+
+	async deleteProject(name: string, signal?: AbortSignal): Promise<boolean> {
+		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
+		const result = await this.#request("DELETE", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
+		if (result.status === 404) return false;
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's delete answers synchronously, with or without metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
+		return true;
+	}
+
+	async listProjectNames(signal?: AbortSignal): Promise<string[]> {
+		const result = await this.#request("GET", "/1.0/projects", undefined, signal);
+		return strings(envelopeMetadata(result), "LXD projects").map((url) => {
+			if (!url.startsWith("/1.0/projects/") || url.slice(14).includes("/"))
+				throw new Error("LXD projects is invalid");
+			return decodeURIComponent(url.slice(14));
+		});
 	}
 
 	async execInstance(project: string, name: string, command: readonly string[], signal?: AbortSignal): Promise<void> {

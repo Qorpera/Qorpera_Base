@@ -119,6 +119,29 @@ describe("coding executor service configuration", () => {
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
 	});
+	it("makes code hosts only with the node inventory policy's code host block", () => {
+		const codeHost = {
+			imageFingerprint: "e".repeat(64),
+			storagePool: "qorpera-vm",
+			cpus: 2,
+			memoryBytes: 4 * 1024 ** 3,
+			rootDiskBytes: 20 * 1024 ** 3,
+			running: 2,
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).codeHost).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), codeHost }).codeHost).toEqual(codeHost);
+		for (const bad of [
+			null,
+			{},
+			{ ...codeHost, extra: true },
+			{ ...codeHost, imageFingerprint: "x" },
+			{ ...codeHost, memoryBytes: 4 * 1024 ** 3 + 1 },
+			{ ...codeHost, running: 0 },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), codeHost: bad })).toThrow(
+				"CODING_EXECUTOR_CONFIG_INVALID",
+			);
+	});
 	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
 		const config = fixture();
 		for (const origin of [

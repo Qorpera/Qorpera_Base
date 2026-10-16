@@ -1,4 +1,12 @@
+import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
+import {
+	COMPANY_COMPUTER_COMMAND_OTHER_RUN,
+	type CompanyComputerCommandFolderEvent,
+	type CompanyComputerCommandFolderStatus,
+	type CompanyComputerCommandFolders,
+	type CompanyComputerCommandRelease,
+} from "@qorpera/runtime/cloud-company-computer-command-folder";
 import { CompanyComputerActionFailedError } from "@qorpera/runtime/cloud-company-computer-leases";
 import {
 	COMPANY_COMPUTER_SHELL_KEPT_OUTPUT,
@@ -692,5 +700,269 @@ describe("the machine's memory and task safety", () => {
 		expect(await guard.check()).toBe(many.shell);
 		guard.close();
 		expect((await many.shell.result({ sessionId, waitMs: 0, signal })).note).toMatch(/running out of processes/);
+	});
+});
+
+/** The company folder's side of one command, as the shell drives it; the real one has its own tests. */
+class StandInFolder {
+	status: CompanyComputerCommandFolderStatus = "idle";
+	event: (event: CompanyComputerCommandFolderEvent) => void = () => undefined;
+	signal?: AbortSignal;
+	/** What its start answers, once a test settles it. */
+	answer: (answer: { ran: true } | { note: string }) => void = () => undefined;
+	/** What each boundary answers in turn; then `released`. */
+	answers: CompanyComputerCommandRelease[] = [];
+	readonly start = vi.fn(
+		(
+			_input: { environmentId: string; shellPid: number; network: boolean; command: string; still: () => boolean },
+			event: (event: CompanyComputerCommandFolderEvent) => void,
+			signal: AbortSignal,
+		) => {
+			this.event = event;
+			this.signal = signal;
+			return new Promise<{ ran: true } | { note: string }>((resolve) => {
+				this.answer = (answer) => {
+					this.status = "ran" in answer ? "running" : "none";
+					resolve(answer);
+				};
+			});
+		},
+	);
+	readonly stop = vi.fn(() => this.status === "running");
+	readonly write = vi.fn((_data: Uint8Array, _end: boolean) => this.status === "running");
+	readonly release = vi.fn(
+		async (_signal: AbortSignal, _until: number): Promise<CompanyComputerCommandRelease> =>
+			this.answers.shift() ?? { released: true },
+	);
+	out(text: string): void {
+		this.event({ t: "out", data: Buffer.from(text).toString("base64") });
+	}
+}
+
+const FOLDER_ENVIRONMENT = "00000000-0000-4000-8000-0000000000e1";
+const OTHER_RUN = "00000000-0000-4000-8000-0000000000c2";
+
+/** A shell with the company folder: every command runs through its own stand-in folder, never the shell host. */
+function folderFixture(options: { init?: number | null } = {}) {
+	const folders: StandInFolder[] = [];
+	const commands = {
+		command: (receipt: string) => {
+			const folder = new StandInFolder();
+			folders.push(folder);
+			expect(receipt).toMatch(/^key-/);
+			return folder;
+		},
+	} as unknown as CompanyComputerCommandFolders;
+	const sent: unknown[] = [];
+	let exit: () => void = () => undefined;
+	const exited = new Promise<void>((resolve) => {
+		exit = resolve;
+	});
+	const shell = new CompanyComputerLinuxShell(
+		async () => ({
+			send: (request) => void sent.push(request),
+			exited,
+			stop: async () => exit(),
+			pid: 801,
+			...(options.init === null ? {} : { init: options.init ?? 802 }),
+		}),
+		{ folders: commands, environmentId: FOLDER_ENVIRONMENT },
+	);
+	shells.push(shell);
+	const signal = new AbortController().signal;
+	let keys = 0;
+	const start = async (command: string, network = false) => {
+		const { sessionId } = await shell.start({ runId: SHELL_RUN, key: `key-${keys++}`, command, network, signal });
+		await vi.waitFor(() => expect(folders[keys - 1]?.start).toHaveBeenCalled());
+		return { sessionId, folder: folders[keys - 1] };
+	};
+	/** `null`: a read with no run. */
+	const read = (sessionId: string, runId: string | null = SHELL_RUN, waitMs = 0) =>
+		shell.result({
+			sessionId,
+			waitMs,
+			...(runId === null ? {} : { runId }),
+			until: performance.now() + 30000,
+			signal,
+		});
+	return { shell, folders, sent, signal, start, read };
+}
+
+describe("a shell command in the company folder", () => {
+	it("runs through its own folder in the shell's namespace, and shows its output once the folder released it", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("npm test");
+		expect(folder.start).toHaveBeenCalledWith(
+			{
+				environmentId: FOLDER_ENVIRONMENT,
+				shellPid: 802,
+				network: false,
+				command: "npm test",
+				still: expect.any(Function),
+			},
+			expect.any(Function),
+			expect.any(AbortSignal),
+		);
+		folder.answer({ ran: true });
+		folder.out("hello\n");
+		const until = performance.now() + 30000;
+		expect(await f.shell.result({ sessionId, waitMs: 0, runId: SHELL_RUN, until, signal: f.signal })).toEqual({
+			sessionId,
+			state: "running",
+			output: "hello\n",
+		});
+		// The boundary has until two seconds before the reply is due.
+		expect(folder.release).toHaveBeenCalledWith(f.signal, until - 2000);
+		// Nothing new since: no boundary is asked.
+		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "" });
+		expect(folder.release).toHaveBeenCalledTimes(1);
+		folder.out("done\n");
+		folder.event({ t: "exit", code: 0, signal: null });
+		folder.status = "released";
+		folder.answers.push({ released: true, final: true, notSaved: [{ path: "a.txt", outcome: "conflict" }] });
+		expect(await f.read(sessionId)).toEqual({
+			sessionId,
+			state: "exited",
+			exitCode: 0,
+			output: "done\n",
+			notSaved: [{ path: "a.txt", outcome: "conflict" }],
+		});
+		// The shell host never ran it.
+		expect(f.sent).toEqual([]);
+		expect(f.shell.list(SHELL_RUN).commands).toEqual([
+			expect.objectContaining({ sessionId, state: "exited", exitCode: 0, unreadBytes: 0 }),
+		]);
+	});
+
+	it("passes a networked start's network on to the folder", async () => {
+		const f = folderFixture();
+		const { folder } = await f.start("curl https://example.com", true);
+		expect(folder.start.mock.calls[0][0].network).toBe(true);
+	});
+
+	it("holds output back from another run, and until the folder released it", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("make");
+		folder.answer({ ran: true });
+		folder.out("one\n");
+		for (const runId of [OTHER_RUN, null])
+			expect(await f.read(sessionId, runId)).toEqual({
+				sessionId,
+				state: "running",
+				output: "",
+				heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message: COMPANY_COMPUTER_COMMAND_OTHER_RUN },
+			});
+		expect(folder.release).not.toHaveBeenCalled();
+		const message = "the company folder did not answer before the reply's deadline; read again";
+		folder.answers.push({ released: false, heldBack: message });
+		expect(await f.read(sessionId)).toEqual({
+			sessionId,
+			state: "running",
+			output: "",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message },
+		});
+		// Nothing was shown, so nothing is lost: the next released boundary shows it.
+		expect(f.shell.list(OTHER_RUN).commands).toEqual([
+			expect.objectContaining({ sessionId, state: "running", unreadBytes: 0 }),
+		]);
+		folder.out("two\n");
+		expect(await f.read(sessionId)).toEqual({ sessionId, state: "running", output: "one\ntwo\n" });
+		// Output after the boundary's mark waits for the next one.
+		folder.out("three\n");
+		expect(f.shell.list(SHELL_RUN).commands).toEqual([
+			expect.objectContaining({ sessionId, state: "running", unreadBytes: 0 }),
+		]);
+		folder.event({ t: "exit", code: 2, signal: null });
+		// Another run never sees the exit before the folder released it.
+		expect(f.shell.list(OTHER_RUN).commands[0]).not.toHaveProperty("exitCode");
+		expect(await f.read(sessionId)).toMatchObject({ state: "exited", exitCode: 2, output: "three\n" });
+	});
+
+	it("ends a command that never ran in the folder with why", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("ls /company");
+		const note = "The command did not start (Folder view command is not current); start it again.";
+		folder.answer({ note });
+		await vi.waitFor(async () =>
+			expect(await f.read(sessionId)).toEqual({ sessionId, state: "exited", exitCode: 127, output: "", note }),
+		);
+		expect(f.shell.busy).toBe(false);
+		// A shell whose namespace has no init the helper can join runs none.
+		const lost = folderFixture({ init: null });
+		const { sessionId: other } = await lost.shell.start({
+			runId: SHELL_RUN,
+			key: "key-0",
+			command: "ls",
+			signal: lost.signal,
+		});
+		await vi.waitFor(async () => expect(await lost.read(other)).toMatchObject({ state: "exited", exitCode: 127 }));
+		expect((await lost.read(other)).note).toBe("The command could not start in the company folder; start it again.");
+		expect(lost.folders[0].start).not.toHaveBeenCalled();
+	});
+
+	it("types into or stops a command once its run request went; before that, a stop calls its start off", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("cat");
+		await expect(f.shell.write({ sessionId, text: "x", endInput: false, signal: f.signal })).rejects.toThrow(
+			"OFFICE_SHELL_STARTING",
+		);
+		await f.shell.stop({ sessionId, signal: f.signal });
+		expect(folder.signal?.aborted).toBe(true);
+		expect(await f.read(sessionId)).toMatchObject({ state: "stopped", output: "" });
+		// The start answers late: nothing changes.
+		folder.answer({ note: "The command could not start in the company folder; start it again." });
+		expect((await f.read(sessionId)).state).toBe("stopped");
+
+		const { sessionId: running, folder: ran } = await f.start("cat");
+		ran.answer({ ran: true });
+		await f.shell.write({ sessionId: running, text: "last", endInput: true, signal: f.signal });
+		expect(ran.write).toHaveBeenCalledWith(Buffer.from("last"), true);
+		await expect(f.shell.write({ sessionId: running, text: "x", endInput: false, signal: f.signal })).rejects.toThrow(
+			"OFFICE_SHELL_INPUT_ENDED",
+		);
+		await f.shell.stop({ sessionId: running, signal: f.signal });
+		expect(ran.stop).toHaveBeenCalledOnce();
+		// The helper's stop is the shell host's: the command is stopped when its exit comes.
+		expect((await f.read(running)).state).toBe("running");
+		ran.event({ t: "exit", code: null, signal: "SIGTERM" });
+		expect(await f.read(running)).toMatchObject({ state: "stopped", signal: "SIGTERM" });
+	});
+
+	it("stops a command whose folder stopped answering, with why", async () => {
+		const f = folderFixture();
+		const { sessionId, folder } = await f.start("sleep 600");
+		folder.answer({ ran: true });
+		folder.event({ t: "lost" });
+		const message = "the company folder no longer serves this command, so its output is held back; start it again";
+		folder.answers.push({ released: false, heldBack: message });
+		expect(await f.read(sessionId)).toEqual({
+			sessionId,
+			state: "stopped",
+			output: "",
+			note: "The company folder stopped answering for this command, so it was stopped; start it again.",
+			heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message },
+		});
+		expect(f.shell.report().ended).toEqual([expect.objectContaining({ id: sessionId, reason: "closed" })]);
+	});
+
+	it("refuses an offline command without the folder helper, and needs the environment with one", async () => {
+		const f = fixture();
+		await expect(
+			f.shell.start({ runId: SHELL_RUN, key: "offline", command: "ls", network: false, signal: f.signal }),
+		).rejects.toThrow("COMPANY_COMPUTER_OFFLINE_UNAVAILABLE");
+		const networked = await f.shell.start({
+			runId: SHELL_RUN,
+			key: "networked",
+			command: "echo hi",
+			network: true,
+			signal: f.signal,
+		});
+		expect(await f.read(networked.sessionId)).toMatchObject({ state: "exited", exitCode: 0, output: "hi\n" });
+		expect(
+			() =>
+				new CompanyComputerLinuxShell(f.launch, {
+					folders: {} as CompanyComputerCommandFolders,
+				}),
+		).toThrow("OFFICE_SHELL_FOLDER_ENVIRONMENT_REQUIRED");
 	});
 });

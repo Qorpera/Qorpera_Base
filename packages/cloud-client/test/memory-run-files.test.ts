@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { companyStatePath, companyStatePathProblems, parseCompanyStateFile } from "../src/company-state-files.ts";
-import { parseMemoryRunToml } from "../src/memory-run-files.ts";
+import { parseMemoryRunToml, parseMemoryTreeToml } from "../src/memory-run-files.ts";
 
 const RUN = "00000000-0000-0000-0000-000000000000";
 const CONVERSATION = "ffffffff-ffff-ffff-ffff-ffffffffffff";
@@ -320,5 +320,134 @@ describe("memory run summary blocks", () => {
 		accepts(TREE, lines(...thirty), "memory-run-block");
 		refuses(TREE, lines(...thirty, tree()));
 		expect(refuses(TREE, " ".repeat(65005))[0]?.code).toBe("too_large");
+	});
+});
+
+describe("conversation summary trees", () => {
+	const THREAD = "agents/research/memory/thread";
+	const GROUP = "agents/groups/research-team/memory";
+	const TREE_TOML = `format = 1\nconversation = "${CONVERSATION}"\nnode_bytes = 512\n`;
+	const BLOCK = `${THREAD}/t0/00000000.jsonl`;
+	const leaf = (changes: Record<string, unknown> = {}) => tree({ seq: 1, hash: HASH, ...changes });
+
+	it("dispatches tree.toml and blocks in agent and group trees with kind-only parses", () => {
+		for (const root of [THREAD, GROUP]) {
+			accepts(`${root}/tree.toml`, TREE_TOML, "memory-tree");
+			accepts(`${root}/t0/00000000.jsonl`, lines(leaf()), "memory-block");
+			expect(companyStatePathProblems(`${root}/tree.toml`)).toEqual([]);
+		}
+		expect(companyStatePath(`${GROUP}/tree.toml`)).toMatchObject({ agent: null, group: "research-team" });
+		expect(companyStatePath(`${THREAD}/t14/00000000.jsonl`)).toMatchObject({
+			kind: "memory-block",
+			agent: "research",
+			group: null,
+		});
+		// A run's files under the same memory folder keep their own kinds.
+		expect(companyStatePath(TREE)?.kind).toBe("memory-run-block");
+	});
+
+	it("classifies by the key as qorpera_structured_path_kind does and refuses noncanonical spelling and names", () => {
+		for (const path of [THREAD.toUpperCase(), THREAD.replace("research", "bad_name")]) {
+			expect(companyStatePath(`${path}/tree.toml`)?.kind).toBe("memory-tree");
+			expect(refuses(`${path}/tree.toml`, TREE_TOML)[0]?.code).toBe("name");
+		}
+		for (const path of [
+			`${THREAD}/tree.md`,
+			`${THREAD}/t15/00000000.jsonl`,
+			`${THREAD}/t00/00000000.jsonl`,
+			`${THREAD}/t0/0.jsonl`,
+			`${THREAD}/t0/00000000.jsonl/extra`,
+			"agents/research/memory/tree.toml",
+			"agents/groups/research-team/memory/thread/tree.toml",
+			"agents/groups/memory/thread/tree.toml",
+			"agents/sections.md/memory/thread/tree.toml",
+			"projects/research/memory/thread/tree.toml",
+		])
+			expect(companyStatePath(path)).toBeNull();
+	});
+
+	it("reads tree.toml's exact grammar with node_bytes 1 to 1024", () => {
+		expect(parseMemoryTreeToml(TREE_TOML)).toEqual({ conversation: CONVERSATION, nodeBytes: 512 });
+		for (const bytes of ["1", "1024"]) accepts(`${THREAD}/tree.toml`, TREE_TOML.replace("512", bytes), "memory-tree");
+		for (const text of [
+			TREE_TOML.replace("512", "0"),
+			TREE_TOML.replace("512", "1025"),
+			TREE_TOML.replace("512", "0512"),
+			TREE_TOML.replace("512", "10000"),
+			TREE_TOML.slice(0, -1),
+			`${TREE_TOML}\n`,
+			TREE_TOML.replaceAll("\n", "\r\n"),
+			TREE_TOML.replace(CONVERSATION, CONVERSATION.toUpperCase()),
+			TREE_TOML.replace("format = 1", "format = 2"),
+			`format = 1\nnode_bytes = 512\nconversation = "${CONVERSATION}"\n`,
+			`${TREE_TOML}# comment\n`,
+		]) {
+			expect(parseMemoryTreeToml(text)).toBeNull();
+			refuses(`${THREAD}/tree.toml`, text);
+		}
+	});
+
+	it("needs seq and hash on a level-0 line and nowhere else", () => {
+		accepts(
+			BLOCK,
+			lines(leaf(), leaf({ k: 1, seq: 0, free: false, tries: 3 }), tree({ l: 1 }), tree({ l: 3, k: 1 })),
+			"memory-block",
+		);
+		const raw = JSON.stringify(leaf());
+		accepts(BLOCK, `${raw.replace('"seq":1', '"seq":9223372036854775807')}\n`, "memory-block");
+		for (const seq of ["9223372036854775808", "-1", "1.0", '"1"', "null"])
+			refuses(BLOCK, `${raw.replace('"seq":1', `"seq":${seq}`)}\n`);
+		refuses(BLOCK, `${raw.replace('"seq":1', '"seq":1,"seq":1')}\n`);
+		for (const row of [
+			tree(),
+			leaf({ seq: undefined }),
+			leaf({ hash: undefined }),
+			leaf({ hash: null }),
+			leaf({ hash: HASH.toUpperCase() }),
+			leaf({ hash: "a".repeat(63) }),
+			leaf({ extra: true }),
+			leaf({ free: false }),
+			leaf({ tries: 1 }),
+			leaf({ free: false, tries: 4 }),
+			tree({ l: 1, seq: 1, hash: HASH }),
+			tree({ l: 1, seq: 1 }),
+		])
+			refuses(BLOCK, lines(row));
+	});
+
+	it("places lines in their tier and block, by level, then by number, each once", () => {
+		accepts(`${THREAD}/t14/00000000.jsonl`, lines(tree({ l: 59, k: 1 })), "memory-block");
+		accepts(`${THREAD}/t1/00000001.jsonl`, lines(tree({ l: 4, k: 16 }), tree({ l: 7, k: 3 })), "memory-block");
+		for (const rows of [
+			[leaf({ k: 16 })],
+			[tree({ l: 4 })],
+			[tree({ l: 60 })],
+			[leaf(), leaf()],
+			[tree({ l: 1 }), leaf()],
+			[leaf({ k: 2 }), leaf({ k: 1 })],
+		])
+			refuses(BLOCK, lines(...rows));
+	});
+
+	it("sizes a line before it is parsed: 2212 bytes at level 0, 2113 above, 2048 escaped text bytes", () => {
+		accepts(BLOCK, lines(leaf({ text: '"'.repeat(1024) })), "memory-block");
+		refuses(BLOCK, lines(leaf({ text: '"'.repeat(1025) })));
+		refuses(BLOCK, lines(leaf({ text: "\u0085" })));
+		const raw = JSON.stringify(leaf());
+		accepts(BLOCK, `${raw}${" ".repeat(2212 - raw.length)}\n`, "memory-block");
+		refuses(BLOCK, `${raw}${" ".repeat(2213 - raw.length)}\n`);
+		const upper = JSON.stringify(tree({ l: 1 }));
+		accepts(BLOCK, `${upper}${" ".repeat(2113 - upper.length)}\n`, "memory-block");
+		refuses(BLOCK, `${upper}${" ".repeat(2114 - upper.length)}\n`);
+		const thirty = [
+			...Array.from({ length: 16 }, (_, k) => leaf({ k, seq: k + 1 })),
+			...Array.from({ length: 8 }, (_, k) => tree({ l: 1, k })),
+			...Array.from({ length: 4 }, (_, k) => tree({ l: 2, k })),
+			...Array.from({ length: 2 }, (_, k) => tree({ l: 3, k })),
+		];
+		accepts(BLOCK, lines(...thirty), "memory-block");
+		refuses(BLOCK, lines(...thirty, tree({ l: 3, k: 2 })));
+		refuses(BLOCK, JSON.stringify(leaf()));
+		expect(refuses(BLOCK, " ".repeat(65005))[0]?.code).toBe("too_large");
 	});
 });

@@ -158,3 +158,43 @@ export function memoryBlockText(lines: readonly MemoryTreeLine[], kind: MemoryTr
 	}
 	return sorted.map((line) => `${memoryLineJson(line, kind)}\n`).join("");
 }
+
+/**
+ * A block's lines, or null when `text` is not one block at `path` as the commit stores it: 1 to 30 lines, each ending
+ * in a newline, each one the commit accepts and in that block, no address twice.
+ */
+export function memoryBlockLines(
+	text: string,
+	path: string,
+	kind: MemoryTreeKind = "conversation",
+): MemoryTreeLine[] | null {
+	const rows = text.split("\n");
+	if (rows.pop() !== "" || rows.length < 1 || rows.length > 30) return null;
+	const lines: MemoryTreeLine[] = [];
+	const seen = new Set<string>();
+	for (const row of rows) {
+		let value: unknown;
+		try {
+			value = JSON.parse(row);
+		} catch {
+			return null;
+		}
+		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+		const { l, k, seq, hash, free, text: lineText, tries, ...rest } = value as Record<string, unknown>;
+		if (Object.keys(rest).length || typeof free !== "boolean" || typeof lineText !== "string") return null;
+		const line = {
+			l,
+			k,
+			...(seq !== undefined ? { seq } : {}),
+			...(hash !== undefined ? { hash } : {}),
+			free,
+			text: lineText,
+			...(tries !== undefined ? { tries } : {}),
+		} as MemoryTreeLine;
+		if (memoryLineProblem(line, kind) !== null || memoryBlockPath(line.l, line.k) !== path) return null;
+		if (seen.has(`${line.l}:${line.k}`)) return null;
+		seen.add(`${line.l}:${line.k}`);
+		lines.push(line);
+	}
+	return lines;
+}

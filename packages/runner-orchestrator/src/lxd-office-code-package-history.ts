@@ -127,6 +127,9 @@ export async function readLxdOfficeCodePackagePublicHistory(
 			target: retain(await manifestRead(document.targetManifestPath)),
 			baseInstallationReceipt: retain(await manifestRead(document.baseInstallationReceiptPath)),
 			baseMountTemplate: retain(await read(document.baseMountTemplatePath, 65536)),
+			...(document.baseFolderMountTemplatePath !== undefined
+				? { baseFolderMountTemplate: retain(await read(document.baseFolderMountTemplatePath, 65536)) }
+				: {}),
 		};
 		const verified = verifyLxdOfficeCodePackageProvision(
 				r.envelope,

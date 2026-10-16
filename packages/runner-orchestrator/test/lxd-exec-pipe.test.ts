@@ -437,8 +437,15 @@ describe("LXD exec pipe", () => {
 		try {
 			await vi.waitFor(() => expect(exec.inputEnded).toBe(true), { timeout: 20_000 });
 			expect(exec.inputBytes).toBe(chunks * size);
-			await collect();
-			expect(process.memoryUsage().arrayBuffers - before).toBeLessThan((chunks * size) / 8);
+			// V8 frees a collected buffer's memory on a background thread after the GC, so a busy machine can still count
+			// it for a while: collect again until it is gone. An input the pipe keeps never goes.
+			await vi.waitFor(
+				async () => {
+					await collect();
+					expect(process.memoryUsage().arrayBuffers - before).toBeLessThan((chunks * size) / 8);
+				},
+				{ timeout: 5_000, interval: 50 },
+			);
 			expect(sent.filter((chunk) => chunk.deref() !== undefined).length).toBeLessThan(chunks / 100);
 		} finally {
 			finish();

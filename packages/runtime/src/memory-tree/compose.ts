@@ -68,15 +68,25 @@ export interface MemoryViewMeasures {
 	readonly stablePrefixSha256: string;
 }
 
-interface Answer {
+/** qorpera_memory_view's answer: the run's conversation, T, the sequence of T's last message, and the live tree. */
+export interface MemoryViewAnswer {
 	readonly sessionId: string;
+	/** As a view names it. */
 	readonly name: string;
+	/** T: the messages before the inputs that woke the run. */
 	readonly messages: number;
 	readonly lastSequence: number | null;
 	readonly tree: MemoryTreeRead;
 }
 
-function answer(value: unknown): Answer | null {
+/** What settle waited for at run start (§5.4, §13): its time, and the lines it built in it. */
+export interface MemoryViewWait {
+	readonly waitMs: number;
+	readonly waitedLines: number;
+}
+
+/** qorpera_memory_view's answer, or null for a run that has none. A malformed answer throws. */
+export function memoryViewAnswer(value: unknown): MemoryViewAnswer | null {
 	if (value === null) return null;
 	try {
 		const read = parseClosedRecord(value, "the answer", [
@@ -126,7 +136,7 @@ export async function memoryComposeView(
 	binding: CloudNativeToolBinding,
 	signal: AbortSignal,
 ): Promise<MemoryComposedView | null> {
-	const read = answer(
+	const read = memoryViewAnswer(
 		await cloudToolRequest(
 			(requestSignal) => control.call("qorpera_memory_view", { p_binding: binding }, requestSignal),
 			signal,
@@ -199,15 +209,16 @@ function recordedSeq(value: unknown, step: number): number {
 
 /**
  * After the run's context is composed and hashed: releases the blocks the view and the branches show, under the
- * context's SHA-256, then records the run's first request (memory_view, §13). Answers the view reference, or null when
- * the record failed or the reference passes its bound. A failed release throws: no model request may see lines that
- * were not released. A failed record is logged, and the run goes on.
+ * context's SHA-256, then records the run's first request (memory_view, §13) with settle's wait. Answers the view
+ * reference, or null when the record failed or the reference passes its bound. A failed release throws: no model
+ * request may see lines that were not released. A failed record is logged, and the run goes on.
  */
 export async function memoryCommitView(
 	control: CloudCompanyPathControl,
 	binding: CloudNativeToolBinding,
 	composed: MemoryComposedView,
 	measures: MemoryViewMeasures,
+	wait: MemoryViewWait,
 	signal: AbortSignal,
 ): Promise<MemoryViewReference | null> {
 	if (composed.blocks.length > 0) {
@@ -220,12 +231,12 @@ export async function memoryCommitView(
 		headBytes: measures.headBytes,
 		viewBytes: Buffer.byteLength(composed.views),
 		branchesBytes: Buffer.byteLength(escapeCloudNativeContextJson(JSON.stringify(composed.tree.branches))),
-		// The run's own view (§5.7, W2) and the wait for lines (§5.4, settle) come later.
+		// The run's own view (§5.7, W2) comes later.
 		runViewBytes: 0,
 		rawSteps: 0,
 		placeholders: composed.placeholders,
-		waitMs: 0,
-		waitedLines: 0,
+		waitMs: wait.waitMs,
+		waitedLines: wait.waitedLines,
 		folded: false,
 		stablePrefixSha256: measures.stablePrefixSha256,
 	};
