@@ -639,6 +639,49 @@ describe("test machine views", () => {
 		expect(core.commits.map(creditsOf)).toEqual([[["docs/saved.txt", [SECOND]]]]);
 		expect(core.entries.has("docs/given.txt")).toBe(false);
 	});
+
+	it("gives a file a discarded draft held back its own credits with its bytes", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		// The starter saves a file; the first command writes into it, not cut, and opens a draft over it.
+		await write(view, "docs/kept.txt", "kept");
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await view.open({ path: "docs/kept.txt", create: false, exclusive: false, truncate: false });
+		const data = Buffer.from("changed");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		const drafted = await draft(view, "docs/kept.txt", "drafted");
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+		// Both are given up: the draft last, which lets the file go back to the starter's bytes, with none of the first's.
+		await view.discard(handle);
+		await view.discard(drafted.handle);
+		await service.boundary(PLACEMENT);
+		expect(core.commits.map(creditsOf)).toEqual([[["docs/kept.txt", undefined]]]);
+		expect(core.entries.get("docs/kept.txt")?.fileSha256).toBe(hashOf("kept"));
+	});
+
+	it("gives a file a draft held back its own credits when the draft's close cannot land it", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		await write(view, "docs/kept.txt", "kept");
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await view.open({ path: "docs/kept.txt", create: false, exclusive: false, truncate: false });
+		const data = Buffer.from("changed");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		const drafted = await draft(view, "docs/kept.txt", "drafted");
+		await service.closeWindow(PLACEMENT, FIRST);
+		await view.discard(handle);
+		// The starter moves the file away and makes a folder where the draft lands: its close is refused, and gives it up.
+		await view.rename({ from: "docs/kept.txt", to: "docs/moved.txt", noReplace: false });
+		await view.mkdir("docs/kept.txt");
+		await expect(view.close(drafted.handle, drafted.bytes)).rejects.toMatchObject({ code: "NOT_A_FILE" });
+		await service.boundary(PLACEMENT);
+		expect([...(creditsOf(core.commits[0]) ?? [])].sort()).toEqual([
+			["docs/kept.txt", undefined],
+			["docs/moved.txt", undefined],
+		]);
+		expect(core.entries.get("docs/moved.txt")?.fileSha256).toBe(hashOf("kept"));
+	});
 });
 
 /** A seeded generator (mulberry32): a seed gives the same sequence at every run. */

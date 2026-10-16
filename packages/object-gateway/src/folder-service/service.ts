@@ -1041,11 +1041,18 @@ export class FolderService {
 					},
 					(pending) => {
 						const written = pending.file(handle);
-						const closed = pending.close(handle, size);
-						// The chunks the close fixed are the file's now, and so are the tags they came under: in the same
-						// step, so no change made after it sees the file without them.
-						if (tags !== undefined) view.credit.fixed(closed, written);
-						return closed;
+						const held = pending.draftHeld(handle);
+						let closed: PendingFile | undefined;
+						try {
+							closed = pending.close(handle, size);
+							// The chunks the close fixed are the file's now, and so are the tags they came under: in the same
+							// step, so no change made after it sees the file without them.
+							if (tags !== undefined) view.credit.fixed(closed, written);
+							return closed;
+						} finally {
+							// A draft that landed elsewhere, or that its close gave up, let go of the view's own file it held.
+							if (tags !== undefined && held !== closed) this.#letGo(view, held);
+						}
 					},
 					tags,
 				).catch((error: unknown) => {
@@ -2303,14 +2310,26 @@ export class FolderService {
 				upload.upload?.abort();
 				view.uploads.delete(key);
 			}
-		// A test machine's file whose last handle this was loses the chunks no close fixed, and their tags (F3 6b).
+		// A test machine's file whose last handle this was loses the chunks no close fixed, and their tags (F3 6b); so
+		// does the view's own file a draft held, when the draft let go of it last.
 		let file: PendingFile | undefined;
+		let held: PendingFile | undefined;
 		try {
-			file = this.#windowsOf(view) === undefined ? undefined : view.pending?.file(handle);
+			if (this.#windowsOf(view) !== undefined) {
+				file = view.pending?.file(handle);
+				held = view.pending?.draftHeld(handle);
+			}
 		} catch {
 			// Closed already: nothing of it is left to abandon.
 		}
 		view.pending?.abandon(handle);
+		this.#letGo(view, file);
+		this.#letGo(view, held);
+	}
+
+	/** A file a handle, or a draft's hold, let go of: with none left on it, it is back at the bytes its last close fixed,
+	 * and a test machine's chunks no close fixed lose their tags (F3 6b). */
+	#letGo(view: View, file: PendingFile | undefined): void {
 		if (file !== undefined && file.open === 0) view.credit.abandoned(file);
 	}
 

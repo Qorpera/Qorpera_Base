@@ -625,6 +625,11 @@ export class PendingView {
 		return this.#handles.get(handle)?.draft?.path;
 	}
 
+	/** The view's own file a handle's draft holds unpublished, if any. */
+	draftHeld(handle: number): PendingFile | undefined {
+		return this.#handles.get(handle)?.draft?.held;
+	}
+
 	isOpen(handle: number): boolean {
 		return this.#handles.has(handle);
 	}
