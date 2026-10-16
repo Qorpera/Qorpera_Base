@@ -507,7 +507,7 @@ describe("CodingFolderViews", () => {
 		});
 
 		it("maps each refusal of the open to its code, and does not try again", async () => {
-			const refusals: [string, string][] = [
+			const refusals: [string | null, string][] = [
 				["Folder view attachment is not current", "ATTACHMENT_NOT_CURRENT"],
 				["Company folder is unavailable", "FOLDER_UNAVAILABLE"],
 				["Folder view principals are unavailable", "PRINCIPALS_UNAVAILABLE"],
@@ -516,15 +516,18 @@ describe("CodingFolderViews", () => {
 				["Folder view opener is invalid", "VIEW_INVALID"],
 				["Folder view anchor is invalid", "VIEW_INVALID"],
 				["Something the core never says", "UNKNOWN"],
+				// A 42501 refusal whose message the control does not keep.
+				[null, "UNKNOWN"],
 			];
 			for (const [reason, code] of refusals) {
+				const label = reason ?? "no reason";
 				const at = fixture();
-				at.script.open.push(new CodingControlRefused(reason));
+				at.script.open.push(new CodingControlRefused(null, reason));
 				const error = await rejection(at.views.attach(session(), later(), live()));
-				expect(error, reason).toBeInstanceOf(CodingFolderViewRefused);
-				expect((error as CodingFolderViewRefused).code, reason).toBe(code);
-				expect(error.message, reason).toBe(`CODING_FOLDER_VIEW_REFUSED:${code}`);
-				expect(at.events, reason).toEqual(["sha256sum", "boundary", "open"]);
+				expect(error, label).toBeInstanceOf(CodingFolderViewRefused);
+				expect((error as CodingFolderViewRefused).code, label).toBe(code);
+				expect(error.message, label).toBe(`CODING_FOLDER_VIEW_REFUSED:${code}`);
+				expect(at.events, label).toEqual(["sha256sum", "boundary", "open"]);
 				await expect(at.views.end(WORKER, live())).resolves.toBeUndefined();
 			}
 		});
@@ -764,8 +767,8 @@ describe("CodingFolderViews", () => {
 			const cases: [Scripted<unknown>[], number, boolean][] = [
 				[[new CodingControlBusy()], 2, true],
 				[[new Error("CODING_CONTROL_UNCONFIRMED")], 2, true],
-				[[new CodingControlRefused("Folder view is unavailable")], 1, true],
-				[[new CodingControlRefused("Folder core authority is required")], 1, false],
+				[[new CodingControlRefused(null, "Folder view is unavailable")], 1, true],
+				[[new CodingControlRefused(null, "Folder core authority is required")], 1, false],
 			];
 			for (const [answers, tries, closed] of cases) {
 				const at = fixture();

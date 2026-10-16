@@ -76,6 +76,7 @@ export const CODING_HOST_RPCS = [
 	"qorpera_attach_coding_session",
 	"qorpera_keep_coding_attachments",
 	"qorpera_record_coding_session_detached",
+	"qorpera_record_coding_machine_stopped",
 	"qorpera_archive_quiet_coding_sessions",
 	"qorpera_authorize_coding_machine_custody",
 	"qorpera_suspend_coding_machine",
@@ -626,12 +627,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return value as unknown as CodingMachineAdmissionReceipt;
 	}
 	/** Drives one machine's journal to the desired state, polling pending LXD
-	 * operations, within its budget. */
+	 * operations, within its budget. A member's machine found stopped from
+	 * outside is handed to `stoppedFromOutside` before anything else is done to it. */
 	async #reconcile(
 		journal: CodingMachineJournalPlan,
 		desiredState: CodingMachineDesiredState,
 		authorize: (intent: CodingMachineIntent, signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
+		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -648,6 +651,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				authorize,
 				signal: checked,
 				plug: this.#options.agentPlug,
+				stoppedFromOutside,
 			});
 			checked.throwIfAborted();
 			if (result.state === "pending") {
@@ -995,11 +999,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await this.#run(claim, machine, storage, signal, true);
 			// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
 			await this.#hostLeases.renew(journal);
+			const authorize = async (checked: AbortSignal) => this.#run(claim, machine, storage, checked);
 			await this.#reconcile(
 				journal,
 				"running",
-				async (_intent, checked) => this.#run(claim, machine, storage, checked),
+				async (_intent, checked) => authorize(checked),
 				signal,
+				// Stopped from outside: its sessions are told, and their folders come off before it starts again.
+				async (startOperationId, checked) => {
+					await this.#recordMachineStopped(machine, startOperationId, checked);
+					await this.#unplugStopped(machine, authorize, "CODING_MACHINE_STOP_DETACH_UNCONFIRMED", checked);
+				},
 			);
 			await this.#run(claim, machine, storage, signal);
 			const boot = await this.#ready(machine, signal);
@@ -1687,6 +1697,76 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#attachSerials.delete(workerId);
 		}
 		this.#samples.delete(workerId);
+	}
+	/** A member's machine LXD shows stopped after its settled start (the
+	 * reconcile has just written that stop down) lost every session's boot: each
+	 * attachment on it ends in SQL with the commands last seen running there,
+	 * stopped for MACHINE_STOPPED, and its next boot installs the helpers again.
+	 * SQL keeps each stop once, by the start it ended: a retry, or an abandoned
+	 * try's request that reaches SQL only after the machine started again and
+	 * sessions attached anew, gets the first record's answer and ends nothing. */
+	async #recordMachineStopped(
+		machine: Readonly<LxdCodingMachineBinding>,
+		startOperationId: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const value = record(
+			await this.#call(
+				"qorpera_record_coding_machine_stopped",
+				{
+					p_machine_id: machine.machineId,
+					p_start_operation_id: startOperationId,
+					p_owner: this.#options.owner,
+					p_binding_text: lxdCodingMachinePlan(machine).text,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+				},
+				signal,
+			),
+		);
+		const detached = Array.isArray(value.detached) ? (value.detached as unknown[]) : null;
+		const ended = (detached ?? []).flatMap((item) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+			const { workerId, attachmentToken } = item as Record<string, unknown>;
+			return isUuid(workerId) && isUuid(attachmentToken) ? [{ workerId, attachmentToken }] : [];
+		});
+		if (
+			value.schema !== "qorpera.coding-machine-stopped/v1" ||
+			value.machineId !== machine.machineId ||
+			!detached ||
+			ended.length !== detached.length
+		)
+			throw new Error("CODING_HOST_MACHINE_STOPPED_UNCONFIRMED");
+		for (const { workerId, attachmentToken } of ended) {
+			if (this.#attachments.get(workerId)?.token === attachmentToken) {
+				this.#attachments.delete(workerId);
+				this.#attachSerials.delete(workerId);
+			}
+			this.#samples.delete(workerId);
+		}
+		this.#helperBoots.delete(machine.machineId);
+	}
+	/** A stopped member machine's session folders unplugged under `authorize`:
+	 * the base devices, with the machine's own agent card (its plug MAC is not in
+	 * the plan). An uncertain update is judged from the machine. */
+	async #unplugStopped(
+		machine: Readonly<LxdCodingMachineBinding>,
+		authorize: (signal: AbortSignal) => Promise<unknown>,
+		unconfirmed: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const client = this.#options.client,
+			name = lxdCodingMachineName(machine.machineId);
+		const stopped = await client.getInstance(machine.project, name, signal);
+		if (!stopped || !assertLxdCodingMachineInstance(machine, this.#placement, stopped).length) return;
+		await authorize(signal);
+		const base = { ...lxdCodingMachinePlan(machine).request.devices, network: stopped.devices.network };
+		try {
+			await client.replaceInstanceDevices(machine.project, name, base, signal);
+		} catch {
+			/* Judged below from the machine. */
+		}
+		const after = await client.getInstance(machine.project, name, signal);
+		if (after && assertLxdCodingMachineInstance(machine, this.#placement, after).length) throw new Error(unconfirmed);
 	}
 
 	/** One keeper pass: first the host lease of every member machine SQL reserves
@@ -2476,41 +2556,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			"stopped",
 			async (_intent, checked) => this.#custody(journal, text, "stop", checked),
 			budget,
+			// Stopped from outside: each attachment ends as MACHINE_STOPPED, so the SLEEP records below find none.
+			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
 		);
-		if (state === "stopped" && entry.kind === "member") {
+		if (state === "stopped" && member) {
 			// Stopped, it needs no lease; one left behind lapses all the same.
 			await this.#hostLeases.drop(journal).catch(() => undefined);
-			const stopped = await client.getInstance(journal.project, journal.name, budget);
-			if (stopped) {
-				const sessions = assertLxdCodingMachineInstance(
-					entry.binding as unknown as LxdCodingMachineBinding,
-					this.#placement,
-					stopped,
-				);
-				if (sessions.length) {
-					await this.#custody(journal, text, "stop", budget);
-					// The base devices, with the machine's own agent card (its plug MAC is not in the plan).
-					const base = {
-						...lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).request.devices,
-						network: stopped.devices.network,
-					};
-					try {
-						await client.replaceInstanceDevices(journal.project, journal.name, base, budget);
-					} catch {
-						/* Judged below from the machine. */
-					}
-					const after = await client.getInstance(journal.project, journal.name, budget);
-					if (
-						after &&
-						assertLxdCodingMachineInstance(
-							entry.binding as unknown as LxdCodingMachineBinding,
-							this.#placement,
-							after,
-						).length
-					)
-						throw new Error("CODING_MACHINE_SLEEP_DETACH_UNCONFIRMED");
-				}
-			}
+			await this.#unplugStopped(
+				member,
+				(checked) => this.#custody(journal, text, "stop", checked),
+				"CODING_MACHINE_SLEEP_DETACH_UNCONFIRMED",
+				budget,
+			);
 		}
 		const slept = record(
 			await this.#call(
@@ -2582,11 +2639,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		if (entry.reserved) await this.#sleep(entry, signal);
 		const budget = AbortSignal.any([signal, AbortSignal.timeout(CODING_VM_STOP_BUDGET_MS * 2)]);
+		const member =
+			entry.kind === "member"
+				? lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).binding
+				: null;
 		const state = await this.#reconcile(
 			journal,
 			"deleted",
 			async (_intent, checked) => this.#custody(journal, text, "delete", checked),
 			budget,
+			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
 		);
 		if (state !== "deleted" && state !== "absent") throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
 		if (entry.kind === "member") await this.#hostLeases.drop(journal).catch(() => undefined);

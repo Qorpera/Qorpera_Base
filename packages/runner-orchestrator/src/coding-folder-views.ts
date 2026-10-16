@@ -280,8 +280,9 @@ export class CodingFolderViews {
 					deadline,
 				);
 			} catch (error) {
+				// A refusal without a message the control keeps (a 42501 of another kind) is final too: UNKNOWN.
 				if (error instanceof CodingControlRefused)
-					throw new CodingFolderViewRefused(OPEN_REFUSALS.get(error.reason) ?? "UNKNOWN");
+					throw new CodingFolderViewRefused(OPEN_REFUSALS.get(error.reason ?? "") ?? "UNKNOWN");
 				// Busy or unconfirmed: a view the lost answer opened gives way to the next, which supersedes it.
 				await this.#pause(until, signal, deadline, "CODING_FOLDER_VIEW_UNCONFIRMED");
 				continue;

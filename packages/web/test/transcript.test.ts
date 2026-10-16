@@ -296,6 +296,40 @@ describe("projectTranscript", () => {
 		expect(projection.items.map((item) => item.kind)).toEqual(["authorization_request", "authorization_decision"]);
 		expect(projection.hiddenCount).toBe(0);
 	});
+
+	it("keeps an erased event's place: a member's input, answer or decision as theirs, else the agent's", () => {
+		const inputId = "55555555-5555-4555-8555-555555555555";
+		const execution = { kind: "run" as const, id: RUN, claimantId: "claimant", runnerAssignmentId: "assignment" };
+		const staffSpeaker = { runId: RUN, staffAgentId: "66666666-6666-4666-8666-666666666666", staffVersion: 2 };
+		const erased = { erased: true };
+		const projection = projectTranscript([
+			event(1, { eventId: inputId, sessionInputId: inputId, body: erased }),
+			event(2, { execution, staffSpeaker, body: erased }),
+			event(3, { eventType: "interaction_request", execution, body: erased }),
+			event(4, { eventType: "interaction_answer", body: erased }),
+			event(5, { eventType: "authorization_request", body: erased }),
+			event(6, { eventType: "authorization_decision", body: erased }),
+			// Only the cloud's exact body counts as erased.
+			event(7, { body: { erased: true, text: "message 7" } }),
+		]);
+		const at = (sequence: number) => ({
+			id: sequence === 1 ? inputId : `44444444-4444-4444-8444-${String(sequence).padStart(12, "0")}`,
+			sequence,
+			text: "",
+			attachmentCount: 0,
+			erased: true,
+			createdAt: `2026-09-02T10:00:0${sequence}Z`,
+		});
+		expect(projection.items).toEqual([
+			{ kind: "member", ...at(1), authorUserId: USER },
+			{ kind: "agent", ...at(2), runId: RUN, staffSpeaker },
+			{ kind: "agent", ...at(3), runId: RUN },
+			{ kind: "member", ...at(4), authorUserId: USER },
+			{ kind: "agent", ...at(5) },
+			{ kind: "member", ...at(6), authorUserId: USER },
+		]);
+		expect(projection.hiddenCount).toBe(1);
+	});
 });
 
 describe("interaction cards in the transcript", () => {

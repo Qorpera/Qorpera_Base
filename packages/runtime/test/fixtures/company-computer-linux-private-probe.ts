@@ -177,7 +177,7 @@ async function xdo(...args: string[]) {
 		program: "/usr/bin/xdotool",
 		args,
 		environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-		workingDirectory: layout.workbenchRoot,
+		workingDirectory: "/home/qorpera",
 		timeoutMs: 5000,
 		maxOutputBytes: 4096,
 		signal,

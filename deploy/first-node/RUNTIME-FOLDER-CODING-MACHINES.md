@@ -281,8 +281,9 @@ over `X` is the publish point inside the syscall, a lock's removal publishes `X`
 (5b, §7 item 9 as amended here):
 
 - `.git` and `repo.git` refused at any depth outside `code/<owner>/<name>/`, accepted inside;
-- leases on shared files in `repo.git` (objects, `refs/`, `packed-refs`, `shallow` and their reflogs), with the version
-  check at the rename as the correctness rule;
+- leases on the shared files in `repo.git` (`refs/`, `packed-refs`, `shallow`), with the version check at the rename
+  as the correctness rule: `X` and its reflog `logs/X` land together or not at all. A lease lives as long as its view.
+  Objects take no lease: a session writes them freely and never removes them;
 - the per-worker rule: only a worker's session and the platform write under `worktrees/<workerId>/` and
   `repo.git/worktrees/<workerId>/`, and no session takes a lease on another worker's branch
   `refs/heads/qorpera/coding/<other>`;
@@ -501,6 +502,15 @@ went wrong reaches only its own company. It does what no member's root may:
 - **gc**, with the lease block (§6 "Cleanup"), and **reading the setup file** (`git show`).
 
 It retires `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap and git custody on the NAS.
+
+A company's code hosts go with its deletion (coordinator decision D3; migration `20260930398000`). A code host is no
+allocation and its code area is erased with the company folder, so the deletion does not wait for it. Each node's
+coding executor asks at its start and every minute after, beside its housekeeping, which of the companies with a code
+host project on the node are being deleted (`qorpera_code_hosts_deleting`, read-only, under its custody check), and
+removes each of their code hosts with its project. The listing of the node's projects and each removal, its wait for the
+host's other steps among it, have the agent wait; a removal out of time never runs later. One in a job or with a job
+waiting for its start (`CODE_HOST_BUSY` at once), refused, failed or out of time is logged and goes on a later pass, as
+does one a job made again after its removal.
 
 ## The report
 

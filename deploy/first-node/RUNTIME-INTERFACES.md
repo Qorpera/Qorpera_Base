@@ -526,8 +526,9 @@ Jonas, 2 October 2026 (decision 4); contract amendment item 10.
   decides who pays.
 - A member's own messages still run on their own account.
 - **Areas grant nothing.** They are not the retired responsibility objects (2026-09-20 amendment, item 1).
-- **Built so far** (I9b): the consent records, an agent's self (§6.1 rule 8) and adding agents by offer. Until the
-  rest is built (agents' offers, work alone, and clearing a leaver's cells), today's rules apply to it.
+- **Built so far** (I9b): the consent records, an agent's self (§6.1 rule 8), adding agents by offer, and an agent's
+  `table_write` claims for its supervisor. Until the rest is built (agents' offers, work alone, and clearing a
+  leaver's cells), today's rules apply to it.
 
 ### 5.2 The table store (later)
 
@@ -883,7 +884,7 @@ offers after its rows or definition change, and lapses them when its folder is d
 (erasure) removes its offers. Test 866 races an offer against a rows save both ways: an offer behind a save reads the
 cell the save left, and a save behind an offer settles it.
 
-**Built: I9b, the consent records** (`supabase/migrations/20260930371000_interface_supervision.sql`, tests 451–453
+**Built: I9b, the consent records** (`supabase/migrations/20260928549360_interface_supervision.sql`, tests 451–453
 and 458).
 Consents are kept in `qorpera_interface_supervisions` (§5.1), at most one live per area row. The save hook's apply
 settles them after each save of `tables/areas`' rows or definition: a member's own rows save that puts them in a
@@ -898,7 +899,7 @@ withdraw hold that row FOR SHARE too, and a consent called while its live one is
 Each end is told once (`interface_supervision_ended`), and the web client
 shows it in the notices. An area's `supervisor` is now offered like any other claimed cell.
 
-**Built: I9b, adding agents by offer** (`supabase/migrations/20260930372000_interface_supervision_agents.sql`, test
+**Built: I9b, adding agents by offer** (`supabase/migrations/20260928549370_interface_supervision_agents.sql`, test
 454). While a row's consent is live, rule 9 refuses a save that adds an agent to its `agents` unless the consent's
 member makes it; removing one stays free. Anyone else who may write the rows offers a hired agent to the supervisor
 with `qorpera_offer_interface_agent` (`supabase/CLIENT-CONTRACT.md`, "Supervision consent"). It is an offer like a
@@ -906,8 +907,17 @@ cell's (§5), kept with its agent and its consent, at most one open per row and 
 rows that puts the agent in the row accepts it, before that save's consent ends are settled (a definition saved alone
 accepts none, even when a new key names another row that holds the agent); the offers' calls decline and withdraw it;
 it lapses when the consent ends. A cell's settle leaves agents' offers alone. The web client reads them with the other
-offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own offers and
-`table_write`'s claims (a row write still refuses a claim); work alone; and clearing a leaver's cells.
+offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own offers;
+work alone; and clearing a leaver's cells.
+
+**Built: I9b, an agent's claims** (`packages/runtime/src/cloud-folder-interface-writes.ts`). `table_write` changes a
+claim for the member who supervises the agent's area. For a change that touches a claim it reads `tables/areas`
+(unless it writes the areas itself), takes the `supervisor` of the row whose `agents` names the agent as the agent's
+self, and checks the change with the claim rule before its receipt: the agent puts the supervisor in an empty cell or
+empties a cell that holds them, and never changes an area's owner, supervisor or agents. Every answer from then on is
+released with the areas' files too; a change that touches no claim reads no areas. Whether the supervisor's consent
+is live is the folder core's to say at the commit (rule 8); when it refuses the claim there, the answer gives the same
+next step as the refusal before the receipt.
 
 **Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
 `app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after
@@ -942,9 +952,9 @@ unchanged. `table_write` sets and removes rows by key and edits `rows.csv` in pl
 removes, the rows it adds after the last row, and every other byte, line end and the byte order mark as they were. It
 writes a number as decimal text, never in exponent form (`5e-7`), which the reader refuses. A new row may leave out an
 id column; the id is made from the run, the operation key and the row's place, and the answer gives it. A row write
-refuses a claim (the agent has no supervisor to act for), a table whose `[write]` doesn't name the agent, a table whose
-rows don't all fit, and rows over 64 KiB, before its receipt. Every answer that says what a file holds is released
-with the entries it read, the commit's answer too; one that cannot be released after the commit is unconfirmed, never
-a refusal (which says nothing happened), so the model repeats the same call. A replay of a saved call finds its change
-made and answers that nothing changed (a made id is made again, so it finds its own row); a call that waited for a
-member or failed at its commit replays from its receipt.
+refuses a claim the agent may not change (it acts only for its area's supervisor, I9b above), a table whose `[write]`
+doesn't name the agent, a table whose rows don't all fit, and rows over 64 KiB, before its receipt. Every answer that
+says what a file holds is released with the entries it read, the commit's answer too; one that cannot be released
+after the commit is unconfirmed, never a refusal (which says nothing happened), so the model repeats the same call. A
+replay of a saved call finds its change made and answers that nothing changed (a made id is made again, so it finds its
+own row); a call that waited for a member or failed at its commit replays from its receipt.

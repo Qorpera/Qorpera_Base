@@ -126,7 +126,8 @@ try {
 trap 'echo "failed at line $LINENO"' ERR
 test -z "\${QORPERA_SYNTHETIC_SECRET-}"
 test "$HOME" = /home/qorpera
-test "$(pwd)" = /srv/workbench
+# It starts in its home, never in the workbench (F3 4f-1b).
+test "$(pwd)" = /home/qorpera
 test -z "\${HTTPS_PROXY-}\${http_proxy-}"
 test "$(head -n 1 /etc/resolv.conf)" = "nameserver 10.210.0.1"
 test "$(grep -c '^nameserver' /etc/resolv.conf)" = 1

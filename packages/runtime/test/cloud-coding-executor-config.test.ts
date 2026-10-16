@@ -95,10 +95,18 @@ describe("coding executor service configuration", () => {
 		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual({
 			...machines,
 			previousHelperSha256s: [],
+			folder: false,
 		});
 		// The helpers of earlier images whose machines still run on this node.
 		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
-		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual(upgraded);
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual({
+			...upgraded,
+			folder: false,
+		});
+		// Each boot's company folder through the node's folder service (F3 6d): switched on only by true.
+		expect(
+			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...upgraded, folder: true } }).machines,
+		).toEqual({ ...upgraded, folder: true });
 		for (const bad of [
 			{ ...machines, helperSha256: "x" },
 			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
@@ -106,6 +114,8 @@ describe("coding executor service configuration", () => {
 			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
 			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
 			{ ...machines, extra: true },
+			{ ...machines, folder: false },
+			{ ...machines, folder: "true" },
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
 	});
@@ -137,6 +147,29 @@ describe("coding executor service configuration", () => {
 			{ ...folder, controlSocket: `/run/${"s".repeat(110)}` },
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), folder: bad })).toThrow("CONFIG_INVALID");
+	});
+	it("makes code hosts only with the node inventory policy's code host block", () => {
+		const codeHost = {
+			imageFingerprint: "e".repeat(64),
+			storagePool: "qorpera-vm",
+			cpus: 2,
+			memoryBytes: 4 * 1024 ** 3,
+			rootDiskBytes: 20 * 1024 ** 3,
+			running: 2,
+		};
+		expect(parseCodingExecutorConfiguration(fixture()).codeHost).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), codeHost }).codeHost).toEqual(codeHost);
+		for (const bad of [
+			null,
+			{},
+			{ ...codeHost, extra: true },
+			{ ...codeHost, imageFingerprint: "x" },
+			{ ...codeHost, memoryBytes: 4 * 1024 ** 3 + 1 },
+			{ ...codeHost, running: 0 },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), codeHost: bad })).toThrow(
+				"CODING_EXECUTOR_CONFIG_INVALID",
+			);
 	});
 	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
 		const config = fixture();

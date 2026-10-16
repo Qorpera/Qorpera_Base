@@ -187,7 +187,7 @@ export type FileRead =
 	| { readonly kind: "text"; readonly entry: CloudCompanyFolderEntry; readonly text: string }
 	| { readonly kind: "not_text"; readonly entry: CloudCompanyFolderEntry; readonly why: string };
 
-/** A file's whole text, or why it has none: a folder, too large, or not UTF-8. */
+/** A file's whole text, or why it has none: a folder, a link, too large, or not UTF-8. */
 export async function readFile(
 	folder: CloudCompanyFolderClient,
 	path: string,
@@ -210,9 +210,11 @@ export async function readFile(
 	const why =
 		entry.kind === "folder"
 			? "is a folder"
-			: entry.file.bytes > maxBytes
-				? `is larger than ${maxBytes / 1024} KiB`
-				: "is not UTF-8 text";
+			: entry.kind === "symlink"
+				? "is a link"
+				: entry.file.bytes > maxBytes
+					? `is larger than ${maxBytes / 1024} KiB`
+					: "is not UTF-8 text";
 	return { kind: "not_text", entry, why };
 }
 
