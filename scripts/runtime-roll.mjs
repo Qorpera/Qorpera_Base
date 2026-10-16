@@ -191,6 +191,9 @@ function historyInsert(name, text) {
 	const [, version, label] = MIGRATION_NAME.exec(name);
 	return `insert into supabase_migrations.schema_migrations(version,name,statements) values (${literal(version)},${literal(label)},array[${dollar(text)}]);`;
 }
+// Every overload of a pg_temp function still there: none if the migration dropped its own.
+const dropTempFunction = (name) =>
+	`do $$ declare f regprocedure; begin for f in select p.oid::regprocedure from pg_catalog.pg_proc p where p.pronamespace = pg_my_temp_schema() and p.proname = ${literal(name)} loop execute format('drop function %s', f); end loop; end $$;`;
 const RECORD = (name) => `select 1 from supabase_migrations.schema_migrations where version = ${literal(MIGRATION_NAME.exec(name)[1])}`;
 // A version taken by another name is refused too: the history must hold exactly this migration.
 const NOT_RECORDED = (name) => [`not exists (${RECORD(name)})`, `${name} is already recorded; inspect receipts instead of replaying`];
@@ -222,17 +225,25 @@ export function rollPackets(options) {
 	// The history order: two migrations that replace one function must apply in timestamp order.
 	const ordered = [...migrations].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	if (new Set(ordered.map((m) => MIGRATION_NAME.exec(m.name)?.[1])).size !== ordered.length) throw new Error("Two migrations share a version");
-	// pg_temp helpers and temporary tables: each migration creates its own, under a name no other release migration
-	// creates. 05 runs them all in one transaction (a shared name fails there) while each 10-* packet runs alone (a
-	// borrowed one fails there). A table made `if not exists` may be shared.
+	// pg_temp helpers and temporary tables: each migration creates its own. Each 10-* packet runs alone (a borrowed one
+	// fails there) while 05 runs them all in one transaction. A later migration may create a pg_temp function again (as
+	// 20260930394000 and 20260930445000 both create s5a_patch): 05 drops it right after the migration that made it. A
+	// table's name stays one migration's, unless it is made `if not exists`.
 	const helpers = new Map();
+	const redeclared = new Map();
 	for (const migration of ordered) {
 		const text = migration.text.replace(/--[^\n]*/g, "").toLowerCase();
 		const functions = [...text.matchAll(/create\s+(?:or\s+replace\s+)?function\s+pg_temp\.([a-z0-9_]+)/g)].map((m) => m[1]);
 		const tables = [...text.matchAll(/create\s+(?:temporary|temp)\s+table\s+(if\s+not\s+exists\s+)?(?:pg_temp\.)?([a-z0-9_]+)/g)];
-		for (const name of [...new Set(functions), ...tables.filter((m) => !m[1]).map((m) => m[2])]) {
-			if (helpers.has(name)) throw new Error(`${migration.name} and ${helpers.get(name)} both create pg_temp.${name}`);
-			helpers.set(name, migration.name);
+		for (const name of new Set(functions)) {
+			const before = helpers.get(name);
+			if (before?.table) throw new Error(`${migration.name} and ${before.migration} both create pg_temp.${name}`);
+			if (before) redeclared.set(before.migration, [...(redeclared.get(before.migration) ?? []), name]);
+			helpers.set(name, { migration: migration.name, table: false });
+		}
+		for (const name of tables.filter((m) => !m[1]).map((m) => m[2])) {
+			if (helpers.has(name)) throw new Error(`${migration.name} and ${helpers.get(name).migration} both create pg_temp.${name}`);
+			helpers.set(name, { migration: migration.name, table: true });
 		}
 		const created = new Set([...functions, ...tables.map((m) => m[2])]);
 		for (const [, name] of text.matchAll(/pg_temp\.([a-z0-9_]+)/g))
@@ -280,7 +291,12 @@ export function rollPackets(options) {
 			// Each migration starts with its packet's settings: a `set local` of one must not carry into the next.
 			...ordered.flatMap((migration) => {
 				const body = migrationBody(migration.text);
-				return [`set local lock_timeout = '5s';\nset local statement_timeout = '120s';`, body, historyInsert(migration.name, body)];
+				return [
+					`set local lock_timeout = '5s';\nset local statement_timeout = '120s';`,
+					body,
+					historyInsert(migration.name, body),
+					...(redeclared.get(migration.name) ?? []).map(dropTempFunction),
+				];
 			}),
 			// The guards the roll relies on, after every migration: a release that loses one pauses instead.
 			gate("roll_after", [[MARKERS, "A guard the roll relies on is missing after the release migrations: commit nothing, the release pauses"]]),

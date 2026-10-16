@@ -406,14 +406,24 @@ function sample(files) {
 	return files.length > 3 ? `${files.slice(0, 3).join(", ")} and ${files.length - 3} more` : files.join(", ");
 }
 
+/** Keeps a side-by-side step's fan-out within its cores, rounded up: its `node --test` runs that many test files at
+ * once (by default the machine's CPUs less one), and its Go programs (the docker CLI) run Go code on that many
+ * threads at once. Every task of the run counts against the runner user's 512 (run-on-node.mjs RUNNERS), and the
+ * steps' fan-out added up near it. The function is the step's own shell's: a `node --test` that npm or a script
+ * starts keeps node's default. */
+function narrow(step) {
+	const width = Math.max(1, Math.ceil(step.cores ?? 1));
+	return `export GOMAXPROCS=${width}; node() { if [ "\${1-}" = --test ]; then shift; command node --test --test-concurrency=${width} "$@"; else command node "$@"; fi; }`;
+}
+
 /** Every step runs, even after another failed; the exit code is 1 if any failed. Without `cores`, one step at a time in
  * plan order, each running its `alone` commands after its others.
  *
  * With `cores`, side by side: first every step's `alone` commands, one step at a time with nothing else running; then
  * the rest of every step, the longest (`seconds`) first, each starting once the running steps' `cores` leave room for
- * it within `cores` (one always runs). A step runs its rest even when its `alone` part failed, and passes only if both
- * passed. Its output is printed whole when it ends, with its own time. A step whose rest ends without a result (its
- * worker killed, or the result not written) fails. */
+ * it within `cores` (one always runs), its fan-out within its own (`narrow`). A step runs its rest even when its
+ * `alone` part failed, and passes only if both passed. Its output is printed whole when it ends, with its own time. A
+ * step whose rest ends without a result (its worker killed, or the result not written) fails. */
 export function planScript(steps, { cores = null } = {}) {
 	const fail = [
 		// The failed step names reach the run record (and the GitHub status) through the status file.
@@ -446,10 +456,10 @@ export function planScript(steps, { cores = null } = {}) {
 		`need=(${steps.map((step) => Math.round((step.cores ?? 1) * 100)).join(" ")})`,
 		`code=(${steps.map(() => 0).join(" ")})`,
 		`seconds=(${steps.map(() => 0).join(" ")})`,
-		// Each part is a subshell, so a command's own exit ends only its part.
+		// Each part is a subshell, so a command's own exit ends only its part. A rest fans out within its step's cores.
 		...indexed.flatMap(({ step, i }) => [
 			...(step.alone?.length ? [`alone_${i}() ( ${step.alone.join(" && ")} )`] : []),
-			...(step.commands.length ? [`rest_${i}() ( ${step.commands.join(" && ")} )`] : []),
+			...(step.commands.length ? [`rest_${i}() ( ${narrow(step)}; ${step.commands.join(" && ")} )`] : []),
 		]),
 		'report() { echo "== changed: ${names[$1]}"; cat "$out/$1.log"; if [ "${code[$1]}" = 0 ]; then echo "== changed: ${names[$1]} passed in ${seconds[$1]} s"; else echo "== changed: ${names[$1]} FAILED after ${seconds[$1]} s"; failed="$failed ${names[$1]}"; fi; }',
 		...indexed

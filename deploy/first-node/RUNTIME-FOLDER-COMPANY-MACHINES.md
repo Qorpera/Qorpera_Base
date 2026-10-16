@@ -356,6 +356,11 @@ to the filter (`scripts/prove-office-command-namespaces-vm.sh`):
   command's own `setns(-1, 0)`, which names no namespace, gets the filter's `EPERM`, not the kernel's `EBADF`;
 - a networked command works, `lo` included.
 
+It runs each mode twice: once with its own stand-in for the child, which reports its state at each step, and once
+with 4d-4a's launcher, `qorpera-folder command`, started as the helper starts it. The launcher's runs check the same
+command from outside and from inside, and that the launcher's start report names it (its pid and its mount
+namespace). The launcher's filter is pinned by the crate's own test to the digest of the one the stand-in installs.
+
 A networked command's child makes only the mount namespace. It stays in the computer's network namespace, so the
 helper has no `lo` to bring up for it (amended 14 October 2026).
 
