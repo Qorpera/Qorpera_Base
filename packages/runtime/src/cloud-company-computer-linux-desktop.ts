@@ -315,6 +315,12 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				await assertCompanyComputerImageArtifact(path, directory);
 				args.push("--ro-bind", path, path);
 			}
+			// LibreOffice's registry links into /etc/libreoffice; without it LibreOffice cannot start. An image without
+			// LibreOffice has none.
+			if (await lstat("/etc/libreoffice").catch(() => undefined)) {
+				await assertCompanyComputerImageArtifact("/etc/libreoffice", true);
+				args.push("--ro-bind", "/etc/libreoffice", "/etc/libreoffice");
+			}
 			args.push("--symlink", "../usr/lib/os-release", "/etc/os-release");
 			if (company) {
 				// The mount's parent, not its mountpoint: a mount made again under it reaches this desktop (Q3, #1007).

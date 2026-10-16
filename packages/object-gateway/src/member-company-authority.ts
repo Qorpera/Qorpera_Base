@@ -40,7 +40,15 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_company_creation_release"
 	| "qorpera_folder_company_creation_fail"
 	// Its kick of the follow-up queue for the new Co-Founder (P15).
-	| "qorpera_folder_follow_up_now";
+	| "qorpera_folder_follow_up_now"
+	// The memory message eraser (memory-message-eraser.ts, M3): its queue and its take, its four steps and step 2's plan.
+	| "qorpera_memory_message_erase_due"
+	| "qorpera_memory_message_erase_take"
+	| "qorpera_memory_message_erase_open"
+	| "qorpera_memory_message_erase_plan"
+	| "qorpera_memory_message_erase_rewrite"
+	| "qorpera_memory_message_erase_ask"
+	| "qorpera_memory_message_erase_scrub";
 
 export interface MemberCompanyAuthority {
 	member(

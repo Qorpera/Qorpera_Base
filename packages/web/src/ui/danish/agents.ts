@@ -234,6 +234,7 @@ export const AGENTS: Record<string, string> = {
 	"The owner is no longer a member": "Ejeren er ikke længere medlem",
 	"{agent} no longer has the repository": "{agent} har ikke længere adgang til repositoriet",
 	"Coding is turned off here": "Kodning er slået fra her",
+	"The machine stopped": "Maskinen stoppede",
 	"1 command stopped": "1 kommando stoppet",
 	"{count} commands stopped": "{count} kommandoer stoppet",
 	"Coding session": "Kodesession",
