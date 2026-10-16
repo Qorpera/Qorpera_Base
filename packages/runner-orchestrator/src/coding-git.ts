@@ -46,8 +46,8 @@ export interface CodingBrokerGitCommand {
 	 * for a network command; never persist, log or forward it into the VM. */
 	readonly env: Readonly<Record<string, string>>;
 	readonly signal: AbortSignal;
-	/** A whole-repository step (a seed's fetch, fsck or bundle, a push's base
-	 * fetch): 240 s of CPU and 300 s in all instead of 30 s and 60 s. */
+	/** A whole-repository step (a seed's fetch, fsck or bundle, a push's two
+	 * fetches): 240 s of CPU and 300 s in all instead of 30 s and 60 s. */
 	readonly long?: boolean;
 }
 export type CodingBrokerGitRunner = (command: CodingBrokerGitCommand) => Promise<string>;
@@ -153,8 +153,9 @@ export const runCodingBrokerGit = createCodingBrokerGitRunner();
 /** Publish one bundle into the worker's fixed GitHub branch. Objects are
  * imported into a new bare broker repository; no worktree, repository config,
  * hooks, filters, submodules or model code execute in the token lane. A thin
- * bundle's prerequisites (and the base branch tip, so the push sends only new
- * objects) are fetched from the repository at depth 1 before it is verified.
+ * bundle's prerequisites are fetched from the repository at depth 1 before it
+ * is verified, and the base branch tip after the checks, so the push sends only
+ * new objects.
  * The caller holds exclusive branch publication authority through draft PR
  * creation. An uncertain push is observed with ls-remote and never reissued. */
 export async function pushCloudCodingBundle(
@@ -315,18 +316,10 @@ export async function pushCloudCodingBundle(
 		const expectedHead = `${input.headSha} ${ref}\n`;
 		if ((await run(["bundle", "list-heads", bundlePath])) !== expectedHead)
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
+		const depthOne = ["fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote];
 		if (prerequisites.length > 0)
 			await run(
-				[
-					"fetch",
-					"--depth=1",
-					"--no-tags",
-					"--no-recurse-submodules",
-					"--no-write-fetch-head",
-					remote,
-					...prerequisites.map((sha, index) => `${sha}:refs/qorpera/prerequisite/${index}`),
-					`${baseRef}:refs/qorpera/base`,
-				],
+				[...depthOne, ...prerequisites.map((sha, index) => `${sha}:refs/qorpera/prerequisite/${index}`)],
 				true,
 				cwd,
 				true,
@@ -336,11 +329,15 @@ export async function pushCloudCodingBundle(
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
 		if ((await run(["cat-file", "-t", input.headSha])) !== "commit\n")
 			throw new Error("CODING_GIT_BUNDLE_TARGET_MISMATCH");
-		// The fetched base branch tip need not be reachable from the head.
+		// A prerequisite the head does not reach is not reported.
 		await run(["fsck", "--strict", "--no-reflogs", "--no-dangling", input.headSha]);
 		await run(["merge-base", "--is-ancestor", input.baseSha, input.headSha]);
 		if (input.expectedRemoteHeadSha !== null)
 			await run(["merge-base", "--is-ancestor", input.expectedRemoteHeadSha, input.headSha]);
+		// Only now: a base tip fetched at depth 1 is shallow, and when the base took
+		// a worker commit it sits on the head's own history and would cut the walks
+		// above short. It lets the push leave out what the base already has.
+		if (prerequisites.length > 0) await run([...depthOne, `${baseRef}:refs/qorpera/base`], true, cwd, true);
 		await authorize();
 		if (!(await publish(options.journalRoot, claimName, Buffer.from(JSON.stringify(claim)))))
 			throw new Error("CODING_GIT_RECONCILIATION_REQUIRED");

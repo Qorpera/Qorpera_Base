@@ -240,7 +240,7 @@ describe("credential-isolated coding Git publication", () => {
 		).toEqual({ branch, headSha: next });
 		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(2);
 	});
-	it("fetches a thin bundle's prerequisites and the base tip at depth 1, then verifies and pushes it", async () => {
+	it("fetches a thin bundle's prerequisites before verify and the base tip after the checks", async () => {
 		const f = await fixture(),
 			path = join(f.root, "thin.bundle");
 		await f.git("bundle", "create", path, ref, `^${f.input.baseSha}`);
@@ -249,27 +249,63 @@ describe("credential-isolated coding Git publication", () => {
 			headSha: f.input.headSha,
 		});
 		const fetches = f.calls.filter((call) => call.args.includes("fetch"));
-		expect(fetches).toHaveLength(1);
-		expect(fetches[0].network).toBe(true);
-		// The base's history may be large: the fetch gets a seed's limits.
-		expect(fetches[0].long).toBe(true);
-		expect(f.calls.filter((call) => call.long)).toHaveLength(1);
-		expect(fetches[0].args.slice(-8)).toEqual([
+		expect(fetches).toHaveLength(2);
+		// The base's history may be large: both fetches get a seed's limits.
+		expect(f.calls.filter((call) => call.long)).toEqual(fetches);
+		const depthOne = [
 			"fetch",
 			"--depth=1",
 			"--no-tags",
 			"--no-recurse-submodules",
 			"--no-write-fetch-head",
 			"https://github.com/qorpera/example.git",
-			`${f.input.baseSha}:refs/qorpera/prerequisite/0`,
-			"refs/heads/main:refs/qorpera/base",
-		]);
-		expect(fetches[0].env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/qorpera/example.git.extraHeader");
-		expect(fetches[0].env.GIT_ALLOW_PROTOCOL).toBe("https");
-		const step = (word: string) => f.calls.findIndex((call) => call.args.includes(word));
-		expect(step("list-heads")).toBeLessThan(step("fetch"));
-		expect(step("fetch")).toBeLessThan(step("verify"));
+		];
+		expect(fetches[0].args.slice(-7)).toEqual([...depthOne, `${f.input.baseSha}:refs/qorpera/prerequisite/0`]);
+		expect(fetches[1].args.slice(-7)).toEqual([...depthOne, "refs/heads/main:refs/qorpera/base"]);
+		for (const call of fetches) {
+			expect(call.network).toBe(true);
+			expect(call.env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/qorpera/example.git.extraHeader");
+			expect(call.env.GIT_ALLOW_PROTOCOL).toBe("https");
+		}
+		const at = (word: string) => f.calls.findIndex((call) => call.args.includes(word));
+		expect(at("list-heads")).toBeLessThan(f.calls.indexOf(fetches[0]));
+		expect(f.calls.indexOf(fetches[0])).toBeLessThan(at("verify"));
+		expect(at("merge-base")).toBeLessThan(f.calls.indexOf(fetches[1]));
+		expect(f.calls.indexOf(fetches[1])).toBeLessThan(at("push"));
 		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
+	});
+	it("checks the head's history before it fetches a base tip that took a worker commit", async () => {
+		const f = await fixture(),
+			remote = join(f.root, "remote.git"),
+			path = join(f.root, "after-merge.bundle");
+		// The base took the worker's first push, and the worker built on it.
+		const tree = await f.git("rev-parse", `${f.input.headSha}^{tree}`);
+		const next = await f.git("commit-tree", tree, "-p", f.input.headSha, "-m", "after the merge");
+		await f.git("update-ref", ref, next);
+		await f.git("push", "--quiet", remote, `${f.input.headSha}:refs/heads/main`, `${f.input.headSha}:${ref}`);
+		f.setBase(f.input.headSha);
+		f.setRemote(f.input.headSha);
+		await f.git("bundle", "create", path, ref, `^${f.input.baseSha}`);
+		// The push is real here, from the broker's shallow repository.
+		const fake = f.options.runGit;
+		if (!fake) throw new Error("fixture missing");
+		f.options.runGit = async (command) => {
+			if (command.args.includes("push"))
+				await exec(
+					"/usr/bin/git",
+					command.args.map((arg) => (arg === "https://github.com/qorpera/example.git" ? `file://${remote}` : arg)),
+					{ cwd: command.cwd, env: { ...command.env, GIT_ALLOW_PROTOCOL: "file" }, signal: command.signal },
+				);
+			return fake(command);
+		};
+		expect(
+			await pushCloudCodingBundle(
+				{ ...f.input, headSha: next, expectedRemoteHeadSha: f.input.headSha },
+				await readFile(path),
+				f.options,
+			),
+		).toEqual({ branch, headSha: next });
+		expect(await f.git("ls-remote", remote, ref)).toBe(`${next}\t${ref}`);
 	});
 	it("refuses a thin bundle whose prerequisite the repository does not have", async () => {
 		const f = await fixture(),
