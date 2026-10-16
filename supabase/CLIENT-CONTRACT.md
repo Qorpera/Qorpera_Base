@@ -246,13 +246,11 @@ with legacy sweep E1 (20260930400000).
 - `qorpera_profile_object_writes_allowed`
 
 
-### Company File, snapshots, workspaces (5)
+### Company File and snapshots (3)
 
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
 - `qorpera_get_company_snapshot`
-- `qorpera_list_company_snapshots`
-- `qorpera_list_company_workspaces`
 
 
 ### Organization and staff (4)

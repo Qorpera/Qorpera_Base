@@ -690,7 +690,9 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   proposal snapshot, artifact index or Company File output limits, and null substrate and snapshot ids on the job and
   the run. `qorpera_folder_runner_broker_describe` keeps the legacy body's checks that still apply: the run is the
   job's, the sponsor and the connection are active and the company's, the assignment is accepted. A proposal review
-  needs a proposal snapshot and refuses (0A000).
+  needs a proposal snapshot and refuses (0A000). Legacy sweep D8 (20260930410000) dropped the legacy body: the
+  broker's describe hands every job to the folder describe, which refuses one whose company has no `folder-v2` Company
+  File (55000).
 - **No fall-through to the whole-tree lane.** The runtime's parsers accept the absence only as the path lane's, with
   version, snapshot and output limits absent together and no substrate named on the job or the run. Every reader of a
   substrate refuses ("This run has no Company File substrate"): resolve, operations, the output and Company File
