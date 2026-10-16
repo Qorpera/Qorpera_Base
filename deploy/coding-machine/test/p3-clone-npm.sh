@@ -14,8 +14,10 @@
 # script). Then node_modules must be on the VM's disk: in the mount program's local folder, with every entry under it a
 # local inode, git seeing no change. If the worktree is a git worktree, one file is committed there too and pushed as
 # p3-<time>-<n>-session (the shared repo.git's objects and ref locks). Last, the mount's pending changes are published,
-# as a turn's end does, and the report must hold the clone's files, all saved, and nothing under node_modules.
-# Everything in the scratch folder is removed at the end, and the removal published.
+# as a turn's end does: the boundary must not be refused, and of this run's paths in its report every one must be saved
+# and none under node_modules. The mount also publishes on its own (about 2 s after the last change), so that report
+# may hold little of the clone: what the node holds is checked here with P3_NODE_LIST. Everything in the scratch
+# folder is removed at the end, and the removal published (unless P3_PUBLISH=0).
 #
 # Options:
 #   P3_PUBLISH=0     no publish (the turn's own publish comes later; check again with P3_CHECK).
@@ -25,7 +27,8 @@
 #                    (unless P3_KEEP=1). P3_WORKTREE and P3_REMOTE are not needed.
 #   P3_NODE_LIST=<command>
 #                    run here after the publish with the scratch folder's path in the folder as $1; it prints the
-#                    node's paths under it, one per line. Fails on any node_modules, or without the clone's package.json.
+#                    node's paths under it, one per line. Fails on any node_modules, or without the clone's package.json
+#                    (in both modes). Without it, nothing checks that the node holds the clone.
 #   P3_STATE_DIR, P3_VIEW_FILE, P3_LOCAL_DIR, P3_PROGRAM
 #                    the mount program's, when they can't be read from its command line in the VM.
 #
@@ -91,8 +94,8 @@ node_list() {
 		echo "the node holds node_modules: $modules"
 		return 1
 	fi
-	if [[ -z ${P3_CHECK:-} ]] &&
-		! grep -qxF -e "$folder/again/p3-app/package.json" -e "/$folder/again/p3-app/package.json" <<<"$listing"; then
+	# A kept run's scratch folder (P3_CHECK) holds the clone too.
+	if ! grep -qxF -e "$folder/again/p3-app/package.json" -e "/$folder/again/p3-app/package.json" <<<"$listing"; then
 		echo "the node's paths have no $folder/again/p3-app/package.json: not this run's folder, or the clone was not published"
 		return 1
 	fi
@@ -113,7 +116,7 @@ if [[ -n ${P3_NODE_LIST:-} ]]; then
 		host=(--env P3_HOST_CHECK=skipped --env "P3_HOST_DETAIL=nothing was published (P3_PUBLISH=0)")
 	fi
 else
-	host=(--env P3_HOST_CHECK=skipped --env "P3_HOST_DETAIL=no P3_NODE_LIST")
+	host=(--env P3_HOST_CHECK=skipped --env "P3_HOST_DETAIL=no P3_NODE_LIST: what the node holds was not checked")
 fi
 
 rc=0

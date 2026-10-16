@@ -320,8 +320,10 @@ publish_to() {
 	echo "$rc"
 }
 
-# Nothing under node_modules is in what the mount published, and every path of this run's was saved (a full run's
-# app among them).
+# This boundary: not refused, and of this run's paths in its report none under node_modules and every one saved. The
+# mount also publishes on its own (about 2 s after the last change, and when git removes a shared lock), so earlier
+# publishes may have saved the clone already and this report may hold none of it: whether the node holds the clone,
+# and no node_modules, is the outer half's node-list check (P3_NODE_LIST).
 publish() {
 	local report=$work/publish.json rc mine
 	rc=$(publish_to "$report")
@@ -331,19 +333,15 @@ publish() {
 		fail "node_modules reached the node: $(jq -c '[.[] | select(.path | test("(^|/)node_modules(/|$)")) | .path] | .[:10]' <<<"$mine")"
 	jq -e 'all(.[]; .outcome == "saved")' <<<"$mine" >/dev/null ||
 		fail "not saved: $(jq -c '[.[] | select(.outcome != "saved")] | .[:10]' <<<"$mine")"
-	if [[ -z $check ]]; then
-		jq -e --arg app "$folder/again/p3-app/package.json" 'any(.[]; .path == $app)' <<<"$mine" >/dev/null ||
-			fail "the report has no $folder/again/p3-app/package.json: the clone was not published"
-	fi
 	count publishExit "$rc"
 	count publishedPaths "$(jq length <<<"$mine")"
 	count publishedOtherPaths "$(jq --arg p "$folder/" '[.paths[] | select(.path | ltrimstr("/") | startswith($p) | not)] | length' "$report")"
 	fact publishCommit "$(jq -r '.commitId // ""' "$report")"
-	touch "$work/published"
 }
 
 # The scratch folder removed through the mount (its node_modules leaves the local folder with it), and the removal
-# published when run published.
+# published unless P3_PUBLISH=0, wherever run stopped: the mount may have published some of the scratch folder on its
+# own, or run's publish saved it and then failed a check.
 cleanup() {
 	local report=$work/publish-cleanup.json
 	if [[ -e $scratch ]]; then as rm -rf "$scratch"; fi
@@ -352,7 +350,8 @@ cleanup() {
 		[[ ! -e $local_dir/cache/$folder/again/p3-app/node_modules ]] ||
 			fail "the local folder still holds $local_dir/cache/$folder/again/p3-app/node_modules"
 	fi
-	if [[ -f $work/published ]]; then
+	# folder is set once preflight found the mount; without it there is nothing to publish with.
+	if [[ ${P3_PUBLISH:-1} != 0 && -n ${folder:-} ]]; then
 		publish_to "$report" >/dev/null
 		jq -e --arg p "$folder/" '.refused == null and all(.paths[] | select(.path | ltrimstr("/") | startswith($p)); .outcome == "saved")' \
 			"$report" >/dev/null || fail "the removal was not published: $(jq -c '{refused, paths: .paths[:10]}' "$report")"
@@ -362,7 +361,7 @@ cleanup() {
 run() {
 	: >"$steps"
 	: >"$facts"
-	rm -f "$work/found" "$work/published" "$work/passed"
+	rm -f "$work/found" "$work/passed"
 	if [[ -n $uid ]]; then install -d -m 0700 -o "$uid" -g "$gid" "$home"; else install -d -m 0700 "$home"; fi
 	if [[ -n $uid ]]; then install -d -m 0755 -o "$uid" -g "$gid" "$work/pkgs"; else install -d -m 0755 "$work/pkgs"; fi
 	step preflight find_mount
