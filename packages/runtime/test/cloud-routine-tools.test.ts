@@ -291,30 +291,82 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
+	// What the model is told about a bad trigger: the argument's name and a good value ("" is no reason).
+	const because = {
+		kind: 'trigger is an object whose kind is dynamic, every, weekly, file_change or event, like {"kind":"dynamic","timeZone":"Europe/Copenhagen"}',
+		everyKeys:
+			'a trigger of kind every takes minutes, and optionally firstRunAt and report, nothing else, like {"kind":"every","minutes":60}',
+		dynamicKeys:
+			'a trigger of kind dynamic takes timeZone, and optionally firstRunAt and report, nothing else, like {"kind":"dynamic","timeZone":"Europe/Copenhagen"}',
+		weeklyKeys:
+			'a trigger of kind weekly takes localTime and timeZone, and optionally weekdays, firstRunAt and report, nothing else, like {"kind":"weekly","localTime":"08:00","timeZone":"Europe/Copenhagen"}',
+		fileKeys:
+			'a trigger of kind file_change takes path and timeZone, and optionally match and report, nothing else, like {"kind":"file_change","path":"sales/leads","timeZone":"Europe/Copenhagen"}',
+		eventKeys:
+			'a trigger of kind event takes hookId and timeZone, and optionally only and report, nothing else, like {"kind":"event","hookId":"<an id from list_hooks>","timeZone":"Europe/Copenhagen"}',
+		minutes: "minutes is a whole number from 5 to 10080 (one week), like 60",
+		weekdays: 'weekdays is 1 to 7 different days, sunday to saturday in lowercase, like ["monday", "thursday"]',
+		localTime: "localTime is a time of day as HH:MM on a 24-hour clock, like 08:00",
+		timeZone: "timeZone is an IANA time zone, like Europe/Copenhagen",
+		report: "report is optional, required or silent",
+		match: "match is exact (the path itself) or subtree (anything under it)",
+		path: "path is a folder or file path inside the company, like sales/leads",
+		hook: "hookId is the id of one of the company's hooks or mailboxes, a UUID copied from list_hooks",
+		only: 'only is 1 to 20 different event types, each up to 128 ASCII letters, digits or punctuation marks without spaces, like ["invoice.paid"]',
+		firstRunAt: "firstRunAt must be an ISO 8601 date and time with its offset",
+	};
 	it.each([
-		["another agent", { staffAgentId: randomUUID() }],
-		["a sponsor", { sponsorBindingId: randomUUID() }],
-		["a trigger id", { trigger: { kind: "every", minutes: 30, id: "mine" } }],
-		["a cron", { trigger: { kind: "cron", expression: "* * * * *" } }],
-		["a one-minute loop", { trigger: { kind: "every", minutes: 1 } }],
-		["an unknown time zone", { trigger: { kind: "weekly", localTime: "08:00", timeZone: "Mars/Olympus" } }],
-		["a path escape", { trigger: { kind: "file_change", path: "../secrets", timeZone: "UTC" } }],
-		["an event listener without a hook id", { trigger: { kind: "event", hookId: "forms", timeZone: "UTC" } }],
+		["another agent", { staffAgentId: randomUUID() }, ""],
+		["a sponsor", { sponsorBindingId: randomUUID() }, ""],
+		["a trigger id", { trigger: { kind: "every", minutes: 30, id: "mine" } }, because.everyKeys],
+		["a cron", { trigger: { kind: "cron", expression: "* * * * *" } }, because.kind],
+		["a trigger in words", { trigger: "every morning at eight" }, because.kind],
+		["a one-minute loop", { trigger: { kind: "every", minutes: 1 } }, because.minutes],
+		["a loop over a week", { trigger: { kind: "every", minutes: 10_081 } }, because.minutes],
+		["a fractional interval", { trigger: { kind: "every", minutes: 7.5 } }, because.minutes],
+		["a weekly routine without a time", { trigger: { kind: "weekly", timeZone: "UTC" } }, because.weeklyKeys],
+		["a capitalised weekday", { trigger: { ...weekly.trigger, weekdays: ["Monday"] } }, because.weekdays],
+		["no weekdays", { trigger: { ...weekly.trigger, weekdays: [] } }, because.weekdays],
+		["a repeated weekday", { trigger: { ...weekly.trigger, weekdays: ["monday", "monday"] } }, because.weekdays],
+		["a 12-hour time", { trigger: { ...weekly.trigger, localTime: "8:00 am" } }, because.localTime],
+		["an unknown time zone", { trigger: { ...weekly.trigger, timeZone: "Mars/Olympus" } }, because.timeZone],
+		["an automatic time zone", { trigger: { kind: "dynamic", timeZone: "auto" } }, because.timeZone],
+		["an unknown report", { trigger: { kind: "dynamic", timeZone: "UTC", report: "loud" } }, because.report],
+		["a path escape", { trigger: { kind: "file_change", path: "../secrets", timeZone: "UTC" } }, because.path],
+		[
+			"an unknown path match",
+			{ trigger: { kind: "file_change", path: "sales/leads", match: "prefix", timeZone: "UTC" } },
+			because.match,
+		],
+		[
+			"a file watch with a cadence",
+			{ trigger: { kind: "file_change", path: "sales/leads", timeZone: "UTC", minutes: 30 } },
+			because.fileKeys,
+		],
+		[
+			"an event listener without a hook id",
+			{ trigger: { kind: "event", hookId: "forms", timeZone: "UTC" } },
+			because.hook,
+		],
 		[
 			"an event listener with an empty filter",
 			{ trigger: { kind: "event", hookId: randomUUID(), only: [], timeZone: "UTC" } },
+			because.only,
 		],
 		[
 			"an event listener with a spaced type",
 			{ trigger: { kind: "event", hookId: randomUUID(), only: ["invoice paid"], timeZone: "UTC" } },
+			because.only,
 		],
 		[
 			"an event listener with a repeated type",
 			{ trigger: { kind: "event", hookId: randomUUID(), only: ["a", "a"], timeZone: "UTC" } },
+			because.only,
 		],
 		[
 			"an event listener with a path",
 			{ trigger: { kind: "event", hookId: randomUUID(), path: "x", timeZone: "UTC" } },
+			because.eventKeys,
 		],
 		[
 			"an event listener with 21 types",
@@ -326,25 +378,55 @@ describe("agent routine tool", () => {
 					timeZone: "UTC",
 				},
 			},
+			because.only,
 		],
-		["equal quiet bounds", { quietHours: { start: "08:00", end: "08:00", timeZone: "UTC" } }],
-		["a dynamic routine without a time zone", { trigger: { kind: "dynamic" } }],
-		["a dynamic routine with a cadence", { trigger: { kind: "dynamic", timeZone: "UTC", minutes: 30 } }],
-		["an unreadable first run", { trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "tomorrow" } }],
+		[
+			"equal quiet bounds",
+			{ quietHours: { start: "08:00", end: "08:00", timeZone: "UTC" } },
+			"quietHours.start and quietHours.end differ, like 22:00 and 07:00",
+		],
+		[
+			"a quiet start past midnight",
+			{ quietHours: { start: "24:00", end: "07:00", timeZone: "UTC" } },
+			"quietHours.start is a time of day as HH:MM on a 24-hour clock, like 08:00",
+		],
+		[
+			"an unknown quiet time zone",
+			{ quietHours: { start: "22:00", end: "07:00", timeZone: "Mars/Olympus" } },
+			"quietHours.timeZone is an IANA time zone, like Europe/Copenhagen",
+		],
+		["a dynamic routine without a time zone", { trigger: { kind: "dynamic" } }, because.dynamicKeys],
+		[
+			"a dynamic routine with a cadence",
+			{ trigger: { kind: "dynamic", timeZone: "UTC", minutes: 30 } },
+			because.dynamicKeys,
+		],
+		[
+			"an unreadable first run",
+			{ trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "tomorrow" } },
+			because.firstRunAt,
+		],
 		[
 			"a first run without an offset",
 			{ trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-01T09:00" } },
+			because.firstRunAt,
 		],
 		// Without an offset the host would read these in its own zone, not the member's.
 		[
 			"an every first run without an offset",
 			{ trigger: { kind: "every", minutes: 60, firstRunAt: "2026-10-01T09:00:00" } },
+			because.firstRunAt,
 		],
 		[
 			"a weekly first run without an offset",
 			{ trigger: { kind: "weekly", localTime: "09:00", timeZone: "UTC", firstRunAt: "2026-10-01T09:00:00" } },
+			because.firstRunAt,
 		],
-		["an expiry without an offset", { expiresAt: "2026-10-03T18:00" }],
+		[
+			"an expiry without an offset",
+			{ expiresAt: "2026-10-03T18:00" },
+			"expiresAt must be an ISO 8601 date and time with its offset",
+		],
 		// Its one next run would never happen.
 		[
 			"a dynamic first run at its end",
@@ -352,12 +434,16 @@ describe("agent routine tool", () => {
 				trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-02T11:00:00+02:00" },
 				expiresAt: "2026-10-02T09:00:00Z",
 			},
+			"firstRunAt must come before expiresAt",
 		],
-	])("rejects %s before the writer sees it", async (_label, extra) => {
+	])("rejects %s before the writer sees it", async (_label, extra, reason) => {
 		const f = await fixture();
 		try {
 			const response = await f.boundary.invoke("bad", "qorpera", "manage_routine", { ...weekly, ...extra });
 			expect(response.success).toBe(false);
+			// The result is JSON, so the reason's quotes are read from its parsed content.
+			const told = (JSON.parse(response.contentItems[0].text) as { content: { text: string } }).content.text;
+			expect(told).toContain(`INVALID_ARGUMENTS${reason ? `: ${reason}` : ""}`);
 			expect(f.writer.check).not.toHaveBeenCalled();
 			expect(f.writer.change).not.toHaveBeenCalled();
 		} finally {
@@ -582,6 +668,11 @@ describe("dynamic routine decision tool", () => {
 		["an unreadable time", { action: "next", operationKey: "k", at: "soon" }, "at must be"],
 		// Without an offset the host would read it in its own zone, not the member's.
 		["a time without an offset", { action: "next", operationKey: "k", at: "2026-10-01T09:00:00" }, "at must be"],
+		[
+			"an unknown report",
+			{ action: "next", operationKey: "k", at: "2026-10-01T09:00:00Z", report: "loud" },
+			"report is optional, required or silent",
+		],
 		["no summary", { action: "conclude", operationKey: "k" }, ""],
 		["a routine key", { action: "conclude", operationKey: "k", summary: "x", routineKey: "other" }, ""],
 		["another action", { action: "remove", operationKey: "k" }, "action must be next or conclude"],
