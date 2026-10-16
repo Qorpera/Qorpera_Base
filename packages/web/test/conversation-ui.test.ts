@@ -396,12 +396,14 @@ describe("conversation UI boundaries", () => {
 		const [author, time] = message.getAttribute("aria-label")!.split(" · ");
 		return { author: author === "You" ? "you" : author!, time: time! };
 	};
-	const erases = (answers: MessageErase["state"][]) => {
+	const erases = (answers: MessageErase["state"][], copies: MessageErase["copies"] = []) => {
 		const erase = (state: MessageErase["state"]): MessageErase => ({
 			eraseId: id(90),
 			state,
 			sessionId: session.sessionId,
 			eventId: id(1001),
+			// Step 3 names the copies.
+			copies: state === "requested" || state === "done" ? copies : [],
 		});
 		const request = vi.fn(async (_session: string, _event: string, _signal: AbortSignal) => erase(answers[0]!));
 		let read = 0;
@@ -491,6 +493,46 @@ describe("conversation UI boundaries", () => {
 		// No menu on the erased message.
 		expect(messageMenu(f.view.el.querySelector(".message")!).offered).toBe(false);
 	});
+	it("names each copy the erase leaves by its path, and says the message is not gone from them", async () => {
+		const here = profileA.environmentId;
+		const route = erases(
+			["pending", "requested", "done"],
+			[
+				{ environmentId: here, path: "Zeta/notes.md", live: false },
+				{ environmentId: here, path: "reports/r2.md", live: true },
+				// Another environment of the company.
+				{ environmentId: id(56), path: "old.md", live: false },
+				{ environmentId: id(56), path: "reports/r2.md", live: true },
+			],
+		);
+		const f = await erasable([event(1, "Before")], 0, { messageErases: route });
+		const what = named(f.view.el.querySelector(".message")!);
+		messageMenu(f.view.el.querySelector(".message")!).items[0]!.click();
+		await settle();
+		button(document.querySelector(".modal-backdrop")!, "Erase").click();
+		await settle();
+		const lines = () =>
+			[...f.view.el.querySelectorAll(".notice")].map((item) => [...item.children].map((line) => line.textContent));
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		const copies = [
+			"A copy stays in the history of Zeta/notes.md, which is deleted.",
+			"A copy stays in reports/r2.md.",
+			"A copy stays in the history of old.md in another Company File, where it is deleted.",
+			"A copy stays in reports/r2.md in another Company File.",
+		];
+		expect(lines()).toContainEqual([
+			`The message from ${what.author} at ${what.time} is erased from the thread. Clearing it from the company's memory…`,
+			...copies,
+		]);
+		await vi.advanceTimersByTimeAsync(2000);
+		await settle();
+		expect(lines()).toContainEqual([
+			`Erased the message from ${what.author} at ${what.time} from the thread and from the company's memory, but not from files that hold a copy of it.`,
+			...copies,
+		]);
+		expect(f.view.el.querySelector(".notice-warn")).not.toBeNull();
+	});
 	it("asks nothing when the member does not confirm", async () => {
 		const route = erases(["pending"]);
 		const f = await erasable([event(1, "Before")], 0, { messageErases: route });
@@ -535,6 +577,8 @@ describe("conversation UI boundaries", () => {
 	it("gives the keyboard back to the link or the message the menu was opened on", async () => {
 		const route = erases(["pending"]);
 		const f = setup({ messageErases: route });
+		// The view's own first read lands before the test draws the thread.
+		await settle();
 		const reply: TranscriptMessage = {
 			kind: "agent",
 			id: id(83),
@@ -580,6 +624,18 @@ describe("conversation UI boundaries", () => {
 		f.view.update();
 		expect(link.isConnected).toBe(false);
 		expect(document.activeElement).toBe(f.view.el.querySelector(".message"));
+		// The message gone from the thread while its dialog is open: Cancel leaves the keyboard on the thread.
+		state.set({ projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+		f.view.update();
+		messageMenu(f.view.el.querySelector(".message")!).items[0]!.click();
+		await settle();
+		state.set({ projection: { items: [], hiddenCount: 0, lastSequence: 1 } });
+		f.view.update();
+		expect(f.view.el.querySelector(".message")).toBeNull();
+		button(document.querySelector(".modal-backdrop")!, "Cancel").click();
+		await settle();
+		expect(document.activeElement).toBe(f.view.el.querySelector(".messages"));
+		expect(route.request).not.toHaveBeenCalled();
 	});
 	it("says in plain words why an erase stopped", async () => {
 		const cases: [Partial<Record<"request" | "status", MessageEraseError>>, MessageErase["state"][], string][] = [

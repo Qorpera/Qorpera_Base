@@ -30,6 +30,7 @@ const answer = (fields: Record<string, unknown> = {}) =>
 		eventId: event,
 		blocks: 0,
 		runsPending: 0,
+		copies: [],
 		...fields,
 	});
 
@@ -61,7 +62,7 @@ describe("the member's message erase transport", () => {
 	it("asks for an erase and reads it again through the bridge with the member's token alone", async () => {
 		const { erases, calls, bridge, signal } = setup(() => new Response(answer(), { status: 200 }));
 		const asked = await erases.request(session, event, signal);
-		expect(asked).toEqual({ eraseId, state: "pending", sessionId: session, eventId: event });
+		expect(asked).toEqual({ eraseId, state: "pending", sessionId: session, eventId: event, copies: [] });
 		await erases.status(asked, signal);
 		expect(calls.map((call) => [call.method, call.url.href])).toEqual([
 			["POST", `${bridge}/v1/member-message-erases/${profileA.environmentId}/${session}/${event}`],
@@ -99,16 +100,34 @@ describe("the member's message erase transport", () => {
 			{ eventId: id(53) },
 			{ sessionId: id(53) },
 			{ eraseId: "not-an-id" },
+			{ copies: null },
+			{ copies: [null] },
+			{ copies: [{ environmentId: profileA.environmentId, path: "", live: true }] },
+			{ copies: [{ environmentId: profileA.environmentId, path: "reports/r2.md", live: "yes" }] },
+			{ copies: [{ path: "reports/r2.md", live: true }] },
+			{ copies: [{ environmentId: "env", path: "reports/r2.md", live: true }] },
 		]) {
 			const { erases, signal } = setup(() => new Response(answer(fields), { status: 200 }));
 			await expect(erases.request(session, event, signal)).rejects.toThrow("Invalid message erase answer");
 		}
 		const { erases, signal } = setup(() => new Response(answer({ eraseId: id(54) }), { status: 200 }));
 		await expect(
-			erases.status({ eraseId, state: "open", sessionId: session, eventId: event }, signal),
+			erases.status({ eraseId, state: "open", sessionId: session, eventId: event, copies: [] }, signal),
 		).rejects.toThrow("Invalid message erase answer");
 		const { erases: other, signal: otherSignal } = setup(() => new Response("{", { status: 200 }));
 		await expect(other.request(session, event, otherSignal)).rejects.toThrow("Invalid message erase answer");
+	});
+
+	it("names the copies the erase leaves, each an environment, a path and whether it is in that folder now", async () => {
+		const copies = [
+			{ environmentId: profileA.environmentId, path: "Zeta/notes.md", live: false },
+			{ environmentId: id(55).toUpperCase(), path: "reports/r2.md", live: true },
+		];
+		const { erases, signal } = setup(() => new Response(answer({ state: "requested", copies }), { status: 200 }));
+		expect((await erases.request(session, event, signal)).copies).toEqual([
+			{ environmentId: profileA.environmentId, path: "Zeta/notes.md", live: false },
+			{ environmentId: id(55), path: "reports/r2.md", live: true },
+		]);
 	});
 
 	it("sends nothing for an id that is not one", async () => {

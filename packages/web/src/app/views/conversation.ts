@@ -1077,6 +1077,16 @@ export class ConversationView {
 		return message && this.#focusable(message);
 	}
 
+	/** Gives the keyboard to a message of the thread, or to the thread itself when the message is no longer there. */
+	#focusMessage(id: string): void {
+		const target = this.#threadMessage(id);
+		if (target) target.focus({ preventScroll: true });
+		else {
+			this.#messages.tabIndex = -1;
+			this.#messages.focus({ preventScroll: true });
+		}
+	}
+
 	/** A message has no tab stop of its own; it takes focus only when given back to it. */
 	#focusable(message: HTMLElement): HTMLElement {
 		if (!message.hasAttribute("tabindex")) message.tabIndex = -1;
@@ -1105,9 +1115,9 @@ export class ConversationView {
 			signal.aborted
 		) {
 			// Cancelled: the dialog gave focus back to the link or message the menu was on, or, if a redraw took that, the
-			// message has it.
+			// message has it (the thread, if the message is gone).
 			if (!signal.aborted && (!document.activeElement?.isConnected || document.activeElement === document.body))
-				this.#threadMessage(item.id)?.focus({ preventScroll: true });
+				this.#focusMessage(item.id);
 			return;
 		}
 		const line: EraseLine = { what };
@@ -1151,9 +1161,25 @@ export class ConversationView {
 		}
 	}
 
-	/** How the member's erase goes, in plain words: which message, and where it is gone from so far. */
+	/** How the member's erase goes, in plain words: which message, where it is gone from so far, and each file at
+	 * another path that still holds a copy (the one exception to showing changes rather than files: the member erases
+	 * such a copy by its path). */
 	#eraseNotice({ what, erase, failure }: EraseLine): HTMLElement {
 		if (failure) return notice("danger", failure);
+		const here = this.#company.profile.environmentId.toLowerCase();
+		const copies = (erase?.copies ?? []).map(({ environmentId, path, live }) =>
+			h(
+				"div",
+				{ class: "erase-copy" },
+				environmentId === here
+					? live
+						? t("A copy stays in {path}.", { path })
+						: t("A copy stays in the history of {path}, which is deleted.", { path })
+					: live
+						? t("A copy stays in {path} in another Company File.", { path })
+						: t("A copy stays in the history of {path} in another Company File, where it is deleted.", { path }),
+			),
+		);
 		switch (erase?.state) {
 			case undefined:
 			case "pending":
@@ -1167,20 +1193,38 @@ export class ConversationView {
 					),
 				);
 			case "done":
-				return notice(
-					"ok",
-					t(
-						"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.",
-						what,
-					),
-				);
+				return copies.length
+					? notice(
+							"warn",
+							h(
+								"div",
+								{},
+								t(
+									"Erased the message from {author} at {time} from the thread and from the company's memory, but not from files that hold a copy of it.",
+									what,
+								),
+							),
+							...copies,
+						)
+					: notice(
+							"ok",
+							t(
+								"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.",
+								what,
+							),
+						);
 			default:
 				return notice(
 					"neutral",
-					t(
-						"The message from {author} at {time} is erased from the thread. Clearing it from the company's memory…",
-						what,
+					h(
+						"div",
+						{},
+						t(
+							"The message from {author} at {time} is erased from the thread. Clearing it from the company's memory…",
+							what,
+						),
 					),
+					...copies,
 				);
 		}
 	}
@@ -2697,14 +2741,7 @@ export class ConversationView {
 		}
 		// A link in a message that was redrawn without it (the message erased) leaves the keyboard on the message.
 		const lost = !document.activeElement?.isConnected || document.activeElement === document.body;
-		if (focusedMessage && active && !active.isConnected && lost) {
-			const target = this.#threadMessage(focusedMessage);
-			if (target) target.focus({ preventScroll: true });
-			else {
-				this.#messages.tabIndex = -1;
-				this.#messages.focus({ preventScroll: true });
-			}
-		}
+		if (focusedMessage && active && !active.isConnected && lost) this.#focusMessage(focusedMessage);
 		this.#pinToBottom();
 	}
 

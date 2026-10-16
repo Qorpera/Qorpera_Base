@@ -82,6 +82,14 @@ export const CONVERSATION: Record<string, string> = {
 		"Beskeden fra {author} kl. {time} er slettet fra tråden. Fjerner den fra virksomhedens hukommelse…",
 	"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.":
 		"Beskeden fra {author} kl. {time} er slettet: den er væk fra tråden og fra virksomhedens hukommelse.",
+	"Erased the message from {author} at {time} from the thread and from the company's memory, but not from files that hold a copy of it.":
+		"Beskeden fra {author} kl. {time} er slettet fra tråden og fra virksomhedens hukommelse, men ikke fra filer, der har en kopi af den.",
+	"A copy stays in {path}.": "En kopi ligger stadig i {path}.",
+	"A copy stays in the history of {path}, which is deleted.":
+		"En kopi ligger stadig i historikken for {path}, som er slettet.",
+	"A copy stays in {path} in another Company File.": "En kopi ligger stadig i {path} i en anden virksomhedsfil.",
+	"A copy stays in the history of {path} in another Company File, where it is deleted.":
+		"En kopi ligger stadig i historikken for {path} i en anden virksomhedsfil, hvor den er slettet.",
 	"The message from {author} at {time} was not erased: only an owner or admin can erase messages.":
 		"Beskeden fra {author} kl. {time} blev ikke slettet: kun en ejer eller administrator kan slette beskeder.",
 	"Only an owner or admin can erase messages.": "Kun en ejer eller administrator kan slette beskeder.",

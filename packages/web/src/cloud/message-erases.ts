@@ -3,8 +3,8 @@ import { UUID_PATTERN } from "./parse.ts";
 
 /** Where an erase of one message stands (summary trees M3c, `qorpera.memory-message-erase/v1`). From `open` on, the
  * message is blanked in the thread; `rewritten` and `requested` are the company's memory being cleared of it, and
- * `done` holds no copy of it anywhere. `refused`: the member who asked was no longer an owner or admin when it
- * started. */
+ * `done` has cleared it. Files at other paths that hold a copy of it stay (`MessageErase.copies`). `refused`: the
+ * member who asked was no longer an owner or admin when it started. */
 export type MessageEraseState = "pending" | "open" | "rewritten" | "requested" | "done" | "refused";
 
 export interface MessageErase {
@@ -12,6 +12,16 @@ export interface MessageErase {
 	readonly state: MessageEraseState;
 	readonly sessionId: string;
 	readonly eventId: string;
+	/** The copies the erase leaves, named from `requested` on (migration 20260930470000), each once. */
+	readonly copies: readonly MessageEraseCopy[];
+}
+
+/** A file at another path, in any environment of the company, that holds a copy of the message's memory, which the
+ * member erases there by its path. `live`: the path is in that folder now; otherwise only its history holds the copy. */
+export interface MessageEraseCopy {
+	readonly environmentId: string;
+	readonly path: string;
+	readonly live: boolean;
 }
 
 /** The erase route refused or gave no usable answer. `status` is its HTTP status, or null without one: 403 when the
@@ -46,7 +56,8 @@ const STATES: ReadonlySet<string> = new Set<MessageEraseState>([
 ]);
 /** The gateway gives its database calls 30 seconds; this covers them and the way there and back. */
 const TIMEOUT_MS = 35_000;
-const MAX_ANSWER_BYTES = 4096;
+/** The answer names every copy the erase leaves. */
+const MAX_ANSWER_BYTES = 262_144;
 
 /** The erase route (`/v1/member-message-erases/`, object gateway) under the member's own token and transport. */
 export function createWebMessageErases(options: {
@@ -116,13 +127,36 @@ function parseMessageErase(value: unknown, expected: Partial<MessageErase>): Mes
 			throw new MessageEraseError("Invalid message erase answer");
 		return found.toLowerCase();
 	};
-	const state = answer.state;
-	if (answer.schema !== SCHEMA || typeof state !== "string" || !STATES.has(state))
+	const { state, copies } = answer;
+	if (
+		answer.schema !== SCHEMA ||
+		typeof state !== "string" ||
+		!STATES.has(state) ||
+		!Array.isArray(copies) ||
+		!copies.every(isCopy)
+	)
 		throw new MessageEraseError("Invalid message erase answer");
 	return {
 		eraseId: id("eraseId"),
 		state: state as MessageEraseState,
 		sessionId: id("sessionId"),
 		eventId: id("eventId"),
+		copies: copies.map(({ environmentId, path, live }) => ({
+			environmentId: environmentId.toLowerCase(),
+			path,
+			live,
+		})),
 	};
+}
+
+function isCopy(value: unknown): value is MessageEraseCopy {
+	if (!value || typeof value !== "object") return false;
+	const { environmentId, path, live } = value as Record<string, unknown>;
+	return (
+		typeof environmentId === "string" &&
+		UUID_PATTERN.test(environmentId) &&
+		typeof path === "string" &&
+		path !== "" &&
+		typeof live === "boolean"
+	);
 }
