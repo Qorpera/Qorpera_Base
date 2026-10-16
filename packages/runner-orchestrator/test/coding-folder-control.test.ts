@@ -6,8 +6,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	CODING_FOLDER_CONTROL_SOCKET,
+	type CodingFolderBoundaryView,
 	CodingFolderControl,
 	CodingFolderControlRefused,
+	type CodingFolderReads,
+	codingFolderBoundaryHeld,
 	codingFolderViewSaved,
 } from "../src/coding-folder-control.ts";
 
@@ -143,15 +146,53 @@ describe("the folder service's control socket", () => {
 		const answer = await f.client.boundary(MACHINE, [], signal());
 		expect(answer.views).toEqual([
 			{ viewId: views[0].viewId, unsaved: 0 },
-			{ viewId: views[1].viewId, unsaved: 3 },
-			{ viewId: views[2].viewId, unsaved: 2 },
-			{ viewId: views[3].viewId, unsaved: 1, refused: "stopped" },
+			{ viewId: views[1].viewId, unsaved: 3, unsavedOutcome: "conflict" },
+			{ viewId: views[2].viewId, unsaved: 2, unsavedOutcome: "not_applied" },
+			{ viewId: views[3].viewId, unsaved: 1, unsavedOutcome: "refused", refused: "stopped" },
 			{ viewId: views[4].viewId, unsaved: 0, refused: "unproven" },
 		]);
 		expect(JSON.stringify(answer)).not.toContain(CANARY);
 		expect(answer.views.map((view) => codingFolderViewSaved(view))).toEqual([true, false, false, false, false]);
 		expect(codingFolderViewSaved({ viewId: VIEW, error: "VIEW_CLOSED" })).toBe(false);
 		expect(codingFolderViewSaved(undefined)).toBe(false);
+		expect(
+			answer.views.map((view) => codingFolderBoundaryHeld({ machine: MACHINE, reads: "released", views: [view] })),
+		).toEqual([undefined, "UNSAVED_CONFLICT", "UNSAVED_NOT_APPLIED", "REFUSED_STOPPED", "REFUSED_UNPROVEN"]);
+	});
+
+	it("names why a boundary holds the output back, from its reads or its first view not saved", () => {
+		const saved = { viewId: VIEW, unsaved: 0 };
+		const held = (reads: CodingFolderReads, ...views: CodingFolderBoundaryView[]) =>
+			codingFolderBoundaryHeld({ machine: MACHINE, reads, views });
+		expect(held("released")).toBeUndefined();
+		expect(held("released", saved, { viewId: FINAL, unsaved: 0 })).toBeUndefined();
+		// The reads come first, whatever the views say.
+		expect(held("unanswered", saved)).toBe("READS_UNANSWERED");
+		expect(held("run_ended", { viewId: FINAL, error: "VIEW_CLOSED" })).toBe("READS_RUN_ENDED");
+		// The first view not saved names it: its error, a whole refusal, its first path not saved, or no report.
+		expect(held("released", saved, { viewId: FINAL, error: "VIEW_CLOSED" }, { viewId: OTHER, unsaved: 1 })).toBe(
+			"VIEW_CLOSED",
+		);
+		expect(held("released", { viewId: FINAL, unsaved: 2, unsavedOutcome: "waiting", refused: "denied" })).toBe(
+			"REFUSED_DENIED",
+		);
+		expect(held("released", { viewId: FINAL, unsaved: 2, unsavedOutcome: "waiting_for_review" })).toBe(
+			"UNSAVED_WAITING_FOR_REVIEW",
+		);
+		expect(held("released", { viewId: FINAL, unsaved: 2 })).toBe("UNSAVED");
+		expect(held("released", { viewId: FINAL })).toBe("UNREPORTED");
+		// Each is a code's reason, as the executor's log keeps it.
+		for (const reads of [
+			"unanswered",
+			"denied",
+			"unreadable",
+			"run_ended",
+			"stopped",
+			"invalid",
+			"unproven",
+		] as const)
+			expect(held(reads)).toMatch(/^[A-Z][A-Z0-9_]{0,63}$/);
+		expect(held("released", { viewId: FINAL, error: `V${"_".repeat(63)}` })).toMatch(/^[A-Z][A-Z0-9_]{0,63}$/);
 	});
 
 	it.each(["unanswered", "denied", "unreadable", "run_ended", "stopped", "invalid", "unproven"])(

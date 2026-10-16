@@ -45,18 +45,34 @@ export interface CodingFolderBoundary {
 
 /** One view at a boundary: the code of the error it had instead of a report; or, from its report, how many of its
  * changed paths are not saved (`unsaved`: a commit with no answer yet, waiting on an open file, refused, denied, a
- * conflict, parked for review; a final boundary keeps none of them pending), and why the core refused the change set
- * whole (`refused`). */
+ * conflict, parked for review; a final boundary keeps none of them pending), the outcome of the first of them
+ * (`unsavedOutcome`, such as `not_applied` or `waiting`), and why the core refused the change set whole (`refused`). */
 export interface CodingFolderBoundaryView {
 	readonly viewId: string;
 	readonly error?: string;
 	readonly unsaved?: number;
+	readonly unsavedOutcome?: string;
 	readonly refused?: string;
 }
 
 /** Whether a view's boundary saved all it had: a report, with every changed path saved and nothing refused whole. */
 export function codingFolderViewSaved(view: CodingFolderBoundaryView | undefined): boolean {
 	return view !== undefined && view.error === undefined && view.unsaved === 0 && view.refused === undefined;
+}
+
+/** Why a boundary holds the machine's output back, as a code's reason (`[A-Z][A-Z0-9_]{0,63}`), or undefined when it
+ * released every read and saved every view: `READS_<reads>` unless the reads were released; otherwise, for the first
+ * view not saved, the code of its error, `REFUSED_<refusal>` for a change set refused whole, `UNSAVED_<outcome>` with
+ * the outcome of its first changed path not saved, or `UNREPORTED`. Its paths are not named. */
+export function codingFolderBoundaryHeld(boundary: CodingFolderBoundary): string | undefined {
+	if (boundary.reads !== "released") return `READS_${boundary.reads.toUpperCase()}`;
+	const view = boundary.views.find((each) => !codingFolderViewSaved(each));
+	if (view === undefined) return undefined;
+	if (view.error !== undefined) return view.error;
+	if (view.refused !== undefined) return `REFUSED_${view.refused.toUpperCase()}`;
+	if (view.unsaved !== undefined && view.unsaved > 0)
+		return view.unsavedOutcome === undefined ? "UNSAVED" : `UNSAVED_${view.unsavedOutcome.toUpperCase()}`;
+	return "UNREPORTED";
 }
 
 /** The service answered with an error, such as VIEW_REFUSED (this uid may not connect), UNAVAILABLE or BAD_REQUEST.
@@ -227,9 +243,9 @@ function errorCode(value: unknown): string {
 	return error.code;
 }
 
-/** What a view's report (the service's Report) says of the save: how many paths are not saved, and a whole refusal.
- * Its paths, reasons and receipts are checked for shape and not kept. */
-function reportOf(value: unknown): { unsaved: number; refused?: string } {
+/** What a view's report (the service's Report) says of the save: how many paths are not saved, the outcome of the first
+ * of them, and a whole refusal. Its paths, reasons and receipts are checked for shape and not kept. */
+function reportOf(value: unknown): { unsaved: number; unsavedOutcome?: string; refused?: string } {
 	const report = objectOf(value);
 	if (
 		!report ||
@@ -242,6 +258,7 @@ function reportOf(value: unknown): { unsaved: number; refused?: string } {
 	)
 		throw new Error(INVALID);
 	let unsaved = 0;
+	let unsavedOutcome: string | undefined;
 	for (const value of report.paths) {
 		const entry = objectOf(value);
 		if (
@@ -255,9 +272,15 @@ function reportOf(value: unknown): { unsaved: number; refused?: string } {
 			!(entry.target === undefined || typeof entry.target === "string")
 		)
 			throw new Error(INVALID);
-		if (entry.outcome !== "saved") unsaved++;
+		if (entry.outcome === "saved") continue;
+		unsaved++;
+		unsavedOutcome ??= entry.outcome as string;
 	}
-	return report.refused === undefined ? { unsaved } : { unsaved, refused: report.refused as string };
+	return {
+		unsaved,
+		...(unsavedOutcome === undefined ? {} : { unsavedOutcome }),
+		...(report.refused === undefined ? {} : { refused: report.refused as string }),
+	};
 }
 
 function objectOf(value: unknown): Record<string, unknown> | undefined {

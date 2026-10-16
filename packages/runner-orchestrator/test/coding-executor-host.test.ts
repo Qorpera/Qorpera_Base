@@ -3153,19 +3153,40 @@ describe("a coding session on the folder model", () => {
 		expect(mocked.push.mock.invocationCallOrder[0]).toBeLessThan(mocked.publish.mock.invocationCallOrder[0]!);
 	});
 	it.each([
-		["holds the machine's reads", { reads: "unanswered" as const, views: [] }],
-		["did not save a view", { reads: "released" as const, views: [{ viewId: randomUUID(), error: "SAVE_FAILED" }] }],
-		["left a view's paths unsaved", { reads: "released" as const, views: [{ viewId: randomUUID(), unsaved: 2 }] }],
+		["holds the machine's reads", "READS_UNANSWERED", { reads: "unanswered" as const, views: [] }],
+		[
+			"did not save a view",
+			"SAVE_FAILED",
+			{ reads: "released" as const, views: [{ viewId: randomUUID(), error: "SAVE_FAILED" }] },
+		],
+		[
+			"left a view's paths unsaved",
+			"UNSAVED_WAITING",
+			{
+				reads: "released" as const,
+				views: [
+					{ viewId: randomUUID(), unsaved: 0 },
+					{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "waiting" },
+				],
+			},
+		],
 		[
 			"refused a view's save whole",
+			"REFUSED_STOPPED",
 			{ reads: "released" as const, views: [{ viewId: randomUUID(), unsaved: 0, refused: "stopped" }] },
 		],
-		["answered a view without its report", { reads: "released" as const, views: [{ viewId: randomUUID() }] }],
-	])("publishes nothing when the boundary %s", async (_case, answer) => {
+		[
+			"answered a view without its report",
+			"UNREPORTED",
+			{ reads: "released" as const, views: [{ viewId: randomUUID() }] },
+		],
+	])("publishes nothing when the boundary %s, and says why", async (_case, held, answer) => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.boundary.mockResolvedValueOnce({ machine: f.machine.machineId, ...answer });
-		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow("CODING_FOLDER_BOUNDARY_HELD");
+		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow(
+			new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`),
+		);
 		expect(f.repositories.export).not.toHaveBeenCalled();
 		expect(mocked.push).not.toHaveBeenCalled();
 	});
