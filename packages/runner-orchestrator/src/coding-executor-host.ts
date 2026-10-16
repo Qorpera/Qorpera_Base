@@ -149,7 +149,7 @@ export interface LxdCodingExecutorHostOptions {
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
 	/** How long a freshly started guest may take to bring up its agent and
-	 * watchdog timer (default 120 s). */
+	 * watchdog timer (default 120 s; on the folder model, its agent, 300 s). */
 	guestReadyTimeoutMs?: number;
 	/** On the folder model, how long a turn waits at most for a boot of its machine to finish before it attaches the
 	 * session (default 180 s). */
@@ -318,6 +318,9 @@ const CODING_KEEP_MACHINE_MS = 15_000;
  * first boot starts the image's services and sets up its new machine id) can take longer than that just to start the
  * guest agent: a turn waits this long at most for the boot to finish before it attaches. */
 const CODING_BOOT_SETTLE_MS = 180_000;
+/** On the folder model, how long a turn waits by default for a started machine's LXD agent: in a loaded nested VM a
+ * fresh machine took 2 min 40 s from running to its agent answering. */
+const CODING_FOLDER_GUEST_READY_MS = 300_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, the machine's plan followed a new policy after this turn
@@ -343,6 +346,12 @@ function guestStarting(error: unknown): boolean {
 		error instanceof Error &&
 		(error.message === "LXD instance agent not running" || error.message === "LXD instance command failed")
 	);
+}
+/** On the folder model, also an exec whose LXD operation failed or whose wait ended first: just after a guest's
+ * lxd-agent comes up, LXD can time out connecting to it before the command runs. The folder model's checks
+ * (`/usr/bin/true`, the boot wait) are safe to run again, and a machine that stopped fails the next exec at once. */
+function folderGuestStarting(error: unknown): boolean {
+	return guestStarting(error) || (error instanceof Error && error.message === "LXD operation failed");
 }
 function digest(value: string | Buffer): string {
 	return createHash("sha256").update(value).digest("hex");
@@ -1180,7 +1189,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	async #folderReady(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<string> {
 		const client = this.#options.client,
 			name = lxdCodingMachineName(machine.machineId);
-		const ready = AbortSignal.any([signal, AbortSignal.timeout(this.#options.guestReadyTimeoutMs ?? 120_000)]);
+		const ready = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(this.#options.guestReadyTimeoutMs ?? CODING_FOLDER_GUEST_READY_MS),
+		]);
 		for (;;) {
 			try {
 				// Every try re-reads the machine: one deleted or stopped elsewhere fails now.
@@ -1193,7 +1205,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			} catch (error) {
 				signal.throwIfAborted();
 				if (ready.aborted) throw new Error("CODING_HOST_GUEST_NOT_READY", { cause: error });
-				if (!guestStarting(error)) throw error;
+				if (!folderGuestStarting(error)) throw error;
 				await setTimeout(1000, undefined, { signal: ready }).catch(() => undefined);
 				// The caller's own abort wins over the readiness deadline.
 				signal.throwIfAborted();
@@ -1209,8 +1221,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** Waits until systemd in the machine has finished this boot (`systemctl is-system-running --wait`), once per boot
 	 * and for at most CODING_BOOT_SETTLE_MS, so the session's attachment starts its minute on a machine that answers in
-	 * time. A boot that finished degraded (a unit failed) has finished too. Past the limit the session is attached
-	 * anyway, and the next turn on this boot waits again. */
+	 * time. A boot that finished degraded (a unit failed) has finished too. A wait that ends without an answer (LXD's
+	 * operation limit, an agent not up) is run again. Past the limit the session is attached anyway, and the next turn
+	 * on this boot waits again. */
 	async #bootSettled(
 		machine: Readonly<LxdCodingMachineBinding>,
 		name: string,
@@ -1222,18 +1235,27 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 			AbortSignal.timeout(this.#options.bootSettleTimeoutMs ?? CODING_BOOT_SETTLE_MS),
 		]);
-		try {
-			await this.#options.client.execInstance(
-				machine.project,
-				name,
-				["/usr/bin/systemctl", "is-system-running", "--wait"],
-				settled,
-			);
-		} catch (error) {
-			signal.throwIfAborted();
-			if (settled.aborted) return;
-			// It exits non-zero once the boot has finished in any state but running (degraded, maintenance).
-			if (!(error instanceof Error && error.message === "LXD instance command failed")) throw error;
+		for (;;) {
+			try {
+				await this.#options.client.execInstance(
+					machine.project,
+					name,
+					["/usr/bin/systemctl", "is-system-running", "--wait"],
+					settled,
+				);
+				break;
+			} catch (error) {
+				signal.throwIfAborted();
+				if (settled.aborted) return;
+				// It exits non-zero once the boot has finished in any state but running (degraded, maintenance).
+				if (error instanceof Error && error.message === "LXD instance command failed") break;
+				// LXD's own wait for the exec ends first (its operation limit, 120 s by default), or the exec failed
+				// before it ran: wait again.
+				if (!folderGuestStarting(error)) throw error;
+				await setTimeout(1000, undefined, { signal: settled }).catch(() => undefined);
+				signal.throwIfAborted();
+				if (settled.aborted) return;
+			}
 		}
 		this.#settledBoots.set(machine.machineId, bootId);
 	}
