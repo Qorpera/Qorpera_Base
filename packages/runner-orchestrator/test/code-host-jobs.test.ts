@@ -344,6 +344,26 @@ describe("code host seed", () => {
 		});
 	});
 
+	it("reports git's own error when main/ fails, without git's advice, and leaves the base where it was", async () => {
+		const { f, c } = await seeded();
+		const second = await f.commit({ "README.md": "two\n" }, "two"),
+			failing = join(f.root, "failing-git");
+		// main/'s checkout reads the new base (with GIT_GRAFT_FILE at /dev/null, git's grafts advice is given for the first
+		// commit a process reads), then fails.
+		await writeFile(
+			failing,
+			`#!/bin/sh\nfor a do [ "$a" = checkout ] && { ${GIT} "$@"; echo "checkout refused" >&2; exit 1; }; done\nexec ${GIT} "$@"\n`,
+		);
+		await chmod(failing, 0o755);
+		await expect(
+			seedCodeArea(
+				{ ...c.job, layout: { ...c.job.layout, git: failing } },
+				{ repository: f.repository, baseSha: second, bundle: await f.bundle("main", `^${f.baseSha}`) },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_MAIN_FAILED", detail: "checkout refused\n" });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(f.baseSha);
+	});
+
 	it("refuses a link on the way to the code area", async () => {
 		const f = await fixture(),
 			c = await f.company();
