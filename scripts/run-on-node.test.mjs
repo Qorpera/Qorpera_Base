@@ -11,6 +11,7 @@ import {
 	candidateMachines,
 	customTarget,
 	describeProbes,
+	FRONT,
 	firstTaking,
 	includeRules,
 	MACHINES,
@@ -188,6 +189,59 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 	}
 });
 
+test("a --front run waits ahead of every other run in the CPU lane, front runs among themselves by arrival", () => {
+	assert.equal(parseArgs(["changed"]).front, false);
+	assert.equal(parseArgs(["--front", "--tree", "pr-loop", "--no-status", "changed"]).front, true);
+	assert.equal(parseArgs(["--front", "hosted-db"]).front, true);
+	assert.throws(() => parseArgs(["--front", "hosted-db", "--", "--only", "001"]), /--front is for the CPU lane/);
+	const base = { run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
+	const front = runScript({ ...base, front: true });
+	const normal = runScript(base);
+	assert.equal(spawnSync("bash", ["-n", "-c", front]).status, 0);
+	assert.equal(FRONT, "0-");
+	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-\$\(date \+%s%N\)-\$\$; exec 7>"\$ticket"; flock 7;/);
+	assert.match(front, /in slot \$slot of 5 in the CPU lane from the front of its queue \(/);
+	assert.doesNotMatch(normal, /queue\/0-|front/);
+	// Only the ticket's name and the slot line differ: the same slot wait, the same position-1 rule.
+	assert.equal(front.replace("queue/0-$(date", "queue/$(date").replace(" from the front of its queue", ""), normal);
+	// The wait's own order (ls | sort, then the ticket's line): front tickets first, in any collation, then the rest.
+	const dir = mkdtempSync(join(tmpdir(), "run-on-node-queue-"));
+	try {
+		for (const name of ["1760650000000000000-900", "0-1760650000000000002-12", "1760640000000000000-31", "0-1760650000000000001-7777"])
+			writeFileSync(join(dir, name), "");
+		for (const locale of ["C", "C.UTF-8", "en_US.UTF-8"]) {
+			const sorted = spawnSync("bash", ["-c", `ls ${shellQuote(dir)} | sort`], { encoding: "utf8", env: { ...process.env, LC_ALL: locale } });
+			assert.deepEqual(
+				sorted.stdout.trim().split("\n"),
+				["0-1760650000000000001-7777", "0-1760650000000000002-12", "1760640000000000000-31", "1760650000000000000-900"],
+				locale,
+			);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a front run goes to the machine with the fewest runs in its slots and front runs waiting, however long its queue", () => {
+	const idle = (name) => ({ name, busy: 0, waiting: 0, quickBusy: 0, quickWaiting: 0, arriving: 0, frontWaiting: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
+	const names = (probes, front) => rankMachines(probes, false, false, front).map((probe) => probe.name);
+	// The first batch's probe (15 Oct, 23:18Z): node02 had a free slot behind 12 waiting runs.
+	const probes = [{ ...idle("node02"), busy: 4, waiting: 12, quickBusy: 1 }, { ...idle("node01"), busy: 5, waiting: 6 }];
+	assert.deepEqual(runOrder(probes, false, false, true), ["node02", "node01"]);
+	assert.deepEqual(runOrder(probes, false, false), ["node01", "node02"]);
+	// Front runs already waiting count against a machine; copies still arriving queue behind the front run.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4, waiting: 2, frontWaiting: 2 }, { ...idle("node01"), busy: 5, waiting: 9, arriving: 3 }], true), [
+		"node01",
+		"node02",
+	]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5 }, { ...idle("node01"), busy: 5 }], true), ["node02", "node01"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5 }, { ...idle("node01"), closed: true }], true), ["node02"]);
+	assert.equal(
+		describeProbes([{ ...idle("node02"), busy: 5, waiting: 3, frontWaiting: 1 }]),
+		"node02 5/5 slots busy, 3 waiting (1 at the front), quick 0/1",
+	);
+});
+
 test("one test machine per node, each with its own address and so its own host key", () => {
 	assert.deepEqual(
 		MACHINES.map((machine) => machine.name),
@@ -325,6 +379,11 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 	assert.equal(probes[1].unreachable, "no answer within 0.15 s of node02's");
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, quickBusy: 1, quickWaiting: 0 } } }), { ...timing, quick: true });
 	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
+	// A front run's grace starts at a slot free ahead of the queue, however long the queue.
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, busy: 3, frontWaiting: 0 } } }), { ...timing, front: true });
+	assert.equal(probes[1].unreachable, "no answer within 0.15 s of node02's");
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...full, busy: 4, frontWaiting: 1 } } }), { ...timing, front: true });
+	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
 });
 
 test("a machine that fails before the suite starts passes the run to the next; the last failure stands", async () => {
@@ -378,6 +437,11 @@ test("the probe reads the locks the run script takes and counts runs still being
 	assert.match(quick, /ticket=\/run\/lock\/qorpera-test-machine-quick-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-quick-queue\/\*; do \{ flock -n 5 \|\| quick_waiting=\$\(\(quick_waiting \+ 1\)\); \}/);
 	assert.match(probe, /echo "busy=\$busy waiting=\$waiting quick_busy=\$quick_busy quick_waiting=\$quick_waiting arriving=/);
+	// A front run's ticket, which only a front run's script takes, is counted again on its own.
+	const front = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", front: true });
+	assert.match(front, /ticket=\/run\/lock\/qorpera-test-machine-queue\/0-/);
+	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/0-\*; do \{ flock -n 5 \|\| front_waiting=\$\(\(front_waiting \+ 1\)\); \} 2>\/dev\/null 5<"\$t"; done/);
+	assert.match(probe, / arriving=\$arriving front_waiting=\$front_waiting /);
 	// The copy marker: made by the run's first SSH call, dropped once it holds a queue ticket, pruned by name.
 	// Arithmetic expansion drops the padding BSD wc adds.
 	assert.match(probe, /arriving=\$\(\( \$\(find \/home\/tester\/arriving -maxdepth 1 -type f -mmin -10 2>\/dev\/null \| wc -l\) \)\)/);
@@ -436,9 +500,15 @@ test(
 			const answer = parseStatus(result.stdout);
 			assert.deepEqual([answer.busy, answer.waiting, answer.arriving, answer.closed, answer.setup], ["1", "1", "1", "0", "1"]);
 			assert.deepEqual([answer.quick_busy, answer.quick_waiting], ["1", "2"]);
+			assert.equal(answer.front_waiting, "0");
 			assert.match(answer.cpus, /^[1-9][0-9]*$/);
 			// Slot 2 was never made, and nothing else appeared or went.
 			assert.deepEqual(listing(), before);
+			// A live front ticket counts as waiting and as front; a dead one as neither.
+			await hold(join(dir, "qorpera-test-machine-queue", "0-1760650000000000001-7"));
+			writeFileSync(join(dir, "qorpera-test-machine-queue", "0-1760650000000000002-8"), "");
+			const front = ask(dir);
+			assert.deepEqual([front.waiting, front.front_waiting], ["2", "1"]);
 			writeFileSync(join(dir, "closed"), "resize to 12 vCPU\n");
 			assert.equal(ask(dir).closed, "1");
 			const empty = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));

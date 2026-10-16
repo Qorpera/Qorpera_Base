@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-154 functions, grouped for navigation. Signatures: see the migration that defines each.
+141 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -229,32 +229,19 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (20)
+### Objects, artifacts, retention (7)
 
-A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_register_artifact_v2`,
-`qorpera_create_artifact_index`, `qorpera_create_artifact_retention_hold`, `qorpera_complete_object_reachability_graph`
-and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
+A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
+answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
+with legacy sweep E1 (20260930400000).
 The raw object reads and uploads by hash and the read lease went with legacy sweep E3 (20260930450000).
 
 - `qorpera_append_object_reachability_entries`
 - `qorpera_begin_object_reachability_graph`
-- `qorpera_cancel_artifact_gc_plan`
-- `qorpera_cancel_artifact_gc_plan_v2`
 - `qorpera_complete_object_reachability_graph`
-- `qorpera_create_artifact_gc_plan`
-- `qorpera_create_artifact_index`
-- `qorpera_create_artifact_retention_hold`
 - `qorpera_create_object_restore_proof`
-- `qorpera_get_artifact_index`
 - `qorpera_get_object_reachability_graph`
-- `qorpera_list_artifact_gc_audit`
-- `qorpera_list_artifact_gc_candidates`
-- `qorpera_list_artifact_gc_plans`
-- `qorpera_list_artifact_index_entries`
 - `qorpera_profile_object_writes_allowed`
-- `qorpera_register_artifact_v2`
-- `qorpera_release_artifact_retention_hold`
-- `qorpera_retry_artifact_gc_plan`
 - `qorpera_stage_operation_receipt_objects`
 
 
@@ -290,7 +277,9 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   Section names are 1-60 characters, unique per company ignoring case; any
   number of sections (at most 40 until bundle v95). The Co-Founder is never
   placed, pinned or hidden. Agents change the same shared sections through the
-  runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
+  runtime tool `organize_sidebar`, which saves `agents/sections.md` (its old row
+  writer, `qorpera_manage_agent_sidebar`, was dropped in legacy sweep D6,
+  `20260930335000`).
 - Group chats (migration `20260928030000`, no bundle): a group chat (an active
   room that is not an agent's thread, with an open conversation) is placed,
   pinned and hidden like an agent, named by `roomId` where an agent is named by
@@ -398,6 +387,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
 - `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
 - `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
+- Not an RPC: a conversation's erasure generation, read from its row (`select memory_generation from qorpera_shared_sessions where id = …`, under the table's `authenticated` read grant and its policy `qorpera_can_read_session`; migration `20260928509140`). An erase (`20260930441000`) rewrites an event's body to exactly `{"erased": true}` in place, under its sequence, and raises the generation without touching `updated_at` (so no `sessions` hint): a client that holds events reads them again when the generation differs from the one they reflect, and never lets a copy read before the erase replace the erased one. The web reads it with each full read of a thread.
 - `qorpera_renew_session_turn_v2`
 - `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
@@ -708,9 +698,14 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   20260930344000 (E3c-1) a `stripe` hook's `signingSecret` also carries, once
   the vault has its secret, `version` (the current one), `capturedAt` (when
   that version was stored) and, if a delivery was refused under that
-  version, `lastRefusal` `{receivedAt, reason}` (the newest one). A `github`
-  or `hmac-sha256` hook's keeps exactly `connectorId`, `secretName` and
-  `ready`, and so does a `stripe` hook's before its first capture. On a
+  version, `lastRefusal` `{receivedAt, reason}` (the newest one). From
+  20260930345000 (E3c-4) a `stripe` hook whose signature did not match under
+  a version no delivery verified under is held: it answers senders
+  `not_ready` until the next capture, `ready` stays true, and `lastRefusal` is
+  that delivery's `receivedAt` with the reason "held: the captured secret does
+  not match". A `github` or `hmac-sha256` hook's keeps exactly `connectorId`,
+  `secretName` and `ready`, and so does a `stripe` hook's before its first
+  capture. On a
   snapshot-v1 company an owner or admin saves the sender's signing secret with
   `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
   'event_hook', secretName, purpose)` and then
@@ -1044,7 +1039,8 @@ machine sets itself (`home`, `path`, `tmpdir`, `user`, `shell`, `lang`, `tz`, th
 any name that starts `lc_`, `git_`, `ld_`, `dyld_`, `ssh_`, `xdg_`, `docker_` or `qorpera_`), and never one that names
 a harness's login or provider (`anthropic_`, `claude_`, `codex_`, `openai_`), so no secret changes who pays for a
 session. The begin refuses any other name with 22023 "That name is not available for an environment variable". A
-value never comes back to a client.
+value never comes back to a client. The broker's screen seals only the one field `value`, at least 8 UTF-8 bytes long
+and without a NUL, so the coding machine can mask it in its output; it refuses any other capture for `environment`.
 
 A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
 its repository; a company secret with no grant reaches no session. When the member's and a granted company secret have

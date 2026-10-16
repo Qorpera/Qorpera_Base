@@ -63,6 +63,9 @@ AGENTS = ipaddress.ip_network("10.210.0.0/16")
 # The exit's own address on the agents' bridge: its DHCP replies are not agent connections.
 GATEWAY = ipaddress.ip_address("10.210.0.1")
 SETS = ("refused_flows", "refused_other")
+# The mark the exit gives a packet as it refuses it, kept in the refused-flow sets with the flow (E8c): which rule
+# refused it, when the flow itself does not tell. None (0): the open bounds.
+REFUSED_BY = {0x80000003: "rules_unknown", 0x80000004: "not_listed"}
 INTERNAL = [
     ipaddress.ip_network(n)
     for n in (
@@ -146,16 +149,22 @@ def parse_conntrack(line):
 
 
 def parse_set(text):
-    """`nft -j list set` output to {key: expires}: key (src, dst, proto) or (src, dst, proto, dport), proto as text;
-    expires in seconds, or None when the element has no timeout."""
+    """`nft -j list set` output of refused_flows or refused_other to {key: expires}: key (src, dst, proto, dport,
+    mark), proto as text, dport None in refused_other, mark the one the packet was refused with (0 in a set from
+    before E8c, which kept none); expires in seconds, or None when the element has no timeout."""
     keys = {}
     for item in json.loads(text).get("nftables", []):
+        ports = item.get("set", {}).get("name") == "refused_flows"
         for elem in item.get("set", {}).get("elem", []) or []:
             inner = elem.get("elem") if isinstance(elem, dict) and "elem" in elem else None
             value = inner.get("val") if inner else elem
             concat = value.get("concat") if isinstance(value, dict) else None
-            if concat and len(concat) in (3, 4):
-                keys[(str(concat[0]), str(concat[1]), str(concat[2]), *concat[3:])] = inner.get("expires") if inner else None
+            if not concat or len(concat) not in ((4, 5) if ports else (3, 4)):
+                continue
+            src, dst, proto, *rest = concat
+            dport = rest.pop(0) if ports else None
+            mark = mark_of(rest[0]) if rest else 0
+            keys[(str(src), str(dst), str(proto), dport, mark)] = inner.get("expires") if inner else None
     return keys
 
 
@@ -172,16 +181,18 @@ def new_refusals(previous, current):
 
 
 def rule_for(key):
-    """Which of the exit's refusals a refused flow came from."""
-    dst, proto = key[1], key[2]
+    """Which of the exit's refusals a refused flow (a parse_set key) came from: our networks and mail by the flow
+    itself, the others by the mark the packet was refused with, so rules that changed before the logger reads the set
+    do not change it."""
+    _, dst, proto, dport, mark = key
     try:
         if any(ipaddress.ip_address(dst) in network for network in INTERNAL):
             return "our_networks"
     except ValueError:
         return "unknown"
-    if proto == "tcp" and len(key) == 4 and str(key[3]) == "25":
+    if proto == "tcp" and str(dport) == "25":
         return "mail"
-    return "open_limit"
+    return REFUSED_BY.get(mark, "open_limit")
 
 
 def should_pause(paused, free, size, cap, floor):
@@ -377,7 +388,7 @@ def poll_refused(netns, writer, interval, guard):
             for key in new_refusals(seen, current):
                 record = {"ts": time.time(), "event": "refused", "src": key[0], "dst": key[1], "proto": key[2],
                           "rule": rule_for(key)}
-                if len(key) == 4:
+                if key[3] is not None:
                     record["dport"] = key[3]
                 guard.see(record)
                 writer.write(record)
@@ -913,7 +924,8 @@ def main():
             print(json.dumps([list(key), expires]))
         return
     if args.diff_sets:
-        # Test mode: stdin {"previous": [[key, expires], ...], "current": [...]}; prints each key to log, with its rule.
+        # Test mode: stdin {"previous": [[key, expires], ...], "current": [...]} (keys as parse_set gives them);
+        # prints each key to log, with its rule.
         both = json.load(sys.stdin)
         previous = {tuple(k): e for k, e in both["previous"]}
         current = {tuple(k): e for k, e in both["current"]}
