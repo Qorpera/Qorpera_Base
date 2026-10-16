@@ -41,18 +41,9 @@ const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
 /** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
 const CONTENT_BYTES = 1200;
-/** A hold that ends early (the run stops, the kernel refuses the wait, or a wait fails for too long) parks its card,
- * asking again through lost or late answers for up to this long. Best effort: the kernel's heartbeat covers a crash. */
+/** A hold that ends early (the run stops, or the kernel refuses the wait) parks its card, asking again through lost
+ * or late answers for up to this long. Best effort: the kernel's heartbeat covers a crash. */
 const PARK_ON_EXIT_MS = 30_000;
-/** A wait that holds keeps its card held this long (the kernel's heartbeat): an answer given meanwhile is left for the
- * hold to read, and one given later wakes the agent. */
-const HELD_MS = 10_000;
-/** A failed wait is asked again only until this long after its answer could first have woken the agent (checked before
- * its pause and again as it goes out). A wait uses an approval, and the woken agent's repeat is told it was used only
- * when that happened within 30 s of the wake (qorpera_begin_action_review); a later use would let the woken repeat be
- * reviewed again, and run twice. This leaves 25 s for a wait to reach the database and finish (its statement budget is
- * 8 s). */
-const RETRY_AFTER_WAKE_MS = 5_000;
 
 /** Plain titles for connector writes, by tool name; others show their tool name. */
 const CONNECTOR_TITLES: Readonly<Record<string, string>> = {
@@ -1094,7 +1085,6 @@ export class CloudActionReviewGate {
 	async #check(call: CloudActionCall, signal: AbortSignal): Promise<CloudActionGateResult> {
 		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects, this.#offlineShells);
 		if (effect === "read" || effect === "internal") return { run: true };
-		const beginning = Date.now();
 		const begin = object(
 			await this.#control.call(
 				"qorpera_begin_action_review",
@@ -1113,9 +1103,8 @@ export class CloudActionReviewGate {
 				run: false,
 				text: "APPROVAL_USED: The approved action already ran, before you were woken. Do not run it again; carry on from its result.",
 			};
-		// A card found waiting may be parked: its answer may wake the agent from now on.
 		if (begin.state === "pending")
-			return this.#hold(String(begin.reviewId), name(begin.approverName, "an owner or admin"), beginning, signal);
+			return this.#hold(String(begin.reviewId), name(begin.approverName, "an owner or admin"), signal);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
 		const requester = name((begin.requester as { name?: unknown } | null)?.name, "");
 		const description = describeCloudAction(call.tool, call.parsed, {
@@ -1166,7 +1155,6 @@ export class CloudActionReviewGate {
 				text: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 			};
 		}
-		const recording = Date.now();
 		const recorded = object(
 			await this.#control.call(
 				"qorpera_record_action_review",
@@ -1204,23 +1192,15 @@ export class CloudActionReviewGate {
 				run: false,
 				text: `APPROVAL_UNAVAILABLE_HERE: ${reason} This action needs approval, and approval cards are raised only where the member they wait for can see them (your own thread or a shared conversation), not here. The action did not happen. Do not retry it here; tell the member, or do it from your own thread where it can be approved.`,
 			};
-		// A card is raised held.
-		return this.#hold(
-			String(recorded.reviewId),
-			name(recorded.approverName, "an owner or admin"),
-			recording + HELD_MS,
-			signal,
-		);
+		return this.#hold(String(recorded.reviewId), name(recorded.approverName, "an owner or admin"), signal);
 	}
 
-	/** Holds the call until its card is answered or the hold runs out. `wakes`: the earliest time the card's answer
-	 * could wake the agent. */
-	async #hold(reviewId: string, approver: string, wakes: number, signal: AbortSignal): Promise<CloudActionGateResult> {
+	async #hold(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
 		try {
-			return await this.#poll(reviewId, approver, wakes, signal);
+			return await this.#poll(reviewId, approver, signal);
 		} catch (error) {
-			// The hold ended early (the run stopped, the kernel refused the wait, or a wait failed for too long):
-			// park the card so its answer wakes the agent.
+			// The hold ended early (the run stopped, or the kernel refused the wait): park the
+			// card so its answer wakes the agent.
 			await this.#leave(reviewId);
 			throw error;
 		}
@@ -1250,17 +1230,10 @@ export class CloudActionReviewGate {
 		}
 	}
 
-	async #poll(reviewId: string, approver: string, wakes: number, signal: AbortSignal): Promise<CloudActionGateResult> {
+	async #poll(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
-		// The last wait's failure, while it is being asked again.
-		let failure: { error: unknown } | undefined;
 		for (let parkFailures = 0; ; ) {
-			const asked = Date.now();
-			const park = asked >= until;
-			// A park ends the heartbeat: the answer may wake the agent from now on.
-			if (park) wakes = Math.min(wakes, asked);
-			// Checked again as it goes out: the pause before it may have ended late (a stalled event loop).
-			if (failure && asked >= wakes + RETRY_AFTER_WAKE_MS) throw failure.error;
+			const park = Date.now() >= until;
 			let answer: unknown;
 			try {
 				answer = await this.#control.call(
@@ -1272,18 +1245,16 @@ export class CloudActionReviewGate {
 				// A lost or late answer does not end the hold (production pass 2, 16 Oct 2026: one poll in about 150
 				// waited past the lock timeout behind a same-run step, and the held call was told its review was
 				// unavailable). A wait is idempotent (asked again, it finds the approval it used or the park it made),
-				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. A
-				// refusal or a stopped run ends the hold, and so does a failure that lasts past RETRY_AFTER_WAKE_MS.
-				const pause = park
-					? cloudControlBackoffMs(parkFailures++)
-					: Math.max(0, Math.min(this.#pollMs, until - Date.now()));
-				if (signal.aborted || !cloudControlRetryable(error) || Date.now() + pause >= wakes + RETRY_AFTER_WAKE_MS)
-					throw error;
-				failure = { error };
-				await cloudControlPause(pause, signal);
+				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. If a
+				// wait uses the approval after its answer woke the agent, however long after, the woken run is told
+				// it was used (20260930489000). A refusal or a stopped run ends the hold.
+				if (signal.aborted || !cloudControlRetryable(error)) throw error;
+				await cloudControlPause(
+					park ? cloudControlBackoffMs(parkFailures++) : Math.max(0, Math.min(this.#pollMs, until - Date.now())),
+					signal,
+				);
 				continue;
 			}
-			failure = undefined;
 			const state = object(answer);
 			if (state.state === "approved") return approved(reviewId);
 			if (state.state === "declined")
@@ -1303,8 +1274,6 @@ export class CloudActionReviewGate {
 				};
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");
-			// Held again: an answer is left for this hold until the new heartbeat ends.
-			wakes = asked + HELD_MS;
 			await cloudControlPause(Math.max(0, Math.min(this.#pollMs, until - Date.now())), signal);
 		}
 	}
