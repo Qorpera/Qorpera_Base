@@ -209,11 +209,14 @@ export interface CompanyComputerProcessScan {
 }
 
 /**
- * Whether a process is in a namespace that only grows by fork (the command's filter refuses setns, and it holds no
- * capability in the initial user namespace). One list of the processes is not enough: one can fork while it is read,
- * then exit before it is looked at, and its child came after the list. Pids are given in a cycle, so each pass after
- * the first looks again at the pids given during the one before, until a pass during which none was given: a process
- * then in the namespace was there through that pass, or forked during an earlier one. An error is no answer.
+ * Whether a process is in a namespace that only grows by fork and that no process leaves: the command's filter refuses
+ * setns and new user namespaces, and it holds no capability, so it can neither join the namespace (the initial user
+ * namespace owns it) nor unshare a mount namespace of its own. One list of the processes is not enough: one can fork
+ * while it is read, then exit before it is looked at, and its child came after the list. Pids are given in a cycle, so
+ * each pass after the first looks again at the pids given during the one before, until a pass during which none was
+ * given: a process then in the namespace was there through that pass, or forked during an earlier one. While the
+ * computer keeps forking, such a pass can take long to come; the answer is then in use: late, never early. An error is
+ * no answer.
  */
 export async function companyComputerNamespaceInUse(scan: CompanyComputerProcessScan): Promise<boolean> {
 	let from: number | undefined,
