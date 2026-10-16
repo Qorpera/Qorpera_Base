@@ -285,7 +285,10 @@ and a ref's log change under their lease for it too. A lease's change set makes 
 the first publish under a lease in a `repo.git` new in the view runs a boundary first, which saves the directory with
 `HEAD` and `config`. A view's machine is never told the path of its own new folder going live, which still shows as the
 same folder: the kernel would drop the folder's entry, and git working in that `repo.git` could no longer name its
-directory (`getcwd` fails). The core enforces the rules (5b, §7 item 9 as amended here):
+directory (`getcwd` fails). After a publish under a lease the view shows live again every new folder above what it
+published, up to a folder it shows live, even one that still holds the view's own pending files (a new `repo.git`'s
+`refs`, beside its `refs/tags`): a new folder shows nothing live in it, so git would not see the ref it just published.
+The core enforces the rules (5b, §7 item 9 as amended here):
 
 - `.git` and `repo.git` refused at any depth outside `code/<owner>/<name>/`, accepted inside;
 - leases on the shared files in `repo.git` (`refs/`, `packed-refs`, `shallow`), with the version check at the rename
