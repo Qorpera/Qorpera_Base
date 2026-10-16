@@ -400,6 +400,7 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_quarantine_session_turn`
 - `qorpera_read_session_events`
 - `qorpera_read_session_events_tail(p_session_id, p_before_sequence, p_limit)` — the newest events below a sequence (the newest overall when null), oldest first, in the shape of `qorpera_read_session_events`, which it runs for its authorization and page check (20260928279410); a thread opens with it and "Show earlier" pages back
+- Not an RPC: a conversation's erasure generation, read from its row (`select memory_generation from qorpera_shared_sessions where id = …`, under the table's `authenticated` read grant and its policy `qorpera_can_read_session`; migration `20260928509140`). An erase (`20260930441000`) rewrites an event's body to exactly `{"erased": true}` in place, under its sequence, and raises the generation without touching `updated_at` (so no `sessions` hint): a client that holds events reads them again when the generation differs from the one they reflect, and never lets a copy read before the erase replace the erased one. The web reads it with each full read of a thread.
 - `qorpera_renew_session_turn_v2`
 - `qorpera_renew_wake`
 - `qorpera_request_session_turn_v2`
