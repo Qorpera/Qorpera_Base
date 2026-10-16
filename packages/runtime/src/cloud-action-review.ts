@@ -47,10 +47,11 @@ const PARK_ON_EXIT_MS = 30_000;
 /** A wait that holds keeps its card held this long (the kernel's heartbeat): an answer given meanwhile is left for the
  * hold to read, and one given later wakes the agent. */
 const HELD_MS = 10_000;
-/** A failed wait is asked again only until this long after its answer could first have woken the agent. A wait uses an
- * approval, and the woken agent's repeat is told it was used only when that happened within 30 s of the wake
- * (qorpera_begin_action_review); a later use would let the woken repeat be reviewed again, and run twice. This leaves
- * 25 s for a wait to reach the database and finish (its statement budget is 8 s). */
+/** A failed wait is asked again only until this long after its answer could first have woken the agent (checked before
+ * its pause and again as it goes out). A wait uses an approval, and the woken agent's repeat is told it was used only
+ * when that happened within 30 s of the wake (qorpera_begin_action_review); a later use would let the woken repeat be
+ * reviewed again, and run twice. This leaves 25 s for a wait to reach the database and finish (its statement budget is
+ * 8 s). */
 const RETRY_AFTER_WAKE_MS = 5_000;
 
 /** Plain titles for connector writes, by tool name; others show their tool name. */
@@ -1248,11 +1249,15 @@ export class CloudActionReviewGate {
 
 	async #poll(reviewId: string, approver: string, wakes: number, signal: AbortSignal): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
+		// The last wait's failure, while it is being asked again.
+		let failure: { error: unknown } | undefined;
 		for (let parkFailures = 0; ; ) {
 			const asked = Date.now();
 			const park = asked >= until;
 			// A park ends the heartbeat: the answer may wake the agent from now on.
 			if (park) wakes = Math.min(wakes, asked);
+			// Checked again as it goes out: the pause before it may have ended late (a stalled event loop).
+			if (failure && asked >= wakes + RETRY_AFTER_WAKE_MS) throw failure.error;
 			let answer: unknown;
 			try {
 				answer = await this.#control.call(
@@ -1271,9 +1276,11 @@ export class CloudActionReviewGate {
 					: Math.max(0, Math.min(this.#pollMs, until - Date.now()));
 				if (signal.aborted || !cloudControlRetryable(error) || Date.now() + pause >= wakes + RETRY_AFTER_WAKE_MS)
 					throw error;
+				failure = { error };
 				await cloudControlPause(pause, signal);
 				continue;
 			}
+			failure = undefined;
 			const state = object(answer);
 			if (state.state === "approved") return approved(reviewId);
 			if (state.state === "declined")

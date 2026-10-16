@@ -1283,6 +1283,8 @@ function gate(options: {
 	leaving?: Array<Record<string, unknown> | Error>;
 	/** How long each failed wait takes, on Date's clock (fake it to use this). */
 	failMs?: number;
+	/** How far Date's clock jumps during the pause after each failed wait (an event loop that stalls; fake Date). */
+	stallMs?: number;
 	holdMs?: number;
 	reviewerFails?: boolean;
 }) {
@@ -1313,6 +1315,9 @@ function gate(options: {
 			const next = waits.shift();
 			if (next instanceof Error) {
 				if (options.failMs) vi.setSystemTime(Date.now() + options.failMs);
+				// Runs before the hold's pause after this failure ends (it is set first, for no longer).
+				const stall = options.stallMs;
+				if (stall) setTimeout(() => vi.setSystemTime(Date.now() + stall), 0);
 				throw next;
 			}
 			return args.p_park && (!next || next.state === "pending")
@@ -1871,6 +1876,29 @@ describe("the review step", () => {
 			);
 			expect(parks).toHaveLength(2);
 			expect(parks.every((call) => call.args.p_park === true && !("p_leaving" in call.args))).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not ask a failed wait again when its pause ends too late, and parks the card", async () => {
+		vi.useFakeTimers({ now: Date.parse("2026-10-16T16:00:00Z"), toFake: ["Date"] });
+		try {
+			// Raised held at 0 s, so a failed wait is asked again only before 15 s. It fails at once, but the pause after
+			// it ends at 30 s: the approval is not used, and the card is parked.
+			const failure = late();
+			const { check, calls } = gate({
+				holdMs: 60_000,
+				stallMs: 30_000,
+				record: { decision: "ask", card: true, reviewId: "review-18" },
+				waits: [failure, { state: "approved" }],
+			});
+			await expect(check()).rejects.toBe(failure);
+			const waits = calls.filter((call) => call.method === "qorpera_await_action_review");
+			expect(waits.map((call) => call.args)).toEqual([
+				{ p_binding: binding, p_review_id: "review-18", p_park: false },
+				{ p_binding: binding, p_review_id: "review-18", p_park: true, p_leaving: true },
+			]);
 		} finally {
 			vi.useRealTimers();
 		}
