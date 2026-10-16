@@ -33,9 +33,9 @@ import { cloudRunWorkComposer } from "./run-work.ts";
 import {
 	CLOSE_MS,
 	type MemoryTreeLine,
+	memoryBlockLines,
 	memoryBlockPath,
 	memoryBlockText,
-	memoryLineProblem,
 	SETTLE_MS,
 } from "./tree.ts";
 
@@ -45,8 +45,6 @@ export const RUN_STEP_OUTCOME_UNKNOWN = "outcome unknown: check before you repea
 /** Core §5's change set, as the log's `commitTree` takes it. */
 const CHANGE_SET_FILES = 64;
 const CHANGE_SET_BYTES = 1024 * 1024;
-/** A tier's block: levels 4t to 4t + 3, 16 + 8 + 4 + 2 lines at most (§4.2). */
-const BLOCK_LINES = 30;
 /** Times a pass reads its steps and blocks, or commits its lines, while the log changes under them. */
 const READS = 3;
 
@@ -71,27 +69,7 @@ export function cloudRunStepText(step: CloudRunStepLinesStep, earlier: boolean):
 
 /** A block's lines, or null when it is not one block of a run's tree as the commit stores it. */
 export function cloudRunTreeBlockLines(text: string, path: string): MemoryTreeLine[] | null {
-	const rows = text.split("\n");
-	if (rows.pop() !== "" || rows.length < 1 || rows.length > BLOCK_LINES) return null;
-	const lines: MemoryTreeLine[] = [];
-	const seen = new Set<string>();
-	for (const row of rows) {
-		let value: unknown;
-		try {
-			value = JSON.parse(row);
-		} catch {
-			return null;
-		}
-		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-		const { l, k, free, text: lineText, tries, ...rest } = value as Record<string, unknown>;
-		if (Object.keys(rest).length || typeof free !== "boolean" || typeof lineText !== "string") return null;
-		const line = { l, k, free, text: lineText, ...(tries !== undefined ? { tries } : {}) } as MemoryTreeLine;
-		if (memoryLineProblem(line, "run") !== null || memoryBlockPath(line.l, line.k) !== path) return null;
-		if (seen.has(`${line.l}:${line.k}`)) return null;
-		seen.add(`${line.l}:${line.k}`);
-		lines.push(line);
-	}
-	return lines;
+	return memoryBlockLines(text, path, "run");
 }
 
 /** The run's log, as its step lines use it. */

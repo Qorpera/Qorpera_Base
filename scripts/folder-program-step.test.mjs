@@ -167,7 +167,7 @@ test("the tests run beside the release build, its check and the program against 
 		assert.ok(flags(args, "-e").includes("QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder"), kind);
 		assert.equal(args.at(-4), NODE_IMAGE, kind);
 	}
-	assert.match(NODE_IMAGE, /^node:24\.21\.0-bookworm-slim@sha256:[0-9a-f]{64}$/);
+	assert.match(NODE_IMAGE, /^node:24\.21\.0-bookworm@sha256:[0-9a-f]{64}$/);
 	assert.equal(call(ran.calls, "check").at(-1), "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder");
 	const e2e = call(ran.calls, "e2e");
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));

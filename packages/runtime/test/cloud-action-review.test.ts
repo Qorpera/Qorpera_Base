@@ -54,6 +54,17 @@ describe("which calls are reviewed", () => {
 		["computer_shell", { action: { kind: "shell", command: "ls" } }, "external"],
 		// The shell reaches the internet: starting a command and typing into one are reviewed.
 		["computer_shell", { action: { kind: "shell", action: "start", command: "ls", waitMs: 0 } }, "external"],
+		[
+			"computer_shell",
+			{ action: { kind: "shell", action: "start", command: "ls", waitMs: 0, network: true } },
+			"external",
+		],
+		// An offline command (F3 4d) reaches only the computer and the company folder.
+		[
+			"computer_shell",
+			{ action: { kind: "shell", action: "start", command: "ls", waitMs: 0, network: false } },
+			"internal",
+		],
 		["computer_shell", { action: { kind: "shell", action: "write", sessionId: RULE, text: "y\n" } }, "external"],
 		["computer_shell", { action: { kind: "shell", action: "read", sessionId: RULE, waitMs: 0 } }, "read"],
 		["computer_shell", { action: { kind: "shell", action: "list" } }, "read"],
@@ -155,6 +166,23 @@ describe("which calls are reviewed", () => {
 		expect(cloudActionEffect(tool("gmail_search_messages", "connector"), {}, effects)).toBe("read");
 		expect(cloudActionEffect(tool("gmail_send_message", "connector"), {}, effects)).toBe("external");
 		expect(cloudActionEffect(tool("gmail_unknown", "connector"), {}, effects)).toBe("external");
+	});
+
+	it("lets input to the run's own offline commands through, and reviews input to any other (F3 4d)", () => {
+		const other = "10000000-0000-4000-8000-000000000002";
+		const offline = new Set([RULE]);
+		const write = (sessionId: string) => ({ action: { kind: "shell", action: "write", sessionId, text: "y\n" } });
+		expect(cloudActionEffect(tool("computer_shell"), write(RULE), new Map(), offline)).toBe("internal");
+		expect(cloudActionEffect(tool("computer_shell"), write(other), new Map(), offline)).toBe("external");
+		// Only input: a networked start stays reviewed whatever the run started before.
+		expect(
+			cloudActionEffect(
+				tool("computer_shell"),
+				{ action: { kind: "shell", action: "start", command: "ls", waitMs: 0, network: true } },
+				new Map(),
+				offline,
+			),
+		).toBe("external");
 	});
 });
 
@@ -456,6 +484,21 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("computer_shell"), { action: { kind: "shell", command: "cd /srv\n  ls -la\t" } })
 				.details,
 		).toEqual({ command: "cd /srv\n  ls -la" });
+	});
+
+	it("says when a command gets internet access (F3 4d)", () => {
+		const start = (network?: boolean) =>
+			describeCloudAction(tool("computer_shell"), {
+				action: {
+					kind: "shell",
+					action: "start",
+					command: "npm publish",
+					waitMs: 0,
+					...(network === undefined ? {} : { network }),
+				},
+			}).title;
+		expect(start(true)).toBe("Run a command with internet access on the computer");
+		expect(start()).toBe("Run a command on the computer");
 	});
 
 	it("shows changes saved from a computer as the changes, in order, never their files", () => {
@@ -1310,6 +1353,41 @@ describe("the review step", () => {
 			),
 		).resolves.toEqual({ run: true });
 		expect(calls).toEqual([]);
+		expect(review).not.toHaveBeenCalled();
+	});
+
+	it("reads the run's offline commands at each call, as its computer tools add them (F3 4d)", async () => {
+		const { calls, review } = gate({});
+		const offlineShells = new Set<string>();
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: {
+				call: async (method, args) => {
+					calls.push({ method, args });
+					return { state: "approved", reviewId: "review-0" };
+				},
+			},
+			reviewer: { review },
+			request: "",
+			holdMs: 0,
+			offlineShells,
+		});
+		const write = () =>
+			instance.check(
+				{
+					tool: tool("computer_shell"),
+					parsed: { action: { kind: "shell", action: "write", sessionId: RULE, text: "y\n" } },
+					argumentsText: "{}",
+					argumentSha256: "a".repeat(64),
+					callId: "c",
+				},
+				new AbortController().signal,
+			);
+		await expect(write()).resolves.toEqual({ run: true });
+		expect(calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+		offlineShells.add(RULE);
+		await expect(write()).resolves.toEqual({ run: true });
+		expect(calls).toHaveLength(1);
 		expect(review).not.toHaveBeenCalled();
 	});
 

@@ -220,7 +220,10 @@ export class PlatformFolderWriter {
 		return file;
 	}
 
-	/** A folder file's bytes, read from this gateway's store by its manifest, at most `maxBytes`. */
+	/** A folder file's bytes, read from this gateway's store by its manifest, at most `maxBytes`. The reference and the
+	 * manifest may come from a caller, so no object is fetched before its size is known to fit: the manifest's within
+	 * its bound, and each chunk's the one the manifest gives it (the core's chunk rules), all of them summing to the
+	 * file's bytes. */
 	async read(
 		environmentId: string,
 		file: { readonly manifestSha256: string; readonly fileSha256: string; readonly bytes: number },
@@ -228,8 +231,7 @@ export class PlatformFolderWriter {
 		signal: AbortSignal,
 	): Promise<Uint8Array> {
 		if (file.bytes > maxBytes) platformFolderProblem("file_too_large");
-		const manifestBytes = await this.#object(environmentId, file.manifestSha256, signal);
-		if (manifestBytes.byteLength > MAX_MANIFEST_BYTES) platformFolderProblem("file_unreadable");
+		const manifestBytes = await this.#object(environmentId, file.manifestSha256, MAX_MANIFEST_BYTES, signal);
 		let manifest: { schema?: unknown; fileSha256?: unknown; bytes?: unknown; chunks?: unknown };
 		try {
 			manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
@@ -244,11 +246,23 @@ export class PlatformFolderWriter {
 			manifest.chunks.length > MAX_CHUNKS
 		)
 			platformFolderProblem("file_unreadable");
-		const parts: Uint8Array[] = [];
-		for (const chunk of manifest.chunks as { sha256?: unknown }[]) {
-			if (typeof chunk?.sha256 !== "string" || !SHA256.test(chunk.sha256)) platformFolderProblem("file_unreadable");
-			parts.push(await this.#object(environmentId, chunk.sha256 as string, signal));
+		const chunks = manifest.chunks as { sha256?: unknown; bytes?: unknown }[];
+		let declared = 0;
+		for (const chunk of chunks) {
+			if (
+				typeof chunk?.sha256 !== "string" ||
+				!SHA256.test(chunk.sha256) ||
+				!Number.isSafeInteger(chunk.bytes) ||
+				(chunk.bytes as number) < 1 ||
+				(chunk.bytes as number) > CHUNK_BYTES
+			)
+				platformFolderProblem("file_unreadable");
+			declared += chunk.bytes as number;
 		}
+		if (declared !== file.bytes) platformFolderProblem("file_unreadable");
+		const parts: Uint8Array[] = [];
+		for (const chunk of chunks)
+			parts.push(await this.#object(environmentId, chunk.sha256 as string, chunk.bytes as number, signal));
 		const bytes = Buffer.concat(parts);
 		if (bytes.byteLength !== file.bytes || contentHash(bytes) !== file.fileSha256)
 			platformFolderProblem("file_unreadable");
@@ -269,7 +283,8 @@ export class PlatformFolderWriter {
 		);
 	}
 
-	async #object(environmentId: string, hash: string, signal: AbortSignal): Promise<Uint8Array> {
+	/** An object the actor may read, fetched only if the catalog's size for it is at most `maxBytes`. */
+	async #object(environmentId: string, hash: string, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
 		const answer = (await this.#rpc(
 			"qorpera_folder_authorize_object_download",
 			{ p_environment_id: environmentId, p_actor: this.#actor, p_sha256: hash },
@@ -279,7 +294,8 @@ export class PlatformFolderWriter {
 			answer?.schema !== "qorpera.folder-object-download/v1" ||
 			typeof answer.profileId !== "string" ||
 			!UUID.test(answer.profileId) ||
-			!Number.isSafeInteger(answer.bytes)
+			!Number.isSafeInteger(answer.bytes) ||
+			(answer.bytes as number) > maxBytes
 		)
 			return platformFolderProblem("file_unreadable");
 		let bytes: Uint8Array;

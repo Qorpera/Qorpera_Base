@@ -145,12 +145,14 @@ function canonical(value: unknown): string {
 	return JSON.stringify(sorted(value)) ?? "null";
 }
 
-/** A text as the boundary's plain one-line refusal takes it: curly quotes straightened, anything else replaced. */
+/** A text as the boundary's plain one-line refusal takes it: curly quotes and dashes straightened, anything else
+ * replaced. */
 const plain = (text: string): string =>
 	text
 		.replace(/\s+/g, " ")
 		.replace(/[“”]/g, '"')
 		.replace(/[‘’]/g, "'")
+		.replace(/[–—]/g, "-")
 		.replace(/[^\x20-\x7e\xc0-\xff]/g, "?");
 
 /** A text cut to `bytes` UTF-8 bytes, marked when cut. */
@@ -1281,7 +1283,7 @@ export function cloudInterfaceWriteTools(options: {
 	const saveInterface: CloudNativeTool = {
 		name: "save_interface" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
-		description: `Save interfaces and tables: up to ${SAVE_FILES} files as one change. A file is an interface's interfaces/<name>/interface.toml, a table's tables/<name>/table.toml, a README.md in either folder, or interfaces/order.md. Give each file's whole new text, with its version from your read as expectedVersion, or null for a file that does not exist yet. A new interface or table is a new folder; its id is a new random UUID you make. A table's rows are written with table_write, never here, and a new table starts with no rows. To make another interface the main one, include the old main's interface.toml with main = false. Change a table's columns in steps its rows fit: add a required column as optional, fill it with table_write, then make it required; to remove a column, make it optional and empty it in every row with table_write, then remove it. A change of buttons, of who sees or edits an interface, of a table's columns or of who writes its rows runs only with the automatic review's approval. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when everything was saved.`,
+		description: `Save interfaces and tables: up to ${SAVE_FILES} files as one change. A file is an interface's interfaces/<name>/interface.toml, a table's tables/<name>/table.toml, a README.md in either folder, or interfaces/order.md. Give each file's whole new text, with its version from your read as expectedVersion, or null for a file that does not exist yet. A new interface or table is a new folder; its id is a new random lowercase UUID (version 4) you make. An interface.toml has format = "qorpera.interface/v0", an [interface] with its id and name, and one or more [[view]]s, each with a name and its [[view.block]]s: a block of kind "text" can hold its own text, and most other kinds show the source named in from, like "table:<name>"; company_read of an existing interface.toml shows the rest. The files are strict TOML: a text is one line in double quotes, with \\n for each line break, and there are no multi-line strings, dotted keys or bare dates. A table's rows are written with table_write, never here, and a new table starts with no rows. To make another interface the main one, include the old main's interface.toml with main = false. Change a table's columns in steps its rows fit: add a required column as optional, fill it with table_write, then make it required; to remove a column, make it optional and empty it in every row with table_write, then remove it. A change of buttons, of who sees or edits an interface, of a table's columns or of who writes its rows runs only with the automatic review's approval. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when everything was saved.`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,

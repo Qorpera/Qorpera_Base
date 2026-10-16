@@ -783,7 +783,8 @@ async function main() {
 			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
-		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores })];
+		const stepWorkers = !options.env.some(([name]) => name === "VITEST_MAX_WORKERS");
+		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores, stepWorkers })];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}

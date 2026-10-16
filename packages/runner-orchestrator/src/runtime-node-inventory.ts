@@ -1,6 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import { cloudCodingSessionLayout } from "@qorpera/contracts";
 import {
+	CODE_HOST_PROJECT,
+	type CodeHostPolicy,
+	codeHostInstanceMatches,
+	codeHostReservation,
+	parseCodeHostPolicy,
+} from "./code-host.ts";
+import {
 	type ExecutionHostIdentityVolumes,
 	executionHostIdentityDevices,
 	MAX_EXECUTION_HOST_IDENTITIES,
@@ -75,12 +82,33 @@ export interface RuntimeNodeInventoryPolicy {
 	operatingMemoryBytes: number;
 	infrastructure: RuntimeNodeInfrastructure[];
 	buildSpace?: RuntimeNodeBuildSpace;
+	/** The node's code hosts (code-host.ts): each company's `code-host` VM in its own project, made by the coding
+	 * executor under the same policy. `running` of them are always reserved, like the build space; a code host
+	 * is accepted only exactly as the executor makes it. Without it, anything in such a project is unregistered. */
+	codeHosts?: CodeHostPolicy;
+}
+/** What the policy holds back from the node's headroom whether anything runs or not. */
+export function runtimeNodeReserved(p: RuntimeNodeInventoryPolicy): { cpuMillis: number; memoryBytes: number } {
+	const hosts = codeHostReservation(p.codeHosts);
+	return {
+		cpuMillis:
+			p.operatingCpuMillis +
+			p.infrastructure.reduce((sum, i) => sum + i.cpuMillis, 0) +
+			(p.buildSpace?.cpuMillis ?? 0) +
+			hosts.cpuMillis,
+		memoryBytes:
+			p.operatingMemoryBytes +
+			p.infrastructure.reduce((sum, i) => sum + i.memoryBytes, 0) +
+			(p.buildSpace?.memoryBytes ?? 0) +
+			hosts.memoryBytes,
+	};
 }
 export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInventoryPolicy {
 	const building = !!value && typeof value === "object" && Object.hasOwn(value, "buildSpace");
+	const coding = !!value && typeof value === "object" && Object.hasOwn(value, "codeHosts");
 	const p = record(
 		value,
-		`schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure${building ? ",buildSpace" : ""}`,
+		`schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure${building ? ",buildSpace" : ""}${coding ? ",codeHosts" : ""}`,
 	);
 	const h = record(
 		p.host,
@@ -134,10 +162,19 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 			memoryBytes: integer(b.memoryBytes, MAX_MEMORY),
 		};
 	}
+	let codeHosts: CodeHostPolicy | undefined;
+	try {
+		codeHosts = coding ? parseCodeHostPolicy(p.codeHosts) : undefined;
+	} catch {
+		throw new Error("INVALID_NODE_INVENTORY_POLICY");
+	}
 	if (
 		new Set(infrastructure.map((i) => JSON.stringify([i.project, i.name]))).size !== infrastructure.length ||
 		new Set(infrastructure.map((i) => i.physicalId)).size !== infrastructure.length ||
-		(buildSpace && infrastructure.some((i) => i.project === buildSpace.project))
+		(buildSpace && infrastructure.some((i) => i.project === buildSpace.project)) ||
+		// A code host project holds its code host and nothing else.
+		infrastructure.some((i) => CODE_HOST_PROJECT.test(i.project)) ||
+		(buildSpace && CODE_HOST_PROJECT.test(buildSpace.project))
 	)
 		throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	return {
@@ -156,6 +193,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 		operatingMemoryBytes: integer(p.operatingMemoryBytes, MAX_MEMORY),
 		infrastructure,
 		...(buildSpace ? { buildSpace } : {}),
+		...(codeHosts ? { codeHosts } : {}),
 	};
 }
 export interface RuntimeNodeInventoryAllocation {
@@ -243,13 +281,14 @@ export interface RuntimeNodeInventoryEntry {
 	cpuMillis: number | null;
 	memoryBytes: number | null;
 	allocation: RuntimeNodeInventoryAllocation | null;
-	category: "managed" | "infrastructure" | "build" | "unmanaged";
+	category: "managed" | "infrastructure" | "build" | "code-host" | "unmanaged";
 	reason:
 		| "UNREGISTERED_INSTANCE"
 		| "INSTANCE_AUTHORITY_DIFFERS"
 		| "INSTANCE_STATE_UNAVAILABLE"
 		| "BUILD_SPACE_EXCEEDED"
 		| "INSTANCE_IMAGE_NOT_RELEASED"
+		| "CODE_HOST_SPACE_EXCEEDED"
 		| null;
 	/** Only on an infrastructure entry whose policy declares identityVolumes:
 	 * the identities of its identity devices, sorted. */
@@ -510,9 +549,12 @@ export function reconcileRuntimeNodeInventory(
 				: null;
 		if (physicalId && physical.has(physicalId)) throw new Error("NODE_INVENTORY_DUPLICATE_INSTANCE");
 		if (physicalId) physical.add(physicalId);
-		const build = p.buildSpace?.project === i.project,
-			a = build ? null : allocation(i, c),
-			infra = a || build ? undefined : p.infrastructure.find((v) => v.project === i.project && v.name === i.name),
+		// The policy keeps code host projects apart from the build space and infrastructure.
+		const host = CODE_HOST_PROJECT.test(i.project),
+			build = p.buildSpace?.project === i.project,
+			a = build || host ? null : allocation(i, c),
+			infra =
+				a || build || host ? undefined : p.infrastructure.find((v) => v.project === i.project && v.name === i.name),
 			{ configurationSha256, identities } = runtimeNodeInstanceConfiguration(i, infra?.identityVolumes, infra?.role),
 			resources = cost(i),
 			s = state(i);
@@ -529,6 +571,13 @@ export function reconcileRuntimeNodeInventory(
 				buildMachine(i, p.buildSpace)
 					? null
 					: "INSTANCE_AUTHORITY_DIFFERS";
+		} else if (host) {
+			// Exactly as the executor makes it, or unregistered. The executor never freezes one, and a frozen VM
+			// would keep its memory outside the running count.
+			if (p.codeHosts && physicalId && codeHostInstanceMatches(p.codeHosts, i.project, i)) {
+				category = "code-host";
+				reason = i.statusCode === 110 ? "INSTANCE_AUTHORITY_DIFFERS" : null;
+			}
 		} else if (a) {
 			if (managed.has(a.allocationId)) throw new Error("NODE_INVENTORY_DUPLICATE_ALLOCATION");
 			managed.add(a.allocationId);
@@ -593,15 +642,12 @@ export function reconcileRuntimeNodeInventory(
 			builds.reduce((sum, e) => sum + (e.memoryBytes ?? 0), 0) > p.buildSpace.memoryBytes)
 	)
 		for (const e of builds) if (e.reason === null) e.reason = "BUILD_SPACE_EXCEEDED";
-	const headroomValid =
-		p.operatingCpuMillis +
-			p.infrastructure.reduce((sum, i) => sum + i.cpuMillis, 0) +
-			(p.buildSpace?.cpuMillis ?? 0) <=
-			c.headroomCpuMillis &&
-		p.operatingMemoryBytes +
-			p.infrastructure.reduce((sum, i) => sum + i.memoryBytes, 0) +
-			(p.buildSpace?.memoryBytes ?? 0) <=
-			c.headroomMemoryBytes;
+	// At most the policy's `running` code hosts are not stopped; each is the policy's size.
+	const hosts = entries.filter((e) => e.category === "code-host" && e.state !== "suspended");
+	if (p.codeHosts && hosts.length > p.codeHosts.running)
+		for (const e of hosts) if (e.reason === null) e.reason = "CODE_HOST_SPACE_EXCEEDED";
+	const reserved = runtimeNodeReserved(p);
+	const headroomValid = reserved.cpuMillis <= c.headroomCpuMillis && reserved.memoryBytes <= c.headroomMemoryBytes;
 	return {
 		state: headroomValid && entries.every((i) => i.reason === null) ? ("ready" as const) : ("unavailable" as const),
 		entries,
