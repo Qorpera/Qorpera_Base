@@ -282,6 +282,53 @@ process.exitCode = ${code};
 	}
 });
 
+test("the shared-server scripts run in lanes at the same time, each lane one script at a time", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "qorpera-hosted-db-lanes-"));
+	try {
+		const log = join(directory, "log");
+		// A script given `other` waits (up to 20 s) until `other` has started, so it sees that only if the two overlap.
+		const script = (name, code, other) => {
+			const file = join(directory, `${name}.mjs`);
+			const started = `readFileSync(${JSON.stringify(log)}, "utf8").includes("start ${other}\\n")`;
+			const wait = other
+				? `const until = Date.now() + 20_000;
+while (!${started} && Date.now() < until) await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+console.log("${name} saw ${other} start: " + ${started});
+`
+				: "";
+			writeFileSync(
+				file,
+				`import { appendFileSync, readFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, "start ${name}\\n");
+${wait}appendFileSync(${JSON.stringify(log)}, "end ${name}\\n");
+process.exitCode = ${code};
+`,
+			);
+			return file;
+		};
+		const [a, b, c, d] = [script("a", 0, "c"), script("b", 0), script("c", 3, "a"), script("d", 0)];
+		const started = startInTurn([a, c, b, d], {}, (file) => ([c, d].includes(file) ? 1 : 0));
+		assert.deepEqual(started.map(([name]) => name), [a, c, b, d]);
+		const results = await Promise.all(started.map(([, exited]) => exited));
+		assert.deepEqual(
+			results.map(({ code, output }) => [code, output]),
+			[
+				[0, "a saw c start: true\n"],
+				[3, "c saw a start: true\n"],
+				[0, ""],
+				[0, ""],
+			],
+		);
+		// In each lane the next script starts only after the one before it ends, failed or not.
+		const lines = readFileSync(log, "utf8").split("\n");
+		assert.ok(lines.indexOf("end a") < lines.indexOf("start b"), lines.join(", "));
+		assert.ok(lines.indexOf("end c") < lines.indexOf("start d"), lines.join(", "));
+		assert.equal(lines.filter(Boolean).length, 8, lines.join(", "));
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("--only keeps the named tests in order and refuses a value that matches none", () => {
 	assert.deepEqual(parseArguments([]), { withScripts: false, only: null });
 	assert.deepEqual(parseArguments(["--scripts", "--only", "811,818"]), { withScripts: true, only: ["811", "818"] });
@@ -311,15 +358,21 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		"040_account_separation.test.sql",
 		"200_deleted_profile_object_gc.test.sql",
 		"625_kept_rows.test.sql",
-		"819_last.test.sql",
-		"820_first.test.sql",
-		"8200_longer.test.sql",
+		"657_last.test.sql",
+		"658_first.test.sql",
+		"6580_longer.test.sql",
+		"825_last.test.sql",
+		"826_first.test.sql",
+		"892_last.test.sql",
+		"893_first.test.sql",
 		"999_end.test.sql",
 	];
 	const split = splitTests(tests, null);
 	assert.deepEqual(split, [
 		["qorpera_test", tests.slice(0, 5)],
-		["qorpera_test_2", tests.slice(5)],
+		["qorpera_test_2", tests.slice(5, 8)],
+		["qorpera_test_3", tests.slice(8, 10)],
+		["qorpera_test_4", tests.slice(10)],
 	]);
 	// Every test runs once, in its usual order.
 	assert.deepEqual(split.flatMap(([, part]) => part), tests);
@@ -333,8 +386,8 @@ test("the SQL tests split into contiguous runs, and --only keeps one run on qorp
 		]),
 		[
 			["a", tests.slice(0, 2)],
-			["b", tests.slice(2, 7)],
-			["c", tests.slice(7)],
+			["b", tests.slice(2, 11)],
+			["c", tests.slice(11)],
 		],
 	);
 	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");

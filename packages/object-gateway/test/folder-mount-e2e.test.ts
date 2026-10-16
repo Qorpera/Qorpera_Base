@@ -406,7 +406,8 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 				.flatMap((commit) => commit.units)
 				.find((unit) => unit.op === "write" && unit.path === path);
 			expect(unit?.op).toBe("write");
-			if (unit?.op === "write") expect(copy?.manifestSha256).toBe(unit.file.manifestSha256);
+			if (unit?.op === "write")
+				expect(copy).toMatchObject({ kind: "file", manifestSha256: unit.file.manifestSha256 });
 		}
 		expect(
 			await eventually(async () => (await readFile(join(company, "docs/plan.md"), "utf8")) === "plan theirs", 5_000),

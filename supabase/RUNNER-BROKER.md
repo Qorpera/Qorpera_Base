@@ -16,7 +16,7 @@ The broker is host-side infrastructure. Sandboxed customer code sees neither thi
 
 Every request is a `POST` with a JSON body of at most 512 KiB:
 
-- `describe` returns the leased job, its run and sponsor in the path lane's shape, and its output limits (`qorpera_runner_broker_describe`, which refuses a proposal review on folder-v2).
+- `describe` returns the leased job, its run and sponsor in the path lane's shape, with no Company File substrate or output limits (`qorpera_runner_broker_describe`, which refuses a proposal review and, since legacy sweep D8, a company that is not folder-v2).
 - `native_authority` leases the run's native provider connection for 30 to 900 seconds and returns it with the run's model authority.
 - `renew_native_authority` extends that lease for 30 to 900 seconds.
 - `release_native_authority` ends it as `released`, `revoked`, or `expired`.

@@ -519,9 +519,11 @@ export function parseCloudMemberCompanyStateFolders(value: unknown): CloudMember
 }
 
 /** One unit of a member's change set, as the member commit route takes it (P34a). Text is UTF-8, at most 64 KiB a
- * file and 512 KiB a change set; the route stages it and gives every state file its parse. */
+ * file and 512 KiB a change set; the route stages it and gives every state file its parse. A `symlink` unit saves a
+ * link, its target 1 to 4,095 bytes kept exactly; with `expectedVersion` it replaces that version of a file or link. */
 export type CloudMemberFolderUnit =
 	| { readonly op: "write"; readonly path: string; readonly text: string; readonly expectedVersion?: string }
+	| { readonly op: "symlink"; readonly path: string; readonly target: string; readonly expectedVersion?: string }
 	| { readonly op: "mkdir"; readonly path: string }
 	| {
 			readonly op: "new_folder";
