@@ -846,7 +846,7 @@ a write under `human-tasks/` waits for P31.
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
   `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260928549380_folder_links`), its `target`, the
   text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
@@ -924,7 +924,7 @@ for a cell's offer; an agent's id is an agent offered to an area's supervisor ("
   most 500. Every member who reads the table sees its offers. Read it again after a folder change to the table and on
   focus; an offer settles with the save that changes its cell.
 
-### Supervision consent (20260930371000_interface_supervision)
+### Supervision consent (20260928549360_interface_supervision)
 
 Folder-v2 companies only (Interfaces I9b; `deploy/first-node/RUNTIME-INTERFACES.md` §5.1 "Supervision"). A member
 supervises the agents of an area (a row of `tables/areas`) by consent: their own save of the areas' rows that puts them
@@ -953,7 +953,7 @@ environment.
   supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
   first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
   names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
-- Agents join a supervised area by its supervisor (20260930372000_interface_supervision_agents). While an area's
+- Agents join a supervised area by its supervisor (20260928549370_interface_supervision_agents). While an area's
   consent is live, only its member's save adds an agent to the row's `agents` cell; anyone else's save that adds one
   is refused (`areas`: "only the area's supervisor adds its agents; offer the agent to them"). Removing an agent stays
   free, and so does adding one to an area nobody supervises.
@@ -979,7 +979,7 @@ environment.
   never the member who ended it. A key the supervisor
   changed in their own save that consents to the renamed row tells nobody.
 
-### Chat images (20260930260000_chat_images)
+### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
 the conversation's summary-tree root: `<root>/images/<clientInputId>/<sha256>.<png|jpg|gif|webp>`, the root being
@@ -1031,7 +1031,7 @@ whole folder of an input never posted, and the images a posted input does not li
 M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
 now; an image's path comes to the zoom with the runtime that opens it.
 
-### Coding environment secrets (20260930438000_coding_environment_secrets)
+### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
 like any other (`qorpera_begin_cloud_secret_capture`, the broker's screen, completion) with the connector id
