@@ -16,6 +16,21 @@ const command = `command-${computerId(2)}`;
 const report = { commitId: "commit-1", seq: 3, paths: [] };
 const refusal = (refused: string) => ({ answer: "refused", report: { commitId: null, seq: null, paths: [], refused } });
 const mount = (name: string) => ({ name, viewId: computerId(9), program: "running" });
+/** A report with no reason that settled every path, one not saved; `closed` as a final that closed the view says. */
+const notAll = (closed?: true) => ({
+	...report,
+	paths: [{ path: "a", outcome: "conflict" }],
+	...(closed ? { closed } : {}),
+});
+/** A report with no reason that keeps a path, as the service's when the commit got no answer or a path still waits. */
+const kept = (outcome: string) => ({
+	commitId: null,
+	seq: null,
+	paths: [
+		{ path: "a", outcome: "conflict" },
+		{ path: "b", outcome, reason: "not yet", kept: true },
+	],
+});
 
 let directory: string;
 let socket: string;
@@ -96,17 +111,22 @@ describe("the stop control's mounts left", () => {
 	});
 
 	it.each([
-		["the pause", refusal("stopped")],
-		["rule 4", refusal("unproven")],
-		["a denied read", refusal("denied")],
-		["some paths", { answer: "refused", report: { ...report, paths: [{ path: "a", outcome: "refused" }] } }],
-		["a saved boundary whose mount stayed", { answer: "saved", report }],
-	])("takes %s as the mount's final answer, and drops what it left", async (_, answer) => {
-		const h = helper([command]);
-		h.answer("unmount", command, { ...answer, unmounted: false });
-		h.answer("drop", command, { answer: "unknown" });
+		["the pause", command, refusal("stopped")],
+		["rule 4", command, refusal("unproven")],
+		["a denied read", command, refusal("denied")],
+		["a final that closed the view though not all was saved", command, { answer: "refused", report: notAll(true) }],
+		[
+			"a desktop's boundary that settled every path though not all was saved",
+			desktop,
+			{ answer: "refused", report: notAll() },
+		],
+		["a saved boundary whose mount stayed", command, { answer: "saved", report }],
+	])("takes %s as the mount's final answer, and drops what it left", async (_, name, answer) => {
+		const h = helper([name]);
+		h.answer("unmount", name, { ...answer, unmounted: false });
+		h.answer("drop", name, { answer: "unknown" });
 		await publish(h);
-		expect(h.ops()).toEqual(["list", `unmount ${command}`, `drop ${command}`]);
+		expect(h.ops()).toEqual(["list", `unmount ${name}`, `drop ${name}`]);
 	});
 
 	it("takes a mount the helper no longer has as gone", async () => {
@@ -117,17 +137,30 @@ describe("the stop control's mounts left", () => {
 	});
 
 	it.each([
-		["no answer", undefined],
-		["a malformed answer", { answer: "invalid" }],
-		["an unanswered boundary (QRC01)", { answer: "unanswered", unmounted: false }],
-		["the run check", { ...refusal("run_ended"), unmounted: false }],
-	])("fails on %s, once every other mount was asked, and drops nothing of it", async (_, answer) => {
-		const h = helper([command, desktop]);
-		h.answer("unmount", command, answer);
-		h.answer("unmount", desktop, { answer: "closed", unmounted: false });
-		h.answer("drop", desktop, { answer: "dropped" });
+		["no answer", command, undefined],
+		["a malformed answer", command, { answer: "invalid" }],
+		["an unanswered boundary (QRC01)", command, { answer: "unanswered", unmounted: false }],
+		["the run check", command, { ...refusal("run_ended"), unmounted: false }],
+		[
+			"a final the core did not answer",
+			command,
+			{ answer: "refused", report: kept("not_applied"), unmounted: false },
+		],
+		["a final whose change still waits", command, { answer: "refused", report: kept("waiting"), unmounted: false }],
+		["a final that did not close the view", command, { answer: "refused", report: notAll(), unmounted: false }],
+		[
+			"a desktop's boundary the core did not answer",
+			desktop,
+			{ answer: "refused", report: kept("not_applied"), unmounted: false },
+		],
+	])("fails on %s, once every other mount was asked, and drops nothing of it", async (_, name, answer) => {
+		const other = name === command ? desktop : command;
+		const h = helper([name, other]);
+		h.answer("unmount", name, answer);
+		h.answer("unmount", other, { answer: "closed", unmounted: false });
+		h.answer("drop", other, { answer: "dropped" });
 		await expect(publish(h)).rejects.toThrow("OFFICE_FOLDERS_LEFT_UNPUBLISHED");
-		expect(h.ops()).toEqual(["list", `unmount ${command}`, `unmount ${desktop}`, `drop ${desktop}`]);
+		expect(h.ops()).toEqual(["list", `unmount ${name}`, `unmount ${other}`, `drop ${other}`]);
 	});
 
 	it.each([

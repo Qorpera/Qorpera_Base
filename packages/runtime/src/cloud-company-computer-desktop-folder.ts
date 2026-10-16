@@ -419,8 +419,9 @@ export class CompanyComputerDesktopFolders {
 	/**
 	 * A drain's boundary on the screen's mount, after its desktop stopped and before the drain's acknowledgement
 	 * ("Drains and stops"): the mount's last changes are published, then it goes and its view closes. A boundary with no
-	 * answer, or refused in a way a retry gets past (QRC01, the run check), is asked again until `until`
-	 * (performance.now()); then the drain fails, and the mount stays for the stop control. Every other answer is final,
+	 * answer, refused in a way a retry gets past (QRC01, the run check), or refused with no reason while it keeps a path
+	 * (the core did not answer the commit, or a path still waits) is asked again until `until` (performance.now()); then
+	 * the drain fails, and the mount stays for the stop control. Every other answer is final,
 	 * the pause's included: a mount still there after it goes without another boundary, and none of its refused changes
 	 * carry into the next holder's view. The answer is logged with the drain. `still` is asked when the request's turn
 	 * comes: a desktop started meanwhile keeps the mount.
@@ -461,7 +462,9 @@ export class CompanyComputerDesktopFolders {
 					!answer ||
 					answer.answer === "invalid" ||
 					answer.answer === "unanswered" ||
-					(answer.answer === "refused" && answer.report.refused === "run_ended")
+					(answer.answer === "refused" &&
+						(answer.report.refused === "run_ended" ||
+							(answer.report.refused === undefined && answer.report.paths.some((entry) => entry.kept))))
 				) {
 					await pause(Math.min(BOUNDARY_RETRY_MS, until - performance.now()), signal);
 					continue;

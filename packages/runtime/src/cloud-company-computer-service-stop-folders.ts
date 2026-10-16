@@ -20,7 +20,8 @@ const BOUNDARY_LEAST_MS = 1000;
  * gets its boundary and goes (`unmount`), all at once, by `until` (performance.now()). A command's boundary is its
  * final one: its processes are gone. A desktop's is not: the view's reads stay the core's to settle.
  *
- * No answer, or a refusal a retry gets past (QRC01, the run check), throws once every mount was asked: the stop has no
+ * No answer, a refusal a retry gets past (QRC01, the run check), or one with no reason that leaves a change waiting
+ * (the core did not answer the commit, or a path still waits) throws once every mount was asked: the stop has no
  * completion, the provider dispatches it again, and the next run, finding its claim retained, asks again with nearly
  * all its time. Every other answer is final for its mount (rule 4's refusal, the company's pause, `denied`), whose
  * changes are refused and whose report says why; a mount it left goes without a boundary (`drop`). The helper's
@@ -54,11 +55,9 @@ export async function publishCompanyComputerFoldersLeft(
 		listed.mounts.map(async ({ name }) => {
 			const timeoutMs = Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MAXIMUM_MS, left() - UNMOUNT_MS);
 			if (timeoutMs < BOUNDARY_LEAST_MS) throw new Error("OFFICE_FOLDERS_LEFT_LATE");
-			const answer = await ask(
-				{ op: "unmount", name, final: name.startsWith("command-"), timeoutMs },
-				{ socket, timeoutMs: left(), signal },
-			);
-			if (!isFinal(answer)) throw new Error("OFFICE_FOLDERS_LEFT_UNANSWERED");
+			const final = name.startsWith("command-");
+			const answer = await ask({ op: "unmount", name, final, timeoutMs }, { socket, timeoutMs: left(), signal });
+			if (!isFinal(answer, final)) throw new Error("OFFICE_FOLDERS_LEFT_UNANSWERED");
 			if (answer.answer === "unknown" || answer.unmounted) return;
 			const dropped = (await ask({ op: "drop", name }, { socket, timeoutMs: Math.max(1, left()), signal }))?.answer;
 			if (dropped !== "dropped" && dropped !== "unknown") throw new Error("OFFICE_FOLDERS_LEFT_KEPT");
@@ -68,15 +67,17 @@ export async function publishCompanyComputerFoldersLeft(
 	if (settled.some((result) => result.status === "rejected")) throw new Error("OFFICE_FOLDERS_LEFT_UNPUBLISHED");
 }
 
-/** Whether the helper's answer is final for the mount: every one but no answer, `unanswered` (QRC01 among them) and
- * the run check's refusal. `unknown`: the mount is gone already. */
+/** Whether the helper's answer is final for the mount: every one but no answer, `unanswered` (QRC01 among them), the
+ * run check's refusal, and a refusal with no reason that leaves a change waiting: a command's final the view did not
+ * close, or another boundary that kept a path. `unknown`: the mount is gone already. */
 function isFinal(
 	answer: CompanyComputerFolderAnswer<"unmount"> | undefined,
+	final: boolean,
 ): answer is Exclude<CompanyComputerFolderAnswer<"unmount">, { answer: "invalid" }> {
-	return (
-		answer !== undefined &&
-		answer.answer !== "invalid" &&
-		answer.answer !== "unanswered" &&
-		!(answer.answer === "refused" && answer.report.refused === "run_ended")
-	);
+	if (answer === undefined || answer.answer === "invalid" || answer.answer === "unanswered") return false;
+	if (answer.answer !== "refused") return true;
+	const { report } = answer;
+	if (report.refused === "run_ended") return false;
+	if (report.refused !== undefined || report.closed) return true;
+	return !final && !report.paths.some((entry) => entry.kept);
 }

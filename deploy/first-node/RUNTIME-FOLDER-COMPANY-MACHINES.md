@@ -216,9 +216,12 @@ stop only after its completion (`cloud-company-computer-service-stop-control.ts`
   `TimeoutStopSec=70`), so a first run's boundaries get what it left less those 15 s; under a second, the run fails
   without asking. A run that finds its claim retained only observes the stopped service, so its boundaries get nearly
   85 s. An image without the folder helper has no socket and no mount: the step asks nothing;
-- a boundary with no answer, or refused in a way a retry gets past (QRC01, the run check; Reads, below), fails the
-  stop control's run, so the provider has no completion and acknowledges nothing: `qorpera_ack_runtime_office_stop`
-  does not clear the pending drain that keeps the old view valid. Every other refusal is an answer: one under rule 4
+- a boundary with no answer, refused in a way a retry gets past (QRC01, the run check; Reads, below), or refused with
+  no reason while a change still waits (the core did not answer the commit, or a path is left waiting: a command's
+  final that did not close its view, or a desktop's boundary that kept a path), fails the stop control's run, so the
+  provider has no completion and acknowledges nothing: `qorpera_ack_runtime_office_stop` does not clear the pending
+  drain that keeps the old view valid. A desktop's drain asks such a boundary again too. Every other refusal is an
+  answer: one under rule 4
   (a read log that cannot be shown complete), the company's pause, and any other the core gives (`denied`, such as a
   read in the view's read set narrowed since). It is final for that mount, whose changes are refused, a member's as
   well as an agent's, and the report says why; the run goes on (rule 3; review rounds 10, 12 and 13);
