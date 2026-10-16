@@ -119,3 +119,15 @@ test("the printed budget includes a declared build space", () => {
 	assert.equal(plan.budget.requiredMemoryBytes, 17 * 1024 ** 3);
 	assert.equal(plan.budget.remainingCpuMillis, 2000);
 });
+
+test("the printed budget includes the code hosts", () => {
+	const f = fixture();
+	f.context.policy = { ...f.context.policy, codeHosts: { imageFingerprint: "c".repeat(64), storagePool: "default", cpus: 2,
+		memoryBytes: 4 * 1024 ** 3, rootDiskBytes: 20 * 1024 ** 3, running: 2 } };
+	f.context.headroomCpuMillis = 11000;
+	f.context.headroomMemoryBytes = 33 * 1024 ** 3;
+	const plan = planNodeBuilderInventory(f);
+	assert.equal(plan.budget.requiredCpuMillis, 10000);
+	assert.equal(plan.budget.requiredMemoryBytes, 24 * 1024 ** 3);
+	assert.equal(plan.budget.remainingCpuMillis, 1000);
+});
