@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AREAS_TABLE, CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
+import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
@@ -160,7 +161,7 @@ const BLOCKED = {
 	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
 	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
 	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file, not a folder: choose another name.",
+		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
 	folder_missing:
 		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
 	owners_only:
@@ -225,6 +226,66 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	);
 	expect(f.releases).toEqual([]);
 	expect(f.commits).toEqual([]);
+});
+
+it("says how to write what a first try at a new page often gets wrong, and saves the page written that way", async () => {
+	// A production run's first three saves of a new page were refused (P0-2, 16 Oct): a text that spans lines and a
+	// made-up id are refused with what to write instead, whole, so the model can fix them in one more call.
+	const f = await fixture({ folders: ["interfaces"] });
+	const launch = (id: string, text: string) => `format = "qorpera.interface/v0"
+
+[interface]
+id = "${id}"
+name = "Launch check"
+
+[[view]]
+name = "Items"
+
+[[view.block]]
+kind = "text"
+text = ${text}
+`;
+	const one = (text: string) => save("launch-1", [{ path: NOTES, text }]);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch(NOTES_ID, '"""\nAlpha: open\nBeta: done\n"""')),
+		`${NOTES} cannot be saved: interface.toml line 12: Multi-line strings are not used in these files: write it on one line in "double quotes", with \\n for each line break.`,
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch(NOTES_ID, '"Alpha: open\nBeta: done"')),
+		'interface.toml line 12: A quoted text must close on its line: write it on one line in "double quotes"',
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch("11111111-2222-3333-4444-555555555555", '"Alpha: open"')),
+		`${NOTES} cannot be saved: interface.toml line 4: interface.id must be a new random lowercase uuid (version 4): 8-4-4-4-12 hex digits, the third group starting with 4 and the fourth with 8, 9, a or b.`,
+	);
+	// A list given its items in place, and a text too long, say what to write instead (the dash kept as one).
+	const list = launch(NOTES_ID, '""').replace(
+		'kind = "text"\ntext = ""',
+		'kind = "list"\nitems = ["Alpha", "Beta", "Gamma"]',
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(list),
+		'This block needs from: the source it shows, like "table:<name>". Only a text block holds its own text.',
+	);
+	refusesArguments(
+		f,
+		"save_interface",
+		one(launch(NOTES_ID, `"${"x".repeat(2001)}"`)),
+		"interface.toml line 12: view[0].block[0].text takes 0-2000 characters.",
+	);
+	expect(f.commits).toEqual([]);
+	const made = await f.call("save_interface", one(launch(NOTES_ID, '"Alpha: open\\nBeta: done"')));
+	expect(read(made)).toMatchObject({ state: "applied", files: [{ path: "interfaces/notes", outcome: "saved" }] });
+	const saved = parseInterfaceFile(f.text(NOTES) ?? "");
+	expect(saved.file?.views[0]?.blocks[0]?.text).toBe("Alpha: open\nBeta: done");
 });
 
 it("makes a new interface as a new folder, only with the review's approval, and a replay finds it made", async () => {
@@ -386,6 +447,15 @@ it("saves nothing when a file is not as the call expects, and says why with what
 		{
 			name: "a file where the interface's folder would be",
 			seed: { files: { "interfaces/odd": "odd" } },
+			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
+			reason: "not_a_folder",
+			path: "interfaces/odd/interface.toml",
+			reads: ["interfaces/odd"],
+		},
+		{
+			// The core keeps links out of interfaces/ (LK1); one is blocked as any other thing that is not a folder.
+			name: "a link where the interface's folder would be",
+			seed: { links: { "interfaces/odd": "../docs" } },
 			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
 			reason: "not_a_folder",
 			path: "interfaces/odd/interface.toml",

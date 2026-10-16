@@ -119,6 +119,8 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			remember(entry);
 			if (entry.kind === "folder")
 				return { path, version: entry.version, kind: "directory", text: "", fileSha256: null };
+			// A link is not followed: no text here, as a notebook or a skill sees bytes that are not text.
+			if (entry.kind === "symlink") throw new CloudCompanyPathNotText("Company folder path is a link");
 			if (entry.file.bytes > MAX_TEXT_BYTES)
 				throw new CloudCompanyPathNotText("Company folder file exceeds its bound", entry.file.bytes);
 			const bytes = await folder.readRange(entry, 0, entry.file.bytes, signal);
@@ -133,8 +135,10 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 		async listTrusted(pathValue, signal) {
 			const path = parseCloudCompanyPath(pathValue, true);
 			const { entries } = await folder.listAll(path, { maxEntries: MAX_LISTED }, signal);
-			for (const entry of entries) remember(entry);
-			return entries.map((entry) => ({
+			// A notebook or a skill is a file or a folder; a link names neither, so the listing leaves it out.
+			const shown = entries.filter((entry) => entry.kind !== "symlink");
+			for (const entry of shown) remember(entry);
+			return shown.map((entry) => ({
 				path: entry.path,
 				version: entry.version,
 				kind: entry.kind === "file" ? ("file" as const) : ("directory" as const),

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+	CODE_HOST_DELETION_RPCS,
 	CODE_HOST_PROJECT_CONFIG,
-	CODE_HOST_RPCS,
 	type CodeHostEvent,
 	type CodeHostPolicy,
 	codeHostCompany,
@@ -860,7 +860,7 @@ describe("code host deletions from the control plane", () => {
 			owner: "exec-a",
 			machineIdSha256: "a".repeat(64),
 		});
-		expect(CODE_HOST_RPCS).toEqual(["qorpera_code_hosts_deleting"]);
+		expect(CODE_HOST_DELETION_RPCS).toEqual(["qorpera_code_hosts_deleting"]);
 		await expect(deleting(ids, signal())).resolves.toEqual(ids.filter((_, n) => n % 2 === 0));
 		const args = { p_owner: "exec-a", p_machine_id_sha256: "a".repeat(64) };
 		expect(calls).toEqual([

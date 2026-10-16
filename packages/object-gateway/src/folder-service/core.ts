@@ -2,6 +2,7 @@ import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { ObjectDependency, ObjectDependencyError } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
 import { nodeRequest, type Transport } from "./https-request.ts";
+import { validTarget } from "./protocol.ts";
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
  * the core's view actor, whose pass the folder service holds. */
@@ -27,9 +28,11 @@ export interface CoreReceipt {
 /** An entry as `qorpera_folder_entry_json` gives it (20260928120000). */
 export interface CoreEntry {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	/** The core's version id of the path (a uuid). */
 	readonly version: string;
+	/** A link's target (20260930380000), as written; only a link has one. */
+	readonly target?: string;
 	readonly manifestSha256?: string;
 	readonly fileSha256?: string;
 	readonly bytes?: number;
@@ -88,8 +91,19 @@ export interface FolderCore {
 	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
 	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). An open
 	 * answer says what the view is and which machine it belongs to (F3 4a). `unsavedSince`: since when the view has
-	 * had changes not published (an ISO time), or null; a desktop's keeps its seat in use. */
-	renewView(viewId: string, pass: string, unsavedSince: string | null, signal?: AbortSignal): Promise<ViewRenewal>;
+	 * had changes not published (an ISO time), or null; a desktop's keeps its seat in use. `service`: this service's id
+	 * (F3 5a `served_by`): a coding view's first renewal names its service, and a renewal from another service while
+	 * that one has not stopped cleanly closes the view (`service_crashed`). Other kinds ignore it. */
+	renewView(
+		viewId: string,
+		pass: string,
+		unsavedSince: string | null,
+		service: string,
+		signal?: AbortSignal,
+	): Promise<ViewRenewal>;
+	/** Clears `served_by` on every view this service served (F3 5a `qorpera_folder_service_stopped`), once every read it
+	 * recorded is released and everything is published; the views stay open for the next service. The views cleared. */
+	serviceStopped(service: string, signal?: AbortSignal): Promise<number>;
 	/** Opens an upload intent for a manifest (C1D §3.1): which of its objects the actor holds already. */
 	openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal): Promise<UploadOpen>;
 	/** The company an intent's object goes to (C1D §3.2's authorization, a plain read): the storage profile, for a view
@@ -127,13 +141,16 @@ export interface FolderCore {
 	): Promise<ReleaseAnswer>;
 }
 
-/** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
-export interface ConflictCopy {
+/** One file or link a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it.
+ * A link's copy holds its target and no manifest. */
+export type ConflictCopy = {
 	readonly unit: number;
 	readonly file: number;
 	readonly path: string;
-	readonly manifestSha256: string;
-}
+} & (
+	| { readonly kind: "file"; readonly manifestSha256: string }
+	| { readonly kind: "symlink"; readonly target: string }
+);
 
 export interface UploadOpen {
 	readonly intentId: string;
@@ -248,25 +265,39 @@ export function parseConflictCopies(value: unknown): ConflictCopy[] {
 			return n;
 		};
 		if (typeof c.path !== "string") invalidAnswer("conflict copy");
-		return {
-			unit: count(c.unit),
-			file: count(c.file),
-			path: c.path,
-			manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest"),
-		};
+		const at = { unit: count(c.unit), file: count(c.file), path: c.path };
+		if (c.kind === undefined)
+			return { ...at, kind: "file", manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest") };
+		if (c.kind !== "symlink" || c.manifestSha256 !== undefined || !validTarget(c.target))
+			invalidAnswer("conflict copy");
+		return { ...at, kind: "symlink", target: c.target };
 	});
 }
 
-/** An open view's `kind` (`run_box`, `computer_desktop`, `coding_session`, …) and `machineId`: the machine allocation
- * it was opened on (migration 20260930104000), null for a run box. */
+/** An open view's `kind` (`run_box`, `computer_desktop`, `coding_session`, `code_host`, …), `machineId`: the machine
+ * allocation it was opened on (migration 20260930104000), null for a run box and a code host's; `companyId`: its
+ * company (the storage profile, every kind); `codingMachineId`: a coding session's machine (F3 5a,
+ * `qorpera_coding_machines.id`), null for every other kind. `service_crashed`: the service that served a coding view
+ * did not stop cleanly, so reads it served may never have been released (F3 5a). */
 export type ViewRenewal =
 	| {
 			readonly state: "open";
 			readonly leaseUntil: string;
 			readonly kind: string;
 			readonly machineId: string | null;
+			readonly companyId: string;
+			readonly codingMachineId: string | null;
 	  }
-	| { readonly state: "closed"; readonly reason: "closed" | "superseded" | "ended" | "expired" };
+	| {
+			readonly state: "closed";
+			readonly reason: "closed" | "superseded" | "ended" | "expired" | "service_crashed";
+	  };
+
+const CLOSED_REASONS = new Set(["closed", "superseded", "ended", "expired", "service_crashed"]);
+
+function uuidOrNull(value: unknown): value is string | null {
+	return value === null || (typeof value === "string" && isUuid(value));
+}
 
 export function parseViewRenewal(value: unknown): ViewRenewal {
 	const answer = answerRecord(value, "view renewal");
@@ -277,17 +308,21 @@ export function parseViewRenewal(value: unknown): ViewRenewal {
 		!Number.isNaN(Date.parse(answer.leaseUntil)) &&
 		typeof answer.kind === "string" &&
 		answer.kind !== "" &&
-		(answer.machineId === null || (typeof answer.machineId === "string" && isUuid(answer.machineId)))
+		uuidOrNull(answer.machineId) &&
+		typeof answer.companyId === "string" &&
+		isUuid(answer.companyId) &&
+		uuidOrNull(answer.codingMachineId)
 	)
-		return { state: "open", leaseUntil: answer.leaseUntil, kind: answer.kind, machineId: answer.machineId };
-	if (
-		answer.state === "closed" &&
-		(answer.reason === "closed" ||
-			answer.reason === "superseded" ||
-			answer.reason === "ended" ||
-			answer.reason === "expired")
-	)
-		return { state: "closed", reason: answer.reason };
+		return {
+			state: "open",
+			leaseUntil: answer.leaseUntil,
+			kind: answer.kind,
+			machineId: answer.machineId,
+			companyId: answer.companyId,
+			codingMachineId: answer.codingMachineId,
+		};
+	if (answer.state === "closed" && typeof answer.reason === "string" && CLOSED_REASONS.has(answer.reason))
+		return { state: "closed", reason: answer.reason as Extract<ViewRenewal, { state: "closed" }>["reason"] };
 	invalidAnswer("view renewal");
 }
 
@@ -319,6 +354,11 @@ export const MEMBER_HELD_READS = "A member-held view records no reads";
 /** The core's refusal of a command view's save after its command ended (20260930183000): only the final one saves
  * now, so the view waits for it. */
 export const COMMAND_ENDED = "Folder view command has ended";
+
+/** The core's refusal of a save whose actor's read set holds a read no longer readable (a run's, and from F3 5a a
+ * coding machine's, rechecked at rank 10). Kept `denied` for a run box, a desktop and a command (4c); a coding view's
+ * is `unreadable`, which moves its machine (F3 step 5, "Reads" rule 4). */
+export const READ_UNREADABLE = "A read is no longer readable";
 
 /** One read a view releases, as `qorpera_folder_record_release` takes it: the path, the version read (null for a
  * folder's listing), and the receipt it was read under. */
@@ -401,15 +441,21 @@ function receiptOf(value: unknown): CoreReceipt {
 }
 
 /** An entry or a feed change, checked field by field; unknown fields (seq, priorVersion) are dropped. A removal on the
- * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). */
+ * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). A
+ * link holds its target and nothing of a file's; the feed gives every other change a null target. */
 function entryOf(value: unknown, removal = false): CoreEntry {
 	const e = answerRecord(value, "entry");
-	if (typeof e.path !== "string" || e.path === "" || (e.kind !== "file" && e.kind !== "folder"))
+	if (
+		typeof e.path !== "string" ||
+		e.path === "" ||
+		(e.kind !== "file" && e.kind !== "folder" && e.kind !== "symlink")
+	)
 		invalidAnswer("entry");
 	const out: {
 		path: string;
-		kind: "file" | "folder";
+		kind: "file" | "folder" | "symlink";
 		version: string;
+		target?: string;
 		manifestSha256?: string;
 		fileSha256?: string;
 		bytes?: number;
@@ -442,6 +488,20 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 	}
 	if (!removal && out.kind === "file" && (out.manifestSha256 === undefined || out.bytes === undefined))
 		invalidAnswer("file entry");
+	if (e.target !== undefined && e.target !== null) {
+		if (out.kind !== "symlink" || removal || !validTarget(e.target)) invalidAnswer("link target");
+		out.target = e.target;
+	}
+	if (
+		!removal &&
+		out.kind === "symlink" &&
+		(out.target === undefined ||
+			out.manifestSha256 !== undefined ||
+			out.fileSha256 !== undefined ||
+			out.bytes !== undefined ||
+			out.executable === true)
+	)
+		invalidAnswer("link entry");
 	return out;
 }
 
@@ -516,6 +576,10 @@ function actorJson(actor: FolderActor): Record<string, string> {
 	}
 }
 
+/** Entries per list page and changes per feed page. An entry can hold a 4,096-byte path (twice that escaped) and a
+ * link's 4,095-byte target (control characters escaped, six times): about 33 KB, so 200 fit an answer's 8 MiB. */
+export const CORE_PAGE = 200;
+
 interface SupabaseFolderCoreOptions {
 	readonly projectUrl: string;
 	readonly secretKey: string;
@@ -552,7 +616,7 @@ export class SupabaseFolderCore implements FolderCore {
 					p_actor: actorJson(actor),
 					p_parent: "",
 					p_after: after,
-					p_limit: 1000,
+					p_limit: CORE_PAGE,
 					p_recursive: true,
 				},
 				signal,
@@ -574,7 +638,7 @@ export class SupabaseFolderCore implements FolderCore {
 					p_environment_id: environmentId,
 					p_actor: actorJson(actor),
 					p_after_seq: afterSeq,
-					p_limit: 1000,
+					p_limit: CORE_PAGE,
 					p_cursor: cursor,
 				},
 				signal,
@@ -619,15 +683,20 @@ export class SupabaseFolderCore implements FolderCore {
 		viewId: string,
 		pass: string,
 		unsavedSince: string | null,
+		service: string,
 		signal?: AbortSignal,
 	): Promise<ViewRenewal> {
 		return parseViewRenewal(
 			await this.#rpc(
 				"qorpera_folder_view_renew",
-				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: unsavedSince },
+				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: unsavedSince, p_service: service },
 				signal,
 			),
 		);
+	}
+
+	async serviceStopped(service: string, signal?: AbortSignal): Promise<number> {
+		return seqOf(await this.#rpc("qorpera_folder_service_stopped", { p_service: service }, signal), "views cleared");
 	}
 
 	async openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal) {

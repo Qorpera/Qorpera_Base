@@ -162,8 +162,8 @@ export type CodeHostEvent =
 	| { event: "code-host"; step: "project-made" | "replaced" | "outdated" | "stopped" | "removed"; project: string }
 	| { event: "code-host-error"; step: "refused" | "stop" | "housekeep" | "remove"; project: string; error?: unknown };
 
-/** The coding executor's control-plane calls for its code hosts (control: CODE_HOST_RPCS). */
-export const CODE_HOST_RPCS = ["qorpera_code_hosts_deleting"] as const;
+/** The coding executor's control-plane calls for its code hosts' deletion pass (control: CODE_HOST_DELETION_RPCS). */
+export const CODE_HOST_DELETION_RPCS = ["qorpera_code_hosts_deleting"] as const;
 
 /** Which of these companies are being deleted. */
 export type CodeHostDeletions = (companyIds: readonly string[], signal: AbortSignal) => Promise<readonly string[]>;
@@ -180,7 +180,7 @@ export function controlCodeHostDeletions(options: {
 		for (let start = 0; start < companyIds.length; start += 500) {
 			const asked = companyIds.slice(start, start + 500);
 			const value = await options.control.call(
-				CODE_HOST_RPCS[0],
+				CODE_HOST_DELETION_RPCS[0],
 				{ p_owner: options.owner, p_machine_id_sha256: options.machineIdSha256, p_company_ids: asked },
 				AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
 			);

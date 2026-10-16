@@ -30,6 +30,7 @@ const ROOT = "agents/bo/memory/thread";
 const BRANCH_ROOT = "agents/ida/memory/thread";
 const CONTEXT = "c".repeat(64);
 const MEASURES = { contextSha256: CONTEXT, headBytes: 1234, stablePrefixSha256: "a".repeat(64) };
+const WAIT = { waitMs: 1500, waitedLines: 3 };
 
 function version(index: number): string {
 	return `97400000-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -222,7 +223,7 @@ describe("memory view composition", () => {
 		const h = host(viewed(12, 40, tree), { branch: treeOf(BRANCH, BRANCH_ROOT, 4, 4, 7) });
 		const signal = new AbortController().signal;
 		const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
-		const reference = await memoryCommitView(h.control, h.binding, composed, MEASURES, signal);
+		const reference = await memoryCommitView(h.control, h.binding, composed, MEASURES, WAIT, signal);
 		expect(reference).toEqual({ asOfSeq: 42, conversations: composed.conversations });
 		const [release] = h.requests("qorpera_memory_release");
 		expect(release).toEqual({
@@ -240,8 +241,8 @@ describe("memory view composition", () => {
 				runViewBytes: 0,
 				rawSteps: 0,
 				placeholders: composed.placeholders,
-				waitMs: 0,
-				waitedLines: 0,
+				waitMs: 1500,
+				waitedLines: 3,
 				folded: false,
 				stablePrefixSha256: "a".repeat(64),
 			},
@@ -253,11 +254,18 @@ describe("memory view composition", () => {
 			["qorpera_memory_release", h.binding],
 			["qorpera_memory_view_record", h.binding],
 		]);
-		await memoryCommitView(h.control, h.binding, composed, MEASURES, signal);
+		await memoryCommitView(h.control, h.binding, composed, MEASURES, WAIT, signal);
 		const releases = h.requests("qorpera_memory_release");
 		expect(releases[1].releaseId).toBe(releases[0].releaseId);
 		// Another context names another release.
-		await memoryCommitView(h.control, h.binding, composed, { ...MEASURES, contextSha256: "d".repeat(64) }, signal);
+		await memoryCommitView(
+			h.control,
+			h.binding,
+			composed,
+			{ ...MEASURES, contextSha256: "d".repeat(64) },
+			WAIT,
+			signal,
+		);
 		expect(h.requests("qorpera_memory_release")[2].releaseId).not.toBe(releases[0].releaseId);
 	});
 
@@ -265,7 +273,7 @@ describe("memory view composition", () => {
 		const h = host(viewed(0, null, treeOf(SESSION, ROOT, 0)));
 		const signal = new AbortController().signal;
 		const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
-		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, signal)).resolves.toEqual({
+		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, WAIT, signal)).resolves.toEqual({
 			asOfSeq: 42,
 			conversations: [{ sessionId: SESSION, generation: 3, through: 0, blocks: [] }],
 		});
@@ -282,7 +290,7 @@ describe("memory view composition", () => {
 		const signal = new AbortController().signal;
 		const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
 		h.call.mockRejectedValueOnce(new Error("release refused"));
-		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, signal)).rejects.toThrow(
+		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, WAIT, signal)).rejects.toThrow(
 			"release refused",
 		);
 		expect(h.requests("qorpera_memory_view_record")).toEqual([]);
@@ -307,7 +315,7 @@ describe("memory view composition", () => {
 			for (const recorded of failures) {
 				const h = host(viewed(12, 40, treeOf(SESSION, ROOT, 12, 8)), { recorded });
 				const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
-				await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, signal)).resolves.toBeNull();
+				await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, WAIT, signal)).resolves.toBeNull();
 				expect(h.requests("qorpera_memory_release")).toHaveLength(1);
 			}
 			expect(logged.mock.calls).toEqual(failures.map(() => ["Memory view was not recorded (unknown)"]));
@@ -319,7 +327,9 @@ describe("memory view composition", () => {
 		const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
 		const cancelled = new AbortController();
 		cancelled.abort();
-		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, cancelled.signal)).rejects.toMatchObject({
+		await expect(
+			memoryCommitView(h.control, h.binding, composed, MEASURES, WAIT, cancelled.signal),
+		).rejects.toMatchObject({
 			name: "AbortError",
 		});
 	});
@@ -352,9 +362,9 @@ describe("memory view composition", () => {
 		const reference = { asOfSeq: 42, conversations: large.conversations };
 		expect(Buffer.byteLength(JSON.stringify(reference))).toBeLessThanOrEqual(MEMORY_VIEW_REFERENCE_BYTES);
 		expect(memoryJsonbTextBytes(reference)).toBeGreaterThan(MEMORY_VIEW_REFERENCE_BYTES);
-		await expect(memoryCommitView(h.control, h.binding, large, MEASURES, signal)).resolves.toBeNull();
+		await expect(memoryCommitView(h.control, h.binding, large, MEASURES, WAIT, signal)).resolves.toBeNull();
 		const within = view(2400);
-		await expect(memoryCommitView(h.control, h.binding, within, MEASURES, signal)).resolves.toEqual({
+		await expect(memoryCommitView(h.control, h.binding, within, MEASURES, WAIT, signal)).resolves.toEqual({
 			asOfSeq: 42,
 			conversations: within.conversations,
 		});

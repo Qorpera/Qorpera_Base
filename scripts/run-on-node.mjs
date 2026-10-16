@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync,
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
+import { ALL_STARTED, describePlan, planChanged, planScript, STOP, splitPlan } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
 	machineLabel,
@@ -43,7 +43,18 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --machine NAME             run on this machine only (node02, node01)
          --front                    wait at the front of the CPU lane's queue, ahead of every run without it
                                     (pr-loop's batch runs, which test every approved head at once)
-         --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own,
+         --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
+                                    first and alone (default: one step at a time). With --front the run takes
+                                    up to 3 slots as they free (one such run per machine); otherwise it keeps
+                                    to its one slot's cores
+         --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own on
+                                    its own machine, all at once (N at most the machines' count). One exit code, status
+                                    and record: the run passes only if every part passed. With one machine open, or
+                                    --machine, one part
+         --fail-fast                changed: stop at the first failed step: no step starts after it, the steps running
+                                    side by side end, and so do the other parts' (pr-loop's batch runs, which are
+                                    bisected when they fail). Without --cores, the shortest steps first
+         --tree NAME               copy against the machine's shared base copy NAME, not this checkout's own,
                                     comparing file contents (for checkouts made fresh per run, such as
                                     pr-loop's merged trees)
          --no-status                do not post the result as a GitHub status on the commit
@@ -116,6 +127,14 @@ const LANES = {
 /** The start of a --front run's queue ticket name. pr-loop's batch run tests every approved head in one `changed`,
  * so its wait delays every one of them: on 15 Oct the CPU lane's queue wait had a median of 14 minutes. */
 export const FRONT = "0-";
+/** A --front --cores run (pr-loop's batch, its steps side by side) may hold up to this many of its machine's CPU slots:
+ * it starts in one and takes the others as they free, ahead of every run that came after it. One such run per machine
+ * at a time holds WIDE; any other --cores run keeps its one slot's cores. The coordinator's decision of 16 Oct: 6 of
+ * a 10-vCPU machine's cores for the batch, the other slots for everyone else. */
+export const WIDE_SLOTS = 3;
+const WIDE = `${LOCKS}/qorpera-test-machine-wide.lock`;
+/** A --cores run's cores file (the start of its name; the run's name follows): how many cores its slots give it now. */
+const CORES = `${LOCKS}/qorpera-test-machine-cores-`;
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
@@ -134,6 +153,9 @@ export function parseArgs(argv) {
 		machine: null,
 		tree: null,
 		front: false,
+		cores: null,
+		parts: null,
+		failFast: false,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -148,10 +170,20 @@ export function parseArgs(argv) {
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
 		else if (flag === "--front") options.front = true;
-		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine" || flag === "--tree") {
+		else if (flag === "--fail-fast") options.failFast = true;
+		else if (["--env", "--record", "--base", "--machine", "--tree", "--cores", "--parts"].includes(flag)) {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--cores") {
+				if (!/^[1-9][0-9]?$/.test(value)) throw new Error(`Invalid --cores ${value}`);
+				options.cores = Number(value);
+			}
+			else if (flag === "--parts") {
+				if (!/^[1-9]$/.test(value) || Number(value) > MACHINES.length)
+					throw new Error(`Invalid --parts ${value} (1 to ${MACHINES.length}, one part per machine)`);
+				options.parts = Number(value);
+			}
 			else if (flag === "--tree") {
 				// Never NAME.lock: that is the lock file of the base copy NAME.
 				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) || value.endsWith(".lock")) throw new Error(`Invalid --tree ${value}`);
@@ -176,6 +208,9 @@ export function parseArgs(argv) {
 	let suite = null;
 	let command;
 	let extra = [];
+	if (options.cores && rest[0] !== "changed") throw new Error("--cores is for changed");
+	if (options.parts && rest[0] !== "changed") throw new Error("--parts is for changed");
+	if (options.failFast && rest[0] !== "changed") throw new Error("--fail-fast is for changed");
 	if (rest[0] === "--") {
 		command = rest.slice(1);
 		if (command.length === 0) throw new Error(USAGE);
@@ -290,7 +325,8 @@ export function treeDigest(root, files) {
 /** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
  * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
  * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
- * node02's disk on 2026-10-09), and hosted-db containers older than 6 hours. */
+ * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, and the cores files of --cores runs killed
+ * before they could remove them (/run/lock is a small tmpfs every lock lives on). */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -298,6 +334,7 @@ export function pruneScript() {
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
+		`for f in ${CORES}*; do n=\${f#${CORES}}; if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
@@ -311,12 +348,24 @@ export function baseCopyCompare(shared) {
 	return shared ? ["--checksum"] : [];
 }
 
+/** The command as runScript runs it, with its --env settings. sudo (--sudo) drops the environment, so the
+ * variables the session sets for the command go along by name: the vitest workers, and a --cores run's cores
+ * file (without it the steps would not know the slots' cores, nor write the all-started marker). */
+export function runCommandLine({ command, env = [], sudo = false, cores = null }) {
+	const settings = env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
+	const line = command.map(shellQuote).join(" ");
+	return sudo
+		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS"${cores ? ' QORPERA_RUN_CORES_FILE="$QORPERA_RUN_CORES_FILE"' : ""} ${settings} PATH="$PATH" ${line}`
+		: `${settings ? `env ${settings} ` : ""}${line}`;
+}
+
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
  * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
- * for the CPU lane's; a `front` run waits ahead of every run without it. Exit codes 90 (install or build) and 91-94
- * (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false }) {
+ * for the CPU lane's; a `front` run waits ahead of every run without it. A `cores` run (changed --cores) tells its
+ * steps how many cores its slots give it in its cores file; a `front` one takes up to WIDE_SLOTS slots (growScript).
+ * Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick, front = false, cores = null }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const lane = quick ? LANES.quick : LANES.cpu;
 	const queue = `${LOCKS}/${lane.queue}`;
@@ -324,6 +373,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`cd ${runDir} || exit 91`,
 		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
 		`export VITEST_MAX_WORKERS=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 ))`,
+		...(cores ? [`export QORPERA_RUN_CORES_FILE=${CORES}${run}`] : []),
 		`echo "workers=$VITEST_MAX_WORKERS" >>${status}`,
 		"t0=$(date +%s%N)",
 		install
@@ -392,7 +442,62 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots} in the ${lane.name}${front ? " from the front of its queue" : ""} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
+		...(cores
+			? [
+					// The cores the run's slots give it, which its steps read (planScript): one slot's to start with.
+					`per=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 )); cores_file=${CORES}${run}; (umask 022; echo "$per" >"$cores_file"); trap 'rm -f "$ticket" "$cores_file"' EXIT`,
+					...(front
+						? [
+								growScript({ allStarted: `${runDir}/${ALL_STARTED}` }),
+								`want=$(( (${cores} + per - 1) / per )); [ "$want" -gt ${WIDE_SLOTS} ] && want=${WIDE_SLOTS}`,
+								// grow's stdin is a pipe only this session holds (sudo closes it for the command), so it ends with the session.
+								'if [ "$want" -gt 1 ]; then',
+								`\tif { exec 6>"${WIDE}"; } 2>/dev/null && flock -n 6; then echo "== run-on-node: side by side in up to $want slots of $per cores, taking the others as they free"; exec 4> >(grow)`,
+								`\telse echo "== run-on-node: another --front run holds this machine's extra slots: side by side in this one slot ($per cores)"; fi`,
+								"fi",
+							]
+						: []),
+				]
+			: []),
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
+	].join("\n");
+}
+
+/** The bash function `grow` of a --front --cores run: it takes up to `$want` of the CPU lane's slots in all, the
+ * session's first included, and keeps `$cores_file` at the cores they give (`$per` each). It waits like a queued run,
+ * with a front ticket of its own (fd 7) named by the time it starts, so --front runs that came earlier go first and
+ * every other run after, and it drops dead tickets as they do. It stops waiting once every step has started
+ * (`allStarted`), and keeps the slots it took until its stdin ends: run as `exec 4> >(grow)`, that pipe ends with the
+ * session's last process, so no slot outlives the run. */
+export function growScript({ locks = LOCKS, allStarted }) {
+	const queue = `${locks}/${LANES.cpu.queue}`;
+	return [
+		"grow() {",
+		// The session's own locks stay the session's: the wide lock (fd 6), the runner user (fd 8) and its first slot (fd 9).
+		"\texec 6>&- 8>&- 9>&-; umask 022",
+		`\theld=1; more=${queue}/${FRONT}$(date +%s%N)-$$-more; exec 7>"$more"; flock 7; trap 'rm -f "$more" "$cores_file" "$cores_file.tmp"' EXIT`,
+		`\twhile [ "$held" -lt "$want" ] && [ ! -e ${shellQuote(allStarted)} ]; do`,
+		`\t\tfor t in ${queue}/*; do [ "$t" != "$more" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
+		'\t\t[ -e "$more" ] || { exec 7>"$more"; flock 7; }',
+		`\t\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$more")" | cut -d: -f1)`,
+		'\t\tif [ "$position" = 1 ]; then',
+		`\t\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
+		// A new descriptor cannot lock the session's own slot either: flock locks conflict between open files.
+		`\t\t\t\t{ exec {fd}>"${locks}/${LANES.cpu.slot}$candidate.lock"; } 2>/dev/null || continue`,
+		'\t\t\t\tif flock -n "$fd"; then',
+		'\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
+		'\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
+		'\t\t\t\t\t[ "$held" -lt "$want" ] || break',
+		"\t\t\t\telse exec {fd}>&-; fi",
+		"\t\t\tdone",
+		"\t\tfi",
+		// The wait ends early when stdin does (read's status 1, a timeout's is over 128): the session is over.
+		'\t\t[ "$held" -lt "$want" ] && { read -r -t 2 _; [ $? -gt 128 ] || return 0; }',
+		"\tdone",
+		'\trm -f "$more"; exec 7>&-',
+		'\t[ "$held" -lt "$want" ] && echo "== run-on-node: every step has started: no more slots ($held of $want)"',
+		"\twhile read -r _; do :; done",
+		"}",
 	].join("\n");
 }
 
@@ -627,12 +732,95 @@ function probeOverSsh(machine, key, signal) {
 	});
 }
 
-function sshRun(t, remoteScript) {
+/** Runs the script over ssh with this process's terminal. One of a run's several parts (`whole`) reads no input, and
+ * hands its output on whole (wholeBlocks), its stderr in order with its stdout, so two parts' output never mixes inside a
+ * line or a step. */
+function sshRun(t, remoteScript, whole = false) {
 	return new Promise((resolvePromise, reject) => {
-		const child = spawn("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(remoteScript)], { stdio: "inherit" });
+		const child = spawn("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(whole ? `exec 2>&1\n${remoteScript}` : remoteScript)], {
+			stdio: whole ? ["ignore", "pipe", "pipe"] : "inherit",
+		});
+		const out = whole ? wholeBlocks((text) => process.stdout.write(text)) : null;
+		// ssh's own messages ("Connection to ... closed by remote host").
+		const err = whole ? wholeBlocks((text) => process.stderr.write(text)) : null;
+		child.stdout?.setEncoding("utf8").on("data", (chunk) => out.push(chunk));
+		child.stderr?.setEncoding("utf8").on("data", (chunk) => err.push(chunk));
 		child.on("error", reject);
-		child.on("close", (code, signal) => resolvePromise(signal ? 128 + (constants.signals[signal] ?? 0) : (code ?? 1)));
+		child.on("close", (code, signal) => {
+			out?.end();
+			err?.end();
+			resolvePromise(signal ? 128 + (constants.signals[signal] ?? 0) : (code ?? 1));
+		});
 	});
+}
+
+/** Hands text on to `write` a whole line at a time, and a `changed` step's lines (planScript's "== changed: NAME" up to
+ * its "passed in" or "FAILED after", which ends the step's last line when that had no newline) in one write. `end`
+ * hands on what is left. */
+export function wholeBlocks(write) {
+	let partial = "";
+	let block = null;
+	const line = (text) => {
+		if (block) {
+			block.text += text;
+			if (block.end.test(text)) {
+				write(block.text);
+				block = null;
+			}
+			return;
+		}
+		const start = /^== changed: ([a-z0-9-]+)\n$/.exec(text);
+		if (start) block = { text, end: new RegExp(`== changed: ${start[1]} (passed in|FAILED after) [0-9]+ s\\n$`) };
+		else write(text);
+	};
+	return {
+		push(chunk) {
+			partial += chunk;
+			for (let end = partial.indexOf("\n"); end >= 0; end = partial.indexOf("\n")) {
+				line(partial.slice(0, end + 1));
+				partial = partial.slice(end + 1);
+			}
+		},
+		end() {
+			const rest = `${block?.text ?? ""}${partial}`;
+			block = null;
+			partial = "";
+			if (rest) write(rest);
+		},
+	};
+}
+
+/** A part's results that are no pass, the worst first: the harness's own (a machine died, a session was cut or a queue
+ * timed out; no result read back), then npm ci or the build, then a failed step. A result not named here is worst. */
+const WORST_FIRST = ["setup-failed", "unknown", "install-failed", "failed"];
+
+/** The record of a changed --parts run from its parts' records (`records`, in part order): `run` names every part's run,
+ * `machine` every part's machine (node02+node01). The run passes only if every part passed. Otherwise the part that
+ * went worst (`WORST_FIRST`, the first such part on a tie) gives the run its result and its exit code (1 for an exit of
+ * 0), whatever the order of the parts, so a failure one part ran never stands for a part that ran no steps, and a
+ * machine that died posts the harness's error. A failed run's failed steps are every part's, in plan order (`order`),
+ * and so are the steps --fail-fast stopped; none when a failed part names neither, as a single run cut off mid-way shows. */
+export function joinRecords(records, { order, ...common }) {
+	const notPassed = records.filter((record) => record.result !== "passed");
+	const rank = (record) => WORST_FIRST.indexOf(record.result);
+	const worst = notPassed.reduce((found, record) => (found && rank(found) <= rank(record) ? found : record), null);
+	const result = worst ? worst.result : "passed";
+	const every = (key) => [...new Set(records.flatMap((record) => record[key] ?? []))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+	const failedSteps = every("failedSteps");
+	const stoppedSteps = every("stoppedSteps");
+	const named = result === "failed" && notPassed.every((record) => record.failedSteps?.length || record.stoppedSteps?.length);
+	return {
+		schema: "qorpera.run-on-node/v1",
+		machine: records.map((record) => record.machine).join("+"),
+		run: records.map((record) => record.run).join("+"),
+		runner: records.some((record) => record.runner) ? records.map((record) => record.runner ?? "none").join("+") : null,
+		...common,
+		exitCode: worst ? worst.exitCode || 1 : 0,
+		result,
+		...(named ? { failedSteps } : {}),
+		...(named && stoppedSteps.length ? { stoppedSteps } : {}),
+		parts: records,
+	};
 }
 
 /** A child that a signal ended: by the signal itself, or ssh's own exit after one ("Killed by signal N."). */
@@ -684,9 +872,13 @@ async function main() {
 	};
 	const github = githubStatus(root, options, source);
 	let changedPlan = null;
+	let plan = null;
+	// --build or --no-build, which holds for every part of a --parts run too.
+	const build = options.build;
+	const stepWorkers = !options.env.some(([name]) => name === "VITEST_MAX_WORKERS");
 	if (options.suite === "changed") {
 		const { mergeBase, files: changed } = changedFiles(root, options.base, untracked);
-		const plan = planChanged(changed);
+		plan = planChanged(changed);
 		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
 		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
 		if (!plan.steps.length) {
@@ -695,7 +887,7 @@ async function main() {
 			else console.error("== run-on-node: no change against master: nothing posted (run the test suite to check this commit)");
 			return 0;
 		}
-		options.command = ["bash", "-c", planScript(plan.steps)];
+		options.command = ["bash", "-c", planScript(plan.steps, { cores: options.cores, stepWorkers, failFast: options.failFast })];
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
@@ -707,11 +899,7 @@ async function main() {
 	const run = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 	const runDir = `${HOME}/runs/${run}`;
 	const treeDir = `${HOME}/trees/${tree}`;
-	const env = options.env.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ");
-	const command = options.command.map(shellQuote).join(" ");
-	const runCommand = options.sudo
-		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS" ${env} PATH="$PATH" ${command}`
-		: `${env ? `env ${env} ` : ""}${command}`;
+	const runCommand = runCommandLine(options);
 	if (!options.dryRun && !existsSync(key)) throw new Error(`Missing test machine key ${key}`);
 	// Before any machine is tried: a name rsync cannot copy is this tree's fault, not a machine's.
 	const rulesText = `${includeRules(files).join("\n")}\n+ */\n- *\n`;
@@ -729,6 +917,20 @@ async function main() {
 		const machine = machines.find((candidate) => candidate.name === name);
 		return { ...machine, ssh: sshArgs(machine, key) };
 	});
+	// changed --parts: the plan's steps split by their CPU work, each part a run of its own (RUN-p1, RUN-p2) with a plan
+	// of its own, which tries the machines from its own on: part 1 the best-ranked one, part 2 the next.
+	const split = plan && options.parts > 1 && ranked.length > 1 ? splitPlan(plan.steps, Math.min(options.parts, ranked.length)) : [];
+	const parts = (
+		split.length > 1
+			? split.map((group, k) => ({
+					run: `${run}-p${k + 1}`,
+					order: [...ranked.slice(k), ...ranked.slice(0, k)],
+					command: ["bash", "-c", planScript(group.steps, { cores: options.cores, stepWorkers, failFast: options.failFast })],
+					build: build ?? group.build,
+					changed: { ...changedPlan, steps: group.steps.map((step) => step.name) },
+				}))
+			: [{ run, order: ranked, command: options.command, build: options.build, changed: changedPlan }]
+	).map((part) => ({ ...part, runDir: `${HOME}/runs/${part.run}`, runCommand: runCommandLine({ ...options, command: part.command }), passedOver: [] }));
 	if (options.dryRun) {
 		console.log(
 			JSON.stringify(
@@ -742,6 +944,9 @@ async function main() {
 					treeDir,
 					install: options.install,
 					runCommand,
+					...(parts.length > 1
+						? { parts: parts.map((part) => ({ machine: part.order[0].name, run: part.run, steps: part.changed.steps, build: part.build })) }
+						: {}),
 					source,
 					githubStatus: github.plan,
 				},
@@ -753,25 +958,29 @@ async function main() {
 	}
 	if (untracked.length) console.error(`== run-on-node: copying ${untracked.length} untracked file(s) too`);
 	console.error(`== run-on-node: ${describeProbes(probes)}`);
-	const pending = (machine) => `running on ${machineLabel(machine.name)} (waits while ${CPU_SLOTS} runs are busy)`;
-	let copyStarted = Date.now();
-	let pruned = copyStarted;
+	const pending = (machines) =>
+		`running on ${machines.map((machine) => machineLabel(machine.name)).join(" + ")} (waits while ${CPU_SLOTS} runs are busy)`;
 
 	try {
 		if (!ranked.length) throw new Error(`No open test machine: ${describeProbes(probes)}`);
-		github.post("pending", pending(ranked[0]));
+		if (parts.length > 1)
+			console.error(
+				`== run-on-node: in ${parts.length} parts at once: ${parts.map((part, k) => `part ${k + 1} on ${part.order[0].name}: ${part.changed.steps.join(", ")}`).join("; ")}`,
+			);
+		else if (options.parts > 1) console.error(`== run-on-node: in one part: ${ranked.length > 1 ? "the plan has one step" : "one machine to run on"}`);
+		github.post("pending", pending(parts.map((part) => part.order[0])));
 		return await execute();
 	} catch (error) {
 		github.post("error", `harness error: ${String(error.message).slice(0, 110)}`);
 		throw error;
 	}
 
-	/** Prune, make the run directory, mark the run as arriving and copy the tree to one machine; throws when the
+	/** Prune, make the part's run directory, mark it as arriving and copy the tree to one machine; throws when the
 	 * machine refuses, with `final` when a signal ended the copy. */
-	function copyTree(t) {
-		copyStarted = Date.now();
-		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${run}\n${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
-		pruned = Date.now();
+	function copyTree(part, t) {
+		part.copyStarted = Date.now();
+		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${part.run}\n${pruneScript()}\nmkdir -p ${part.runDir} ${treeDir}\ntouch ${treeDir}.lock`);
+		part.pruned = Date.now();
 		const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
 		const rules = join(rulesDir, "rules");
 		writeFileSync(rules, rulesText);
@@ -788,14 +997,14 @@ async function main() {
 				"-e",
 				["ssh", ...t.ssh].map(shellQuote).join(" "),
 				`${root}/`,
-				`${t.host}:${runDir}/`,
+				`${t.host}:${part.runDir}/`,
 			],
 			{ stdio: ["ignore", "inherit", "inherit"] },
 		);
 		rmSync(rulesDir, { recursive: true, force: true });
 		if (rsync.status !== 0) {
 			try {
-				sshCapture(t, `rm -f ${ARRIVING}/${run}`);
+				sshCapture(t, `rm -f ${ARRIVING}/${part.run}`);
 			} catch {
 				// Ages out of the probe's count in 10 minutes.
 			}
@@ -808,117 +1017,190 @@ async function main() {
 	}
 
 	async function execute() {
-	const started = Date.now();
-	const passedOver = [];
-	const t = await firstTaking(ranked, copyTree, (machine, error, next) => {
-		passedOver.push(machine.name);
-		console.error(`== run-on-node: ${machine.name} failed before the suite started (${error.message}); trying ${next.name}`);
-		github.post("pending", pending(next));
-	});
-	const synced = Date.now();
-	// A signal that arrived during the synchronous copy ends the run here, before a suite starts.
-	await signalTurn();
-	// A shared worktree can change between the check and the copy: then the copy is not the commit.
-	if (
-		github.plan.posted &&
-		(git(root, ["rev-parse", "HEAD"]).toString().trim() !== source.head ||
-			git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0)
-	)
-		github.abandon("the working tree changed while it was copied: this run is not the commit's");
+		const started = Date.now();
+		// Every part is copied before any starts, so a part no machine takes ends the run before a suite starts.
+		const copied = [];
+		try {
+			for (const [k, part] of parts.entries()) {
+				part.t = await firstTaking(
+					part.order,
+					(t) => copyTree(part, t),
+					(machine, error, next) => {
+						part.passedOver.push(machine.name);
+						console.error(
+							`== run-on-node: ${parts.length > 1 ? `part ${k + 1}: ` : ""}${machine.name} failed before the suite started (${error.message}); trying ${next.name}`,
+						);
+						if (parts.length === 1) github.post("pending", pending([next]));
+					},
+				);
+				part.synced = Date.now();
+				copied.push(part);
+			}
+		} catch (error) {
+			for (const part of copied) {
+				try {
+					sshCapture(part.t, `rm -f ${ARRIVING}/${part.run}; sudo -n rm -rf -- ${part.runDir}`);
+				} catch {
+					// Pruned after a day; the arriving mark ages out of the probe's count in 10 minutes.
+				}
+			}
+			throw error;
+		}
+		// A signal that arrived during the synchronous copy ends the run here, before a suite starts.
+		await signalTurn();
+		// A shared worktree can change between the check and the copy: then the copy is not the commit.
+		if (
+			github.plan.posted &&
+			(git(root, ["rev-parse", "HEAD"]).toString().trim() !== source.head ||
+				git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0)
+		)
+			github.abandon("the working tree changed while it was copied: this run is not the commit's");
 
-	const code = await sshRun(
-		t,
-		runScript({
-			run,
-			runDir,
-			treeDir,
-			shared: Boolean(options.tree),
-			files: files.length,
-			copySeconds: (synced - copyStarted) / 1000,
+		if (parts.length === 1) return finish(await runPart(parts[0], started));
+		// Every part runs to its end whatever the others do, unless --fail-fast stops them (runPart). The run passes only
+		// when every part passed: a part whose machine died or that was cut off makes the whole run fail (joinRecords).
+		const outcomes = await Promise.allSettled(parts.map((part) => runPart(part, started)));
+		const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+		if (rejected) throw rejected.reason;
+		return finish(
+			joinRecords(
+				outcomes.map((outcome) => outcome.value),
+				{
+					order: changedPlan.steps,
+					machines: probes,
+					probeSeconds,
+					source,
+					lane: "cpu",
+					...(options.front ? { front: true } : {}),
+					...(options.cores ? { cores: options.cores } : {}),
+					...(options.failFast ? { failFast: true } : {}),
+					changed: changedPlan,
+					startedAt: new Date(started).toISOString(),
+					elapsedSeconds: (Date.now() - started) / 1000,
+				},
+			),
+		);
+	}
+
+	/** The record's GitHub status, the record line and the --record file; the run's exit code. */
+	function finish(record) {
+		record.githubStatus = github.post(statusState(record.result), statusDescription(record));
+		console.log(`== run-on-node record ${JSON.stringify(record)}`);
+		if (options.record) {
+			try {
+				writeFileSync(resolve(options.record), `${JSON.stringify(record, null, 2)}\n`);
+			} catch (error) {
+				console.error(`run-on-node: could not write ${options.record}: ${error.message}`);
+			}
+		}
+		return record.exitCode;
+	}
+
+	/** One part's session on the machine that took its copy, then its status, the machine's versions and the cleanup:
+	 * the part's record. A part's output comes a step at a time when the run has more than one (sshRun `whole`). */
+	async function runPart(part, started) {
+		const { t } = part;
+		const code = await sshRun(
+			t,
+			runScript({
+				run: part.run,
+				runDir: part.runDir,
+				treeDir,
+				shared: Boolean(options.tree),
+				files: files.length,
+				copySeconds: (part.synced - part.copyStarted) / 1000,
+				install: options.install,
+				build: part.build,
+				runCommand: part.runCommand,
+				quick: options.quick,
+				front: options.front,
+				cores: options.cores,
+			}),
+			parts.length > 1,
+		);
+		const finished = Date.now();
+		part.ended = true;
+		// --fail-fast: a part that did not pass stops the others still running; their steps end and no more start (planScript).
+		if (options.failFast && code !== 0)
+			for (const [k, other] of parts.entries()) {
+				if (other.ended) continue;
+				console.error(`== run-on-node: part ${parts.indexOf(part) + 1} failed: stopping part ${k + 1} (--fail-fast)`);
+				try {
+					// A part whose directory is gone has ended.
+					sshCapture(other.t, `sudo -n touch ${other.runDir}/${STOP} 2>/dev/null || [ ! -d ${other.runDir} ]`);
+				} catch (error) {
+					console.error(`run-on-node: could not stop part ${k + 1}: ${error.message}`);
+				}
+			}
+		let status = {};
+		try {
+			status = parseStatus(sshCapture(t, `cat ${part.runDir}/.run-on-node-status 2>/dev/null || true`));
+		} catch {
+			// The record says the status is unknown.
+		}
+
+		let environment;
+		try {
+			environment = JSON.parse(sshCapture(t, VERSIONS));
+		} catch (error) {
+			environment = { unavailable: String(error.message) };
+		}
+		if (!options.keep) {
+			try {
+				sshCapture(t, `sudo -n rm -rf -- ${part.runDir}`);
+			} catch (error) {
+				console.error(`run-on-node: cleanup of ${part.runDir} failed (pruned after a day): ${error.message}`);
+			}
+		}
+		return {
+			schema: "qorpera.run-on-node/v1",
+			machine: t.name,
+			host: t.host,
+			via: t.jump || null,
+			machines: probes,
+			probeSeconds,
+			...(part.passedOver.length ? { passedOver: part.passedOver } : {}),
+			environment,
+			source,
+			command: part.command,
+			sudo: options.sudo,
 			install: options.install,
-			build: options.build,
-			runCommand,
-			quick: options.quick,
-			front: options.front,
-		}),
-	);
-	const finished = Date.now();
-	let status = {};
-	try {
-		status = parseStatus(sshCapture(t, `cat ${runDir}/.run-on-node-status 2>/dev/null || true`));
-	} catch {
-		// The record says the status is unknown.
-	}
-
-	let environment;
-	try {
-		environment = JSON.parse(sshCapture(t, VERSIONS));
-	} catch (error) {
-		environment = { unavailable: String(error.message) };
-	}
-	if (!options.keep) {
-		try {
-			sshCapture(t, `sudo -n rm -rf -- ${runDir}`);
-		} catch (error) {
-			console.error(`run-on-node: cleanup of ${runDir} failed (pruned after a day): ${error.message}`);
-		}
-	}
-	const record = {
-		schema: "qorpera.run-on-node/v1",
-		machine: t.name,
-		host: t.host,
-		via: t.jump || null,
-		machines: probes,
-		probeSeconds,
-		...(passedOver.length ? { passedOver } : {}),
-		environment,
-		source,
-		command: options.command,
-		sudo: options.sudo,
-		install: options.install,
-		build: options.build,
-		run: options.keep ? runDir : run,
-		runner: status.runner ?? null,
-		lane: options.quick ? "quick" : "cpu",
-		...(options.front ? { front: true } : {}),
-		cpuSlot: status.slot ? Number(status.slot) : null,
-		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
-		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
-		loadAtStart: status.load ? Number(status.load) : null,
-		uncappedTestProcesses: status.uncapped ? Number(status.uncapped) : null,
-		...(changedPlan ? { changed: changedPlan } : {}),
-		startedAt: new Date(started).toISOString(),
-		copySeconds: (synced - copyStarted) / 1000,
-		// The copy's two parts: the ssh call that marks the run arriving, prunes old runs and makes the run directory;
-		// then rsync.
-		pruneSeconds: (pruned - copyStarted) / 1000,
-		rsyncSeconds: (synced - pruned) / 1000,
-		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
-		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
-		elapsedSeconds: (finished - started) / 1000,
-		exitCode: code,
-		result:
-			status.installed === "1"
-				? code === 0
-					? "passed"
-					: "failed"
-				: status.installed === "0"
-					? "install-failed"
-					: code === 0 && !status.runner
-						? "unknown"
-						: "setup-failed",
-		...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
-	};
-	record.githubStatus = github.post(statusState(record.result), statusDescription(record));
-	console.log(`== run-on-node record ${JSON.stringify(record)}`);
-	if (options.record) {
-		try {
-			writeFileSync(resolve(options.record), `${JSON.stringify(record, null, 2)}\n`);
-		} catch (error) {
-			console.error(`run-on-node: could not write ${options.record}: ${error.message}`);
-		}
-	}
-	return code;
+			build: part.build,
+			run: options.keep ? part.runDir : part.run,
+			runner: status.runner ?? null,
+			lane: options.quick ? "quick" : "cpu",
+			...(options.front ? { front: true } : {}),
+			...(options.cores ? { cores: options.cores } : {}),
+			...(options.failFast ? { failFast: true } : {}),
+			cpuSlot: status.slot ? Number(status.slot) : null,
+			queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
+			vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
+			loadAtStart: status.load ? Number(status.load) : null,
+			uncappedTestProcesses: status.uncapped ? Number(status.uncapped) : null,
+			...(part.changed ? { changed: part.changed } : {}),
+			startedAt: new Date(started).toISOString(),
+			copySeconds: (part.synced - part.copyStarted) / 1000,
+			// The copy's two parts: the ssh call that marks the run arriving, prunes old runs and makes the run directory;
+			// then rsync.
+			pruneSeconds: (part.pruned - part.copyStarted) / 1000,
+			rsyncSeconds: (part.synced - part.pruned) / 1000,
+			prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
+			suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
+			elapsedSeconds: (finished - started) / 1000,
+			exitCode: code,
+			result:
+				status.installed === "1"
+					? code === 0
+						? "passed"
+						: "failed"
+					: status.installed === "0"
+						? "install-failed"
+						: code === 0 && !status.runner
+							? "unknown"
+							: "setup-failed",
+			...(status.failed_steps ? { failedSteps: status.failed_steps.split(",").filter(Boolean) } : {}),
+			...(status.stopped_steps ? { stoppedSteps: status.stopped_steps.split(",").filter(Boolean) } : {}),
+		};
 	}
 }
 

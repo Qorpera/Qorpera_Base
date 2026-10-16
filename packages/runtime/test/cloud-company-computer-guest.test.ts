@@ -408,8 +408,6 @@ function automationFixture(
 	const commands: CompanyComputerGuestCommands = {
 		run: vi.fn(async () => ({ code: 0, stdout: "ok", stderr: "" })),
 		capturePng: vi.fn(async () => captureBytes()),
-		readFile: vi.fn(async () => new Uint8Array([0, 255, 10])),
-		writeFile: vi.fn(async () => undefined),
 	};
 	const screenshots: CompanyComputerScreenshotPublisher = {
 		publish: vi.fn(async (bytes: Uint8Array) => ({
@@ -563,34 +561,6 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(f.context.close).toHaveBeenCalledOnce();
 	});
 
-	// The office carries no file import or export (legacy removal, step C); the tool stays in the catalog.
-	it.each<[string, CompanyComputerAction]>([
-		[
-			"OFFICE_FILE_EXPORT_UNAVAILABLE",
-			{
-				kind: "transfer",
-				action: "export",
-				source: { realm: "company_computer", path: "reports/$(literal); 'file'.bin" },
-				destination: { realm: "object_storage" },
-				mediaType: "application/octet-stream",
-			},
-		],
-		[
-			"OFFICE_FILE_IMPORT_UNAVAILABLE",
-			{
-				kind: "transfer",
-				action: "import",
-				source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-				destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
-			},
-		],
-	])("answers a file transfer with %s and reads, writes or runs nothing", async (code, action) => {
-		const f = automationFixture(false);
-		await expect(f.perform(action)).rejects.toThrow(code);
-		expect(f.commands.readFile).not.toHaveBeenCalled();
-		expect(f.commands.writeFile).not.toHaveBeenCalled();
-		expect(f.commands.run).not.toHaveBeenCalled();
-	});
 	it.each(["target", "tab"] as const)(
 		"keeps the real profile session usable after a pre-effect %s ambiguity",
 		async (ambiguity) => {
