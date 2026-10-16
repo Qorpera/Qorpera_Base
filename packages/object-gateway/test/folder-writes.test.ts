@@ -1708,7 +1708,8 @@ describe("a draft against every pair of events", () => {
 	 * it (it was opened over that file), the view's move of the live file there away (to where, and what it moved; that
 	 * hides the path until it publishes, whatever another machine does there), and whether that move fails at its
 	 * boundary because another machine took its destination; where it failed under the file the draft holds, the
-	 * version of the file it left there (`under`). */
+	 * version of the file it left there (`under`); and whether the file it shows there is a new one over what it took
+	 * away (`fresh`: that file replaces the version it took, as one unit, where a file moved in over it lets it go). */
 	type Own = {
 		present: boolean;
 		base: string | undefined;
@@ -1717,6 +1718,7 @@ describe("a draft against every pair of events", () => {
 		away?: { readonly to: string; readonly text: string | undefined };
 		doomed?: boolean;
 		under?: string;
+		fresh?: boolean;
 	};
 	const DRAFTED = Buffer.from("drafted");
 	const SECOND_DRAFT = Buffer.from("second");
@@ -1806,9 +1808,11 @@ describe("a draft against every pair of events", () => {
 					base,
 					replaced: own.replaced || (moved && base !== undefined),
 					held: own.held && !moved,
+					// A save over what the view took away makes a new file there, and one into that file keeps it new.
+					fresh: !moved && (own.fresh === true || !own.present),
 				};
 			} else if (own.base === undefined) own = undefined;
-			else own = { ...own, present, replaced: true, held: false };
+			else own = { ...own, present, replaced: true, held: false, fresh: false };
 			if (!present || moved) origin = undefined;
 		};
 		const theirs = async (how: "write" | "delete" | "move", n: number) => {
@@ -1824,9 +1828,11 @@ describe("a draft against every pair of events", () => {
 			}
 			await service.poll();
 			await service.settled();
-			// What the view took away there is moot once another machine changed or removed it: that removal goes. The
-			// view's move away keeps hiding the path until its boundary (where it fails, its source changed).
-			if (own?.replaced && !own.away) own = own.present ? { ...own, base: undefined, replaced: false } : undefined;
+			// What the view took away there is moot once another machine changed or removed it: that removal goes, but a new
+			// file of the view's there still replaces the version it took (the core's conflict). The view's move away keeps
+			// hiding the path until its boundary (where it fails, its source changed).
+			if (own?.replaced && !own.away && !own.fresh)
+				own = own.present ? { ...own, base: undefined, replaced: false } : undefined;
 		};
 		const act = async (event: Event, n: number): Promise<string | undefined> => {
 			const showsP = own ? own.present : version() !== undefined;

@@ -153,6 +153,10 @@ impl Shared {
 				}
 				Ok(())
 			}
+			EntryKind::Symlink => {
+				let target = self.read_all(path, &entry.version, entry.size)?;
+				local.put_link(path, &target).map_err(local::errno)
+			}
 		}
 	}
 

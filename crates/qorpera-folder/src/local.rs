@@ -226,6 +226,19 @@ impl Local {
 		file.write_all(bytes)
 	}
 
+	/// Makes a seeded link at the folder's `path` to `target`, in place of one an earlier seed left there.
+	pub fn put_link(&self, path: &str, target: &[u8]) -> io::Result<()> {
+		let disk = self.disk(Area::Git, path);
+		if let Some(parent) = disk.parent() {
+			fs::DirBuilder::new().recursive(true).mode(0o755).create(parent)?;
+		}
+		match fs::remove_file(&disk) {
+			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+			_ => {}
+		}
+		std::os::unix::fs::symlink(OsStr::from_bytes(target), &disk)
+	}
+
 	/// The local inode's folder, name and area.
 	pub fn name(&self, ino: u64) -> Option<(Up, String, Area)> {
 		latest(&self.names.lock().unwrap(), ino)
@@ -835,6 +848,16 @@ mod tests {
 		let walked: Vec<String> =
 			other.walk(&dir.join("cache/code/o/n/worktrees")).unwrap().into_iter().map(|w| w.0).collect();
 		assert_eq!(walked, ["w", "w/node_modules"]);
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_seeded_link_is_a_link_on_the_disk_in_place_of_one_an_earlier_seed_left() {
+		let (l, dir) = local("seeded-link", "v1");
+		let disk = dir.join("git/code/o/n/repo.git/hooks/pre-commit");
+		l.put_link("code/o/n/repo.git/hooks/pre-commit", b"/bin/false").unwrap();
+		l.put_link("code/o/n/repo.git/hooks/pre-commit", b"../../tools/check").unwrap();
+		assert_eq!(fs::read_link(&disk).unwrap(), Path::new("../../tools/check"));
 		fs::remove_dir_all(&dir).unwrap();
 	}
 }

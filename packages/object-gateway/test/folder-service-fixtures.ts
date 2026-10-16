@@ -488,7 +488,7 @@ export class FakeCore implements FolderCore {
 					// A write or a link replaces the file or link at the version it names (a link's write makes it a file).
 					const e = this.entries.get(u.path);
 					// An object is its content (5b): one another session published first is saved as it is.
-					if (u.expectedVersion === undefined && e?.kind === "file" && gitObjectPath(u.path))
+					if (u.op === "write" && u.expectedVersion === undefined && e?.kind === "file" && gitObjectPath(u.path))
 						return e.fileSha256 === u.file.fileSha256
 							? { unit, outcome: "saved", reason: null, version: e.version }
 							: no("refused", "git_object_delete");
