@@ -6,6 +6,7 @@ import {
 	parseInteractionAnswerInput,
 	parseInteractionRequest,
 } from "./interactions.ts";
+import { type InterfaceChange, parseInterfaceChange } from "./interface-changes.ts";
 import { type MessageQuote, parseQuotes } from "./quotes.ts";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
 import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
@@ -43,6 +44,8 @@ export interface TranscriptMessage {
 	staffSpeaker?: HostedStaffSpeaker;
 	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
 	held?: boolean;
+	/** A message, question, answer or authorization a member erased (20260930441000): its body gone, its place kept. */
+	erased?: true;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -90,6 +93,15 @@ export interface TranscriptNote {
 	createdAt: string;
 }
 
+/** An agent's change to the company's interfaces or tables, saved without review: one line with Undo (Interfaces I10). */
+export interface TranscriptInterfaceChange {
+	kind: "interface_change";
+	id: string;
+	sequence: number;
+	change: InterfaceChange;
+	createdAt: string;
+}
+
 /** A typed card the agent raised, with the member's answer once there is one
  * (queued or written). An answer whose card is not in the loaded window is dropped. */
 export interface TranscriptInteraction {
@@ -109,6 +121,7 @@ export type TranscriptItem =
 	| TranscriptCard
 	| TranscriptPeerLink
 	| TranscriptNote
+	| TranscriptInterfaceChange
 	| TranscriptInteraction;
 
 export interface TranscriptProjection {
@@ -308,6 +321,35 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 	return undefined;
 }
 
+/** An event a member erased (20260930441000): the cloud replaces its body with exactly `{"erased": true}`. */
+export function isErased(body: JsonValue): boolean {
+	const record = asRecord(body);
+	return record?.erased === true && Object.keys(record).length === 1;
+}
+
+/** An erased event keeps its place, its author and the run that wrote it. A member's input, answer or decision stands
+ * as theirs; anything else as the agent's. */
+function erasedMessage(event: HostedSessionEvent): TranscriptMessage {
+	const base = {
+		id: event.eventId,
+		sequence: event.sequence,
+		text: "",
+		attachmentCount: 0,
+		erased: true as const,
+		createdAt: event.createdAt,
+	};
+	const { eventType } = event;
+	if (event.sessionInputId || eventType === "interaction_answer" || eventType === "authorization_decision")
+		return { kind: "member", ...base, authorUserId: event.actorUserId };
+	const runId = event.execution?.kind === "run" ? event.execution.id : undefined;
+	return {
+		kind: "agent",
+		...base,
+		...(runId ? { runId } : {}),
+		...(runId && event.staffSpeaker?.runId === runId ? { staffSpeaker: event.staffSpeaker } : {}),
+	};
+}
+
 export function projectTranscript(
 	events: readonly HostedSessionEvent[],
 	pending: readonly PendingSessionInput[] = [],
@@ -324,6 +366,10 @@ export function projectTranscript(
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
 		if (event.sessionInputId) inputIds.add(event.sessionInputId);
+		if (isErased(event.body)) {
+			items.push(erasedMessage(event));
+			continue;
+		}
 		if (event.eventType === "authorization_request" || event.eventType === "authorization_decision") {
 			const card: TranscriptCard = {
 				kind: event.eventType,
@@ -390,6 +436,17 @@ export function projectTranscript(
 						text: info.text.slice(0, 512),
 						createdAt: event.createdAt,
 					});
+				else {
+					const change = parseInterfaceChange(info);
+					if (change)
+						items.push({
+							kind: "interface_change",
+							id: event.eventId,
+							sequence: event.sequence,
+							change,
+							createdAt: event.createdAt,
+						});
+				}
 			} else hiddenCount++;
 			continue;
 		}

@@ -64,6 +64,12 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
+ * replaces it, so a cut answer never grows. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
+const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
+/** The pinned fence's bound on one tool result's PNG. */
+const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
 /** A run carries every tool its agent is granted, with no count cap (founder,
  * 2026-09-24: a provider's own limit, such as OpenAI's per-request function
  * count, is enforced by the provider). Only the serialized catalog is bounded,
@@ -85,6 +91,11 @@ function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
 	while (store.size > limit) store.delete(store.keys().next().value as K);
 }
 
+/** An exact issued envelope of a call, as the images issued with it are kept. */
+function issuedKey(callId: string, envelope: string): string {
+	return `${callId}:${createHash("sha256").update(envelope).digest("hex")}`;
+}
+
 export interface CloudToolContext {
 	readonly companyId: string;
 	readonly runId: string;
@@ -104,6 +115,8 @@ export interface CloudNativeTool {
 	readonly description: string;
 	readonly source: "company_file" | "connector" | "worker" | "runtime";
 	readonly inputSchema: { [key: string]: JsonValue };
+	/** Its answers may show the model an image (`CloudToolContent.image`): the native session must then carry images. */
+	readonly images?: true;
 	/** A required, closed parser: native provider schema hints are not validation. */
 	parseArguments(value: JsonValue): JsonValue;
 	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
@@ -127,6 +140,9 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 	companyReadId?: string;
 	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
 	completesTurn?: boolean;
+	/** Host-only: the PNG an `images` tool shows with an answer that cites its read (a folder image company_read
+	 * converted), handed to the model right after the envelope. */
+	image?: { png: Buffer; sha256: string };
 };
 
 /** The auto-review step (runtime v130) an acting call passes before it runs. */
@@ -385,6 +401,9 @@ export class CloudNativeToolBoundary {
 	readonly #signal: AbortSignal;
 	readonly #calls = new Map<string, CloudNativeCall>();
 	readonly #issuedResults = new Set<string>();
+	/** The image issued with each exact envelope that showed one, by `callId:sha256(envelope)`: only its hash (never
+	 * pixels), kept as long as the issued results are. */
+	readonly #shownImages = new Map<string, string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
 	#pending: Promise<void> = Promise.resolve();
 
@@ -430,6 +449,7 @@ export class CloudNativeToolBoundary {
 				!tool.description.trim() ||
 				Buffer.byteLength(tool.description) > 4096 ||
 				!["company_file", "connector", "worker", "runtime"].includes(tool.source) ||
+				(tool.images !== undefined && tool.images !== true) ||
 				tool.inputSchema.type !== "object" ||
 				tool.inputSchema.additionalProperties !== false ||
 				Buffer.byteLength(cloudToolJsonText(tool.inputSchema)) > MAX_ARGUMENT_BYTES
@@ -464,8 +484,9 @@ export class CloudNativeToolBoundary {
 		};
 	}
 
+	/** Whether a result may carry an image: a screenshot, or an image a tool shows. */
 	get captureImagesEnabled(): boolean {
-		return this.#captures !== undefined;
+		return this.#captures !== undefined || [...this.#tools.values()].some((tool) => tool.images === true);
 	}
 
 	close(): void {
@@ -541,9 +562,16 @@ export class CloudNativeToolBoundary {
 					imageSha256 = image.sha256;
 				}
 			}
-			if (imageSha256 && !this.#captures) throw new Error("Native captures unavailable");
-			const capture = text === undefined ? undefined : this.#captures?.verify(input.callId, text, imageSha256);
-			const image = capture ? { imageSha256: capture.sha256, capture } : {};
+			// An image a tool showed comes back with exactly the envelope it was issued with, and that envelope never without it.
+			const shown = text === undefined ? undefined : this.#shownImages.get(issuedKey(input.callId, text));
+			if (shown !== undefined && imageSha256 !== shown) throw new Error("Native image not issued");
+			if (imageSha256 && shown === undefined && !this.#captures) throw new Error("Native captures unavailable");
+			const capture =
+				text === undefined || shown !== undefined
+					? undefined
+					: this.#captures?.verify(input.callId, text, imageSha256);
+			const image =
+				shown !== undefined ? { imageSha256: shown } : capture ? { imageSha256: capture.sha256, capture } : {};
 			const previous = this.#nativeResults.get(key);
 			if (previous) {
 				// Compaction may retain the already-fenced body. Only our exact prior
@@ -908,12 +936,41 @@ export class CloudNativeToolBoundary {
 			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
 			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
 			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
-			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
+			if (
+				tool.name === "computer_screenshot" &&
+				tool.source === "runtime" &&
+				// No picture when the office gave the screen back or the company folder held the capture back (F3 4d).
+				!(
+					content.kind === "json" &&
+					content.value !== null &&
+					typeof content.value === "object" &&
+					!Array.isArray(content.value) &&
+					content.value.completed === false
+				)
+			) {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),
 					this.#signal,
 				);
 				response.contentItems.push({ type: "inputImage", imageUrl });
+			}
+			if (content.image) {
+				// Only a tool that shows images, after an answer citing the read it showed: the image is released with it.
+				const { png, sha256 } = content.image;
+				if (
+					tool.images !== true ||
+					content.companyReadId === undefined ||
+					!Buffer.isBuffer(png) ||
+					png.byteLength > MAX_SHOWN_IMAGE_BYTES ||
+					createHash("sha256").update(png).digest("hex") !== sha256
+				)
+					throw new Error("Invalid shown image");
+				this.#shownImages.set(issuedKey(callId, response.contentItems[0].text), sha256);
+				remember(this.#shownImages, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
+				response.contentItems.push({
+					type: "inputImage",
+					imageUrl: `data:image/png;base64,${png.toString("base64")}`,
+				});
 			}
 			if (tool.source !== "company_file")
 				observation?.update({
@@ -996,9 +1053,12 @@ export class CloudNativeToolBoundary {
 			(tool?.source !== "company_file" || status !== "ok" || !UUID.test(content.companyReadId))
 		)
 			throw new Error("Invalid Company File read provenance");
-		const text = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
-		if (typeof text !== "string" || Buffer.byteLength(text) > MAX_SOURCE_BYTES)
+		const raw = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
+		if (typeof raw !== "string" || Buffer.byteLength(raw) > MAX_SOURCE_BYTES)
 			throw new Error("Invalid cloud tool content");
+		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
+		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
+		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;

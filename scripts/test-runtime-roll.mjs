@@ -175,6 +175,20 @@ async function rehearse(empty, path = "roll") {
 		const rehearsal = lastJson(dryRun(p("05-rehearse-migrations.sql")));
 		assert.deepEqual(rehearsal.rehearsed, [migration.name]);
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "0");
+		// 05 with three migrations that create one pg_temp function, the first two overloads of it and the second
+		// dropping its own: 05 drops what is left after the first two (both overloads, then nothing), so each next one
+		// creates it anew.
+		const make = (args) => `create function pg_temp.roll_fixture_patch(${args}) returns integer language sql as $$ select 1 $$;\n`;
+		const use = "select pg_temp.roll_fixture_patch();\n";
+		const patch = (version, text) => ({ name: `${version}_roll_fixture_patch.sql`, text: `begin;\n${text}commit;\n` });
+		const again = [
+			patch("20260929999100", `${make("")}${make("p integer")}${use}`),
+			patch("20260929999200", `${make("")}${use}drop function pg_temp.roll_fixture_patch();\n`),
+			patch("20260929999300", `${make("")}${use}`),
+		];
+		const rehearsedAgain = lastJson(dryRun(rollPackets({ activation, migrations: again, from, to, nodeA, nodeB, reason, empty })["05-rehearse-migrations.sql"]));
+		assert.deepEqual(rehearsedAgain.rehearsed, again.map((m) => m.name));
+		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version in ('20260929999100', '20260929999200', '20260929999300');"), "0");
 		// 10, 20: the release migration and node B declared N.
 		commit(`10-migration-${migration.name}`);
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");

@@ -44,6 +44,8 @@ export interface CompanyComputerNativeGuestSession {
 	ended?(): boolean;
 	/** A screenshot published without storage (folder-v2): its pixels, once, for the perform answer. */
 	screenshot?(receiptId: string): Uint8Array | undefined;
+	/** A vault_capture's signing secret sealed to the vault's capture key (E3c-3): its box, once, for the perform answer. */
+	capture?(receiptId: string): Readonly<Record<string, string>> | undefined;
 }
 /** The guest refused to create a session and created nothing; the gateway keeps no capacity for it. */
 export class CompanyComputerGuestSessionRefusedError extends Error {
@@ -408,12 +410,28 @@ export class CompanyComputerNativeGateway {
 				operation.tool === "computer_screenshot"
 					? session.guest.screenshot?.(receipt.receiptId as string)
 					: undefined;
+			// A vault_capture's box travels in its answer, to the vault (E3c-3); a site stop's answer has none. A capture
+			// that read the secret but lost its box (its session ended under it) never answers as done.
+			const capture = parsedAction.kind === "browser" && parsedAction.action === "vault_capture";
+			const box = capture ? session.guest.capture?.(receipt.receiptId as string) : undefined;
+			const answer = content.kind === "json" ? content.value : null;
+			if (
+				capture &&
+				!box &&
+				typeof answer === "object" &&
+				answer !== null &&
+				!Array.isArray(answer) &&
+				answer.completed === true &&
+				!("stop" in answer)
+			)
+				throw new Error("VAULT_CAPTURE_LOST");
 			return {
 				schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
 				receiptId: receipt.receiptId,
 				idempotencyKey: receipt.idempotencyKey,
 				content,
 				...(image ? { image: Buffer.from(image).toString("base64") } : {}),
+				...(box ? { box } : {}),
 			};
 		})();
 		session.active.add(result);

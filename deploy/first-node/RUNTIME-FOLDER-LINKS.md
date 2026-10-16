@@ -166,8 +166,9 @@ The member commit route (`packages/object-gateway/src/member-folder-commits.ts`)
   which covers the targets shown.
 - **`company_write`** refuses a link's path: the answer names the target, and the agent writes to the path it names.
   **`company_delete`** of a link deletes the link itself. **`company_mkdir`** at a link's path is `exists`.
-- **Skills, routines and interfaces** never follow a link: a skill's `SKILL.md` that is a link is not loaded, as a
-  missing one is, and an interface serves no link.
+- **Skills, routines and interfaces** never follow a link: a skill's `SKILL.md` that is a link is not loaded (the
+  catalog names the skill unreadable, as one whose `SKILL.md` is not text, so `update_skill` never writes over the
+  link), and an interface serves no link.
 - **`company_search`** (LK5) says protocol 4 to the folder service, shows a link's hit with its target, and releases
   the link's read with the page, as for any hit.
 - **The web app** lists a link with its target (`→ target`) from LK2, so it never breaks on one. LK6 shows a link in

@@ -3,8 +3,8 @@ import { describe, it } from "node:test";
 import { forwardMemberCompanyGateway } from "./member-company-gateway.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
-const object = `/v1/member-company-objects/${id}/${id}/${"a".repeat(64)}`;
-const edits = `/v1/member-company-file/${id}/edits`;
+const object = `/v1/member-folder-objects/${id}/${"a".repeat(64)}`;
+const commit = `/v1/member-folder-commits/${id}`;
 const upstreamUrl = "https://node.tailnet.ts.net:10000";
 const base = "https://project.supabase.co/functions/v1/member-company-gateway";
 function request(path = object, init: RequestInit = {}) {
@@ -13,7 +13,6 @@ function request(path = object, init: RequestInit = {}) {
 		headers: {
 			origin: "https://app.qorpera.com",
 			authorization: "Bearer member.jwt.token",
-			"x-qorpera-company-path": "bm90ZXMudHh0",
 			...Object.fromEntries(new Headers(init.headers)),
 		},
 	});
@@ -76,7 +75,6 @@ describe("public member Company File gateway", () => {
 					assert.equal(init?.credentials, "omit");
 					assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
 						authorization: "Bearer member.jwt.token",
-						"x-qorpera-company-path": "bm90ZXMudHh0",
 					});
 					return new Response(new Uint8Array([0, 1, 255]), {
 						headers: {
@@ -97,11 +95,15 @@ describe("public member Company File gateway", () => {
 		assert.equal(response.headers.get("set-cookie"), null);
 		assert.equal(response.headers.get("location"), null);
 	});
-	it("passes unchanged member edits once and never replays an uncertain write", async () => {
+	it("passes an unchanged folder commit once and never replays an uncertain write", async () => {
 		let calls = 0;
-		const body = JSON.stringify({ operationKey: id, text: "new appearance" });
+		const body = JSON.stringify({
+			schema: "qorpera.member-folder-commit/v1",
+			operationKey: "web:1",
+			units: [{ op: "write", path: "notes.txt", text: "new appearance" }],
+		});
 		const response = await forwardMemberCompanyGateway(
-			request(edits, { method: "POST", body, headers: { "content-type": "application/json" } }),
+			request(commit, { method: "POST", body, headers: { "content-type": "application/json" } }),
 			{
 				upstreamUrl,
 				fetchImplementation: async (_url, init) => {
@@ -123,42 +125,6 @@ describe("public member Company File gateway", () => {
 		assert.equal(response.status, 403);
 		assert.deepEqual(await response.json(), { error: "denied" });
 	});
-	it("admits a full-size text edit after JSON escaping", async () => {
-		const body = JSON.stringify({ text: "\u0001".repeat(32 * 1024) });
-		assert.ok(body.length > 64 * 1024);
-		const response = await forwardMemberCompanyGateway(request(edits, { method: "POST", body }), {
-			upstreamUrl,
-			fetchImplementation: async (_url, init) => {
-				assert.equal(new TextDecoder().decode(init?.body as Uint8Array), body);
-				assert.equal(
-					new Headers(init?.headers).get("content-length"),
-					String(new TextEncoder().encode(body).length),
-				);
-				return Response.json({ state: "applied" });
-			},
-		});
-		assert.equal(response.status, 200);
-	});
-	it("forwards selected upload bytes and metadata without JSON conversion", async () => {
-		const path = `/v1/member-company-file/${id}/uploads`;
-		const content = new Uint8Array([0, 128, 255]);
-		const response = await forwardMemberCompanyGateway(
-			request(path, {
-				method: "PUT",
-				body: content,
-				headers: { "content-type": "application/octet-stream", "x-qorpera-company-upload": "metadata" },
-			}),
-			{
-				upstreamUrl,
-				fetchImplementation: async (_url, init) => {
-					assert.deepEqual(init?.body, content);
-					assert.equal(new Headers(init?.headers).get("x-qorpera-company-upload"), "metadata");
-					return Response.json({ state: "applied" });
-				},
-			},
-		);
-		assert.equal(response.status, 200);
-	});
 	it("forwards presence reads through the same public boundary", async () => {
 		const path = `/v1/member-company-presence/${id}/${id}`;
 		const response = await forwardMemberCompanyGateway(request(path, { method: "POST", body: "{}" }), {
@@ -171,7 +137,7 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(response.status, 200);
 	});
-	it("admits the SDK's bounded presence candidate payload without applying the smaller edit limit", async () => {
+	it("admits the SDK's bounded presence candidate payload up to the 1 MiB write bound", async () => {
 		const path = `/v1/member-company-presence/${id}/${id}`;
 		const routes = Array.from({ length: 136 }, () => ({
 			token: "a".repeat(64),
@@ -235,24 +201,27 @@ describe("public member Company File gateway", () => {
 				method: "OPTIONS",
 				headers: {
 					"access-control-request-method": "GET",
-					"access-control-request-headers": "authorization,x-qorpera-company-path",
+					"access-control-request-headers": "authorization",
 				},
 			}),
 			{ upstreamUrl, fetchImplementation },
 		);
 		assert.equal(response.status, 204);
 		assert.equal(response.headers.get("access-control-allow-methods"), "GET");
-		const denied = await forwardMemberCompanyGateway(
-			request(object, {
-				method: "OPTIONS",
-				headers: {
-					"access-control-request-method": "GET",
-					"access-control-request-headers": "authorization,x-admin-key",
-				},
-			}),
-			{ upstreamUrl, fetchImplementation },
-		);
-		assert.equal(denied.status, 403);
+		assert.equal(response.headers.get("access-control-allow-headers"), "authorization");
+		for (const header of ["x-admin-key", "x-qorpera-company-path"]) {
+			const denied = await forwardMemberCompanyGateway(
+				request(object, {
+					method: "OPTIONS",
+					headers: {
+						"access-control-request-method": "GET",
+						"access-control-request-headers": `authorization,${header}`,
+					},
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(denied.status, 403);
+		}
 	});
 	for (const [name, req, status] of [
 		["foreign origin", request(object, { headers: { origin: "https://evil.test" } }), 403],
@@ -265,6 +234,21 @@ describe("public member Company File gateway", () => {
 		["a folder object write", request(`/v1/member-folder-objects/${id}/${"b".repeat(64)}`, { method: "PUT" }), 405],
 		["a folder commit read", request(`/v1/member-folder-commits/${id}`), 405],
 		["a folder commit with a tail", request(`/v1/member-folder-commits/${id}/${id}`, { method: "POST" }), 404],
+		["a snapshot-v1 path object", request(`/v1/member-company-objects/${id}/${id}/${"b".repeat(64)}`), 404],
+		[
+			"a snapshot-v1 snapshot object",
+			request(`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`),
+			404,
+		],
+		["a snapshot-v1 edit", request(`/v1/member-company-file/${id}/edits`, { method: "POST", body: "{}" }), 404],
+		["a snapshot-v1 edit read", request(`/v1/member-company-file/${id}/edits/${id}/content`), 404],
+		[
+			"a snapshot-v1 proposal review",
+			request(`/v1/member-company-file/${id}/proposals/${id}/review`, { method: "POST", body: "{}" }),
+			404,
+		],
+		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
+		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forwardMemberCompanyGateway(req, {
@@ -295,7 +279,7 @@ describe("public member Company File gateway", () => {
 			},
 		});
 		const init: RequestInit & { duplex: "half" } = { method: "POST", body, duplex: "half" };
-		const response = await forwardMemberCompanyGateway(request(edits, init), {
+		const response = await forwardMemberCompanyGateway(request(commit, init), {
 			upstreamUrl,
 			fetchImplementation: async () => {
 				assert.fail("oversized body forwarded");
@@ -336,7 +320,7 @@ describe("public member Company File gateway", () => {
 			},
 		});
 		const init: RequestInit & { duplex: "half" } = { method: "POST", body, signal: abort.signal, duplex: "half" };
-		const pending = forwardMemberCompanyGateway(request(edits, init), {
+		const pending = forwardMemberCompanyGateway(request(commit, init), {
 			upstreamUrl,
 			fetchImplementation: async () => assert.fail("cancelled request forwarded"),
 		});
@@ -387,7 +371,7 @@ describe("public member Company File gateway", () => {
 		const body = JSON.stringify({
 			schema: "qorpera.member-folder-commit/v1",
 			operationKey: "web:1",
-			// Past the governed routes' 256 KiB: a change set may carry up to 512 KiB of text.
+			// Past 256 KiB: a change set may carry up to 512 KiB of text.
 			units: [{ op: "write", path: "notes.txt", text: "x".repeat(300 * 1024) }],
 		});
 		const response = await forwardMemberCompanyGateway(
@@ -408,45 +392,16 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(response.status, 200);
 	});
-	for (const kind of ["edits", "proposals"])
-		it(`forwards exact ${kind} review requests`, async () => {
-			const body = JSON.stringify({ planSha256: "a".repeat(64), decision: "approve" });
-			const response = await forwardMemberCompanyGateway(
-				request(`/v1/member-company-file/${id}/${kind}/${id}/review`, {
-					method: "POST",
-					body,
-					headers: { "content-type": "application/json" },
-				}),
-				{
+	it("supports the governed folder object read route", async () => {
+		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;
+		assert.equal(
+			(
+				await forwardMemberCompanyGateway(request(path), {
 					upstreamUrl,
-					fetchImplementation: async (_url, init) => {
-						assert.equal(init?.method, "POST");
-						assert.equal(new TextDecoder().decode(init?.body as Uint8Array), body);
-						return Response.json({ state: "applied" });
-					},
-				},
-			);
-			assert.equal(response.status, 200);
-		});
-	for (const path of [
-		`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`,
-		`/v1/member-folder-objects/${id}/${"b".repeat(64)}`,
-		`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`,
-		`/v1/member-company-file/${id}/edits/${id}`,
-		`/v1/member-company-file/${id}/edits/${id}/content`,
-		`/v1/member-company-file/${id}/edits/${id}/file`,
-		`/v1/member-company-file/${id}/proposals/${id}/content`,
-		`/v1/member-company-file/${id}/proposals/${id}/file`,
-	])
-		it(`supports governed read route ${path.split("/")[2]}`, async () => {
-			assert.equal(
-				(
-					await forwardMemberCompanyGateway(request(path), {
-						upstreamUrl,
-						fetchImplementation: async () => new Response("ok"),
-					})
-				).status,
-				200,
-			);
-		});
+					fetchImplementation: async () => new Response("ok"),
+				})
+			).status,
+			200,
+		);
+	});
 });

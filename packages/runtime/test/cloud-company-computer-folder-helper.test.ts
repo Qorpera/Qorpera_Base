@@ -1,7 +1,10 @@
+import { spawn } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { createConnection, type Server } from "node:net";
+import { createConnection, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	COMPANY_COMPUTER_FOLDER_MOUNTPOINT_MODE,
 	COMPANY_COMPUTER_FOLDER_PROGRAM,
@@ -9,22 +12,34 @@ import {
 	type CompanyComputerFolderHelperOptions,
 	type CompanyComputerFolderHelperSystem,
 	type CompanyComputerFolderUnitState,
+	type CompanyComputerProcessScan,
 	companyComputerFolderBoundaryAnswer,
 	companyComputerFolderProgram,
+	companyComputerFolderServed,
 	companyComputerFolderUnit,
+	companyComputerNamespaceInUse,
+	companyComputerThreadCount,
 	createCompanyComputerFolderHelperServer,
+	isCompanyComputerCommandNamespace,
+	parseCompanyComputerFolderCommandReport,
 	parseCompanyComputerMountinfo,
 } from "@qorpera/runtime/cloud-company-computer-folder-helper";
 import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_HELPER_SOCKET,
+	COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES,
+	COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES,
 	type CompanyComputerFolderRequest,
+	type CompanyComputerFolderRunEvent,
 	companyComputerFolderName,
 	companyComputerFolderPaths,
 	parseCompanyComputerFolderAnswer,
 	parseCompanyComputerFolderRequest,
+	parseCompanyComputerFolderRunEvent,
+	parseCompanyComputerFolderRunInput,
+	startCompanyComputerFolderRun,
 } from "@qorpera/runtime/cloud-company-computer-folder-helper-client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // The helper against a machine of its own (units, mounts, the folder program); the real mounts, units and program run
 // in the office image's proof.
@@ -84,6 +99,9 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 	shares = true;
 	detaches = true;
 	published: { code: number | null; stdout: Buffer | undefined } = { code: 0, stdout: printed(report()) };
+	/** The stand-in for `qorpera-folder command` (LAUNCHER), and the arguments of each launch. */
+	launcher = "";
+	readonly launches: string[][] = [];
 	#id = 100;
 	readonly root: string;
 
@@ -123,7 +141,8 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		if (this.program === "closes") return void this.units.set(unit, CLOSED);
 		this.units.set(unit, ACTIVE);
 		if (this.program === "hangs") return;
-		this.#mount(this.#paths(unit).mountpoint, "", "fuse.qorpera", "qorpera-company");
+		// As the kernel lists the program's direct mount (#1007): `fuse qorpera-company`.
+		this.#mount(this.#paths(unit).mountpoint, "", "fuse", "qorpera-company");
 		await this.#prove(unit);
 	}
 	async stop(unit: string) {
@@ -132,7 +151,7 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		const mountpoint = this.#paths(unit).mountpoint;
 		if (
 			this.stopPost &&
-			this.entries.some((line) => line.includes(" fuse.qorpera ") && line.split(" ")[4] === mountpoint)
+			this.entries.some((line) => line.includes(" - fuse qorpera-company ") && line.split(" ")[4] === mountpoint)
 		)
 			this.#unmount(mountpoint);
 	}
@@ -156,7 +175,97 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		this.publishes.push({ args, timeoutMs });
 		return this.published;
 	}
+	launch(args: readonly string[]) {
+		this.launches.push([...args]);
+		return spawn(process.execPath, [this.launcher, ...args], {
+			cwd: "/",
+			stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+		});
+	}
+	/** The stand-in reports the command's process group as its mount namespace. */
+	async namespaceInUse(mntns: number) {
+		try {
+			process.kill(-mntns, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 }
+
+/**
+ * `qorpera-folder command` as the helper sees it: the command on its stdin, stdout and stderr, its reports on fd 3,
+ * the helper's go on fd 4 (the command runs after a G; an end of file before it kills the command unrun and fails),
+ * and SIGTERM stops the command's process group. Some shell pids stand for a launcher that goes wrong: one that
+ * reports its failure, one that reports garbage, one that never reports, one that exits without a report, one that
+ * neither reports nor heeds the go, and one that started its command but withholds the report (it notes the
+ * command's pid next to itself).
+ */
+const LAUNCHER = `
+import { spawn } from "node:child_process";
+import { createReadStream, createWriteStream, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+const args = process.argv.slice(2);
+const split = args.indexOf("--");
+const shell = Number(args[args.indexOf("--shell-pid") + 1]);
+const reports = createWriteStream(null, { fd: 3 });
+const report = (value) => reports.write(JSON.stringify(value) + "\\n");
+const go = createReadStream(null, { fd: 4 });
+// One with no command yet just exits when the go ends.
+const leave = () => go.on("end", () => process.exit(1));
+if (shell === 4000001) {
+	report({ t: "failed", error: "the shell is not the office account's" });
+	reports.end(() => process.exit(1));
+} else if (shell === 4000002) {
+	reports.write("not a report\\n");
+	leave();
+	setInterval(() => undefined, 1000);
+} else if (shell === 4000003) {
+	leave();
+	setInterval(() => undefined, 1000);
+} else if (shell === 4000004) reports.end(() => process.exit(1));
+else if (shell === 4000005) setInterval(() => undefined, 1000);
+else {
+	// The command waits at its gate (its fd 3) for the go, and holds neither the reports nor the go when it runs.
+	const child = spawn("/bin/sh", ["-c", 'read -r _ <&3 || exit 1; exec 3>&- 4>&- "$0" "$@"', ...args.slice(split + 1)], {
+		detached: true,
+		stdio: ["inherit", "inherit", "inherit", "pipe"],
+	});
+	// A stop right after the go can end the command before it reads the go; its gate then resets.
+	child.stdio[3].on("error", () => undefined);
+	const kill = () => {
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch {}
+	};
+	child.on("spawn", () => {
+		if (shell === 4000006) writeFileSync(join(dirname(process.argv[1]), "withheld.pid"), String(child.pid));
+		else report({ t: "started", pid: child.pid, mntns: child.pid });
+	});
+	let released = false;
+	go.on("data", (bytes) => {
+		if (released) return;
+		if (bytes[0] === 0x47) {
+			released = true;
+			child.stdio[3].end("\\n");
+		} else kill();
+	});
+	go.on("end", () => released || kill());
+	child.on("exit", (code, signal) => {
+		report(released ? { t: "exit", code, signal } : { t: "failed", error: "the helper did not let the command start" });
+		reports.end(() => process.exit(released ? 0 : 1));
+	});
+	process.on("SIGTERM", () => {
+		const signal = (name) => {
+			try {
+				process.kill(-child.pid, name);
+			} catch {}
+		};
+		signal("SIGTERM");
+		setTimeout(() => signal("SIGKILL"), 2000).unref();
+	});
+}
+`;
 
 async function setup(options: CompanyComputerFolderHelperOptions = {}) {
 	const base = await mkdtemp(join(await realpath(tmpdir()), "fh-"));
@@ -519,8 +628,18 @@ describe("the folder helper's socket", () => {
 			JSON.stringify({ op: "drop", name: "desktop-1" }),
 		])
 			expect(await raw(socket, `${line}\n`)).toBe('{"answer":"invalid"}\n');
-		expect(await raw(socket, "x".repeat(5000))).toBe('{"answer":"invalid"}\n');
+		// A run's request may be as long as a run's line; any other only as long as a request line.
+		expect(await raw(socket, "x".repeat(COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES))).toBe('{"answer":"invalid"}\n');
+		expect(await raw(socket, `{"op":"list"${" ".repeat(5000)}}\n`)).toBe('{"answer":"invalid"}\n');
+		expect(await raw(socket, `{"op":"list"${" ".repeat(4000)}}\n`)).toMatch(/^\{"answer":"list",/);
 		expect(await raw(socket, Buffer.from([0xff, 0x0a]))).toBe('{"answer":"invalid"}\n');
+		// A run has a connection of its own.
+		expect(
+			await askCompanyComputerFolderHelper(
+				{ op: "run", name: COMMAND, shellPid: 4242, network: true, command: "true" } as never,
+				{ socket },
+			),
+		).toBe(undefined);
 	});
 
 	it("is no answer without a helper, and never asks with a malformed request", async () => {
@@ -566,6 +685,700 @@ describe("the folder helper's socket", () => {
 	});
 });
 
+describe("the folder helper's runs", () => {
+	const SECOND = companyComputerFolderName("command", "66666666-7777-4888-9999-bbbbbbbbbbbb");
+	const THIRD = companyComputerFolderName("command", "66666666-7777-4888-9999-cccccccccccc");
+	type Run = Extract<CompanyComputerFolderRequest, { op: "run" }>;
+
+	/** The helper on a socket, with the launcher stand-in and these command mounts. */
+	async function running(names: readonly string[] = [COMMAND], options: CompanyComputerFolderHelperOptions = {}) {
+		const context = await setup({ endedPollMs: 20, ...options });
+		context.system.launcher = join(context.base, "launcher.mjs");
+		await writeFile(context.system.launcher, LAUNCHER);
+		const server: Server = createCompanyComputerFolderHelperServer(context.helper);
+		const connections = new Set<Socket>();
+		server.on("connection", (connection) => {
+			connections.add(connection);
+			connection.on("close", () => connections.delete(connection));
+		});
+		const socket = join(context.base, "helper.sock");
+		await new Promise<void>((resolve) => server.listen(socket, resolve));
+		// A run still open stops its command.
+		cleanups.push(
+			() =>
+				new Promise((resolve) => {
+					for (const connection of connections) connection.destroy();
+					server.close(resolve);
+				}),
+		);
+		for (const name of names)
+			expect(await context.helper.answer({ op: "mount", name, view: VIEW })).toEqual({ answer: "mounted" });
+		const ended = (name: string) => askCompanyComputerFolderHelper({ op: "ended", name }, { socket });
+		const commandState = async (name: string) =>
+			JSON.parse(await readFile(join(context.paths(name).state, "command.json"), "utf8"));
+		return { ...context, socket, ended, commandState };
+	}
+	function start(socket: string, command: string, extra: Partial<Run> = {}) {
+		const events: CompanyComputerFolderRunEvent[] = [];
+		const run = startCompanyComputerFolderRun(
+			{ op: "run", name: COMMAND, shellPid: 4242, network: true, command, ...extra },
+			(event) => events.push(event),
+			{ socket },
+		);
+		const output = () =>
+			Buffer.concat(
+				events.flatMap((event) => (event.t === "out" ? [Buffer.from(event.data, "base64")] : [])),
+			).toString();
+		return { run, events, output };
+	}
+
+	it("starts the command with the launcher, relays its output and exit, and ends once nothing is left", async () => {
+		const { socket, system, paths, ended, commandState } = await running();
+		const command = "echo out; echo err >&2; exit 7";
+		const { run, events, output } = start(socket, command);
+		expect(await run.answer).toEqual({ answer: "started" });
+		await run.closed;
+		expect(output().split("\n").sort()).toEqual(["", "err", "out"]);
+		expect(events.slice(-2)).toEqual([{ t: "exit", code: 7, signal: null }, { t: "ended" }]);
+		expect(system.launches).toEqual([
+			[
+				"command",
+				"--shell-pid",
+				"4242",
+				"--tree",
+				paths(COMMAND).parent,
+				"--network",
+				"yes",
+				"--",
+				"/usr/bin/bash",
+				"--noprofile",
+				"--norc",
+				"-c",
+				command,
+			],
+		]);
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
+		expect(await mode(join(paths(COMMAND).state, "command.json"))).toBe(0o600);
+		expect(await ended(COMMAND)).toEqual({ answer: "ended" });
+	});
+
+	it("passes the writes to the command's input, those sent before its start too, and its output in chunks", async () => {
+		const { socket, system } = await running([COMMAND, SECOND, THIRD]);
+		const cat = start(socket, "cat", { network: false });
+		cat.run.write(Buffer.from("hello "), false);
+		cat.run.write(Buffer.from("there"), true);
+		expect(await cat.run.answer).toEqual({ answer: "started" });
+		await cat.run.closed;
+		expect(cat.output()).toBe("hello there");
+		expect(cat.events.slice(-2)).toEqual([{ t: "exit", code: 0, signal: null }, { t: "ended" }]);
+		expect(system.launches[0]?.slice(5, 7)).toEqual(["--network", "no"]);
+		const count = start(socket, "wc -c", { name: SECOND });
+		expect(await count.run.answer).toEqual({ answer: "started" });
+		count.run.write(Buffer.alloc(200000, 0x61), true);
+		await count.run.closed;
+		expect(count.output().trim()).toBe("200000");
+		const long = start(socket, "head -c 300000 /dev/zero | tr '\\0' a", { name: THIRD });
+		await long.run.closed;
+		const chunks = long.events.flatMap((event) => (event.t === "out" ? [Buffer.from(event.data, "base64")] : []));
+		expect(chunks.every((chunk) => chunk.length <= COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES)).toBe(true);
+		expect(long.output()).toBe("a".repeat(300000));
+	});
+
+	it("stops the command's process group, and a stop after its exit does nothing", async () => {
+		const { socket } = await running();
+		const sleeper = start(socket, "sleep 30");
+		expect(await sleeper.run.answer).toEqual({ answer: "started" });
+		sleeper.run.stop();
+		await sleeper.run.closed;
+		expect(sleeper.events).toEqual([{ t: "exit", code: null, signal: "SIGTERM" }, { t: "ended" }]);
+		sleeper.run.stop();
+	});
+
+	it("ends only once the command's background jobs are gone, and `ended` answers running until then", async () => {
+		const { socket, ended, commandState } = await running();
+		const lingering = start(socket, "(sleep 1.5 </dev/null >/dev/null 2>&1 &); echo done");
+		expect(await lingering.run.answer).toEqual({ answer: "started" });
+		await vi.waitFor(() => expect(lingering.events.some((event) => event.t === "exit")).toBe(true), {
+			timeout: 5000,
+			interval: 20,
+		});
+		expect(lingering.output()).toBe("done\n");
+		expect(await ended(COMMAND)).toEqual({ answer: "running" });
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: false });
+		await lingering.run.closed;
+		expect(lingering.events.at(-1)).toEqual({ t: "ended" });
+		expect(await ended(COMMAND)).toEqual({ answer: "ended" });
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
+	});
+
+	it("runs nothing on a mount that is not there, ran a command already, is closed or is not served", async () => {
+		const { socket, system, logs, ended } = await running([COMMAND, SECOND, THIRD]);
+		const absent = companyComputerFolderName("command", "66666666-7777-4888-9999-dddddddddddd");
+		expect(await start(socket, "true", { name: absent }).run.answer).toEqual({ answer: "unknown" });
+		expect(await ended(absent)).toEqual({ answer: "unknown" });
+		// Before its command, a mount has no end to answer.
+		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
+		await start(socket, "true").run.closed;
+		const again = start(socket, "true");
+		expect(await again.run.answer).toEqual({ answer: "refused" });
+		await again.run.closed;
+		expect(again.events).toEqual([]);
+		system.units.set(companyComputerFolderUnit(SECOND), CLOSED);
+		expect(await start(socket, "true", { name: SECOND }).run.answer).toEqual({ answer: "closed" });
+		system.entries.length = 0;
+		expect(await start(socket, "true", { name: THIRD }).run.answer).toEqual({ answer: "failed" });
+		expect(logs).toContain(`folder-helper: run ${THIRD}: its mount is not served`);
+		expect(system.launches).toHaveLength(1);
+	});
+
+	it("keeps the claim of a command that did not start, so the mount runs none and never ends", async () => {
+		const { socket, logs, ended, commandState } = await running();
+		const failed = start(socket, "true", { shellPid: 4000001 });
+		expect(await failed.run.answer).toEqual({ answer: "failed" });
+		await failed.run.closed;
+		expect(logs).toContain(`folder-helper: run ${COMMAND}: failed: "the shell is not the office account's"`);
+		expect(await commandState(COMMAND)).toEqual({ mntns: null, ended: false });
+		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
+		expect(await start(socket, "true").run.answer).toEqual({ answer: "refused" });
+	});
+
+	it("keeps the claim a helper left that stopped before its go, and ends one whose namespace it recorded", async () => {
+		const { socket, system, paths, ended, commandState } = await running([COMMAND, SECOND]);
+		// A helper that stopped before it recorded the namespace never let its command run.
+		const left = (name: string, mntns: number | null) =>
+			writeFile(join(paths(name).state, "command.json"), `${JSON.stringify({ mntns, ended: false })}\n`, {
+				mode: 0o600,
+			});
+		await left(COMMAND, null);
+		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
+		expect(await start(socket, "true").run.answer).toEqual({ answer: "refused" });
+		// One that stopped after it: the command ran or not, and ends once nothing is left in that namespace.
+		await left(SECOND, 4000007);
+		expect(await ended(SECOND)).toEqual({ answer: "ended" });
+		expect(await commandState(SECOND)).toEqual({ mntns: 4000007, ended: true });
+		expect(system.launches).toEqual([]);
+	});
+
+	it("fails a launcher that reports garbage, nothing, or nothing in time, and stops it", async () => {
+		const FOURTH = companyComputerFolderName("command", "66666666-7777-4888-9999-eeeeeeeeeeee");
+		const { socket, logs, commandState } = await running([COMMAND, SECOND, THIRD, FOURTH], {
+			launchMs: 300,
+			launchStopMs: 300,
+		});
+		for (const [name, shellPid] of [
+			[COMMAND, 4000002],
+			[SECOND, 4000004],
+			[THIRD, 4000003],
+			// It does not exit when the go ends: it is killed.
+			[FOURTH, 4000005],
+		] as const) {
+			const launch = start(socket, "true", { name, shellPid });
+			expect(await launch.run.answer).toEqual({ answer: "failed" });
+			await launch.run.closed;
+			expect(logs).toContain(`folder-helper: run ${name}: failed: no start report`);
+			expect(await commandState(name)).toEqual({ mntns: null, ended: false });
+		}
+	});
+
+	it("never lets a command run whose start came too late, and its launcher stops it unrun", async () => {
+		const { base, socket, logs, ended, commandState } = await running([COMMAND], { launchMs: 300 });
+		const marker = join(base, "ran");
+		const launch = start(socket, `touch ${marker}`, { shellPid: 4000006 });
+		expect(await launch.run.answer).toEqual({ answer: "failed" });
+		await launch.run.closed;
+		// The helper answers once its launcher is gone, and the launcher goes once its command is.
+		const pid = Number(await readFile(join(base, "withheld.pid"), "utf8"));
+		expect(() => process.kill(-pid, 0)).toThrow();
+		await vi.waitFor(
+			() => expect(logs).toContain(`folder-helper: run ${COMMAND}: "the helper did not let the command start"`),
+			{ timeout: 5000, interval: 20 },
+		);
+		expect(logs).toContain(`folder-helper: run ${COMMAND}: failed: no start report`);
+		await delay(200);
+		expect(await gone(marker)).toBe(true);
+		expect(await commandState(COMMAND)).toEqual({ mntns: null, ended: false });
+		expect(await ended(COMMAND)).toEqual({ answer: "unknown" });
+	});
+
+	it("never lets a command run whose mount namespace it could not record", async () => {
+		const { base, socket, system, logs, paths } = await running();
+		const marker = join(base, "ran");
+		const launch = system.launch.bind(system);
+		system.launch = (args) => {
+			// The state folder goes after the claim: the namespace's record cannot be written.
+			rmSync(paths(COMMAND).state, { recursive: true });
+			writeFileSync(paths(COMMAND).state, "");
+			return launch(args);
+		};
+		const run = start(socket, `touch ${marker}`);
+		expect(await run.run.answer).toEqual({ answer: "failed" });
+		await run.run.closed;
+		expect(logs).toContain(`folder-helper: run ${COMMAND}: failed: its record was not written`);
+		expect(logs.some((line) => line.startsWith(`folder-helper: run ${COMMAND}: its record: `))).toBe(true);
+		await delay(200);
+		expect(await gone(marker)).toBe(true);
+	});
+
+	it("stops the command when the asker leaves or sends a malformed line, and still answers its end", async () => {
+		const { socket, ended, commandState } = await running([COMMAND, SECOND]);
+		const sleeper = start(socket, "sleep 30");
+		expect(await sleeper.run.answer).toEqual({ answer: "started" });
+		sleeper.run.close();
+		await vi.waitFor(async () => expect(await ended(COMMAND)).toEqual({ answer: "ended" }), {
+			timeout: 5000,
+			interval: 50,
+		});
+		expect(await commandState(COMMAND)).toEqual({ mntns: expect.any(Number), ended: true });
+		const request: Run = { op: "run", name: SECOND, shellPid: 4242, network: true, command: "sleep 30" };
+		const connection = createConnection(socket);
+		connection.on("error", () => undefined);
+		connection.resume();
+		await new Promise((resolve) => {
+			connection.on("close", resolve);
+			connection.write(`${JSON.stringify(request)}\n{"t":"write","data":"!","end":false}\n`);
+		});
+		await vi.waitFor(async () => expect(await ended(SECOND)).toEqual({ answer: "ended" }), {
+			timeout: 5000,
+			interval: 50,
+		});
+	});
+
+	it("takes only well-formed runs, events, inputs and launcher reports", () => {
+		const run: Run = { op: "run", name: COMMAND, shellPid: 4242, network: false, command: "ls -la" };
+		expect(parseCompanyComputerFolderRequest(JSON.stringify(run))).toEqual(run);
+		expect(parseCompanyComputerFolderRequest(JSON.stringify({ ...run, shellPid: 4194304 }))).toEqual({
+			...run,
+			shellPid: 4194304,
+		});
+		for (const bad of [
+			{ ...run, command: "ls\0" },
+			{ ...run, shellPid: 1 },
+			{ ...run, shellPid: 4194305 },
+			{ ...run, shellPid: 42.5 },
+			{ ...run, name: DESKTOP },
+			{ ...run, network: "yes" },
+			{ ...run, extra: 1 },
+			{ op: "ended", name: DESKTOP },
+			{ op: "ended", name: COMMAND, extra: 1 },
+		])
+			expect(parseCompanyComputerFolderRequest(JSON.stringify(bad))).toBe(undefined);
+		expect(parseCompanyComputerFolderRequest(JSON.stringify({ op: "ended", name: COMMAND }))).toEqual({
+			op: "ended",
+			name: COMMAND,
+		});
+		expect(parseCompanyComputerFolderAnswer("run", '{"answer":"started"}')).toEqual({ answer: "started" });
+		expect(parseCompanyComputerFolderAnswer("run", '{"answer":"held"}')).toBe(undefined);
+		expect(parseCompanyComputerFolderAnswer("ended", '{"answer":"running"}')).toEqual({ answer: "running" });
+		expect(parseCompanyComputerFolderAnswer("ended", '{"answer":"started"}')).toBe(undefined);
+
+		expect(parseCompanyComputerFolderRunEvent('{"t":"out","data":"aGk="}')).toEqual({ t: "out", data: "aGk=" });
+		expect(parseCompanyComputerFolderRunEvent('{"t":"exit","code":null,"signal":"SIG34"}')).toEqual({
+			t: "exit",
+			code: null,
+			signal: "SIG34",
+		});
+		expect(parseCompanyComputerFolderRunEvent('{"t":"ended"}')).toEqual({ t: "ended" });
+		for (const bad of [
+			'{"t":"out","data":"not base64!"}',
+			`{"t":"out","data":"${"A".repeat(90004)}"}`,
+			'{"t":"exit","code":256,"signal":null}',
+			'{"t":"exit","code":0,"signal":"TERM"}',
+			'{"t":"exit","code":0}',
+			'{"t":"ended","extra":1}',
+			'{"t":"started"}',
+		])
+			expect(parseCompanyComputerFolderRunEvent(bad)).toBe(undefined);
+
+		expect(parseCompanyComputerFolderRunInput('{"t":"write","data":"","end":true}')).toEqual({
+			t: "write",
+			data: "",
+			end: true,
+		});
+		expect(parseCompanyComputerFolderRunInput('{"t":"stop"}')).toEqual({ t: "stop" });
+		for (const bad of [
+			'{"t":"write","data":"aGk="}',
+			'{"t":"write","data":"aGk=","end":"yes"}',
+			`{"t":"write","data":"${"A".repeat(90004)}","end":false}`,
+			'{"t":"stop","now":true}',
+			'["stop"]',
+		])
+			expect(parseCompanyComputerFolderRunInput(bad)).toBe(undefined);
+
+		expect(parseCompanyComputerFolderCommandReport('{"t":"started","pid":812,"mntns":4026532301}')).toEqual({
+			t: "started",
+			pid: 812,
+			mntns: 4026532301,
+		});
+		expect(parseCompanyComputerFolderCommandReport('{"t":"exit","code":null,"signal":"SIGKILL"}')).toEqual({
+			t: "exit",
+			code: null,
+			signal: "SIGKILL",
+		});
+		expect(parseCompanyComputerFolderCommandReport('{"t":"failed","error":"setns: EPERM"}')).toEqual({
+			t: "failed",
+			error: "setns: EPERM",
+		});
+		for (const bad of [
+			'{"t":"started","pid":0,"mntns":4026532301}',
+			'{"t":"started","pid":812,"mntns":"4026532301"}',
+			'{"t":"started","pid":812}',
+			'{"t":"exit","code":-1,"signal":null}',
+			'{"t":"failed","error":1}',
+			'{"t":"failed","error":"x","extra":1}',
+			"[1]",
+			"null",
+			"not json",
+		])
+			expect(parseCompanyComputerFolderCommandReport(bad)).toBe(undefined);
+	});
+
+	it("knows a command's mount namespace by the clone of its mount parent, deleted or not", () => {
+		const table = (...lines: string[]) =>
+			parseCompanyComputerMountinfo(
+				`${["1 0 8:1 / / rw - ext4 /dev/sda1 rw", "30 1 0:24 / /run rw shared:5 - tmpfs tmpfs rw", ...lines].join("\n")}\n`,
+			);
+		const clone = (root: string) => `40 30 0:24 ${root} /run/qorpera-company rw master:9 - tmpfs tmpfs rw`;
+		expect(isCompanyComputerCommandNamespace(table(clone(`/qorpera-folder/mounts/${COMMAND}`)), COMMAND)).toBe(true);
+		expect(
+			isCompanyComputerCommandNamespace(table(clone(`/qorpera-folder/mounts/${COMMAND}//deleted`)), COMMAND),
+		).toBe(true);
+		expect(isCompanyComputerCommandNamespace(table(clone(`/qorpera-folder/mounts/${SECOND}`)), COMMAND)).toBe(false);
+		expect(isCompanyComputerCommandNamespace(table(), COMMAND)).toBe(false);
+		// Only the top mount there counts.
+		expect(
+			isCompanyComputerCommandNamespace(
+				table(clone(`/qorpera-folder/mounts/${COMMAND}`), "41 40 0:30 / /run/qorpera-company rw - tmpfs tmpfs rw"),
+				COMMAND,
+			),
+		).toBe(false);
+	});
+
+	/** A machine's threads (process, thread, and whether it is in the namespace; undefined while it is listed but reads as
+	 * gone) and its last pid; `when` changes them as a thread is looked at, before the look reads it, `listing` as
+	 * a process's threads are listed, giving what the kernel's list holds, and `counting` as they are counted, giving
+	 * what the read says. */
+	function machine(threads: ReadonlyArray<readonly [number, number, boolean | undefined]>, last: number) {
+		const table = new Map<number, Map<number, boolean | undefined>>();
+		const set = (group: number, thread: number, inside: boolean | undefined) => {
+			table.set(group, (table.get(group) ?? new Map<number, boolean | undefined>()).set(thread, inside));
+		};
+		for (const [group, thread, inside] of threads) set(group, thread, inside);
+		const looked: string[] = [];
+		let lists = 0;
+		let next: (() => void) | undefined;
+		let list: ((listed: number[]) => number[]) | undefined;
+		let counted: (() => number | undefined) | undefined;
+		const scan: CompanyComputerProcessScan = {
+			lastPid: async () => last,
+			processes: async () => [...table.keys()],
+			async count(group) {
+				const change = counted;
+				counted = undefined;
+				return change ? change() : table.get(group)?.size;
+			},
+			async threads(group) {
+				lists++;
+				const listed = [...(table.get(group)?.keys() ?? [])];
+				const change = list;
+				list = undefined;
+				return change ? change(listed) : listed;
+			},
+			async inside(group, thread) {
+				looked.push(`${group}/${thread}`);
+				const change = next;
+				next = undefined;
+				change?.();
+				return table.get(group)?.get(thread);
+			},
+		};
+		/** A thread made now (a process, when it is its own group), which takes the next pid. */
+		const clone = (group: number, thread: number, inside: boolean) => {
+			set(group, thread, inside);
+			last = thread;
+		};
+		/** A thread ends: its process goes with its last thread. */
+		const end = (group: number, thread: number) => {
+			const listed = table.get(group);
+			listed?.delete(thread);
+			if (listed?.size === 0) table.delete(group);
+		};
+		const when = (change: () => void) => {
+			next = change;
+		};
+		const listing = (change: (listed: number[]) => number[]) => {
+			list = change;
+		};
+		const counting = (change: () => number | undefined) => {
+			counted = change;
+		};
+		return { scan, looked, lists: () => lists, set, clone, end, when, listing, counting };
+	}
+
+	it("looks at every thread, the leader's place last, in whole passes until a quiet one", async () => {
+		const quiet = machine(
+			[
+				[400, 400, false],
+				[400, 401, false],
+				[500, 500, false],
+			],
+			600,
+		);
+		expect(await companyComputerNamespaceInUse(quiet.scan)).toBe(false);
+		expect(quiet.looked).toEqual(["400/401", "400/400", "500/500"]);
+		// A process made during a pass, outside: one more pass, which is quiet.
+		const busy = machine(
+			[
+				[400, 400, false],
+				[400, 401, false],
+			],
+			600,
+		);
+		busy.when(() => busy.clone(601, 601, false));
+		expect(await companyComputerNamespaceInUse(busy.scan)).toBe(false);
+		expect(busy.looked).toEqual(["400/401", "400/400", "400/401", "400/400", "601/601"]);
+		// A process made during a pass, inside, whose parent ended before the next pass: that pass finds it.
+		const forked = machine(
+			[
+				[400, 400, false],
+				[500, 500, false],
+			],
+			600,
+		);
+		forked.when(() => {
+			forked.clone(601, 601, true);
+			forked.end(400, 400);
+		});
+		expect(await companyComputerNamespaceInUse(forked.scan)).toBe(true);
+		expect(forked.looked).toEqual(["400/400", "500/500", "500/500", "601/601"]);
+	});
+
+	it("looks at the threads of a process whose leader ended before them", async () => {
+		// The leader is a zombie while its threads live: its place reads as gone, and its threads are each looked at.
+		const workers = machine(
+			[
+				[400, 400, undefined],
+				[400, 401, false],
+				[400, 402, true],
+			],
+			600,
+		);
+		expect(await companyComputerNamespaceInUse(workers.scan)).toBe(true);
+		expect(workers.looked).toEqual(["400/401", "400/402"]);
+		// A zombie leader holds no namespace, and asks for no new list of its threads: those listed were looked at.
+		const zombie = machine(
+			[
+				[400, 400, undefined],
+				[400, 401, false],
+			],
+			600,
+		);
+		expect(await companyComputerNamespaceInUse(zombie.scan)).toBe(false);
+		expect(zombie.looked).toEqual(["400/401", "400/400"]);
+	});
+
+	it("lists a process's threads again while one ended as they were listed, looks at the leader's place after an exec, and counts again after a count of 0", async () => {
+		// The kernel's list reached 601 as it ended (`next_tid`): neither 601 nor 602 after it is on the list, which holds
+		// only the zombie leader. The count went from 3 to 2 meanwhile, and the next list has 602.
+		const stopped = machine(
+			[
+				[400, 400, undefined],
+				[400, 601, false],
+				[400, 602, true],
+			],
+			700,
+		);
+		stopped.listing(() => {
+			stopped.end(400, 601);
+			return [400];
+		});
+		expect(await companyComputerNamespaceInUse(stopped.scan)).toBe(true);
+		expect(stopped.looked).toEqual(["400/602"]);
+		expect(stopped.lists()).toBe(2);
+		// The same with 602 outside: once the list is whole, the process is outside.
+		const outside = machine(
+			[
+				[400, 400, undefined],
+				[400, 601, false],
+				[400, 602, false],
+			],
+			700,
+		);
+		outside.listing(() => {
+			outside.end(400, 601);
+			return [400];
+		});
+		expect(await companyComputerNamespaceInUse(outside.scan)).toBe(false);
+		expect(outside.looked).toEqual(["400/602", "400/400"]);
+		expect(outside.lists()).toBe(2);
+		// A list shorter than the count, though the count did not change: listed again.
+		const short = machine(
+			[
+				[400, 400, false],
+				[400, 601, true],
+			],
+			700,
+		);
+		short.listing(() => [400]);
+		expect(await companyComputerNamespaceInUse(short.scan)).toBe(true);
+		expect(short.looked).toEqual(["400/601"]);
+		expect(short.lists()).toBe(2);
+		// 601 made 701 after the list and ended before it was looked at: it reads as gone, and asks for no new list; the
+		// pass was not quiet, and the next one has 701.
+		const replaced = machine(
+			[
+				[400, 400, undefined],
+				[400, 601, true],
+			],
+			700,
+		);
+		replaced.when(() => {
+			replaced.clone(400, 701, true);
+			replaced.end(400, 601);
+		});
+		expect(await companyComputerNamespaceInUse(replaced.scan)).toBe(true);
+		expect(replaced.looked).toEqual(["400/601", "400/400", "400/701"]);
+		// 601 made 701 after the list and lives on: the pass was not quiet, and the next one has 701.
+		const added = machine(
+			[
+				[400, 400, false],
+				[400, 601, false],
+			],
+			700,
+		);
+		added.when(() => added.clone(400, 701, true));
+		expect(await companyComputerNamespaceInUse(added.scan)).toBe(true);
+		expect(added.looked).toEqual(["400/601", "400/400", "400/601", "400/701"]);
+		// 601 execs before it is looked at: it takes the process's id without a new pid, and its old one reads as gone.
+		const exec = machine(
+			[
+				[400, 400, false],
+				[400, 601, true],
+			],
+			700,
+		);
+		exec.when(() => {
+			exec.end(400, 601);
+			exec.set(400, 400, true);
+		});
+		expect(await companyComputerNamespaceInUse(exec.scan)).toBe(true);
+		expect(exec.looked).toEqual(["400/601", "400/400"]);
+		// 601 execs while the first count is read: the read found the old leader, which the exec let go of before the
+		// read took its count, so it says 0. That is no answer, and the count is read again: 601 is in the leader's place.
+		const released = machine(
+			[
+				[400, 400, false],
+				[400, 601, true],
+			],
+			700,
+		);
+		released.counting(() => {
+			released.end(400, 601);
+			released.set(400, 400, true);
+			return 0;
+		});
+		expect(await companyComputerNamespaceInUse(released.scan)).toBe(true);
+		expect(released.looked).toEqual(["400/400"]);
+		expect(released.lists()).toBe(1);
+	});
+
+	it("answers in use while tasks keep being made or ending, and no answer when a thread cannot be looked at", async () => {
+		let last = 1000;
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => last++,
+				processes: async () => [10],
+				count: async () => 1,
+				threads: async () => [10],
+				inside: async () => false,
+			}),
+		).toBe(true);
+		// A process whose count changes while each list is made is never listed whole, and never looked at.
+		let count = 2;
+		let lists = 0;
+		const looks: number[] = [];
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				processes: async () => [10],
+				count: async () => count++,
+				async threads() {
+					lists++;
+					return [10, 11];
+				},
+				async inside(_group, thread) {
+					looks.push(thread);
+					return false;
+				},
+			}),
+		).toBe(true);
+		expect(lists).toBe(50);
+		expect(looks).toEqual([]);
+		// A process whose count reads 0 each time is never listed.
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				processes: async () => [10],
+				count: async () => 0,
+				threads: async () => {
+					throw new Error("listed");
+				},
+				inside: async () => false,
+			}),
+		).toBe(true);
+		// A process gone before its count is read holds no task.
+		expect(
+			await companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				processes: async () => [10],
+				count: async () => undefined,
+				threads: async () => {
+					throw new Error("listed");
+				},
+				inside: async () => true,
+			}),
+		).toBe(false);
+		await expect(
+			companyComputerNamespaceInUse({
+				lastPid: async () => 5,
+				processes: async () => [4],
+				count: async () => 1,
+				threads: async () => [4],
+				inside: async () => {
+					throw new Error("EACCES");
+				},
+			}),
+		).rejects.toThrow("EACCES");
+	});
+
+	it.runIf(process.platform === "linux")(
+		"reads a process's thread count from its status, whatever its name",
+		async () => {
+			expect(await companyComputerThreadCount(process.pid)).toBeGreaterThan(1);
+			expect(await companyComputerThreadCount(4194305)).toBeUndefined();
+			/** The count of a bash that named itself these bytes (the printf escapes for them). */
+			const named = async (escaped: string, name: Buffer) => {
+				const child = spawn("/bin/bash", ["-c", `printf "${escaped}" > /proc/$$/comm && read -r _`], {
+					stdio: ["pipe", "ignore", "ignore"],
+				});
+				try {
+					const comm = Buffer.concat([name, Buffer.from("\n")]);
+					for (let wait = 0; !(await readFile(`/proc/${child.pid}/comm`)).equals(comm); wait++) {
+						expect(wait).toBeLessThan(100);
+						await delay(50);
+					}
+					return await companyComputerThreadCount(child.pid as number);
+				} finally {
+					child.kill("SIGKILL");
+				}
+			};
+			// Bytes that are not UTF-8.
+			expect(await named("\\377\\376", Buffer.from([0xff, 0xfe]))).toBe(1);
+			// A name that reads as a count line where a carriage return ends a line: the kernel does not escape it.
+			expect(await named("\\rThreads:\\t0\\r", Buffer.from("\rThreads:\t0\r", "latin1"))).toBe(1);
+		},
+	);
+});
+
 describe("the folder helper's machine", () => {
 	it("reads the mount table and each program's state", () => {
 		expect(
@@ -574,6 +1387,9 @@ describe("the folder helper's machine", () => {
 			),
 		).toEqual([
 			{
+				id: 36,
+				parent: 35,
+				root: "/",
 				mountpoint: "/run/a b/company",
 				optional: ["master:1", "shared:7"],
 				fstype: "fuse.qorpera",
@@ -583,6 +1399,27 @@ describe("the folder helper's machine", () => {
 		expect(() => parseCompanyComputerMountinfo("36 35 0:51 / /run/a rw\n")).toThrow(
 			"COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED",
 		);
+		// The folder program's mount as root makes it (#1007's evidence): plain `fuse`, its subtype dropped.
+		const company = "/run/qorpera-folder/mounts/desktop-a/company";
+		const real = `373 657 0:67 / ${company} rw,nosuid,nodev,noatime master:380 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other\n`;
+		expect(companyComputerFolderServed(parseCompanyComputerMountinfo(real), company)).toBe(true);
+		expect(
+			companyComputerFolderServed(
+				parseCompanyComputerMountinfo(real.replace(" - fuse ", " - fuse.qorpera ")),
+				company,
+			),
+		).toBe(true);
+		// Another FUSE file system, or anything mounted over the program's, is not the folder.
+		expect(
+			companyComputerFolderServed(parseCompanyComputerMountinfo(real.replace("qorpera-company", "other")), company),
+		).toBe(false);
+		expect(
+			companyComputerFolderServed(
+				parseCompanyComputerMountinfo(`${real}374 373 0:68 / ${company} rw - tmpfs tmpfs rw\n`),
+				company,
+			),
+		).toBe(false);
+		expect(companyComputerFolderServed(parseCompanyComputerMountinfo(real), `${company}/x`)).toBe(false);
 		expect(companyComputerFolderProgram(ACTIVE)).toBe("running");
 		expect(companyComputerFolderProgram({ ...INACTIVE, active: "activating" })).toBe("restarting");
 		expect(companyComputerFolderProgram(CLOSED)).toBe("closed");
@@ -603,6 +1440,11 @@ describe("the folder helper's machine", () => {
 		expect(lines).toContain(`ConditionPathExists=${template(at.view)}`);
 		expect(lines).toContain(
 			`ExecStart=${COMPANY_COMPUTER_FOLDER_PROGRAM} mount --view-file ${template(at.view)} --mountpoint ${template(at.mountpoint)} --state-dir ${template(at.state)} --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@`,
+		);
+		// Before each start too: a kill of the whole cgroup kills the stop-post umount with it (Q3, #1084).
+		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeGreaterThan(-1);
+		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeLessThan(
+			lines.findIndex((line) => line.startsWith("ExecStart=")),
 		);
 		expect(lines).toContain(`ExecStopPost=-/usr/bin/umount -l ${template(at.mountpoint)}`);
 		expect(lines).toContain("RestartPreventExitStatus=3");

@@ -2,7 +2,7 @@
 
 Machines are virtual machines that agents start themselves, for tests, builds, Docker stacks and long jobs (Jonas, 2026-09-28). The word follows the contract's wording: a computer is one agent's screen, and a machine is a VM. The coding machines and the company machines that host computers are separate things. So is this one.
 
-An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run as root, and Docker with Compose, Node, Python, Git and build tools are installed. A machine belongs to the company. Every member sees it and may stop, wake or delete it. Any agent of the company may use it. It holds no credential, it can reach the internet but none of our networks, and nothing reaches it from outside. Machines run on our own nodes only.
+An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run as root, and Docker with Compose, Node, Python, Git, build tools and the toolbox every Qorpera machine has are installed. A machine belongs to the company. Every member sees it and may stop, wake or delete it. Any agent of the company may use it. It holds no credential, it can reach the internet but none of our networks, and nothing reaches it from outside. Machines run on our own nodes only.
 
 ## What runs where
 
@@ -12,7 +12,7 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 | `machine_*` tools (`packages/runtime/src/cloud-machine-tools.ts`) | the identity host, in a company conversation and in its agents' workers | start, run, read, cancel, stop, delete, list (a worker's start and read can wait) |
 | Command route `/v1/machine-commands/*` (`cloud-machine-command-http.ts`) | the coding executor's ingress and peer listener | SQL authority, local execution or forwarding to the machine's node |
 | Machine workload (`packages/runner-orchestrator/src/company-machine-host.ts`) | the coding executor on each node, a pass every 10 s | admit waiting machines; create, start, stop, delete them under the coding machine's journal (`company-machines/` on the NAS control path); keep each guest's lease; record how commands ended, which were busy, and busy work outside them |
-| Guest helper (`packages/runtime/src/cloud-machine-guest.ts`) | `/opt/qorpera-machine/cloud-machine-guest.mjs` in the machine | commands as transient systemd units under `qorpera-machine.slice`, their retained intent and bounded logs on the machine's disk, and the watchdog |
+| Guest helper (`packages/runtime/src/cloud-machine-guest.ts`) | `/opt/qorpera-machine/cloud-machine-guest.mjs` in the machine | commands as transient systemd units under `qorpera-machine.slice`, their retained intent and bounded logs on the machine's disk, the watchdog, and `folder-mount`, which mounts the company folder at `/company` from a view read on its stdin |
 
 ### Lifetime
 
@@ -64,7 +64,8 @@ Nested KVM also works inside a machine (`/dev/kvm`, `svm` on every CPU). Docker'
 The steps below need root on the node and a maintenance window. The coordinator runs them in a release cut.
 
 1. **Package the guest** from a checkout whose `npm run check` passes:
-   `node scripts/package-machine-guest.mjs --out /task-owned/machine-guest`. The helper must stay under 64 KiB, because the executor re-reads it to check its pin.
+   `node scripts/package-machine-guest.mjs --out /task-owned/machine-guest --folder-program <built qorpera-folder>`. The helper must stay under 64 KiB, because the executor re-reads it to check its pin.
+   - The folder program is the build `deploy/folder-service/folder-program-linux-x64.json` records (`node scripts/build-folder-program.mjs`). The package refuses any other bytes, and the image script pins the same sha-256.
 2. **Create the project** on the node, with the agent exit installed and healthy (`deploy/agent-exit/README.md`, "Switching a node on"):
    - `lxc project create machines -c features.images=false -c features.profiles=false`
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
@@ -77,6 +78,8 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - The builder joins the build space's network, not the agents' bridge, to fetch packages and Node.js. It holds no credential and is deleted when the build ends.
    - The builder NIC's IPv6 filtering needs the `br_netfilter` module, which nodes load at bootstrap (`deploy/first-node/bootstrap-lxd-host.sh`).
    - Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
+   - The image has the toolbox every Qorpera machine has (deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md): npm, npx, `tsc`, `tsx`, pip, uv, mise, ripgrep, fd, jq, sqlite3, curl, zip, unzip and LibreOffice (without its desktop parts), from apt except uv and mise (their releases, pinned by sha-256 in the script; mise installs any other language or version in the user's home, without root) and `tsc` and `tsx` (npm, pinned by version). The script's own checks run every toolbox command with `--version` (unzip has none: `-v`).
+   - It also has `fuse3`, the folder program at `/opt/qorpera-folder/qorpera-folder` and its unit `qorpera-machine-folder.service`, and an empty `/company`. Nothing starts the unit at boot: the guest helper's `folder-mount` starts it once the host hands the machine a view, and starts it again on a newer view, which replaces the one before (F3 step 6, deploy/first-node/RUNTIME-FOLDER-TEST-MACHINES.md).
 4. **Compute the policy.**
    `node scripts/machine-provider-policy.mjs image-build.json <executor owner> <node id> <machine-id sha256> <coding providerId> <max cpus> <max memory GiB> <machine disk GiB> machines <pool> qagent0`
    - The provider id must be the coding executor's `vmPolicy.providerId`, because command routing reuses the coding peers.

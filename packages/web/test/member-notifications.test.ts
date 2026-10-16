@@ -292,6 +292,76 @@ describe("company notices member read", () => {
 			await expect(f.client.listNotifications(), JSON.stringify(bad)).rejects.toThrow("invalid response");
 		}
 	});
+	it("reads an area's supervision that ended (20260930371000), and fails the read for a bad one", async () => {
+		const ended = (subject: Record<string, unknown> = {}, n = 100) => ({
+			...full,
+			notification_id: id(n),
+			kind: "interface_supervision_ended",
+			subject: {
+				schema: "qorpera.member-notification.interface-supervision-ended/v1",
+				supervisionId: id(80),
+				tableId: id(81),
+				key: ["Sales"],
+				supervisorUserId: userB.id,
+				reason: "withdrawn",
+				byUserId: userB.id,
+				at: timestamp,
+				...subject,
+			},
+		});
+		let f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json([
+				ended(),
+				ended({ key: null, reason: "left", byUserId: null, private: "hidden" }, 101),
+				ended({ key: [2, true, null, ["a", "b"]], reason: "gone" }, 102),
+			]),
+		);
+		const [withdrawn, left, gone] = await f.client.listNotifications();
+		expect(withdrawn).toMatchObject({ notificationId: id(100), kind: "interface_supervision_ended" });
+		expect(withdrawn!.subject).toEqual({
+			schema: "qorpera.member-notification.interface-supervision-ended/v1",
+			supervisionId: id(80),
+			tableId: id(81),
+			key: ["Sales"],
+			supervisorUserId: userB.id,
+			reason: "withdrawn",
+			byUserId: userB.id,
+			at: timestamp,
+		});
+		// A key too long to carry is null, and a leaving names no member; nothing beyond the published fields is kept.
+		expect(left!.subject).toEqual({
+			schema: "qorpera.member-notification.interface-supervision-ended/v1",
+			supervisionId: id(80),
+			tableId: id(81),
+			key: null,
+			supervisorUserId: userB.id,
+			reason: "left",
+			byUserId: null,
+			at: timestamp,
+		});
+		expect(gone!.subject).toMatchObject({ key: [2, true, null, ["a", "b"]], reason: "gone" });
+		for (const bad of [
+			ended({ schema: undefined }),
+			ended({ schema: "qorpera.member-notification.interface-supervision-ended/v2" }),
+			{ ...ended(), kind: "routine_payer_changed" },
+			ended({ supervisionId: "supervision" }),
+			ended({ tableId: null }),
+			ended({ key: [] }),
+			ended({ key: "Sales" }),
+			ended({ key: [{ name: "Sales" }] }),
+			ended({ key: Array.from({ length: 65 }, () => "a") }),
+			ended({ key: [[1]] }),
+			ended({ supervisorUserId: null }),
+			ended({ reason: "ended" }),
+			ended({ byUserId: "someone" }),
+			ended({ at: "yesterday" }),
+		]) {
+			f = setup();
+			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));
+			await expect(f.client.listNotifications(), JSON.stringify(bad)).rejects.toThrow("invalid response");
+		}
+	});
 	it("fails the read for a retired notice from another company, under another kind or envelope", async () => {
 		const pause = {
 			...full,

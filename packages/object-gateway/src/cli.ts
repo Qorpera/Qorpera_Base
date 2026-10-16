@@ -9,9 +9,9 @@ import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
+import { MemoryMessageEraser } from "./memory-message-eraser.ts";
 import { migrateLegacyObjects } from "./migration.ts";
 import { FileSystemObjectStore } from "./object-store.ts";
-import { ObjectReadLeases } from "./read-lease.ts";
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
 import { SupabaseObjectAuthority } from "./supabase-authority.ts";
@@ -30,18 +30,15 @@ function port(environment: NodeJS.ProcessEnv): number {
 	return value;
 }
 
-const readLeaseSeconds = Number(process.env.QORPERA_OBJECT_READ_LEASE_SECONDS ?? "0");
 const authority = new SupabaseObjectAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
-	readLeaseSeconds,
 });
 const store = new FileSystemObjectStore(resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")));
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const replication = new ObjectGatewayReplication(journal, store, authority);
 const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
-const readLeases = readLeaseSeconds > 0 ? new ObjectReadLeases(journal) : undefined;
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -78,6 +75,20 @@ const codingResults =
 				replication,
 			})
 		: undefined;
+// The memory message eraser (M3): off unless QORPERA_MEMORY_MESSAGE_ERASER=1; the coordinator turns it on. Its own
+// database client and its own loop, as the connection-file writer's.
+const memoryErase =
+	process.env.QORPERA_MEMORY_MESSAGE_ERASER === "1"
+		? new MemoryMessageEraser({
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
+				store,
+				replication,
+			})
+		: undefined;
 // Company creation's worker (P14b): off unless QORPERA_COMPANY_FOLDER_CREATOR=1; the coordinator turns it on. Its own
 // database client and its own loop, as the connection-file writer's.
 const companyCreation =
@@ -100,10 +111,8 @@ const handler = createObjectGatewayHandler({
 	store,
 	authority,
 	controlToken: required(process.env, "QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN"),
-	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 	replication,
 	folderGc,
-	memberObjects: authority,
 	memberFolderObjects: authority,
 	// Members' folder commits (P34a) on their own database client, as the platform's writers: a slow commit never
 	// opens the circuit members' reads and file requests share.
@@ -140,9 +149,6 @@ const handler = createObjectGatewayHandler({
 				},
 			}
 		: {}),
-	...(readLeases
-		? { readLeases, revocationToken: required(process.env, "QORPERA_OBJECT_GATEWAY_REVOCATION_TOKEN") }
-		: {}),
 });
 if (process.argv[2] === "migrate") {
 	const migrated = await migrateLegacyObjects(authority, store);
@@ -163,7 +169,6 @@ if (process.argv[2] === "migrate") {
 					.probe()
 					.then(() => folderGc.recover())
 					.then(() => replication.reconcile()),
-				readLeases?.prune(),
 			]);
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
@@ -209,6 +214,23 @@ if (process.argv[2] === "migrate") {
 	const codingResultsWrites = setInterval(() => {
 		void writeCodingResults();
 	}, 5_000);
+	// The memory message eraser's own loop, every 5 s, as the coding results writer's: one pass at a time, at most ten
+	// erases and 30 s per tick.
+	let erasing = false;
+	const eraseMemoryMessages = async (): Promise<void> => {
+		if (!memoryErase || erasing) return;
+		erasing = true;
+		try {
+			await memoryErase.eraseDue(10, AbortSignal.timeout(30_000));
+		} catch {
+			process.stderr.write("Memory message eraser requires operator attention\n");
+		} finally {
+			erasing = false;
+		}
+	};
+	const memoryErasures = setInterval(() => {
+		void eraseMemoryMessages();
+	}, 5_000);
 	// Company creation's own loop: one drain at a time, at most five companies and 120 s per tick.
 	let creating = false;
 	const createCompanies = async (): Promise<void> => {
@@ -234,6 +256,7 @@ if (process.argv[2] === "migrate") {
 			clearInterval(maintenance);
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);
+			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			server.close(() => process.exit(0));
 		});

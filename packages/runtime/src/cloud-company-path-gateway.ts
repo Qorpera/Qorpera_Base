@@ -51,6 +51,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_read"
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
+	| "qorpera_folder_memory_commit"
+	| "qorpera_memory_run_log_place"
+	| "qorpera_memory_step_narrow"
+	| "qorpera_memory_step_hashes"
 	| "qorpera_folder_record_release"
 	| "qorpera_folder_run_view_open"
 	// Staging a folder-v2 file's bytes (core C1d).
@@ -138,6 +142,20 @@ function closed(value: unknown, keys: readonly string[], optional: readonly stri
 	)
 		throw new Error("Invalid Company File data");
 	return value as Record<string, unknown>;
+}
+
+/** The hash of the image a company_read answer showed, as its text names it (`kind: "image"`), or undefined. */
+function shownImageSha256(text: unknown): string | undefined {
+	if (typeof text !== "string") return undefined;
+	let answer: unknown;
+	try {
+		answer = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (!answer || typeof answer !== "object" || Array.isArray(answer)) return undefined;
+	const { kind, imageSha256 } = answer as { kind?: unknown; imageSha256?: unknown };
+	return kind === "image" && typeof imageSha256 === "string" && SHA.test(imageSha256) ? imageSha256 : undefined;
 }
 
 function version(value: unknown, nullable = false): string | null {
@@ -282,8 +300,16 @@ export class CloudCompanyPathGateway {
 					content?: { sha256?: string; text?: string; includedBytes?: number };
 				};
 				const capture = output.capture ? parseCompanyComputerScreenshotAsset(output.capture) : undefined;
+				// A folder image company_read showed is bound to its read: the released text names the image's hash.
+				const shown =
+					!capture &&
+					output.imageSha256 !== undefined &&
+					envelope.status === "ok" &&
+					envelope.provenance?.tool === "company_read" &&
+					typeof envelope.provenance.companyReadId === "string" &&
+					shownImageSha256(envelope.content?.text) === output.imageSha256;
 				if (
-					output.imageSha256 !== capture?.sha256 ||
+					(output.imageSha256 !== capture?.sha256 && !shown) ||
 					(capture &&
 						(envelope.status !== "ok" ||
 							envelope.provenance?.tool !== "computer_screenshot" ||
