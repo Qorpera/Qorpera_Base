@@ -98,12 +98,14 @@ end $$;
 
 
 -- A command started by run v outlives it: the next run's action on the screen takes in what the command's view
--- released. The action's retry replays, and each new action takes in what the view released since, also after the
--- command ended and its final closed the view. The reading run gets the read set and the records.
+-- released. The action's retry replays, and each new action checks the view's whole read set but copies only what the
+-- view released since (20260930498000), also after the command ended and its final closed the view. The reading run
+-- gets the read set and the records; a run that reads first after the close gets them all.
 do $$
 declare
 	v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
-	c uuid; s jsonb; k uuid; k2 uuid; k3 uuid;
+	v3 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	c uuid; s jsonb; k uuid; k2 uuid; k3 uuid; k4 uuid;
 begin
 	perform pg_temp.hold(v);
 	c := pg_temp.command(v);
@@ -122,6 +124,11 @@ begin
 	perform pg_temp.release(s, 'rules/tone.txt');
 	k2 := pg_temp.action(v2);
 	perform pg_temp.expect_inherit(pg_temp.inherit(c, k2), k2, s, 2, false);
+	if not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.run_id = (v2 ->> 'runId')::uuid and rec.release_id = k2 and x ->> 'path' = 'rules/tone.txt')
+		or exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.run_id = (v2 ->> 'runId')::uuid and rec.release_id = k2 and x ->> 'path' = 'shared/a.txt') then
+		raise exception 'A new action copies only what the view released since'; end if;
 	perform pg_temp.expect_inherit(pg_temp.inherit(c, k), k, s, 1, true);
 	perform pg_temp.ended(c);
 	perform pg_temp.final(s, 'outlived-final', '[]');
@@ -129,8 +136,13 @@ begin
 		raise exception 'The final closes the view'; end if;
 	k3 := pg_temp.action(v2);
 	perform pg_temp.expect_inherit(pg_temp.inherit(c, k3), k3, s, 2, false);
-	if not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
-		where rec.run_id = (v2 ->> 'runId')::uuid and rec.release_id = k3 and x ->> 'path' = 'rules/tone.txt') then
+	if exists (select 1 from public.qorpera_folder_run_read_records where run_id = (v2 ->> 'runId')::uuid and release_id = k3) then
+		raise exception 'An action with nothing new copies nothing'; end if;
+	perform pg_temp.hold(v3);
+	k4 := pg_temp.action(v3);
+	perform pg_temp.expect_inherit(pg_temp.inherit(c, k4), k4, s, 2, false);
+	if (select count(*) from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+		where rec.run_id = (v3 ->> 'runId')::uuid and rec.release_id = k4 and x ->> 'path' in ('shared/a.txt', 'rules/tone.txt')) <> 2 then
 		raise exception 'A closed view''s reads are taken in'; end if;
 end $$;
 

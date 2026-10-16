@@ -76,6 +76,7 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_folder_view_open",
 	"qorpera_folder_view_close",
 	"qorpera_retire_company_machine",
+	"qorpera_folder_test_machine_inherit_reads",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -181,6 +182,9 @@ interface BootFolder {
 	held: boolean;
 	/** Since when the boot's own view is missing from the service's answers. */
 	missing?: number;
+	/** A run's take-in of the machine's reads was refused as no longer readable (#inherit): the boot's output stays
+	 * held, and the next pass retires its placement. */
+	unreadable?: boolean;
 	/** The windows this process opened for the boot's commands, until their command ends: the service keeps them in
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
@@ -566,7 +570,11 @@ export class LxdCompanyMachineHost {
 		// Checked again once the look's windows closed, as a read is after its boundary (#ended).
 		if (this.#ended(e.placementId, bootId)) return { placementId: e.placementId, step: "commands", state: "done" };
 		await this.#record(e, bootId, look, signal);
-		const watched = watching ? await this.#watch(e, watching, look.boundary, signal) : undefined;
+		// A run's take-in the core refused as no longer readable (#inherit) retires the placement, whatever the boot's
+		// folder: the disk keeps what its views were served.
+		let watched: string | undefined;
+		if (f?.unreadable) watched = await this.#retire(e, f, "unreadable", signal);
+		else if (watching) watched = await this.#watch(e, watching, look.boundary, signal);
 		const said = watched ?? settled;
 		return {
 			placementId: e.placementId,
@@ -741,7 +749,8 @@ export class LxdCompanyMachineHost {
 		f.state = "open";
 		return `FOLDER_FENCED:${code}`;
 	}
-	/** A disk that may never be proven (6d-2): a new disk the open refuses, or reads on its view the core cannot read.
+	/** A disk that may never be proven (6d-2): a new disk the open refuses, or reads on its view the core cannot read (a
+	 * boundary's, or a run's take-in of them, 6d-3b).
 	 * SQL checks the cause again: it retires the placement (its commands end lost, and admission starts the machine on a
 	 * new disk once this one is stopped and removed), or keeps a disk that may still get a view, as the boot it is. A
 	 * boot SQL no longer runs (stale) or a retired placement only waits for its stop: its starts are refused. */
@@ -1326,16 +1335,58 @@ export class LxdCompanyMachineHost {
 		// and a command still running with nothing printed has nothing to let out. Nothing leaves a boot whose folder
 		// ended (6d-2), whatever a boundary answers (a crashed service's successor releases reads it never served) and
 		// whatever came of its folder: its guest may still run, its reboot not taken yet. A boot can end while its guest
-		// answers or the boundary is out, so it is checked after each. Only a boot without /company (none) skips this.
+		// answers or the boundary is out, so it is checked after each. Only a boot without /company (none) skips the
+		// boundary. Then the run that gets the output takes in the reads of the machine's views (6d-3b, "Reads" rule 3),
+		// on a boot without /company too: the disk keeps what any boot of it was served.
 		const ended = () => !!authority.bootId && this.#ended(authority.placementId, authority.bootId);
 		const f = this.#folders.get(authority.placementId);
-		if (!ended() && f?.bootId === authority.bootId && f?.state === "none") return receipt;
+		const boot = f?.bootId === authority.bootId ? f : undefined;
+		const none = boot?.state === "none";
 		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
-		if (request.action === "start" || ended() || (receipt.state === "running" && receipt.log.totalBytes === 0))
+		if (
+			(request.action === "start" && !none) ||
+			ended() ||
+			boot?.unreadable ||
+			(receipt.state === "running" && receipt.log.totalBytes === 0)
+		)
 			return held(receipt, at);
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-		const answer = await folder.boundary(authority.placementId, [], checked).catch(() => undefined);
-		return answer?.reads === "released" && !ended() ? receipt : held(receipt, at);
+		if (!none) {
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
+			const answer = await folder.boundary(authority.placementId, [], checked).catch(() => undefined);
+			if (answer?.reads !== "released" || ended()) return held(receipt, at);
+		}
+		return (await this.#inherit(authority, boot, signal)) && !ended() ? receipt : held(receipt, at);
+	}
+	/** The run a command's output goes to takes in the reads of its machine's newest view first (6d-3b): SQL builds the
+	 * run's actor, and answers a placement that never had a view with nothing to take in. Each take-in has its own id:
+	 * SQL checks the view's whole read set for the run each time, and copies only what the run has not taken in from
+	 * that view (20260930498000). Any failure holds the output. The core's refusal of a read it
+	 * can no longer read ("qorpera.test-machine/unreadable") marks the boot, which holds every later output of it, and
+	 * the next pass retires the placement (rule 5). */
+	async #inherit(
+		authority: CompanyMachineCommandAuthority,
+		boot: BootFolder | undefined,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		const { placementId, bootId, runId } = authority;
+		if (typeof bootId !== "string" || typeof runId !== "string" || !UUID.test(bootId) || !UUID.test(runId))
+			return false;
+		const inheritId = randomUUID();
+		try {
+			const taken = record(
+				await this.#call(
+					"qorpera_folder_test_machine_inherit_reads",
+					{ p_placement_id: placementId, p_boot_id: bootId, p_run_id: runId, p_inherit_id: inheritId },
+					signal,
+				),
+				"COMPANY_MACHINE_INHERIT_INVALID",
+			);
+			return taken.schema === "qorpera.folder-inherit/v1" && taken.inheritId === inheritId;
+		} catch (error) {
+			if (boot && error instanceof CodingControlRefused && error.detail === "qorpera.test-machine/unreadable")
+				boot.unreadable = true;
+			return false;
+		}
 	}
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s
 	 * (the gateway's request is bounded at 30 s): a boot still unsettled refuses the start, which so never runs

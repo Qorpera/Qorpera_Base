@@ -149,7 +149,7 @@ describe("dedicated coding executor control", () => {
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}
 	});
-	it("tells a folder view open's 42501 refusal apart, with its detail, and nothing else's (F3 6d)", async () => {
+	it("tells a view open's and a take-in's 42501 refusal apart, with its detail, and no other's (F3 6d)", async () => {
 		const refusal = {
 			code: "42501",
 			details: "qorpera.test-machine/new-disk",
@@ -160,6 +160,8 @@ describe("dedicated coding executor control", () => {
 			new Response(body, { status, headers: { "content-type": "application/json" } });
 		const body = (change: Record<string, unknown> = {}) => JSON.stringify({ ...refusal, ...change });
 		const open = "qorpera_folder_view_open";
+		const inherit = "qorpera_folder_test_machine_inherit_reads";
+		const unreadable = body({ details: "qorpera.test-machine/unreadable", message: "A read is no longer readable" });
 		const refused = "CODING_CONTROL_REFUSED";
 		const unconfirmed = "CODING_CONTROL_UNCONFIRMED";
 		const cases: [method: string, status: number, body: string, expected: string, detail?: string | null][] = [
@@ -175,6 +177,11 @@ describe("dedicated coding executor control", () => {
 			[open, 403, "42501", unconfirmed],
 			// Still busy, as every call.
 			[open, 500, body({ code: "55P03" }), "CODING_CONTROL_BUSY"],
+			// A test machine's take-in of reads, refused as no longer readable (6d-3b), and only its 42501.
+			[inherit, 403, unreadable, refused, "qorpera.test-machine/unreadable"],
+			[inherit, 403, body({ details: null, message: "Run is unavailable" }), refused, null],
+			[inherit, 400, body({ code: "22023" }), unconfirmed],
+			[inherit, 500, unreadable, unconfirmed],
 			// Every other call's refusal stays unconfirmed.
 			["qorpera_folder_view_close", 403, body(), unconfirmed],
 			["qorpera_mark_company_machine_running", 403, body(), unconfirmed],
