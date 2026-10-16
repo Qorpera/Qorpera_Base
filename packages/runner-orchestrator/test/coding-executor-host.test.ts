@@ -2639,18 +2639,62 @@ describe("a coding session on the folder model", () => {
 		expect(waited).toHaveBeenCalledTimes(2);
 		expect(f.views.attach).toHaveBeenCalledTimes(2);
 	});
-	it("fails the turn before its attach when the machine's LXD agent drops out during the wait", async () => {
+	it("waits for the boot again when a wait ends without an answer, and attaches once it has finished", async () => {
+		// LXD's own wait for the exec ends at its operation limit (120 s by default), and an agent just up can fail an
+		// exec before it runs.
+		const f = await folderFixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		const unanswered = [new Error("LXD operation failed"), new Error("LXD instance agent not running")];
+		const waited = vi.fn();
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			waited(command);
+			const failure = unanswered.shift();
+			if (failure) throw failure;
+		});
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(waited).toHaveBeenCalledTimes(3);
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(1);
+		expect(f.views.attach).toHaveBeenCalledTimes(1);
+		await nextTurn(f, f.host, 2);
+		expect(waited).toHaveBeenCalledTimes(3);
+	});
+	it("fails the turn before its attach when the wait for the boot fails otherwise", async () => {
 		const f = await folderFixture();
 		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
 			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
-			throw new Error("LXD instance agent not running");
+			throw new Error("LXD: Instance is not running");
 		});
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
-			/^LXD instance agent not running$/,
+			/^LXD: Instance is not running$/,
 		);
 		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
 		expect(f.views.attach).not.toHaveBeenCalled();
+	});
+	it("checks the machine's agent again when an exec's LXD operation failed before it ran, up to the limit", async () => {
+		// Live 2026-10-16 (P3 phase A run 5): just after the guest's lxd-agent came up, LXD timed out connecting to it
+		// ("Timed out waiting for websockets to connect") and the turn failed before its attach.
+		const f = await folderFixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let failures = 1;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[0] === "/usr/bin/true" && failures-- > 0) throw new Error("LXD operation failed");
+			return fallback(project, name, command, signal);
+		});
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.execs()).toEqual([["/usr/bin/true"], ["/usr/bin/true"], SETTLED]);
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(1);
+		// One that keeps failing is given up at the limit.
+		const g = await folderFixture();
+		vi.mocked(g.client.execInstance).mockRejectedValue(new Error("LXD operation failed"));
+		const impatient = new LxdCodingExecutorHost({ ...g.options, folder: g.folder, guestReadyTimeoutMs: 50 });
+		const started = performance.now();
+		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
+			/^CODING_HOST_GUEST_NOT_READY$/,
+		);
+		expect(performance.now() - started).toBeLessThan(5000);
+		expect(g.calls("qorpera_attach_coding_session")).toEqual([]);
 	});
 	it("attaches a session under its view's attachment after the executor restarted, while the machine's boot is the same", async () => {
 		const f = await folderFixture();
