@@ -555,6 +555,8 @@ export class LxdCompanyMachineHost {
 		const watching = f?.state === "open" && settled === undefined ? f : undefined;
 		if (watching) await this.#reopen(e, watching, signal);
 		const look = await this.#ends(e, bootId, () => this.#look(e, bootId, signal), signal);
+		// Checked again once the look's windows closed, as a read is after its boundary (#ended).
+		if (this.#ended(e.placementId, bootId)) return { placementId: e.placementId, step: "commands", state: "done" };
 		await this.#record(e, bootId, look, signal);
 		const watched = watching ? await this.#watch(e, watching, look.boundary, signal) : undefined;
 		const said = watched ?? settled;
@@ -795,6 +797,12 @@ export class LxdCompanyMachineHost {
 			)
 			.catch(() => undefined);
 	}
+	/** A boot whose folder ended (6d-2): nothing of it is looked at or recorded any more, by a pass or its stop, and
+	 * nothing its commands printed, nor how they ended, leaves it (#command). */
+	#ended(placementId: string, bootId: string): boolean {
+		const f = this.#folders.get(placementId);
+		return f?.state === "ended" && f.bootId === bootId;
+	}
 	/** Hands a view to the guest's folder program (folder-mount, F3 6c) on exec stdin: its pass is never in an argument,
 	 * a file on this host or a log. The newest view the guest is handed wins. */
 	async #mount(
@@ -959,13 +967,17 @@ export class LxdCompanyMachineHost {
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		// A last look first, when this boot was seen before, so a machine busy again since the last pass keeps running
 		// (stop custody then refuses). A guest that does not answer still stops, once busy work seen earlier is recorded;
-		// a record SQL does not take leaves the machine running until a later pass records it.
+		// a record SQL does not take leaves the machine running until a later pass records it. A boot whose folder ended
+		// (6d-2) is neither looked at nor recorded, before its windows close or after: how its commands ended, and what
+		// they printed, stay held whatever a boundary answers (#ended).
 		const kept = this.#guests.get(e.placementId);
 		const bootId = e.bootId;
-		if (bootId !== null && kept?.bootId === bootId) {
+		const ended = () => bootId !== null && this.#ended(e.placementId, bootId);
+		if (bootId !== null && kept?.bootId === bootId && !ended()) {
 			const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
 			const looking = () => this.#look(e, bootId, checked).catch(() => ({ ended: [], busy: kept.busy }));
-			await this.#record(e, bootId, await this.#ends(e, bootId, looking, signal), signal);
+			const look = await this.#ends(e, bootId, looking, signal);
+			if (!ended()) await this.#record(e, bootId, look, signal);
 		}
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
 		try {
@@ -992,6 +1004,9 @@ export class LxdCompanyMachineHost {
 						stopping,
 					)
 					.catch(() => undefined);
+			// A boot whose folder ended lists none of its commands either: which still ran says how the others ended, so
+			// SQL ends them all lost at the power-off (#ended). Its stopped containers are the stop's own.
+			const silent = ended();
 			// With its programs stopped and the machine still up, the boot's folder ends (F3 6d): the final boundary of
 			// its views, then their close, before SQL ends the commands and the machine is powered off.
 			if (this.#options.folder && e.bootId !== null) await this.#endFolder(e, e.bootId, signal, false);
@@ -1007,7 +1022,7 @@ export class LxdCompanyMachineHost {
 				// SQL takes the snapshot before the power-off; a record it does not take leaves the machine running.
 				await this.#custody(e, "qorpera_record_company_machine_stop", signal, {
 					p_boot_id: e.bootId,
-					p_commands: stopped.commands,
+					p_commands: silent ? [] : stopped.commands,
 					p_containers: stopped.containers,
 				});
 			// What the stop ended is never measured as busy afterwards: a look after a failed power-off starts afresh.
@@ -1300,10 +1315,7 @@ export class LxdCompanyMachineHost {
 		// ended (6d-2), whatever a boundary answers (a crashed service's successor releases reads it never served): its
 		// guest may still run, its reboot not taken yet. A boot can end while its guest answers or the boundary is out,
 		// so it is checked after each.
-		const ended = () => {
-			const now = this.#folders.get(authority.placementId);
-			return now?.state === "ended" && now.bootId === authority.bootId;
-		};
+		const ended = () => !!authority.bootId && this.#ended(authority.placementId, authority.bootId);
 		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
 		if (request.action === "start" || ended() || (receipt.state === "running" && receipt.log.totalBytes === 0))
 			return held(receipt, at);

@@ -1892,6 +1892,53 @@ describe("company machine host when a test machine's folder can never be proven 
 		expect(g.service.requests.filter((request) => request.op === "boundary")).toHaveLength(2);
 	});
 
+	it("records nothing of how a boot whose folder ended ran its commands at its stop, though its reboot failed", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		const commandId = randomUUID();
+		f.running([commandId]);
+		await start(f, commandId);
+		// The guest does not take its reboot.
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			if (command.join(" ") !== "/bin/sh -c systemctl --no-block reboot") return exec(project, name, command);
+			f.order.push("reboot");
+			throw new Error("LXD instance command failed");
+		});
+		expect(await f.host.pass(f.signal)).toEqual([quiet]);
+		// The service crashed, and the next one holds no view of the boot's: it answers the machine's reads released.
+		f.service.held = [];
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			expect(await f.host.pass(f.signal)).toEqual([quiet]);
+			clock.mockReturnValue(now + 90000);
+			expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:VIEW_GONE" }]);
+		} finally {
+			clock.mockRestore();
+		}
+		// The command finishes meanwhile, and the machine is stopped before its guest boots again.
+		f.observe({ ...idle, ended: [{ commandId, state: "succeeded", exitCode: 0, outputTail: "ok" }] });
+		f.snapshot({ commands: [commandId], containers: true });
+		f.entry.stopDue = true;
+		const from = f.order.length;
+		const asked = f.service.requests.length;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		// No last look, no window close, and no end of the command recorded. Its stop lists none of the boot's commands
+		// (SQL ends them lost at the power-off), and tells its containers.
+		const after = f.order.slice(from);
+		expect(after).not.toContain("exec:observe");
+		expect(f.service.requests.slice(asked).map((request) => request.op)).toEqual(["boundary", "restarted"]);
+		expect(recorded(f)).toEqual([]);
+		expect(f.calls.find((call) => call.method === "qorpera_record_company_machine_stop")?.args).toMatchObject({
+			p_boot_id: f.boot,
+			p_commands: [],
+			p_containers: true,
+		});
+		expect(after.indexOf("sql:qorpera_suspend_company_machine")).toBeGreaterThan(after.indexOf("lxd:stop"));
+		expect(reboots(f)).toBe(1);
+	});
+
 	it("refuses a start whose boot a pass ended while its window opened, and the restart waits for it", async () => {
 		const f = await fixture({ folder: true });
 		await f.host.pass(f.signal);
