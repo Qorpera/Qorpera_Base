@@ -906,17 +906,22 @@ export class LxdCodingFolderCommandTransport {
 		budget: AbortSignal,
 		signal: AbortSignal,
 	): Promise<{ progress: Progress; outcome?: Outcome; shown: State }> {
+		// That the guest has no such command is the guest's word, as its output and its end are: none of it reaches the
+		// model until the machine's reads are released. Until then the command shows running.
+		if (!(await this.#released(budget, signal))) return { progress, shown: "running" };
 		// A start may still land.
 		if (!progress.acknowledged && !moved)
 			return { progress, shown: progress.cancelled ? "cancelled" : "unconfirmed" };
 		const state: Final =
 			!progress.acknowledged && progress.cancelled ? "cancelled" : moved ? "machine_stopped" : "unconfirmed";
-		// Past the limit nothing more would have been kept anyway.
+		// Past the limit nothing more would have been kept anyway. The bytes counted lost are passed over with the count,
+		// so a call that stops before the outcome is linked doesn't count them again.
 		const lost = progress.limitReached ? 0 : Math.max(0, progress.end - progress.raw);
-		// The guest's end is the guest's word, as its output is: the count reaches the model only once the machine's reads
-		// are released. Until then the command shows running.
-		if (lost > 0 && !(await this.#released(budget, signal))) return { progress, shown: "running" };
-		const next = await this.#note(folder, progress, { gapBytes: progress.gapBytes + lost });
+		const next = await this.#note(
+			folder,
+			progress,
+			lost ? { raw: progress.end, masked: null, gapBytes: progress.gapBytes + lost } : {},
+		);
 		const outcome: Outcome = { schema: "qorpera.coding-host-command-outcome/v1", state, exitCode: null };
 		if (!(await linkOnce(folder, "outcome.json", outcome))) throw new Error(INVALID);
 		return { progress: next, outcome, shown: state };
