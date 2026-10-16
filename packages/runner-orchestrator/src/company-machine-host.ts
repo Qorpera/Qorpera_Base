@@ -1358,8 +1358,9 @@ export class LxdCompanyMachineHost {
 		return (await this.#inherit(authority, boot, signal)) && !ended() ? receipt : held(receipt, at);
 	}
 	/** The run a command's output goes to takes in the reads of its machine's newest view first (6d-3b): SQL builds the
-	 * run's actor, and answers a placement that never had a view with nothing to take in. Each take-in has its own id,
-	 * so each read takes in what the machine read since. Any failure holds the output. The core's refusal of a read it
+	 * run's actor, and answers a placement that never had a view with nothing to take in. Each take-in has its own id:
+	 * SQL checks the view's whole read set for the run each time, and copies only what the run has not taken in from
+	 * that view (20260930498000). Any failure holds the output. The core's refusal of a read it
 	 * can no longer read ("qorpera.test-machine/unreadable") marks the boot, which holds every later output of it, and
 	 * the next pass retires the placement (rule 5). */
 	async #inherit(

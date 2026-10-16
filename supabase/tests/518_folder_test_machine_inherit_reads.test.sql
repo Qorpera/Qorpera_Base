@@ -56,6 +56,21 @@ begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 end $$;
 
+-- The take-in copies only what is new (part 2): its body carries the marker on top of the earlier patches, and the
+-- marks are the platform's alone.
+do $$
+declare d constant text := pg_get_functiondef('public.qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)'::regprocedure);
+	t constant text := 'public.qorpera_folder_run_inherited_records'; r name;
+begin
+	if strpos(d, '20260930498000') = 0 or strpos(d, '20260930446000') = 0 or strpos(d, '20260930480000') = 0 then
+		raise exception 'The take-in carries 20260930498000 on top of the earlier patches'; end if;
+	if not (select relrowsecurity from pg_class where oid = t::regclass) then
+		raise exception 'The marks have row level security'; end if;
+	foreach r in array array['public', 'anon', 'authenticated', 'service_role']::name[] loop
+		if has_table_privilege(r, t, 'select,insert,update,delete') then raise exception '% reaches the marks', r; end if;
+	end loop;
+end $$;
+
 -- Setup: tmi/ with two files, which the machines read.
 do $$
 declare a jsonb := pg_temp.stage('test machine inherit');
@@ -65,9 +80,10 @@ begin
 end $$;
 
 
--- A run of another member takes in what the machine's view read; the same inherit id replays, and a new one takes in
--- what the view read since. After a reboot the newest view counts: the earlier boot's until the new boot opens its
--- own, which carries the disk's reads. Agent B's run takes them in too. A placement that never had a view answers with
+-- A run of another member takes in what the machine's view read; the same inherit id replays, and a new one checks
+-- the whole set but copies only what the view read since (nothing, when nothing is new). After a reboot the newest
+-- view counts: the earlier boot's until the new boot opens its own, which carries the disk's reads as its own records,
+-- so the run copies them once more. Agent B's run takes them in too. A placement that never had a view answers with
 -- no view and no reads.
 do $$
 declare c_m2 constant uuid := '63200000-0000-4000-8000-000000000002'; c_m4 constant uuid := '63200000-0000-4000-8000-000000000004';
@@ -87,11 +103,18 @@ begin
 	perform pg_temp.expect_take(pg_temp.take(a, w, k), k, s, 1, true);
 	perform pg_temp.release(s, 'tmi/b.txt');
 	perform pg_temp.expect_take(pg_temp.take(a, w, k2), k2, s, 2, false);
-	if not pg_temp.run_has(w, k2, 'tmi/b.txt') then raise exception 'A new inherit id takes in what the view read since'; end if;
+	if not pg_temp.run_has(w, k2, 'tmi/b.txt') or pg_temp.run_has(w, k2, 'tmi/a.txt') then
+		raise exception 'A new inherit id copies only what the view read since'; end if;
+	if (select jsonb_agg(i.inherit_id order by i.created_at) from public.qorpera_folder_run_inherited_records i
+			where i.run_id = (w ->> 'runId')::uuid and i.view_id = (s ->> 'viewId')::uuid)
+		is distinct from jsonb_build_array(k, k2) then
+		raise exception 'Each of the view''s records is marked once, with the inherit id that filed it'; end if;
 	-- The disk boots again: the earlier boot is not current, and its view is the newest until the new boot opens one.
 	a2 := pg_temp.reboot(a);
 	perform pg_temp.take_refused(a, w, extensions.gen_random_uuid(), '42501', 'Folder inheritance read is not current');
 	perform pg_temp.expect_take(pg_temp.take(a2, w, k3), k3, s, 2, false);
+	if exists (select 1 from public.qorpera_folder_run_read_records where run_id = (w ->> 'runId')::uuid and release_id = k3) then
+		raise exception 'A take-in with nothing new copies nothing'; end if;
 	s2 := pg_temp.open_machine(a2);
 	perform pg_temp.expect_take(pg_temp.take(a2, w, k4), k4, s2, 2, false);
 	if not pg_temp.run_has(w, k4, 'tmi/a.txt') or not pg_temp.run_has(w, k4, 'tmi/b.txt') then
@@ -145,7 +168,8 @@ begin
 	perform pg_temp.take_refused(a, w, extensions.gen_random_uuid(), '55000', 'Company execution is paused');
 	perform pg_temp.expect_take(pg_temp.take(a, w, k), k, s, 1, true);
 	perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L', c_profile));
-	-- tmi/ narrows to a resource agent A holds no grant on: the run can no longer read what the machine read.
+	-- tmi/ narrows to a resource agent A holds no grant on: the run can no longer read what the machine read. The run
+	-- took that read in with k, so nothing is new, and the whole set is still checked.
 	begin
 		perform public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'tmi', 'subtree',
 			'company_shared', 'normal');

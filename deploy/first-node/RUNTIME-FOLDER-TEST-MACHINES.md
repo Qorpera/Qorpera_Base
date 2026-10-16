@@ -302,7 +302,8 @@ them. Step 6 builds that as follows:
    leased (rule 1 reaches only leased jobs). The executor asks for it after the boundary releases the reads, through
    `qorpera_folder_test_machine_inherit_reads` (6d-3b), for the placement, boot and run its command's authority names.
    That takes in the newest view of the placement, so a boot without `/company` takes in what an earlier boot of the
-   same disk was served.
+   same disk was served. Each take-in checks the view's whole read set for the run (rule 5), but copies into the run's
+   records only the view's records that run has not taken in yet (`20260930498000`, for the office's take-in too).
 4. **Boundaries come after reads.** A boundary (below) is answered only after every recorded read of the machine is
    released. A boundary with no answer holds the output back: the model gets nothing from the machine until it is
    answered.
