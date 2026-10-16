@@ -784,15 +784,21 @@ export function wholeBlocks(write) {
 	};
 }
 
+/** A part's results that are no pass, the worst first: the harness's own (a machine died, a session was cut or a queue
+ * timed out; no result read back), then npm ci or the build, then a failed step. A result not named here is worst. */
+const WORST_FIRST = ["setup-failed", "unknown", "install-failed", "failed"];
+
 /** The record of a changed --parts run from its parts' records (`records`, in part order): `run` names every part's run,
- * `machine` every part's machine (node02+node01). The run passes only if every part passed. Otherwise a part that did
- * not pass gives the run its result: failed when each such part failed, else the first other one (setup-failed when a
- * machine died), so a failure one part ran never stands for a part that ran no steps. A failed run's failed steps are
- * every part's, in plan order (`order`); none when a failed part names none, as a single run cut off mid-way shows. The
- * exit code is the first part's that is not 0, and 1 for a run that did not pass with none. */
+ * `machine` every part's machine (node02+node01). The run passes only if every part passed. Otherwise the part that
+ * went worst (`WORST_FIRST`, the first such part on a tie) gives the run its result and its exit code (1 for an exit of
+ * 0), whatever the order of the parts, so a failure one part ran never stands for a part that ran no steps, and a
+ * machine that died posts the harness's error. A failed run's failed steps are every part's, in plan order (`order`);
+ * none when a failed part names none, as a single run cut off mid-way shows. */
 export function joinRecords(records, { order, ...common }) {
 	const notPassed = records.filter((record) => record.result !== "passed");
-	const result = notPassed.length ? (notPassed.find((record) => record.result !== "failed")?.result ?? "failed") : "passed";
+	const rank = (record) => WORST_FIRST.indexOf(record.result);
+	const worst = notPassed.reduce((found, record) => (found && rank(found) <= rank(record) ? found : record), null);
+	const result = worst ? worst.result : "passed";
 	const failedSteps = [...new Set(records.flatMap((record) => record.failedSteps ?? []))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 	const named = result === "failed" && notPassed.every((record) => record.failedSteps?.length);
 	return {
@@ -801,7 +807,7 @@ export function joinRecords(records, { order, ...common }) {
 		run: records.map((record) => record.run).join("+"),
 		runner: records.some((record) => record.runner) ? records.map((record) => record.runner ?? "none").join("+") : null,
 		...common,
-		exitCode: records.find((record) => record.exitCode !== 0)?.exitCode ?? (result === "passed" ? 0 : 1),
+		exitCode: worst ? worst.exitCode || 1 : 0,
 		result,
 		...(named ? { failedSteps } : {}),
 		parts: records,

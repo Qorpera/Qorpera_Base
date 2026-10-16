@@ -253,8 +253,29 @@ test("a run in parts passes only when every part passed; a part that ran no step
 		return [run.result, run.exitCode, run.failedSteps, run.runner];
 	};
 	assert.deepEqual(diedBeside(part(1, "passed")), ["setup-failed", 255, undefined, "ci01+none"]);
-	assert.deepEqual(diedBeside(part(1, "failed", { failedSteps: ["hosted-db"] })), ["setup-failed", 1, undefined, "ci01+none"]);
+	const failedBeside = diedBeside(part(1, "failed", { failedSteps: ["hosted-db"] }));
+	assert.deepEqual(failedBeside, ["setup-failed", 255, undefined, "ci01+none"]);
 	assert.deepEqual(joinRecords([part(1, "install-failed", { exitCode: 90 }), part(2, "passed")], common).result, "install-failed");
+	// The part that went worst gives the run its result and exit code, in either order of the parts: the harness's own
+	// failure (a queue that timed out; no result read back) before npm ci or the build, and that before a failed step.
+	const bothOrders = (a, b) => {
+		const runs = [joinRecords([a, b], common), joinRecords([b, a], common)];
+		return runs.map((run) => [run.result, run.exitCode, run.failedSteps]);
+	};
+	const install = part(1, "install-failed", { exitCode: 90 });
+	const timedOut = part(2, "setup-failed", { exitCode: 94, runner: null });
+	const noResult = part(2, "unknown", { exitCode: 0, runner: null });
+	const failedStep = part(2, "failed", { failedSteps: ["hosted-db"] });
+	const twice = (result, exitCode) => [
+		[result, exitCode, undefined],
+		[result, exitCode, undefined],
+	];
+	assert.deepEqual(bothOrders(install, timedOut), twice("setup-failed", 94));
+	assert.deepEqual(bothOrders(install, died), twice("setup-failed", 255));
+	assert.deepEqual(bothOrders(failedStep, died), twice("setup-failed", 255));
+	assert.deepEqual(bothOrders(noResult, timedOut), twice("setup-failed", 94));
+	assert.deepEqual(bothOrders(install, noResult), twice("unknown", 1));
+	assert.deepEqual(bothOrders(install, failedStep), twice("install-failed", 90));
 	// A part with no result (exit 0, no runner) is no pass, and the run exits non-zero.
 	const unknown = joinRecords([part(1, "passed"), part(2, "unknown", { exitCode: 0, runner: null })], common);
 	assert.deepEqual([unknown.result, unknown.exitCode], ["unknown", 1]);
