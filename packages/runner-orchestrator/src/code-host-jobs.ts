@@ -88,7 +88,8 @@ const WORKTREE_LOCK = "qorpera: a coding session's worktree";
 /** Every command's settings, command scope, so they beat the repository's. §6's table for the shared directory, and
  * for gc: worker branches never packed (packed-refs is shared and the folder can't read its lines; gc packs refs
  * itself), no reflog expiry (it would lock workers' refs and worktrees' HEADs, which the gc block does not hold),
- * locked worktrees never pruned, and packs under the folder's 256 MiB. */
+ * locked worktrees never pruned, and packs under the folder's 256 MiB. No grafts advice: with GIT_GRAFT_FILE at
+ * /dev/null, git gives it for every process that reads a commit, and it would crowd git's error out of a report. */
 const SETTINGS: readonly (readonly [string, string])[] = [
 	["core.hooksPath", "/dev/null"],
 	["core.fsmonitor", "false"],
@@ -122,6 +123,7 @@ const SETTINGS: readonly (readonly [string, string])[] = [
 	["repack.writeBitmaps", "false"],
 	["worktree.useRelativePaths", "false"],
 	["advice.detachedHead", "false"],
+	["advice.graftFileDeprecated", "false"],
 ];
 
 function checkPath(value: unknown): string {
