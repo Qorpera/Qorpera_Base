@@ -2715,7 +2715,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#current(ready);
 			await this.#run(ready.claim, ready.machine, ready.storage, checked);
 			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
-			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes.
+			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes, and
+			// keeps and shows nothing of the command (the transport's `withheld` below).
 			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
 				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
@@ -2753,6 +2754,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
 				guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
 				control,
+				withheld: (checked) => this.#newDiskDue(ready.machine, checked),
 				dropped: async (startOperationId, checked) =>
 					codingMachineStartDropped(
 						await this.#directory("machines", checked),

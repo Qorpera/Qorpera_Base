@@ -436,9 +436,11 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      so before each session's view is attached, a view held since an earlier turn and still mounted included: the
      executor asks for custody `rebuild`, which SQL grants only to a machine so marked and which changes nothing, and
      gives the machine its new disk before the view opens. Each command's start and read asks so too and is refused on
-     a marked machine (`CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK`); a cancel still goes. A machine so marked restarts as above, but
-     the restart's record answers `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both
-     marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
+     a marked machine (`CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK`). A cancel still goes, but keeps and shows
+     nothing of the command: the command transport asks so too once the machine's boundary releases (no answer is
+     marked), keeps nothing more of the command's output, and answers the cancel with none of it, what was kept before
+     included. A machine so marked restarts as above, but the restart's record answers `new-disk`: it detaches the
+     sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
      executor rebuilds the instance from its binding's image (`imageFingerprint`), and
      `qorpera_record_coding_machine_new_disk`, named by the rebuild's LXD operation and replayed like the restart's
      record, detaches any session attached since, empties the machine's read set, clears both marks and answers

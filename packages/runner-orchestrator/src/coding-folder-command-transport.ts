@@ -445,6 +445,16 @@ async function readPage(
 	};
 }
 
+/** The receipt with none of the command's output: only how much its log holds. */
+function withoutOutput(receipt: CloudCodingCommandReceipt): CloudCodingCommandReceipt {
+	return parseCloudCodingCommandReceipt({
+		...receipt,
+		output: "",
+		truncated: receipt.log.totalBytes > 0 || receipt.log.limitReached,
+		log: { ...receipt.log, offset: 0, nextOffset: 0 },
+	});
+}
+
 /** How the guest's command ended, as a receipt says it; null while it runs. A command the guest lost ended with the
  * machine when the machine started again since the command did. */
 function finalOf(command: CodingGuestCommand, moved: boolean): Omit<Outcome, "schema"> | null {
@@ -545,6 +555,10 @@ export interface LxdCodingFolderCommandTransportOptions {
 	 * started was released (F3 5g-5, from the machine's journal): a command of that boot keeps nothing more of what it
 	 * left on the machine's disk. Asked of the command's own start each time its output is about to be kept. */
 	readonly dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
+	/** Whether the machine shows nothing of its commands (F3 5g-5: SQL holds it marked for a new disk, so its disk may
+	 * hold a read the turn can no longer read): nothing more of a command's output is kept, and a cancel, which still
+	 * goes, answers none of it. Asked after the machine's boundary releases; no answer withholds. Never by default. */
+	readonly withheld?: (signal: AbortSignal) => Promise<boolean>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
 	/** As the NAS transport's: checks the request's authority before each call's work and again before its answer. */
@@ -564,6 +578,7 @@ export class LxdCodingFolderCommandTransport {
 	readonly #guest: LxdCodingFolderCommandTransportOptions["guest"];
 	readonly #control: LxdCodingFolderCommandTransportOptions["control"];
 	readonly #dropped: LxdCodingFolderCommandTransportOptions["dropped"];
+	readonly #withheld: NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>;
 	readonly #currentStart: LxdCodingFolderCommandTransportOptions["currentStart"];
 	readonly #secrets: CodingCommandSecrets;
 	readonly #authorize: Authorize;
@@ -601,6 +616,7 @@ export class LxdCodingFolderCommandTransport {
 		this.#guest = options.guest;
 		this.#control = options.control;
 		this.#dropped = options.dropped;
+		this.#withheld = options.withheld ?? (async () => false);
 		this.#currentStart = options.currentStart;
 		this.#secrets = options.secrets ?? noCodingCommandSecrets;
 		this.#authorize = options.authorize;
@@ -782,7 +798,9 @@ export class LxdCodingFolderCommandTransport {
 				if (!progress.cancelled) progress = await this.#save(folder, { ...progress, cancelled: true });
 				await this.#stop(commandId, budget, signal);
 			}
-			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
+			const settled = await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
+			// A machine that shows nothing of its commands answers none of what was kept before either.
+			return (await this.#withholds(budget, signal)) ? withoutOutput(settled) : settled;
 		});
 		await this.#gate("cancel", scope, commandId, null, signal);
 		return receipt;
@@ -989,13 +1007,25 @@ export class LxdCodingFolderCommandTransport {
 		return { progress: next, outcome, shown: state };
 	}
 
-	/** Whether the machine's boundary released every read the machine was served until now. No answer is no release. */
+	/** Whether the machine's boundary released every read the machine was served until now, and the machine shows its
+	 * commands. No answer is no release. */
 	async #released(budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
 		try {
-			return (await this.#control.boundary(this.#machineId, [], budget)).reads === "released";
+			if ((await this.#control.boundary(this.#machineId, [], budget)).reads !== "released") return false;
 		} catch {
 			signal.throwIfAborted();
 			return false;
+		}
+		return !(await this.#withholds(budget, signal));
+	}
+
+	/** Whether the machine shows nothing of its commands now. No answer withholds. */
+	async #withholds(budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
+		try {
+			return await this.#withheld(budget);
+		} catch {
+			signal.throwIfAborted();
+			return true;
 		}
 	}
 

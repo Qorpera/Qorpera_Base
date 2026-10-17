@@ -849,6 +849,36 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await json(join(folder, "outcome.json"))).toMatchObject({ state: "cancelled", exitCode: null });
 	});
 
+	it("keeps nothing more of a machine that withholds its commands, and cancels in it showing none of the output (F3 5g-5)", async () => {
+		const at = await fixture();
+		const withheld = vi.fn<NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>>(async () => false);
+		const transport = at.another({ withheld });
+		const input = at.input();
+		at.guest.print(input.commandId, "kept\n");
+		expect(await transport.start(at.scope, input, signal)).toStrictEqual(
+			at.receipt(input, { state: "running", output: "kept\n" }),
+		);
+		// SQL marks the machine for a new disk, and the command prints more on the disk it is to lose; every read the
+		// machine was served is still released.
+		withheld.mockResolvedValue(true);
+		at.guest.print(input.commandId, "old disk\n");
+		const shown = at.receipt(input, { state: "running", truncated: true, log: { totalBytes: 5 } });
+		expect(await transport.cancel(at.scope, input.commandId, signal)).toStrictEqual(shown);
+		expect(at.guest.client.cancel).toHaveBeenCalledTimes(1);
+		const folder = at.folder(input.commandId);
+		expect(await json(join(folder, "progress.json"))).toMatchObject({ cancelled: true, logBytes: 5 });
+		expect(await readFile(join(folder, "output.log"), "utf8")).toBe("kept\n");
+		await absent(join(folder, "outcome.json"));
+		// Asked once the boundary released, and again for the cancel's answer.
+		expect(withheld).toHaveBeenCalledTimes(3);
+		expect(at.control.boundary.mock.invocationCallOrder[1]).toBeLessThan(withheld.mock.invocationCallOrder[1]);
+		// No answer withholds.
+		withheld.mockRejectedValue(new Error("CODING_CUSTODY_UNAVAILABLE"));
+		expect(await transport.cancel(at.scope, input.commandId, signal)).toStrictEqual(shown);
+		expect(await readFile(join(folder, "output.log"), "utf8")).toBe("kept\n");
+		await absent(join(folder, "outcome.json"));
+	});
+
 	it("tolerates a cancel the guest has no command for, and passes its other refusals on", async () => {
 		const at = await fixture();
 		const input = at.input();

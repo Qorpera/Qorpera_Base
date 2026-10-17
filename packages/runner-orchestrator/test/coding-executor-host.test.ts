@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	CODING_GUEST,
+	type CodingGuestCommandState,
 	type CodingGuestUsage,
 	cloudCodingSessionLayout,
 	parseCloudCodingNasPolicy,
+	parseCodingGuestAnswer,
+	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodingCommandSecrets, CodingEnvironmentSource } from "../src/coding-command-secrets.ts";
@@ -22,6 +25,7 @@ import {
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
+import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
 import type { CodingFolderControl } from "../src/coding-folder-control.ts";
 import type { CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
 import {
@@ -30,6 +34,7 @@ import {
 	type CodingFolderViewHeld,
 	CodingFolderViews,
 } from "../src/coding-folder-views.ts";
+import type { LxdCodingGuestClient } from "../src/coding-guest-client.ts";
 import { CodingHostLeases, judgeCodingHostLease } from "../src/coding-host-lease.ts";
 import {
 	type CodingMachineReconcileOptions,
@@ -3987,6 +3992,90 @@ describe("a coding session on the folder model", () => {
 		expect(authorize.mock.calls.map(([action]) => action)).toEqual(["start", "cancel"]);
 		// Asking changed nothing: the machine still runs, marked, and the turn's next view gets it a new disk first.
 		expect(await custodyIntents(f)).toEqual(["rebuild", "rebuild"]);
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(true);
+	});
+	it("keeps and shows none of what a command printed on a machine SQL marked for a new disk, and still cancels it, through the folder model's own command transport (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const options = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		const { LxdCodingFolderCommandTransport } = await vi.importActual<
+			typeof import("../src/coding-folder-command-transport.ts")
+		>("../src/coding-folder-command-transport.ts");
+		await mkdir(options.custody, { recursive: true, mode: 0o700 });
+		await chmod(options.custody, 0o700);
+		// The guest agent's one command, answering as the real agent does.
+		const { workerId } = f.scope();
+		const command = { state: "running" as CodingGuestCommandState, printed: Buffer.from("before\n") };
+		const stateOf = (commandId: string) => ({
+			commandId,
+			state: command.state,
+			exit: null,
+			end: command.printed.length,
+		});
+		const guest = {
+			run: vi.fn<LxdCodingGuestClient["run"]>(async (request) => ({
+				schema: "qorpera.coding-guest-command/v1",
+				workerId,
+				...stateOf(parseCodingGuestRequest("run", request).commandId),
+			})),
+			output: vi.fn<LxdCodingGuestClient["output"]>(async (request) => {
+				const asked = parseCodingGuestRequest("output", request);
+				const bytes = Buffer.from(command.printed.subarray(asked.offset, asked.offset + asked.maxBytes));
+				const answer = parseCodingGuestAnswer("output", asked, {
+					schema: "qorpera.coding-guest-output/v1",
+					workerId,
+					...stateOf(asked.commandId),
+					offset: asked.offset,
+					bytes: bytes.length,
+					gap: 0,
+				});
+				return { answer, bytes };
+			}),
+			cancel: vi.fn<LxdCodingGuestClient["cancel"]>(async (request) => {
+				command.state = "cancelled";
+				return {
+					schema: "qorpera.coding-guest-command/v1",
+					workerId,
+					...stateOf(parseCodingGuestRequest("cancel", request).commandId),
+				};
+			}),
+		};
+		const transport = new LxdCodingFolderCommandTransport({ ...options, guest });
+		const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "make", timeoutMs: null };
+		expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "running", output: "before\n" });
+		// The turn's take-in at its next run marks the machine for a new disk without placing the read on it that the
+		// turn can no longer read (20260930505000); the command prints more on the disk it is to lose, and the machine's
+		// boundary still releases every read it was served.
+		const answer = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (called, args, signal) => {
+			if (called === "qorpera_authorize_coding_machine_run") {
+				f.state.newDisk = true;
+				f.state.folderRestart = true;
+			}
+			return answer(called, args, signal);
+		});
+		command.printed = Buffer.concat([command.printed, Buffer.from("old disk\n")]);
+		// The cancel goes, and keeps and shows nothing of the command: not what it printed since, nor what was kept.
+		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toMatchObject({
+			state: "running",
+			output: "",
+			truncated: true,
+			log: { offset: 0, nextOffset: 0, totalBytes: 7 },
+		});
+		expect(guest.cancel).toHaveBeenCalledTimes(1);
+		const kept = join(options.custody, "host-commands", input.commandId.replaceAll("-", ""));
+		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\n");
+		// Nor is the command read, until the machine has its new disk.
+		await expect(transport.read(f.scope(), { commandId: input.commandId }, f.signal)).rejects.toThrow(
+			"CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK",
+		);
+		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\n");
 		expect(f.lxd.running).toBe(true);
 		expect(f.state.newDisk).toBe(true);
 	});
