@@ -1241,7 +1241,8 @@ describe("settings session lifecycle", () => {
 			".settings-staff-group + .settings-memory-slot > .settings-memory",
 		)!;
 		expect(section.hidden).toBe(false);
-		expect(f.root.querySelector(".settings-memory-slot + .settings-file")).not.toBeNull();
+		// The company's pages (C6a) come between its memory and its file.
+		expect(f.root.querySelector(".settings-memory-slot + .settings-pages-slot + .settings-file")).not.toBeNull();
 		expect(f.api.getCompanyMemory).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
 		section.querySelector<HTMLInputElement>("input[type=radio][value=tree]")!.click();
 		await draw();
