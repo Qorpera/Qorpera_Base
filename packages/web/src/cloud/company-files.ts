@@ -2,6 +2,7 @@ import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
+import { createWebMessageErases, type WebMessageErases } from "./message-erases.ts";
 import type { HostedProfile, HostedProfileRole } from "./types.ts";
 
 /** A member's endpoints, token and transport for one company. */
@@ -99,6 +100,11 @@ export class WebCompanyFiles {
 			accessToken: this.#options.accessToken,
 			fetch: this.#options.fetch,
 		});
+	}
+	/** The member's erases of single messages (summary trees M3c), through the same member route transport. */
+	messageErases(): WebMessageErases {
+		this.current();
+		return createWebMessageErases(this.#options);
 	}
 	/** The folder's hint (folder core C4, P30): `onHint(seq)` when it changed. Closes with this company's signal. */
 	folderHints(onHint: (seq: number) => void): CloudMemberFolderHints {
