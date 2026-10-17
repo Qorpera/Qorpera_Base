@@ -642,10 +642,12 @@ fn a_cache_move_whose_link_the_node_does_not_take_at_once_is_made_again() {
 	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js", "node_modules/y.js"])).unwrap();
 	node.busy_links(1);
 	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
-	// The move is not done while the link is not in the folder: it is tried again, and the link moves in.
-	let moved = || node.target("code/o/n/worktrees/w/node_modules/y.js").as_deref() == Some("x.js");
-	assert!(eventually(Duration::from_secs(20), moved), "the link did not move into the folder");
-	assert_eq!(node.content("code/o/n/worktrees/w/node_modules/x.js").unwrap(), b"cached");
+	// The move is not done while the link is not in the folder: it is tried again, and the link moves in. (The disk
+	// lists the file and the link in no set order, so either can reach the node first.)
+	let content = || node.content("code/o/n/worktrees/w/node_modules/x.js");
+	let moved = || node.target("code/o/n/worktrees/w/node_modules/y.js").as_deref() == Some("x.js") && content().is_some();
+	assert!(eventually(Duration::from_secs(20), moved), "the cache did not move into the folder");
+	assert_eq!(content().unwrap(), b"cached");
 	assert_eq!(std::fs::read_link(modules.join("y.js")).unwrap(), Path::new("x.js"));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
