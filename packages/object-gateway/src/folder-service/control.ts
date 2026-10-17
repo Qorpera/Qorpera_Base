@@ -3,13 +3,22 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { isUuid } from "@qorpera/contracts";
 import { ErrorCode, ProtocolError } from "./protocol.ts";
+import {
+	SECRET_MAX_BYTES,
+	SECRET_MIN_BYTES,
+	SECRET_TAG_BITS,
+	SECRET_VALUES_MAX,
+	SecretSet,
+	type SecretValue,
+} from "./secret-scan.ts";
 import type { MachineBoundary } from "./service.ts";
 import type { CommandWindow } from "./windows.ts";
 
 /** The folder service's control socket (F3 5c and 6b, the plans' "Boundaries"): host-local, for the executor of the
- * coding and test machines alone, which asks it for their boundaries, says when it restarted one, and opens and closes
- * a test machine's command windows. A machine is named by its id: a coding machine's, or a test machine's placement's.
- * One JSON object a line each way, one request at a time, each answered in order:
+ * coding and test machines alone, which asks it for their boundaries, says when it restarted one, opens and closes a
+ * test machine's command windows, and sends a coding machine's secret values (5j-5). A machine is named by its id: a
+ * coding machine's, or a test machine's placement's. One JSON object a line each way, one request at a time, each
+ * answered in order:
  *
  *   {"op":"boundary","machine":"<machine id>","final":["<view id>", …]}
  *   → {"boundary":{"machine":…,"reads":…,"views":[…]}} (`MachineBoundary`), or {"error":{"code":…,"message":…}}
@@ -23,6 +32,10 @@ import type { CommandWindow } from "./windows.ts";
  *   {"op":"close","machine":"<placement id>","commandId":…}
  *   → {"boundary":…}: sent when the command ended; answered once what the machine changed until then was published or
  *     refused (`FolderService.closeWindow`)
+ *   {"op":"secrets","machine":"<machine id>","key":"<32 bytes, base64url>","values":[{"length":…,"start":…,"whole":…}, …]}
+ *   → {"secrets":{"machine":…,"values":…}}: a coding machine's secret values as keyed hashes (secret-scan.ts), never
+ *     the values. They replace what it sent before; what its views save is checked against them, and none of its views
+ *     saves before the first (`FolderService.secrets`). `values`: how many the service holds, each once.
  *
  * Node cannot read a connection's peer credentials (SO_PEERCRED), so the kernel checks the peer's uid: connecting to
  * a Unix socket needs write permission on its file. The socket unit (qorpera-folder-control.socket) makes the file the
@@ -30,8 +43,9 @@ import type { CommandWindow } from "./windows.ts";
  * so (`socketRefusal`); otherwise it is refused at once. Root may connect, as it may do anything on the host. */
 export const CONTROL_SOCKET = "/run/qorpera-folder-control/control.sock";
 
-/** A request longer than this ends the connection. */
-const MAX_LINE = 64 * 1024;
+/** A request longer than this ends the connection: a secrets request of the most values, each written compactly (66
+ * bytes at most), fits. */
+const MAX_LINE = 320 * 1024;
 /** Views named final in one boundary: every session of one machine, with room. */
 const MAX_FINAL = 256;
 const REFUSED = "This socket admits only the executor of the coding and test machines";
@@ -42,13 +56,16 @@ export interface ControlTarget {
 	restarted(machine: string): boolean;
 	openWindow(machine: string, window: CommandWindow): void;
 	closeWindow(machine: string, commandId: string): Promise<MachineBoundary>;
+	/** Takes the machine's secret values in place of what it sent before; how many it holds. */
+	secrets(machine: string, set: SecretSet): number;
 }
 
 type Request =
 	| { op: "boundary"; machine: string; final: string[] }
 	| { op: "restarted"; machine: string }
 	| { op: "open"; machine: string; window: CommandWindow }
-	| { op: "close"; machine: string; commandId: string };
+	| { op: "close"; machine: string; commandId: string }
+	| { op: "secrets"; machine: string; set: SecretSet };
 
 /** Each request's keys: all are needed but a boundary's `final`. */
 const KEYS: Record<Request["op"], readonly string[]> = {
@@ -56,13 +73,17 @@ const KEYS: Record<Request["op"], readonly string[]> = {
 	restarted: ["op", "machine"],
 	open: ["op", "machine", "commandId", "runId", "staffAgentId", "requestedByUserId"],
 	close: ["op", "machine", "commandId"],
+	secrets: ["op", "machine", "key", "values"],
 };
 const SHAPES: Record<Request["op"], string> = {
 	boundary: "A boundary request is {op, machine, final?}",
 	restarted: "A restarted request is {op, machine}",
 	open: "An open request is {op, machine, commandId, runId, staffAgentId, requestedByUserId}",
 	close: "A close request is {op, machine, commandId}",
+	secrets: "A secrets request is {op, machine, key, values}",
 };
+const KEY = "key is 32 bytes, base64url";
+const VALUES = `values is a list of at most ${SECRET_VALUES_MAX} values, each {length, start, whole}: a length of ${SECRET_MIN_BYTES} to ${SECRET_MAX_BYTES} bytes, a start below 2^${SECRET_TAG_BITS}, and 16 bytes base64url`;
 const IDS: Record<string, string> = {
 	commandId: "commandId is a command's id",
 	runId: "runId is a run's id",
@@ -75,6 +96,7 @@ const FAILED: Record<Request["op"], string> = {
 	restarted: "The restart could not be taken now",
 	open: "The window could not be opened now",
 	close: "The window's boundary could not be made now",
+	secrets: "The secret values could not be taken now",
 };
 
 export interface ControlOptions {
@@ -187,6 +209,8 @@ async function answer(text: string, options: ControlOptions): Promise<unknown> {
 		}
 		if (request.op === "close")
 			return { boundary: await options.target.closeWindow(request.machine, request.commandId) };
+		if (request.op === "secrets")
+			return { secrets: { machine: request.machine, values: options.target.secrets(request.machine, request.set) } };
 		return { boundary: await options.target.boundary(request.machine, request.final) };
 	} catch (error) {
 		if (error instanceof ProtocolError) return { error: { code: error.code, message: error.message } };
@@ -207,12 +231,19 @@ function parseRequest(text: string): Request | string {
 		return "A request is one JSON object a line";
 	const request = value as Record<string, unknown>;
 	const op = request.op;
-	if (op !== "boundary" && op !== "restarted" && op !== "open" && op !== "close")
-		return "A request's op is boundary, restarted, open or close";
+	if (op !== "boundary" && op !== "restarted" && op !== "open" && op !== "close" && op !== "secrets")
+		return "A request's op is boundary, restarted, open, close or secrets";
 	if (Object.keys(request).some((key) => !KEYS[op].includes(key))) return SHAPES[op];
 	const machine = request.machine;
 	if (!isUuid(machine)) return "machine is a coding machine's id or a test machine's placement id";
 	if (op === "restarted") return { op, machine };
+	if (op === "secrets") {
+		const key = canonical(request.key, 43);
+		if (!key) return KEY;
+		const values = valuesOf(request.values);
+		if (!values) return VALUES;
+		return { op, machine, set: new SecretSet(key, values) };
+	}
 	if (op === "boundary") {
 		const final = request.final ?? [];
 		if (!Array.isArray(final) || final.length > MAX_FINAL || !final.every((id) => isUuid(id)))
@@ -229,4 +260,29 @@ function parseRequest(text: string): Request | string {
 		requestedByUserId: request.requestedByUserId as string,
 	};
 	return { op, machine, window };
+}
+
+/** The bytes `value` writes as unpadded base64url of `chars` characters, if that is the one way to write them. */
+function canonical(value: unknown, chars: number): Buffer | undefined {
+	if (typeof value !== "string" || value.length !== chars || !/^[A-Za-z0-9_-]+$/.test(value)) return undefined;
+	const bytes = Buffer.from(value, "base64url");
+	return bytes.toString("base64url") === value ? bytes : undefined;
+}
+
+/** A secrets request's values, if each is a value's hashes as `SecretValue` says. */
+function valuesOf(value: unknown): SecretValue[] | undefined {
+	if (!Array.isArray(value) || value.length > SECRET_VALUES_MAX) return undefined;
+	const values: SecretValue[] = [];
+	for (const each of value) {
+		if (typeof each !== "object" || each === null || Array.isArray(each)) return undefined;
+		const { length, start, whole, ...rest } = each as Record<string, unknown>;
+		if (Object.keys(rest).length > 0) return undefined;
+		if (!Number.isInteger(length) || (length as number) < SECRET_MIN_BYTES || (length as number) > SECRET_MAX_BYTES)
+			return undefined;
+		if (!Number.isInteger(start) || (start as number) < 0 || (start as number) >= 2 ** SECRET_TAG_BITS)
+			return undefined;
+		if (!canonical(whole, 22)) return undefined;
+		values.push({ length: length as number, start: start as number, whole: whole as string });
+	}
+	return values;
 }

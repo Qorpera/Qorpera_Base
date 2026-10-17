@@ -563,8 +563,12 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
 
 - output, `output.log`, receipts and terminals: each value's exact, base64 and URL-encoded forms, across chunk
   boundaries, replaced before anything is written or reaches a model;
-- saves: the folder service refuses a plain save or an inflated loose object that carries a value (a keyed rolling
-  hash over values of at least a minimum length, so the service never holds the values in the clear);
+- saves: the folder service refuses a coding machine's save that carries a value in its exact form (5j-5): a file's
+  bytes, a new name or a new link's target, and in a git change its ref, its log and its loose objects as stored. A
+  loose object is not inflated, so a value in a commit is the push check's to stop. The executor sends each machine's
+  values of 8 bytes to 32 KiB as keyed hashes under a key of its own (`secrets` on the control socket), so the service
+  never holds a value. Until a machine's first values come, nothing of it is saved. A refused change stays on the
+  machine, and the report says why without naming the value;
 - pushes: the broker's push check reads every object the push adds (file contents, file and folder names, each
   commit with its message) and refuses a push that carries a value.
 
