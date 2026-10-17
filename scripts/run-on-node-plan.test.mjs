@@ -249,6 +249,43 @@ test("in parts, every step runs in exactly one part, the heaviest work first to 
 	assert.deepEqual(groupNames(splitPlan([{ name: "a", seconds: 100 }, { name: "b", seconds: 60 }, { name: "c", seconds: 60 }], 2)), [["b", "c"], ["a"]]);
 });
 
+test("in parts, the checks' part builds the packages too, though no other step in it needs them", () => {
+	// #1133 on master 24b4cb7d5 (pr-loop's run 20261017T010302-83483-ec1fbc8f): a web change that is not web-only put
+	// the web and scripts in one part and the checks in the other, which then had no build. check:connector-catalog
+	// runs the runtime's TypeScript in Node, which imports @qorpera/contracts' dist: "Cannot find module".
+	const files = [
+		"packages/web/CHANGELOG.md",
+		"packages/web/src/app/application.ts",
+		"packages/web/src/app/views/conversation.ts",
+		"packages/web/src/app/workspace-actions.ts",
+		"packages/web/src/cloud/company-files.ts",
+		"packages/web/src/cloud/message-erases.ts",
+		"packages/web/src/styles/conversation.css",
+		"packages/web/src/ui/danish/conversation.ts",
+		"packages/web/test/conversation-ui.test.ts",
+		"packages/web/test/message-erases.test.ts",
+	];
+	const plan = planChanged(files);
+	assert.deepEqual(plan.steps.map((step) => step.name), [...ALWAYS, "web", "cloud-client", "runtime", "scripts"]);
+	const parts = splitPlan(plan.steps, 2);
+	assert.deepEqual(parts.map((part) => part.steps.map((step) => step.name)), [
+		["web", "scripts"],
+		["lint", "typecheck", "checks", "cloud-client", "runtime"],
+	]);
+	assert.deepEqual(parts.map((part) => part.build), [true, true]);
+	// Node imports the built packages for these steps; the other vitest steps (runtime, cloud-client and the rest) read
+	// the packages' sources (vitest.base.ts), so a part of only those has no build.
+	assert.deepEqual(STEPS.filter((step) => step.build).map((step) => step.name), ["checks", "web", "scripts", "hosted-db"]);
+	assert.match(STEPS.find((step) => step.name === "checks").alone.join("\n"), /check:connector-catalog/);
+	// The part with the checks builds in 2, 3 or 5 parts: these files, a runtime change and the full plan.
+	for (const changed of [files, ["packages/runtime/src/cloud-identity-recovery-filesystems.ts"], ["package-lock.json"]])
+		for (const count of [2, 3, 5]) {
+			const groups = splitPlan(planChanged(changed).steps, count);
+			const checks = groups.find((group) => group.steps.some((step) => step.name === "checks"));
+			assert.equal(checks.build, true, `${changed[0]} in ${count} parts`);
+		}
+});
+
 test("every step runs, a failing command fails its step, and the exit code says so", () => {
 	const script = planScript([
 		{ name: "first", commands: ["false", "true"] },

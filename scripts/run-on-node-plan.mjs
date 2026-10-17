@@ -122,7 +122,8 @@ const ANY = [/./];
 /** Starts on any path that is not web-only. */
 const NOT_WEB_ONLY = Symbol("not web-only");
 
-/** Ordered steps. `build`: needs npm run build:web-sdk first (script tests and the web import it). `alone`: commands
+/** Ordered steps. `build`: needs npm run build:web-sdk first (script tests, the web and the connector catalog check
+ * import it; the other vitest steps read the packages' sources, vitest.base.ts). `alone`: commands
  * that need the tree to themselves, run after `commands` one step at a time, but first in a side-by-side run
  * (planScript). `cores`: the step's mean busy cores at 2 vitest workers, its PostgreSQL containers included (node01,
  * 16 Oct), which a side-by-side run packs by (default 1). `seconds`: its median in pr-loop's full runs (15 Oct), so a side-by-side run starts the longest
@@ -148,6 +149,9 @@ export const STEPS = [
 		name: "checks",
 		why: "pinned dependencies, imports, cloud boundaries, wire helper copies, migration custom settings, connector catalog, runtime bundle",
 		paths: ANY,
+		// check:connector-catalog runs the runtime's TypeScript in Node, which imports built packages. A run in parts
+		// builds them in every part with a step that needs them (splitPlan).
+		build: true,
 		commands: [],
 		alone: [
 			"npm run check:pinned-deps",
