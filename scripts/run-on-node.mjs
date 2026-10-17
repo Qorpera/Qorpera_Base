@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { constants, homedir, hostname, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ALL_STARTED, describePlan, planChanged, planScript, STOP, splitPlan } from "./run-on-node-plan.mjs";
 import {
@@ -895,6 +895,20 @@ export function wholeBlocks(write) {
 	};
 }
 
+/** Writes `text` to `path` whole: into a temp file in the same folder, then renamed over `path`, so a reader (pr-loop
+ * reads the --record file the moment the run exits) sees the old file or the new one, never half of one. A failed write
+ * leaves no temp file behind and throws. */
+export function writeWhole(path, text) {
+	const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+	try {
+		writeFileSync(temp, text);
+		renameSync(temp, path);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
+}
+
 /** A part's results that are no pass, the worst first: the harness's own (a machine died, a session was cut or a queue
  * timed out; no result read back), then npm ci or the build, then a failed step. A result not named here is worst. */
 const WORST_FIRST = ["setup-failed", "unknown", "install-failed", "failed"];
@@ -1227,7 +1241,7 @@ async function main() {
 		console.log(`== run-on-node record ${JSON.stringify(record)}`);
 		if (options.record) {
 			try {
-				writeFileSync(resolve(options.record), `${JSON.stringify(record, null, 2)}\n`);
+				writeWhole(resolve(options.record), `${JSON.stringify(record, null, 2)}\n`);
 			} catch (error) {
 				console.error(`run-on-node: could not write ${options.record}: ${error.message}`);
 			}
