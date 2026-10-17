@@ -788,20 +788,24 @@ alone (no queue modules)`. With the modules, `verify` names:
 - the `sni` chain not in the rules (the modules came after the rules: reload the exit);
 - no checker on queue 0;
 - the checker not running, or its status older than 30 seconds;
-- the checker's own problems (`sni: …`): a rules file it cannot use, or the kernel's drops from the queue, for a minute
-  after the last one.
+- the checker's own problems (`sni: …`): a rules file it cannot use, or the kernel's drops from the queue in 3 status
+  writes in a row (2 seconds apart: the queue full again and again), for a minute after the last such write. Drops in
+  one or two writes in a row (a burst) are counted in its status (`kernel`, `dropping`) and named in its journal only.
 
 Limits:
 - the node has one queue, of 8192 packets, for every company's flows being judged. When it is full, the kernel drops
-  what the chain queues (it fails closed: new connections wait, hellos in progress may be refused), and `verify` says so
-  for a minute. So that one machine cannot fill it, a machine's packets of flows being judged, both ways together, go
-  to the queue at 1000 a second at most (2000 at once): the ones over that are dropped before the queue, counted in
-  `dropped_sni_rate`, and TCP sends them again. A flow is refused past 128 packets or 10 seconds without a whole hello,
+  what the chain queues (it fails closed: new connections wait, hellos in progress may be refused). So that one machine
+  cannot fill it, a machine's packets of flows being judged, both ways together, go to the queue at 1000 a second at
+  most (250 at once): the ones over that are dropped before the queue, counted in `dropped_sni_rate`, and TCP sends
+  them again. A flow is refused past 128 packets or 10 seconds without a whole hello,
   or 5 seconds after its pass without the server's acknowledgement; it holds at most 64 packets (a whole 16 KiB hello
   is 12 full segments), one machine's flows together at most 512, and a packet with no new byte is dropped, not held. A
-  machine past its 512 has its next flow refused; other machines are judged as before. Many machines that send as fast
-  as they can, all at once, can still fill the queue: then the kernel drops, and `verify` reports the exit unhealthy
-  for a minute after the last drop;
+  machine past its 512 has its next flow refused; other machines are judged as before. Some 30 machines that send
+  their 250 at the same moment can still fill the queue: then the kernel drops, and TCP sends again. Only when they do
+  it again and again (drops in 3 status writes in a row, as when they do it every 2 seconds) does `verify` report the
+  exit unhealthy, for a minute after the last such write. A flow has its buffers (34 KiB) only while it holds a
+  packet, so the queue's length bounds them; the checker forgets a flow not seen for 30 seconds, and its unit has
+  `MemoryMax=2G` (past it the kernel ends the checker, which starts again: it fails closed);
 - it reads the name the machine asks for, never the certificate or what follows, so domain fronting (a listed name
   carrying another site inside) is not caught. With encrypted ClientHello (ECH) the name read is the outer one; E6's
   browser policy keeps ECH off;
@@ -937,19 +941,21 @@ on the tailnet. It checks:
 - the server name checker's judge (`test/sni-judge.py`, made-up packets, no queue): a listed name, one under a `*.`
   name and one in capitals go on, the flow unmarked once the server acknowledges the hello; a blocked or unlisted name
   (and a name an open company blocks), a machine not verified, a company not known or with unusable rules, other bytes
-  sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start, and any packet of a flow
-  whose SYN it did not see (the machine's or the server's; the machine's reset goes on) are refused, and the refused
-  flow's packets dropped both ways; a hello in two records and in pieces is held whole; a part sent again with no new
-  byte is dropped, not held; a hello in more than 64 packets, and a flow of a machine holding 512, are refused while
-  another machine goes on, and a pass, a refusal, a reset and the 5 seconds let go of what a flow held; a flow past 128
-  packets (the machine's ACKs, or the server's packets after a pass), a pass the server does not acknowledge in 5
-  seconds (either side's next packet), a flow with no whole hello 10 seconds after its SYN, and the 129th SYN of a flow
-  are refused, and a SYN sent again starts the 10 seconds again; a packet with no machine on either side is dropped,
-  and the checker's machine addresses are the exit's (`AGENTS`) and the `sni` chain's; the server's bytes are never
-  judged as the machine's; a SYN on the ports of a flow judged (passed or refused) starts a new one; a machine's reset
-  keeps its flow, whose later packets are dropped both ways until a new SYN; a flow idle 120 seconds is forgotten. With made-up
-  kernel answers: the queue's config waits for the answer to it, not a verdict's, dropping a packet queued meanwhile;
-  the status names the packets held and the kernel's row for the queue, and its drops for a minute after the last.
+  sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start, and any packet of a flow whose
+  SYN it did not see (the machine's or the server's; the machine's reset goes on) are refused, and the refused flow's
+  packets dropped both ways; a hello in two records and in pieces is held whole; a part sent again with no new byte is
+  dropped, not held, and one past what a hello can take also gets the flow no buffers; a hello in more than 64 packets,
+  and a flow of a machine holding 512, are refused while another machine goes on, and a pass, a refusal, a reset and the
+  5 seconds let go of what a flow held; a flow past 128 packets (the machine's ACKs, or the server's packets after a
+  pass), a pass the server does not acknowledge in 5 seconds (either side's next packet), a flow with no whole hello 10
+  seconds after its SYN, and the 129th SYN of a flow are refused, and a SYN sent again starts the 10 seconds again; a
+  packet with no machine on either side is dropped, and the checker's machine addresses are the exit's (`AGENTS`) and
+  the `sni` chain's; the server's bytes are never judged as the machine's; a SYN on the ports of a flow judged (passed
+  or refused) starts a new one; a machine's reset keeps its flow, whose later packets are dropped both ways until a new
+  SYN; a flow idle 30 seconds is forgotten. With made-up kernel answers: the queue's config waits for the answer to it,
+  not a verdict's, dropping a packet queued meanwhile; the status names the packets held and the kernel's row for the
+  queue, and counts its drops: drops in 3 status writes in a row are a problem for a minute after the last, a burst (one
+  or two) is not.
   And, as the container has no queue modules,
   that the exit loads no `sni` chain and no queue rule, `check` says "only listed by address alone", and "only
   listed" goes by address;
@@ -1101,8 +1107,13 @@ writes the rules file from a list), and:
   and one slower than 5 seconds are reset, marked 3, counted and logged as `name_not_listed`; the open company's
   machine is not checked. While one machine floods the queue (ACKs on 100 connections with no hello, as fast as it
   can, for 8 seconds), its packets past 1000 a second are dropped before the queue (`dropped_sni_rate`), the kernel
-  drops none from the queue, the other machine's hellos are judged, and `verify` stays healthy. With the checker stopped, a judged flow goes on, a new one gets nowhere and `verify` says
-  why; a killed checker comes back each time, and a flow it was judging is refused; back to open, nothing is queued;
+  drops none from the queue, the other machine's hellos are judged, and `verify` stays healthy. The queue full once:
+  with the checker stopped (SIGSTOP), the machine floods 100 new connections for 10 seconds with 1400 bytes of data a
+  packet, past what a hello can take; the kernel drops what does not fit in the queue, and the checker, continued, is
+  the same process (a full socket does not end it), works the queue off, names the drops in its journal, judges the
+  other machine's hellos as before, and `verify` stays healthy (drops in one status write). With the checker stopped,
+  a judged flow goes on, a new one gets nowhere and `verify` says why; a killed checker comes back each time, and a
+  flow it was judging is refused; back to open, nothing is queued;
 - kills a resolver: systemd starts it again and the names hold;
 - fails closed: unusable rules for a company and a missing rules file leave its machines (or all of them) with no
   answer, and `verify` says why;

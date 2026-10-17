@@ -16,6 +16,9 @@ NetworkNamespacePath=/run/netns/qexit
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh sni
 Restart=always
 RestartSec=1
+# Its buffers are bounded by the queue's 8192 packets (34 KiB a flow at most, while a flow holds one) and its flows by
+# 1000 packets a second a machine for 30 seconds; past this, the kernel ends it, and it starts again (fails closed).
+MemoryMax=2G
 # The checker parses what agent road machines send: keep it to what it needs (root, to read the plug's and the rules
 # reader's files; the queue socket takes CAP_NET_ADMIN).
 NoNewPrivileges=yes

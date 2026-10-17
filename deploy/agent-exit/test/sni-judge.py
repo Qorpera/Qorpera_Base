@@ -222,8 +222,18 @@ def main():
     verdicts = run.judge.expire(run.at + sni.HOLD_TIME + 1)
     check(verdicts == [(ident2, DROP, 0), (ident, REPEAT, REFUSED)], f"a hello not whole in 5 seconds: {verdicts}")
     check(run.judge.holding == {}, f"a refused flow holds nothing: {run.judge.holding}")
+    run = Run()
+    run.send(packet("10.210.1.1", 40000, 5000, SYN))
+    for seq in (5001 + sni.STREAM_MAX, 5001 + 20000):
+        _, verdicts = run.send(packet("10.210.1.1", 40000, seq, ACK | PSH, b"x"))
+        flow = run.judge.flows[(("10.210.1.1", 40000), (SERVER, 443))]
+        check(verdicts == [(run.ident, DROP, 0)] and flow.data is None and flow.known is None and not flow.held,
+              f"a byte past what a hello can take is dropped, and the flow gets no buffers: {verdicts}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001 + sni.STREAM_MAX - 1, ACK | PSH, b"xy"))
+    check(verdicts == [] and flow.data is not None and flow.held == [run.ident],
+          f"a part with one byte a hello can take is held, with the flow's buffers: {verdicts}")
     print("PASS: a hello in parts out of order is held and then let on whole; parts that differ or a hello not whole "
-          "within 5 seconds are refused; a part sent again is dropped")
+          "within 5 seconds are refused; a part sent again, or past what a hello can take, is dropped (no buffers)")
 
     run = Run()
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, SYN, hello("x.test")))
@@ -459,18 +469,27 @@ def main():
         got = status(at, other + "    0   3018     1 2 65531     0     0        2  1\n")
         check(got["kernel"] == {"queued": 1, "queue_dropped": 0, "user_dropped": 0} and got["problems"] == [] and
               got["flows"] == 1 and got["held"] == 1, f"the status with the kernel's row for queue 0: {got}")
-        got = status(at + 2, other + "    0   3018     0 2 65531     5     1      900  1\n")
-        check(len(got["problems"]) == 1 and "dropped packets of queue 0 0s ago, 6 since" in got["problems"][0],
-              f"the kernel's drops are a problem: {got}")
-        got = status(at + 2 + sni.DROPS_SHOWN - 1, other + "    0   3018     0 2 65531     5     1      950  1\n")
-        check(len(got["problems"]) == 1, f"for a minute: {got}")
-        got = status(at + 2 + sni.DROPS_SHOWN + 1, other + "    0   3018     0 2 65531     5     1      990  1\n")
-        check(got["problems"] == [], f"a minute after the last drop, not any more: {got}")
+        row = "    0   3018     0 2 65531 {}     {}      900  1\n"
+        # One burst (drops in one status write), then none, then drops in two writes in a row: counted, no problem.
+        for step, (queue_dropped, user_dropped, dropping) in enumerate([(5, 1, 1), (5, 1, 0), (7, 1, 1), (7, 2, 2)]):
+            got = status(at + 2 + 2 * step, other + row.format(queue_dropped, user_dropped))
+            check(got["kernel"]["queue_dropped"] == queue_dropped and got["dropping"] == dropping and
+                  got["problems"] == [], f"drops in {dropping} status writes in a row are no problem: {got}")
+        last = at + 2 + 2 * 4
+        got = status(last, other + row.format(8, 2))
+        check(got["dropping"] == sni.DROPS_LASTING and len(got["problems"]) == 1 and
+              f"in {sni.DROPS_LASTING} status writes in a row, the last 0s ago, 10 since" in got["problems"][0],
+              f"drops in {sni.DROPS_LASTING} status writes in a row are a problem: {got}")
+        got = status(last + sni.DROPS_SHOWN - 1, other + row.format(8, 2))
+        check(got["dropping"] == 0 and len(got["problems"]) == 1, f"for a minute: {got}")
+        got = status(last + sni.DROPS_SHOWN + 1, other + row.format(8, 2))
+        check(got["problems"] == [], f"a minute after the last, not any more: {got}")
         got = status(at + 90, other)
         check(got["kernel"] is None and got["problems"] == [], f"no row before the checker binds its queue: {got}")
         got = status(at + 92, None)
         check(got["kernel"] is None and "cannot read" in got["problems"][0], f"no queue file: {got}")
-    print("PASS: the status names the packets held, and the kernel's drops of the queue for a minute after the last")
+    print(f"PASS: the status names the packets held and counts the kernel's drops of the queue; drops in "
+          f"{sni.DROPS_LASTING} status writes in a row are a problem for a minute after the last, a burst is not")
 
 
 class Kernel:

@@ -10,9 +10,10 @@
 #   queued again;
 # - 0x80000002: refused; the packet is refused with that mark (the logger reads it as name_not_listed), the flow
 #   becomes 3 and is queued no more: the machine's later packets of it are reset, the server's dropped.
-# The node has one queue for every company. So that no machine fills it, a machine's packets of flows being judged,
-# both ways together, go to it at 1000 a second at most (2000 at once); the ones over that are dropped here, before the
-# queue, and counted in dropped_sni_rate (TCP sends them again).
+# The node has one queue (8192 packets) for every company. So that no machine fills it, a machine's packets of flows
+# being judged, both ways together, go to it at 1000 a second at most (250 at once: some 30 machines at the same moment
+# to fill it); the ones over that are dropped here, before the queue, and counted in dropped_sni_rate (TCP sends them
+# again).
 # With no checker on queue 0 (it stopped, or restarts) the kernel drops the packets (no bypass): a flow being judged
 # then is refused, never let through unread. The brake's marks are 1..0x7FFFFFFF, so bit 31 never meets them.
 table inet qorpera_agent_exit {
@@ -40,8 +41,8 @@ table inet qorpera_agent_exit {
 		# Refused on the server's packet: the flow is the machine's, so it is counted and logged as the machine's.
 		meta mark 0x80000002 ip daddr 10.210.0.0/16 ct mark set 3 counter name "refused_name" goto refuse_reply
 		meta mark 0x80000002 ct mark set 3 counter name "refused_name" goto refuse
-		ip saddr 10.210.0.0/16 update @sni_rate { ip saddr limit rate over 1000/second burst 2000 packets } counter name "dropped_sni_rate" drop
-		ip daddr 10.210.0.0/16 update @sni_rate { ip daddr limit rate over 1000/second burst 2000 packets } counter name "dropped_sni_rate" drop
+		ip saddr 10.210.0.0/16 update @sni_rate { ip saddr limit rate over 1000/second burst 250 packets } counter name "dropped_sni_rate" drop
+		ip daddr 10.210.0.0/16 update @sni_rate { ip daddr limit rate over 1000/second burst 250 packets } counter name "dropped_sni_rate" drop
 		queue num 0
 	}
 

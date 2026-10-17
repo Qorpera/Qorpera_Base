@@ -395,12 +395,15 @@ server name check.
     too slow or in too many packets, more than 128 packets or 10 seconds before it is judged, a hello the server does
     not acknowledge in 5 seconds, a flow whose start it did not see) is marked 3 and queued no more, its machine reset,
     counted and logged as `name_not_listed`. The node's one queue (8192 packets) serves every company, so a machine's
-    packets of flows being judged go to it at 1000 a second at most (the rest are dropped before it, counted in
-    `dropped_sni_rate`), one machine's flows together hold at most 512 packets (past that its next flow is refused),
-    and a packet with no new byte is dropped, not held. Many machines flooding at once can still fill it: the kernel
-    then drops (fails closed), and `verify` shows the drops for a minute. With no checker on the queue
-    the kernel drops the queued packets; systemd starts it again one second after any stop, with no limit. The exit never loads the modules: it loads the chain and starts the
-    checker only while both are loaded, and `check` says which way "only listed" runs.
+    packets of flows being judged go to it at 1000 a second at most and 250 at once (the rest are dropped before it,
+    counted in `dropped_sni_rate`), one machine's flows together hold at most 512 packets (past that its next flow is
+    refused), and a packet with no new byte is dropped, not held. Some 30 machines sending at the same moment can still
+    fill it: the kernel then drops (fails closed) and TCP sends again; the checker's status counts the drops and its
+    journal names them, and `verify` turns unhealthy only when they come in 3 status writes in a row (the queue stays
+    full), for a minute after. A flow's buffers (34 KiB) exist only while it holds a packet, a flow is forgotten after
+    30 seconds idle, and the unit has `MemoryMax=2G`. With no checker on the queue the kernel drops the queued packets;
+    systemd starts it again one second after any stop, with no limit. The exit never loads the modules: it loads the
+    chain and starts the checker only while both are loaded, and `check` says which way "only listed" runs.
 
 ## 11. The address block (E9, choice 1)
 

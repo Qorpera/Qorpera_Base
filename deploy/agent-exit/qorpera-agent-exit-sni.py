@@ -34,10 +34,12 @@ A company without rules now (it was "only listed" when the flow started) has its
 mode now has them let on unless the name is blocked.
 
 The node has one queue, of 8192 packets, for every company. The chain lets a machine's packets of flows being judged
-(both ways together) into it at 1000 a second at most, and drops the others before the queue; and a flow is refused
-past 128 packets or the times above. So one machine cannot fill the queue. Many machines that send as fast as they
-can, all at once, still can: the kernel then drops what the chain queues (no bypass), and the status names those drops
-for a minute after the last one.
+(both ways together) into it at 1000 a second at most, 250 at once, and drops the others before the queue; and a flow
+is refused past 128 packets or the times above. So one machine cannot fill the queue. Some 30 machines that send their
+250 at the same moment still can: the kernel then drops what the chain queues (no bypass), and TCP sends it again. The
+status counts such drops and the journal names them; only drops in 3 status writes in a row (2 seconds apart: the
+queue full again and again, as when those machines do it every 2 seconds) are a problem, named for a minute after the
+last such write. A flow's buffers (34 KiB) exist only while it holds a packet, so the queue's length bounds them too.
 
 There is no bypass and no fail-open: with no checker bound to the queue the kernel drops the packets, and when the
 checker's socket closes it drops the ones held. TCP sends them again; the checker started again (the unit's
@@ -85,7 +87,10 @@ FLOW_HELD = 64              # a whole 16 KiB ClientHello is 12 full segments, or
 MACHINE_HELD = 512
 FLOW_QUEUED = 128           # a flow's packets both ways until it is judged: a 16 KiB ClientHello takes about 30
 HELLO_TIME = 10
-FLOW_IDLE = 120
+# A flow not seen for FLOW_IDLE seconds is forgotten: one not judged yet would be refused at its next packet anyway (it
+# is past HELLO_TIME and HOLD_TIME), one judged is queued no more, and one reset has ended.
+FLOW_IDLE = 30
+DROPS_LASTING = 3           # status writes in a row (2 s apart) with drops of the queue: it stayed full, not one burst
 DROPS_SHOWN = 60
 AGENTS = ipaddress.ip_network("10.210.0.0/16")    # AGENTS in qorpera-agent-exit.sh, and in qorpera-agent-exit-sni.nft
 AGENT_BITS, AGENT_MASK = int(AGENTS.network_address), int(AGENTS.netmask)
@@ -237,6 +242,10 @@ def agent(address):
 
 
 class Flow:
+    # Every flow seen in the last FLOW_IDLE seconds has one: slots keep each small.
+    __slots__ = ("start", "state", "held", "since", "seen", "opened", "passed", "queued", "data", "known", "filled",
+                 "hello")
+
     def __init__(self, start, at, queued=1):
         self.start = start          # the sequence number of the flow's first data byte (the SYN's + 1)
         self.state = "waiting"      # waiting -> passed (server not past the hello yet) -> done; or refused, or reset
@@ -327,6 +336,11 @@ class Judge:
             if payload[:len(hello)] != hello:
                 return self.refuse(key, flow, ident, "the ClientHello's bytes again, other ones")
             return [(ident, ACCEPT, 0)]
+        if offset >= STREAM_MAX:
+            # Past what a ClientHello can take: no new byte, so it is dropped (as below) before the flow gets buffers.
+            # A flow has them only while it holds a packet, and expire() refuses those, so the queue's length bounds
+            # them.
+            return [(ident, DROP, 0)]
         if flow.data is None:
             flow.data, flow.known, flow.since = bytearray(STREAM_MAX), bytearray(STREAM_MAX), at
         end = min(offset + len(payload), STREAM_MAX)
@@ -334,8 +348,8 @@ class Judge:
         if known.count(1) and any(k and a != b for k, a, b in zip(known, flow.data[offset:end], payload)):
             return self.refuse(key, flow, ident, "the ClientHello's bytes again, other ones")
         if not known.count(0):
-            # No new byte (all held already, or past what a ClientHello can take): holding it would only fill the
-            # queue every company shares. TCP sends it again after the verdict.
+            # No new byte (all held already): holding it would only fill the queue every company shares. TCP sends it
+            # again after the verdict.
             return [(ident, DROP, 0)]
         machine = key[0][0]
         if len(flow.held) >= FLOW_HELD:
@@ -434,6 +448,7 @@ CMD_BIND = 1
 COPY_PACKET = 2
 A_PACKET_HDR, A_VERDICT_HDR, A_MARK, A_PAYLOAD = 1, 2, 3, 10
 SO_RCVBUFFORCE = 33
+SOL_NETLINK, NETLINK_NO_ENOBUFS = 270, 5
 
 
 def attribute(kind, value):
@@ -458,6 +473,9 @@ class Queue:
         self.number, self.seq = number, 0
         self.sock = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_NETFILTER)
         self.sock.setsockopt(socket.SOL_SOCKET, SO_RCVBUFFORCE, 16 << 20)
+        # A packet the kernel cannot hand over (this socket full) it drops and counts in user_dropped; this keeps it
+        # from also failing the socket's next read with ENOBUFS, which would end the checker and drop what it holds.
+        self.sock.setsockopt(SOL_NETLINK, NETLINK_NO_ENOBUFS, 1)
         self.sock.bind((0, 0))
         self.request(attribute(CFG_CMD, struct.pack("!BxH", CMD_BIND, 0)))
         self.request(attribute(CFG_PARAMS, struct.pack("!IB", 0xFFFF, COPY_PACKET)))
@@ -487,8 +505,8 @@ class Queue:
                         self.verdict(ident, DROP, 0)
 
     def receive(self):
-        """The messages of one read: (type, sequence, body). A full socket (ENOBUFS) raises: the checker leaves, and
-        the kernel drops what it held."""
+        """The messages of one read: (type, sequence, body). An error of the socket raises: the checker leaves, and the
+        kernel drops what it held."""
         data, at, found = self.sock.recv(1 << 20), 0, []
         while at + 16 <= len(data):
             length, kind, _flags, seq, _pid = struct.unpack_from("=IHHII", data, at)
@@ -526,7 +544,7 @@ class Checker:
         self.namespace = os.stat("/proc/self/ns/net").st_ino
         self.status_path = os.path.join(args.run_dir, "sni.json")
         self.queue_rows = QUEUE_ROWS
-        self.dropped, self.dropped_at = 0, None
+        self.dropped, self.dropping, self.dropped_at = 0, 0, None
 
     def decide(self, machine, name):
         """None when the machine's company allows `name` now, or why not (rules and machines read at most once a
@@ -584,14 +602,26 @@ class Checker:
         except (OSError, ValueError) as error:
             kernel = None
             problems.append(f"cannot read {self.queue_rows}: {error}"[:300])
-        if kernel and kernel["queue_dropped"] + kernel["user_dropped"] > self.dropped:
-            self.dropped, self.dropped_at = kernel["queue_dropped"] + kernel["user_dropped"], at
+        # Drops in one write or two are a burst, from many machines at once: the status counts them (kernel, dropping),
+        # the journal names them, and TCP sends the packets again. Drops in DROPS_LASTING writes in a row are a queue
+        # that stays full, a problem (verify: not healthy) for DROPS_SHOWN seconds.
+        total = kernel["queue_dropped"] + kernel["user_dropped"] if kernel else self.dropped
+        if total > self.dropped:
+            print(f"the kernel dropped {total - self.dropped} packets of queue {self.args.queue}: the queue or the "
+                  "checker's socket was full", file=sys.stderr, flush=True)
+            self.dropping += 1
+        else:
+            self.dropping = 0
+        self.dropped = total
+        if self.dropping >= DROPS_LASTING:
+            self.dropped_at = at
         if self.dropped_at is not None and at - self.dropped_at < DROPS_SHOWN:
-            problems.append(f"the kernel dropped packets of queue {self.args.queue} {int(at - self.dropped_at)}s ago, "
-                            f"{self.dropped} since this checker started: the queue was full, or the checker behind")
+            problems.append(f"the kernel dropped packets of queue {self.args.queue} in {DROPS_LASTING} status writes in "
+                            f"a row, the last {int(at - self.dropped_at)}s ago, {self.dropped} since this checker "
+                            "started: the queue stayed full, or the checker fell behind")
         status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(at), "queue": self.args.queue,
                   "flows": len(self.judge.flows), "held": sum(self.judge.holding.values()), "kernel": kernel,
-                  "refused": self.judge.refused, "problems": problems}
+                  "dropping": self.dropping, "refused": self.judge.refused, "problems": problems}
         plug.write_replace(self.status_path, json.dumps(status, sort_keys=True) + "\n")
 
     def run(self):

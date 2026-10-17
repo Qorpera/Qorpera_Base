@@ -503,13 +503,17 @@ except Exception as error:
     print(f"failed: {error!r}")
 EOF
 # A machine that floods the server name check's queue (E8c-2), run in a machine as root: `flood.py ADDRESS COUNT
-# SECONDS` opens COUNT connections to ADDRESS:443 and sends no ClientHello on them. It prints "flooding", then for
-# SECONDS sends ACKs on them, round and round, as fast as it can: no data, the numbers its own TCP sends (read from the
-# server's SYN-ACK), so conntrack takes them as the connection's. Then it prints "sent N".
+# SECONDS [SIZE DELAY]` opens COUNT connections to ADDRESS:443 and sends no ClientHello on them. It prints "connected",
+# waits DELAY seconds (none by default) and prints "flooding", then for SECONDS sends ACKs on them, round and round, as
+# fast as it can: the numbers its own TCP sends (read from the server's SYN-ACK), so conntrack takes them as the
+# connection's, and no data, or SIZE bytes 20,000 bytes past the connection's start (inside the server's window, past
+# what a ClientHello can take). Then it prints "sent N".
 cat >"$work/flood.py" <<'EOF'
 import socket, struct, sys, time
 address, count, seconds = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+size, delay = (int(sys.argv[4]), float(sys.argv[5])) if len(sys.argv) > 5 else (0, 0)
 def checksum(data):
+    data += b"\0" * (len(data) % 2)
     total = sum(struct.unpack(f"!{len(data) // 2}H", data))
     while total >> 16:
         total = (total & 0xFFFF) + (total >> 16)
@@ -528,12 +532,15 @@ for _ in range(count):
         if data[12:16] == socket.inet_aton(address) and (sport, dport) == (443, port) and flags & 0x12 == 0x12:
             break
     ends = socket.inet_aton(here) + socket.inet_aton(address)
-    tcp = struct.pack("!HHIIBBHHH", port, 443, ack, (seq + 1) & 0xFFFFFFFF, 5 << 4, 0x10, 64240, 0, 0)
+    start = (ack + 20000) & 0xFFFFFFFF if size else ack
+    tcp = struct.pack("!HHIIBBHHH", port, 443, start, (seq + 1) & 0xFFFFFFFF, 5 << 4, 0x10, 64240, 0, 0) + b"x" * size
     tcp = tcp[:16] + struct.pack("!H", checksum(ends + struct.pack("!BBH", 0, 6, len(tcp)) + tcp)) + tcp[18:]
     # The kernel fills in the IP header's checksum.
-    packets.append(struct.pack("!BBHHHBBH", 0x45, 0, 40, 0, 0x4000, 64, 6, 0) + ends + tcp)
+    packets.append(struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(tcp), 0, 0x4000, 64, 6, 0) + ends + tcp)
 sniff.close()
 raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+print("connected", flush=True)
+time.sleep(delay)
 print("flooding", flush=True)
 sent, end = 0, time.monotonic() + seconds
 while time.monotonic() < end:
@@ -913,9 +920,39 @@ limited=$(($(counted dropped_sni_rate) - limited))
 	fail "the kernel dropped $(($(queue_drops) - dropped)) packets from the queue while m1 flooded (it sent $sent)"
 ((limited >= 1000)) || fail "m1's flood (it sent $sent) was not limited before the queue: dropped_sni_rate +$limited"
 healthy || fail "not healthy after m1's flood: $(verify_problems)"
+pass "one machine flooding the node's one queue is held to its share before it: m1 (only listed) sent $sent ACKs on 100 connections to a listed name's address in 8 s with no ClientHello; dropped_sni_rate counted the $limited over its 1000 a second, the kernel dropped none from the queue, m2's ClientHellos were judged meanwhile (a listed name let on, a name not listed refused), and verify stayed healthy"
+
+# The queue full once, as some 30 machines' bursts at the same moment would fill it: with the checker stopped, m1 floods
+# 100 new connections for 10 s with 1400 bytes of data a packet, 20,000 bytes past their start (past what a ClientHello
+# can take): about 10,000 packets get past its 1000 a second, more than the queue's 8192. The kernel drops the rest (no
+# bypass) and counts them; the checker, continued, is the same process (a full socket does not end it), works the queue
+# off, and names the drops in the journal. Drops in one status write are no problem: verify stays healthy, and m2's
+# ClientHellos are judged as before.
+queue_waiting() { ip netns exec qexit awk '$1 == 0 {print $3}' /proc/net/netfilter/nfnetlink_queue; }
+checker=$(sni_pid) dropped=$(queue_drops)
+in_m m1 python3 /root/flood.py 198.51.100.1 100 10 1400 3 >"$work/flood.out" 2>&1 &
+flood=$!
+pids+=($flood)
+within 30 'grep -q connected "$work/flood.out" || ! kill -0 "$flood" 2>/dev/null'
+grep -q connected "$work/flood.out" || fail "m1's flood: $(cat "$work/flood.out")"
+kill -STOP "$checker"
+flooded=0
+wait "$flood" || flooded=$?
+kill -CONT "$checker"
+((flooded == 0)) || fail "m1's flood with the checker stopped: $(cat "$work/flood.out")"
+sent=$(sed -n 's/^sent //p' "$work/flood.out")
+drops=$(($(queue_drops) - dropped))
+((drops > 0)) || fail "the kernel dropped none of m1's $sent packets with the checker stopped"
+within 30 '[[ $(queue_waiting) == 0 ]]'
+[[ $(sni_pid) == "$checker" ]] || fail "the checker did not stay up through the full queue: $checker, now $(sni_pid)"
+within 10 'journalctl --sync; journalctl -u "$SNI" -o cat --no-pager | grep -q "^the kernel dropped [0-9]* packets of queue 0"'
+expect_hello ok 198.51.100.1 listed.example.com
+expect_hello refused 198.51.100.1 unlisted.example.com
+healthy || fail "not healthy after the queue was full once: $(verify_problems)"
+[[ $(sni_pid) == "$checker" ]] || fail "the checker did not stay up: $checker, now $(sni_pid)"
 rules "$C1=blocked.example.com,*.wild.example.com,fresh.example.com"
 within 30 only
-pass "one machine flooding the node's one queue is held to its share before it: m1 (only listed) sent $sent ACKs on 100 connections to a listed name's address in 8 s with no ClientHello; dropped_sni_rate counted the $limited over its 1000 a second, the kernel dropped none from the queue, m2's ClientHellos were judged meanwhile (a listed name let on, a name not listed refused), and verify stayed healthy"
+pass "the queue full once: with the checker stopped, m1 sent $sent packets of 1400 bytes on 100 connections in 10 s, and the kernel dropped the $drops that did not fit (no bypass); continued, the checker (the same process) worked the queue off and named the drops in the journal, m2's ClientHellos were judged as before, and verify stayed healthy (drops in one status write are a burst)"
 
 # No bypass: a judged flow goes on while the checker is down, a new one gets nowhere, and verify says why.
 in_m m2 python3 /root/hello.py 198.51.100.1 listed.example.com --wait 10 >"$work/held-hello.out" 2>&1 &

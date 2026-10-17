@@ -510,9 +510,9 @@ What the companies see:
   not whole within 5 seconds or in 64 packets, a connection with no whole ClientHello 10 seconds after it opened or
   after 128 packets, one whose server does not acknowledge the ClientHello in 5 seconds, or a connection of a machine
   holding 512 packets already. A machine's packets of connections being checked go to the checker at 1000 a second at
-  most; the rest are dropped, and TCP sends them again. Its connections made before the reload were checked by address
-  only: those made since step 11 are marked as not yet judged, and are reset at their next packet (the checker never
-  saw their start); older ones go on;
+  most, 250 at once; the rest are dropped, and TCP sends them again. Its connections made before the reload were
+  checked by address only: those made since step 11 are marked as not yet judged, and are reset at their next packet
+  (the checker never saw their start); older ones go on;
 - while the checker restarts (about a second; it always comes back) a new connection of an "only listed" machine
   waits (the kernel drops its packets and the machine sends them again), and one being checked then is reset; none is
   let through unchecked. A connection already checked goes on;
