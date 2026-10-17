@@ -152,10 +152,9 @@ these checks are independently complete:
 
 The provider can be enabled for the NAS-disconnected Step 2 acceptance run
 after all common checks pass and every object consumer explicitly uses
-`QORPERA_OBJECT_STORAGE_PRIMARY=supabase`. The client and
-`company-file-verifier` both honor that value; catalog entries and cleanup must
-remain `supabase-storage`. Do not configure a fake gateway and do not relabel
-this as a NAS topology test.
+`QORPERA_OBJECT_STORAGE_PRIMARY=supabase`. The client honors that value;
+catalog entries and cleanup must remain `supabase-storage`. Do not configure a
+fake gateway and do not relabel this as a NAS topology test.
 
 When an already-published Company File is NAS-backed, it has to be promoted to
 Supabase Storage before acceptance. The desktop-era promotion script

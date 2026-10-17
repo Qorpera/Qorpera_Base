@@ -54,15 +54,14 @@ insert into p13_allowed(name, kind, reason) values
 	-- The old Company File gateway: a folder-v2 row has no path gateway (the qorpera_company_files check, verified below).
 	('qorpera_company_path_actor', 'legacy', 'Refuses 55000 on a missing path_gateway_version before the fence (both checked below).'),
 	('qorpera_enable_company_path_gateway', 'legacy', 'Operator only; takes the fence, then the files check refuses a folder-v2 row.'),
-	('qorpera_promote_company_file_graph_to_supabase', 'legacy', 'Old Company File graph; no folder-v2 caller.'),
 	('qorpera_verify_company_path_tree', 'legacy', 'Old tree proof; its caller, the old path lane''s routes, refuses folder-v2 first (finalize_company_bootstrap went with legacy sweep D1, 20260930330000).'),
 	('qorpera_wake_path_authorized', 'legacy', 'Old file wake check; folder-v2 callers dispatch to folder bodies first.'),
 	('qorpera_sync_company_file_listener', 'legacy', 'Takes the fence only for an old file-wake cursor; folder-v2 file wakes use the P29 listener.'),
 	-- Artifacts: nothing makes an artifact any more (the member's registration went with legacy sweep E1, the runner
-	-- broker's with D5), graph completion refuses folder-v2 first (20260930041000, pinned below), and a folder-v2
-	-- company has no snapshots. So these are reached only through a snapshot-v1 company's artifacts and snapshots.
+	-- broker's with D5), the member's graph functions went with E2 (20260930502000), and a folder-v2 company has no
+	-- snapshots. So these are reached only through a snapshot-v1 company's artifacts and snapshots.
 	('qorpera_reject_profile_root_during_gc', 'legacy', 'Trigger on artifacts and snapshots; nothing registers an artifact any more, the office capture, export and import refuse folder-v2, and folder-v2 has no snapshots.'),
-	('qorpera_reject_graph_completion_during_gc', 'legacy', 'Trigger on reachability graphs; graph completion refuses folder-v2, whose roots (artifacts, snapshots) do not exist.');
+	('qorpera_reject_graph_completion_during_gc', 'legacy', 'Trigger on reachability graphs; since legacy sweep E2 only the old path lane''s publish completes a graph, and its routes refuse folder-v2 first (the office import went with the office transfers).');
 -- No folder-v2 site is left to move: the last one, the office waiter check, tests the core first since C1c-3l part 2
 -- (20260930030100).
 -- A run's own machines and the node machine's kinds all test the core since C1c-3n (20260930046000) and P13's sign-in
@@ -104,13 +103,6 @@ begin
 	if not exists (select 1 from p13_code where name = 'qorpera_company_path_actor'
 			and position('path_gateway_version is distinct from 1' in src) between 1 and position('qorpera_lock_profile_gc_fence(' in src)) then
 		raise exception 'qorpera_company_path_actor no longer refuses a missing path gateway before the fence'; end if;
-	-- The artifact entries rest on this refusal (20260930041000): it comes before any write, row lock, fence or job.
-	select string_agg(n, ', ' order by n) into v_list from unnest(array['qorpera_complete_object_reachability_graph']) n
-	where not exists (select 1 from p13_code c where c.name = n
-		and position('Artifacts do not serve folder-v2 companies' in c.src) between 1 and coalesce((select min(nullif(position(m[1] in c.src), 0))
-			from regexp_matches(c.src, '(\minsert\s+into\M|\mupdate\s+public\.|\mdelete\s+from\M|\mfor\s+(?:update|share|no\s+key\s+update|key\s+share)\M|qorpera_lock_profile_gc_fence\(|qorpera_runner_broker_locked_job\()', 'gi') m),
-			1000000));
-	if v_list is not null then raise exception 'This artifact function no longer refuses folder-v2 before any lock: %', v_list; end if;
 	-- The sites still to move, for whoever reads a failing run's output (the list above is the record).
 	select string_agg(format('%s (%s): %s', name, kind, reason), E'\n' order by name) into v_list from p13_allowed
 	where kind in ('open', 'partial');

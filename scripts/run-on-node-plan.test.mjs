@@ -102,9 +102,8 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	])
 		for (const half of RUNNER_ORCHESTRATOR) assert.ok(names([file]).includes(half), `${file} ${half}`);
 	assert.deepEqual(names(["deploy/first-node/install.sh"]), set([...BASELINE, ...RUNNER_ORCHESTRATOR, "deploy-node", "deploy-shell"]));
-	assert.deepEqual(names(["supabase/functions/company-file-verifier/object-loader.ts"]), set([...BASELINE, "web", "functions"]));
+	assert.deepEqual(names(["supabase/functions/mail-outbox/mail-outbox.ts"]), set([...BASELINE, "web", "functions"]));
 	const functions = STEPS.find((step) => step.name === "functions").commands.join(" ");
-	assert.match(functions, /company-file-verifier\.test\.ts/);
 	assert.match(functions, /runner-orchestrator\/runner-orchestrator\.test\.ts/);
 	assert.match(functions, /event-intake\/event-intake\.test\.ts/);
 	assert.match(functions, /mail-intake\/mail-intake\.test\.ts/);
