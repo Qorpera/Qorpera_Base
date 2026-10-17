@@ -314,6 +314,9 @@ export class ConversationView {
 	readonly #undos = new Map<string, InterfaceUndoState>();
 	/** Each message drawn in the thread: what it is and who wrote it, for its right-click menu. */
 	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string; mine: boolean }>();
+	/** What opens the next message menu: "key" after Shift+F10 or the menu key in the thread, else the type of the
+	 * pointer last pressed there ("mouse", "pen", "touch"). */
+	#menuInput = "";
 	/** The member's erases of messages here, one line each, oldest first, each read until it is done or fails (summary
 	 * trees M3c). */
 	#erases: EraseLine[] = [];
@@ -720,8 +723,18 @@ export class ConversationView {
 			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
-		// A message's own menu: a right-click, or Shift+F10 or the menu key from a link in it. Also on an earlier page's
-		// message, which stands outside the live log.
+		// A message's own menu: a right-click, a long press, or Shift+F10 or the menu key from a link in it. Also on an
+		// earlier page's message, which stands outside the live log. A browser fires the keyboard's at the focused element's
+		// place, not at 0,0, so the key itself is noted (on Windows the menu key opens it on release), and so is the type of
+		// the pointer pressed last.
+		const menuKey = (event: KeyboardEvent) => {
+			if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) this.#menuInput = "key";
+		};
+		this.#messages.addEventListener("keydown", menuKey);
+		this.#messages.addEventListener("keyup", menuKey);
+		this.#messages.addEventListener("pointerdown", (event) => {
+			this.#menuInput = event.pointerType;
+		});
 		this.#messages.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
@@ -1051,10 +1064,18 @@ export class ConversationView {
 
 	/** A message's menu, for an owner or admin, the roles the erase route takes (M3c): Erase, or for a message already
 	 * erased, how its erase went (its copies included), read again. A message on its way has none, and with nothing to
-	 * offer the browser's own menu stays. So it does for a right-click on a link, an image or attachment, or text the
-	 * member selected in the message (Copy, Open link, Save image); the keyboard (Shift+F10, the menu key) still opens the
-	 * message's. */
+	 * offer the browser's own menu stays. So it does for a mouse or pen right-click on a link, an image or attachment, or
+	 * text the member selected in the message (Copy, Open link, Save image). The keyboard (Shift+F10, the menu key) still
+	 * opens the message's, since a link is its only way into a message, and so does a long press, which selects the word
+	 * under the finger before the menu comes. */
 	#openMessageMenu(event: MouseEvent): void {
+		// What opened it: a key noted, else the event's own pointer (Chrome and Firefox send the menu as a pointer event,
+		// with no pointer type for a key), else the pointer pressed last.
+		const input = this.#menuInput;
+		this.#menuInput = "";
+		const pointer = (event as Partial<PointerEvent>).pointerType;
+		const keyboard = input === "key" || pointer === "" || !(event.clientX || event.clientY);
+		const touch = (pointer || input) === "touch";
 		const target = event.target instanceof Element ? event.target : null;
 		const element = target?.closest<HTMLElement>("article.message") ?? null;
 		const drawn = element ? this.#messageItems.get(element) : undefined;
@@ -1070,7 +1091,8 @@ export class ConversationView {
 			return;
 		const selection = document.getSelection();
 		if (
-			(event.clientX || event.clientY) &&
+			!keyboard &&
+			!touch &&
 			(target.closest("a[href], img, video, audio, .received-attachments") ||
 				(selection &&
 					!selection.isCollapsed &&
