@@ -1314,6 +1314,59 @@ describe("the Members page after C6d: areas, agents and who left (Interfaces C6d
 		expect(main.querySelector(".notice")).toBeNull();
 	});
 
+	it("draws an areas table with no rows file yet empty, and the first area writes the file's first line first", async () => {
+		const fake = seeded();
+		fake.remove(AREAS);
+		const table = fake.text("tables/areas/table.toml");
+		const { main, hint } = await members(fake);
+		expect(main.querySelector(".interface-missing")).toBeNull();
+		expect(main.querySelector(".interface-area-add .interface-empty")?.textContent).toBe("No areas yet.");
+		const made = versionAfter(fake);
+		buttonNamed(main, "Add an area")!.click();
+		fill(field(main, "area"), "Hiring");
+		buttonNamed(form(main)!, "Save")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
+		// The rows file alone, made only where there is none, its first line naming the table's columns.
+		expect(fake.commits[0]?.operationKey).toMatch(/^web:areas-rows:[0-9a-f-]{36}$/);
+		expect(fake.commits[0]?.units).toEqual([{ op: "write", path: AREAS, text: noAreas }]);
+		// Then the row, written with the version the new rows file has; the table's definition as it was.
+		expect(made()).toBeDefined();
+		expect(fake.commits[1]?.units).toEqual([
+			{ op: "write", path: AREAS, text: areas(`Hiring,,${me},no,,`), expectedVersion: made() },
+		]);
+		expect(fake.text("tables/areas/table.toml")).toBe(table);
+		await hint();
+		await vi.waitFor(() => expect(titles(main, "You")).toEqual(["Hiring"]));
+	});
+
+	it("adds the row to the rows file another member made meanwhile, and makes no second one", async () => {
+		const fake = seeded();
+		fake.remove(AREAS);
+		const { main } = await members(fake);
+		const original = fake.folder.commit.getMockImplementation()!;
+		let theirs: string | undefined;
+		// Bea's first area makes the rows file between the member's look and their write.
+		fake.folder.commit.mockImplementationOnce(async (...args) => {
+			theirs = fake.put(AREAS, areas(`Press,,${bea},no,,`));
+			return original(...args);
+		});
+		buttonNamed(main, "Add an area")!.click();
+		fill(field(main, "area"), "Hiring");
+		buttonNamed(form(main)!, "Save")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
+		// The rows file was answered that it exists; the row is written to Bea's, with the version it read.
+		expect(fake.commits[0]?.units).toEqual([{ op: "write", path: AREAS, text: noAreas }]);
+		expect(fake.commits[1]?.units).toEqual([
+			{
+				op: "write",
+				path: AREAS,
+				text: areas(`Press,,${bea},no,,`, `Hiring,,${me},no,,`),
+				expectedVersion: theirs,
+			},
+		]);
+		expect(main.querySelector(".notice")).toBeNull();
+	});
+
 	it("draws Remove for each of an area's agents and Add an agent, which lists working agents in no area", async () => {
 		const fake = seeded();
 		const { main } = await members(fake, "owner", offersFake(fake));

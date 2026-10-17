@@ -2,6 +2,7 @@ import type { CloudMemberFolderUnit } from "@qorpera/cloud-client/cloud-member-f
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import {
 	csvField,
+	parseTableFile,
 	parseTableRows,
 	splitCsv,
 	type TableFile,
@@ -13,6 +14,7 @@ import {
 import {
 	commitUnit,
 	invalid,
+	readStateFile,
 	rewriteStateFile,
 	unsaved,
 	type WebMemberFolder,
@@ -23,10 +25,11 @@ import { ClaimLostError, rowsLocator, withCell } from "./interface-claims.ts";
 /* The Members page's areas (Interfaces C6d; deploy/first-node/RUNTIME-INTERFACES.md §5.1): a member adds an area,
  * which is then theirs, and changes which agents an area has. A company whose folder has no `tables/areas/` gets it
  * with the first such change: the table's two files as founding writes them (`interfaceLibraryFiles`), in one new
- * folder, before the change itself. Each change rewrites `tables/areas/rows.csv` the way a claim does
- * (app/interface-claims.ts): the rows are read and checked against the table's current definition, the claim rule is
- * checked here before anything is sent, and the write names the version it read. When the file changed in between it
- * is read and checked again; an area that changed meanwhile ends the change with that said. */
+ * folder, before the change itself; an areas table with no rows file yet gets one, its first line alone. Each change
+ * rewrites `tables/areas/rows.csv` the way a claim does (app/interface-claims.ts): the rows are read and checked
+ * against the table's current definition, the claim rule is checked here before anything is sent, and the write names
+ * the version it read. When the file changed in between it is read and checked again; an area that changed meanwhile
+ * ends the change with that said. */
 
 const AREAS = "areas";
 /** Tries of the first write when another writer made a folder it makes meanwhile. */
@@ -92,12 +95,43 @@ export async function ensureAreasTable(change: AreaChange, failure: string): Pro
 	}
 }
 
+/** Makes `tables/areas/rows.csv` with its first line alone, naming the table's current columns, when the table has no
+ * rows file yet (a table without one is valid and has no rows, RUNTIME-INTERFACES.md §5 "Rows"); nothing else is
+ * written. A rows file another writer made meanwhile (`exists`) is the one the change then adds its row to. */
+async function ensureAreaRows(change: AreaChange, failure: string): Promise<void> {
+	const { folder, signal, check } = change;
+	const path = `tables/${AREAS}/rows.csv`;
+	const rows = await folder.read(path, signal);
+	check();
+	if (rows.entry !== null) return;
+	const read = await readStateFile(folder, `tables/${AREAS}/table.toml`, signal);
+	check();
+	if (read === null) throw new Error(t("The areas are no longer here."));
+	const parsed = parseTableFile(read.text);
+	if (!parsed.ok)
+		throw invalid(
+			failure,
+			parsed.problems.map((problem) => problem.message),
+		);
+	const text = `${parsed.file.columns.map((column) => csvField(column.name)).join(",")}\n`;
+	const result = await commitUnit(
+		folder,
+		`web:areas-rows:${crypto.randomUUID()}`,
+		{ op: "write", path, text },
+		signal,
+	);
+	check();
+	if (result.outcome === "saved" || (result.outcome === "conflict" && result.reason === "exists")) return;
+	throw unsaved(result, failure);
+}
+
 /** Adds an area named `area`, with `about` when it says something, owned by the member, shared with no one, with no
  * supervisor and no agents: a row at the end of the rows file, every other byte as written. Supervision then goes
  * through the member's yes, as for an area they took. An area by that name already there ends it with that said. */
 export async function addArea(change: AreaChange & { readonly area: string; readonly about: string }): Promise<void> {
 	const failure = t("The area could not be added.");
 	await ensureAreasTable(change, failure);
+	await ensureAreaRows(change, failure);
 	let definition: TableFile | null = null;
 	await rewriteStateFile(
 		change.folder,
