@@ -23,7 +23,7 @@ function masked(mask: { push(chunk: Uint8Array): Uint8Array; end(): Uint8Array }
 	return Buffer.concat([mask.push(new TextEncoder().encode(text)), mask.end()]).toString("utf8");
 }
 
-/** The mask a read of the command gets; the session started it. */
+/** The mask a read of the command gets; the guest took the start the session resolved. */
 async function readMask(secrets: CodingCommandSecrets, request: CodingCommandSecretRequest) {
 	const masks = await secrets.output(request, signal());
 	if (!masks) throw new Error("no mask");
@@ -66,6 +66,7 @@ describe("a coding session's command secrets on its machine", () => {
 		const scope = f.scope(workerId);
 		const request = f.request(machineId, scope);
 		const started = await f.secrets.session(machineId, scope).resolve(request, signal());
+		f.secrets.session(machineId, scope).accepted(request);
 		expect(started.environment).toStrictEqual({ API_KEY });
 		expect(Object.isFrozen(started.environment)).toBe(true);
 		expect(f.environment).toHaveBeenCalledExactlyOnceWith(scope, expect.any(AbortSignal));
@@ -105,6 +106,7 @@ describe("a coding session's command secrets on its machine", () => {
 		const scope = f.scope(mine);
 		const request = f.request(machineId, scope);
 		const resolved = await f.secrets.session(machineId, scope).resolve(request, signal());
+		f.secrets.session(machineId, scope).accepted(request);
 		// Only its own values are in its environment, but root on the machine reaches the other session's.
 		expect(resolved.environment).toStrictEqual({ API_KEY });
 		const printed = `${API_KEY} ${OTHER_KEY} ${AWAY_KEY}`;
@@ -125,23 +127,30 @@ describe("a coding session's command secrets on its machine", () => {
 		expect(f.environment).toHaveBeenCalledTimes(5);
 	});
 
-	it("has no mask for a command it didn't start, or that the guest runs with an earlier start's environment", async () => {
+	it("has no mask for a command until the guest takes the start it resolved", async () => {
 		const workerId = randomUUID();
 		const f = fixture({ [workerId]: { API_KEY } });
 		const machineId = randomUUID();
 		const scope = f.scope(workerId);
 		const session = f.secrets.session(machineId, scope);
 		// An executor before this one started it: the values it runs with are not known here, and none is asked for.
-		expect(await session.output(f.request(machineId, scope), signal())).toBeNull();
+		const before = f.request(machineId, scope);
+		session.accepted(before);
+		expect(await session.output(before, signal())).toBeNull();
 		expect(f.environment).not.toHaveBeenCalled();
+		// Resolved, but the guest's answer to the start was lost, or it refused it: the guest may run the command with an
+		// earlier start's environment.
 		const request = f.request(machineId, scope);
-		await session.resolve(request, signal());
-		session.differs(request);
+		const started = await session.resolve(request, signal());
 		expect(await session.output(request, signal())).toBeNull();
 		// Its answer still masks the machine's other commands.
 		f.environment.mockResolvedValueOnce({ API_KEY: ROTATED });
 		const next = await session.resolve(f.request(machineId, scope), signal());
 		expect(masked(next.mask(), `${API_KEY} ${ROTATED}`)).toBe("*** ***");
+		// A start again sends the same environment without asking. Once the guest takes it, the command's reads are masked.
+		expect((await session.resolve(request, signal())).environment).toBe(started.environment);
+		session.accepted(request);
+		expect(masked(await readMask(session, request), `${API_KEY} ${ROTATED}`)).toBe("*** ***");
 		expect(f.environment).toHaveBeenCalledTimes(2);
 	});
 
@@ -222,7 +231,7 @@ describe("a coding session's command secrets on its machine", () => {
 		]) {
 			await expect(mine.resolve(differs, signal())).rejects.toThrow("CODING_COMMAND_SECRETS_SCOPE_DIFFERS");
 			await expect(mine.output(differs, signal())).rejects.toThrow("CODING_COMMAND_SECRETS_SCOPE_DIFFERS");
-			expect(() => mine.differs(differs)).toThrow("CODING_COMMAND_SECRETS_SCOPE_DIFFERS");
+			expect(() => mine.accepted(differs)).toThrow("CODING_COMMAND_SECRETS_SCOPE_DIFFERS");
 		}
 		expect(f.environment).toHaveBeenCalledTimes(2);
 	});

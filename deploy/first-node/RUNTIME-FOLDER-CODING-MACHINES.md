@@ -555,9 +555,12 @@ A program that encodes a value another way gets past the mask; that is why it is
 Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
 starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
 session on the machine. A session's values stay in the masks until the machine's last session is released. When the
-executor does not know the values a command runs with (it restarted after the start, or the guest kept an earlier
-start's environment), none of that command's output is kept: the bytes are counted lost. The save and push checks are
-5j-5.
+executor does not know the values a command runs with (it restarted after the start, or the guest did not confirm that
+it took this start's environment), none of that command's output is kept: the bytes are counted lost. The masks cover
+only the values this executor process asked for. An older value, such as a secret's value before it was changed, can
+still be on the machine (in a process started before, a container or a file), and a command that prints it is not
+masked. Changing a secret in the vault does not take its old value off the machine: revoke the old value where it was
+issued. The save and push checks are 5j-5.
 
 **The vault relay** (5j) is host-side, on a second vsock port that checks the caller's CID, on the platform road
 (agent exit §2: "the platform's own services keep the platform road, even when they act for an agent"). It does two

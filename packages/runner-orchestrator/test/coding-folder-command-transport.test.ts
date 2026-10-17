@@ -95,7 +95,7 @@ function maskedSecrets(environment: Record<string, string> = { TOKEN: SECRET }, 
 	return {
 		resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({ environment, mask })),
 		output: vi.fn<CodingCommandSecrets["output"]>(async () => mask),
-		differs: vi.fn<CodingCommandSecrets["differs"]>(),
+		accepted: vi.fn<CodingCommandSecrets["accepted"]>(),
 	};
 }
 
@@ -434,6 +434,11 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 				kind: "command",
 			},
 			expect.any(AbortSignal),
+		);
+		// The guest took the start, so its environment masks the command's output.
+		expect(secrets.accepted).toHaveBeenCalledExactlyOnceWith(secrets.resolve.mock.calls[0][0]);
+		expect(at.guest.client.run.mock.invocationCallOrder[0]).toBeLessThan(
+			secrets.accepted.mock.invocationCallOrder[0],
 		);
 		const asked = ["start", at.scope, input.commandId, input.inputSha256, signal];
 		expect(at.authorize.mock.calls).toStrictEqual([asked, asked]);

@@ -111,7 +111,7 @@ async function fixture() {
 		new LxdCodingFolderCommandTransport({
 			machine,
 			scope,
-			startOperationId,
+			currentStart: () => startOperationId,
 			session: { uid: 200001, gid: 200002, cwd: "/run/qorpera-folder/mounts/0123/repository", environment: {} },
 			custody,
 			limitBytes: 4 * 1048576,
@@ -123,6 +123,7 @@ async function fixture() {
 					views: [],
 				}),
 			},
+			dropped: async () => false,
 			authorize: vi.fn<LxdCodingFolderCommandTransportOptions["authorize"]>(async () => undefined),
 			secrets: secrets.session(machine.machineId, claim()),
 		});
@@ -218,5 +219,42 @@ describe("a folder-model command with its session's vault environment", () => {
 			log: { gapBytes: printed.length + 5 },
 		});
 		expect(await at.saved(input.commandId)).toBe("");
+	});
+
+	it("keeps none of a command's output when the guest's answer to its start was lost", async () => {
+		const at = await fixture();
+		// As above, but the guest's refusal of this executor's start never arrives: the run ends without an answer.
+		at.source.environment.mockResolvedValue({ API_KEY: ROTATED });
+		const printed = `key=${API_KEY}\n`;
+		const transport = at.transport(new CodingMachineCommandSecrets(at.source));
+		const lost = async (input: ReturnType<typeof at.input>) => {
+			at.guest.print(input.commandId, printed);
+			at.guest.client.run.mockRejectedValueOnce(new Error("CODING_GUEST_FAILED"));
+			await expect(transport.start(at.scope, input, signal)).rejects.toThrow("CODING_GUEST_FAILED");
+		};
+		const running = { state: "running", output: "", log: { gapBytes: printed.length } };
+		// A read: the guest has the command, so it is not started again, and none of its output is kept.
+		const input = at.input();
+		await lost(input);
+		expect(await transport.read(at.scope, { commandId: input.commandId }, signal)).toMatchObject(running);
+		at.guest.print(input.commandId, "done\n");
+		at.guest.end(input.commandId);
+		expect(await transport.read(at.scope, { commandId: input.commandId }, signal)).toMatchObject({
+			state: "succeeded",
+			exitCode: 0,
+			output: "",
+			log: { gapBytes: printed.length + 5 },
+		});
+		expect(await at.saved(input.commandId)).toBe("");
+		// A start again sends the same environment, and this time the refusal arrives. Still nothing is kept.
+		const again = at.input();
+		await lost(again);
+		at.guest.client.run.mockRejectedValueOnce(new CodingGuestRefused("CODING_GUEST_COMMAND_CONFLICT"));
+		expect(await transport.start(at.scope, again, signal)).toMatchObject(running);
+		const sent = at.guest.client.run.mock.calls.slice(-2).map(([request]) => request.environment);
+		expect(sent[1]).toStrictEqual(sent[0]);
+		expect(sent[1]).toMatchObject({ API_KEY: ROTATED });
+		expect(at.source.environment).toHaveBeenCalledTimes(2);
+		expect(await at.saved(again.commandId)).toBe("");
 	});
 });

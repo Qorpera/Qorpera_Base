@@ -736,12 +736,13 @@ export class LxdCodingFolderCommandTransport {
 						},
 						budget,
 					);
+					// Only now does this start's environment mask the command's output. A start whose answer was lost, or
+					// that the guest refused, may run with an earlier start's environment.
+					this.#secrets.accepted(this.#secretRequest(input.commandId));
 				} catch (error) {
-					// The guest has the command with another environment, such as a secret's earlier value: it is this one,
-					// and this start's values don't mask its output.
+					// The guest has the command with another environment, such as a secret's earlier value: it is this one.
 					if (!(error instanceof CodingGuestRefused && error.code === "CODING_GUEST_COMMAND_CONFLICT"))
 						throw error;
-					this.#secrets.differs(this.#secretRequest(input.commandId));
 				}
 				progress = await this.#save(folder, { ...progress, acknowledged: true });
 			}
@@ -898,8 +899,9 @@ export class LxdCodingFolderCommandTransport {
 			pending = 0,
 			masked: number | null = null;
 		if (!masks) {
-			// The values the command runs with are not known here (an executor before this one started it): nothing
-			// more of its output is kept, and what it printed is counted lost. Past the limit nothing more is kept anyway.
+			// The values the command runs with are not known here (an executor before this one started it, or the guest
+			// did not take this start): nothing more of its output is kept, and what it printed is counted lost. Past the
+			// limit nothing more is kept anyway.
 			if (!skip) gapBytes += Math.max(0, at - covered);
 		} else {
 			let mask = masks();

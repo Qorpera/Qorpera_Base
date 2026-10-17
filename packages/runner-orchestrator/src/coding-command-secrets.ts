@@ -34,11 +34,12 @@ export interface CodingCommandSecrets {
 		request: CodingCommandSecretRequest,
 		signal: AbortSignal,
 	): Promise<{ environment: Readonly<Record<string, string>>; mask(): CodingCommandSecretMask }>;
-	/** At each read: the mask for the output of a command started with `resolve`, or `null` when the values the command
-	 * runs with are not known here. Then none of its output may be kept. */
+	/** At each read: the mask for the output of a command whose start the guest `accepted`, or `null` when the values
+	 * the command runs with are not known here. Then none of its output may be kept. */
 	output(request: CodingCommandSecretRequest, signal: AbortSignal): Promise<(() => CodingCommandSecretMask) | null>;
-	/** The guest runs the command with another environment than `resolve` gave: an earlier start's. */
-	differs(request: CodingCommandSecretRequest): void;
+	/** The guest took the command's start with the environment `resolve` gave. Until then, it may run the command with
+	 * another one: an earlier start's. */
+	accepted(request: CodingCommandSecretRequest): void;
 }
 
 /** No secrets: an empty environment, and a mask that changes nothing. */
@@ -49,7 +50,7 @@ export const noCodingCommandSecrets: CodingCommandSecrets = Object.freeze({
 	async output() {
 		return () => new CodingSecretMask().stream();
 	},
-	differs() {},
+	accepted() {},
 });
 
 /** The leased session a vault environment is asked for (5j-4): the company whose secret broker holds it, and the
@@ -71,8 +72,8 @@ type Environment = Readonly<Record<string, string>>;
 interface Session {
 	/** Each command's environment. */
 	readonly commands: Map<string, Environment>;
-	/** The commands the guest runs with an earlier start's environment (`differs`). */
-	readonly differs: Set<string>;
+	/** The commands the guest took with their environment (`accepted`). */
+	readonly accepted: Set<string>;
 }
 
 interface Machine {
@@ -86,8 +87,9 @@ interface Machine {
  * its reads' masks cover the values it started with, even if one changes while it runs. A failed ask is not kept.
  * Each mask covers every value resolved for any session attached to the command's machine, and for any released while
  * another stayed: root on the machine reaches them all, and the other's commands may not have had their output kept
- * yet. A machine's values go once its last session is released. A command whose start this process didn't resolve
- * (it started before the executor did), or whose guest runs it with an earlier start's environment, has no mask. */
+ * yet. A machine's values go once its last session is released. A command has no mask until the guest takes the start
+ * this process resolved: one that started before the executor did, or whose start's answer was lost or refused, may
+ * run with an earlier start's environment. */
 export class CodingMachineCommandSecrets {
 	readonly #source: CodingEnvironmentSource;
 	readonly #machines = new Map<string, Machine>();
@@ -104,7 +106,7 @@ export class CodingMachineCommandSecrets {
 		this.#machines.set(machineId, machine);
 		const session: Session = machine.sessions.get(scope.workerId) ?? {
 			commands: new Map<string, Environment>(),
-			differs: new Set<string>(),
+			accepted: new Set<string>(),
 		};
 		machine.sessions.set(scope.workerId, session);
 		const asked = Object.freeze({
@@ -115,9 +117,9 @@ export class CodingMachineCommandSecrets {
 		return {
 			resolve: (request, signal) => this.#resolve(machineId, asked, session, request, signal),
 			output: (request, signal) => this.#output(machineId, asked, session, request, signal),
-			differs: (request) => {
+			accepted: (request) => {
 				this.#check(machineId, asked, request);
-				if (session.commands.has(request.commandId)) session.differs.add(request.commandId);
+				if (session.commands.has(request.commandId)) session.accepted.add(request.commandId);
 			},
 		};
 	}
@@ -171,7 +173,7 @@ export class CodingMachineCommandSecrets {
 		this.#check(machineId, scope, request);
 		signal.throwIfAborted();
 		const environment = session.commands.get(request.commandId);
-		if (!environment || session.differs.has(request.commandId)) return null;
+		if (!environment || !session.accepted.has(request.commandId)) return null;
 		const mask = this.#mask(machineId, scope, session, environment);
 		return () => mask.stream();
 	}
