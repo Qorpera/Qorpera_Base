@@ -241,4 +241,5 @@ of them, and the record is written with them redacted if one slipped in.
 - No model: the runs' calls are made by the harness, as the runtime would.
 - Bob's step 3 take-in is a SQL call; his run reads output only in step 4,
   where the host takes his reads in, as it does Carol's. The notify
-  continuation's take-in (6d-3c) is not built.
+  continuation's take-in (6d-3c, `20260930500000`) is a SQL path, tested
+  in SQL test 519, not here.

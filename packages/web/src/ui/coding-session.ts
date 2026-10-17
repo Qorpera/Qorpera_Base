@@ -976,7 +976,9 @@ export class CodingSessionElement {
 									? t("Coding is turned off here")
 									: body.reason === "MACHINE_STOPPED"
 										? t("The machine stopped")
-										: undefined;
+										: body.reason === "FOLDER_RESTART"
+											? t("The machine restarted")
+											: undefined;
 		const stopped = count
 			? count === 1
 				? t("1 command stopped")

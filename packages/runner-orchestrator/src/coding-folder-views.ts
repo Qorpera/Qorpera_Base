@@ -4,7 +4,7 @@ import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CODING_GUEST, type CodingGuestRequests, isUuid, normalizeUuid, parseClosedRecord } from "@qorpera/contracts";
 import { CodingControlRefused } from "./coding-executor.ts";
-import { type CodingFolderBoundary, codingFolderViewSaved } from "./coding-folder-control.ts";
+import { type CodingFolderBoundary, type CodingFolderReads, codingFolderViewSaved } from "./coding-folder-control.ts";
 import { CodingGuestRefused, LxdCodingGuestClient } from "./coding-guest-client.ts";
 import { type LxdCodingMachineBinding, lxdCodingMachineName, lxdCodingMachinePlan } from "./coding-machine.ts";
 import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient } from "./lxd-client.ts";
@@ -28,6 +28,7 @@ const OPEN_REFUSALS: ReadonlyMap<string, string> = new Map([
 	["Folder view is invalid", "VIEW_INVALID"],
 	["Folder view opener is invalid", "VIEW_INVALID"],
 	["Folder view anchor is invalid", "VIEW_INVALID"],
+	["Coding machine must restart first", "MACHINE_RESTART_REQUIRED"],
 ]);
 /** The guest's refusals that pass: another call holds the session's or the machine's lock. */
 const GUEST_BUSY = new Set(["CODING_GUEST_SESSION_BUSY", "CODING_GUEST_MACHINE_BUSY"]);
@@ -78,8 +79,8 @@ export interface CodingFolderViewEnd {
 	readonly closed: boolean;
 }
 
-/** The core refused the session's view (its code is one of OPEN_REFUSALS' or VIEW_CLOSED, the node closed the view
- * under the mount): the attach fails with it, and the same attach would fail the same way. */
+/** The core refused the session's view (its code is one of OPEN_REFUSALS'): the attach fails with it, and the same
+ * attach would fail the same way. */
 export class CodingFolderViewRefused extends Error {
 	readonly code: string;
 	constructor(code: string) {
@@ -87,6 +88,13 @@ export class CodingFolderViewRefused extends Error {
 		this.code = code;
 	}
 }
+
+/** The machine must restart before a view opens on it (RUNTIME-FOLDER-CODING-MACHINES.md, rule 4): the node closed the
+ * view the session holds, or the one just opened, under its mount (VIEW_CLOSED), the boundary before a new view
+ * answered the machine's reads unproven (READS_UNPROVEN), or the core marked the machine (MACHINE_RESTART_REQUIRED, the
+ * open's refusal). The executor stops and starts it, the folder service hearing `restarted` between, and attaches the
+ * session again. */
+export class CodingFolderRestartRequired extends CodingFolderViewRefused {}
 
 export interface CodingFolderViewsOptions {
 	readonly control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
@@ -168,11 +176,13 @@ export class CodingFolderViews {
 	 * Before a new view, the old one's final boundary saves what it has pending and it closes; with no old view held, a
 	 * boundary saves what the machine's views have pending. A new view is recorded before it is shown, or closed. Resolves
 	 * with the view shown and, when it replaced one the session held, how that one ended: the caller ends a view it means
-	 * to replace before its attachment does, so one replaced here is a view whose attachment SQL already gave up or one
-	 * the node closed. Invalid ids, a uid outside the sessions' range or an invalid `until` reject with
-	 * CODING_FOLDER_VIEW_REQUEST_INVALID before anything; a refused open with CodingFolderViewRefused; a guest's refusal
-	 * with CodingGuestRefused, and an agent's answer that is not one with CODING_GUEST_ANSWER_INVALID; records it can't
-	 * read, write or remove with CODING_FOLDER_VIEW_RECORD_FAILED; an open or a mount with no answer is tried again until
+	 * to replace before its attachment does, so one replaced here is a view whose attachment SQL already gave up. Invalid
+	 * ids, a uid outside the sessions' range or an invalid `until` reject with CODING_FOLDER_VIEW_REQUEST_INVALID before
+	 * anything; a refused open with CodingFolderViewRefused; a machine that must restart first (the node closed the
+	 * session's view, held or new, under its mount; the boundary before a new view answered its reads unproven; or the
+	 * core refused the open so) with CodingFolderRestartRequired, before any other view opens; a guest's refusal with
+	 * CodingGuestRefused, and an agent's answer that is not one with CODING_GUEST_ANSWER_INVALID; records it can't read,
+	 * write or remove with CODING_FOLDER_VIEW_RECORD_FAILED; an open or a mount with no answer is tried again until
 	 * `until`, and then rejects with CODING_FOLDER_VIEW_UNCONFIRMED or CODING_FOLDER_MOUNT_UNANSWERED. */
 	async attach(
 		session: CodingFolderViewSession,
@@ -210,20 +220,28 @@ export class CodingFolderViews {
 			});
 		const held = await recorded(this.#held(workerId, deadline));
 		if (held?.machineId === machineId && held.bootId === bootId && held.attachmentToken === attachmentToken) {
-			// One the node closed since gives way to a new one.
 			if ((await this.#mount(asked, held, until, signal, deadline)) === "mounted") return { viewId: held.viewId };
+			// The node closed it: what it read may still be in the machine. It stays held, for the restart to end.
+			throw new CodingFolderRestartRequired("VIEW_CLOSED");
 		}
-		const [replaced] = await recorded(this.#finish(held?.machineId ?? machineId, held ? [held] : [], deadline));
+		const finished = held?.machineId ?? machineId;
+		const {
+			reads,
+			ends: [replaced],
+		} = await recorded(this.#finish(finished, held ? [held] : [], deadline));
+		// A view opened now would answer unproven until the machine restarted.
+		if (finished === machineId && reads === "unproven") throw new CodingFolderRestartRequired("READS_UNPROVEN");
 		const view = await this.#open(asked, machineId, until, signal, deadline);
 		await recorded(this.#keep(view, deadline)).catch(async (error: unknown) => {
 			// Unrecorded, it would outlive a restart unended: it closes, never shown.
 			await this.#close(view, signal);
 			throw error;
 		});
-		// A failed mount leaves the view held: the session's end closes it, and its next attach tries it again.
+		// A failed mount leaves the view held: the session's end closes it, and its next attach tries it again. One the
+		// node closed under the mount stays held too, for the restart to end.
 		if ((await this.#mount(asked, view, until, signal, deadline)) === "mounted")
 			return replaced ? { viewId: view.viewId, replaced } : { viewId: view.viewId };
-		throw new CodingFolderViewRefused("VIEW_CLOSED");
+		throw new CodingFolderRestartRequired("VIEW_CLOSED");
 	}
 
 	/** The attachment the session's view was opened under, by its record: an executor that restarted attaches under it
@@ -241,7 +259,7 @@ export class CodingFolderViews {
 	async end(workerId: string, signal: AbortSignal): Promise<CodingFolderViewEnd | undefined> {
 		const worker = normalizeUuid(workerId);
 		const view = worker ? await this.#held(worker, signal) : undefined;
-		return view && (await this.#finish(view.machineId, [view], signal))[0];
+		return view && (await this.#finish(view.machineId, [view], signal)).ends[0];
 	}
 
 	/** Every view on the machine ends, before the machine stops: one final boundary for them all, then each close. Rejects
@@ -256,7 +274,7 @@ export class CodingFolderViews {
 			await this.#finish(machine, [], signal);
 			throw error;
 		}
-		return views.length > 0 ? this.#finish(machine, views, signal) : [];
+		return views.length > 0 ? (await this.#finish(machine, views, signal)).ends : [];
 	}
 
 	async #open(
@@ -280,9 +298,14 @@ export class CodingFolderViews {
 					deadline,
 				);
 			} catch (error) {
-				// A refusal without a message the control keeps (a 42501 of another kind) is final too: UNKNOWN.
-				if (error instanceof CodingControlRefused)
-					throw new CodingFolderViewRefused(OPEN_REFUSALS.get(error.reason ?? "") ?? "UNKNOWN");
+				// A refusal without a message the control keeps (a 42501 of another kind) is final too: UNKNOWN. A machine
+				// the core marked must restart first.
+				if (error instanceof CodingControlRefused) {
+					const code = OPEN_REFUSALS.get(error.reason ?? "") ?? "UNKNOWN";
+					throw code === "MACHINE_RESTART_REQUIRED"
+						? new CodingFolderRestartRequired(code)
+						: new CodingFolderViewRefused(code);
+				}
 				// Busy or unconfirmed: a view the lost answer opened gives way to the next, which supersedes it.
 				await this.#pause(until, signal, deadline, "CODING_FOLDER_VIEW_UNCONFIRMED");
 				continue;
@@ -326,8 +349,13 @@ export class CodingFolderViews {
 	}
 
 	/** The views' final boundary, then their closes, and then their records go; a boundary with no views only saves what
-	 * the machine's views have pending. Rejects when a record stays. */
-	async #finish(machineId: string, views: readonly HeldView[], signal: AbortSignal): Promise<CodingFolderViewEnd[]> {
+	 * the machine's views have pending. Resolves with how each view ended and the boundary's reads (none when it had no
+	 * answer). Rejects when a record stays. */
+	async #finish(
+		machineId: string,
+		views: readonly HeldView[],
+		signal: AbortSignal,
+	): Promise<{ reads?: CodingFolderReads; ends: CodingFolderViewEnd[] }> {
 		let boundary: CodingFolderBoundary | undefined;
 		try {
 			boundary = await this.#folder.boundary(
@@ -356,7 +384,7 @@ export class CodingFolderViews {
 				failure ??= error;
 			});
 		if (failure) throw failure;
-		return ends;
+		return boundary?.machine === machineId ? { reads: boundary.reads, ends } : { ends };
 	}
 
 	/** The view the session holds, by its record. */

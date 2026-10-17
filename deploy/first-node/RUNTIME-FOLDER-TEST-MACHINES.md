@@ -309,6 +309,12 @@ them. Step 6 builds that as follows:
    That takes in the newest view of the placement, so a boot without `/company` takes in what an earlier boot of the
    same disk was served. Each take-in checks the view's whole read set for the run (rule 5), but copies into the run's
    records only the view's records that run has not taken in yet (`20260930498000`, for the office's take-in too).
+   The notify continuation takes in when the woken run reads its wake or describes its context (6d-3c,
+   `20260930500000`): for each command event, the newest view of its placement, under an id made from the wake and the
+   view, so a second read replays. A command shows its exit code and output only after that take-in, or when its
+   placement had no view by its end. A take-in refused because a read is no longer readable to the run, or because the
+   run lacks the company-wide view, is undone, and the command shows as `held`, with no exit code or output. That path
+   does not retire the placement; the executor does (rule 5).
 4. **Boundaries come after reads.** A boundary (below) is answered only after every recorded read of the machine is
    released. A boundary with no answer holds the output back: the model gets nothing from the machine until it is
    answered.

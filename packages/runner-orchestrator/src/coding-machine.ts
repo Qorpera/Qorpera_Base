@@ -395,8 +395,11 @@ export interface CodingMachineReconcileOptions {
 	stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>;
 	/** A machine LXD shows stopped, about to be started (the first start after its create too): called each time,
 	 * before the start's fresh authority, so its time costs none of it. The executor says here that the machine
-	 * restarted (the folder service's `restarted`). A failure fails the reconcile, and nothing is dispatched. */
-	starting?: (signal: AbortSignal) => Promise<void>;
+	 * restarted (the folder service's `restarted`) and records the restart. `afterOperationId` names the start: the
+	 * LXD operation of the settled effect it follows (the create, the stop, or the start the machine stopped after),
+	 * the same each time this start is about to go out and no other start's, since that effect stays the journal's
+	 * last until the start is dispatched. A failure fails the reconcile, and nothing is dispatched. */
+	starting?: (afterOperationId: string, signal: AbortSignal) => Promise<void>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -886,9 +889,12 @@ export async function reconcileCodingMachine(
 		)
 	)
 		throw new Error("AGENT_PLUG_MISSING");
-	// A start goes out only once the executor has said the machine restarted. Before the fresh authority too.
+	// A start goes out only once the executor has said the machine restarted. Before the fresh authority too. The
+	// settled effect it follows names it.
 	if (action === "start" && options.starting) {
-		await options.starting(options.signal);
+		if (tail?.kind !== "settled" || typeof tail.operationId !== "string")
+			throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+		await options.starting(tail.operationId, options.signal);
 		options.signal.throwIfAborted();
 	}
 	// Fresh authority immediately before irreversible dispatch; journal CAS

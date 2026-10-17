@@ -511,7 +511,7 @@ describe("a coding machine's journaled lifecycle", () => {
 			return receipt(f.journal, intent);
 		};
 		let fail = true;
-		const starting = vi.fn(async (signal: AbortSignal) => {
+		const starting = vi.fn(async (_afterOperationId: string, signal: AbortSignal) => {
 			expect(signal).toBe(f.controller.signal);
 			order.push("starting");
 			if (fail) {
@@ -550,18 +550,24 @@ describe("a coding machine's journaled lifecycle", () => {
 			...start,
 			"authorize:run",
 		]);
-		expect(starting).toHaveBeenCalledTimes(4);
+		// The fake LXD numbers each operation by its submission: the create 11, the starts 12, 14 and 15, the stop 13. Each
+		// start is named by the effect it follows: the create (tried twice), the stop, the start the machine stopped after.
+		expect(starting.mock.calls.map((call) => call[0])).toEqual([id(11), id(11), id(13), id(14)]);
 	});
 	it("rolls over a member's full journal that ends with a start whose VM stopped by itself", async () => {
 		const f = await fixture();
 		const root = await retainedHistory(f, 381, "succeeded", "start");
-		expect((await f.reconcile()).state).toBe("pending");
+		const starting = vi.fn(async (_afterOperationId: string, _signal: AbortSignal) => undefined);
+		const reconcile = () => reconcileCodingMachine({ ...f.options, desiredState: "running", starting });
+		expect((await reconcile()).state).toBe("pending");
 		expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
 			segment: 1,
 			previousEventCount: 381,
 		});
-		expect((await f.reconcile()).state).toBe("pending");
-		expect((await f.reconcile()).state).toBe("running");
+		expect((await reconcile()).state).toBe("pending");
+		expect((await reconcile()).state).toBe("running");
+		// The start after the rollover is named by the old segment's last start (its triplet 126), as before it.
+		expect(starting.mock.calls.map((call) => call[0])).toEqual([id(1126)]);
 		expect((await f.reconcile("stopped")).state).toBe("pending");
 		expect((await f.reconcile("stopped")).state).toBe("stopped");
 		// The stop is written down once, after the start that ended the old segment.

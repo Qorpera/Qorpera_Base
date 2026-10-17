@@ -864,6 +864,18 @@ describe("the element in the thread", () => {
 					{ text: "The machine stopped", reason: "MACHINE_STOPPED", stopped: [], moreStopped: 0 },
 					"executor",
 				),
+				// The executor restarted the machine for the company folder (F3 5g-5).
+				event(
+					10,
+					"step",
+					{
+						text: "The machine restarted for the company folder; 1 command was stopped",
+						reason: "FOLDER_RESTART",
+						stopped: [{ commandId: id(82), turn: 3, command: "npm run dev" }],
+						moreStopped: 0,
+					},
+					"executor",
+				),
 			],
 		});
 		await settle();
@@ -876,6 +888,7 @@ describe("the element in the thread", () => {
 			"Quiet for 3 days · asked Mark whether it can be archived",
 			"The machine stopped · 2 commands stopped",
 			"The machine stopped",
+			"The machine restarted · 1 command stopped",
 		]);
 		// The working step stays the harness's.
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");

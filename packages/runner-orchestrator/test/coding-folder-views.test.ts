@@ -16,7 +16,7 @@ import { CODING_GUEST, type CodingGuestRequests } from "@qorpera/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingFolderBoundary } from "../src/coding-folder-control.ts";
-import { CodingFolderViewRefused, CodingFolderViews } from "../src/coding-folder-views.ts";
+import { CodingFolderRestartRequired, CodingFolderViewRefused, CodingFolderViews } from "../src/coding-folder-views.ts";
 import { CodingGuestRefused } from "../src/coding-guest-client.ts";
 import { lxdCodingMachineName } from "../src/coding-machine.ts";
 import type { LxdExecStreamRequest, LxdInstanceExecStreamClient, LxdInstanceProgramClient } from "../src/lxd-client.ts";
@@ -434,26 +434,71 @@ describe("CodingFolderViews", () => {
 			expect(at.closes).toEqual([]);
 		});
 
-		it("replaces a view the node closed since: its final boundary and close, then a new view", async () => {
+		it("refuses VIEW_CLOSED, for the machine to restart, when the node closed the view the session holds", async () => {
 			const at = fixture();
 			await at.views.attach(session(), later(), live());
 			at.events.splice(0);
 			at.script.mount.push("closed");
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
-				viewId: VIEWS[1],
-				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+			const error = await rejection(at.views.attach(session(), later(), live()));
+			expect(error).toBeInstanceOf(CodingFolderRestartRequired);
+			expect((error as CodingFolderRestartRequired).code).toBe("VIEW_CLOSED");
+			expect(error.message).toBe("CODING_FOLDER_VIEW_REFUSED:VIEW_CLOSED");
+			// No other view opens: what the closed one read may still be in the machine.
+			expect(at.events).toEqual(["sha256sum", "mount"]);
+			expect(at.opens).toHaveLength(1);
+			expect(at.closes).toEqual([]);
+			// It stays held, for the restart to end; the session's attach on the new boot then opens a new view.
+			await expect(at.views.held(WORKER, live())).resolves.toEqual({
+				machineId: MACHINE,
+				bootId: BOOT,
+				attachmentToken: TOKEN,
 			});
-			expect(at.events).toEqual(["sha256sum", "mount", "boundary", "close", "open", "mount"]);
-			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
-			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
-			expect(at.mounts.map(({ view }) => view)).toEqual([
-				{ environmentId: ENVIRONMENT, viewId: VIEWS[0], pass: PASSES[0] },
-				{ environmentId: ENVIRONMENT, viewId: VIEWS[0], pass: PASSES[0] },
-				{ environmentId: ENVIRONMENT, viewId: VIEWS[1], pass: PASSES[1] },
+			await expect(at.views.endMachine(MACHINE, live())).resolves.toEqual([
+				{ workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
 			]);
-			// The session holds the new view now.
-			await expect(at.views.end(WORKER, live())).resolves.toMatchObject({ viewId: VIEWS[1], closed: true });
-			expect(at.closes.at(-1)).toEqual({ p_view_id: VIEWS[1], p_pass: PASSES[1] });
+			await expect(
+				at.views.attach(session({ attachmentToken: TOKEN_2, bootId: BOOT_2 }), later(), live()),
+			).resolves.toEqual({ viewId: VIEWS[1] });
+		});
+
+		it("refuses READS_UNPROVEN, before any view opens, when the boundary before a new view answers the machine's reads unproven", async () => {
+			const at = fixture();
+			at.script.boundary = (machine, final) => ({ ...released(machine, final), reads: "unproven" });
+			const error = await rejection(at.views.attach(session(), later(), live()));
+			expect(error).toBeInstanceOf(CodingFolderRestartRequired);
+			expect((error as CodingFolderRestartRequired).code).toBe("READS_UNPROVEN");
+			expect(at.events).toEqual(["sha256sum", "boundary"]);
+			expect(at.boundaries).toEqual([{ machine: MACHINE, final: [] }]);
+			await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
+		});
+
+		it("ends the view it replaces on the same machine, unsaved, and opens none when the machine's reads are unproven", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			at.script.boundary = (machine, final) => ({ ...released(machine, final), reads: "unproven" });
+			const error = await rejection(at.views.attach(session({ attachmentToken: TOKEN_2 }), later(), live()));
+			expect((error as CodingFolderRestartRequired).code).toBe("READS_UNPROVEN");
+			expect(at.events).toEqual(["sha256sum", "boundary", "close"]);
+			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
+			expect(at.opens).toHaveLength(1);
+			await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
+		});
+
+		it("opens a moved session's view though its old machine's reads are unproven", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			at.script.boundary = (machine, final) => ({
+				...released(machine, final),
+				reads: machine === MACHINE ? "unproven" : "released",
+			});
+			await expect(at.views.attach(session({ machine: OTHER_MACHINE_BINDING }), later(), live())).resolves.toEqual({
+				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: false, closed: true },
+			});
+			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
+			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
 		});
 
 		it("replaces the view of an earlier attachment", async () => {
@@ -515,6 +560,8 @@ describe("CodingFolderViews", () => {
 				["Folder view is invalid", "VIEW_INVALID"],
 				["Folder view opener is invalid", "VIEW_INVALID"],
 				["Folder view anchor is invalid", "VIEW_INVALID"],
+				// The core marked the machine to restart (rule 4).
+				["Coding machine must restart first", "MACHINE_RESTART_REQUIRED"],
 				["Something the core never says", "UNKNOWN"],
 				// A 42501 refusal whose message the control does not keep.
 				[null, "UNKNOWN"],
@@ -525,6 +572,7 @@ describe("CodingFolderViews", () => {
 				at.script.open.push(new CodingControlRefused(null, reason));
 				const error = await rejection(at.views.attach(session(), later(), live()));
 				expect(error, label).toBeInstanceOf(CodingFolderViewRefused);
+				expect(error instanceof CodingFolderRestartRequired, label).toBe(code === "MACHINE_RESTART_REQUIRED");
 				expect((error as CodingFolderViewRefused).code, label).toBe(code);
 				expect(error.message, label).toBe(`CODING_FOLDER_VIEW_REFUSED:${code}`);
 				expect(at.events, label).toEqual(["sha256sum", "boundary", "open"]);
@@ -623,11 +671,11 @@ describe("CodingFolderViews", () => {
 			expect(at.opens).toHaveLength(1);
 		});
 
-		it("refuses VIEW_CLOSED when the node closed a fresh view, which stays held for the end", async () => {
+		it("refuses VIEW_CLOSED, for the machine to restart, when the node closed a fresh view, which stays held for the end", async () => {
 			const at = fixture();
 			at.script.mount.push("closed");
 			const error = await rejection(at.views.attach(session(), later(), live()));
-			expect(error).toBeInstanceOf(CodingFolderViewRefused);
+			expect(error).toBeInstanceOf(CodingFolderRestartRequired);
 			expect((error as CodingFolderViewRefused).code).toBe("VIEW_CLOSED");
 			expect(error.message).toBe("CODING_FOLDER_VIEW_REFUSED:VIEW_CLOSED");
 			expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
