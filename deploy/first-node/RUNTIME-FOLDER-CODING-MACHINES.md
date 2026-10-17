@@ -22,11 +22,16 @@ today's coding machines are from master at dc4988f7a.
 >   file, devcontainers) beyond what core execution needs. The merged setup parser and snapshot records (#1100 and
 >   #1131) stay, unused; nothing is removed or undone for this. A coding machine with no setup is the accepted
 >   core baseline, and ordinary package installs stay;
+> - **deferred as well, on the coordinator's list of deferred work of 17 October:** MCP servers inside coding
+>   sessions and the vault relay (5j-6c, the host's forwarder; 5j-6d, the full URL form; 5j-7, sign-ins and their
+>   proof; the VM's vsock relay and git's `insteadOf`), and the 5m live proof run (the note under 5m's proofs). The
+>   broker routes already merged for the relay (5j-6b, #1266) stay, unused;
 > - **parked:** 5k (a second machine when one is full), which is capacity work, and 5l (the retirements after
->   step 6), both on the coordinator's list of deferred work of 17 October. Their unmerged work is kept;
-> - **kept:** machine and coding execution, folder access, root and Docker, code custody, the vault, MCP and
->   credential handling, connectors, persistence, recovery and access control. The CPU and byte measurements that
->   idle sleep and quiet-day archival need are core.
+>   step 6), both on that list. Their unmerged work is kept;
+> - **kept:** machine and coding execution, folder access, root and Docker, code custody (a push and its pull
+>   request keep their credentials), vault secrets in coding commands, masked in output and refused in a save into
+>   the folder or a push (5j-4, 5j-5), credential handling, connectors, persistence, recovery and access control.
+>   The CPU and byte measurements that idle sleep and quiet-day archival need are core.
 >
 > The places below that serve only deferred or parked work carry a mark. The status line above dates from the
 > plan's review. This note records scope; it says nothing about which slices are built.
@@ -72,7 +77,8 @@ save is credited to its session as well as root allows, as on test machines).
 - **The preview proxy** (new, 5i) and **the vault relay** (new, 5j), both host-side.
 - **The host watchdog** (new, 5g): a host timer that force-stops a coding VM whose lease has lapsed.
 
-> **Scope reset, 2026-10-17.** The builder VM (5h) and the preview proxy (5i) are deferred (the note at the top).
+> **Scope reset, 2026-10-17.** The builder VM (5h), the preview proxy (5i) and the vault relay (5j-6c to 5j-7) are
+> deferred (the note at the top).
 
 ## Capabilities on our nodes
 
@@ -96,9 +102,10 @@ Each capability of item 11, and how it works on our nodes. "The VM" is the membe
 | Each session mounts with its own authority | One view per session, served only to its own machine (below). | 5a, 5c, 5g |
 | Branches leave only as PRs | The code host bundles the session's branch; the broker checks and pushes it and opens a draft PR. | 5e |
 
-> **Scope reset, 2026-10-17.** The rows for a setup file and snapshots (5h) and for ports and the browser (5i)
-> are deferred, and the second machine (5k) is parked (the note at the top). "Any language" holds through the
-> base image and ordinary package installs; its setup file part is deferred.
+> **Scope reset, 2026-10-17.** The rows for a setup file and snapshots (5h), for ports and the browser (5i) and for
+> MCP servers (5j-6c to 5j-7) are deferred, and the second machine (5k) is parked (the note at the top). The secrets
+> row stays core (5j-4, 5j-5). "Any language" holds through the base image and ordinary package installs; its setup
+> file part is deferred.
 
 ## What stays outside the machine
 
@@ -301,6 +308,8 @@ true; `core.checkStat` minimal; `core.trustctime` false; `core.splitIndex` false
 `url.<relay>.insteadOf` for GitHub (5j). Under root these are defaults that keep honest tools working on the shared
 directory, not walls; the walls are the folder's rules (5b) and the code host's own git (5e).
 
+> **Scope reset, 2026-10-17.** The `insteadOf` for GitHub is deferred with the vault relay (the note at the top).
+
 **The lock protocol, refusals, names and cleanup** are §6's ("Git on the mount"). The folder program serves them (5d):
 an exclusive create of a shared `X.lock` takes the lease and refreshes `X` before `open()` returns (for `packed-refs` it
 also reads the feed, and the machine forgets its listings of the loose refs, so git does not pack back a loose ref
@@ -501,6 +510,11 @@ boundary.
 
 ## Secrets, MCP and the vault relay
 
+> **Scope reset, 2026-10-17.** Core: environment secrets, injected host-side into each command and masked (5j-4),
+> and the refusal of a save into the folder or a push that carries a value (5j-5). Deferred (the note at the top):
+> the vault relay below, for MCP sign-ins and git fetch, and MCP servers inside coding sessions (5j-6c, 5j-6d,
+> 5j-7). The broker half (5j-6b, #1266) stays, unused. A snapshot build's `install` waits with 5h.
+
 **The kind.** A vault "environment secret": a name and a value, scoped to the member or to the company. A company
 secret reaches a session only through a grant a current owner or administrator issued (contract 11.5); the grant's
 unit is Q5 (recommended: per repository). Item 11's environment variables put a value inside the member's machine,
@@ -615,9 +629,10 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 folder before 5g. 5h, 5i, 5j and 5k each need 5g and can run side by side (5j's SQL can land earlier). 5l needs 5g and
 step 6. 5m comes last.
 
-> **Scope reset, 2026-10-17.** The rest of 5h (after the merged setup parser and snapshot records) and 5i are
-> deferred, and 5k and 5l are parked (the note at the top). 5m's proofs are split below into core proofs and
-> proofs for those later features.
+> **Scope reset, 2026-10-17.** The rest of 5h (after the merged setup parser and snapshot records), 5i, 5j's relay
+> and MCP part (5j-6c, 5j-6d, 5j-7) and the 5m run are deferred, and 5k and 5l are parked (the note at the top).
+> 5j's secrets, masking and refusals (5j-4, 5j-5) stay core. The note under the proofs below says which proofs
+> core acceptance still needs.
 
 **Live proof (5m)**, on a test company, without Codex:
 - a snapshot builds for each setup format (ours, Cursor's, a devcontainer with a feature); a broken `install` keeps the
@@ -636,14 +651,15 @@ screenshot reaching the model; a secret masked in a tool result and refused in a
 second machine when the first is full; a narrowing during a turn on a shared machine stopping every turn on it; the
 numbers (attach time with and without a snapshot, the folder program's memory per session).
 
-> **Scope reset, 2026-10-17.** The proofs above split as follows:
-> - **core (5m):** the code host seeds a repository and its `main/` shows, with gc holding leases (5e); the host
->   watchdog (5g); the refused vsock probe, with nothing else answering (5c, 5g); the node host unchanged (5f,
->   5g);
-> - **later features, outside core acceptance:** a snapshot for each setup format, with a broken `install`
->   keeping the old one, and a secret masked in the build log (5h);
-> - **in the list deferred for Codex,** the preview and the browser screenshot (5i), the second machine (5k) and
->   the attach time with a snapshot (5h) are later-feature proofs; the rest stay core.
+> **Scope reset, 2026-10-17.** The 5m run is deferred as a whole (the note at the top), and its proofs split so:
+> - **core**, proved by the coordinator's core list of 17 October rather than by 5m: a coding session end to end,
+>   with idle sleep and quiet-day archival; a clean restart after a folder service crash or an unreadable read; a
+>   vault secret masked in output and refused in a save or a push; then the same live after the rollout. The rules
+>   behind 5m's other checks (the code host's seed and gc, the watchdog, the vsock probe, the unchanged host) stay
+>   pinned by the tests in the rows of 5c, 5e, 5f and 5g;
+> - **later features**, waiting with their slices: a snapshot for each setup format, a broken `install` keeping the
+>   old one, a secret masked in the build log and the attach time with a snapshot (5h); the preview and the browser
+>   screenshot (5i); an MCP server with a sign-in (5j-6c to 5j-7); the second machine (5k).
 >
 > This note records scope; it says nothing about which proofs have run.
 
@@ -708,5 +724,5 @@ only if a rule is wrong.
   container.
 - **Q13 (coordinator).** Packs over 256 MiB (§6's open question 4).
 
-> **Scope reset, 2026-10-17.** Q6 (5i), Q7 and Q12 (5h) and Q9 (5k) wait with their deferred or parked slices.
-> In Q3, retiring the private repository folder waits with 5l.
+> **Scope reset, 2026-10-17.** Q6 (5i), Q7 and Q12 (5h) and Q9 (5k) wait with their deferred or parked slices, and
+> P1 and P2 with the 5m run. In Q3, retiring the private repository folder waits with 5l.

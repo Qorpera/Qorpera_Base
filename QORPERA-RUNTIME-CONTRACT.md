@@ -31,8 +31,8 @@ founder stop; the Co-Founder holds the company-level responsibilities
 
 **Rebuild scope corrected:** 2026-10-17 — agent notebooks stay the default and
 the shared summary tree is an optional beta; Interfaces are two pages Qorpera
-makes; coding setup snapshots, previews and the agent browser are deferred
-(section 19). Scope recorded, not built.
+makes; coding setup snapshots, previews, the agent browser and MCP inside coding
+sessions are deferred (section 19). Scope recorded, not built.
 
 **Scope:** Pure-cloud agent behavior, the live Company File, execution,
 authority, context, tools, computers, workers, memory, routines, rooms,
@@ -5659,8 +5659,13 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
       command output, logs and commits.
     - **MCP.** MCP servers that run as programs run on the machine (item 3). A server that needs a sign-in reaches it
       through the vault, so the sign-in stays off the machine.
+    - *Scope reset, 2026-10-17:* deferred, on the coordinator's list of deferred work of 17 October: MCP servers
+      inside coding sessions and the vault relay for their sign-ins (5j-6c, 5j-6d, 5j-7). The secrets above stay
+      core (5j-4, 5j-5).
     - **No waiting.** When a member's machine is full, another machine of the same member starts with the same setup,
       as company machines do (compute item 1, "no waiting for a seat").
+    - *Scope reset, 2026-10-17:* parked, on the coordinator's list of deferred work of 17 October: this second
+      machine (5k), which is capacity work. Its unmerged work is kept.
     - **What stays.** The network stays open through the agent exit under the company's network rules, sessions stay
       unreviewed (27 September, item 9), each session mounts the company folder with its own authority, and branches
       leave the company only as pull requests (5.1).
@@ -5684,7 +5689,8 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
   on test machines.
 - *Scope reset, 2026-10-17:* from that list, the rest of the setup file's work and snapshots (5h), port previews
   and the agent's browser (5i) are deferred and outside core acceptance. The setup file's reader and the snapshot
-  records already merged (#1100 and #1131) stay unused (scope amendment, item 3).
+  records already merged (#1100 and #1131) stay unused (scope amendment, item 3). The second machine (5k) is
+  parked, on the coordinator's list of deferred work of 17 October; its unmerged work is kept.
 
 ### 2026-10-17 amendment: the rebuild's scope (founder correction)
 
@@ -5753,9 +5759,14 @@ the proofs and the list of documents, is
      what core execution needs.
    - The merged setup parser and snapshot records (#1100 and #1131) stay, unused. A coding machine with no setup is
      the accepted core baseline.
+   - Also deferred, on the coordinator's list of deferred work of 17 October: MCP servers inside coding sessions
+     and the vault relay that would serve them and git fetch (steps 5j-6c, 5j-6d and 5j-7). The broker routes
+     already merged for it (#1266) stay, unused. Vault secrets reaching coding commands, masked, and the refusal of
+     a save or push that carries one (5j-4, 5j-5) are core. The same list parks the second machine for a member
+     whose machine is full (5k), which is capacity work.
    - Kept: machine and coding execution, folder access, root and Docker, code custody, the vault, MCP and credential
-     handling, connectors, persistence, recovery and access control. The CPU and byte measurements that idle sleep
-     and quiet-day archival need are core.
+     handling (apart from MCP inside coding sessions, above), connectors, persistence, recovery and access control.
+     The CPU and byte measurements that idle sleep and quiet-day archival need are core.
 4. **Three tracks.**
    - **Core rebuild:** the company folder working; the kept machine, coding and credential behavior; notebook memory
      with the beta off, with the company's Settings choice (default "Agent notebooks", where the beta may show as
