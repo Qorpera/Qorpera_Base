@@ -48,13 +48,12 @@ pass. Claude has no such exception.
 ## Deployment prerequisites
 
 This functional acceptance may run while the NAS is disconnected. In that
-case, configure clients and `company-file-verifier` with
-`QORPERA_OBJECT_STORAGE_PRIMARY=supabase`, keep admitted catalog rows on the
-`supabase-storage` backend, and run artifact cleanup through that backend. The
-objects are real content-addressed Supabase Storage objects, not fixtures. Do
-not configure a fake NAS gateway. Production remains NAS-primary with Supabase
-backup and requires separate replication, restore, failover, and failback
-evidence.
+case, configure clients with `QORPERA_OBJECT_STORAGE_PRIMARY=supabase`, keep
+admitted catalog rows on the `supabase-storage` backend, and run artifact
+cleanup through that backend. The objects are real content-addressed Supabase
+Storage objects, not fixtures. Do not configure a fake NAS gateway. Production
+remains NAS-primary with Supabase backup and requires separate replication,
+restore, failover, and failback evidence.
 
 Record immutable image, package, migration, and source commit identifiers for
 each deployed component before starting.
