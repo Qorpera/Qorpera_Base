@@ -49,7 +49,7 @@ export class MachineCommandRouter {
 				gateway.cancel(request.scope, request.input.commandId, signal));
 		} catch (error) {
 			const refusal = cloudMachineCommandRefusal(error);
-			throw refusal ? new CloudMachineCommandRefusal(refusal) : error;
+			throw refusal ? new CloudMachineCommandRefusal(refusal, error instanceof CloudMachineCommandRefusal ? error.folderLost : undefined) : error;
 		}
 	}
 }

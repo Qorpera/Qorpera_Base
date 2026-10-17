@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-machine.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCommandHttpRequest, cloudMachineCommandHead, CloudMachineCommandRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
@@ -21,6 +22,9 @@ export interface MachineCommandAuthority {
 	runId: string;
 	staffAgentId: string;
 	requestedByUserId: string;
+	/** Why the machine lost the command, when it did for its folder (F3 6e-2a): its executor restarted it, or moved it
+	 * to a new disk. Null otherwise, and from a database before 20260930511000. */
+	folderLost: string | null;
 }
 
 /** The calling run's live tool authority, a running machine of its company
@@ -41,8 +45,12 @@ export async function authorizeMachineCommand(
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_COMMAND_AUTHORITY_INVALID");
 	const result = value as Record<string, unknown>;
 	if (result.schema !== "qorpera.machine-command-authority/v1") throw new Error("MACHINE_COMMAND_AUTHORITY_INVALID");
+	// Any value outside the six causes (F3 6e-2a) is not SQL's; a database before 20260930511000 sends none.
+	const folderLost = result.folderLost === undefined || result.folderLost === null ? undefined : result.folderLost;
+	if (folderLost !== undefined && !isCloudMachineFolderLost(folderLost)) throw new Error("MACHINE_COMMAND_AUTHORITY_INVALID");
 	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_COMMAND_ENDED"))
-		throw new CloudMachineCommandRefusal(result.reason);
+		// A command that already ended says why its machine lost it, when the folder made it.
+		throw new CloudMachineCommandRefusal(result.reason, folderLost);
 	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.commandId !== request.input.commandId ||
 		typeof result.placementId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(result.placementId) ||
 		typeof result.inputSha256 !== "string" || !/^[0-9a-f]{64}$/.test(result.inputSha256) ||
@@ -67,5 +75,6 @@ export async function authorizeMachineCommand(
 	signal.throwIfAborted();
 	return { inputSha256: result.inputSha256, machineId: result.machineId as string, placementId: result.placementId, machine: result.machine,
 		executorOwner: result.executorOwner, providerId: result.providerId, bootId: result.bootId as string | null,
-		runId: identity.runId, staffAgentId: identity.staffAgentId, requestedByUserId: identity.requesterUserId };
+		runId: identity.runId, staffAgentId: identity.staffAgentId, requestedByUserId: identity.requesterUserId,
+		folderLost: folderLost ?? null };
 }

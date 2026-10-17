@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CloudSecretBroker,
 	type CloudSecretBrokerAuthority,
+	CODING_ENVIRONMENT_MASK_MAXIMUM,
 	CODING_ENVIRONMENT_VALUE_MINIMUM_BYTES,
 	type CodingEnvironmentRequest,
 } from "../src/cloud-secret-broker.ts";
@@ -23,6 +24,8 @@ const repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base",
 // Values the tests seal. None is a real secret, and none may ever ride on an error.
 const API_KEY = "env-value-api-key-CANARY";
 const DATABASE_URL = "postgres://env-value-database-CANARY";
+const OLD_API_KEY = "env-value-old-api-key-CANARY";
+const OLDER_API_KEY = "env-value-older-api-key-CANARY";
 
 interface Entry {
 	readonly name: string;
@@ -30,7 +33,10 @@ interface Entry {
 	readonly ownerKind?: "company" | "member";
 }
 
-type Answer = Record<string, unknown> & { readonly secrets: readonly Record<string, unknown>[] };
+type Answer = Record<string, unknown> & {
+	readonly secrets: readonly Record<string, unknown>[];
+	readonly maskSecrets?: readonly Record<string, unknown>[];
+};
 
 const signal = () => new AbortController().signal;
 
@@ -49,14 +55,19 @@ function unusedAuthority(): CloudSecretBrokerAuthority {
 }
 
 /** A broker whose fake kernel authorizes the sealed entries for the asking session, in the
- * entries' order; `edit` changes the kernel's answer before the broker reads it. */
-function fixture(entries: readonly Entry[], edit: (answer: Answer) => unknown = (answer) => answer) {
+ * entries' order, and the `masked` older versions when given (a database before 20260930514000
+ * answers none); `edit` changes the kernel's answer before the broker reads it. */
+function fixture(
+	entries: readonly Entry[],
+	edit: (answer: Answer) => unknown = (answer) => answer,
+	masked?: readonly Entry[],
+) {
 	const companyId = randomUUID();
 	const environmentId = randomUUID();
 	const keyring = new CloudSecretKeyring({ [KEY]: randomBytes(32) });
 	keyrings.push(keyring);
-	const secrets = entries.map((entry, index) => {
-		const identity = { companyId, environmentId, secretId: randomUUID(), version: index + 1, keyId: KEY };
+	const seal = (entry: Entry, version: number) => {
+		const identity = { companyId, environmentId, secretId: randomUUID(), version, keyId: KEY };
 		const envelope = Buffer.from(keyring.seal(entry.fields, identity));
 		return {
 			name: entry.name,
@@ -68,7 +79,9 @@ function fixture(entries: readonly Entry[], edit: (answer: Answer) => unknown = 
 			encryptedEnvelopeBase64: envelope.toString("base64").replace(/(.{76})/g, "$1\n"),
 			envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
 		};
-	});
+	};
+	const secrets = entries.map((entry, index) => seal(entry, index + 1));
+	const maskSecrets = masked?.map((entry, index) => seal(entry, entries.length + index + 1));
 	const authorizeCodingEnvironment = vi.fn(async (request: CodingEnvironmentRequest) =>
 		edit({
 			schema: "qorpera.coding-environment-authorization/v1",
@@ -77,6 +90,7 @@ function fixture(entries: readonly Entry[], edit: (answer: Answer) => unknown = 
 			workerId: request.workerId,
 			repository,
 			secrets,
+			...(maskSecrets ? { maskSecrets } : {}),
 		}),
 	);
 	const broker = new CloudSecretBroker({
@@ -98,7 +112,8 @@ async function expectRefusal(promise: Promise<unknown>): Promise<void> {
 	expect(error).toBeInstanceOf(Error);
 	expect((error as Error).message).toBe(REFUSAL);
 	expect((error as Error).cause).toBeUndefined();
-	for (const value of [API_KEY, DATABASE_URL]) expect(`${(error as Error).stack}`).not.toContain(value);
+	for (const value of [API_KEY, DATABASE_URL, OLD_API_KEY, OLDER_API_KEY])
+		expect(`${(error as Error).stack}`).not.toContain(value);
 }
 
 describe("a coding session's environment through the company's secret broker", () => {
@@ -111,7 +126,11 @@ describe("a coding session's environment through the company's secret broker", (
 			{ ...f.request, workerId: f.request.workerId.toUpperCase(), leaseToken: f.request.leaseToken.toUpperCase() },
 			signal(),
 		);
-		expect(answer).toEqual({ schema: "qorpera.coding-environment/v1", environment: { API_KEY, DATABASE_URL } });
+		expect(answer).toEqual({
+			schema: "qorpera.coding-environment/v1",
+			environment: { API_KEY, DATABASE_URL },
+			mask: [],
+		});
 		expect(Object.keys(answer.environment)).toEqual(["API_KEY", "DATABASE_URL"]);
 		// The kernel is asked for exactly the request's worker, lease and executor, lower-cased.
 		expect(f.authorizeCodingEnvironment).toHaveBeenCalledExactlyOnceWith(f.request, expect.any(AbortSignal));
@@ -122,7 +141,91 @@ describe("a coding session's environment through the company's secret broker", (
 		await expect(f.broker.codingEnvironment(f.request, signal())).resolves.toEqual({
 			schema: "qorpera.coding-environment/v1",
 			environment: {},
+			mask: [],
 		});
+	});
+
+	it("opens the older versions into the mask, each once, in order, none the environment holds", async () => {
+		const f = fixture(
+			[
+				{ name: "API_KEY", fields: { value: API_KEY } },
+				{ name: "DATABASE_URL", fields: { value: DATABASE_URL } },
+			],
+			undefined,
+			[
+				{ name: "API_KEY", fields: { value: OLD_API_KEY } },
+				// A value used twice, and one a current secret holds too (another secret's older version).
+				{ name: "API_KEY", fields: { value: OLD_API_KEY } },
+				{ name: "TOKEN", fields: { value: DATABASE_URL } },
+				{ name: "API_KEY", ownerKind: "member", fields: { value: OLDER_API_KEY } },
+			],
+		);
+		await expect(f.broker.codingEnvironment(f.request, signal())).resolves.toEqual({
+			schema: "qorpera.coding-environment/v1",
+			environment: { API_KEY, DATABASE_URL },
+			mask: [OLD_API_KEY, OLDER_API_KEY],
+		});
+		// An empty list, as an unattached session gets, masks nothing more.
+		const none = fixture([{ name: "API_KEY", fields: { value: API_KEY } }], undefined, []);
+		await expect(none.broker.codingEnvironment(none.request, signal())).resolves.toEqual({
+			schema: "qorpera.coding-environment/v1",
+			environment: { API_KEY },
+			mask: [],
+		});
+	});
+
+	it("takes at most 64 older versions", async () => {
+		expect(CODING_ENVIRONMENT_MASK_MAXIMUM).toBe(64);
+		const repeat = (count: number) => (answer: Answer) => ({
+			...answer,
+			maskSecrets: Array.from({ length: count }, () => answer.maskSecrets?.[0]),
+		});
+		const masked = [{ name: "API_KEY", fields: { value: OLD_API_KEY } }];
+		const most = fixture([], repeat(64), masked);
+		await expect(most.broker.codingEnvironment(most.request, signal())).resolves.toEqual({
+			schema: "qorpera.coding-environment/v1",
+			environment: {},
+			mask: [OLD_API_KEY],
+		});
+		const more = fixture([], repeat(65), masked);
+		await expectRefusal(more.broker.codingEnvironment(more.request, signal()));
+	});
+
+	it("refuses the whole answer when one older version is bad, and never names a value", async () => {
+		const each = (answer: Answer, change: Record<string, unknown>) => ({
+			...answer,
+			maskSecrets: answer.maskSecrets?.map((secret) => ({ ...secret, ...change })),
+		});
+		const edits: ((answer: Answer) => unknown)[] = [
+			(answer) => ({ ...answer, maskSecrets: {} }),
+			(answer) => ({ ...answer, maskSecrets: null }),
+			(answer) => each(answer, { envelopeSha256: "0".repeat(64) }),
+			(answer) => each(answer, { extra: true }),
+			(answer) => each(answer, { name: "api_key" }),
+			(answer) => each(answer, { keyId: "../key" }),
+			// A key this broker does not hold.
+			(answer) => each(answer, { keyId: "company-kek-0" }),
+			(answer) => each(answer, { secretVersion: 0 }),
+		];
+		for (const edit of edits) {
+			const f = fixture([{ name: "API_KEY", fields: { value: API_KEY } }], edit, [
+				{ name: "API_KEY", fields: { value: OLD_API_KEY } },
+			]);
+			await expectRefusal(f.broker.codingEnvironment(f.request, signal()));
+		}
+		// An older value that could never have been handed out.
+		const older: Record<string, string>[] = [
+			{ value: "1234567" },
+			{ value: `${OLD_API_KEY}\0` },
+			{ token: OLD_API_KEY },
+		];
+		for (const fields of older) {
+			const f = fixture([{ name: "API_KEY", fields: { value: API_KEY } }], undefined, [
+				{ name: "API_KEY", fields: { value: OLDER_API_KEY } },
+				{ name: "API_KEY", fields },
+			]);
+			await expectRefusal(f.broker.codingEnvironment(f.request, signal()));
+		}
 	});
 
 	it("refuses an answer that is not the one the kernel promised", async () => {
@@ -183,6 +286,7 @@ describe("a coding session's environment through the company's secret broker", (
 			await expect(f.broker.codingEnvironment(f.request, signal())).resolves.toEqual({
 				schema: "qorpera.coding-environment/v1",
 				environment: { API_KEY: value },
+				mask: [],
 			});
 		}
 		// Seven ASCII bytes do not.

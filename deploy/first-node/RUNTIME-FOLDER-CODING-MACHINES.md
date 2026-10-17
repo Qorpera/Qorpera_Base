@@ -560,9 +560,34 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
   boundaries, replaced before anything is written or reaches a model;
 - saves: the folder service refuses a plain save or an inflated loose object that carries a value (a keyed rolling
   hash over values of at least a minimum length, so the service never holds the values in the clear);
-- pushes: the broker's push check scans the diff and the commit messages and refuses a push that carries a value.
+- pushes: the broker's push check reads every object the push adds (file contents, file and folder names, each
+  commit with its message) and refuses a push that carries a value.
 
 A program that encodes a value another way gets past the mask; that is why it is best effort.
+
+Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
+starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
+session on the machine. A session's values stay in the masks until the machine's last session is released. When the
+executor does not know the values a command runs with (it restarted after the start, or the guest did not confirm that
+it took this start's environment), none of that command's output is kept: the bytes are counted lost.
+
+An older value, such as a secret's value before it was changed, can still be on the machine (in a process started
+before, a container or a file). So each answer also brings the older values used on this machine by this member
+(migration `20260930514000`): the vault records the machine on each use, and keeps every version sealed until the
+broker opens it. The executor masks them in every session on the machine and never puts them in an environment, also
+after it restarts. The limits:
+
+- a version used before migration `20260930514000` has no machine on its record, and is not masked;
+- a version sealed under an older broker key is skipped;
+- at most the 64 most recently used versions (and 256 KiB of sealed values) come back;
+- a value printed in another encoding is still not masked (best effort, as above);
+- a removed secret is not masked any more (a member's own secrets are removed when the member leaves).
+
+Changing a secret in the vault does not take its old value off the machine: revoke the old value where it was issued.
+Since 5j-5 (b), a publication is checked against the values the masks cover, the older values included, and the
+session's environment asked again at publish: a push, or a pull request title or summary, that carries one is
+refused, and so is a push that can't be checked whole (too big, or Git failed while reading it). The save check is
+5j-5 (a).
 
 **The vault relay** (5j) is host-side, on a second vsock port that checks the caller's CID, on the platform road
 (agent exit §2: "the platform's own services keep the platform road, even when they act for an agent"). It does two

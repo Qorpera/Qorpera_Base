@@ -1181,7 +1181,11 @@ export class HttpCloudSecretBrokerService {
 					parseCodingEnvironmentHttpRequest(await readRequest(request)),
 					AbortSignal.timeout(10_000),
 				);
-				response(reply, 200, { schema: environment.schema, environment: { ...environment.environment } });
+				response(reply, 200, {
+					schema: environment.schema,
+					environment: { ...environment.environment },
+					mask: [...environment.mask],
+				});
 				return;
 			}
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });

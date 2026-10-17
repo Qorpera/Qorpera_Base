@@ -22,6 +22,7 @@ import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-c
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
+import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import { authorizeMachineCommand } from "./machine-command-authority.ts";
 import { MachineCommandRouter } from "./machine-command-routing.ts";
@@ -233,6 +234,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
+	// The same broker gives each command its session's vault environment (5j-4).
+	const commandEnvironment = config.broker ? new BrokerCodingEnvironment({ origin: config.broker.origin,
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	const storage = createCodingNasStorage(config.storagePolicy);
 	const journalRoot = await storage.prepareControl();
 	const lxd = new LxdUnixClient();
@@ -257,6 +261,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
+		...(commandEnvironment ? { commandEnvironment } : {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();
@@ -293,7 +298,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
 					inputSha256: authority.inputSha256, bootId: authority.bootId, runId: authority.runId,
-					staffAgentId: authority.staffAgentId, requestedByUserId: authority.requestedByUserId },
+					staffAgentId: authority.staffAgentId, requestedByUserId: authority.requestedByUserId, folderLost: authority.folderLost },
 				request.action === "start" ? { action: "start", commandId: request.input.commandId, inputSha256: request.input.inputSha256,
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },

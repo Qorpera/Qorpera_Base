@@ -115,10 +115,16 @@ export class CodingSecretMaskStream {
 	/** Whether the bytes returned so far end inside a masked range. */
 	#joined = false;
 	#ended = false;
+	#matched = false;
 
 	constructor(forms: readonly Uint8Array[], byFirst: ReadonlyMap<number, readonly number[]>) {
 		this.#forms = forms;
 		this.#byFirst = byFirst;
+	}
+
+	/** Whether a value matched in the bytes pushed so far (the push check, 5j-5 b), returned yet or not. */
+	get matched(): boolean {
+		return this.#matched;
 	}
 
 	/** Raw bytes pushed and not yet returned. */
@@ -217,6 +223,7 @@ export class CodingSecretMaskStream {
 	 * it ends at or after every range so far and can only reach back into the
 	 * last ones: those that end at or after its start merge into it. */
 	#mask(start: number, end: number): void {
+		this.#matched = true;
 		let from = start;
 		let to = end;
 		while (this.#masked.length > 0) {

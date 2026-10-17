@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type CodingPushCarrier, CodingPushRefused } from "../src/coding-executor.ts";
 import {
 	type CodingBrokerGitCommand,
+	type CodingBrokerGitRunner,
 	type CodingGitPush,
 	type CodingGitPushOptions,
 	createCodingBrokerGitRunner,
 	pushCloudCodingBundle,
 } from "../src/coding-git.ts";
+import { CodingSecretMask } from "../src/coding-secret-mask.ts";
 
 const exec = promisify(execFile);
 const workerId = "00000000-0000-4000-8000-000000000001";
@@ -38,6 +41,11 @@ async function fixture() {
 	const source = join(root, "source.git");
 	const git = async (...args: string[]): Promise<string> =>
 		(await exec("/usr/bin/git", ["--git-dir", source, ...args], { cwd: root, env })).stdout.trim();
+	const put = async (stdin: string, ...args: string[]): Promise<string> => {
+		const running = exec("/usr/bin/git", ["--git-dir", source, ...args], { cwd: root, env });
+		running.child.stdin?.end(stdin);
+		return (await running).stdout.trim();
+	};
 	await exec("/usr/bin/git", ["init", "--bare", "--template=", source], { cwd: root, env });
 	const tree = await git("hash-object", "-w", "-t", "tree", "/dev/null");
 	const baseSha = await git("commit-tree", tree, "-m", "base");
@@ -110,6 +118,7 @@ async function fixture() {
 		options,
 		calls,
 		git,
+		put,
 		setBase: (head: string) => {
 			remoteBase = head;
 		},
@@ -120,6 +129,71 @@ async function fixture() {
 			loseReply = true;
 			noEffect = !effect;
 		},
+	};
+}
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+// The push check (F3 5j-5 b). Made-up values only.
+const secret = "made-up-canary-5j5b-push-value";
+const spanning = "canary-left/canary-right";
+const linux = process.platform === "linux";
+const percent = (text: string): string =>
+	[...Buffer.from(text)].map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+/** A tree with `files` by path, and the folders they are in. */
+async function tree(f: Fixture, files: Readonly<Record<string, string>>): Promise<string> {
+	const folders = new Map<string, Record<string, string>>();
+	const entries: string[] = [];
+	for (const [path, contents] of Object.entries(files)) {
+		const [name, ...rest] = path.split("/");
+		if (rest.length > 0) folders.set(name, { ...folders.get(name), [rest.join("/")]: contents });
+		else entries.push(`100644 blob ${await f.put(contents, "hash-object", "-w", "--stdin")}\t${name}\0`);
+	}
+	for (const [name, inner] of folders) entries.push(`040000 tree ${await tree(f, inner)}\t${name}\0`);
+	return f.put(entries.join(""), "mktree", "-z");
+}
+async function commit(f: Fixture, parent: string, files: Readonly<Record<string, string>>, message: string) {
+	return f.git("commit-tree", await tree(f, files), "-p", parent, "-m", message);
+}
+/** A complete bundle of the worker branch at `head`. */
+async function bundled(f: Fixture, head: string): Promise<Buffer> {
+	await f.git("update-ref", ref, head);
+	const path = join(f.root, `${head}.bundle`);
+	await f.git("bundle", "create", path, ref);
+	return readFile(path);
+}
+/** Pushing `head` is refused, and nothing it says carries a value. */
+async function refusal(f: Fixture, head: string, input: Partial<CodingGitPush> = {}): Promise<CodingPushRefused> {
+	const error = await pushCloudCodingBundle(
+		{ ...f.input, headSha: head, ...input },
+		await bundled(f, head),
+		f.options,
+	).then(
+		() => null,
+		(error: unknown) => error,
+	);
+	expect(error).toBeInstanceOf(CodingPushRefused);
+	for (const text of [String(error), (error as Error).stack, JSON.stringify(error)]) {
+		expect(text).not.toContain(secret);
+		expect(text).not.toContain(spanning);
+	}
+	return error as CodingPushRefused;
+}
+/** `git`, but what the check's `step` writes goes through `change` first, `size` bytes a write. A write that throws
+ * fails the command, as the runner kills Git then. */
+function rewritten(
+	git: CodingBrokerGitRunner,
+	step: "rev-list" | "cat-file",
+	change: (bytes: Buffer) => Buffer,
+	size = 7,
+): CodingBrokerGitRunner {
+	return async (command) => {
+		const { output } = command;
+		if (!output || !command.args.includes(step)) return git(command);
+		const chunks: Buffer[] = [];
+		await git({ ...command, output: { limit: output.limit, write: (chunk) => void chunks.push(chunk) } });
+		const bytes = change(Buffer.concat(chunks));
+		for (let at = 0; at < bytes.length; at += size) output.write(bytes.subarray(at, at + size));
+		return "";
 	};
 }
 describe("credential-isolated coding Git publication", () => {
@@ -362,6 +436,188 @@ describe("credential-isolated coding Git publication", () => {
 		await expect(pushCloudCodingBundle(f.input, Buffer.from("not a bundle"), f.options)).rejects.toThrow(
 			/^CODING_GIT_OPERATION_UNCONFIRMED$/,
 		);
+		expect(f.calls.some((call) => call.args.includes("push"))).toBe(false);
+	});
+});
+describe("the push check against the session's secret values", () => {
+	it("checks nothing when the session has no values", async () => {
+		const f = await fixture();
+		f.options.secrets = new CodingSecretMask();
+		expect(await pushCloudCodingBundle(f.input, f.bundle, f.options)).toEqual({ branch, headSha: f.input.headSha });
+		expect(f.calls.some((call) => call.output !== undefined || call.args.includes("--objects"))).toBe(false);
+	});
+	it.runIf(linux)("refuses a value anywhere the push adds it, and names only the masked path", async () => {
+		const f = await fixture();
+		f.options.secrets = new CodingSecretMask([secret, spanning]);
+		const base = f.input.baseSha;
+		const message = await commit(f, base, { "notes.txt": "clean\n" }, `notes for ${secret}`);
+		const cases: [string, CodingPushCarrier][] = [
+			[await commit(f, base, { "notes.txt": `token = ${secret}\n` }, "notes"), { kind: "file", path: "notes.txt" }],
+			[
+				await commit(f, base, { "a/b.txt": Buffer.from(`token: ${secret}`).toString("base64") }, "notes"),
+				{ kind: "file", path: "a/b.txt" },
+			],
+			[
+				await commit(f, base, { "notes.txt": `https://example.invalid/?token=${percent(secret)}` }, "notes"),
+				{ kind: "file", path: "notes.txt" },
+			],
+			// A folder's names are read before the files in it.
+			[await commit(f, base, { [`${secret}.txt`]: "clean\n" }, "notes"), { kind: "folder", path: "" }],
+			[await commit(f, base, { [`keys/${secret}.txt`]: "clean\n" }, "notes"), { kind: "folder", path: "keys" }],
+			// No one name carries a value split by a folder, but the path the refusal shows would.
+			[
+				await commit(f, base, { [`${spanning}/notes.txt`]: `${secret}\n` }, "notes"),
+				{ kind: "file", path: "***/notes.txt" },
+			],
+			[message, { kind: "commit", sha: message.slice(0, 12) }],
+			// Committed, then removed: the history still carries it.
+			[
+				await commit(f, await commit(f, base, { "notes.txt": `${secret}\n` }, "add"), {}, "remove"),
+				{ kind: "file", path: "notes.txt" },
+			],
+		];
+		for (const [head, carrier] of cases) {
+			const error = await refusal(f, head);
+			expect(error.message).toBe("CODING_PUSH_CARRIES_SECRET");
+			expect(error.carrier).toEqual(carrier);
+		}
+		expect(f.calls.some((call) => call.args.includes("push"))).toBe(false);
+		expect((await readdir(f.root)).some((name) => name.endsWith(".git-push.json"))).toBe(false);
+		for (const call of f.calls) expect(JSON.stringify(call.args)).not.toContain(secret);
+		// A near miss is not a value.
+		const clean = await commit(f, base, { "notes.txt": `${secret.slice(0, -1)}\n` }, secret.slice(1));
+		expect(await pushCloudCodingBundle({ ...f.input, headSha: clean }, await bundled(f, clean), f.options)).toEqual({
+			branch,
+			headSha: clean,
+		});
+	});
+	it.runIf(linux)("checks only what the push adds to the base and the branch head the remote showed", async () => {
+		const f = await fixture();
+		f.options.secrets = new CodingSecretMask([secret]);
+		// The value was on the repository before it was a secret: in the base, and in the branch's last push.
+		const base = await commit(f, f.input.baseSha, { "old.txt": `${secret}\n` }, `old ${secret}`);
+		const last = await commit(f, base, { "old.txt": `${secret}\n`, "last.txt": `${secret}\n` }, `last ${secret}`);
+		const head = await commit(
+			f,
+			last,
+			{ "old.txt": `${secret}\n`, "last.txt": `${secret}\n`, "src/new.txt": "clean\n" },
+			"new",
+		);
+		f.setRemote(last);
+		const input = { ...f.input, baseSha: base, headSha: head, expectedRemoteHeadSha: last };
+		expect(await pushCloudCodingBundle(input, await bundled(f, head), f.options)).toEqual({ branch, headSha: head });
+		const checked = f.calls.filter((call) => call.output !== undefined);
+		expect(
+			checked.map((call) => call.args.slice(call.args.findIndex((arg) => arg === "rev-list" || arg === "cat-file"))),
+		).toEqual([
+			["rev-list", "--objects", head, `^${base}`, `^${last}`],
+			["cat-file", "--batch"],
+		]);
+		expect(checked.map((call) => [call.long, call.network, call.output?.limit])).toEqual([
+			[true, false, 16 * 1024 ** 2],
+			[true, false, 256 * 1024 ** 2],
+		]);
+		expect(checked[0].input).toBeUndefined();
+		// The new commit, its top folder, src and src/new.txt.
+		expect(
+			Buffer.from(checked[1].input as Uint8Array)
+				.toString()
+				.split("\n"),
+		).toHaveLength(5);
+		// A file the work changes is a new file, and carries the value again.
+		const next = await commit(
+			f,
+			head,
+			{ "old.txt": `${secret}\nchanged\n`, "last.txt": `${secret}\n`, "src/new.txt": "clean\n" },
+			"change",
+		);
+		const error = await refusal(f, next, { baseSha: base, expectedRemoteHeadSha: head });
+		expect(error.carrier).toEqual({ kind: "file", path: "old.txt" });
+	});
+	it.runIf(linux)("reads the check's output however Git splits it, and refuses output it doesn't expect", async () => {
+		const f = await fixture();
+		f.options.secrets = new CodingSecretMask([secret]);
+		const git = f.options.runGit as CodingBrokerGitRunner;
+		const base = f.input.baseSha;
+		const carrying = await commit(f, base, { "a.txt": "clean\n", "b/c.txt": `${secret}\n` }, "carrying");
+		// Both steps' output, a byte at a time.
+		const bytewise = rewritten(
+			rewritten(git, "rev-list", (bytes) => bytes, 1),
+			"cat-file",
+			(bytes) => bytes,
+			1,
+		);
+		f.options.runGit = bytewise;
+		expect((await refusal(f, carrying)).carrier).toEqual({ kind: "file", path: "b/c.txt" });
+		const head = await commit(f, base, { "a.txt": "clean\n", "b/c.txt": "clean\n" }, "clean");
+		const many = Array.from({ length: 100_001 }, (_, index) => `${index.toString(16).padStart(40, "0")}\n`).join("");
+		const latin1 = (bytes: Buffer, from: string, to: string) =>
+			Buffer.from(bytes.toString("latin1").replace(from, to), "latin1");
+		const surprises: [CodingBrokerGitRunner, string][] = [
+			[rewritten(git, "rev-list", (bytes) => bytes.subarray(0, -1)), "a line without its newline"],
+			[rewritten(git, "rev-list", (bytes) => Buffer.concat([Buffer.from("abc\n"), bytes])), "a short name"],
+			[rewritten(git, "rev-list", (bytes) => latin1(bytes, " ", "\t")), "another separator"],
+			[rewritten(git, "rev-list", (bytes) => Buffer.concat([bytes, bytes.subarray(0, 41)])), "an object twice"],
+			[rewritten(git, "rev-list", () => Buffer.from(many), 65536), "over the object bound"],
+			[rewritten(git, "cat-file", (bytes) => latin1(bytes, " commit ", " tag ")), "a tag"],
+			[rewritten(git, "cat-file", () => Buffer.from(`${head} missing\n`)), "a missing object"],
+			[
+				rewritten(git, "cat-file", (bytes) => Buffer.concat([Buffer.from("f".repeat(40)), bytes.subarray(40)])),
+				"another object",
+			],
+			[rewritten(git, "cat-file", (bytes) => bytes.subarray(0, -2)), "an object cut short"],
+			[rewritten(git, "cat-file", (bytes) => bytes.subarray(0, -1)), "no last newline"],
+			[rewritten(git, "cat-file", (bytes) => Buffer.concat([bytes, bytes])), "more than asked"],
+			[rewritten(git, "cat-file", () => Buffer.alloc(0)), "nothing"],
+			[
+				async (command) => {
+					if (command.output && command.args.includes("cat-file")) throw new Error(`killed ${secret}`);
+					return git(command);
+				},
+				"a failed step",
+			],
+		];
+		for (const [runGit, surprise] of surprises) {
+			f.options.runGit = runGit;
+			const error = await refusal(f, head);
+			expect([surprise, error.message, error.carrier]).toEqual([surprise, "CODING_PUSH_UNCHECKED", null]);
+		}
+		// The first push and the cat-file surprises read objects: a surprise in the list stops the check before.
+		expect(f.calls.filter((call) => call.args.includes("cat-file") && call.output !== undefined)).toHaveLength(8);
+		f.options.runGit = bytewise;
+		expect(await pushCloudCodingBundle({ ...f.input, headSha: head }, await bundled(f, head), f.options)).toEqual({
+			branch,
+			headSha: head,
+		});
+	});
+	it.runIf(linux)("keeps a lost authority's or a cancel's own error when a check step fails", async () => {
+		const f = await fixture();
+		f.options.secrets = new CodingSecretMask([secret]);
+		const git = f.options.runGit as CodingBrokerGitRunner;
+		const head = await commit(f, f.input.baseSha, { "a.txt": "clean\n" }, "clean");
+		let revoked = false;
+		f.options.assertAuthorized = async () => {
+			if (revoked) throw new Error("revoked");
+		};
+		f.options.runGit = async (command) => {
+			if (!command.output || !command.args.includes("cat-file")) return git(command);
+			revoked = true;
+			throw new Error("killed");
+		};
+		await expect(
+			pushCloudCodingBundle({ ...f.input, headSha: head }, await bundled(f, head), f.options),
+		).rejects.toThrow(/^CODING_GIT_AUTHORITY_UNAVAILABLE$/);
+		revoked = false;
+		const controller = new AbortController();
+		f.options.signal = controller.signal;
+		f.options.runGit = async (command) => {
+			if (!command.output || !command.args.includes("rev-list")) return git(command);
+			controller.abort();
+			throw new Error("killed");
+		};
+		await expect(
+			pushCloudCodingBundle({ ...f.input, headSha: head }, await bundled(f, head), f.options),
+		).rejects.toMatchObject({ name: "AbortError" });
 		expect(f.calls.some((call) => call.args.includes("push"))).toBe(false);
 	});
 });
