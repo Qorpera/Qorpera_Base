@@ -136,45 +136,43 @@ impl Pattern {
 		}
 	}
 
-	/// Whether it matches `path`, whose last name is `name` (git's `last_matching_pattern_from_list`, one pattern).
+	/// Whether it matches `path`, whose last name is `name` (git's `last_matching_pattern_from_list`, one pattern). A
+	/// match `wildmatch` gives up on counts as the one that leaves less out: a negated pattern matches, another does not.
 	fn matches(&self, path: &[u8], name: &[u8], folder: bool) -> bool {
 		if self.folder_only && !folder {
 			return false;
 		}
-		if self.name_only {
-			self.matches_name(name)
-		} else {
-			self.matches_path(path)
-		}
+		let matched = if self.name_only { self.matches_name(name) } else { self.matches_path(path) };
+		matched.unwrap_or(self.negative)
 	}
 
 	/// Git's `match_basename`.
-	fn matches_name(&self, name: &[u8]) -> bool {
+	fn matches_name(&self, name: &[u8]) -> Option<bool> {
 		if self.literal == self.text.len() {
-			name == self.text.as_slice()
+			Some(name == self.text.as_slice())
 		} else if self.ends_with {
-			self.text.get(1..).is_some_and(|rest| name.ends_with(rest))
+			Some(self.text.get(1..).is_some_and(|rest| name.ends_with(rest)))
 		} else {
 			wildmatch(&self.text, name, false)
 		}
 	}
 
 	/// Git's `match_pathname`, for a path relative to the pattern's folder.
-	fn matches_path(&self, path: &[u8]) -> bool {
+	fn matches_path(&self, path: &[u8]) -> Option<bool> {
 		let (mut pattern, literal) = match self.text.strip_prefix(b"/") {
 			Some(rest) => (rest, self.literal.saturating_sub(1)),
 			None => (self.text.as_slice(), self.literal),
 		};
 		let mut path = path;
 		if path.is_empty() {
-			return false;
+			return Some(false);
 		}
 		if literal > 0 {
 			if literal > path.len() || pattern.get(..literal) != path.get(..literal) {
-				return false;
+				return Some(false);
 			}
 			if pattern.len() == literal && path.len() == literal {
-				return true;
+				return Some(true);
 			}
 			// Git keeps the literal start's last byte, so that wildmatch sees where a name starts.
 			pattern = rest(pattern, literal - 1);
@@ -230,23 +228,39 @@ fn rest(text: &[u8], at: usize) -> &[u8] {
 	text.get(at..).unwrap_or_default()
 }
 
-/// How git's `dowild` ends: the two aborts end the `*` loops above it early.
+/// How git's `dowild` ends: the two aborts end the `*` loops above it early. `GivenUp` (not git's) ends them all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Wild {
 	Match,
 	NoMatch,
 	AbortAll,
 	AbortToStarStar,
+	GivenUp,
 }
 
-/// Git's `wildmatch` without case folding; `pathname` is `WM_PATHNAME`.
-fn wildmatch(pattern: &[u8], text: &[u8], pathname: bool) -> bool {
-	dowild(pattern, text, pathname) == Wild::Match
+/// How deep `dowild` calls itself, and how often in one match, before it gives up. Git has no limit: its matcher calls
+/// itself once for each `*` it is in, and a pattern of many `**/` takes time binomial in them on a path with slashes it
+/// does not match. No pattern a person writes comes near either; the mount's stack and its time are kept from one
+/// that does.
+const MAX_DEPTH: usize = 256;
+const MAX_CALLS: usize = 1 << 16;
+
+/// Git's `wildmatch` without case folding; `pathname` is `WM_PATHNAME`. None when it gives up (`MAX_DEPTH`,
+/// `MAX_CALLS`).
+fn wildmatch(pattern: &[u8], text: &[u8], pathname: bool) -> Option<bool> {
+	match dowild(pattern, text, pathname, 0, &mut 0) {
+		Wild::GivenUp => None,
+		matched => Some(matched == Wild::Match),
+	}
 }
 
-/// Git's `dowild`. A call inside it starts its pattern where the C code passes `p`, as git's `**` check reads back
-/// from there.
-fn dowild(pattern: &[u8], text: &[u8], pathname: bool) -> Wild {
+/// Git's `dowild`, called `depth` deep, counting the `calls` of its match. A call inside it starts its pattern where
+/// the C code passes `p`, as git's `**` check reads back from there.
+fn dowild(pattern: &[u8], text: &[u8], pathname: bool, depth: usize, calls: &mut usize) -> Wild {
+	*calls += 1;
+	if depth >= MAX_DEPTH || *calls > MAX_CALLS {
+		return Wild::GivenUp;
+	}
 	let mut p = 0;
 	let mut t = 0;
 	while byte(pattern, p) != 0 {
@@ -280,8 +294,11 @@ fn dowild(pattern: &[u8], text: &[u8], pathname: bool) -> Wild {
 					} else if (prev_p < 2 || byte(pattern, prev_p - 2) == b'/')
 						&& (after == 0 || after == b'/' || (after == b'\\' && byte(pattern, p + 1) == b'/'))
 					{
-						if after == b'/' && dowild(rest(pattern, p + 1), rest(text, t), pathname) == Wild::Match {
-							return Wild::Match;
+						if after == b'/' {
+							let matched = dowild(rest(pattern, p + 1), rest(text, t), pathname, depth + 1, calls);
+							if matched == Wild::Match || matched == Wild::GivenUp {
+								return matched;
+							}
 						}
 						true
 					} else {
@@ -316,7 +333,7 @@ fn dowild(pattern: &[u8], text: &[u8], pathname: bool) -> Wild {
 								return if match_slash { Wild::AbortAll } else { Wild::AbortToStarStar };
 							}
 						}
-						let matched = dowild(rest(pattern, p), rest(text, t), pathname);
+						let matched = dowild(rest(pattern, p), rest(text, t), pathname, depth + 1, calls);
 						if matched != Wild::NoMatch {
 							if !match_slash || matched != Wild::AbortToStarStar {
 								return matched;
@@ -752,6 +769,27 @@ mod tests {
 		);
 		assert!(!answer);
 		assert_eq!(asked, ["", "src", "src/a"]);
+	}
+
+	#[test]
+	fn a_pattern_too_deep_or_too_long_to_match_leaves_nothing_out() {
+		let deep = |n: usize, last: &str| Patterns::parse(format!("{}{last}\n", "**/".repeat(n)).as_bytes());
+		// Git matches these; one deeper than the mount's stack takes would end the program.
+		let fine = deep(100, "x");
+		assert_eq!(fine.decide("x", false), Some(true));
+		assert_eq!(fine.decide("a/b/x", false), Some(true));
+		let started = std::time::Instant::now();
+		assert_eq!(fine.decide("a/b/c/d/e/y", false), None);
+		assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+		let too_deep = deep(1_000_000, "x");
+		assert_eq!(too_deep.decide("x", false), None);
+		assert_eq!(too_deep.decide("a/b/x", false), None);
+		// A negated one given up on takes the path back: here every path.
+		let back = Patterns::parse(format!("*\n!{}x\n", "**/".repeat(1_000)).as_bytes());
+		assert_eq!(back.decide("x", false), Some(false));
+		assert_eq!(back.decide("y", false), Some(false));
+		assert!(!ignored("a/y", false, |_| Some(&back), None));
+		assert_eq!(Patterns::parse(b"*\n!**/x\n").decide("y", false), Some(true));
 	}
 
 	#[test]

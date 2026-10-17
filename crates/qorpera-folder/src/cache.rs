@@ -121,6 +121,10 @@ struct Worktree {
 	read: bool,
 	/// The paths its index tracked when it was last read (a sparse index's folders without their `/`).
 	tracked: BTreeSet<String>,
+	/// Of those, a sparse index's folders, which it tracks all of.
+	sparse: BTreeSet<String>,
+	/// How often `track` was asked, in memory: a move of what the index tracks is done only for what it tracked since.
+	generation: u64,
 }
 
 pub struct CacheList {
@@ -182,19 +186,27 @@ impl CacheList {
 		}
 	}
 
-	/// Whether `worktree`'s index tracks `path` (in the worktree), or a path in it: as it did when it was last read.
-	pub fn tracks(&self, worktree: &str, path: &str) -> bool {
+	/// Whether `worktree`'s index tracks `path` (in the worktree), a folder when `folder`, as it did when it was last
+	/// read: a file it has, or a folder it has paths in, or either in a sparse index's folder (`covers`). A file it has
+	/// is only itself: a folder in its place is not tracked, nor anything in it.
+	pub fn tracks(&self, worktree: &str, path: &str, folder: bool) -> bool {
 		let Some(w) = self.worktrees.get(worktree) else { return false };
+		if self.covers(worktree, path) {
+			return true;
+		}
+		if !folder {
+			return w.tracked.contains(path);
+		}
 		let below = format!("{path}/");
-		self.covers(worktree, path) || w.tracked.range(below.clone()..).next().is_some_and(|p| p.starts_with(&below))
+		w.tracked.range(below.clone()..).next().is_some_and(|p| p.starts_with(&below))
 	}
 
-	/// Whether `worktree`'s index tracks `path` and all in it: itself, or a sparse index's folder it is in.
+	/// Whether `worktree`'s index tracks all in `path`: a sparse index's folder, or a path in one.
 	pub fn covers(&self, worktree: &str, path: &str) -> bool {
 		let Some(w) = self.worktrees.get(worktree) else { return false };
 		let mut at = Some(path);
 		while let Some(p) = at {
-			if w.tracked.contains(p) {
+			if w.sparse.contains(p) {
 				return true;
 			}
 			at = p.rsplit_once('/').map(|(up, _)| up);
@@ -202,9 +214,16 @@ impl CacheList {
 		false
 	}
 
-	/// `worktree`'s index tracks caches, or paths in them: they move into the folder (`TRACKED`).
+	/// How often `track` was asked for `worktree` since the program started.
+	pub fn generation(&self, worktree: &str) -> u64 {
+		self.worktrees.get(worktree).map_or(0, |w| w.generation)
+	}
+
+	/// `worktree`'s index tracks caches, or paths in them: they move into the folder (`TRACKED`). Asked again while
+	/// that move is on, the move is made again after it (`moved`), for what the index tracks now.
 	pub fn track(&mut self, worktree: &str) {
 		let w = self.worktrees.entry(worktree.to_string()).or_default();
+		w.generation += 1;
 		if !w.moving.insert(TRACKED.to_string()) {
 			return;
 		}
@@ -217,6 +236,7 @@ impl CacheList {
 		let w = self.worktrees.entry(worktree.to_string()).or_default();
 		w.read = true;
 		w.tracked = paths.iter().map(|p| p.strip_suffix('/').unwrap_or(p).to_string()).collect();
+		w.sparse = paths.iter().filter_map(|p| p.strip_suffix('/')).map(str::to_string).collect();
 		let mut leaving = BTreeSet::new();
 		for path in paths {
 			for name in index::folders(path) {
@@ -243,9 +263,11 @@ impl CacheList {
 		self.worktrees.iter().filter(|(w, _)| only(w)).flat_map(of).collect()
 	}
 
-	/// `worktree`'s cache folders named `name` all moved into the folder.
-	pub fn moved(&mut self, worktree: &str, name: &str) {
-		if !self.worktrees.get_mut(worktree).is_some_and(|w| w.moving.remove(name)) {
+	/// `worktree`'s cache folders named `name` all moved into the folder, by a move started at `generation`: for
+	/// `TRACKED`, once `track` was not asked again since.
+	pub fn moved(&mut self, worktree: &str, name: &str, generation: u64) {
+		let Some(w) = self.worktrees.get_mut(worktree) else { return };
+		if (name == TRACKED && w.generation != generation) || !w.moving.remove(name) {
 			return;
 		}
 		self.write(&Line { w: worktree.to_string(), n: name.to_string(), moved: true });
@@ -335,14 +357,14 @@ mod tests {
 		let pair = |w: &str, n: &str| (w.to_string(), n.to_string());
 		assert_eq!(list.moves(Some(w)), [pair(w, "build"), pair(w, "dist")]);
 		assert!(marker.exists());
-		list.moved(w, "build");
-		list.moved(v, "build");
+		list.moved(w, "build", 0);
+		list.moved(v, "build", 0);
 		assert!(marker.exists());
 		// A program started again finds the unfinished move; the marker stays until it is done.
 		let mut again = CacheList::open(&file, Some(marker.clone())).unwrap();
 		assert_eq!(again.moves(None), [pair(w, "dist")]);
 		assert!(marker.exists() && !again.listed(w, "dist") && !again.listed(v, "build"));
-		again.moved(w, "dist");
+		again.moved(w, "dist", 0);
 		assert!(again.moves(None).is_empty() && !marker.exists());
 		assert!(CacheList::open(&file, Some(marker.clone())).unwrap().moves(None).is_empty());
 		std::fs::remove_dir_all(&dir).unwrap();
@@ -352,25 +374,35 @@ mod tests {
 	fn tracked_paths_and_the_folders_above_them_are_tracked() {
 		let w = "code/o/n/worktrees/w";
 		let mut list = CacheList::memory();
-		assert!(!list.tracks(w, "a"));
+		assert!(!list.tracks(w, "a", true));
 		let paths = ["a/b/keep.txt", "a/b-c", "x.log", "sparse/dir/"].map(String::from);
 		list.indexed(w, &paths);
-		for path in ["a", "a/b", "a/b/keep.txt", "a/b-c", "x.log", "sparse/dir", "sparse/dir/deep/file", "sparse"] {
-			assert!(list.tracks(w, path), "{path}");
+		for path in ["a", "a/b", "sparse/dir", "sparse/dir/deep", "sparse"] {
+			assert!(list.tracks(w, path, true), "{path}");
 		}
-		for path in ["a/b/other.txt", "a/b-", "a/bc", "x", "x.lo", "b", "sparse/di", "sparse/dir2"] {
-			assert!(!list.tracks(w, path), "{path}");
+		for path in ["a/b/keep.txt", "a/b-c", "x.log", "sparse/dir", "sparse/dir/deep/file"] {
+			assert!(list.tracks(w, path, false), "{path}");
 		}
-		for path in ["a/b/keep.txt", "x.log", "sparse/dir", "sparse/dir/deep/file"] {
+		for path in ["a/b/other.txt", "a/b-", "a/bc", "x", "x.lo", "b", "sparse/di", "sparse/dir2", "a", "a/b"] {
+			assert!(!list.tracks(w, path, false), "{path}");
+		}
+		// A folder in the place of a file the index has is not tracked, nor anything in it.
+		for path in ["a/b/keep.txt", "x.log", "a/b-", "b", "sparse/dir2"] {
+			assert!(!list.tracks(w, path, true), "{path}");
+		}
+		for path in ["x.log/secret.log", "a/b/keep.txt/x"] {
+			assert!(!list.tracks(w, path, false) && !list.tracks(w, path, true), "{path}");
+		}
+		for path in ["sparse/dir", "sparse/dir/deep/file"] {
 			assert!(list.covers(w, path), "{path}");
 		}
-		for path in ["a", "a/b", "sparse", "a/b/other.txt"] {
+		for path in ["a", "a/b", "sparse", "a/b/other.txt", "a/b/keep.txt", "x.log", "x.log/secret.log"] {
 			assert!(!list.covers(w, path), "{path}");
 		}
-		assert!(!list.tracks("code/o/n/worktrees/v", "a"));
+		assert!(!list.tracks("code/o/n/worktrees/v", "a", true));
 		// What the index tracks now, not what it did.
 		list.indexed(w, &["y".to_string()]);
-		assert!(!list.tracks(w, "a/b/keep.txt") && list.tracks(w, "y"));
+		assert!(!list.tracks(w, "a/b/keep.txt", false) && list.tracks(w, "y", false));
 	}
 
 	#[test]
@@ -388,8 +420,13 @@ mod tests {
 		let mut again = CacheList::open(&file, Some(marker.clone())).unwrap();
 		assert_eq!(again.moves(Some(w)), [(w.to_string(), TRACKED.to_string())]);
 		// No name left the list for it, and the index is read again before the move.
-		assert!(again.listed(w, "build") && !again.read(w) && !again.tracks(w, "build"));
-		again.moved(w, TRACKED);
+		assert!(again.listed(w, "build") && !again.read(w) && !again.tracks(w, "build", true));
+		// Asked again while the move is on: the move is made again after it.
+		let started = again.generation(w);
+		again.track(w);
+		again.moved(w, TRACKED, started);
+		assert_eq!(again.moves(None), [(w.to_string(), TRACKED.to_string())]);
+		again.moved(w, TRACKED, again.generation(w));
 		assert!(again.moves(None).is_empty() && !marker.exists());
 		assert!(CacheList::open(&file, Some(marker.clone())).unwrap().moves(None).is_empty());
 		std::fs::remove_dir_all(&dir).unwrap();

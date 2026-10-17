@@ -422,31 +422,53 @@ impl Local {
 
 	/// Makes the cache folder `name` in `dir` the caches of the node's folder of that name, which a move has in the
 	/// folder now (`mount/on_disk.rs`): what is in it becomes that folder's top entries, all moving (`whole`) or (not
-	/// `whole`) those the move picks. False, and nothing done, when that folder has top entries of its own.
+	/// `whole`) those the move picks. When that folder has top entries of its own: `whole`, false, and nothing done;
+	/// not `whole`, what is in it joins them, but for a name they have, which is not shown (the node's folder is) and
+	/// goes with the cache folder.
 	pub fn convert(&self, dir: &str, name: &str, whole: bool) -> io::Result<bool> {
 		let mut names = self.names.lock().unwrap();
 		let path = crate::proto::join(dir, name);
 		let (top, into) = (self.disk(Area::Cache, &path), self.mirror(&path).join("t"));
 		let ino = fs::symlink_metadata(&top)?.ino() | LOCAL;
 		fs::DirBuilder::new().recursive(true).mode(0o755).create(self.mirror(&path))?;
-		match fs::remove_dir(&into) {
+		let joined = match fs::remove_dir(&into) {
 			Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) || e.raw_os_error() == Some(libc::EEXIST) => {
-				return Ok(false);
+				if whole {
+					return Ok(false);
+				}
+				let mut joined = HashSet::new();
+				for entry in fs::read_dir(&top)? {
+					let entry = entry?;
+					let to = into.join(entry.file_name());
+					if fs::symlink_metadata(&to).is_err() {
+						fs::rename(entry.path(), to)?;
+						joined.extend(entry.file_name().into_string());
+					}
+				}
+				Some(joined)
 			}
 			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-			_ => {}
-		}
+			_ => None,
+		};
 		if whole {
 			self.mark_whole(&path, true)?;
 		}
-		fs::rename(&top, &into)?;
-		forget(&mut names, ino, &Up::Mount(dir.to_string()), name);
+		if joined.is_none() {
+			fs::rename(&top, &into)?;
+		}
 		for all in names.values_mut() {
-			for (up, _, area) in all.iter_mut() {
-				if *up == Up::Local(ino) && *area == Area::Cache {
+			for (up, n, area) in all.iter_mut() {
+				if *up == Up::Local(ino) && *area == Area::Cache && joined.as_ref().is_none_or(|j| j.contains(n.as_str())) {
 					*up = Up::Mount(path.clone());
 				}
 			}
+		}
+		let up = Up::Mount(dir.to_string());
+		if joined.is_some() {
+			trash(&self.root, &top)?;
+			forget_all(&mut names, |u, n, area| area == Area::Cache && *u == up && n == name);
+		} else {
+			forget(&mut names, ino, &up, name);
 		}
 		Ok(true)
 	}
@@ -1150,9 +1172,17 @@ mod tests {
 		assert!(l.is_top("c/b", "dist") && l.is_top("c/b/dist", "y.js"));
 		// A folder git tracks paths in: the rest of it stays the caches of the node's folder, not all moving.
 		let tracked = made(Up::Mount("e".to_string()), "logs");
-		file(Up::Local(tracked), "keep.log");
+		let kept = file(Up::Local(tracked), "keep.log");
 		assert_eq!(l.convert("e", "logs", false).unwrap(), true);
 		assert!(l.is_top("e/logs", "keep.log") && !l.whole("e/logs") && !l.moving_below("e", &[]));
+		// Again, where that folder has caches already: what is in it joins them, but for a name they have.
+		let more = made(Up::Mount("e".to_string()), "logs");
+		let (twin, new) = (file(Up::Local(more), "keep.log"), file(Up::Local(more), "new.log"));
+		assert_eq!(l.convert("e", "logs", false).unwrap(), true);
+		assert!(!l.is_top("e", "logs") && l.is_top("e/logs", "keep.log") && l.is_top("e/logs", "new.log"));
+		assert_eq!(l.name(new), Some((Up::Mount("e/logs".to_string()), "new.log".to_string(), Area::Cache)));
+		assert!(l.name(kept).is_some() && l.name(twin).is_none() && l.name(more).is_none());
+		assert!(!l.whole("e/logs") && !dir.join("caches/d/e/t/logs").exists());
 		// The node's entry wins (rule 1), and a folder gone takes the caches in and below it.
 		l.gone_top("c/b", "dist");
 		assert!(!l.is_top("c/b", "dist") && l.name(again).is_none() && l.getattr(again) == Err(libc::ENOENT));

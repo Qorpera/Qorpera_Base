@@ -19,7 +19,7 @@ use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::sync::MutexGuard;
 
 /// Whether the kernel must ask the node again for `path` each time: git's shared files, which other sessions change.
@@ -150,7 +150,7 @@ impl Shared {
 					self.read_index(local, &worktree, &index);
 				}
 				let list = local.cache.lock().unwrap();
-				if list.tracks(&worktree, &path) {
+				if list.tracks(&worktree, &path, folder) {
 					return false;
 				}
 				if !named || list.listed(&worktree, name) {
@@ -191,20 +191,39 @@ impl Shared {
 		ignore::ignored(path, folder, gitignore, exclude.as_ref())
 	}
 
-	/// The `.gitignore` in the node's folder `dir` (at `path`), parsed once per version: None when it has none, or one
-	/// that is not a file (git does not follow a link to it), or one it could not give.
+	/// The `.gitignore` in the node's folder `dir` (at `path`), parsed once per version: the node's, or where the node
+	/// has none, the folder's cache of that name (git reads a `.gitignore` it ignores too). None when there is neither,
+	/// or the one there is not a file (git does not follow a link to it), or could not be read.
 	fn gitignore(&self, local: &Local, dir: u64, path: &str) -> Option<Arc<Patterns>> {
-		let child = self.child(dir, ".gitignore").ok().filter(|c| c.attr.kind == EntryKind::File)?;
 		let file = join(path, ".gitignore");
-		if let Some((version, patterns)) = local.ignores.lock().unwrap().get(&file) {
-			if *version == child.attr.version {
+		let (version, size, disk) = match self.child(dir, ".gitignore") {
+			Ok(child) if child.attr.kind == EntryKind::File => (child.attr.version, child.attr.size, None),
+			Err(libc::ENOENT) => {
+				let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+				let disk = fs::OpenOptions::new().read(true).custom_flags(flags).open(local.disk(Area::Cache, &file)).ok()?;
+				let meta = disk.metadata().ok().filter(|m| m.is_file())?;
+				let (ino, len) = (meta.ino(), meta.len());
+				let version = format!("disk:{ino}:{len}:{}.{}:{}.{}", meta.mtime(), meta.mtime_nsec(), meta.ctime(), meta.ctime_nsec());
+				(version, len, Some(disk))
+			}
+			_ => return None,
+		};
+		if let Some((known, patterns)) = local.ignores.lock().unwrap().get(&file) {
+			if *known == version {
 				return Some(patterns.clone());
 			}
 		}
-		let patterns = if child.attr.size >= ignore::MAX_FILE as u64 {
+		let patterns = if size >= ignore::MAX_FILE as u64 {
 			Patterns::default()
 		} else {
-			match self.read_all(&file, &child.attr.version, child.attr.size) {
+			let text = match disk {
+				Some(disk) => {
+					let mut text = Vec::new();
+					disk.take(ignore::MAX_FILE as u64).read_to_end(&mut text).map(|_| text).map_err(local::errno)
+				}
+				None => self.read_all(&file, &version, size),
+			};
+			match text {
 				Ok(text) => Patterns::parse(&text),
 				Err(e) => {
 					eprintln!("qorpera-folder: {file} could not be read (errno {e}); it leaves nothing out");
@@ -213,7 +232,7 @@ impl Shared {
 			}
 		};
 		let patterns = Arc::new(patterns);
-		local.ignores.lock().unwrap().insert(file, (child.attr.version, patterns.clone()));
+		local.ignores.lock().unwrap().insert(file, (version, patterns.clone()));
 		Some(patterns)
 	}
 
@@ -334,11 +353,15 @@ impl Shared {
 		let mut todo = vec![String::new()];
 		while let Some(rel) = todo.pop() {
 			let dir = below(worktree, &rel);
-			let tops = fs::read_dir(local.room(&dir, Area::Cache)).into_iter().flatten().flatten();
-			if tops.filter_map(|e| e.file_name().into_string().ok()).any(|n| list.tracks(worktree, &join(&rel, &n))) {
+			let mut tops = fs::read_dir(local.room(&dir, Area::Cache)).into_iter().flatten().flatten();
+			let tracked = |e: fs::DirEntry| {
+				let folder = e.file_type().is_ok_and(|t| t.is_dir());
+				e.file_name().into_string().is_ok_and(|n| list.tracks(worktree, &join(&rel, &n), folder))
+			};
+			if tops.any(tracked) {
 				return true;
 			}
-			todo.extend(local.mirrors(&dir).iter().map(|m| join(&rel, m)).filter(|r| list.tracks(worktree, r)));
+			todo.extend(local.mirrors(&dir).iter().map(|m| join(&rel, m)).filter(|r| list.tracks(worktree, r, true)));
 		}
 		false
 	}
@@ -362,11 +385,16 @@ impl Shared {
 		let mut held = local.moving.lock().unwrap();
 		let moves = local.cache.lock().unwrap().moves(worktree);
 		for (worktree, name) in moves {
-			if name == cache::TRACKED && !local.cache.lock().unwrap().read(&worktree) {
-				continue;
-			}
+			// A `TRACKED` move asked for again meanwhile, for what the index tracks then, is made again.
+			let started = {
+				let list = local.cache.lock().unwrap();
+				if name == cache::TRACKED && !list.read(&worktree) {
+					continue;
+				}
+				list.generation(&worktree)
+			};
 			match self.move_in(local, &mut held, &worktree, &name) {
-				Ok(()) => local.cache.lock().unwrap().moved(&worktree, &name),
+				Ok(()) => local.cache.lock().unwrap().moved(&worktree, &name, started),
 				Err(e) => eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder yet (errno {e})"),
 			}
 		}
@@ -398,7 +426,7 @@ impl Shared {
 	/// all of (a sparse index's), whole; of a folder it tracks paths in, those paths, the rest staying caches.
 	fn move_in(&self, local: &Local, held: &mut HashMap<String, Writer>, worktree: &str, name: &str) -> Result<(), i32> {
 		let tracked = name == cache::TRACKED;
-		let tracks = |path: &str| local.cache.lock().unwrap().tracks(worktree, within(path, worktree));
+		let tracks = |path: &str, folder: bool| local.cache.lock().unwrap().tracks(worktree, within(path, worktree), folder);
 		// The node's folders to look in, and whether all of their caches move (what was in a cache that moves).
 		let start = *local.folders.lock().unwrap();
 		let mut todo = vec![(worktree.to_string(), false)];
@@ -426,20 +454,26 @@ impl Shared {
 				let Some(child) = entry.file_name().to_str().map(str::to_string) else { continue };
 				let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
 				let path = join(&dir, &child);
-				let picked = if tracked { tracks(&path) } else { child == name && meta.is_dir() };
+				let picked = if tracked { tracks(&path, meta.is_dir()) } else { child == name && meta.is_dir() };
 				if !whole && !picked {
 					continue;
 				}
 				if meta.is_dir() {
-					match self.link.mkdir(&path) {
-						Err(f) if f.errno() != libc::EEXIST => return Err(f.errno()),
-						_ => {}
+					let fresh = match self.link.mkdir(&path) {
+						Ok(()) => true,
+						Err(f) if f.errno() == libc::EEXIST => false,
+						Err(f) => return Err(f.errno()),
+					};
+					if fresh {
+						// The caches of a folder of that name the node had no longer: another view removed it, and this
+						// one has not listed its folder since (`caches_gone`).
+						local.drop_mirror(&path);
 					}
 					let all = whole || !tracked || local.cache.lock().unwrap().covers(worktree, within(&path, worktree));
 					if local.convert(&dir, &child, all).map_err(local::errno)? {
 						made.push(child);
 					} else {
-						// The node's folder has caches of its own (of an earlier folder of that name): this one moves whole.
+						// The node's folder has caches of its own, and all of this one moves: it moves whole.
 						self.move_folder(local, held, &path, &entry.path())?;
 					}
 				} else if meta.is_file() {
@@ -457,7 +491,7 @@ impl Shared {
 				// A folder of the node's with caches in it or below; one made now, or by a move not finished, moves whole
 				// (`TRACKED`: what the index tracks in it, in those it tracks paths in).
 				let path = join(&dir, &child);
-				if (folders.contains(&child) || made.contains(&child)) && (whole || !tracked || tracks(&path)) {
+				if (folders.contains(&child) || made.contains(&child)) && (whole || !tracked || tracks(&path, true)) {
 					let whole = whole || child == name;
 					if whole {
 						local.mark_whole(&path, true).map_err(local::errno)?;
