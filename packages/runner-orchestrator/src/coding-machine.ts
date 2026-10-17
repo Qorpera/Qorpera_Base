@@ -457,6 +457,30 @@ function trailingFailed(events: readonly Event[], action: Action): number {
 	}
 	return count;
 }
+/** trailingFailed, carried across the checkpoint the segment opens with: a failed rebuild may close a segment, and its
+ * failures in a row go on counting in the next. They are read back in the segment before, each record checked against
+ * the one after it, as codingMachineLastStart reads it. A segment holds far more than MAX_FAILED_ATTEMPTS effects, so
+ * the one before is as far back as it reads. */
+async function failedInARow(
+	base: string,
+	current: Awaited<ReturnType<typeof readEvents>>,
+	action: Action,
+): Promise<number> {
+	let count = trailingFailed(current.events, action);
+	if (count * 3 < current.events.length || !current.prior) return count;
+	const root = current.segment === 1 ? base : join(base, `segment-${String(current.segment - 1).padStart(6, "0")}`);
+	for (let after = current.prior; ; ) {
+		if (after.kind !== "settled" || after.action !== action || after.state !== "failed") return count;
+		if (++count >= MAX_FAILED_ATTEMPTS || after.sequence < 3) return count;
+		for (let step = 0; step < 3; step++) {
+			const record = await readRecord(join(root, `${String(after.sequence - 1).padStart(6, "0")}.json`));
+			const event = record.value as Event | null;
+			if (!event || sha(record.bytes) !== after.previousSha256 || event.sequence !== after.sequence - 1)
+				throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+			after = event;
+		}
+	}
+}
 function physical(instance: LxdInstanceRecord): "running" | "stopped" | "other" {
 	if (instance.status === "Running" && instance.statusCode === 103) return "running";
 	if (instance.status === "Stopped" && instance.statusCode === 102) return "stopped";
@@ -901,12 +925,13 @@ export async function reconcileCodingMachine(
 				// its own. A run never reuses a VM whose stop failed without stopping it
 				// first. A disposable VM's failed create or start is settled the same
 				// way, and a run tries the start again a bounded number of times. A
-				// failed rebuild is tried again so too, and never followed by a start.
+				// failed rebuild is tried again so too, counted across a checkpoint, and
+				// never followed by a start.
 				if (seen === "stopped") {
 					if (intent === "stop") return result("stopped");
 					if (intent === "delete") action = "delete";
 					else if (tail.action === "rebuild") {
-						if (trailingFailed(current.events, "rebuild") >= MAX_FAILED_ATTEMPTS)
+						if ((await failedInARow(root, current, "rebuild")) >= MAX_FAILED_ATTEMPTS)
 							return result("recovery-required");
 						action = "rebuild";
 					} else if (

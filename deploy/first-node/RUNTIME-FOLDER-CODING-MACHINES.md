@@ -430,9 +430,13 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      release refused `unreadable`, or a view's change set refused whole for it): the final boundary of the machine's
      last view, before a turn's view opens (`READS_UNREADABLE`); the boundary before a publication, which then fails
      and publishes nothing (`CODING_FOLDER_BOUNDARY_HELD:READS_UNREADABLE` or `:REFUSED_UNREADABLE`); and a command's
-     boundary, marked once per transport, which leaves the machine running, so the session's next turn finds its view
-     refused. The turn or publication then stops the machine as for a restart, unless it started since; it is marked
-     all the same then, since that start may not have given it a new disk. A machine so marked restarts as above, but
+     boundary, marked once per transport, which leaves the machine running for the next turn to stop. The turn then
+     stops the machine as for a restart, even when it started since, since that start may not have given it a new disk;
+     a publication that finds it started since only marks it. A machine SQL marked itself (a take-in above) is found
+     so before each session's view is attached, a view held since an earlier turn and still mounted included: the
+     executor asks for custody `rebuild`, which SQL grants only to a machine so marked and which changes nothing, and
+     gives the machine its new disk before the view opens. Each command's start and read asks so too and is refused on
+     a marked machine (`CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK`); a cancel still goes. A machine so marked restarts as above, but
      the restart's record answers `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both
      marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
      executor rebuilds the instance from its binding's image (`imageFingerprint`), and

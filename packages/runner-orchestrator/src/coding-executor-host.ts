@@ -1199,7 +1199,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * at /company under that attachment, so a view mounted now lists the session's worktree from its first listing.
 	 * Nothing is hot-plugged, installed or seeded in the machine, and no guest lease is taken: the session's view is held
 	 * under its attachment, which the keeper renews. A machine that must restart for the folder before its view opens
-	 * (rule 4) restarts, and the session attaches again, once. */
+	 * (rule 4) restarts, and the session attaches again, once; one SQL holds marked for a new disk gets it so too. */
 	async #prepareFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1221,6 +1221,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 		);
 		const attach = async ({ bootId, uid }: { bootId: string; uid: number }) => {
+			// A machine SQL holds marked for a new disk gets it before a view opens on it, or one held since an earlier turn
+			// is kept: that view would stay mounted until its next renewal.
+			if (await this.#newDiskDue(machine, signal)) throw new CodingFolderRestartRequired("READS_UNREADABLE");
 			const guest = { bootId, guestConfigSha256: this.#folderSessionSha(claim.workerId, machine.machineId, bootId) };
 			await this.#attachSession(claim, machine, storage, { ...guest, folder: { uid } }, scope, signal);
 			return guest;
@@ -1231,8 +1234,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		} catch (error) {
 			if (!(error instanceof CodingFolderRestartRequired)) throw error;
 			// No view opened: the machine stops, unless it started since this turn's start, and starts again (on a new disk
-			// when it holds a read no longer readable), and its restart's record detached the session, which attaches anew
-			// on the new boot.
+			// when it holds a read no longer readable, or SQL marked it for one: then it stops all the same), and its
+			// restart's record detached the session, which attaches anew on the new boot.
 			started = await this.#startFolder(folder, claim, machine, storage, journal, signal, {
 				starts: started.starts,
 				newDisk: error.code === "READS_UNREADABLE",
@@ -1254,7 +1257,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** One lifecycle step on the folder model: the machine runs this plan and its LXD agent answers, and the session's
 	 * user and the boot are read, with how many times this process started the machine so far. With `restart` (that
 	 * count when a turn found the machine must restart for the folder), it stops first, unless it started since. One that
-	 * must get a new disk is marked for it all the same: a start since may not have given it one. */
+	 * must get a new disk is marked for it and stops all the same: a start since may not have given it one, and the
+	 * turn's view does not open on it until it has. */
 	#startFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1266,9 +1270,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<{ bootId: string; uid: number; starts: number }> {
 		return this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
-			if (restart !== undefined && (this.#folderStarts.get(machine.machineId) ?? 0) === restart.starts)
+			if (
+				restart !== undefined &&
+				(restart.newDisk || (this.#folderStarts.get(machine.machineId) ?? 0) === restart.starts)
+			)
 				await this.#stopForFolder(folder, machine, journal, signal, restart.newDisk);
-			else if (restart?.newDisk) await this.#markForFolder(machine, true, signal);
 			await this.#runFolder(folder, claim, machine, storage, journal, signal);
 			const receipt = await this.#run(claim, machine, storage, signal);
 			// Each session runs as its own user, which SQL assigns in the guest agent's range.
@@ -2047,6 +2053,28 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		)
 			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
 	}
+	/** Whether SQL holds the machine marked for a new disk (rule 4, `unreadable`): a boundary said so, or a turn's take-in
+	 * found a read on it that turn can no longer place (20260930505000), which a view held since an earlier turn hears of
+	 * only at its next renewal. Asked as rebuild custody, which SQL grants for exactly such a machine and which changes
+	 * nothing: one not so marked is refused it (MACHINE_IN_USE under a leased turn, MACHINE_NO_NEW_DISK otherwise). */
+	async #newDiskDue(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<boolean> {
+		try {
+			await this.#custody(
+				lxdCodingMachineJournalPlan(machine, this.#placement),
+				lxdCodingMachinePlan(machine).text,
+				"rebuild",
+				signal,
+			);
+			return true;
+		} catch (error) {
+			if (
+				error instanceof CodingCustodyRefused &&
+				(error.reason === "MACHINE_IN_USE" || error.reason === "MACHINE_NO_NEW_DISK")
+			)
+				return false;
+			throw error;
+		}
+	}
 	/** A stopped machine is about to start: if SQL marked it to restart for the company folder (the folder model's rule
 	 * 4), the restart is recorded, each attachment on it ending as FOLDER_RESTART (not an outside stop: its sessions
 	 * attach again on the new boot) and the mark cleared, so views open on it again. An unmarked machine changes
@@ -2682,12 +2710,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const ready = this.#prepared.get(scope.workerId);
 		if (!ready || !isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
 		await this.#run(ready.claim, ready.machine, ready.storage, signal);
+		const folder = this.#options.folder;
 		const checkedAuthorize: typeof authorize = async (action, checkedScope, commandId, inputSha256, checked) => {
 			this.#current(ready);
 			await this.#run(ready.claim, ready.machine, ready.storage, checked);
+			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
+			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes.
+			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
+				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
-		const folder = this.#options.folder;
 		if (folder && ready.folder) {
 			// The session's own user runs each command through the guest agent, at its worktree, with Git's settings for
 			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever

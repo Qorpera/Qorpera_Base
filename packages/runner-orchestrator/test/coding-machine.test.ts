@@ -167,11 +167,14 @@ async function outsideStops(f: Awaited<ReturnType<typeof fixture>>) {
 	return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(root, name), "utf8"))));
 }
 
+/** A full segment of stops and starts after a create. Its last `trailing` effects are `lastAction` (when given), each
+ * settled `lastState`; only the very last one is when `trailing` is 1. */
 async function retainedHistory(
 	f: Awaited<ReturnType<typeof fixture>>,
 	count: 381 | 384,
 	lastState: "succeeded" | "failed" = "succeeded",
 	lastAction?: "start" | "rebuild",
+	trailing = 1,
 ) {
 	await f.reconcile();
 	await f.reconcile();
@@ -189,14 +192,14 @@ async function retainedHistory(
 				action:
 					sequence < 3
 						? "create"
-						: lastAction && sequence >= count - 3
+						: lastAction && sequence >= count - 3 * trailing
 							? lastAction
 							: Math.floor(sequence / 3) % 2
 								? "start"
 								: "stop",
 				kind: ["dispatch", "accepted", "settled"][phase],
 				operationId: phase === 0 ? null : id(1000 + Math.floor(sequence / 3)),
-				state: phase === 2 ? (sequence === count - 1 ? lastState : "succeeded") : null,
+				state: phase === 2 ? (sequence >= count - 3 * trailing ? lastState : "succeeded") : null,
 			})}\n`,
 		);
 		await writeFile(join(root, `${String(sequence).padStart(6, "0")}.json`), bytes, { mode: 0o600 });
@@ -865,6 +868,36 @@ describe("a coding machine's journaled lifecycle", () => {
 			// The retained history's own create and start, then the rebuild again (13) and the start after it.
 			expect(actions(g).map((action) => action.action)).toEqual(["create", "start", "rebuild", "start"]);
 			expect(starting.mock.calls.map((call) => [call[0], call[2]]).at(-1)).toEqual([id(13), "rebuild"]);
+		});
+		it("counts failed rebuilds in a row across the checkpoint a failed one closed its segment with", async () => {
+			const f = await fixture();
+			// The segment ends with two failed rebuilds (its triplets 125 and 126), after a stop.
+			const root = await retainedHistory(f, 381, "failed", "rebuild", 2);
+			const starting = vi.fn(async (_afterOperationId: string, _signal: AbortSignal, _after: After) => undefined);
+			const reconcile = (desiredState: "running" | "deleted" = "running") =>
+				reconcileCodingMachine({ ...f.options, desiredState, starting });
+			f.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+			const states: string[] = [];
+			for (let attempt = 0; attempt < 4; attempt++) states.push((await reconcile()).state);
+			// The rollover, the third rebuild, then its failure: the third in a row, so an operator is waited for.
+			expect(states).toEqual(["pending", "pending", "recovery-required", "recovery-required"]);
+			expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+				segment: 1,
+				previousEventCount: 381,
+			});
+			expect(actions(f).map((action) => action.action)).toEqual(["create", "start", "rebuild"]);
+			expect(starting).not.toHaveBeenCalled();
+			// A record of the segment before that no longer matches the one after it is never counted.
+			const g = await fixture();
+			const gRoot = await retainedHistory(g, 381, "failed", "rebuild", 2);
+			const reconcileG = () => reconcileCodingMachine({ ...g.options, desiredState: "running", starting });
+			expect((await reconcileG()).state).toBe("pending");
+			const record = JSON.parse(await readFile(join(gRoot, "000378.json"), "utf8"));
+			await writeFile(join(gRoot, "000378.json"), `${JSON.stringify({ ...record, operationId: id(999) })}\n`);
+			await expect(reconcileG()).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+			expect(actions(g).map((action) => action.action)).toEqual(["create", "start"]);
+			// The machine is still stopped: a delete still goes.
+			for (const expected of ["pending", "deleted"]) expect((await reconcile("deleted")).state).toBe(expected);
 		});
 	});
 	it("never takes a member's VM that LXD shows in any other state for stopped", async () => {
