@@ -215,9 +215,9 @@ describe("the shipped pages (C6a)", () => {
 });
 
 describe("the rail's Agents | Interfaces switch", () => {
-	/** A company that shows Members, so the rail has both tabs. */
-	function rail(route: Route) {
-		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
+	/** A company that shows Members, so the rail has both tabs; unless `read` is false and its pages aren't read yet. */
+	function rail(route: Route, read = true) {
+		const { f, controller } = company([], { members: 3, ...(read ? { pages: pages(false, true) } : {}) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
 		const auth = new AuthController(f.cloud);
@@ -242,6 +242,15 @@ describe("the rail's Agents | Interfaces switch", () => {
 			tab.getAttribute("aria-selected"),
 		]);
 	const home: Route = { name: "company", profileId: profileA.profileId, section: "home" };
+	/** Lets the lists play their slide, as in a browser that has motion. */
+	const motion = () => {
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const getAnimations = vi.fn(() => []);
+		Object.defineProperty(HTMLElement.prototype, "getAnimations", { configurable: true, value: getAnimations });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { getAnimations?: unknown }).getAnimations;
+		});
+	};
 
 	it("starts on Agents and switches lists without leaving the page", () => {
 		const { element } = rail(home);
@@ -286,18 +295,34 @@ describe("the rail's Agents | Interfaces switch", () => {
 	});
 
 	it("slides the list that takes over in from its tab's side, and nothing on the first draw", () => {
-		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-		const getAnimations = vi.fn(() => []);
-		Object.defineProperty(HTMLElement.prototype, "getAnimations", { configurable: true, value: getAnimations });
-		cleanup.push(() => {
-			delete (HTMLElement.prototype as { getAnimations?: unknown }).getAnimations;
-		});
+		motion();
 		const { element } = rail(home);
 		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
 		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[1]!.click();
 		expect(element.querySelector(".rail-interfaces")?.classList.contains("is-entering-right")).toBe(true);
 		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[0]!.click();
 		expect(element.querySelector("#rail-list-agents")?.classList.contains("is-entering-left")).toBe(true);
+	});
+
+	it("shows Interfaces for a page's route once its page is read, though the route didn't change (C6a)", () => {
+		motion();
+		// A reload of the Members page: the route opens before the pages are read.
+		const members: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
+		const { element, draw, controller } = rail(members, false);
+		expect(element.querySelector<HTMLElement>("[role=tablist]")?.hidden).toBe(true);
+		expect(element.querySelector("#rail-list-agents")).not.toBeNull();
+		expect(element.querySelector(".rail-interfaces")).toBeNull();
+		controller.store.set({ interfacePages: pages(false, true) });
+		draw();
+		expect(element.querySelector<HTMLElement>("[role=tablist]")?.hidden).toBe(false);
+		expect(tabs(element)).toEqual([
+			["Agents", "false"],
+			["Interfaces", "true"],
+		]);
+		const rows = element.querySelectorAll(".rail-interfaces a.rail-row-interface");
+		expect([...rows].map((row) => row.querySelector("strong")?.textContent)).toEqual(["Members"]);
+		// The tabs appear on the list the route chose: nothing slides.
+		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
 	});
 
 	it("folds the search out over the tabs and back on Esc or its close button, clearing it", () => {

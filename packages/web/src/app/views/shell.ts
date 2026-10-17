@@ -867,8 +867,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	}
 	const interfacesShown = companyInterfaces(company);
 	const tabbed = interfacesShown.length > 0;
-	if (!tabbed) parts.tab = "agents";
-	const onInterfaces = parts.tab === "interfaces";
+	// Without the tabs the rail shows Agents but keeps the chosen tab: a page's route can open before the pages are
+	// read, and its Interfaces tab shows once its page is listed.
+	const shownTab: RailTab = tabbed ? parts.tab : "agents";
+	const onInterfaces = shownTab === "interfaces";
+	const hadTabs = !parts.switcher.hidden;
 	// Real tabs over the two lists. Only the chosen tab is in the Tab order, and it names the list it shows.
 	for (const [button, chosen, panel] of [
 		[parts.tabAgents, !onInterfaces, parts.list.id],
@@ -905,10 +908,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.searchToggle.tabIndex = searchShown ? -1 : 0;
 	parts.searchClose.hidden = !(tabbed && parts.searchOpen);
 	const shownList = onInterfaces ? parts.interfaces : parts.list;
-	const turned = parts.shownTab !== undefined && parts.shownTab !== parts.tab;
-	parts.shownTab = parts.tab;
+	const turned = parts.shownTab !== undefined && parts.shownTab !== shownTab && hadTabs && tabbed;
+	parts.shownTab = shownTab;
 	reconcile(container, [parts.toolbar, shownList, parts.foot]);
-	// The list taking over slides in from its tab's side (styles/interfaces.css).
+	// The list taking over slides in from its tab's side (styles/interfaces.css), when the member sees the tabs turn.
 	if (turned) playOnce(shownList, onInterfaces ? "is-entering-right" : "is-entering-left");
 	parts.selection.measure(parts.list);
 	const places = measureRows(parts.list);
