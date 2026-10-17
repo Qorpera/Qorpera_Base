@@ -23,6 +23,7 @@ import { renderPlan } from "./plan.ts";
 import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { HooksView } from "./settings-hooks.ts";
+import { MemoryView } from "./settings-memory.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -48,7 +49,7 @@ const TABS = [
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff file delete leave virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller slet forlad",
+			"people team members invitations staff memory notebooks shared context beta file delete leave virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst virksomhedsfilen roller slet forlad",
 	},
 	{
 		id: "friends",
@@ -130,6 +131,8 @@ export class SettingsView {
 	#companyEnvironment: CodingEnvironmentView | undefined;
 	#hooks: HooksView | undefined;
 	#rules: RulesView | undefined;
+	/** Company: the company's memory, Agent notebooks or the Shared context beta. */
+	#memory: MemoryView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
 	readonly #accountPanel = h("div");
 	readonly #rulesSlot = h("div");
@@ -330,6 +333,7 @@ export class SettingsView {
 		this.#companyEnvironment?.dispose();
 		this.#hooks?.dispose();
 		this.#rules?.dispose();
+		this.#memory?.dispose();
 		this.#friends.dispose();
 		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
@@ -603,6 +607,8 @@ export class SettingsView {
 		this.#hooks = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
+		this.#memory?.dispose();
+		this.#memory = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -626,6 +632,7 @@ export class SettingsView {
 				this.#companyEnvironment?.update();
 				this.#hooks?.update();
 				this.#rules?.update();
+				this.#memory?.update();
 				this.#drawCompany();
 				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
 				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
@@ -656,10 +663,24 @@ export class SettingsView {
 					h("h2", null, uiText("Staff at work")),
 					h("div", { class: "settings-staff" }),
 				),
+				h("div", { class: "settings-memory-slot" }),
 				h("div", { class: "settings-file" }),
 				h("div", { class: "settings-company-exit" }),
 			);
 		}
+		if (this.#tab === "company" && !this.#memory) {
+			const profileId = company.profile.profileId;
+			this.#memory = new MemoryView(
+				{
+					read: () => this.#api.getCompanyMemory(profileId),
+					choose: (mode) => this.#api.setCompanyMemory(profileId, mode),
+				},
+				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				() => company.store.get().team?.role,
+			);
+		}
+		const memorySlot = panel.querySelector<HTMLElement>(".settings-memory-slot")!;
+		if (this.#memory && memorySlot.firstChild !== this.#memory.el) replace(memorySlot, this.#memory.el);
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("href")
