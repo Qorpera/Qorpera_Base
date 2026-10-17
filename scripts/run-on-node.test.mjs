@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -57,6 +58,7 @@ import {
 	WIDE_SLOTS,
 	wholeBlocks,
 	workingTreeFiles,
+	writeWhole,
 } from "./run-on-node.mjs";
 
 test("suites map to their commands", () => {
@@ -1157,6 +1159,29 @@ test("the status file reads back runner, install and times", () => {
 	});
 	assert.deepEqual(parseStatus("runner=ci03\ninstalled=0\n"), { runner: "ci03", installed: "0" });
 	assert.deepEqual(parseStatus(""), {});
+});
+
+test("the --record file is written whole: a new file renamed over the old one, never rewritten in place, no temp left", () => {
+	const dir = mkdtempSync(join(tmpdir(), "run-on-node-record-"));
+	try {
+		const record = join(dir, "record.json");
+		writeWhole(record, "first\n");
+		assert.equal(readFileSync(record, "utf8"), "first\n");
+		// A reader holding the old file keeps it whole: the new record is another file, renamed over the path.
+		const old = join(dir, "old.json");
+		linkSync(record, old);
+		writeWhole(record, "second\n");
+		assert.equal(readFileSync(record, "utf8"), "second\n");
+		assert.equal(readFileSync(old, "utf8"), "first\n");
+		assert.deepEqual(readdirSync(dir).sort(), ["old.json", "record.json"]);
+		// A write that cannot land throws and leaves no temp file: here the path is a folder.
+		const folder = join(dir, "folder");
+		mkdirSync(folder);
+		assert.throws(() => writeWhole(folder, "third\n"));
+		assert.deepEqual(readdirSync(dir).sort(), ["folder", "old.json", "record.json"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("shell quoting survives a round trip through bash", () => {
