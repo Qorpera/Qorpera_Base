@@ -1,6 +1,7 @@
 // P3's driver, on the test machine (test/prove-coding-session-vm.sh runs it as root once the throwaway node is set up):
 // the test database (p3-database.mjs) with a company whose member has a coding session, the node's executor
-// (p3-executor.ts) started in the node as its service unit would start it, and the runtime's side of four turns:
+// (p3-executor.ts) started in the node as its service unit would start it, and the runtime's side of four turns (six on
+// the folder model):
 //   turn 1 starts a command that keeps printing, and edits and commits in its workspace (the executor's clone of a
 //     throwaway repository on the node's stand-in GitHub); the turn's end pushes the commit and opens a draft pull request
 //     (on the folder model's phase A, which has no repositories yet, its commands start at /company instead; on phase B,
@@ -11,6 +12,10 @@
 // then the rest of Order 9 (p3-order9.mjs cuts each wait short in the database): the machine sleeps after 10 idle
 // minutes and turn 3 says what stopped; after a quiet day the agent is asked about archiving; archiving stops the
 // session's programs, and a new message reopens it (turn 4, which says what the archive stopped).
+// Then C2 on the folder model (p3-c2.mjs): turn 5 keeps its machine awake through 10 quiet minutes (cut short in the
+// database), then leaves a command that reads the company folder after the turn; the node's folder service is killed,
+// and turn 6 runs on the same machine, restarted for the folder: it says the restart stopped that command, and nothing
+// keeps what the command printed.
 // The executor's control RPCs come here over its stdout and run on the database as service_role; the runtime's coding
 // command gateway (packages/runtime/src/cloud-coding-command-http.ts, bundled as p3-gateway.mjs) reaches the
 // executor's command service through the same pipe. Prints PASS lines, then SESSION PROVEN.
@@ -23,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import * as c2 from "./p3-c2.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
 import { postgrestError } from "./p3-postgrest-errors.mjs";
@@ -83,9 +89,9 @@ const JOURNALS =
 	"for event in $(ls \"$dir\" | grep -E '^[0-9]{6}[.]json$' | tail -n 12); do echo \"$event $(head -c 400 \"$dir/$event\")\"; done; done";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-// The executor's SQL control calls and the folder service's core calls: the last 60 (begun, kind, name, outcome, time)
-// and those not answered yet.
-const calls = { recent: [], pending: new Set() };
+// The executor's SQL control calls and the folder service's core calls: the last 60 (begun, kind, name, outcome, time),
+// those not answered yet, and how many of each control call the executor has made.
+const calls = { recent: [], pending: new Set(), rpc: new Map() };
 
 // Inside a coding machine, for diagnose(): its folder program's units and journal, the mounts, the programs.
 const GUEST_LOOK = [
@@ -319,6 +325,135 @@ try {
 		await executor.turnSettled();
 		console.error(JSON.stringify(await database.describe(db, ids)));
 		pass(`turn 4 ended (${elapsed()})`);
+
+		if (node.folder) {
+			// --- C2: a long turn whose guest stays quiet keeps its machine awake ----------------------------------------------
+			await database.followUp(db, ids, { workerId, text: "P3 proof: think for a while, then leave a command reading your todo." });
+			const turn5 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 5, timeoutMs: 20 * 60000 });
+			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 5 runs on another machine");
+			const quiet5 = await c2.awaitQuiet(db, workerId, machine, 5 * 60000);
+			note(`turn 5's guest is quiet: ${JSON.stringify(quiet5)}`);
+			await c2.quietElevenMinutes(db, machine);
+			const before5 = await c2.standing(db, workerId, machine);
+			const lines5 = executor.machineLines.length;
+			const lists5 = calls.rpc.get("qorpera_list_coding_machines") ?? 0;
+			// Two housekeeping passes (every 30 s) and about seven keeps (every 10 s); the list as they read it, every 15 s.
+			const entries5 = [];
+			for (let waited = 0; waited <= 75000; waited += 15000) {
+				if (waited) await new Promise((settle) => setTimeout(settle, 15000));
+				entries5.push(await c2.listed(db, ids.owner, machineIdSha256, machine));
+			}
+			const clocks5 = await c2.clocks(db, machine);
+			// A clock moved back up proves nothing about the turn: say which, and never move it back again.
+			const moved = [clocks5.lastUsedAgo < 600 && `last used ${clocks5.lastUsedAt}`, clocks5.busyAgo < 600 && `last busy ${clocks5.busyAt}`].filter(Boolean);
+			if (moved.length) fail(`a clock moved during turn 5's quiet wait, so the wait proved nothing: ${moved.join(", ")} (${JSON.stringify(clocks5)})`);
+			const due = entries5.filter((entry) => entry?.live !== true || entry.reserved !== true || entry.superseded !== false || entry.sleepDue !== false);
+			if (due.length) fail(`the executor's list does not keep turn 5's machine awake: ${JSON.stringify(due)}`);
+			const sleeps = executor.machineLines.slice(lines5).filter((line) => line.machineId === machine.machineId && line.step === "sleep");
+			if (sleeps.length) fail(`the executor's housekeeping tried to sleep turn 5's machine: ${JSON.stringify(sleeps)}`);
+			const lists = (calls.rpc.get("qorpera_list_coding_machines") ?? 0) - lists5;
+			if (lists < 4) fail(`the executor's keeper and housekeeping read the list only ${lists} times in 75 s`);
+			const awake5 = await c2.standing(db, workerId, machine);
+			const slept5 = (await c2.eventsAfter(db, workerId, before5.lastEventId)).filter((event) => event.body?.reason === "SLEEP");
+			if (guestState(machine) !== "RUNNING" || awake5.attachedMachineId !== machine.machineId || !awake5.attached || !awake5.demand ||
+				awake5.suspendedAt || slept5.length)
+				fail(`turn 5's machine did not stay awake: ${guestState(machine)} ${JSON.stringify(awake5)} ${JSON.stringify(slept5)}`);
+			pass(`turn 5 stays awake with both idle clocks 11 minutes back: 75 s and ${lists} list reads later its entry is live, ` +
+				`reserved and not due to sleep (${JSON.stringify(entries5.at(-1))}), the clocks did not move (${JSON.stringify(clocks5)}), ` +
+				`no sleep was tried, and the machine is RUNNING with the session attached (${elapsed()})`);
+			await c2.usedNow(db, machine);
+
+			// --- C2: the folder service crashes while a command's read is unreleased ------------------------------------------
+			// The command waits for the driver, then reads the todo after the turn and prints a number only the guest's shell
+			// works out, so neither the command nor anything the driver writes holds it; then it only waits.
+			const gateway5 = gatewayFor(turn5);
+			const todo = `/company/${database.fixture.TODO_FOLDER}.md`;
+			const nonce = randomBytes(4).readUInt32BE();
+			const unsaved = `P3-UNSAVED-${nonce + 1}`;
+			const reader = await database.beginCommand(db, turn5, {
+				operationKey: "p3-unsaved", timeoutMs: null,
+				command: `while [ ! -e /dev/shm/p3-go ]; do sleep 1; done; if cat ${todo} 2>/dev/shm/p3-read-error; then touch /dev/shm/p3-read; fi; ` +
+					`echo P3-UNSAVED-$((${nonce} + 1)); exec sleep 86401`,
+			});
+			const readerStart = await gateway5.start(turn5.scope, reader.input, AbortSignal.timeout(60000));
+			await reader.complete(readerStart);
+			if (readerStart.state !== "running") fail(`turn 5's reading command is ${readerStart.state}, not running: ${JSON.stringify(readerStart)}`);
+			await database.finishTurn(db, turn5, { operationKey: "p3-turn-5", summary: "Stayed awake; left a command reading the todo.", headSha: head });
+			await executor.turnSettled();
+			pass(`turn 5 ended, leaving a command that has read nothing yet (${elapsed()})`);
+			guestRun(machine, "touch", "/dev/shm/p3-go");
+			let waiting = guestProcesses(machine, "^sleep 86401$");
+			for (let waited = 0; !waiting && waited < 60000; waited += 1000, waiting = guestProcesses(machine, "^sleep 86401$"))
+				await new Promise((settle) => setTimeout(settle, 1000));
+			if (!waiting) fail("turn 5's command did not get past its read within 60 s");
+			if (!guestHas(machine, "/dev/shm/p3-read"))
+				fail(`turn 5's command could not read the todo after the turn: ${guestRun(machine, "cat", "/dev/shm/p3-read-error").trim()}`);
+			await order9.awaitRunning(db, workerId, reader.commandId, 60000);
+			const boot5 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
+			const service5 = folderService();
+			if (!service5.MainPID || service5.MainPID === "0") fail(`the node's folder service is not running: ${JSON.stringify(service5)}`);
+			const crash = await c2.standing(db, workerId, machine);
+			lxc("exec", vm, "--", "touch", "/run/p3-c2-crash");
+			lxc("exec", vm, "--", "systemctl", "kill", "--signal=SIGKILL", "qorpera-folder-service.service");
+			for (let waited = 0; nodeHas(`/proc/${service5.MainPID}`) && waited < 10000; waited += 250) await new Promise((settle) => setTimeout(settle, 250));
+			if (nodeHas(`/proc/${service5.MainPID}`)) fail(`the folder service's process ${service5.MainPID} outlived its SIGKILL`);
+			if (nodeHas("/run/qorpera-folder-service/clean-stop.json")) fail("the folder service's crash left a clean-stop note");
+			pass(`the command read the todo after turn 5 and printed what it read; then the node's folder service ` +
+				`(${service5.MainPID}) is killed, leaving no clean-stop note (${elapsed()})`);
+
+			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the folder service crashed." });
+			const turn6 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 6, timeoutMs: 20 * 60000 });
+			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 6 runs on another machine");
+			// Whichever look found the view gone (a renewal, the next attach), the machine restarts before the turn's view opens.
+			let restarts = await c2.restartsSince(db, machine, crash.now);
+			for (let waited = 0; !restarts.some((row) => row.state === "restarted") && waited < 180000; waited += 2000) {
+				await new Promise((settle) => setTimeout(settle, 2000));
+				restarts = await c2.restartsSince(db, machine, crash.now);
+			}
+			if (!restarts.some((row) => row.state === "restarted")) fail(`the machine was not restarted for the folder after the crash: ${JSON.stringify(restarts)}`);
+			const after6 = await c2.standing(db, workerId, machine);
+			if (after6.folderRestartAt || after6.newDiskAt || after6.attachedMachineId !== machine.machineId || !after6.demand || after6.suspendedAt)
+				fail(`after the restart turn 6's machine is not as it should be: ${JSON.stringify(after6)}`);
+			const events6 = await c2.eventsAfter(db, workerId, crash.lastEventId);
+			const restartEvent = events6.find((event) => event.body?.reason === "FOLDER_RESTART");
+			if (!restartEvent?.body.stopped.some((stopped) => stopped.commandId === reader.commandId))
+				fail(`the session's restart event does not name turn 5's command: ${JSON.stringify(events6)}`);
+			if (events6.some((event) => event.body?.reason === "SLEEP")) fail(`the machine slept after the crash: ${JSON.stringify(events6)}`);
+			const boot6 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
+			if (boot6 === boot5 || guestState(machine) !== "RUNNING") fail(`turn 6's machine did not boot again: boot ${boot6}, ${guestState(machine)}`);
+			const stopped6 = (await database.turnContext(db, turn6)).commands.stopped;
+			if (!stopped6.some((stopped) => stopped.commandId === reader.commandId && stopped.reason === "FOLDER_RESTART"))
+				fail(`turn 6's context does not say the restart stopped turn 5's command: ${JSON.stringify(stopped6)}`);
+			pass(`turn 6 runs on the same machine, restarted for the folder (boot ${boot5} → ${boot6}): ${JSON.stringify(restarts)}; ` +
+				`the session says what stopped: ${JSON.stringify(restartEvent.body)}, and so does turn 6's context (${elapsed()})`);
+			const gateway6 = gatewayFor(turn6);
+			const left6 = await gateway6.read(turn6.scope, { commandId: reader.commandId, offset: 0, limit: 4096 }, AbortSignal.timeout(60000));
+			if (left6.state !== "machine_stopped" || (left6.output ?? "").includes(unsaved) || (left6.output ?? "").includes("P3 task"))
+				fail(`turn 6 reads what turn 5's command printed from its unreleased read: ${JSON.stringify(left6)}`);
+			// A command's output is kept in its host record on the NAS (host-commands/<id>/output.log, once its reads are
+			// released); SQL keeps only digests. Neither may hold it.
+			const held = await c2.holding(db, unsaved);
+			if (held?.holding?.length !== 0 || held.unread?.length !== 0) fail(`the core keeps what turn 5's command printed: ${JSON.stringify(held)}`);
+			const records = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/workers`, "-type", "d", "-name", reader.commandId.replaceAll("-", "")).trim();
+			const kept = [nodeGrep(unsaved, nasPolicy.rootPath), records ? nodeGrep("P3 task", ...records.split("\n")) : null].filter(Boolean);
+			const recorded = records ? lxc("exec", vm, "--", "ls", "-la", ...records.split("\n")).trim() : "none";
+			if (kept.length) fail(`the NAS keeps what turn 5's command printed: ${kept.join(" ")} (its host record: ${recorded})`);
+			const dropped = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/control`, "-name", "dropped-start-*.json", "-newer", "/run/p3-c2-crash").trim();
+			if (!dropped) fail("the executor did not write down that the crashed boot's disk is not to be kept (no dropped-start mark)");
+			const service6 = folderService();
+			if (!service6.MainPID || service6.MainPID === "0" || service6.MainPID === service5.MainPID)
+				fail(`the node's folder service did not come back: ${JSON.stringify(service6)}`);
+			const read6 = await runToEnd(turn6, gateway6, "p3-todo-6", `cat ${todo}`);
+			if (read6.state !== "succeeded" || !read6.output.includes("P3 task")) fail(`turn 6 cannot read the todo on the new boot: ${JSON.stringify(read6)}`);
+			pass(`what turn 5's command printed is gone: turn 6 reads it ${left6.state} with nothing of it, no table in the core and no ` +
+				`file on the NAS holds ${unsaved} (its host record: ${recorded.split("\n").join("; ")}), the crashed boot is marked dropped ` +
+				`(${dropped.split("\n").join(" ")}), and the folder service is back (${JSON.stringify(service6)}), so turn 6 reads the ` +
+				`todo again (${elapsed()})`);
+			await database.finishTurn(db, turn6, { operationKey: "p3-turn-6", summary: "Carried on after the folder service crashed.", headSha: head });
+			await executor.turnSettled();
+			console.error(JSON.stringify(await database.describe(db, ids)));
+			pass(`turn 6 ended (${elapsed()})`);
+		}
 		if (node.folder) pass(`the session's folder view mounts, worker and view: ${mounted().join(" ")}`);
 	} finally {
 		clearInterval(refreshing);
@@ -390,6 +525,52 @@ function guestProcesses(machine, text) {
 	}
 }
 
+/** Runs a program as root on the coding machine: its output. */
+function guestRun(machine, ...args) {
+	return lxc("exec", vm, "--", "lxc", "--project", machine.project, "exec", machine.name, "--", ...args);
+}
+
+/** Whether `path` is on the coding machine. */
+function guestHas(machine, path) {
+	try {
+		guestRun(machine, "test", "-e", path);
+		return true;
+	} catch (error) {
+		if (error.status === 1) return false;
+		throw error;
+	}
+}
+
+/** Whether `path` is in the node. */
+function nodeHas(path) {
+	try {
+		lxc("exec", vm, "--", "test", "-e", path);
+		return true;
+	} catch (error) {
+		if (error.status === 1) return false;
+		throw error;
+	}
+}
+
+/** The files under `paths` in the node that hold `text`, or null. A file the executor renamed away mid-scan is not
+ * an error. */
+function nodeGrep(text, ...paths) {
+	try {
+		return lxc("exec", vm, "--", "timeout", "300", "grep", "-rlaF", "-e", text, "--", ...paths).trim() || null;
+	} catch (error) {
+		if (error.status === 1) return null;
+		const errors = String(error.stderr ?? "").trim().split("\n");
+		if (error.status === 2 && errors.every((line) => line.endsWith(": No such file or directory"))) return String(error.stdout ?? "").trim() || null;
+		throw error;
+	}
+}
+
+/** The node's folder service unit: its main process (0 when none) and how often systemd restarted it. */
+function folderService() {
+	const shown = lxc("exec", vm, "--", "systemctl", "show", "-p", "MainPID", "-p", "NRestarts", "-p", "ActiveState", "qorpera-folder-service.service");
+	return Object.fromEntries(shown.trim().split("\n").map((line) => line.split(/=(.*)/s).slice(0, 2)));
+}
+
 /** The runtime's gateway for one turn, through the executor's pipe. */
 function gatewayFor(turn) {
 	return createHttpCloudCodingCommandGateway({
@@ -453,8 +634,10 @@ function startExecutor() {
 	const send = (value) => {
 		if (!exited) child.stdin.write(`${JSON.stringify(value)}\n`);
 	};
-	// The folder model's own lines: the executor's start (its two pins) and each view it mounts.
+	// The folder model's own lines: the executor's start (its two pins) and each view it mounts. And each step its
+	// housekeeping logs for a machine (sleep, delete, release, archive).
 	const folderLines = { start: null, mounts: [] };
+	const machineLines = [];
 	createInterface({ input: child.stderr }).on("line", (line) => {
 		console.error(`executor: ${line}`);
 		let logged;
@@ -465,6 +648,7 @@ function startExecutor() {
 		}
 		if (logged?.event === "coding-executor-folder") folderLines.start = line;
 		else if (logged?.event === "coding-folder-mount") folderLines.mounts.push(line);
+		else if (logged?.event === "coding-machine" || logged?.event === "coding-machine-error") machineLines.push(logged);
 	});
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.startsWith("P3 ")) return void console.error(`executor stdout: ${line}`);
@@ -506,6 +690,7 @@ function startExecutor() {
 	return {
 		ready,
 		folderLines,
+		machineLines,
 		http(url, init) {
 			const id = ++nextHttp;
 			const path = new URL(url).pathname;
@@ -628,6 +813,7 @@ function timed(kind, name, answer) {
 	const begun = performance.now();
 	const call = `${elapsed()} ${kind} ${name}`;
 	calls.pending.add(call);
+	if (kind === "rpc") calls.rpc.set(name, (calls.rpc.get(name) ?? 0) + 1);
 	const waiting = setTimeout(() => note(`${call}: no answer after 10 s`), 10000);
 	waiting.unref();
 	const done = (outcome) => {
