@@ -169,6 +169,8 @@ begin
 		'["saved", null]', 'the launch group');
 end $$;
 select pg_temp.run('one', pg_temp.thread()), pg_temp.run('two', pg_temp.thread()), pg_temp.run('g', pg_temp.chat()) \g /dev/null
+-- The company is on the memory tree's list, so its runs keep logs (20260930352000); the fixture's removal takes the row.
+insert into public.qorpera_memory_tree_companies(profile_id) values ('64800000-0000-4000-8000-000000000010');
 
 -- The folders on the way to the logs, made by runs one and g; g's log with step 0.
 do $$
