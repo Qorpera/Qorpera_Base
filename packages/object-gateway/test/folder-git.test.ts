@@ -874,17 +874,32 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.entries.has(TOPIC)).toBe(true);
 	});
 
-	it("holds a coding machine's git change until its executor sent the machine's secret values (5j-5)", async () => {
+	it("holds a coding machine's git change, a branch's deletion too, until its executor sent the machine's secret values, but gives an unused lease back (5j-5)", async () => {
 		const { core, service, open } = await repo(codingGrants(), true, null);
 		const view = await open("first");
 		await write(view, `${MAIN}.lock`, "3333\n", true);
 		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "BUSY");
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await view.unlink(TOPIC_LOG, undefined);
+		await refused(view.unlink(`${TOPIC}.lock`, undefined), "BUSY");
 		expect(core.gitPublishes).toEqual([]);
-		// Once they are in, git's retry publishes it.
+		expect(core.entries.has(TOPIC)).toBe(true);
+		expect(core.entries.has(TOPIC_LOG)).toBe(true);
+		expect(core.gitLeases.has(TOPIC)).toBe(true);
+		// A lock git gives up publishes nothing, so its lease goes.
+		await write(view, `${R}/refs/heads/other.lock`, "", true);
+		expect(core.gitLeases.has(`${R}/refs/heads/other`)).toBe(true);
+		await view.unlink(`${R}/refs/heads/other.lock`, undefined);
+		expect(core.gitLeases.has(`${R}/refs/heads/other`)).toBe(false);
+		// Once they are in, git's retries publish each.
 		service.secrets(CODING_MACHINE_ID, noSecrets());
 		await view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
-		expect(core.gitPublishes).toMatchObject([{ published: true }]);
+		await view.unlink(`${TOPIC}.lock`, undefined);
+		expect(core.gitPublishes).toMatchObject([{ published: true }, { published: true }]);
 		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("3333\n"));
+		expect(core.entries.has(TOPIC)).toBe(false);
+		expect(core.entries.has(TOPIC_LOG)).toBe(false);
 	});
 
 	it("refuses a coding machine's git change whose log carries one of the member's secret values (5j-5)", async () => {

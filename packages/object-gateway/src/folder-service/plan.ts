@@ -102,6 +102,16 @@ function carrierOf(path: string, check: SecretCheck): string | undefined {
 	return parentOf(path);
 }
 
+/** For a live folder moved from `from` to `to`: the folder above the first name that carries a secret value in a path
+ * the move gives what the folder holds, or nothing if none does. */
+function carrierBelow(view: PendingView, from: string, to: string, check: SecretCheck): string | undefined {
+	for (const live of view.liveBelow(from)) {
+		const carrier = carrierOf(to + live.slice(from.length), check);
+		if (carrier !== undefined) return carrier;
+	}
+	return undefined;
+}
+
 /**
  * The units of one boundary (RUNTIME-FOLDER-WRITES.md, "A boundary"): everything pending but files still open for
  * writing, bytes not staged yet, and names never published, as one change set. `PendingView` keeps every pending
@@ -113,7 +123,8 @@ function carrierOf(path: string, check: SecretCheck): string | undefined {
  *
  * With `check` (a coding machine's view, 5j-5), a name new in the view that carries one of the machine's secret
  * values, a new link's target that does, and a file whose bytes do are not published but refused, and kept pending:
- * the names before anything else, so no list holds one. A refused move keeps its source where it is, so what needs a
+ * the names before anything else, so no list holds one. A folder's move gives what it holds new names too, and each is
+ * checked. A refused move keeps its source where it is (`PendingView.settle`), so what needs a
  * refused change waits with it: a change into the path it would free or into the folder it would make, and the removal
  * or move of a folder that holds a source it keeps.
  */
@@ -147,7 +158,14 @@ export function planBoundary(
 			keep.add(path);
 			continue;
 		}
-		const carrier = check && (!node.origin || node.origin.path !== path) ? carrierOf(path, check) : undefined;
+		const from = node.origin && node.origin.path !== path ? node.origin.path : undefined;
+		let carrier: string | undefined;
+		if (check && (!node.origin || from !== undefined)) {
+			carrier = carrierOf(path, check);
+			// A folder moved takes what it holds along: each of their new paths is a new name too.
+			if (carrier === undefined && from !== undefined && node.kind === "folder")
+				carrier = carrierBelow(view, from, path, check);
+		}
 		if (carrier !== undefined) {
 			keep.add(path);
 			refuse(carrier, NAME_CARRIES);

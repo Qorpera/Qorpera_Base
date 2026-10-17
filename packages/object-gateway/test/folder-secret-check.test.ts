@@ -45,12 +45,14 @@ const DESK_PASS = "deskpass_0123456789-abcdefghijklmnopqrstuvw";
 const AT_OFFICE: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
 /** The member's secret value in these tests. None is a secret. */
 const VALUE = "test-value-0001";
+/** A value that spans a folder and the name of a file in it. */
+const SPANNING = "abcdefgh/ijklmnop";
 const SECRETS_WAIT = "waiting for the machine's secret check";
 
 /** A company folder with two files, a coding session's view on a coding machine, a desktop's on the office machine,
  * and the node's service, whose log lines `logs` keeps. `secrets`: the coding machine's values its executor sent, or
- * none yet. */
-async function company(secrets?: SecretSet) {
+ * none yet; `more`: further entries by path, each a file's text or `null` for a folder. */
+async function company(secrets?: SecretSet, more: Record<string, string | null> = {}) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-secrets-"));
 	const core = new FakeCore();
 	core.seed([
@@ -58,6 +60,9 @@ async function company(secrets?: SecretSet) {
 		await storeFile(root, "docs/plan.md", "the plan", 1),
 		await storeFile(root, "docs/notes.md", "the notes", 2),
 	]);
+	let version = 3;
+	for (const [path, text] of Object.entries(more))
+		core.seed([text === null ? folder(path, version++) : await storeFile(root, path, text, version++)]);
 	core.openView(SESSION, PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
 	core.openView(DESK, DESK_PASS, { kind: "computer_desktop", machineId: ALLOCATION });
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
@@ -99,15 +104,15 @@ async function company(secrets?: SecretSet) {
 	};
 	/** No log line holds the value, its hashes or the key, and no change set the core was sent holds the value or its
 	 * whole's. */
-	const nothingNamed = () => {
-		const { start, whole } = secretHashes(SECRET_KEY, VALUE);
+	const nothingNamed = (value = VALUE) => {
+		const { start, whole } = secretHashes(SECRET_KEY, value);
 		for (const line of logs) {
-			expect(line).not.toContain(VALUE);
+			expect(line).not.toContain(value);
 			expect(line).not.toContain(whole);
 			expect(line).not.toContain(String(start));
 			expect(line).not.toContain(SECRET_KEY.toString("base64url"));
 		}
-		expect(JSON.stringify(core.commits)).not.toContain(VALUE);
+		expect(JSON.stringify(core.commits)).not.toContain(value);
 		expect(JSON.stringify(core.commits)).not.toContain(whole);
 	};
 	return { core, service, open, logs, staged: () => staged, nothingNamed };
@@ -127,6 +132,10 @@ function pathsOf(boundary: MachineBoundary) {
 	return [...(report?.paths ?? [])].sort((a, b) => (a.path < b.path ? -1 : 1));
 }
 const refusedIn = (boundary: MachineBoundary) => pathsOf(boundary).filter((entry) => entry.outcome === "refused");
+/** The names the view shows in the folder `path`. */
+async function namesIn(view: ViewHandle, path: string): Promise<string[]> {
+	return (await view.list(path, undefined)).entries.map((entry) => entry.name).sort();
+}
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(done: () => boolean, ms = 3_000): Promise<void> {
@@ -219,6 +228,57 @@ describe("the save check of a coding machine", () => {
 		expect(core.entries.get("docs/old-plan.md")?.fileSha256).toBe(hashOf("the plan"));
 		expect(core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("a new plan"));
 		nothingNamed();
+	});
+
+	it("still shows a refused move only where it put it after the rest was saved, and moved back it changes nothing", async () => {
+		const { core, service, open, nothingNamed } = await company(secretsOf(VALUE));
+		const view = await open();
+		await view.rename({ from: "docs/plan.md", to: `docs/${VALUE}.md`, noReplace: false });
+		await write(view, "docs/fine.md", "fine");
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([
+			{ path: "docs", outcome: "refused", reason: NAME_CARRIES, kept: true },
+		]);
+		expect(core.entries.get("docs/fine.md")?.fileSha256).toBe(hashOf("fine"));
+		expect(await namesIn(view, "docs")).toEqual([`${VALUE}.md`, "fine.md", "notes.md"]);
+		// Moved back, the file is where it was: the next boundary has nothing to save, and removes nothing.
+		const commits = core.commits.length;
+		await view.rename({ from: `docs/${VALUE}.md`, to: "docs/plan.md", noReplace: false });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.commits.length).toBe(commits);
+		expect(core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("the plan"));
+		expect(await namesIn(view, "docs")).toEqual(["fine.md", "notes.md", "plan.md"]);
+		nothingNamed();
+	});
+
+	it("checks the names a folder's move gives what it holds, keeps the folder where it is if one carries a value, and moved back it changes nothing", async () => {
+		const { core, service, open, nothingNamed } = await company(secretsOf(SPANNING), {
+			"docs/old": null,
+			"docs/old/ijklmnop": "x",
+		});
+		const view = await open();
+		await view.rename({ from: "docs/old", to: "docs/abcdefgh", noReplace: false });
+		await write(view, "docs/fine.md", "fine");
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([
+			{ path: "docs/abcdefgh", outcome: "refused", reason: NAME_CARRIES, kept: true },
+		]);
+		expect(core.entries.get("docs/fine.md")?.fileSha256).toBe(hashOf("fine"));
+		expect(core.entries.get("docs/old/ijklmnop")?.fileSha256).toBe(hashOf("x"));
+		expect([...core.entries.keys()].filter((path) => path.startsWith("docs/abcdefgh"))).toEqual([]);
+		expect(await namesIn(view, "docs")).toEqual(["abcdefgh", "fine.md", "notes.md", "plan.md"]);
+		expect(await namesIn(view, "docs/abcdefgh")).toEqual(["ijklmnop"]);
+		// Moved back, it is the live folder again, and nothing is saved.
+		const commits = core.commits.length;
+		await view.rename({ from: "docs/abcdefgh", to: "docs/old", noReplace: false });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.commits.length).toBe(commits);
+		expect(await namesIn(view, "docs")).toEqual(["fine.md", "notes.md", "old", "plan.md"]);
+		// Moved to a name that gives none, it goes with what it holds.
+		await view.rename({ from: "docs/old", to: "docs/new", noReplace: false });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.entries.get("docs/new/ijklmnop")?.fileSha256).toBe(hashOf("x"));
+		expect(core.entries.has("docs/old")).toBe(false);
+		expect(core.entries.has("docs/old/ijklmnop")).toBe(false);
+		nothingNamed(SPANNING);
 	});
 
 	it("checks a file staged under older values again for new ones, and the same values not again", async () => {

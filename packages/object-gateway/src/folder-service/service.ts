@@ -2339,6 +2339,10 @@ export class FolderService {
 			for (const [file, version] of removed)
 				if (version !== null && lock.deleted.has(file) && pending.nodes().get(file)?.kind !== "file")
 					units.push({ op: "delete", path: file, expectedVersion: version });
+			// A coding view publishes nothing, a git removal neither, before its machine's values came (5j-5). A lease
+			// that publishes nothing still ends.
+			if (units.length > 0 && this.#secretsOf(view) === null)
+				throw new ProtocolError(ErrorCode.busy, "The git change waits for the machine's secret check");
 			const reflog = gitReflog(target);
 			const log = pending.nodes().get(reflog);
 			let made: string | undefined;
