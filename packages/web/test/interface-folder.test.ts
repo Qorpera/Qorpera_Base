@@ -224,6 +224,33 @@ describe("the pages and the folder (I7, C6a)", () => {
 		}
 	});
 
+	it("draws the Mailbox the web ships while the company has mail, never one stored under its name", async () => {
+		const fake = seeded();
+		const mailbox = "interfaces/mailbox/interface.toml";
+		fake.put(mailbox, fake.text(mailbox)!.replace('name = "Mailbox"', 'name = "Written by an agent"'));
+		const { f, controller } = company();
+		// The company's mail is on: the member mail read lists an address, so the Mailbox's need is met.
+		controller.store.set({
+			mail: {
+				addresses: [{ address: "support@mail.example.test", handledBy: [], routines: [], last7Days: 0 }],
+				waiting: [],
+				lists: {},
+				threads: {},
+				answers: {},
+			},
+		});
+		await follow(fake, controller);
+		expect(read(fake).filter((path) => path.startsWith("interfaces"))).toEqual([]);
+		expect(fake.folder.list).not.toHaveBeenCalled();
+		expect(names(controller)).toEqual(["mailbox", "members"]);
+		expect(companyInterfaces(controller).map((entry) => entry.file.name)).toEqual(["Mailbox", "Members"]);
+		expect(texts(rail(controller, f), ".rail-interfaces .rail-row-interface strong")).toEqual(["Mailbox", "Members"]);
+		const main = h("main");
+		renderInterface(main, controller, "mailbox");
+		expect(main.querySelector("h1")?.textContent).toBe("Mailbox");
+		expect(main.textContent).not.toContain("Written by an agent");
+	});
+
 	it("reads nothing while no page is on, what a page reads once it is on, and drops it once it is off", async () => {
 		vi.useFakeTimers();
 		const fake = seeded();
