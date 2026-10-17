@@ -56,10 +56,10 @@ feed takes acknowledgements alone). A machine on protocol 1 reads only. On a wri
 
 | Type | Request | Answer |
 | --- | --- | --- |
-| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `o` `{handle, size, version}` |
+| `O` | open for writing `{path, base?, create, exclusive, truncate, draft?}`: `draft` (with `truncate`) keeps the file out of the view until its close | `o` `{handle, size, version}` |
 | `K` | one part of a chunk: `[u32 header length][{handle, index, sha256, bytes, offset}][≤ 1 MiB]`, in order from offset 0 | `k` once stored (the last part) |
 | `G` | `{handle, index, offset, length ≤ 1 MiB}`: part of a pending chunk back | `d` the bytes |
-| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks | `k` `{version}` |
+| `C` | close `{handle, size, discard?}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks; `discard` gives the handle up instead | `k` `{version}`; `k` `{}` for a discard |
 | `M` | mkdir `{path}` | `k` |
 | `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
@@ -73,6 +73,19 @@ the connection that opened it (the folder program pools its connections); a file
 connection ends is abandoned, and what it held at its last close stays pending. A protocol-3 core view's handles
 outlive its connections instead: they are abandoned only when a program holding the mount's `daemon.lock` says the
 program before it is gone (a restarted mount, or a publisher), or when the view ends (Step 4c-3).
+
+A draft's file joins the view only when its close lands it there (step 5d): until then the view keeps what it had at
+the path, so no boundary publishes the draft half written. It lands as the view's newest change at the path: over what
+this view itself did there since the open (a save, a removal or a move, published or not), and against what another
+machine did there since, which is a conflict when it is published, not overwritten. Where the view's move of the
+path's file away is still pending at the close, the draft lands as a new file there, as a create would; if the boundary
+then lets that move go, the new file meets the file the move left and is a conflict (both are kept). A removal or move
+the boundary lets go before the close leaves the draft landing against the file it would have taken away, as one opened
+over that file. The draft takes the executable bit of what it lands over (none as a new file). Over the view's own unsaved file,
+the draft holds that file unpublished, as an open handle does, and its close is the file's next save. A discard gives a
+handle up as the end of its connection does; a draft's leaves nothing, and the quiet period then publishes a file it held.
+A close that cannot land the draft (a folder is at its path now, say) gives it up the same way.
+The mount writes a cache it moves into the folder as drafts, so a move it gives up leaves no file behind.
 
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
@@ -719,21 +732,30 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   remover's tags and those of the file or folder it took, and holds them only while it is the removal pending there.
   Chunks take the windows open as they arrive and become the file's in the step of the close that fixes them, so a
   change made after the close (a removal waiting behind the same boundary) takes them with the file; a file abandoned,
-  or removed, with chunks unfixed loses them and their tags. Each change and its tags are made in one synchronous step,
-  after the change's last wait, and so are a boundary's plan and its credits, and its settling: no other change sees one
-  without the other. Each unit's `credits` are read from what it publishes as the boundary plans it: a removal's from
-  the removals it names, any other unit's from its files and folders, and a new file published as the next version of a
-  live file the view removed also from that removal. They are the sorted commands, and none when only the starter
-  changed them. A unit that mixes both is credited to the commands alone: `credits` cannot name the starter, and leaving
-  it out would credit the commands' changes to the starter. A commit tried again, or replayed under its key at the next
-  boundary, sends the same credits. A new file the core refused and the boundary keeps pending takes the tags of the
-  removal it carried as the settling drops that removal, so a unit kept pending goes again with the same credits. Every
-  tag goes with the view.
+  or removed, with chunks unfixed loses them and their tags. A draft (5d) is out of the view until its close: its
+  chunks' tags are kept on the draft, and its close, tagged with the windows open then, gives them to the file it lands
+  as. Landed on the view's own unsaved file at its path, the draft's bytes are that file's next save: the file keeps its
+  own tags and takes the draft's, and loses those of its chunks no close fixed, which the draft's bytes replace. A draft
+  discarded, or one its close cannot land, leaves no tags; the view's own file it held, with no handle left on it, goes
+  back to the bytes its last close fixed and loses the tags of the chunks no close fixed. Each change and its tags are
+  made in one synchronous step, after the change's last wait, and so are a boundary's plan and its credits, and its
+  settling: no other change sees one without the other. Each unit's `credits` are read from what it publishes as the
+  boundary plans it: a removal's from the removals it names, any other unit's from its files and folders, and a new file
+  published as the next version of a live file the view removed also from that removal. They are the sorted commands,
+  and none when only the starter changed them. A unit that mixes both is credited to the commands alone: `credits`
+  cannot name the starter, and leaving it out would credit the commands' changes to the starter. A commit tried again,
+  or replayed under its key at the next boundary, sends the same credits. A new file the core refused and the boundary
+  keeps pending takes the tags of the removal it carried as the settling drops that removal, so a unit kept pending goes
+  again with the same credits. Every tag goes with the view.
 - **`command_ended`.** A unit the core refuses because a command it is credited to has ended is kept, as any refused
   unit, and sent again at each boundary with the same credits, until the final. It is never credited to the starter
   instead.
 - **The final.** A test machine's view named in a boundary's `final` clears its quiet period and publishes with `final`;
   the core closes the view.
+- **Git (5d).** A test machine's view takes no git lock: creating a lock file in a `repo.git` is refused
+  `NOT_PERMITTED` (`EPERM`), so git there changes no shared git file, and reads them as anywhere. A git publish carries
+  no credits, and its changes would be the starter's. Credited git units need the core's git functions to take credits
+  (a follow-up).
 - **Tests.** `packages/object-gateway/test/folder-test-machine-views.test.ts`, against the stand-in core: a test
   machine's view is refused from another test machine, an office, a coding machine, an image builder, an unlisted
   project and the execution host, and an overlapping project stops the service; a change made in one window is credited
@@ -743,15 +765,18 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   wrote, closed and removed by the starter while a boundary runs, both waiting for it, has its removal credited to the
   command; a refused new file that took in a command's removal is sent with the same credits at three boundaries; a cut
   takes the windows open at its close; an undone change's tags go; a retry sends the same credits; a `command_ended`
-  refusal is kept and sent again; a quiet publish comes about 2 s after the last change; a close publishes the command's
-  changes before it answers; the final boundary publishes with `final`; the control socket refuses a window from another
-  uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files: writes, renames, renames
-  over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended, several in a row, and
-  boundaries held at their commit while the machine closes a file it wrote before the boundary began, may remove it, and
-  writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and credits against a model: a
-  unit is credited to exactly the commands whose windows were open when a change now in it was made. It also checks that
-  a unit a boundary kept pending, or refused whole, goes again with the same credits until a change is made to it. The
-  model holds a file open only across a held boundary.
+  refusal is kept and sent again; a draft is credited to the windows its chunks came under and the one its close landed
+  it under; a draft landed over the view's own unsaved file keeps that file's credits too; a discarded draft is credited
+  nothing; a file a draft held, the draft discarded or its close refused, publishes its own bytes with their credits
+  alone; a git lock file's create is refused; a quiet publish comes about 2 s after the last change; a close publishes
+  the command's changes before it answers; the final boundary publishes with `final`; the control socket refuses a
+  window from another uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files:
+  writes, renames, renames over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended,
+  several in a row, and boundaries held at their commit while the machine closes a file it wrote before the boundary
+  began, may remove it, and writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and
+  credits against a model: a unit is credited to exactly the commands whose windows were open when a change now in it
+  was made. It also checks that a unit a boundary kept pending, or refused whole, goes again with the same credits until
+  a change is made to it. The model holds a file open only across a held boundary.
 
 ## Not here
 

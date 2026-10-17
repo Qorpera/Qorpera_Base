@@ -3,9 +3,13 @@
 //! The binary is `src/main.rs`; the node side of the protocol is `packages/object-gateway/src/folder-service/`.
 
 pub mod bridge;
+pub mod cache;
 pub mod command;
 pub mod frame;
+pub mod git;
+pub mod index;
 pub mod link;
+pub mod local;
 pub mod lxd;
 pub mod mount;
 pub mod proto;

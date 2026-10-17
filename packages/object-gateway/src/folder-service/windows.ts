@@ -109,7 +109,10 @@ export interface Before {
  * - a pending node (the object, never its path) has the tags of the changes made to it since it last had nothing to
  *   publish. They go with it through renames, and go when it does: removed, settled, or back to nothing to publish.
  *   Chunks no close fixed have theirs apart until the close that fixes them takes them in the same step; a file
- *   abandoned, or removed, before that loses them, and their tags.
+ *   abandoned, or removed, before that loses them, and their tags. A draft's chunks have theirs on the draft: its close
+ *   gives them to the file it lands as, the view's own file at its path taking them in place of its own chunks' no
+ *   close fixed, whose bytes the draft's replace. A draft given up has none left, and the view's own file it held, let
+ *   go with no handle left on it, is back at its fixed bytes and loses its unfixed chunks' tags.
  * - a removal of a live path (the path removed, or the origin of the node removed) has the tags of the change that
  *   removed it and of the node it took. They are kept on the removal itself (its `LiveRef`, never a path), and go
  *   wherever the pending view moves it: a new file or link made where it was removed, or renamed over that path (an
@@ -180,15 +183,19 @@ export class CreditTags {
 		this.#add(this.#unfixed, file, tags);
 	}
 
-	/** A close fixed the file's chunks: their tags are the file's, from the close's own step on. */
-	fixed(file: PendingFile): void {
-		const unfixed = this.#unfixed.get(file);
+	/** A close fixed the file's chunks: their tags are the file's, from the close's own step on. A draft's close fixes
+	 * the draft's own (`written`) as those of the file it landed on, whose bytes they replace, and so the tags of that
+	 * file's chunks no close fixed go. */
+	fixed(file: PendingFile, written: PendingFile = file): void {
+		const unfixed = this.#unfixed.get(written);
+		this.#unfixed.delete(written);
 		this.#unfixed.delete(file);
 		if (unfixed !== undefined) this.#add(this.#nodes, file, [...unfixed]);
 	}
 
-	/** The file's last handle was abandoned: the chunks no close fixed are lost, and their tags. Left with nothing to
-	 * publish (at its origin's path: a file open for writing with an origin is never moved), it has none. */
+	/** The file's last handle, or the draft that held it, was let go without a close: the chunks no close fixed are lost,
+	 * and their tags. Left with nothing to publish (at its origin's path: a file open for writing with an origin is never
+	 * moved), it has none. */
 	abandoned(file: PendingFile): void {
 		this.#unfixed.delete(file);
 		if (file.origin !== undefined && !differs(file, file.origin.path)) this.#forget(file);

@@ -77,7 +77,7 @@ fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread:
 		4,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state, reads: None };
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state, reads: None, local: None };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -220,7 +220,7 @@ fn a_refused_view_is_never_mounted() {
 		2,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None, reads: None };
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None, reads: None, local: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
@@ -539,6 +539,112 @@ fn a_close_the_node_does_not_take_at_once_is_tried_again_until_it_does() {
 	std::fs::write(company.join("busy.md"), "again").unwrap();
 	assert_eq!(node.content("busy.md").unwrap(), b"again");
 	assert_eq!(node.open_handles(), 0);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+/// An index as git writes it (version 2, SHA-1) that tracks `paths`.
+fn git_index(paths: &[&str]) -> Vec<u8> {
+	let mut out = b"DIRC".to_vec();
+	out.extend_from_slice(&2u32.to_be_bytes());
+	out.extend_from_slice(&(paths.len() as u32).to_be_bytes());
+	for path in paths {
+		let start = out.len();
+		out.extend_from_slice(&[0; 40]);
+		out.extend_from_slice(&[0xab; 20]);
+		out.extend_from_slice(&(path.len() as u16).to_be_bytes());
+		out.extend_from_slice(path.as_bytes());
+		let len = out.len() - start;
+		out.resize(start + (len + 8) / 8 * 8, 0);
+	}
+	out.extend_from_slice(&[0; 20]);
+	out
+}
+
+#[test]
+fn a_cache_move_the_node_does_not_take_at_once_goes_on_through_the_same_handle() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	// The worktree's node_modules is a cache git does not track: on the machine's disk, not in the folder.
+	let modules = company.join("code/o/n/worktrees/w/node_modules");
+	std::fs::create_dir(&modules).unwrap();
+	std::fs::write(modules.join("x.js"), "cached").unwrap();
+	assert!(!node.exists("code/o/n/worktrees/w/node_modules"));
+	// Git comes to track it while a boundary settles: the node answers BUSY to the move's first chunk.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js"])).unwrap();
+	node.busy(1, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	// The move goes on through the handle it opened, so none is left open at the node to keep its boundaries back.
+	let moved = || node.content("code/o/n/worktrees/w/node_modules/x.js").is_some_and(|c| c == b"cached");
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0);
+	assert!(done, "moved: {}, handles open at the node: {}", moved(), node.open_handles());
+	assert_eq!(std::fs::read(modules.join("x.js")).unwrap(), b"cached");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_cache_move_whose_link_the_node_does_not_take_at_once_is_made_again() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	// A cache with a file and a link to it, on the machine's disk.
+	let modules = company.join("code/o/n/worktrees/w/node_modules");
+	std::fs::create_dir(&modules).unwrap();
+	std::fs::write(modules.join("x.js"), "cached").unwrap();
+	std::os::unix::fs::symlink("x.js", modules.join("y.js")).unwrap();
+	// Git comes to track both while a boundary settles: the node answers BUSY to the link.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js", "node_modules/y.js"])).unwrap();
+	node.busy_links(1);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	// The move is not done while the link is not in the folder: it is tried again, and the link moves in.
+	let moved = || node.target("code/o/n/worktrees/w/node_modules/y.js").as_deref() == Some("x.js");
+	assert!(eventually(Duration::from_secs(20), moved), "the link did not move into the folder");
+	assert_eq!(node.content("code/o/n/worktrees/w/node_modules/x.js").unwrap(), b"cached");
+	assert_eq!(std::fs::read_link(modules.join("y.js")).unwrap(), Path::new("x.js"));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_cache_move_given_up_leaves_nothing_in_the_folder() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let modules = company.join("code/o/n/worktrees/w/node_modules");
+	std::fs::create_dir(&modules).unwrap();
+	std::fs::write(modules.join("x.js"), "cached").unwrap();
+	// Git comes to track it while a boundary settles: the move's write of x.js is kept, its handle open at the node.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js"])).unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
+	// The write is a draft: until the node takes its close, x.js is not in the folder.
+	let (x, marker) = ("code/o/n/worktrees/w/node_modules/x.js", node.dir.join("state/caches.moving"));
+	assert!(!node.exists(x) && marker.exists());
+	// x.js leaves the machine's disk before the node takes a chunk: the move gives its write up, and the node answers
+	// the first two discards BUSY. The handle is given up all the same, and nothing is left in the folder.
+	node.busy_discards(2);
+	std::fs::remove_file(node.dir.join("state/local/cache/code/o/n/worktrees/w/node_modules/x.js")).unwrap();
+	let out = eventually(Duration::from_secs(30), || node.open_handles() == 0 && !marker.exists());
+	assert!(out, "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
+	assert!(!node.exists(x) && node.busy_discards_left() == 0);
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

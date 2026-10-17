@@ -28,6 +28,7 @@ const kind = args[0] === "volume" ? "volume " + args[1]
 	: script.includes("rm -rf /tmp/target/release") ? "clean build"
 	: script.includes("cargo build") ? "build"
 	: script.includes("--check") ? "check"
+	: script.includes("git.tar.xz") ? "git"
 	: script.includes("vitest") ? "e2e"
 	: script.includes("stat -c") ? "stamps"
 	: "unknown";
@@ -55,6 +56,7 @@ else if (kind === "test") {
 	exit(config.test);
 } else if (kind === "build" || kind === "clean build") exit(config.build);
 else if (kind === "check") exit(config.check);
+else if (kind === "git") exit(config.git);
 else if (kind === "e2e") {
 	if (config.beside) { wait("test-started"); fs.writeFileSync(path.join(dir, "e2e-started"), ""); }
 	exit(config.e2e);
@@ -134,13 +136,13 @@ test("the tests run beside the release build, its check and the program against 
 	const ran = step(root);
 	assert.ok(ran.passed, ran.output);
 	// The tests start beside the build (either may log first); the build, its check and the e2e follow each other.
-	assert.deepEqual(ran.kinds.filter((kind) => !["volume ls", "test"].includes(kind)), ["volume create", "ps", "prepare", "build", "check", "e2e", "volume rm"]);
+	assert.deepEqual(ran.kinds.filter((kind) => !["volume ls", "test"].includes(kind)), ["volume create", "ps", "prepare", "build", "check", "git", "e2e", "volume rm"]);
 	assert.equal(ran.kinds.filter((kind) => kind === "test").length, 1);
 	assert.ok(ran.kinds.indexOf("test") > ran.kinds.indexOf("prepare") && ran.kinds.indexOf("test") < ran.kinds.indexOf("volume rm"));
 	const [out] = call(ran.calls, "volume create").slice(2);
 	assert.match(out, new RegExp(`^qorpera-folder-out-${NOW}-[0-9]+$`));
 	// Every container carries the runner's target volume in its label.
-	for (const kind of ["prepare", "test", "build", "check", "e2e"])
+	for (const kind of ["prepare", "test", "build", "check", "git", "e2e"])
 		assert.deepEqual(flags(call(ran.calls, kind), "--label"), ["qorpera.folder-program-target=qorpera-folder-target-ci07"], kind);
 	// Every Rust container has the runner's target volume, the crates' cache and the source read-only.
 	for (const kind of ["prepare", "test", "build"]) {
@@ -171,7 +173,15 @@ test("the tests run beside the release build, its check and the program against 
 	assert.equal(call(ran.calls, "check").at(-1), "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder");
 	const e2e = call(ran.calls, "e2e");
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));
-	assert.equal(e2e.at(-1), "node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts");
+	assert.equal(e2e.at(-1), "node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts");
+	// The runs with real git read the pinned git from its volume, built once per test machine and checked against its
+	// digest first.
+	assert.ok(flags(e2e, "-e").includes("QORPERA_GIT_BIN=/git/2.56.0/bin/git") && flags(e2e, "-v").includes("qorpera-git-2.56.0:/git:ro"));
+	const git = call(ran.calls, "git");
+	assert.ok(flags(git, "-v").includes("qorpera-git-2.56.0:/git"));
+	assert.equal(git.at(-4), NODE_IMAGE);
+	assert.match(git.at(-1), /^test -x \/git\/2\.56\.0\/bin\/git \|\| /);
+	assert.match(git.at(-1), /git-2\.56\.0\.tar\.xz && echo "[0-9a-f]{64}  git\.tar\.xz" \| sha256sum -c - && /);
 	// Only the run's own volume is removed; the runner's stays for its next run.
 	assert.deepEqual(call(ran.calls, "volume rm").slice(2), [out]);
 	assert.match(ran.output, /compiled crates in qorpera-folder-target-ci07 kept/);
@@ -206,9 +216,10 @@ test("containers a killed run left on the runner's volume are removed before the
 
 test("the step fails when any part fails, and still shows the tests", () => {
 	for (const [config, ran, missing] of [
-		[{ test: 101 }, ["test", "build", "check", "e2e"], []],
-		[{ e2e: 1 }, ["test", "build", "check", "e2e"], []],
-		[{ build: 101 }, ["test", "build"], ["check", "e2e"]],
+		[{ test: 101 }, ["test", "build", "check", "git", "e2e"], []],
+		[{ e2e: 1 }, ["test", "build", "check", "git", "e2e"], []],
+		[{ git: 1 }, ["test", "build", "check", "git"], ["e2e"]],
+		[{ build: 101 }, ["test", "build"], ["check", "git", "e2e"]],
 		[{ prepare: 1 }, ["prepare"], ["test", "build"]],
 	]) {
 		const result = step(tree(config));

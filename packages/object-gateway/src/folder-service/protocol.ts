@@ -416,18 +416,23 @@ export interface OpenRequest {
 	readonly create: boolean;
 	readonly exclusive: boolean;
 	readonly truncate: boolean;
+	/** The file joins the view only when this handle closes; until then the view keeps what it had. */
+	readonly draft?: boolean;
 }
 
 export function parseOpen(payload: Buffer): OpenRequest {
 	const value = object(payload);
-	exactKeys(value, ["path", "create", "exclusive", "truncate"], ["base"]);
+	exactKeys(value, ["path", "create", "exclusive", "truncate"], ["base", "draft"]);
 	const b = base(value.base);
+	const draft = value.draft === undefined ? false : flag(value.draft);
+	if (draft && value.truncate !== true) throw new ProtocolError(ErrorCode.badRequest, "A draft starts empty");
 	return {
 		path: path(value.path),
 		...(b ? { base: b } : {}),
 		create: flag(value.create),
 		exclusive: flag(value.exclusive),
 		truncate: flag(value.truncate),
+		...(draft ? { draft: true } : {}),
 	};
 }
 
@@ -488,10 +493,22 @@ export function parseGetChunk(payload: Buffer): {
 	};
 }
 
-export function parseClose(payload: Buffer): { readonly handle: number; readonly size: number } {
+export interface CloseRequest {
+	readonly handle: number;
+	readonly size: number;
+	/** Give the handle up: its writes are dropped, as when its connection ends (a draft's leave nothing). */
+	readonly discard?: boolean;
+}
+
+export function parseClose(payload: Buffer): CloseRequest {
 	const value = object(payload);
-	exactKeys(value, ["handle", "size"]);
-	return { handle: count(value.handle, 0xffff_ffff), size: count(value.size, 64 * CHUNK_MAX) };
+	exactKeys(value, ["handle", "size"], ["discard"]);
+	const discard = value.discard === undefined ? false : flag(value.discard);
+	return {
+		handle: count(value.handle, 0xffff_ffff),
+		size: count(value.size, 64 * CHUNK_MAX),
+		...(discard ? { discard: true } : {}),
+	};
 }
 
 export function parseMkdir(payload: Buffer): { readonly path: string } {

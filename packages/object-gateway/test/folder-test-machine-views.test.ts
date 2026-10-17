@@ -47,6 +47,7 @@ const PASS = "testpass_0123456789-abcdefghijklmnopqrstuvw";
 const AT_TEST: BridgeInfo = { cid: 95, lookup: "found", machine: TEST_MACHINE };
 const FIRST = "c0aa0001-0000-4a00-8b00-000000000001";
 const SECOND = "c0aa0002-0000-4a00-8b00-000000000002";
+const THIRD = "c0aa0003-0000-4a00-8b00-000000000003";
 const RUN = "a0aa0000-0000-4a00-8b00-000000000001";
 const AGENT = "a6e70000-0000-4a00-8b00-000000000001";
 const REFUSED = "This socket admits only the executor of the coding and test machines";
@@ -95,6 +96,14 @@ async function write(view: ViewHandle, path: string, text: string): Promise<void
 	const data = Buffer.from(text);
 	await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 	await view.close(handle, data.byteLength);
+}
+
+/** A small file's draft: opened as a draft, its one chunk written, not closed. Its handle, and its size. */
+async function draft(view: ViewHandle, path: string, text: string): Promise<{ handle: number; bytes: number }> {
+	const { handle } = await view.open({ path, create: true, exclusive: false, truncate: true, draft: true });
+	const data = Buffer.from(text);
+	await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+	return { handle, bytes: data.byteLength };
 }
 
 /** Each unit of a commit: the path it publishes, and the commands it is credited to. */
@@ -575,6 +584,120 @@ describe("test machine views", () => {
 		expect(core.entries.has("docs/old")).toBe(false);
 		expect(core.entries.get("docs/there")).toMatchObject({ kind: "symlink", target: "plan.md" });
 	});
+
+	it("credits a draft's file to the windows its chunks came under and the one its close landed it under", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle, bytes } = await draft(view, "docs/landed.txt", "drafted");
+		// Out of the view until its close lands it: the first window's boundary publishes nothing.
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+		service.openWindow(PLACEMENT, windowOf(SECOND));
+		await view.close(handle, bytes);
+		await service.closeWindow(PLACEMENT, SECOND);
+		expect(core.commits.map(creditsOf)).toEqual([[["docs/landed.txt", [FIRST, SECOND]]]]);
+		expect(core.entries.get("docs/landed.txt")?.fileSha256).toBe(hashOf("drafted"));
+	});
+
+	it("credits a draft that lands over the view's own unsaved file with that file's credits too", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		// The third command saves a new file, and its boundary is refused whole: the file stays the view's own, unsaved.
+		service.openWindow(PLACEMENT, windowOf(THIRD));
+		await write(view, "docs/mine.txt", "mine");
+		core.commitRefusal = "stopped";
+		await service.closeWindow(PLACEMENT, THIRD);
+		core.commitRefusal = undefined;
+		// A draft over it, written under the first command, holds it unpublished through the first's boundary.
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle, bytes } = await draft(view, "docs/mine.txt", "drafted");
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toHaveLength(1);
+		// Its close under the second is that file's next save: the file keeps its own credits and takes the draft's.
+		service.openWindow(PLACEMENT, windowOf(SECOND));
+		await view.close(handle, bytes);
+		await service.closeWindow(PLACEMENT, SECOND);
+		expect(core.commits.map(creditsOf)).toEqual([
+			[["docs/mine.txt", [THIRD]]],
+			[["docs/mine.txt", [FIRST, SECOND, THIRD]]],
+		]);
+		expect(core.entries.get("docs/mine.txt")?.fileSha256).toBe(hashOf("drafted"));
+	});
+
+	it("credits nothing to a discarded draft", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await draft(view, "docs/given.txt", "given");
+		await view.discard(handle);
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+		service.openWindow(PLACEMENT, windowOf(SECOND));
+		await write(view, "docs/saved.txt", "s");
+		await service.boundary(PLACEMENT);
+		expect(core.commits.map(creditsOf)).toEqual([[["docs/saved.txt", [SECOND]]]]);
+		expect(core.entries.has("docs/given.txt")).toBe(false);
+	});
+
+	it("gives a file a discarded draft held back its own credits with its bytes", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		// The starter saves a file; the first command writes into it, not cut, and opens a draft over it.
+		await write(view, "docs/kept.txt", "kept");
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await view.open({ path: "docs/kept.txt", create: false, exclusive: false, truncate: false });
+		const data = Buffer.from("changed");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		const drafted = await draft(view, "docs/kept.txt", "drafted");
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+		// Both are given up: the draft last, which lets the file go back to the starter's bytes, with none of the first's.
+		await view.discard(handle);
+		await view.discard(drafted.handle);
+		await service.boundary(PLACEMENT);
+		expect(core.commits.map(creditsOf)).toEqual([[["docs/kept.txt", undefined]]]);
+		expect(core.entries.get("docs/kept.txt")?.fileSha256).toBe(hashOf("kept"));
+	});
+
+	it("gives a file a draft held back its own credits when the draft's close cannot land it", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		await write(view, "docs/kept.txt", "kept");
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await view.open({ path: "docs/kept.txt", create: false, exclusive: false, truncate: false });
+		const data = Buffer.from("changed");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		const drafted = await draft(view, "docs/kept.txt", "drafted");
+		await service.closeWindow(PLACEMENT, FIRST);
+		await view.discard(handle);
+		// The starter moves the file away and makes a folder where the draft lands: its close is refused, and gives it up.
+		await view.rename({ from: "docs/kept.txt", to: "docs/moved.txt", noReplace: false });
+		await view.mkdir("docs/kept.txt");
+		await expect(view.close(drafted.handle, drafted.bytes)).rejects.toMatchObject({ code: "NOT_A_FILE" });
+		await service.boundary(PLACEMENT);
+		expect([...(creditsOf(core.commits[0]) ?? [])].sort()).toEqual([
+			["docs/kept.txt", undefined],
+			["docs/moved.txt", undefined],
+		]);
+		expect(core.entries.get("docs/moved.txt")?.fileSha256).toBe(hashOf("kept"));
+	});
+
+	it("takes no git lock on a test machine: a git publish would carry no credits", async () => {
+		const { core, service, open } = await company();
+		const repo = "code/acme/app/repo.git";
+		core.seed(
+			["code", "code/acme", "code/acme/app", repo, `${repo}/refs`, `${repo}/refs/heads`].map((p) => folder(p)),
+		);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await expect(
+			view.open({ path: `${repo}/refs/heads/main.lock`, create: true, exclusive: true, truncate: true }),
+		).rejects.toMatchObject({ code: "NOT_PERMITTED" });
+		expect(core.gitLeases.size).toBe(0);
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+	});
 });
 
 /** A seeded generator (mulberry32): a seed gives the same sequence at every run. */
@@ -733,7 +856,6 @@ function sortUnits(units: ModelUnit[]): ModelUnit[] {
 }
 
 describe("test machine credits against a model", () => {
-	const THIRD = "c0aa0003-0000-4a00-8b00-000000000003";
 	const COMMANDS = [FIRST, SECOND, THIRD];
 	const PATHS = ["docs/a.md", "docs/b.md", "docs/c.md"];
 	const STEPS = 18;

@@ -65,6 +65,9 @@ pub struct HelloOk {
 	pub read_only: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub switchable: bool,
+	/// A company's code host: it publishes git's session-local files like any other, so none goes in `--local-dir`.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub code_host: bool,
 }
 
 /// The first frame from the bridge on the node: the peer's CID as the node's kernel reported it, and the
@@ -232,6 +235,9 @@ pub struct OpenRequest {
 	pub create: bool,
 	pub exclusive: bool,
 	pub truncate: bool,
+	/// The file joins the view only when this handle closes (with `truncate`): until then the view keeps what it had.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub draft: bool,
 }
 
 /// `o`: the node's handle for the open file, its size and the version it shows now.
@@ -261,11 +267,14 @@ pub struct GetChunk {
 	pub length: u32,
 }
 
-/// `C`: the file closed at `size`; its chunks must make up that size on the 4 MiB grid.
+/// `C`: the file closed at `size`; its chunks must make up that size on the 4 MiB grid. With `discard` the handle is
+/// given up instead, as the end of its connection gives it up: what it wrote is dropped (a draft's leaves nothing).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct CloseRequest {
 	pub handle: u32,
 	pub size: u64,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub discard: bool,
 }
 
 /// `k` to a close or the executable bit: the version the save made (the version map takes it).
@@ -541,8 +550,16 @@ mod tests {
 	#[test]
 	fn write_shapes() {
 		// As protocol.ts parses them: exact keys, a base only when there is one.
-		let open = OpenRequest { path: "a".into(), base: None, create: true, exclusive: false, truncate: true };
+		let open = OpenRequest { path: "a".into(), base: None, create: true, exclusive: false, truncate: true, draft: false };
 		assert_eq!(serde_json::to_string(&open).unwrap(), r#"{"path":"a","create":true,"exclusive":false,"truncate":true}"#);
+		let draft = OpenRequest { draft: true, ..open };
+		assert_eq!(
+			serde_json::to_string(&draft).unwrap(),
+			r#"{"path":"a","create":true,"exclusive":false,"truncate":true,"draft":true}"#
+		);
+		assert_eq!(serde_json::to_string(&CloseRequest { handle: 1, size: 2, discard: false }).unwrap(), r#"{"handle":1,"size":2}"#);
+		let discard = CloseRequest { handle: 1, size: 0, discard: true };
+		assert_eq!(serde_json::to_string(&discard).unwrap(), r#"{"handle":1,"size":0,"discard":true}"#);
 		let rename =
 			RenameRequest { from: "a".into(), from_base: Some("v".into()), to: "b".into(), to_base: None, no_replace: true };
 		assert_eq!(serde_json::to_string(&rename).unwrap(), r#"{"from":"a","fromBase":"v","to":"b","noReplace":true}"#);

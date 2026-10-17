@@ -87,7 +87,8 @@ function staged(node: PendingFile): FileRef {
 }
 
 /** A view over a live folder; `publish` commits a boundary into it and settles the view, as the service does. */
-function setup(paths: Record<string, Content>) {
+/** `codeHost`: the code host's view (5d), which writes git's session-local files. */
+function setup(paths: Record<string, Content>, codeHost = false) {
 	let state = folderOf(paths);
 	let tree = treeOf(state);
 	let seq = 10;
@@ -95,6 +96,7 @@ function setup(paths: Record<string, Content>) {
 		() => tree,
 		() => seq,
 		() => 1_000,
+		codeHost,
 	);
 	return {
 		view,
@@ -934,6 +936,26 @@ describe("a view's pending changes", () => {
 				},
 			]),
 		);
+	});
+
+	it("moves a new folder to git's session-local files, and what is in it, only in the code host's view (5d)", () => {
+		const repo = "code/acme/app/repo.git";
+		const paths = { code: null, "code/acme": null, "code/acme/app": null, [repo]: null };
+		// A session's view: git keeps its hooks on the machine.
+		const session = setup(paths);
+		session.view.mkdir(`${repo}/staged`);
+		session.view.mkdir(`${repo}/staged/sample`);
+		const before = shown(session.view);
+		refused(() => session.view.rename(`${repo}/staged`, `${repo}/hooks`), "NOT_PERMITTED");
+		expect(shown(session.view)).toEqual(before);
+		// The code host's view publishes the hooks sessions seed theirs from: the folder's names are hooks too.
+		const host = setup(paths, true);
+		host.view.mkdir(`${repo}/staged`);
+		host.view.mkdir(`${repo}/staged/sample`);
+		host.view.rename(`${repo}/staged`, `${repo}/hooks`);
+		expect(host.publish()).toEqual([
+			{ op: "new_folder", path: `${repo}/hooks`, contents: [{ path: "sample", kind: "folder" }] },
+		]);
 	});
 });
 

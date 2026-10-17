@@ -16,12 +16,14 @@ import {
 	type FeedEvent,
 	type FolderActor,
 	type FolderCore,
+	type GitPublish,
 	MEMBER_HELD_READS,
 	type ReleaseAnswer,
 	type ReleasedRead,
 	type UploadSeal,
 	type ViewRenewal,
 } from "../src/folder-service/core.ts";
+import { type GitUnit, gitObjectPath, gitPlace, gitReflog } from "../src/folder-service/git.ts";
 import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
 import type { CommitUnit, NewFolderEntry } from "../src/folder-service/plan.ts";
@@ -48,7 +50,7 @@ export const hashOf = (bytes: Uint8Array | string): string => createHash("sha256
 export async function storeFile(
 	root: string,
 	path: string,
-	content: string,
+	content: string | Uint8Array,
 	version: number,
 	chunkBytes = 4,
 	options: { executable?: boolean; mediaType?: string } = {},
@@ -407,6 +409,7 @@ export class FakeCore implements FolderCore {
 		if (final && view?.kind !== "computer_shell_command" && view?.kind !== "test_machine")
 			throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
+		if (units.length > 1000) throw new CoreRefusal("invalid", "Change set is invalid");
 		if (view?.kind === "computer_shell_command" && view.ended && !final)
 			throw new CoreRefusal("denied", COMMAND_ENDED);
 		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it. A
@@ -491,6 +494,11 @@ export class FakeCore implements FolderCore {
 				case "symlink": {
 					// A write or a link replaces the file or link at the version it names (a link's write makes it a file).
 					const e = this.entries.get(u.path);
+					// An object is its content (5b): one another session published first is saved as it is.
+					if (u.op === "write" && u.expectedVersion === undefined && e?.kind === "file" && gitObjectPath(u.path))
+						return e.fileSha256 === u.file.fileSha256
+							? { unit, outcome: "saved", reason: null, version: e.version }
+							: no("refused", "git_object_delete");
 					if (u.expectedVersion !== undefined ? e?.kind === "folder" || e?.version !== u.expectedVersion : e)
 						return conflict(u.expectedVersion !== undefined ? "version_changed" : "exists");
 					if (u.op === "symlink") {
@@ -520,6 +528,9 @@ export class FakeCore implements FolderCore {
 				}
 				case "mkdir":
 				case "new_folder": {
+					const there = this.entries.get(u.path);
+					if (u.op === "mkdir" && there?.kind === "folder" && gitObjectPath(u.path))
+						return { unit, outcome: "saved", reason: null, version: there.version };
 					if (this.entries.has(u.path))
 						return u.op === "new_folder" ? conflict("exists") : no("conflict", "exists");
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
@@ -674,6 +685,149 @@ export class FakeCore implements FolderCore {
 		return answer;
 	}
 
+	// ---- Git leases (5b, core §6's lock protocol), in memory ------------------------------------------------------------
+
+	/** The leases held, by file: the view holding it and the lease. A held lease does not show in listings here. */
+	readonly gitLeases = new Map<string, { viewId: string; leaseId: string }>();
+	/** Files whose lease is refused, with the reason. */
+	readonly gitRefusals = new Map<string, string>();
+	/** Every git publish and every release with units, in order. */
+	readonly gitPublishes: { leaseId: string; units: readonly GitUnit[]; published: boolean }[] = [];
+	#nextLease = 1;
+
+	async gitLeaseTake(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>, path: string) {
+		this.#check(actor, environmentId);
+		const reason = this.gitRefusals.get(path);
+		if (reason) return { state: "refused", reason } as const;
+		// The view's own lease answers held again; another's, busy.
+		const held = this.gitLeases.get(path);
+		if (held && held.viewId !== actor.viewId)
+			return { state: "busy", leaseUntil: "2026-10-05T12:02:00.000Z", reason: null } as const;
+		const leaseId = held?.leaseId ?? v(this.#nextLease++);
+		this.gitLeases.set(path, { viewId: actor.viewId, leaseId });
+		const place = gitPlace(path);
+		const live = (p: string) => this.entries.get(p)?.version ?? null;
+		return {
+			state: "held",
+			leaseId,
+			path,
+			versions: {
+				file: live(path),
+				reflog: live(gitReflog(path)),
+				packedRefs: place.kind === "git" ? live(`${place.area}/repo.git/packed-refs`) : null,
+			},
+		} as const;
+	}
+
+	async gitLeaseRelease(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		units: readonly unknown[] | null,
+	) {
+		if (units === null) {
+			// Released, held or not (it may have ended already).
+			this.#check(actor, environmentId);
+			const held = [...this.gitLeases].find(([, l]) => l.leaseId === leaseId && l.viewId === actor.viewId);
+			if (held) this.gitLeases.delete(held[0]);
+			return null;
+		}
+		const path = this.#leased(environmentId, actor, leaseId);
+		const answer = this.#gitApply(leaseId, units as GitUnit[]);
+		this.gitLeases.delete(path);
+		return answer;
+	}
+
+	async gitLeasesDrop(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>) {
+		this.#check(actor, environmentId);
+		const dropped = [...this.gitLeases].filter(([, lease]) => lease.viewId === actor.viewId).map(([path]) => path);
+		for (const path of dropped) this.gitLeases.delete(path);
+		return dropped;
+	}
+
+	async gitPublish(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		_operationKey: string,
+		units: readonly unknown[],
+	) {
+		const path = this.#leased(environmentId, actor, leaseId);
+		const answer = this.#gitApply(leaseId, units as GitUnit[]);
+		if (answer.published) this.gitLeases.delete(path);
+		return answer;
+	}
+
+	/** The file `leaseId` leases for the view: refused (42501) when the view does not hold it (it ended, or is another's). */
+	#leased(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>, leaseId: string): string {
+		this.#check(actor, environmentId);
+		const held = [...this.gitLeases].find(([, l]) => l.leaseId === leaseId && l.viewId === actor.viewId);
+		if (!held) throw new CoreRefusal("denied", "Folder git lease is unavailable");
+		return held[0];
+	}
+
+	/** One git change set: its objects land (one already there is saved as it is), and the ref and its log land at the
+	 * versions the lease found or not at all (one written with none, onto nothing). The missing folders below the git
+	 * directory are made, and count against its 1000 units; a git directory not in the folder lands nothing (446300). */
+	#gitApply(leaseId: string, units: readonly GitUnit[]): GitPublish {
+		const folders = new Set<string>();
+		for (const u of units) {
+			const segments = u.path.split("/");
+			for (let n = 5; n < segments.length; n++) folders.add(segments.slice(0, n).join("/"));
+		}
+		if (units.length + folders.size > 1000) throw new CoreRefusal("invalid", "Change set is invalid");
+		const live = (path: string) => this.entries.get(path)?.version ?? null;
+		const commitId = v(this.#nextVersion++);
+		const changed = (u: GitUnit) => !gitObjectPath(u.path) && live(u.path) !== (u.expectedVersion ?? null);
+		const missing = units.some((u) => !this.entries.has(u.path.split("/").slice(0, 4).join("/")));
+		const stale = missing || units.some(changed);
+		this.gitPublishes.push({ leaseId, units, published: !stale });
+		const now = "2026-10-05T12:00:00.000Z";
+		const changes: FeedChange[] = [];
+		const outcomes = units.map((u, i): CommitOutcome => {
+			const saved = (version: string | null): CommitOutcome => ({
+				unit: i + 1,
+				outcome: "saved",
+				reason: null,
+				version,
+			});
+			if (missing) return { unit: i + 1, outcome: "conflict", reason: "parent_missing", version: null };
+			if (stale && !gitObjectPath(u.path))
+				return { unit: i + 1, outcome: "conflict", reason: "version_changed", version: null };
+			const old = this.entries.get(u.path);
+			if (u.op === "delete") {
+				this.entries.delete(u.path);
+				changes.push({ path: u.path, kind: "file", version: old!.version, op: "delete" });
+				return saved(null);
+			}
+			if (old && u.expectedVersion === undefined) return saved(old.version);
+			const segments = u.path.split("/");
+			for (let n = 5; n < segments.length; n++) {
+				const parent = segments.slice(0, n).join("/");
+				if (this.entries.has(parent)) continue;
+				const folder: CoreEntry = { path: parent, kind: "folder", version: v(this.#nextVersion++), updatedAt: now };
+				this.entries.set(parent, folder);
+				changes.push({ ...folder, op: "mkdir" });
+			}
+			const entry: CoreEntry = {
+				path: u.path,
+				kind: "file",
+				version: v(this.#nextVersion++),
+				...u.file,
+				updatedAt: now,
+			};
+			this.entries.set(u.path, entry);
+			changes.push({ ...entry, op: "write" });
+			return saved(entry.version);
+		});
+		let seq: number | null = null;
+		if (changes.length > 0) {
+			seq = ++this.seq;
+			this.journal.push({ seq, kind: "change_set", changes });
+		}
+		return { commitId, seq, published: !stale, units: outcomes };
+	}
+
 	/** A coding or code host view's renewal names its service (22023 without one): the first sets `served_by`, and
 	 * another service's while it is set closes the view (`service_crashed`, F3 5a). */
 	async renewView(viewId: string, pass: string, unsavedSince: string | null, service: string): Promise<ViewRenewal> {
@@ -750,6 +904,16 @@ export const OFFICE: MachineRef = {
 /** No operator mount: the execution host presents run boxes, and the office project's machines their desktops. */
 export function companyGrants(): MountGrants {
 	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT]);
+}
+
+/** The company's grants, serving its code host's `code_host` view too, from any machine (5c's grants serve it from
+ * the code host's project), with shell command boundaries. */
+export function codeHostGrants(): MountGrants {
+	const grants = companyGrants();
+	const coreAccess = grants.coreAccess.bind(grants);
+	grants.coreAccess = (identity) =>
+		identity.kind === "code_host" ? { write: true, command: true, admits: () => true } : coreAccess(identity);
+	return grants;
 }
 
 /** The node's coding machine project (F3 5c), a coding machine, and the machine the node made for it, named after it. */

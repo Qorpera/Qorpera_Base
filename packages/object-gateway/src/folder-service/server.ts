@@ -178,6 +178,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 					asOfSeq: handle.asOfSeq,
 					readOnly: !writing,
 					...(handle.switchable ? { switchable: true } : {}),
+					...(handle.codeHost ? { codeHost: true } : {}),
 				}),
 			);
 			if (role === "feed")
@@ -250,6 +251,10 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			}
 			case Kind.close: {
 				const request = parseClose(frame.payload);
+				if (request.discard) {
+					await handle.discard(request.handle);
+					break;
+				}
 				send(encodeJson(Kind.done, await handle.close(request.handle, request.size)));
 				return;
 			}
