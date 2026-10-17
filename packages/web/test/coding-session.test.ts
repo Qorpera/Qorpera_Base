@@ -876,6 +876,21 @@ describe("the element in the thread", () => {
 					},
 					"executor",
 				),
+				// The executor gave the machine a new disk, as a read it held is no longer readable (F3 5g-5).
+				event(
+					11,
+					"step",
+					{
+						text: "The machine got a new disk; only the company folder was kept; 2 commands were stopped",
+						reason: "MACHINE_NEW_DISK",
+						stopped: [
+							{ commandId: id(83), turn: 4, command: "npm run dev" },
+							{ commandId: id(84), turn: 4, command: "docker compose up" },
+						],
+						moreStopped: 0,
+					},
+					"executor",
+				),
 			],
 		});
 		await settle();
@@ -889,6 +904,7 @@ describe("the element in the thread", () => {
 			"The machine stopped · 2 commands stopped",
 			"The machine stopped",
 			"The machine restarted · 1 command stopped",
+			"The machine got a new disk · 2 commands stopped",
 		]);
 		// The working step stays the harness's.
 		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");

@@ -236,6 +236,7 @@ export const AGENTS: Record<string, string> = {
 	"Coding is turned off here": "Kodning er slået fra her",
 	"The machine stopped": "Maskinen stoppede",
 	"The machine restarted": "Maskinen genstartede",
+	"The machine got a new disk": "Maskinen fik en ny disk",
 	"1 command stopped": "1 kommando stoppet",
 	"{count} commands stopped": "{count} kommandoer stoppet",
 	"Coding session": "Kodesession",

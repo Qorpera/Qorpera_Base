@@ -170,13 +170,32 @@ export function mailThreadParts(options: {
 			),
 		];
 	const shown = read.thread;
+	const loading = read.older === "loading";
 	return [
 		head,
-		shown.more
+		shown.nextBefore
 			? h(
-					"p",
-					{ class: "interface-note interface-mail-more" },
-					t("Only the newest {count} messages of this thread are shown here.", { count: shown.messages.length }),
+					"div",
+					{ class: "interface-mail-older interface-mail-more" },
+					read.older === "error"
+						? h("p", { class: "interface-note", role: "alert" }, t("Older messages can't be read."))
+						: null,
+					h(
+						"button",
+						{
+							type: "button",
+							class: "interface-button",
+							"data-focus-key": `older-messages:${blockKey}:${thread}`,
+							disabled: loading,
+							"aria-busy": loading ? "true" : null,
+							onclick: () => CompanyMail.of(company)?.olderMessages(thread),
+						},
+						loading
+							? t("Reading older messages")
+							: read.older === "error"
+								? t("Try again")
+								: t("Show older messages"),
+					),
 				)
 			: null,
 		h(

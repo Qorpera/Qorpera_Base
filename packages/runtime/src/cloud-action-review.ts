@@ -200,8 +200,7 @@ export function cloudActionEffect(
 		case "list_hooks":
 		case "read_event":
 		case "find_mail":
-		// Interfaces (I8): a page and a table, read with the run's own authority.
-		case "interface_read":
+		// Interfaces (I8): a table, read with the run's own authority.
 		case "table_read":
 		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
 		case "zoom":
@@ -297,13 +296,9 @@ export function cloudActionEffect(
 			return args.effect === "destructive" ? "destructive" : "delegation";
 		case "discard_proposal":
 			return "internal";
-		// Interfaces (I8b): rows of a table the agent may write are the company's records; an interface or table change
-		// that gives a button, an access, a column or who writes is a delegation, as the database classes it. Its class
-		// comes from the files it replaces, read before the review (`prepare`); an unprepared call is a delegation.
+		// Interfaces (I8b): rows of a table the agent may write are the company's records.
 		case "table_write":
 			return "internal";
-		case "save_interface":
-			return args.effect === "internal" ? "internal" : "delegation";
 		default:
 			return "external";
 	}
@@ -687,13 +682,10 @@ export function describeCloudAction(
 			(args.action === "followup" && worker ? readable(worker) : null);
 		add("title", args.title);
 		quote("task", args.goal ?? args.text, CONTENT_BYTES);
-	} else if (tool.name === "apply_proposal" || tool.name === "save_interface") {
-		// Changes the agent saved from a computer, as the run's list described them (cloud-folder-proposals.ts), or an
-		// interface or table change, as the call's preparation described it from the files it replaces
-		// (cloud-folder-interface-writes.ts): what changes, in order, never its files.
-		title =
-			text(args.title, 200) ||
-			(tool.name === "apply_proposal" ? "Apply changes saved from a computer" : "Change an interface");
+	} else if (tool.name === "apply_proposal") {
+		// Changes the agent saved from a computer, as the run's list described them (cloud-folder-proposals.ts): what
+		// changes, in order, never its files.
+		title = text(args.title, 200) || "Apply changes saved from a computer";
 		target = text(args.target) || null;
 		for (const item of Array.isArray(args.details) ? args.details : []) {
 			const detail = record(item);

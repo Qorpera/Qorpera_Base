@@ -956,9 +956,7 @@ it.each([
 				"company_mkdir",
 				"company_read",
 				"company_write",
-				"interface_read",
 				"table_read",
-				"save_interface",
 				"table_write",
 				"company_account",
 				"ask_member",
@@ -1416,18 +1414,33 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 	const list = tools.find((tool) => tool.name === "company_list");
 	// The folder core pages a folder by its last path; no listing pins a snapshot.
 	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
-	const files = [
-		"company_read",
-		"company_write",
-		"company_mkdir",
-		"company_delete",
-		"interface_read",
-		"table_read",
-		"save_interface",
-		"table_write",
-	];
+	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
+	// Since the scope reset (C6b) a run neither reads a page nor saves an interface: the pages are the platform's.
+	expect(tools.filter((tool) => ["interface_read", "save_interface"].includes(tool.name))).toEqual([]);
+});
+
+it("refuses a call to a page tool the scope reset took out, without an effect, and the run still answers", async () => {
+	const f = await fixture("company-removed-tools");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const refusals = evidence.fenced.outputs.slice(0, 2).map((item: { output: string }) => JSON.parse(item.output));
+	const refusal = expect.objectContaining({
+		status: "denied",
+		content: expect.objectContaining({ text: "TOOL_UNAVAILABLE" }),
+	});
+	expect(refusals).toEqual([refusal, refusal]);
+	// Neither name is the catalog's any more: no review, no tool-operation receipt, no effect; each is observed as an
+	// unknown tool.
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	const refused = f.observations.filter((row) => row.operation === "unknown_tool" && row.phase === "finish");
+	expect(refused.map((row) => [row.status, row.errorCategory])).toEqual([
+		["denied", "unavailable_tool"],
+		["denied", "unavailable_tool"],
+	]);
 });
 
 it("refuses a company run whose context names no company folder, before reading a file or starting Codex", async () => {
@@ -2173,7 +2186,6 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
 		"company_list",
 		"company_read",
-		"interface_read",
 		"read_context",
 		"read_skill",
 		"recall_memory",
@@ -2866,16 +2878,15 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
 	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
 	// supervisor, so they moved again. Since save_interface's description gives an interface.toml's form and the files'
-	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again; every other tool is as on master.
+	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again. Since the scope reset (C6b) the catalog has no
+	// interface_read and no save_interface, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
 		"company_write",
 		"company_mkdir",
 		"company_delete",
-		"interface_read",
 		"table_read",
-		"save_interface",
 		"table_write",
 		"read_context",
 		"company_account",
@@ -2901,9 +2912,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"e5a6e4334d8d273ddeee2a903049dcf545c2134a72dba7164f567615f78d1023",
+		"0714ddb8e0b3fb99e26d189f5957baa17143d2ffe22223ac9540adb73c851bec",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"af93a5cf6e612796c0fc8be50b0ac0d736442a474c281eb095ebb9fe05916146",
+		"3b5d64e6fc1164ff2e47e44273af6a205a5431e3c9ae1efd2ac921b809147683",
 	);
 });

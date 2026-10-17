@@ -129,9 +129,10 @@ export interface CloudNativeTool {
 	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
 	 * never reviewed on a part. */
 	reviewContents?(parsed: JsonValue): JsonValue;
-	/** What the call would change, read from the company's current state before the automatic review (I8b: an
-	 * interface save's card and effect come from the files it replaces). Its value takes the parsed arguments' place for
-	 * the review, the work log and the effect; it changes nothing. A `CloudToolRefusal` refuses the call before review. */
+	/** What the call would change, read from the company's current state before the automatic review (I8b's interface
+	 * save took its card and effect from the files it replaced; since the scope reset, C6b, no tool has one). Its value
+	 * takes the parsed arguments' place for the review, the work log and the effect; it changes nothing. A
+	 * `CloudToolRefusal` refuses the call before review. */
 	prepare?(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue>;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;

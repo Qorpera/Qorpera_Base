@@ -198,7 +198,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_interface_pages(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; whether Mailbox and Members are on, read only (C6a)'),
 	('public.qorpera_member_interface_supervisions(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; live consents on tables the caller reads (I9b)'),
 	('public.qorpera_member_mail_addresses(uuid)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
-	('public.qorpera_member_mail_thread(uuid,text)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
+	('public.qorpera_member_mail_thread(uuid,text,jsonb)', false, true, 'member: auth.uid() + membership, before any lock (I5a; older pages C6e)'),
 	('public.qorpera_member_mail_threads(uuid,jsonb)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
 	('public.qorpera_member_mail_waiting(uuid)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
 	('public.qorpera_member_manage_company_machine(uuid,uuid,text)', false, true, 'internal: auth.uid() + membership/ownership'),
