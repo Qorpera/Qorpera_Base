@@ -121,7 +121,7 @@ export function invalid(failure: string, problems: readonly string[]): WebCompan
 }
 
 /** The settled outcome of a one-unit change set. A refused or conflicting unit is an answer, never an exception. */
-async function commitUnit(
+export async function commitUnit(
 	folder: WebMemberFolder,
 	operationKey: string,
 	unit: CloudMemberFolderUnit,

@@ -156,7 +156,7 @@ describe("opening a run's work log", () => {
 		});
 	});
 
-	it("keeps no log for a run off the memory tree's list or without a conversation tree, and asks nothing more", async () => {
+	it("keeps no log for a run in Agent notebooks or without a conversation tree, and asks nothing more", async () => {
 		const f = fixture();
 		vi.mocked(f.folder.locate).mockRejectedValue(new CloudRunLogUnavailable("off"));
 		expect(await f.open()).toBeNull();

@@ -2,7 +2,10 @@
 // the test database (p3-database.mjs) with a company whose member has a coding session, the node's executor
 // (p3-executor.ts) started in the node as its service unit would start it, and the runtime's side of four turns:
 //   turn 1 starts a command that keeps printing, and edits and commits in its workspace (the executor's clone of a
-//     throwaway repository on the node's stand-in GitHub); the turn's end pushes the commit and opens a draft pull request;
+//     throwaway repository on the node's stand-in GitHub); the turn's end pushes the commit and opens a draft pull request
+//     (on the folder model's phase A, which has no repositories yet, its commands start at /company instead; on phase B,
+//     the node's code host for its company seeds the code area under /company/code, the workspace is the session's
+//     worktree there, and after the push a code host job of the driver's own finds the commit in the code area);
 //   turn 2, a follow-up in the same session, reads that command: it still runs and its output grew (Order 9), then stops
 //     it and leaves another running;
 // then the rest of Order 9 (p3-order9.mjs cuts each wait short in the database): the machine sleeps after 10 idle
@@ -22,6 +25,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
+import { postgrestError } from "./p3-postgrest-errors.mjs";
 
 const [project, vm, imageFingerprint, packageDirectory, facts] = process.argv.slice(2);
 if (!facts) throw new Error("usage: p3-driver.mjs <project> <node VM> <image fingerprint> <package directory> <node facts JSON>");
@@ -63,7 +67,8 @@ const nasPolicy = {
 const vmPolicy = {
 	bootstrapSha256: sha256("p3 coding machine bootstrap"), cpus: 2, imageFingerprint, memoryBytes: 2 * 1024 ** 3,
 	network: "qagent0", project: "default", providerId: "p3-coding", providerPolicySha256: sha256("p3 coding provider policy"),
-	rootDiskBytes: 12 * 1024 ** 3, storagePool: "default",
+	// 5f's image has a 16 GiB root.
+	rootDiskBytes: 20 * 1024 ** 3, storagePool: "default",
 };
 const repository = { host: "github.com", owner: "qorpera-p3", name: "proof", baseBranch: "main" };
 const machineIdSha256 = sha256(node.machineId);
@@ -76,10 +81,50 @@ const EDIT = "git rev-parse HEAD && printf 'P3 proof\\n' >P3-PROOF.md && git add
 const JOURNALS =
 	"for binding in $(find /mnt/qorpera-nas/coding -name binding.json); do dir=$(dirname \"$binding\"); echo \"== $dir\"; " +
 	"for event in $(ls \"$dir\" | grep -E '^[0-9]{6}[.]json$' | tail -n 12); do echo \"$event $(head -c 400 \"$dir/$event\")\"; done; done";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// The executor's SQL control calls and the folder service's core calls: the last 60 (begun, kind, name, outcome, time)
+// and those not answered yet.
+const calls = { recent: [], pending: new Set() };
+
+// Inside a coding machine, for diagnose(): its folder program's units and journal, the mounts, the programs.
+const GUEST_LOOK = [
+	"uptime",
+	"systemctl list-units --all --no-pager --plain 'qorpera-*'",
+	"journalctl --no-pager -o short-monotonic -n 100 -u 'qorpera-folder-*'",
+	"findmnt -rn -o TARGET,FSTYPE,OPTIONS | grep -E 'fuse|company' || true",
+	"ls -la /opt/qorpera-guest /opt/qorpera-folder 2>&1",
+	"ls -la /dev/vsock /dev/fuse 2>&1",
+	"journalctl --no-pager -o short-monotonic -p warning -n 40",
+	"true",
+].join("; echo ----; ");
+
+// In the node, for diagnose(): whether the bridge's account, under the bridge's own sandbox, can ask LXD which
+// machine has a CID (lxd.rs answers "unavailable" for any failure, and nothing logs it).
+const BRIDGE_LOOK = [
+	"stat -c '%U:%G %a' /var/snap/lxd/common/lxd/unix.socket",
+	"id qorpera-folder-bridge",
+	"systemctl show -p ActiveState -p MainPID -p NRestarts qorpera-folder-bridge",
+	"grep -E '^(Uid|Gid|Groups)' /proc/$(systemctl show -p MainPID --value qorpera-folder-bridge)/status",
+	"systemd-run --wait --pipe --quiet -p User=qorpera-folder-bridge -p Group=qorpera-folder-bridge -p SupplementaryGroups=lxd -p ProtectSystem=strict -p PrivateDevices=yes -p NoNewPrivileges=yes curl -sS --max-time 5 --unix-socket /var/snap/lxd/common/lxd/unix.socket 'http://lxd/1.0/instances?all-projects=true&recursion=1' 2>&1 | grep -oE '\"(name|project|status|volatile.vsock_id)\":\"[^\"]*\"|^curl.*' | head -n 40",
+	"true",
+].join("; echo ----; ");
+
+// In each code host, for diagnose(): its jobs' folder mounts (one transient unit per job; the journal keeps them).
+const CODE_HOST_LOOK = [
+	"uptime",
+	"journalctl --no-pager -o short-monotonic -n 150 -u qorpera-code-host-folder.service",
+	"findmnt -rn -o TARGET,FSTYPE,OPTIONS | grep -E 'fuse|company' || true",
+	"true",
+].join("; echo ----; ");
+// The core calls whose request and answer the log keeps (startPostgrest): the saves, git leases and read releases a
+// boundary waits on, so a held boundary shows its refusal (reason and paths) even on a 200.
+const CORE_LOGGED = /^qorpera_folder_(commit|git_publish|git_lease_take|git_lease_release|record_release)$/;
 
 const db = await database.openDatabase();
 let executor;
 let stopping;
+let postgrest;
 try {
 	const ids = await database.seed(db, { vmPolicy, nasPolicy, machineIdSha256, repository });
 	pass(`the test database has a company whose member's coding session may run on the node (${elapsed()})`);
@@ -92,15 +137,40 @@ try {
 			uid: 1500, gid: 1500, resourceProfile: { maxLogBytes: 64 * 1024 ** 2 },
 		},
 		repositories: [{ repository: ids.repository ?? repository, credential: "qorpera-coding-repository-p3" }],
+		// The folder model (5g-6a): the guest agent and the folder program the node holds, which the executor pushes into
+		// each machine; every session then takes the folder path. The control socket is the default one.
+		...(node.folder ? { folder: node.folder } : {}),
+		// Its repositories (5g-6b): the company's code host, made from the image the node imported into its default
+		// project's store, with the limits the node inventory policy's `codeHosts` would give.
+		...(node.codeHost ? {
+			codeHost: { imageFingerprint: node.codeHost.imageFingerprint, storagePool: "default", cpus: 1, memoryBytes: 1024 ** 3,
+				rootDiskBytes: 12 * 1024 ** 3, running: 1 },
+		} : {}),
 	};
 	pushFile("/etc/qorpera/coding-executor.json", JSON.stringify(config));
 	pushFile("/etc/qorpera/coding-command.key", commandToken);
+
+	// --- The folder model (phase A): the node's folder service reaches its core here, before any session opens a view --
+	if (node.folder) {
+		postgrest = startPostgrest();
+		await postgrest.ready;
+		pass(`the node's folder service has its core: the test database, through the stand-in PostgREST (${elapsed()})`);
+	}
 
 	// --- The executor, as its unit runs it ------------------------------------------------------------------------------
 	note(`the NAS in the executor's sandbox:\n${sandboxMounts()}`);
 	executor = startExecutor();
 	await executor.ready;
 	pass(`the executor runs in the node as its service unit would run it (${elapsed()})`);
+	if (node.folder) {
+		for (let waited = 0; !executor.folderLines.start && waited < 10000; waited += 250) await new Promise((settle) => setTimeout(settle, 250));
+		const start = executor.folderLines.start;
+		const logged = start ? JSON.parse(start) : null;
+		if (logged?.agentSha256 !== node.folder.agent.sha256 || logged?.programSha256 !== node.folder.program.sha256 ||
+			(logged?.repositories ?? "none") !== (node.codeHost ? "code-host" : "none"))
+			fail(`the executor did not start on the folder model with the node's agent and program: ${start}`);
+		pass(`the executor starts on the folder model with both pins: ${start}`);
+	}
 	const refreshing = setInterval(() => void database.refreshNode(db, ids).catch((error) => note(`refresh: ${error.message}`)), 20000);
 
 	try {
@@ -108,6 +178,14 @@ try {
 		const { workerId } = await database.dispatchCodingTask(db, ids, { instructions: "P3 proof: start a command that keeps printing." });
 		const turn1 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 1, timeoutMs: 20 * 60000 });
 		pass(`turn 1 runs: the executor prepared the workspace and attached the session (${elapsed()})`);
+		const mounted = () => executor.folderLines.mounts.filter((line) => {
+			const logged = JSON.parse(line);
+			return logged.workerId === workerId && typeof logged.viewId === "string" && typeof logged.machineId === "string";
+		});
+		if (node.folder) {
+			if (!mounted().length) fail(`turn 1 runs with no folder view mounted for ${workerId}`);
+			pass(`turn 1's session has its folder view: ${mounted().join(" ")}`);
+		}
 		const gateway1 = gatewayFor(turn1);
 		const command = "for i in $(seq 1 1800); do echo \"tick $i\"; sleep 1; done";
 		const begun = await database.beginCommand(db, turn1, { operationKey: "p3-ticking", command, timeoutMs: null });
@@ -118,20 +196,51 @@ try {
 		const first = await gateway1.read(turn1.scope, { commandId: begun.commandId, offset: 0, limit: 4096 }, AbortSignal.timeout(60000));
 		if (first.state !== "running" || !/tick 1\n/.test(first.output)) fail(`turn 1 cannot read its command: ${JSON.stringify(first)}`);
 		pass(`turn 1 started a command and reads it running (${first.log.totalBytes} bytes, ${elapsed()})`);
-		const edited = await runToEnd(turn1, gateway1, "p3-edit", EDIT);
-		const [cloned, head] = edited.output.trim().split("\n").slice(-2);
-		if (edited.state !== "succeeded" || cloned !== node.baseSha || !/^[0-9a-f]{40}$/.test(head ?? ""))
-			fail(`turn 1's edit and commit in its workspace: ${JSON.stringify(edited)}`);
-		pass(`turn 1's workspace is the executor's clone of qorpera-p3/proof at ${cloned}; an edit is committed as ${head} (${elapsed()})`);
-		await database.finishTurn(db, turn1, { operationKey: "p3-turn-1", summary: "Started a command that keeps printing; committed an edit.", headSha: head });
-		await executor.turnSettled();
-		let pushed = published(workerId);
-		for (let waited = 0; (pushed.sha !== head || !pushed.pull) && waited < 60000; waited += 2000, pushed = published(workerId))
-			await new Promise((settle) => setTimeout(settle, 2000));
-		if (pushed.sha !== head || pushed.pull?.draft !== true || pushed.pull.head.sha !== head)
-			fail(`turn 1's end did not push its commit and open a draft pull request: ${JSON.stringify(pushed)}`);
-		pass(`turn 1 ended: the throwaway repository has its commit on ${pushed.branch}, and a draft pull request ` +
-			`${pushed.pull.html_url}; the session stands by (${elapsed()})`);
+		// The folder model's phase A has no repositories (5g-6b brings them): commands start at /company and a finished
+		// turn exports nothing, so the edit, commit and push are phase B's.
+		let head = node.baseSha;
+		if (node.folder && !node.codeHost) {
+			const where = await runToEnd(turn1, gateway1, "p3-where", "pwd");
+			if (where.state !== "succeeded" || where.output.trim() !== "/company") fail(`turn 1's commands do not start at /company: ${JSON.stringify(where)}`);
+			pass(`turn 1's commands start in the company folder at /company (${elapsed()})`);
+			await database.finishTurn(db, turn1, { operationKey: "p3-turn-1", summary: "Started a command that keeps printing.", headSha: head });
+			await executor.turnSettled();
+			pass(`turn 1 ended; the session stands by (${elapsed()})`);
+		} else {
+			// Phase B: the code host seeded the company's code area and added the session's worktree, on its own branch.
+			if (node.codeHost) {
+				const worktree = `/company/code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}`;
+				const where = await runToEnd(turn1, gateway1, "p3-where", "pwd && git branch --show-current");
+				const [cwd, branch] = where.output.trim().split("\n");
+				if (where.state !== "succeeded" || cwd !== worktree || branch !== `qorpera/coding/${workerId}`)
+					fail(`turn 1's commands do not start in its worktree ${worktree}: ${JSON.stringify(where)}`);
+				pass(`turn 1's commands start in its worktree in the company's code area, ${cwd}, on ${branch} (${elapsed()})`);
+			}
+			const edited = await runToEnd(turn1, gateway1, "p3-edit", EDIT);
+			const [cloned, committed] = edited.output.trim().split("\n").slice(-2);
+			if (edited.state !== "succeeded" || cloned !== node.baseSha || !/^[0-9a-f]{40}$/.test(committed ?? ""))
+				fail(`turn 1's edit and commit in its workspace: ${JSON.stringify(edited)}`);
+			head = committed;
+			pass(`turn 1's workspace is ${node.codeHost ? "its worktree" : "the executor's clone"} of qorpera-p3/proof at ${cloned}; ` +
+				`an edit is committed as ${head} (${elapsed()})`);
+			await database.finishTurn(db, turn1, { operationKey: "p3-turn-1", summary: "Started a command that keeps printing; committed an edit.", headSha: head });
+			await executor.turnSettled();
+			let pushed = published(workerId);
+			for (let waited = 0; (pushed.sha !== head || !pushed.pull) && waited < 60000; waited += 2000, pushed = published(workerId))
+				await new Promise((settle) => setTimeout(settle, 2000));
+			if (pushed.sha !== head || pushed.pull?.draft !== true || pushed.pull.head.sha !== head)
+				fail(`turn 1's end did not push its commit and open a draft pull request: ${JSON.stringify(pushed)}`);
+			pass(`turn 1 ended: the throwaway repository has its commit on ${pushed.branch}, and a draft pull request ` +
+				`${pushed.pull.html_url}; the session stands by (${elapsed()})`);
+			if (node.codeHost) {
+				// The commit is the company's too: a code host job of its own (as a session's attach runs one) finds it in
+				// the code area's repository, whose main is the base the area was seeded at.
+				const area = await executor.inspect({ companyId: ids.profileId, environmentId: ids.environmentId, repository, commit: head });
+				if (area.holds !== true || area.ready !== true || area.base !== node.baseSha)
+					fail(`the company's code area does not hold turn 1's commit: ${JSON.stringify(area)}`);
+				pass(`the company's code area holds turn 1's commit ${head}, its main at ${area.base}: ${JSON.stringify(area)} (${elapsed()})`);
+			}
+		}
 
 		// --- Turn 2: the same session reads turn 1's command -------------------------------------------------------------
 		await database.followUp(db, ids, { workerId, text: "P3 proof: read the command you started." });
@@ -154,6 +263,8 @@ try {
 		// --- Order 9: the machine sleeps after 10 idle minutes, and the next turn says what stopped ------------------------
 		const machine = await order9.machineOf(db, workerId);
 		await order9.awaitRunning(db, workerId, sleeper2.commandId, 60000);
+		const idle2 = await order9.awaitIdle(db, workerId, machine);
+		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 2 finds the session and its machine idle: ${JSON.stringify(idle2)} (${elapsed()})`);
 		await order9.idleTenMinutes(db, machine);
 		const slept = await order9.awaitDetached(db, workerId, machine, "SLEEP", 5 * 60000);
 		const state = guestState(machine);
@@ -178,6 +289,8 @@ try {
 		await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
 		const settled = await database.settleParent(db, ids, { workerId });
 		note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
+		const idle3 = await order9.awaitIdle(db, workerId, machine);
+		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
 		const quiet = await order9.quietDay(db, workerId);
 		note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
 		if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
@@ -206,10 +319,12 @@ try {
 		await executor.turnSettled();
 		console.error(JSON.stringify(await database.describe(db, ids)));
 		pass(`turn 4 ended (${elapsed()})`);
+		if (node.folder) pass(`the session's folder view mounts, worker and view: ${mounted().join(" ")}`);
 	} finally {
 		clearInterval(refreshing);
 	}
 	await executor.stop();
+	if (postgrest) pass(`the folder service's calls on its core: ${postgrest.summary()}`);
 	console.log("SESSION PROVEN");
 } catch (error) {
 	if (stopping) await stopping;
@@ -218,6 +333,7 @@ try {
 	process.exitCode = 1;
 } finally {
 	await executor?.stop().catch(() => undefined);
+	postgrest?.stop();
 	await db.close();
 }
 
@@ -316,6 +432,7 @@ function startExecutor() {
 		"--unit=p3-coding-executor", ...executorSandbox(),
 		"/usr/local/bin/node", "-e", 'import("/opt/p3/p3-executor.mjs")'], { stdio: ["pipe", "pipe", "pipe"] });
 	const httpPending = new Map();
+	const inspectPending = new Map();
 	let nextHttp = 0;
 	let readyResolve;
 	let readyReject;
@@ -330,25 +447,37 @@ function startExecutor() {
 	const exit = new Promise((settle) => child.on("close", (code) => {
 		exited = true;
 		readyReject(new Error(`the executor exited (${code}) before it was ready`));
-		for (const pending of httpPending.values()) pending.reject(new Error("the executor exited"));
+		for (const pending of [...httpPending.values(), ...inspectPending.values()]) pending.reject(new Error("the executor exited"));
 		settle(code);
 	}));
 	const send = (value) => {
 		if (!exited) child.stdin.write(`${JSON.stringify(value)}\n`);
 	};
-	createInterface({ input: child.stderr }).on("line", (line) => console.error(`executor: ${line}`));
+	// The folder model's own lines: the executor's start (its two pins) and each view it mounts.
+	const folderLines = { start: null, mounts: [] };
+	createInterface({ input: child.stderr }).on("line", (line) => {
+		console.error(`executor: ${line}`);
+		let logged;
+		try {
+			logged = JSON.parse(line);
+		} catch {
+			return;
+		}
+		if (logged?.event === "coding-executor-folder") folderLines.start = line;
+		else if (logged?.event === "coding-folder-mount") folderLines.mounts.push(line);
+	});
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.startsWith("P3 ")) return void console.error(`executor stdout: ${line}`);
 		const message = JSON.parse(line.slice(3));
-		if (message.t === "rpc")
-			void database.rpc(db, message.method, message.args).then(
-				(result) => send({ t: "rpc", id: message.id, ok: true, result }),
-				(error) => {
-					note(`rpc ${message.method} failed: ${error.sqlState ?? "-"} ${String(error.message).slice(0, 300)}`);
-					send({ t: "rpc", id: message.id, ok: false, sqlState: error.sqlState ?? null });
-				},
-			);
-		else if (message.t === "http") {
+		// The executor's control (production's, ../control.ts) asks as it would ask PostgREST, and is answered as the
+		// folder service is: the status and body tell it a busy row and a refusal apart.
+		if (message.t === "rest") {
+			const name = message.path.split("?")[0].replace(/^\/rest\/v1\/rpc\//, "");
+			void timed("rpc", name, restAnswer(message.method, message.path, message.body)).then((answer) => {
+				if (answer.status !== 200) note(`rpc ${name} answered ${answer.status}: ${answer.body.slice(0, 300)}`);
+				send({ t: "rest", id: message.id, status: answer.status, body: answer.body });
+			});
+		} else if (message.t === "http") {
 			const pending = httpPending.get(message.id);
 			httpPending.delete(message.id);
 			if (message.status === 0) pending?.reject(new Error(`the command service is unreachable: ${message.error?.join(" <- ")}`));
@@ -356,6 +485,11 @@ function startExecutor() {
 				if (message.status !== 200) note(`command service answered ${message.status}: ${message.body.slice(0, 300)}`);
 				pending?.resolve(new Response(message.body, { status: message.status, headers: { "content-type": "application/json" } }));
 			}
+		} else if (message.t === "inspect") {
+			const pending = inspectPending.get(message.id);
+			inspectPending.delete(message.id);
+			if (message.ok) pending?.resolve(message.state);
+			else pending?.reject(new Error(`the code host job failed: ${message.error?.join(" <- ")}`));
 		} else if (message.t === "ready") readyResolve();
 		else if (message.t === "exit") {
 			note(`executor: ${line.slice(3)}`);
@@ -371,12 +505,21 @@ function startExecutor() {
 	});
 	return {
 		ready,
+		folderLines,
 		http(url, init) {
 			const id = ++nextHttp;
 			const path = new URL(url).pathname;
 			return new Promise((resolveHttp, rejectHttp) => {
 				httpPending.set(id, { resolve: resolveHttp, reject: rejectHttp });
 				send({ t: "http", id, path, headers: init.headers, body: init.body });
+			});
+		},
+		/** The company's code area for a repository, from a code host job the executor runs (p3-executor.ts's "inspect"). */
+		inspect({ companyId, environmentId, repository, commit }) {
+			const id = ++nextHttp;
+			return new Promise((resolveInspect, rejectInspect) => {
+				inspectPending.set(id, { resolve: resolveInspect, reject: rejectInspect });
+				send({ t: "inspect", id, companyId, environmentId, repository, commit });
 			});
 		},
 		turnSettled(timeoutMs = 10 * 60000) {
@@ -392,18 +535,126 @@ function startExecutor() {
 		async stop() {
 			if (exited) return;
 			send({ t: "stop" });
-			const timer = setTimeout(() => child.kill("SIGTERM"), 120000);
+			// The child's SIGTERM need not reach the unit (lxc exec, then systemd-run --wait; run 9 hung 15 min on an
+			// executor that had said it exits): stop the unit itself too, and kill the child if even that does not end it.
+			const timer = setTimeout(() => {
+				child.kill("SIGTERM");
+				try {
+					lxc("exec", vm, "--", "systemctl", "stop", "p3-coding-executor");
+				} catch (error) {
+					note(`stopping p3-coding-executor failed: ${String(error.stderr ?? error.message).slice(0, 300)}`);
+				}
+			}, 120000);
+			const killer = setTimeout(() => child.kill("SIGKILL"), 240000);
 			await exit;
 			clearTimeout(timer);
+			clearTimeout(killer);
 		},
 	};
+}
+
+/** The stand-in PostgREST in the node (test/p3-postgrest.mjs): each request the folder service makes of its core runs
+ * here on the test database, as PostgREST would run it on the service key. */
+function startPostgrest() {
+	const child = spawn("lxc", ["--project", project, "exec", vm, "--force-noninteractive", "--", "/usr/local/bin/node",
+		"/root/push/coding-worker/test/p3-postgrest.mjs", "127.0.0.2", "/etc/p3-github/supabase.crt", "/etc/p3-github/supabase.key"],
+		{ stdio: ["pipe", "pipe", "pipe"] });
+	const calls = new Map();
+	let readyResolve;
+	let readyReject;
+	const ready = new Promise((resolveReady, rejectReady) => {
+		readyResolve = resolveReady;
+		readyReject = rejectReady;
+	});
+	let exited = false;
+	child.on("close", (code) => {
+		exited = true;
+		readyReject(new Error(`the stand-in PostgREST exited (${code}) before it was ready`));
+	});
+	createInterface({ input: child.stderr }).on("line", (line) => console.error(`postgrest: ${line}`));
+	createInterface({ input: child.stdout }).on("line", (line) => {
+		if (!line.startsWith("P3 ")) return void console.error(`postgrest stdout: ${line}`);
+		const message = JSON.parse(line.slice(3));
+		if (message.t === "ready") return readyResolve();
+		if (message.t !== "rest") return note(`postgrest: ${line.slice(3)}`);
+		void timed("core", `${message.method} ${message.path.split("?")[0]}`, restAnswer(message.method, message.path, message.body)).then((answer) => {
+			const name = answer.name ?? `${message.method} ${message.path.split("?")[0]}`;
+			const counted = calls.get(name) ?? { ok: 0, refused: 0 };
+			counted[answer.status < 300 ? "ok" : "refused"] += 1;
+			calls.set(name, counted);
+			if (answer.status >= 300) note(`core ${name} answered ${answer.status}: ${answer.body.slice(0, 300)}`);
+			else if (CORE_LOGGED.test(name))
+				note(`core ${name} asked ${(message.body ?? "").slice(0, 600)} answered ${answer.status}: ${answer.body.slice(0, 1500)}`);
+			if (!exited) child.stdin.write(`${JSON.stringify({ id: message.id, status: answer.status, body: answer.body })}\n`);
+		});
+	});
+	return {
+		ready,
+		summary: () => [...calls].map(([name, { ok, refused }]) => `${name} ${ok}${refused ? ` (+${refused} refused)` : ""}`).join(", ") || "none",
+		stop() {
+			if (exited) return;
+			child.stdin.end();
+			setTimeout(() => exited || child.kill("SIGTERM"), 5000).unref();
+		},
+	};
+}
+
+/** One PostgREST request, of the node's folder service or the executor's control: an RPC, or the clocks the folder
+ * service polls (core.ts `clocks`). Errors as PostgREST answers them (p3-postgrest-errors.mjs): its status, the
+ * SQLSTATE as `code`, the message as raised. */
+async function restAnswer(method, path, body) {
+	const url = new URL(path, "https://p3-supabase.test");
+	const rpc = /^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]{1,120})$/.exec(url.pathname);
+	try {
+		if (method === "POST" && rpc)
+			return { name: rpc[1], status: 200, body: JSON.stringify(await database.rpc(db, rpc[1], body ? JSON.parse(body) : {})) };
+		const ids = /^in\.\(([0-9a-f,-]*)\)$/.exec(url.searchParams.get("environment_id") ?? "")?.[1].split(",");
+		if (method === "GET" && url.pathname === "/rest/v1/qorpera_folder_clocks" && url.searchParams.get("select") === "environment_id,last_seq" &&
+			[...url.searchParams.keys()].length === 2 && ids?.every((id) => UUID.test(id))) {
+			const marker = `@@clocks${randomBytes(6).toString("hex")}@@`;
+			const [rows] = await db.marked(`begin;\nset local role service_role;\nselect ${database.quote(marker)} ||
+				coalesce(jsonb_agg(jsonb_build_object('environment_id', environment_id, 'last_seq', last_seq)), '[]'::jsonb)::text
+				from public.qorpera_folder_clocks where environment_id = any(${database.quote(`{${ids.join(",")}}`)}::uuid[]);\ncommit;`, marker);
+			return { name: "clocks", status: 200, body: JSON.stringify(rows) };
+		}
+		return { status: 404, body: JSON.stringify({ code: "PGRST125", message: "Invalid path specified in request URL", details: null, hint: null }) };
+	} catch (error) {
+		return { name: rpc?.[1], ...postgrestError(error) };
+	}
+}
+
+/** Times one call (calls): one that takes 5 s or more, or has no answer after 10 s, is noted at once. */
+function timed(kind, name, answer) {
+	const begun = performance.now();
+	const call = `${elapsed()} ${kind} ${name}`;
+	calls.pending.add(call);
+	const waiting = setTimeout(() => note(`${call}: no answer after 10 s`), 10000);
+	waiting.unref();
+	const done = (outcome) => {
+		clearTimeout(waiting);
+		calls.pending.delete(call);
+		const ms = Math.round(performance.now() - begun);
+		calls.recent.push(`${call} ${outcome} ${ms} ms`);
+		if (calls.recent.length > 60) calls.recent.shift();
+		if (ms >= 5000) note(`${call}: ${outcome} after ${ms} ms`);
+	};
+	return answer.then(
+		(value) => {
+			done("answered");
+			return value;
+		},
+		(error) => {
+			done("failed");
+			throw error;
+		},
+	);
 }
 
 /** Ends a run that can no longer pass, at once: diagnoses it, stops the executor and exits. */
 function stopRun(reason) {
 	stopping ??= (async () => {
 		try {
-			console.error(`FAIL: ${reason}`);
+			console.error(`FAIL: ${reason} (${elapsed()})`);
 			await diagnose();
 		} finally {
 			await executor?.stop().catch(() => undefined);
@@ -423,6 +674,10 @@ async function diagnose() {
 		["the coding machines' journals", ["exec", vm, "--", "bash", "-c", JOURNALS]],
 		["LXD's operations", ["exec", vm, "--", "lxc", "operation", "list", "--all-projects", "-f", "compact"]],
 		["LXD's warnings and errors", ["exec", vm, "--", "bash", "-c", "journalctl -u snap.lxd.daemon --no-pager -o cat | grep -E 'level=(warning|error)' | tail -n 30"]],
+		...(node.folder ? [["the folder service's journal", ["exec", vm, "--", "journalctl", "-u", "qorpera-folder-service", "-u",
+			"qorpera-folder-bridge", "-u", "p3-objects", "-n", "80", "--no-pager"]]] : []),
+		...(node.folder ? [["the node's vsock sockets and modules", ["exec", vm, "--", "bash", "-c", "ss -a --vsock 2>&1 | head -n 30; lsmod | grep -E 'vsock|fuse' || true"]]] : []),
+		...(node.folder ? [["the bridge's view of LXD", ["exec", vm, "--", "bash", "-c", BRIDGE_LOOK]]] : []),
 	]) {
 		try {
 			console.error(`--- ${title}\n${lxc(...args)}`);
@@ -430,11 +685,42 @@ async function diagnose() {
 			console.error(`--- ${title}: ${error.stderr ?? error.message}`);
 		}
 	}
+	if (postgrest) console.error(`--- the folder service's calls on its core: ${postgrest.summary()}`);
+	console.error(`--- the last control and core calls (begun, kind, name, outcome, time)\n${calls.recent.join("\n")}`);
+	if (calls.pending.size) console.error(`--- calls with no answer: ${[...calls.pending].join(", ")}`);
 	try {
 		const machines = lxc("exec", vm, "--", "lxc", "list", "-c", "n", "-f", "csv").trim().split("\n").filter(Boolean);
-		for (const machine of machines)
-			console.error(`--- console of ${machine}\n${lxc("exec", vm, "--", "lxc", "console", machine, "--show-log").split("\n").slice(-40).join("\n")}`);
-	} catch {}
+		for (const machine of machines) {
+			for (const [title, args] of [
+				[`console of ${machine}`, ["timeout", "30", "lxc", "console", machine, "--show-log"]],
+				[`inside ${machine}`, ["timeout", "90", "lxc", "exec", machine, "--", "bash", "-c", GUEST_LOOK]],
+			]) {
+				try {
+					console.error(`--- ${title}\n${lxc("exec", vm, "--", ...args).split("\n").slice(-150).join("\n")}`);
+				} catch (error) {
+					console.error(`--- ${title}: ${error.stderr ?? error.message}`);
+				}
+			}
+		}
+	} catch (error) {
+		console.error(`--- the node's machines: ${error.stderr ?? error.message}`);
+	}
+	if (node.codeHost) {
+		try {
+			const hosts = JSON.parse(lxc("exec", vm, "--", "lxc", "list", "--all-projects", "-f", "json"))
+				.filter(instance => /^qorpera-codehost-[0-9a-f]{32}$/.test(instance.project));
+			for (const host of hosts) {
+				try {
+					const look = lxc("exec", vm, "--", "timeout", "90", "lxc", "exec", "--project", host.project, host.name, "--", "bash", "-c", CODE_HOST_LOOK);
+					console.error(`--- inside ${host.project}/${host.name}\n${look.split("\n").slice(-180).join("\n")}`);
+				} catch (error) {
+					console.error(`--- inside ${host.project}/${host.name}: ${error.stderr ?? error.message}`);
+				}
+			}
+		} catch (error) {
+			console.error(`--- the node's code hosts: ${error.stderr ?? error.message}`);
+		}
+	}
 	try {
 		console.error(`--- the database\n${JSON.stringify(await database.describe(db), null, 1)}`);
 	} catch (error) {

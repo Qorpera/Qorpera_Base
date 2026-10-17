@@ -345,7 +345,7 @@ async function fixture(
 				};
 			}
 			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
-			// The run's work log: a company off the memory tree's list keeps none yet (20260930352000).
+			// The run's work log: a run in Agent notebooks keeps none (20260930508000).
 			if (method === "qorpera_memory_run_log_place") {
 				expect(args).toEqual({ p_environment_id: f.authority.identity.environmentId, p_run_id: f.binding.runId });
 				return { off: true };
@@ -1432,7 +1432,8 @@ it("refuses a call to a page tool the scope reset took out, without an effect, a
 		content: expect.objectContaining({ text: "TOOL_UNAVAILABLE" }),
 	});
 	expect(refusals).toEqual([refusal, refusal]);
-	// Neither name is the catalog's any more: no review, no work log, no effect; each is observed as an unknown tool.
+	// Neither name is the catalog's any more: no review, no tool-operation receipt, no effect; each is observed as an
+	// unknown tool.
 	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
 	const refused = f.observations.filter((row) => row.operation === "unknown_tool" && row.phase === "finish");

@@ -54,6 +54,46 @@ export class CodingControlRefused extends Error {
 		this.reason = reason;
 	}
 }
+/** What carries one of a session's secret values in a publication (F3 5j-5 b): a commit by its short id, a file
+ * or a folder's names by the path the push reached it at ("" for the top folder), or the pull request's title or
+ * summary. The id and the path went through the mask, and are null when what is left is not plain text. */
+export type CodingPushCarrier =
+	| { readonly kind: "commit"; readonly sha: string | null }
+	| { readonly kind: "file" | "folder"; readonly path: string | null }
+	| { readonly kind: "pull-request" };
+/** The broker sent nothing (F3 5j-5 b): the publication carries one of the session's secret values
+ * (`CODING_PUSH_CARRIES_SECRET`, with what carries it), or it could not be checked whole (`CODING_PUSH_UNCHECKED`).
+ * Neither names or holds the value. */
+export class CodingPushRefused extends Error {
+	readonly carrier: CodingPushCarrier | null;
+	constructor(carrier: CodingPushCarrier | null) {
+		super(carrier ? "CODING_PUSH_CARRIES_SECRET" : "CODING_PUSH_UNCHECKED");
+		this.carrier = carrier;
+	}
+}
+/** The reason a refused publication's turn fails with, for the model and the member: what to change, never the value. */
+function pushRefusal(refused: CodingPushRefused): string {
+	const carrier = refused.carrier;
+	if (!carrier)
+		return "The push was refused: it could not be checked whole for the session's secret values, most likely because it is too large. Publish a smaller change and finish again.";
+	if (carrier.kind === "pull-request")
+		return "The push was refused: the pull request's title or summary carries one of the session's secret values. Write it without the value and finish again.";
+	const where =
+		carrier.kind === "commit"
+			? carrier.sha === null
+				? "a commit"
+				: `the commit ${carrier.sha}`
+			: carrier.kind === "file"
+				? carrier.path === null
+					? "a file"
+					: `the file "${carrier.path}"`
+				: carrier.path === null
+					? "a file or folder name"
+					: carrier.path === ""
+						? "a file or folder name at the top of the repository"
+						: `a file or folder name in "${carrier.path}"`;
+	return `The push was refused: ${where} carries one of the session's secret values. Remove it from the history and finish again.`;
+}
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -524,7 +564,17 @@ export class CloudCodingExecutor {
 			const submission = turn.submission;
 			if (submission?.kind === "finish" && turn.jobStatus === "completed") {
 				await progress({ p_phase: "publishing", p_last_step: "Publishing the draft pull request" });
-				const publication = await this.#host.publish(claimed, submission, active);
+				let publication: CodingExecutorPublication;
+				try {
+					publication = await this.#host.publish(claimed, submission, active);
+				} catch (error) {
+					if (!(error instanceof CodingPushRefused) || active.aborted) throw error;
+					// Nothing went out, and the same work would be refused again: the turn fails with what to change, and the
+					// session's next turn can finish again.
+					end();
+					await complete("failed", pushRefusal(error));
+					return "failed";
+				}
 				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");
 				end();
 				await complete("succeeded", submission.summary, {

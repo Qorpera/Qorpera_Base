@@ -579,6 +579,8 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("call coding_ask again");
 		expect(instructions).toContain("MACHINE_STOPPED: the machine stopped from outside");
 		expect(instructions).toContain("FOLDER_RESTART: the machine restarted because the company folder");
+		expect(instructions).toContain("MACHINE_NEW_DISK: the machine got a new disk");
+		expect(instructions).toContain("a new disk keeps only /company, which holds the repository");
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",
@@ -690,8 +692,10 @@ describe("the coding composition of a native turn", () => {
 			[3, "ask", "failed"],
 		]);
 		expect(context.earlierTurns[1].outcome?.needs).toBe("Keep 250 ms, or raise to 500 ms?");
+		// It predates machine (20260930515000): no new disk.
+		expect(context.machine).toEqual({ newDisk: false });
 	});
-	it("takes a command the machine's stop from outside or its restart for the folder ended, and refuses a reason it does not know", () => {
+	it("takes a command the machine's stop from outside, its restart for the folder or its new disk ended, and refuses a reason it does not know", () => {
 		const workerId = randomUUID(),
 			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
 		const stopped = { commandId: randomUUID(), turn: 1, command: "npm run dev", reason: "MACHINE_STOPPED" };
@@ -710,9 +714,75 @@ describe("the coding composition of a native turn", () => {
 		expect(
 			parseCloudCodingTurnContext(context("FOLDER_RESTART"), { workerId, sequence: 2 }, repository).commands,
 		).toEqual({ running: [], stopped: [{ ...stopped, reason: "FOLDER_RESTART" }], omitted: 0 });
+		expect(
+			parseCloudCodingTurnContext(context("MACHINE_NEW_DISK"), { workerId, sequence: 2 }, repository).commands,
+		).toEqual({ running: [], stopped: [{ ...stopped, reason: "MACHINE_NEW_DISK" }], omitted: 0 });
 		expect(() => parseCloudCodingTurnContext(context("UNPLUGGED"), { workerId, sequence: 2 }, repository)).toThrow(
 			/^CODING_TURN_CONTEXT_INVALID$/,
 		);
+	});
+	it("reads whether the machine got a new disk, a context that does not say as no, and refuses any other shape of it", () => {
+		const workerId = randomUUID(),
+			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
+		const context = {
+			schema: "qorpera.coding-turn-context/v2",
+			workerId,
+			sequence: 2,
+			input: { from: "agent", text: "Go on.", answers: null },
+			earlierTurns: [],
+			omittedEarlierTurns: 1,
+			commands: { running: [], stopped: [], omitted: 0 },
+		};
+		const machine = (value: unknown) =>
+			parseCloudCodingTurnContext(value, { workerId, sequence: 2 }, repository).machine;
+		// A kernel from before 20260930515000 does not say.
+		expect(machine(context)).toEqual({ newDisk: false });
+		expect(machine({ ...context, machine: { newDisk: false } })).toEqual({ newDisk: false });
+		expect(machine({ ...context, machine: { newDisk: true } })).toEqual({ newDisk: true });
+		for (const drift of [
+			{ newDisk: true, since: "2026-10-17T20:00:00Z" },
+			{ newDisk: "yes" },
+			{ newDisk: 1 },
+			{ newDisk: null },
+			{},
+			null,
+			[],
+			true,
+		])
+			expect(() => machine({ ...context, machine: drift })).toThrow(/^CODING_TURN_CONTEXT_INVALID$/);
+	});
+	it("tells the agent of a new disk only on a turn whose context says so", async () => {
+		for (const said of [undefined, { newDisk: false }, { newDisk: true }]) {
+			const f = fixture();
+			// Turn 2: the kernel never says it on a first turn.
+			Object.assign(f.coding, { sequence: 2 });
+			const wake = structuredClone(f.turn.wake) as unknown as { payload: { sequence: number } };
+			wake.payload.sequence = 2;
+			f.turnContext.earlierTurns = [
+				{ sequence: 1, input: { from: "dispatch", text: null }, submitted: null, outcome: null },
+			];
+			f.turnContext.input = { from: "member", text: "Go on.", answers: null };
+			if (said) Object.assign(f.turnContext, { machine: said });
+			let prompt = "";
+			let instructions = "";
+			vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+				prompt = options.prompt ?? "";
+				instructions = options.runtimeInstructions ?? "";
+				throw new Error("stop after composing");
+			});
+			await expect(
+				f.runtime.execute(f.request, "/private", f.context.signal, {
+					...f.turn,
+					wake: wake as unknown as CloudWakeEnvelope,
+				}),
+			).rejects.toThrow("stop after composing");
+			const newDisk = said?.newDisk ?? false;
+			// The prompt carries it, so it counts in the context's hash.
+			expect((JSON.parse(prompt) as { machine: unknown }).machine).toEqual({ newDisk });
+			expect(instructions.split("machine.newDisk is true").length - 1).toBe(newDisk ? 1 : 0);
+			if (newDisk) expect(instructions).toContain("Only /company was kept");
+			expect(instructions).toContain("MACHINE_NEW_DISK: the machine got a new disk");
+		}
 	});
 	it("keeps the newest earlier turns when the whole history does not fit the prompt", async () => {
 		const f = fixture();

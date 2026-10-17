@@ -11,7 +11,7 @@
  * (app/interface-mail.ts), and its tables and files that hold no outside content, read from its folder
  * (app/interface-folder.ts). */
 
-import { INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
+import { AREAS_TABLE, INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
 	type InterfaceBlock,
 	type InterfaceBoardPart,
@@ -20,6 +20,7 @@ import {
 	type InterfaceQuery,
 	interfaceOutsideColumns,
 	parseInterfaceFile,
+	parseTableFile,
 	type TableFile,
 	type TableRow,
 	tableRowKey,
@@ -101,14 +102,43 @@ export function rowHasCard(source: string, row: TableRow): boolean {
 	return source === "waiting" && typeof row.kind === "string" && CARD_KINDS.has(row.kind);
 }
 
+/** The sources the shipped pages never draw: Members' cards (Interfaces C6d). A company's folder keeps its cards
+ * table and the library still seeds it; the page just doesn't read it. */
+const HIDDEN_SOURCES: ReadonlySet<string> = new Set(["table:cards"]);
+
+/** `file` without what reads a hidden source: a block from one, a board part from one, and a lookup column that looks
+ * one up. */
+function withoutHiddenSources(file: InterfaceFile): InterfaceFile {
+	const hidden = (source: string) => HIDDEN_SOURCES.has(source);
+	return {
+		...file,
+		views: file.views.map((view) => ({
+			...view,
+			blocks: view.blocks
+				.filter((block) => !block.from.some(hidden))
+				.map((block) => {
+					const lookups = Object.entries(block.lookups);
+					const dropped = new Set(lookups.flatMap(([column, lookup]) => (hidden(lookup.from) ? [column] : [])));
+					return {
+						...block,
+						parts: block.parts.filter((part) => !hidden(part.from)),
+						columns: block.columns.filter((column) => !dropped.has(column)),
+						lookups: Object.fromEntries(lookups.filter(([column]) => !dropped.has(column))),
+					};
+				}),
+		})),
+	};
+}
+
 let shipped: readonly CompanyInterface[] | undefined;
-/** The definitions the web ships for the two pages, parsed once; the library's others (Pulse) are not among them. A
- * definition that doesn't parse is a bug in the library; it is left out rather than drawn wrong. */
+/** The definitions the web ships for the two pages, parsed once, without what reads a hidden source; the library's
+ * others (Pulse) are not among them. A definition that doesn't parse is a bug in the library; it is left out rather
+ * than drawn wrong. */
 function shippedInterfaces(): readonly CompanyInterface[] {
 	shipped ??= INTERFACE_LIBRARY.flatMap((entry) => {
 		if (!(INTERFACE_PAGES as readonly string[]).includes(entry.name)) return [];
 		const parsed = parseInterfaceFile(entry.interface);
-		return parsed.ok ? [{ name: entry.name, file: parsed.file }] : [];
+		return parsed.ok ? [{ name: entry.name, file: withoutHiddenSources(parsed.file) }] : [];
 	});
 	return shipped;
 }
@@ -132,9 +162,23 @@ export function isLiveSource(source: string): boolean {
 	return Object.hasOwn(LIVE_SOURCES, source) || isMailSource(source) || isFolderSource(source);
 }
 
+let noAreas: FolderTable | undefined;
+/** A table source as the folder was last read. A company whose folder has no `tables/areas/` yet reads it as the
+ * library's table with no rows (Interfaces C6d): the Members page draws its board empty, and the first area a member
+ * adds writes the table (app/interface-areas.ts). */
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
 	if (!source.startsWith("table:")) return undefined;
-	return company.store.get().interfaceFolder?.tables.get(source.slice("table:".length));
+	const name = source.slice("table:".length);
+	const folder = company.store.get().interfaceFolder;
+	const read = folder?.tables.get(name);
+	if (read || !folder || name !== "areas") return read;
+	if (noAreas === undefined) {
+		const parsed = parseTableFile(AREAS_TABLE);
+		noAreas = parsed.ok
+			? { table: parsed.file, rows: [], problems: [], readable: true }
+			: { table: null, rows: [], problems: [], readable: false };
+	}
+	return noAreas;
 }
 
 /** A table source's definition as last read from the folder, or null. */
@@ -420,6 +464,34 @@ export function memberMayWriteRows(company: CompanyController, table: TableFile)
 	return table.write.members === "all" || (table.write.members === "owners" && ownerOrAdmin(company));
 }
 
+/** The ids of the company's members now, or undefined until they are read. */
+export function memberIds(company: CompanyController): ReadonlySet<string> | undefined {
+	const members = company.store.get().team?.members;
+	return members && new Set(members.map((member) => member.userId));
+}
+
+/** Whether a member cell's value names someone who is no longer a member of the company (Interfaces C6d). Nothing
+ * clears such a cell: it counts as empty for the members who stay, who take or offer it as an empty one. False for an
+ * empty cell, and while the members are not read. */
+export function namesLeaver(company: CompanyController, value: unknown): boolean {
+	return typeof value === "string" && value !== "" && memberIds(company)?.has(value) === false;
+}
+
+/** How a page names someone who left: by the name presence still knows, else as "Someone who left". */
+export function leaverName(company: CompanyController, id: string): string {
+	const name = company.store.get().here?.find((present) => present.userId === id)?.name;
+	return name ? t("{name} (left)", { name }) : t("Someone who left");
+}
+
+/** The open offers a page draws (step I9c): those a current member made. One from someone who left is not listed
+ * (Interfaces C6d): the cell it offers counts as empty, so any member takes or offers it themselves. None until the
+ * members are read. */
+export function memberOffers(company: CompanyController): readonly MemberInterfaceOffer[] | undefined {
+	const offers = company.store.get().interfaceOffers?.offers;
+	const members = memberIds(company);
+	return offers?.filter((offer) => members?.has(offer.from) === true);
+}
+
 /** Whether `[access] members` lets this member see the page. It only narrows: the data is read with the
  * member's own rights either way. "owners" means owners and admins, as for `edit`. */
 function memberMaySee(file: InterfaceFile, company: CompanyController): boolean {
@@ -528,7 +600,7 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 			});
 		}
 		// A cell another member offers this one (step I9c), answered on the row itself: its offer is the row's id.
-		for (const offer of state.interfaceOffers?.offers ?? []) {
+		for (const offer of memberOffers(company) ?? []) {
 			const offered = offer.to === company.userId ? offeredRow(company, offer) : undefined;
 			if (!offered) continue;
 			const { definition, row } = offered;

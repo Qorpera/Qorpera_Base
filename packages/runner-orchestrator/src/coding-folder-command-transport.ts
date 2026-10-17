@@ -736,6 +736,9 @@ export class LxdCodingFolderCommandTransport {
 						},
 						budget,
 					);
+					// Only now does this start's environment mask the command's output. A start whose answer was lost, or
+					// that the guest refused, may run with an earlier start's environment.
+					this.#secrets.accepted(this.#secretRequest(input.commandId));
 				} catch (error) {
 					// The guest has the command with another environment, such as a secret's earlier value: it is this one.
 					if (!(error instanceof CodingGuestRefused && error.code === "CODING_GUEST_COMMAND_CONFLICT"))
@@ -887,32 +890,41 @@ export class LxdCodingFolderCommandTransport {
 		// reads are left unproven).
 		if (!(await this.#released(budget, signal)))
 			return { progress: await this.#note(folder, progress, { acknowledged: true, end }), shown: "running" };
-		const secrets = await this.#secrets.resolve(this.#secretRequest(commandId), budget);
-		let mask = secrets.mask(),
-			gapBytes = progress.gapBytes;
-		// The pull starts with the bytes the last one's mask held back, so this mask takes over from that one there.
-		mask.resume(progress.masked);
+		const masks = await this.#secrets.output(this.#secretRequest(commandId), budget);
 		// The guest's offset up to which the kept output's last `***` already covers the bytes.
 		const covered = progress.raw + (progress.masked ?? 0);
-		const kept: Uint8Array[] = [];
-		for (const page of pages) {
-			if (page.gap) {
-				// The tail the mask held back may start a secret whose rest was lost: it is lost with the gap, and the
-				// mask starts again after it. Bytes past the gap that the kept `***` already covers stay behind it.
-				gapBytes += mask.pending();
-				mask = secrets.mask();
-				if (covered > page.offset) mask.resume(covered - page.offset);
-			}
-			gapBytes += page.gap;
-			kept.push(mask.push(page.bytes));
-		}
 		const caughtUp = at >= end;
-		let pending = mask.pending(),
+		const kept: Uint8Array[] = [];
+		let gapBytes = progress.gapBytes,
+			pending = 0,
+			masked: number | null = null;
+		if (!masks) {
+			// The values the command runs with are not known here (an executor before this one started it, or the guest
+			// did not take this start): nothing more of its output is kept, and what it printed is counted lost. Past the
+			// limit nothing more is kept anyway.
+			if (!skip) gapBytes += Math.max(0, at - covered);
+		} else {
+			let mask = masks();
+			// The pull starts with the bytes the last one's mask held back, so this mask takes over from that one there.
+			mask.resume(progress.masked);
+			for (const page of pages) {
+				if (page.gap) {
+					// The tail the mask held back may start a secret whose rest was lost: it is lost with the gap, and the
+					// mask starts again after it. Bytes past the gap that the kept `***` already covers stay behind it.
+					gapBytes += mask.pending();
+					mask = masks();
+					if (covered > page.offset) mask.resume(covered - page.offset);
+				}
+				gapBytes += page.gap;
+				kept.push(mask.push(page.bytes));
+			}
+			pending = mask.pending();
 			masked = mask.masked();
-		if (final && caughtUp) {
-			kept.push(mask.end());
-			pending = 0;
-			masked = null;
+			if (final && caughtUp) {
+				kept.push(mask.end());
+				pending = 0;
+				masked = null;
+			}
 		}
 		// Bytes the mask still holds are pulled again next time, with what follows them.
 		const bytes = Buffer.concat(kept),

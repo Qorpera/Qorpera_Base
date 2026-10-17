@@ -2,10 +2,10 @@
 -- "Views and machines"). One member's sessions share a machine only for the same coding agent, repository (GitHub's
 -- names in any case) and setup digest; a session keeps its machine when the setup changes. A turn runs only on a machine
 -- of its session's agent and repository, as the session's own uid; a machine stays while its own sessions are open.
--- A company on the folder, one member, one executor with its node and coding provider, and seven leased sessions:
---   s1 agent a1, acme/app; s2 agent a1, Acme/App; s3 agent a2, acme/app; s4 agent a1, acme/web; s5 to s7 agent a1, acme/app.
+-- A company on the folder, one member, one executor with its node and coding provider, and eight leased sessions:
+--   s1 agent a1, acme/app; s2 agent a1, Acme/App; s3 agent a2, acme/app; s4 agent a1, acme/web; s5 to s8 agent a1, acme/app.
 -- H adds the read set (20260930445000): a turn already leased moves onto a machine with its session and takes in the
--- machine's reads.
+-- machine's reads. I (20260930505000): a read the moved turn can no longer place marks the machine for a new disk.
 begin;
 
 insert into auth.users(id, email) values ('48500000-0000-4000-8000-000000000001', 'coding-identity@example.test');
@@ -47,14 +47,14 @@ select ('48500000-0000-4000-8000-0000000000c' || n)::uuid, '48500000-0000-4000-8
 	('48500000-0000-4000-8000-0000000000a' || case n when 3 then 2 else 1 end)::uuid, extensions.gen_random_uuid(), 'w-485-' || n, 'coding',
 	'Code', 'read', 'each', '{}', '48500000-0000-4000-8000-000000000001', extensions.gen_random_uuid(),
 	'48500000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), 1
-from generate_series(1, 7) n;
+from generate_series(1, 8) n;
 insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, harness, repository, branch, phase, lease_owner,
 	lease_token, lease_until, started_at)
 select ('48500000-0000-4000-8000-0000000000c' || n)::uuid, '48500000-0000-4000-8000-000000000010', '48500000-0000-4000-8000-000000000020',
 	'codex', jsonb_build_object('host', 'github.com', 'owner', case n when 2 then 'Acme' else 'acme' end,
 		'name', case n when 2 then 'App' when 4 then 'web' else 'app' end, 'baseBranch', 'main'),
 	'qorpera/coding/485-' || n, 'preparing', 'exec-485', extensions.gen_random_uuid(), clock_timestamp() + interval '5 minutes', clock_timestamp()
-from generate_series(1, 7) n;
+from generate_series(1, 8) n;
 set local session_replication_role = origin;
 
 create function pg_temp.ok(p_ok boolean, p_message text) returns void language plpgsql as $$
@@ -120,7 +120,7 @@ end $$;
 
 do $$
 declare v_m1 jsonb; v_m2 jsonb; v_m3 jsonb; v_m4 jsonb; v_m5 jsonb; v_again jsonb; v_run1 jsonb; v_run2 jsonb; v_machine public.qorpera_coding_machines%rowtype;
-	v_turn6 uuid; v_turn7 uuid; v_read jsonb; v_take uuid;
+	v_turn6 uuid; v_turn7 uuid; v_turn8 uuid; v_read jsonb; v_take uuid;
 begin
 	-- A. The three-argument plan is gone; the executor's named three still reach the new one. A digest must be one.
 	perform pg_temp.ok(to_regprocedure('public.qorpera_plan_coding_machine(uuid,uuid,text)') is null, 'the three-argument plan went');
@@ -211,6 +211,30 @@ begin
 		and resource_revision = (v_read -> 'authority' ->> 'resourceRevision')::bigint), 'the moved turn has the read''s pair');
 	perform pg_temp.ok(not exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn7)
 		and not exists (select 1 from public.qorpera_folder_run_reads where run_id = v_turn7), 'a turn no longer leased takes in nothing');
+
+	-- I. A read the moved turn can no longer place marks the machine for a new disk (20260930505000). secret/ narrows to a
+	-- resource a1 holds no grant on, and m1's set gains a read of secret/x.md. s8 moves onto m1 with its leased turn: the
+	-- run goes on, the turn takes in nothing (not m1's rules/ read either), and m1 carries both marks.
+	perform public.qorpera_folder_set_resource('48500000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"48500000-0000-4000-8000-000000000001"}', 'secret', 'subtree', 'company_shared', 'normal');
+	select jsonb_build_object('path', 'secret/x.md', 'version', '1', 'authority', jsonb_build_object('resourceId', id,
+		'resourceRevision', authority_revision, 'grantId', null, 'grantRevision', null)) into v_read
+	from public.qorpera_company_path_resources where environment_id = '48500000-0000-4000-8000-000000000020' and path = 'secret';
+	insert into public.qorpera_coding_machine_read_records(coding_machine_id, release_id, environment_id, resource_id, reads, output_sha256)
+	values ((v_m1 ->> 'machineId')::uuid, extensions.gen_random_uuid(), '48500000-0000-4000-8000-000000000020',
+		(v_read -> 'authority' ->> 'resourceId')::uuid, jsonb_build_array(v_read), repeat('3', 64));
+	v_turn8 := pg_temp.turn(8, clock_timestamp() + interval '1 hour');
+	perform pg_temp.ok(v_read -> 'authority' ->> 'resourceId' is not null and not exists (select 1 from public.qorpera_coding_machines
+		where id = (v_m1 ->> 'machineId')::uuid and (new_disk_at is not null or folder_restart_at is not null)),
+		format('secret/ is its own resource and m1 is not marked before: %s', v_read));
+	v_again := pg_temp.run(8, v_m1 ->> 'bindingText');
+	perform pg_temp.ok(v_again ->> 'intent' = 'run', format('s8 moves onto m1 and runs: %s', v_again));
+	perform pg_temp.ok(exists (select 1 from public.qorpera_coding_sessions where worker_id = pg_temp.worker(8)
+		and vm_allocation_id = (v_m1 ->> 'machineId')::uuid), 's8 is on m1');
+	perform pg_temp.ok(exists (select 1 from public.qorpera_coding_machines where id = (v_m1 ->> 'machineId')::uuid
+		and new_disk_at is not null and folder_restart_at is not null), 'm1 is marked for a new disk');
+	perform pg_temp.ok(not exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn8)
+		and not exists (select 1 from public.qorpera_folder_run_reads where run_id = v_turn8), 's8''s turn takes in nothing');
 end $$;
 
 rollback;

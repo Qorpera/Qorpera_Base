@@ -26,6 +26,7 @@ afterEach(async () => {
 
 // A coding session's environment value the kernel releases in these tests (not a real secret).
 const ENVIRONMENT_VALUE = "env-value-HTTP-CANARY-0123";
+const MASKED_VALUE = "env-value-HTTP-OLDER-CANARY-0123";
 
 function fixture(reflectSecret = false) {
 	const identity = {
@@ -51,9 +52,12 @@ function fixture(reflectSecret = false) {
 		expiresAt: "2099-08-29T00:00:00.000Z",
 	};
 	let envelope = new Uint8Array();
-	// The kernel releases one sealed environment secret for one leased coding session (5j-3).
+	// The kernel releases one sealed environment secret for one leased coding session (5j-3), and an
+	// older version of another for the output's mask (5j-4).
 	const authorizeCodingEnvironment = vi.fn(async (request: CodingEnvironmentRequest) => {
 		const sealed = Buffer.from(keyring.seal({ value: ENVIRONMENT_VALUE }, identity));
+		const older = { ...identity, secretId: randomUUID(), version: 3 };
+		const masked = Buffer.from(keyring.seal({ value: MASKED_VALUE }, older));
 		return {
 			schema: "qorpera.coding-environment-authorization/v1",
 			companyId: identity.companyId,
@@ -69,6 +73,17 @@ function fixture(reflectSecret = false) {
 					ownerKind: "member",
 					encryptedEnvelopeBase64: sealed.toString("base64"),
 					envelopeSha256: createHash("sha256").update(sealed).digest("hex"),
+				},
+			],
+			maskSecrets: [
+				{
+					name: "OLD_KEY",
+					secretId: older.secretId,
+					secretVersion: older.version,
+					keyId: older.keyId,
+					ownerKind: "company",
+					encryptedEnvelopeBase64: masked.toString("base64"),
+					envelopeSha256: createHash("sha256").update(masked).digest("hex"),
 				},
 			],
 		};
@@ -420,6 +435,7 @@ it("answers the coding environment only to the executor's token, uncached, and n
 	expect(await released.json()).toEqual({
 		schema: "qorpera.coding-environment/v1",
 		environment: { API_KEY: ENVIRONMENT_VALUE },
+		mask: [MASKED_VALUE],
 	});
 	expect(f.authorizeCodingEnvironment).toHaveBeenCalledTimes(1);
 	expect(f.authorizeCodingEnvironment).toHaveBeenCalledWith(
@@ -444,6 +460,7 @@ it("answers the coding environment only to the executor's token, uncached, and n
 	const text = await refused.text();
 	expect(JSON.parse(text)).toEqual(unavailable);
 	expect(text).not.toContain(ENVIRONMENT_VALUE);
+	expect(text).not.toContain(MASKED_VALUE);
 	// A broker started without the executor's token has no environment route at all.
 	const bare = new HttpCloudSecretBrokerService(f.broker, f.runtimeToken);
 	services.push(bare);

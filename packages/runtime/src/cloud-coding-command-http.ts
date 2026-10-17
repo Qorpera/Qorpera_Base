@@ -364,9 +364,12 @@ export class HttpCloudCodingCommandService {
 						await serveCloudMachineCommand(this.#options.machines, body, machineRoute[1], controller.signal),
 					);
 				} catch (error) {
-					// Only a refusal the agent can act on is told apart, by its fixed code.
+					// Only a refusal the agent can act on is told apart, by its fixed code (and its folder cause, 6e-2a).
 					if (!(error instanceof CloudMachineCommandRefusal)) throw error;
-					replyJson(reply, 409, { code: error.code });
+					replyJson(reply, 409, {
+						code: error.code,
+						...(error.folderLost !== undefined ? { folderLost: error.folderLost } : {}),
+					});
 				}
 				return;
 			}

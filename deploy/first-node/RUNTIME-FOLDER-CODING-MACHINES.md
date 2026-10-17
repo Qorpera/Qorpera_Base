@@ -421,8 +421,24 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      since a restart writes the mark before the boundary answers `released` again; so a call begun before that restart
      keeps nothing of the dropped boot either. A test machine says `restarted` at its first
      boot too, and at each boot after a stop, before SQL hears of the boot; it keeps nothing of a boot before.
-   - **`unreadable`** (a released read the core can no longer place) moves the machine's sessions to a new machine id
-     with a new disk, or archives them; the old disk is removed.
+   - **`unreadable`** (a released read the core can no longer place) gives the machine a new disk, under the same
+     machine id: only `/company` is kept. SQL built (5g-5 part 3, migration `20260930505000`): a take-in refused with
+     "A released read is no longer readable" (a turn's wake read, or run authority moving a session onto the machine)
+     marks the machine for a new disk (`new_disk_at`, always with `folder_restart_at`) and goes on without the
+     machine's reads; every other refusal still raises. The executor marks it with
+     `qorpera_mark_coding_machine_new_disk`. A machine so marked restarts as above, but the restart's record answers
+     `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants
+     `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the executor rebuilds the instance
+     from its binding's image (`imageFingerprint`), and `qorpera_record_coding_machine_new_disk`, named by the
+     rebuild's LXD operation and replayed like the restart's record, detaches any session attached since, empties the
+     machine's read set, clears both marks and answers `replaced`. It refuses a machine not marked for a new disk, so a
+     record with no rebuild behind it never drops reads the old disk still holds. Then the machine starts. A model hears of it only
+     through a stopped command's entry: a session that was not attached gets no event.
+     Since 5g-5 part 3 PR C (migration `20260930515000`) that is not the only way: every session on the machine (its
+     `vm_allocation_id`, which the detach leaves) is also told in its next turn's context, `machine: {newDisk: true}`:
+     true when the machine has a `replaced` record at or after the previous turn's begin (its wake occurrence, or when it
+     opened if it never began), false on a first turn. A rebuild while the previous turn ran is told twice rather than
+     never.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.
 
@@ -432,7 +448,8 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
   job KEY SHARE in id order;
 - every coding commit rechecks it at rank 10, as a run's read set is rechecked today;
 - a turn takes it in at its lease;
-- the executor's disk-replacement call empties it, and that call is refused while a session is attached.
+- the executor's disk-replacement call empties it, and that call is refused while a session is attached;
+- a new disk's record (5g-5 part 3) empties it once it has detached every session.
 
 **Narrow marks (W6).** W6's machine rule assumed "if F3 shares mounts between sessions on one machine, the rule widens
 to every mount on that machine". Step 5 is that case. 5a does `create or replace` on
@@ -552,9 +569,34 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
   values of 8 bytes to 32 KiB as keyed hashes under a key of its own (`secrets` on the control socket), so the service
   never holds a value. Until a machine's first values come, nothing of it is saved. A refused change stays on the
   machine, and the report says why without naming the value;
-- pushes: the broker's push check scans the diff and the commit messages and refuses a push that carries a value.
+- pushes: the broker's push check reads every object the push adds (file contents, file and folder names, each
+  commit with its message) and refuses a push that carries a value.
 
 A program that encodes a value another way gets past the mask; that is why it is best effort.
+
+Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
+starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
+session on the machine. A session's values stay in the masks until the machine's last session is released. When the
+executor does not know the values a command runs with (it restarted after the start, or the guest did not confirm that
+it took this start's environment), none of that command's output is kept: the bytes are counted lost.
+
+An older value, such as a secret's value before it was changed, can still be on the machine (in a process started
+before, a container or a file). So each answer also brings the older values used on this machine by this member
+(migration `20260930514000`): the vault records the machine on each use, and keeps every version sealed until the
+broker opens it. The executor masks them in every session on the machine and never puts them in an environment, also
+after it restarts. The limits:
+
+- a version used before migration `20260930514000` has no machine on its record, and is not masked;
+- a version sealed under an older broker key is skipped;
+- at most the 64 most recently used versions (and 256 KiB of sealed values) come back;
+- a value printed in another encoding is still not masked (best effort, as above);
+- a removed secret is not masked any more (a member's own secrets are removed when the member leaves).
+
+Changing a secret in the vault does not take its old value off the machine: revoke the old value where it was issued.
+Since 5j-5 (b), a publication is checked against the values the masks cover, the older values included, and the
+session's environment asked again at publish: a push, or a pull request title or summary, that carries one is
+refused, and so is a push that can't be checked whole (too big, or Git failed while reading it). The save check is
+5j-5 (a).
 
 **The vault relay** (5j) is host-side, on a second vsock port that checks the caller's CID, on the platform road
 (agent exit §2: "the platform's own services keep the platform road, even when they act for an agent"). It does two

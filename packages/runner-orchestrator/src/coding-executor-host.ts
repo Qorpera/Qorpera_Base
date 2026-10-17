@@ -16,6 +16,11 @@ import {
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
 import type { AgentPlug } from "./agent-plug.ts";
+import {
+	type CodingCommandSecrets,
+	type CodingEnvironmentSource,
+	CodingMachineCommandSecrets,
+} from "./coding-command-secrets.ts";
 import { LxdCodingCommandTransport } from "./coding-command-transport.ts";
 import type {
 	CodingExecutorHost,
@@ -27,7 +32,7 @@ import type {
 	CodingTurnState,
 	CodingWorkspace,
 } from "./coding-executor.ts";
-import { CodingMachineUnavailable } from "./coding-executor.ts";
+import { CodingMachineUnavailable, CodingPushRefused } from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
 import { type CodingFolderControl, codingFolderBoundaryHeld } from "./coding-folder-control.ts";
 import {
@@ -158,6 +163,9 @@ export interface LxdCodingExecutorHostOptions {
 		watchdogHelperSha256: string;
 	};
 	repositoryCredentials: CodingRepositoryCredentials;
+	/** On the folder model, where each session's vault environment comes from: the company's secret broker (5j-4). Each
+	 * command gets it, and its output is masked. Absent, a command gets no secrets. */
+	commandEnvironment?: CodingEnvironmentSource;
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
 	/** How long a freshly started guest may take to bring up its agent and
@@ -475,6 +483,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * whenever the session was prepared or its transport made. None from right before it starts again until that start
 	 * is read. */
 	readonly #folderStartOperations = new Map<string, string>();
+	/** The vault environments this process asked for the sessions attached to its machines (5j-4). */
+	readonly #commandSecrets: CodingMachineCommandSecrets | undefined;
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -516,6 +526,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				resourceProfile: Object.freeze({ ...options.guest.resourceProfile }),
 			}),
 		};
+		this.#commandSecrets = options.commandEnvironment
+			? new CodingMachineCommandSecrets(options.commandEnvironment)
+			: undefined;
 	}
 	#call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		signal.throwIfAborted();
@@ -1007,6 +1020,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		});
 		const credentials = this.#options.repositoryCredentials;
 		return (repository, use, signal) => credentials.withRepositoryToken(scope, repository, use, signal);
+	}
+	/** The command secrets of this turn's session on its machine, asked for under its claim; none without a broker. */
+	#sessionSecrets(ready: Prepared): CodingCommandSecrets | undefined {
+		return this.#commandSecrets?.session(ready.machine.machineId, {
+			companyId: ready.claim.profileId,
+			workerId: ready.claim.workerId,
+			leaseToken: ready.claim.leaseToken,
+		});
 	}
 	/** The turn is still prepared: once its detach begins, nothing new starts. */
 	#current(ready: Prepared): void {
@@ -1700,6 +1721,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const authorize = async (): Promise<void> => {
 			await this.#run(claim, ready.machine, ready.storage, signal);
 		};
+		// The session's secret values, those its commands were given and its environment now (5j-5 b): a push or a pull
+		// request that carries one goes nowhere. No broker, no values to check.
+		const secrets = await this.#commandSecrets?.publication(
+			ready.machine.machineId,
+			{ companyId: claim.profileId, workerId: claim.workerId, leaseToken: claim.leaseToken },
+			signal,
+		);
+		const title = claim.title.slice(0, 200);
+		if (
+			secrets &&
+			[title, submission.summary].some((text) => {
+				const stream = secrets.stream();
+				stream.push(Buffer.from(text));
+				stream.end();
+				return stream.matched;
+			})
+		)
+			throw new CodingPushRefused({ kind: "pull-request" });
 		await pushCloudCodingBundle(
 			{
 				repository: claim.repository,
@@ -1715,6 +1754,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				assertAuthorized: authorize,
 				withRepositoryToken: token,
 				runGit: this.#options.runGit,
+				...(secrets ? { secrets } : {}),
 			},
 		);
 		const pullRequest = await publishCloudCodingDraftPullRequest(
@@ -1722,7 +1762,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				repository: claim.repository,
 				workerId: claim.workerId,
 				headSha: submission.headSha,
-				title: claim.title.slice(0, 200),
+				title,
 				body: submission.summary,
 			},
 			{
@@ -1772,8 +1812,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * running commands are cancelled first (so a later read says cancelled),
 	 * then the guest stops its slice, flushes, and removes its boot-local state
 	 * and user, and its NAS folders are unplugged. The folders themselves stay.
-	 * On the folder model, its view ends in between (below). */
-	#takeOff(
+	 * On the folder model, its view ends in between (below). Once it is off,
+	 * the vault environments asked for its commands go (5j-4). */
+	async #takeOff(
 		machine: Readonly<LxdCodingMachineBinding>,
 		storage: Readonly<CloudCodingStorageBinding>,
 		session: { workerId: string; leaseToken: string | null },
@@ -1785,7 +1826,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			name = lxdCodingMachineName(machine.machineId),
 			client = this.#options.client;
 		const folder = this.#options.folder;
-		return this.#exclusive(machine.machineId, signal, async () => {
+		await this.#exclusive(machine.machineId, signal, async () => {
 			await this.#custody(journal, text, "detach", signal, session);
 			const instance = await client.getInstance(machine.project, name, signal);
 			if (folder) {
@@ -1853,6 +1894,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			if (guestFailure) throw guestFailure;
 		});
+		this.#commandSecrets?.release(machine.machineId, session.workerId);
 	}
 	/** Best effort, bounded: cancels each named command through the pinned
 	 * command helper, which records it cancelled once systemd has stopped it. A
@@ -2586,6 +2628,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						startOperationId,
 					),
 				authorize: checkedAuthorize,
+				secrets: this.#sessionSecrets(ready),
 			});
 		}
 		return new LxdCodingCommandTransport({

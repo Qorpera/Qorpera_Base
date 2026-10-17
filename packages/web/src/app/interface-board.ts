@@ -107,7 +107,15 @@ export function boardLanes(block: InterfaceBlock, parts: readonly BoardPartRows[
 	for (const [id, cards] of left) {
 		const name = people.formerName(id);
 		if (name === undefined) unknown.push(...cards);
-		else named.push({ id: `left:${id}`, kind: "left", title: name, member: id, own: false, cards });
+		else
+			named.push({
+				id: `left:${id}`,
+				kind: "left",
+				title: t("{name} (left)", { name }),
+				member: id,
+				own: false,
+				cards,
+			});
 	}
 	named.sort((a, b) => collator.compare(a.title, b.title));
 	drawn.push(...named);

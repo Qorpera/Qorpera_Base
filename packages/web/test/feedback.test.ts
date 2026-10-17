@@ -46,8 +46,8 @@ async function open() {
 		submit: dialog.querySelector<HTMLButtonElement>('[type="submit"]')!,
 	};
 }
-/** The RPCs made, besides the company's mail, offers and pages reads, which run while it is open (Interfaces steps I5c,
- * I9c and C6a). */
+/** The RPCs made, besides the company's mail, offers, consents and pages reads, which run while it is open (Interfaces
+ * steps I5c, I9c, C6a and C6d). */
 function rpcs(f: ReturnType<typeof fixture>): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
@@ -56,6 +56,7 @@ function rpcs(f: ReturnType<typeof fixture>): string[] {
 			(name) =>
 				!name.startsWith("qorpera_member_mail_") &&
 				name !== "qorpera_member_interface_offers" &&
+				name !== "qorpera_member_interface_supervisions" &&
 				name !== "qorpera_member_interface_pages",
 		);
 }

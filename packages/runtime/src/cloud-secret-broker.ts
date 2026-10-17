@@ -91,6 +91,8 @@ const MAX_RPC_BYTES = 256 * 1024;
  * every value a coding machine is given is long enough to be masked in its output. The runtime does not
  * import that package, so the two are kept equal by hand. */
 export const CODING_ENVIRONMENT_VALUE_MINIMUM_BYTES = 8;
+/** The most older values one answer masks (5j-4), as qorpera_authorize_coding_environment caps them. */
+export const CODING_ENVIRONMENT_MASK_MAXIMUM = 64;
 
 export interface CloudSecretCaptureRequest {
 	readonly ticketId: string;
@@ -200,10 +202,14 @@ export interface CodingEnvironmentRequest {
 
 /** The only answer that ever carries environment values out of the broker: each
  * variable's name and value, in the authorization's order. It goes to the executor,
- * which starts the session's processes with it, never into a model turn or a log. */
+ * which starts the session's processes with it, never into a model turn or a log.
+ * `mask` (5j-4) holds the older values used on the session's machine by its member,
+ * each once and none of the environment's: the executor masks them in the output and
+ * never puts them in an environment. */
 export interface CodingEnvironment {
 	readonly schema: "qorpera.coding-environment/v1";
 	readonly environment: Readonly<Record<string, string>>;
+	readonly mask: readonly string[];
 }
 
 export interface CodingEnvironmentSecret {
@@ -223,6 +229,8 @@ export interface CodingEnvironmentAuthorization {
 	readonly workerId: string;
 	readonly repository: CloudCodingRepository;
 	readonly secrets: readonly CodingEnvironmentSecret[];
+	/** The older versions for the output's mask only (5j-4); none from a database before 20260930514000. */
+	readonly maskSecrets: readonly CodingEnvironmentSecret[];
 }
 
 /** A coding session's request through the broker to an MCP server (5j-6b): the session and the server's origin.
@@ -612,54 +620,35 @@ function parseCodingEnvironmentAuthorization(
 	request: CodingEnvironmentRequest,
 ): CodingEnvironmentAuthorization {
 	const input = record(value, "Coding environment authorization");
+	const keys = ["schema", "companyId", "environmentId", "workerId", "repository", "secrets"];
 	exact(
 		input,
-		["schema", "companyId", "environmentId", "workerId", "repository", "secrets"],
+		Object.hasOwn(input, "maskSecrets") ? [...keys, "maskSecrets"] : keys,
 		"Coding environment authorization",
 	);
+	// A database before 20260930514000 answers no maskSecrets: then there are none.
+	const maskSecrets = Object.hasOwn(input, "maskSecrets") ? input.maskSecrets : [];
 	if (
 		input.schema !== "qorpera.coding-environment-authorization/v1" ||
 		typeof input.workerId !== "string" ||
 		input.workerId.toLowerCase() !== request.workerId ||
-		!Array.isArray(input.secrets)
+		!Array.isArray(input.secrets) ||
+		!Array.isArray(maskSecrets) ||
+		maskSecrets.length > CODING_ENVIRONMENT_MASK_MAXIMUM
 	)
 		throw new Error("Coding environment authorization differs from its request");
 	const repository = parseCloudCodingRepository(input.repository);
 	const companyId = uuid(input.companyId, "Cloud secret company");
 	const environmentId = uuid(input.environmentId, "Cloud secret environment");
 	// The database settles a member's and the company's secret of the same name before it
-	// answers, so a repeated name here means the answer is not the one it promised.
+	// answers, so a repeated name here means the answer is not the one it promised. The
+	// mask's versions may repeat a name: they are older values, never an environment.
 	const names = new Set<string>();
 	const secrets = input.secrets.map((entry: unknown): CodingEnvironmentSecret => {
-		const secret = record(entry, "Coding environment secret");
-		exact(
-			secret,
-			["name", "secretId", "secretVersion", "keyId", "ownerKind", "encryptedEnvelopeBase64", "envelopeSha256"],
-			"Coding environment secret",
-		);
-		if (
-			typeof secret.name !== "string" ||
-			!ENVIRONMENT_NAME.test(secret.name) ||
-			names.has(secret.name) ||
-			(secret.ownerKind !== "company" && secret.ownerKind !== "member") ||
-			typeof secret.keyId !== "string" ||
-			!KEY_ID.test(secret.keyId) ||
-			typeof secret.encryptedEnvelopeBase64 !== "string" ||
-			!/^[A-Za-z0-9+/=\r\n]+$/.test(secret.encryptedEnvelopeBase64) ||
-			typeof secret.envelopeSha256 !== "string" ||
-			!SHA.test(secret.envelopeSha256)
-		)
-			throw new Error("Coding environment secret is invalid");
+		const secret = parseCodingEnvironmentSecret(entry);
+		if (names.has(secret.name)) throw new Error("Coding environment secret is invalid");
 		names.add(secret.name);
-		return {
-			name: secret.name,
-			secretId: uuid(secret.secretId, "Cloud secret id"),
-			version: integer(secret.secretVersion, "Cloud secret version"),
-			keyId: secret.keyId,
-			ownerKind: secret.ownerKind,
-			encryptedEnvelopeBase64: secret.encryptedEnvelopeBase64,
-			envelopeSha256: secret.envelopeSha256,
-		};
+		return secret;
 	});
 	return {
 		schema: "qorpera.coding-environment-authorization/v1",
@@ -668,6 +657,37 @@ function parseCodingEnvironmentAuthorization(
 		workerId: request.workerId,
 		repository,
 		secrets,
+		maskSecrets: maskSecrets.map(parseCodingEnvironmentSecret),
+	};
+}
+
+function parseCodingEnvironmentSecret(entry: unknown): CodingEnvironmentSecret {
+	const secret = record(entry, "Coding environment secret");
+	exact(
+		secret,
+		["name", "secretId", "secretVersion", "keyId", "ownerKind", "encryptedEnvelopeBase64", "envelopeSha256"],
+		"Coding environment secret",
+	);
+	if (
+		typeof secret.name !== "string" ||
+		!ENVIRONMENT_NAME.test(secret.name) ||
+		(secret.ownerKind !== "company" && secret.ownerKind !== "member") ||
+		typeof secret.keyId !== "string" ||
+		!KEY_ID.test(secret.keyId) ||
+		typeof secret.encryptedEnvelopeBase64 !== "string" ||
+		!/^[A-Za-z0-9+/=\r\n]+$/.test(secret.encryptedEnvelopeBase64) ||
+		typeof secret.envelopeSha256 !== "string" ||
+		!SHA.test(secret.envelopeSha256)
+	)
+		throw new Error("Coding environment secret is invalid");
+	return {
+		name: secret.name,
+		secretId: uuid(secret.secretId, "Cloud secret id"),
+		version: integer(secret.secretVersion, "Cloud secret version"),
+		keyId: secret.keyId,
+		ownerKind: secret.ownerKind,
+		encryptedEnvelopeBase64: secret.encryptedEnvelopeBase64,
+		envelopeSha256: secret.envelopeSha256,
 	};
 }
 
@@ -1328,9 +1348,8 @@ export class CloudSecretBroker {
 			await this.#authority.authorizeCodingEnvironment(request, signal),
 			request,
 		);
-		const environment: Record<string, string> = {};
 		// One envelope at a time, so at most one decoded envelope is in memory before it is zeroed.
-		for (const secret of authorization.secrets) {
+		const open = async (secret: CodingEnvironmentSecret): Promise<string> => {
 			const envelope = Buffer.from(secret.encryptedEnvelopeBase64, "base64");
 			try {
 				if (createHash("sha256").update(envelope).digest("hex") !== secret.envelopeSha256)
@@ -1342,14 +1361,19 @@ export class CloudSecretBroker {
 					version: secret.version,
 					keyId: secret.keyId,
 				};
-				const opened = await this.#keys.use(envelope, identity, async (fields) => environmentValue(fields));
-				environment[secret.name] = opened;
+				return await this.#keys.use(envelope, identity, async (fields) => environmentValue(fields));
 			} finally {
 				envelope.fill(0);
 			}
-		}
+		};
+		const environment: Record<string, string> = {};
+		for (const secret of authorization.secrets) environment[secret.name] = await open(secret);
+		// The older values (5j-4), each once and none the environment already holds.
+		const mask = new Set<string>();
+		for (const secret of authorization.maskSecrets) mask.add(await open(secret));
+		for (const value of Object.values(environment)) mask.delete(value);
 		signal.throwIfAborted();
-		return { schema: "qorpera.coding-environment/v1", environment };
+		return { schema: "qorpera.coding-environment/v1", environment, mask: [...mask] };
 	}
 
 	/**

@@ -185,9 +185,11 @@ request; the authority's `service_origin` stays that bare origin.
   holds the same value as `qorpera-coding-broker-executor`; no guest, provider
   or exec host ever receives it. Since 5j-3 the same token, and only it, also
   opens `/v1/coding-environment`, which returns a leased session's environment
-  variables opened from its `environment` secrets (`{schema, environment}`,
-  `Cache-Control: no-store`). Since 5j-6b it also opens the relay, which sends
-  a running session's request on with a sign-in the session never holds:
+  variables opened from its `environment` secrets (`{schema, environment,
+  mask}`, `Cache-Control: no-store`; since 5j-4 `mask` holds the older values
+  its member used on the session's machine, for masking only). Since 5j-6b it
+  also opens the relay, which sends a running session's request on with a
+  sign-in the session never holds:
   `/v1/coding-mcp` (GET, POST, DELETE) to the MCP server named in
   `x-qorpera-mcp-url`, with that server's API-key sign-in as its header, and
   `/v1/coding-repository-fetch/refs` (GET) and `/upload-pack` (POST) to the

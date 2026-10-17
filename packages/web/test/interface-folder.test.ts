@@ -197,10 +197,9 @@ const card = (main: HTMLElement, title: string) =>
 	);
 /** The open area's owner, supervisor and agents. */
 const fields = (main: HTMLElement) => texts(main, ".interface-detail.is-open .interface-fields dd");
+/** The areas' note on the board: its one part since C6d hides the cards, so the note carries no part title. */
 const areasNote = (main: HTMLElement) =>
-	[...main.querySelectorAll<HTMLElement>(".interface-note")].find(
-		(note) => note.querySelector("strong")?.textContent === "Areas",
-	);
+	main.querySelector<HTMLElement>(".interface-board-block .interface-note") ?? undefined;
 
 describe("the pages and the folder (I7, C6a)", () => {
 	it("never reads or draws the folder's interfaces/: Pulse, a page an agent wrote, or one named like the two", async () => {
@@ -224,6 +223,33 @@ describe("the pages and the folder (I7, C6a)", () => {
 		}
 	});
 
+	it("draws the Mailbox the web ships while the company has mail, never one stored under its name", async () => {
+		const fake = seeded();
+		const mailbox = "interfaces/mailbox/interface.toml";
+		fake.put(mailbox, fake.text(mailbox)!.replace('name = "Mailbox"', 'name = "Written by an agent"'));
+		const { f, controller } = company();
+		// The company's mail is on: the member mail read lists an address, so the Mailbox's need is met.
+		controller.store.set({
+			mail: {
+				addresses: [{ address: "support@mail.example.test", handledBy: [], routines: [], last7Days: 0 }],
+				waiting: [],
+				lists: {},
+				threads: {},
+				answers: {},
+			},
+		});
+		await follow(fake, controller);
+		expect(read(fake).filter((path) => path.startsWith("interfaces"))).toEqual([]);
+		expect(fake.folder.list).not.toHaveBeenCalled();
+		expect(names(controller)).toEqual(["mailbox", "members"]);
+		expect(companyInterfaces(controller).map((entry) => entry.file.name)).toEqual(["Mailbox", "Members"]);
+		expect(texts(rail(controller, f), ".rail-interfaces .rail-row-interface strong")).toEqual(["Mailbox", "Members"]);
+		const main = h("main");
+		renderInterface(main, controller, "mailbox");
+		expect(main.querySelector("h1")?.textContent).toBe("Mailbox");
+		expect(main.textContent).not.toContain("Written by an agent");
+	});
+
 	it("reads nothing while no page is on, what a page reads once it is on, and drops it once it is off", async () => {
 		vi.useFakeTimers();
 		const fake = seeded();
@@ -236,16 +262,11 @@ describe("the pages and the folder (I7, C6a)", () => {
 		reader.read(pagesOn(ON));
 		await vi.advanceTimersByTimeAsync(1000);
 		await vi.waitFor(() =>
-			expect([...(controller.store.get().interfaceFolder?.tables.keys() ?? [])]).toEqual(["areas", "cards"]),
+			expect([...(controller.store.get().interfaceFolder?.tables.keys() ?? [])]).toEqual(["areas"]),
 		);
-		// Members' tables and its rules text; Mailbox reads the company's mail, not the folder.
-		expect(read(fake).sort()).toEqual([
-			"rules/shared-areas.md",
-			"tables/areas/rows.csv",
-			"tables/areas/table.toml",
-			"tables/cards/rows.csv",
-			"tables/cards/table.toml",
-		]);
+		// Members' table and its rules text, not the cards it hides (C6d); Mailbox reads the company's mail, not the
+		// folder.
+		expect(read(fake).sort()).toEqual(["rules/shared-areas.md", "tables/areas/rows.csv", "tables/areas/table.toml"]);
 		expect(names(controller)).toEqual(["members"]);
 		controller.store.set({ interfacePages: OFF });
 		reader.read(pagesOn(OFF));
@@ -374,11 +395,11 @@ describe("live", () => {
 		fake.resync();
 		await hint();
 		await vi.waitFor(() => expect(card(main, "Ops")).toBeDefined());
-		expect(read(fake)).toEqual(expect.arrayContaining(["tables/areas/table.toml", "tables/cards/table.toml"]));
+		expect(read(fake)).toEqual(expect.arrayContaining(["tables/areas/table.toml", "tables/areas/rows.csv"]));
 		fake.folder.read.mockClear();
 		fake.authority();
 		await hint();
-		await vi.waitFor(() => expect(read(fake)).toContain("tables/cards/rows.csv"));
+		await vi.waitFor(() => expect(read(fake)).toContain("tables/areas/rows.csv"));
 		expect(read(fake).filter((path) => path.startsWith("interfaces"))).toEqual([]);
 	});
 });

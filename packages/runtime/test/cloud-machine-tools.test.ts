@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
@@ -643,6 +644,43 @@ describe("machine tools", () => {
 				commandId: randomUUID(),
 			});
 			expect(cancelled.contentItems[0].text).toContain("MACHINE_COMMAND_ENDED");
+			expect(f.content(cancelled as never).refused).not.toHaveProperty("lost");
+			// A command its machine lost when it moved for its folder says why (6e-2a), on a read, a cancel and a start.
+			const moved = "the machine moved to a new disk because something it read in /company is no longer readable";
+			f.gateway.read.mockRejectedValueOnce(
+				new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED", "moved_unreadable"),
+			);
+			const lostRead = await f.boundary.invoke("r5", "qorpera", "machine_read", {
+				machine: "build-a",
+				commandId: randomUUID(),
+			});
+			expect(f.content(lostRead as never).refused).toEqual({
+				reason: "MACHINE_COMMAND_ENDED",
+				message: "that command ended when its machine stopped or moved; its log went with the old disk",
+				lost: moved,
+			});
+			f.gateway.cancel.mockRejectedValueOnce(
+				new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED", "moved_unreadable"),
+			);
+			const lostCancel = await f.boundary.invoke("r6", "qorpera", "machine_cancel", {
+				operationKey: "stop:2",
+				machine: "build-a",
+				commandId: randomUUID(),
+			});
+			expect(f.content(lostCancel as never).refused).toMatchObject({ lost: moved });
+			f.gateway.start.mockRejectedValueOnce(
+				new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED", "moved_unreadable"),
+			);
+			const lostStart = await f.boundary.invoke("r7", "qorpera", "machine_run", {
+				operationKey: "suite:3",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(f.content(lostStart as never).refused).toEqual({
+				reason: "MACHINE_COMMAND_ENDED",
+				message: "this command was lost after it started; start it again with a new operationKey",
+				lost: moved,
+			});
 		} finally {
 			f.boundary.close();
 		}
@@ -703,6 +741,127 @@ describe("machine tools", () => {
 			expect(gone.contentItems[0].text).toContain("MACHINE_NOT_FOUND");
 			const list = await f.boundary.invoke("e", "qorpera", "machine_list", {});
 			expect(list.contentItems[0].text).toContain("build-a");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows what the company folder said, and keeps the paths not saved when a read asks again for a smaller page (F3 6e-2a)", async () => {
+		const f = fixture();
+		try {
+			const machineId = f.listed[0].machineId;
+			const commandId = randomUUID();
+			const page = (state: string, output: string, companyFolder: Record<string, unknown>, id = commandId) => ({
+				schema: "qorpera.machine-command-result/v1",
+				machineId,
+				commandId: id,
+				inputSha256: "a".repeat(64),
+				state,
+				exitCode: state === "succeeded" ? 0 : null,
+				output,
+				truncated: Buffer.byteLength(output) < 6000,
+				log: {
+					offset: 0,
+					nextOffset: Buffer.byteLength(output),
+					totalBytes: 6000,
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+				companyFolder,
+			});
+			const pending = { company: "pending", heldBack: "the machine has not answered the company folder yet" };
+			f.gateway.start.mockResolvedValueOnce(page("running", "", pending, f.receiptId) as never);
+			const ran = await f.boundary.invoke("r", "qorpera", "machine_run", {
+				operationKey: "suite:1",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(f.content(ran as never).companyFolder).toEqual(pending);
+			const none = {
+				company: "none",
+				why: "the company folder refused this machine's view",
+				heldBack: "this boot of the machine has no /company",
+			};
+			f.gateway.cancel.mockResolvedValueOnce(page("cancelled", "", none) as never);
+			const cancelled = await f.boundary.invoke("c", "qorpera", "machine_cancel", {
+				operationKey: "stop:1",
+				machine: "build-a",
+				commandId,
+			});
+			expect(f.content(cancelled as never).companyFolder).toEqual(none);
+			// Each page is as long as the read asks: the first is too large for the result, so the read asks again. The
+			// executor said its paths not saved on the first page only.
+			const folders: Record<string, unknown>[] = [];
+			// What a try after those reports: the paths still not saved, which every try says again.
+			let after: Record<string, unknown> = { company: "mounted" };
+			f.gateway.read.mockImplementation(
+				async (_scope, input) =>
+					page("succeeded", "x".repeat(input.limit ?? 4096), folders.shift() ?? after) as never,
+			);
+			const plan = { path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile" };
+			const pay = { path: "people/pay.md", outcome: "denied" };
+			folders.push({ company: "mounted", notSaved: [plan, pay] });
+			const read = async (key: string) =>
+				f.content(
+					(await f.boundary.invoke(key, "qorpera", "machine_read", { machine: "build-a", commandId })) as never,
+				);
+			const shown = await read("a");
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit)).toEqual([4096, 2048]);
+			expect(shown.output).toBe("x".repeat(2048));
+			expect(shown.companyFolder).toEqual({ company: "mounted", notSaved: [plan, pay] });
+			// Paths from every try, within the report's limits; the rest are counted.
+			f.gateway.read.mockClear();
+			const many = (from: string) =>
+				Array.from({ length: 5 }, (_, i) => ({
+					path: `reports/${from}${i}.md`,
+					outcome: "refused",
+					reason: "r".repeat(150),
+				}));
+			folders.push(
+				{ company: "mounted", notSaved: many("a"), moreNotSaved: 1 },
+				{ company: "mounted", notSaved: many("b") },
+			);
+			const merged = (await read("b")).companyFolder;
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			const listed = merged.notSaved as { path: string }[];
+			expect(listed.length).toBeGreaterThan(5);
+			expect(listed.length).toBeLessThan(CLOUD_MACHINE_FOLDER_LIMITS.notSaved);
+			expect(listed.length + merged.moreNotSaved).toBe(11);
+			expect(listed.map((entry) => entry.path)).toEqual(
+				[...many("a"), ...many("b")].slice(0, listed.length).map((entry) => entry.path),
+			);
+			expect(cloudMachineFolderBytes(merged)).toBeLessThanOrEqual(CLOUD_MACHINE_FOLDER_LIMITS.bytes);
+			expect(merged.company).toBe("mounted");
+			// The paths still not saved come on every try: the last try's are shown, not added to the first's.
+			f.gateway.read.mockClear();
+			const still = Array.from({ length: 8 }, (_, i) => ({ path: `people/p${i}.md`, outcome: "denied" }));
+			after = { company: "mounted", stillNotSaved: still, moreStillNotSaved: 3 };
+			folders.push({ ...after, notSaved: [plan] }, { ...after, notSaved: [pay] });
+			const again = (await read("e")).companyFolder;
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(again).toEqual({
+				company: "mounted",
+				notSaved: [plan, pay],
+				stillNotSaved: still,
+				moreStillNotSaved: 3,
+			});
+			// Past the report's bytes, they go before the paths said once.
+			f.gateway.read.mockClear();
+			const long = (from: string, n: number) =>
+				Array.from({ length: n }, (_, i) => ({
+					path: `reports/${from}${i}.md`,
+					outcome: "refused",
+					reason: "r".repeat(150),
+				}));
+			after = { company: "mounted", stillNotSaved: long("s", 2) };
+			folders.push({ ...after, notSaved: long("a", 3) }, { ...after, notSaved: long("b", 3) });
+			const full = (await read("f")).companyFolder;
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(full.notSaved).toEqual([...long("a", 3), ...long("b", 3)]);
+			expect(full).not.toHaveProperty("moreNotSaved");
+			expect(full).not.toHaveProperty("stillNotSaved");
+			expect(full.moreStillNotSaved).toBe(2);
+			expect(cloudMachineFolderBytes(full)).toBeLessThanOrEqual(CLOUD_MACHINE_FOLDER_LIMITS.bytes);
 		} finally {
 			f.boundary.close();
 		}

@@ -11,12 +11,12 @@ import { t } from "../ui/preferences.ts";
 import type { InterfaceOfferActions } from "./interface-offers.ts";
 
 /* A board's take and release (Interfaces step I9a; deploy/first-node/RUNTIME-INTERFACES.md §3.3 and §5): a member puts
- * their own id in a card's empty holder cell, or clears the cell that names them. Accepting an offer (step I9c) puts
- * their id in the cell the offer names, while it is as the offer read it. The rows file is read and parsed against the
- * table's current definition, only that field's text changes (every other byte stays as written), the claim rule is
- * checked here before anything is sent, and the write names the version it read. When the file changed in between it is
- * read and checked again: a cell someone else took meanwhile, or that stopped being the member's or what the offer
- * read, ends the claim with that said. */
+ * their own id in a card's empty holder cell, or one that names someone who left (Interfaces C6d), or clears the cell
+ * that names them. Accepting an offer (step I9c) puts their id in the cell the offer names, while it is as the offer
+ * read it. The rows file is read and parsed against the table's current definition, only that field's text changes
+ * (every other byte stays as written), the claim rule is checked here before anything is sent, and the write names the
+ * version it read. When the file changed in between it is read and checked again: a cell someone else took meanwhile,
+ * or that stopped being the member's or what the offer read, ends the claim with that said. */
 
 /** What a page needs to write: the member's own client for the company's folder, and a check that the company is still
  * the one the page was drawn for. With `offers`, a board makes and answers offers (step I9c). */
@@ -24,6 +24,8 @@ export interface InterfaceWrites {
 	readonly folder: () => WebMemberFolder;
 	readonly current: () => void;
 	readonly offers?: InterfaceOfferActions;
+	/** Reads the company's folder again soon, so a change that could not be made shows the rows as they are now. */
+	readonly reread?: () => void;
 }
 
 /** The offer an accept answers: the cell it names and what it read there. */
@@ -50,9 +52,10 @@ export function claimFailure(verb: ClaimVerb): string {
 	return verb === "release" ? t("The card could not be released.") : t("The offer could not be accepted.");
 }
 
-/** Takes or releases one row's holder cell in `tables/<table>/rows.csv`, or accepts the offer of a cell. Answers whether
- * it wrote: false when the cell already says it. Throws `ClaimLostError` when the cell changed under the card, and a
- * refusal (`WebCompanyFolderRejectedError`) with the problems when the rows or the claim don't pass. */
+/** Takes or releases one row's holder cell (or the cell `column` names) in `tables/<table>/rows.csv`, or accepts the
+ * offer of a cell. Answers whether it wrote: false when the cell already says it. Throws `ClaimLostError` when the cell
+ * changed under the card, and a refusal (`WebCompanyFolderRejectedError`) with the problems when the rows or the claim
+ * don't pass. */
 export async function claimTableCell(options: {
 	readonly folder: WebMemberFolder;
 	readonly table: string;
@@ -61,7 +64,12 @@ export async function claimTableCell(options: {
 	readonly verb: ClaimVerb;
 	/** The offer an accept answers. */
 	readonly offer?: ClaimOffer;
+	/** The member cell a take or release changes, when it isn't the holder: an area's `supervisor` (step I9b). */
+	readonly column?: string;
 	readonly memberId: string;
+	/** The company's members now: a cell that names someone else counts as empty (Interfaces C6d). Without them,
+	 * every cell that names someone is theirs. */
+	readonly members?: ReadonlySet<string>;
 	readonly signal: AbortSignal;
 	readonly check: () => void;
 }): Promise<boolean> {
@@ -71,20 +79,22 @@ export async function claimTableCell(options: {
 	return await rewriteStateFile(
 		folder,
 		{
-			// The definition is read again on every try, so the rows are always parsed against the current one.
-			locate: async () => {
-				const read = await readStateFile(folder, `tables/${table}/table.toml`, signal);
-				if (read === null) return null;
-				const parsed = parseTableFile(read.text);
-				if (!parsed.ok)
-					throw invalid(
-						failure,
-						parsed.problems.map((problem) => problem.message),
-					);
-				definition = parsed.file;
-				return `tables/${table}/rows.csv`;
-			},
-			rewrite: (text) => rewriteRows(definition, table, text, options.key, verb, options.offer, memberId, failure),
+			locate: rowsLocator(folder, table, failure, signal, (read) => {
+				definition = read;
+			}),
+			rewrite: (text) =>
+				rewriteRows(
+					definition,
+					table,
+					text,
+					options.key,
+					verb,
+					options.offer,
+					options.column,
+					memberId,
+					failure,
+					options.members,
+				),
 			key: () => `web:board-${verb}:${crypto.randomUUID()}`,
 			gone: t("This card is no longer here."),
 			failure,
@@ -92,6 +102,30 @@ export async function claimTableCell(options: {
 		signal,
 		options.check,
 	);
+}
+
+/** A rewrite's `locate` for `tables/<table>/rows.csv`. The definition is read again on every try and handed to
+ * `found`, so the rows are always parsed against the current one; a definition that doesn't parse is refused with its
+ * problems. */
+export function rowsLocator(
+	folder: WebMemberFolder,
+	table: string,
+	failure: string,
+	signal: AbortSignal,
+	found: (definition: TableFile) => void,
+): () => Promise<string | null> {
+	return async () => {
+		const read = await readStateFile(folder, `tables/${table}/table.toml`, signal);
+		if (read === null) return null;
+		const parsed = parseTableFile(read.text);
+		if (!parsed.ok)
+			throw invalid(
+				failure,
+				parsed.problems.map((problem) => problem.message),
+			);
+		found(parsed.file);
+		return `tables/${table}/rows.csv`;
+	};
 }
 
 /** The rows file with one cell changed, or null when it already says it. */
@@ -102,11 +136,14 @@ function rewriteRows(
 	key: string,
 	verb: ClaimVerb,
 	offer: ClaimOffer | undefined,
+	cell: string | undefined,
 	memberId: string,
 	failure: string,
+	members: ReadonlySet<string> | undefined,
 ): string | null {
-	// Take and release change the holder cell; an accept the cell its offer names, a member column that needs a yes.
-	const column = verb === "accept" ? (offer?.column ?? null) : (definition?.holder ?? null);
+	// Take and release change the holder cell, or the cell they name; an accept the cell its offer names. Each is a
+	// member column that needs a yes.
+	const column = verb === "accept" ? (offer?.column ?? null) : (cell ?? definition?.holder ?? null);
 	if (
 		definition === null ||
 		column === null ||
@@ -127,7 +164,9 @@ function rewriteRows(
 	const was = row[column] ?? null;
 	if (verb === "take") {
 		if (was === memberId) return null;
-		if (was !== null) throw new ClaimLostError(t("Someone else took it first."));
+		// A cell that names someone who left counts as empty.
+		if (was !== null && (members === undefined || typeof was !== "string" || members.has(was)))
+			throw new ClaimLostError(t("Someone else took it first."));
 	} else if (verb === "accept") {
 		if (was === memberId) return null;
 		if (offer === undefined || was !== offer.was) throw new ClaimLostError(t("That changed while you were looking."));
@@ -144,7 +183,7 @@ function rewriteRows(
 		parsed.rows,
 		after,
 		{ kind: "member", memberId },
-		{ folder: table, offers },
+		{ folder: table, offers, members },
 	);
 	if (problems.length > 0)
 		throw invalid(
@@ -158,7 +197,7 @@ function rewriteRows(
  * values are only for the checks, so writing them back can't round a number or reword a time in another row. The rows
  * parsed without problems, so each line that isn't blank is one of them, in order. A first line that leaves the column
  * out gets it at its end, and every row an empty field for it. */
-function withCell(text: string, index: number, name: string, value: string): string {
+export function withCell(text: string, index: number, name: string, value: string): string {
 	// A byte-order mark the file starts with stays.
 	const mark = text.startsWith("\ufeff") ? "\ufeff" : "";
 	const body = text.slice(mark.length);
@@ -203,4 +242,5 @@ function fieldSpans(record: string): [number, number][] {
 	return spans;
 }
 
-const csvText = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text);
+/** A field's text as CSV writes it, quoted when it must be. */
+export const csvText = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text);

@@ -4,13 +4,21 @@ import { mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CodingPushCarrier, CodingPushRefused } from "./coding-executor.ts";
 import { type CodingGitSandboxOptions, codingGitSandboxPlan, codingGitSocketFilter } from "./coding-git-sandbox.ts";
+import type { CodingSecretMask, CodingSecretMaskStream } from "./coding-secret-mask.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const MAX_BUNDLE = 64 * 1024 ** 2;
 const MAX_PREREQUISITES = 64;
+/** The push check's bounds (5j-5 b). A 64 MiB bundle inflates to far more than it holds; the check reads at most 256
+ * MiB of objects, framing included, which the mask takes at about 10 MiB/s with 30 values, well inside a long step.
+ * The names are kept until the check ends, so their list is bounded too. */
+const CHECKED_OBJECTS = 100_000;
+const CHECKED_NAME_BYTES = 16 * 1024 ** 2;
+const CHECKED_BYTES = 256 * 1024 ** 2;
 
 /** The `-<sha>` prerequisite lines of a v2/v3 bundle header. Anything that is
  * not a bundle yields none, so Git itself refuses the bytes. */
@@ -47,8 +55,18 @@ export interface CodingBrokerGitCommand {
 	readonly env: Readonly<Record<string, string>>;
 	readonly signal: AbortSignal;
 	/** A whole-repository step (a seed's fetch, fsck or bundle, a push's two
-	 * fetches): 240 s of CPU and 300 s in all instead of 30 s and 60 s. */
+	 * fetches, the push check): 240 s of CPU and 300 s in all instead of 30 s and 60 s. */
 	readonly long?: boolean;
+	/** Bytes for Git's stdin, which is otherwise closed: the push check's object names. */
+	readonly input?: Uint8Array;
+	/** Where stdout goes instead of the returned string, which is then "": the push check. */
+	readonly output?: CodingBrokerGitOutput;
+}
+/** A streamed stdout: each chunk as it comes, `limit` bytes in all. Over the limit, or when `write` throws, Git is
+ * killed and the command fails. stderr keeps its own 64 KiB limit. */
+export interface CodingBrokerGitOutput {
+	readonly limit: number;
+	write(chunk: Buffer): void;
 }
 export type CodingBrokerGitRunner = (command: CodingBrokerGitCommand) => Promise<string>;
 export interface CodingGitPushOptions {
@@ -64,12 +82,14 @@ export interface CodingGitPushOptions {
 	): Promise<T>;
 	/** Trusted transport injection for tests; production uses mandatory Linux namespace isolation + prlimit + git. */
 	runGit?: CodingBrokerGitRunner;
+	/** The session's secret values (F3 5j-5 b): a push that carries one is refused. Without them, nothing is checked. */
+	secrets?: CodingSecretMask;
 }
 
 /** Closed process transport: no shell, inherited environment, error body or
  * unbounded output. Git descendants are killed together on timeout/lease loss. */
 export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {}): CodingBrokerGitRunner {
-	return async ({ cwd, scratchRoot, network, args, env, signal, long = false }) => {
+	return async ({ cwd, scratchRoot, network, args, env, signal, long = false, input, output }) => {
 		signal.throwIfAborted();
 		if (process.platform !== "linux" || process.getuid?.() === 0)
 			throw new Error("CODING_GIT_BROKER_REQUIRES_UNPRIVILEGED_LINUX");
@@ -105,11 +125,12 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 						env: { ...env },
 						shell: false,
 						detached: true,
-						stdio: ["ignore", "pipe", "pipe", filter.fd],
+						stdio: [input ? "pipe" : "ignore", "pipe", "pipe", filter.fd],
 					},
 				);
 				const chunks: Buffer[] = [];
 				let bytes = 0,
+					streamed = 0,
 					failed = false;
 				const kill = (): void => {
 					failed = true;
@@ -123,6 +144,19 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 				checked.addEventListener("abort", kill, { once: true });
 				if (checked.aborted) kill();
 				child.stdout?.on("data", (value: Buffer) => {
+					if (output) {
+						// Nothing reaches the sink once Git is being killed.
+						if (failed) return;
+						streamed += value.length;
+						if (streamed > output.limit) kill();
+						else
+							try {
+								output.write(value);
+							} catch {
+								kill();
+							}
+						return;
+					}
 					bytes += value.length;
 					if (bytes > 65536) kill();
 					else chunks.push(value);
@@ -131,6 +165,9 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 					bytes += value.length;
 					if (bytes > 65536) kill();
 				});
+				// Git stopping before it read all of its input fails the command.
+				child.stdin?.on("error", kill);
+				child.stdin?.end(input);
 				child.once("error", () => {
 					checked.removeEventListener("abort", kill);
 					reject(new Error("CODING_GIT_PROCESS_UNCONFIRMED"));
@@ -149,6 +186,114 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 }
 
 export const runCodingBrokerGit = createCodingBrokerGitRunner();
+
+const LF = 0x0a;
+const SPACE = 0x20;
+type CheckedType = "blob" | "tree" | "commit";
+
+/** What a refusal may show of a path or an id: what is left of it after the mask, when that is plain text. */
+function shown(mask: CodingSecretMask, bytes: Uint8Array): string | null {
+	const stream = mask.stream();
+	const text = Buffer.concat([stream.push(bytes), stream.end()]).toString("utf8");
+	return text.length <= 200 && !/[\x00-\x1f\x7f�]/.test(text) ? text : null;
+}
+
+/** The push check (F3 5j-5 b). Every object the head reaches and `excluded` does not, as `rev-list --objects` lists
+ * it with the path it was first reached by, is read whole from `cat-file --batch` through a fresh mask stream: file
+ * contents, file and folder names, and each commit with its message, so a value committed and removed later is caught.
+ * `step` runs one Git command with its stdout streamed and says whether it succeeded; a sink that throws stops Git.
+ * Throws `CodingPushRefused`: with what carries a value, or without when the objects are over the bounds or Git's
+ * output is not what it should be. */
+async function checkPush(
+	mask: CodingSecretMask,
+	head: string,
+	excluded: readonly string[],
+	step: (args: string[], output: CodingBrokerGitOutput, input?: Uint8Array) => Promise<boolean>,
+): Promise<void> {
+	const listed: Buffer[] = [];
+	const list = { limit: CHECKED_NAME_BYTES, write: (chunk: Buffer) => void listed.push(chunk) };
+	if (!(await step(["rev-list", "--objects", head, ...excluded.map((sha) => `^${sha}`)], list)))
+		throw new CodingPushRefused(null);
+	// A line is an object's name, then for a folder or a file a space and the path ("" for the top folder), in raw
+	// bytes up to the first newline.
+	const lines = Buffer.concat(listed);
+	const names: string[] = [];
+	const paths: (Buffer | null)[] = [];
+	const seen = new Set<string>();
+	for (let at = 0; at < lines.length; ) {
+		const end = lines.indexOf(LF, at);
+		const name = lines.toString("latin1", at, at + 40);
+		if (
+			end < at + 40 ||
+			!SHA.test(name) ||
+			(end > at + 40 && lines[at + 40] !== SPACE) ||
+			seen.has(name) ||
+			names.length === CHECKED_OBJECTS
+		)
+			throw new CodingPushRefused(null);
+		seen.add(name);
+		names.push(name);
+		paths.push(end > at + 40 ? lines.subarray(at + 41, end) : null);
+		at = end + 1;
+	}
+	if (names.length === 0) return;
+	let carrier = null as CodingPushCarrier | null;
+	// Each object comes as `<name> <type> <size>\n`, its bytes and a newline, in the order asked. A commit reaches no
+	// tag object.
+	let index = 0,
+		header = Buffer.alloc(0),
+		object = null as { type: CheckedType; left: number; stream: CodingSecretMaskStream } | null,
+		closing = false;
+	const output: CodingBrokerGitOutput = {
+		limit: CHECKED_BYTES,
+		write(chunk) {
+			for (let at = 0; at < chunk.length; ) {
+				if (closing) {
+					if (chunk[at] !== LF) throw new Error("CODING_PUSH_UNCHECKED");
+					at++;
+					closing = false;
+					index++;
+					continue;
+				}
+				if (object === null) {
+					const end = chunk.indexOf(LF, at);
+					header = Buffer.concat([header, chunk.subarray(at, end < 0 ? chunk.length : end)]);
+					if (header.length > 80) throw new Error("CODING_PUSH_UNCHECKED");
+					if (end < 0) return;
+					at = end + 1;
+					const match = /^([0-9a-f]{40}) (blob|tree|commit) ([0-9]{1,10})$/.exec(header.toString("latin1"));
+					header = Buffer.alloc(0);
+					if (!match || match[1] !== names[index]) throw new Error("CODING_PUSH_UNCHECKED");
+					object = { type: match[2] as CheckedType, left: Number(match[3]), stream: mask.stream() };
+				} else {
+					const take = Math.min(object.left, chunk.length - at);
+					object.stream.push(chunk.subarray(at, at + take));
+					object.left -= take;
+					at += take;
+				}
+				if (object.left > 0) continue;
+				object.stream.end();
+				if (object.stream.matched) {
+					const { type } = object,
+						path = paths[index];
+					carrier =
+						type === "commit"
+							? { kind: type, sha: shown(mask, Buffer.from(names[index].slice(0, 12))) }
+							: { kind: type === "blob" ? "file" : "folder", path: path === null ? null : shown(mask, path) };
+					// No more bytes are needed: Git stops here.
+					throw new Error("CODING_PUSH_CARRIES_SECRET");
+				}
+				object = null;
+				closing = true;
+			}
+		},
+	};
+	const read = await step(["cat-file", "--batch"], output, Buffer.from(names.map((name) => `${name}\n`).join("")));
+	if (carrier) throw new CodingPushRefused(carrier);
+	// Every object asked for was read whole.
+	if (!read || index !== names.length || closing || object !== null || header.length > 0)
+		throw new CodingPushRefused(null);
+}
 
 /** Publish one bundle into the worker's fixed GitHub branch. Objects are
  * imported into a new bare broker repository; no worktree, repository config,
@@ -263,7 +408,13 @@ export async function pushCloudCodingBundle(
 			"receive.fsckObjects=true",
 		];
 		const prefix = ["--no-replace-objects", ...configs.flatMap((config) => ["-c", config])];
-		const run = async (args: string[], network = false, directory = cwd, long = false): Promise<string> => {
+		const run = async (
+			args: string[],
+			network = false,
+			directory = cwd,
+			long = false,
+			stream?: { input?: Uint8Array; output: CodingBrokerGitOutput },
+		): Promise<string> => {
 			await authorize();
 			const invoke = async (token?: string): Promise<string> => {
 				await authorize();
@@ -282,6 +433,7 @@ export async function pushCloudCodingBundle(
 					env,
 					signal: options.signal,
 					...(long ? { long } : {}),
+					...stream,
 				});
 				await authorize();
 				return output;
@@ -335,6 +487,24 @@ export async function pushCloudCodingBundle(
 		await run(["merge-base", "--is-ancestor", input.baseSha, input.headSha]);
 		if (input.expectedRemoteHeadSha !== null)
 			await run(["merge-base", "--is-ancestor", input.expectedRemoteHeadSha, input.headSha]);
+		if (options.secrets && options.secrets.size > 0) {
+			// The base and the branch head the remote showed were on the repository before this push, with all they
+			// reach: what the head brings beyond them is all the push can add. A step that fails leaves the push
+			// unchecked, unless authority was lost or the push cancelled meanwhile.
+			const excluded = [
+				input.baseSha,
+				...(input.expectedRemoteHeadSha === null ? [] : [input.expectedRemoteHeadSha]),
+			];
+			await checkPush(options.secrets, input.headSha, excluded, async (args, output, stdin) => {
+				try {
+					await run(args, false, cwd, true, { output, ...(stdin ? { input: stdin } : {}) });
+					return true;
+				} catch {
+					await authorize();
+					return false;
+				}
+			});
+		}
 		// The base tip lets the push leave out what the base already has. Fetched at
 		// depth 1 it is shallow, so it is fetched only when the broker lacks it: then
 		// it is on none of the head's history, and the walks above and the push's own

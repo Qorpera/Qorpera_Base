@@ -18,14 +18,15 @@ const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, .
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
-/** The core's refusals of a coding session's folder view, in its own words (F3 5g-4): SQL raised one of these, with
- * 42501 or 22023. The executor fails the session's attach with them, or, for a machine SQL marked to restart for the
- * folder (5g-5), restarts it first. Any other text, and every other method's, is never kept. */
+/** The core's refusals of a folder view, in their own words: SQL raised one of these, with 42501 or 22023. The
+ * executor fails a coding session's attach with them (F3 5g-4), or, for a machine SQL marked to restart for the
+ * folder (5g-5), restarts it first; a test machine's command receipts say why its boot has no /company (F3 6e-2a).
+ * Any other text, and every other method's, is never kept. */
 const VIEW_REFUSALS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 	["qorpera_folder_view_open", new Set(["Folder core authority is required", "Company folder is unavailable",
 		"Folder view is invalid", "Folder view opener is invalid", "Folder view anchor is invalid",
 		"Folder view attachment is not current", "Folder view principals are unavailable",
-		"Coding machine must restart first"])],
+		"Coding machine must restart first", "Folder view machine is not current"])],
 	["qorpera_folder_view_close", new Set(["Folder core authority is required", "Folder view is unavailable"])],
 ]);
 
