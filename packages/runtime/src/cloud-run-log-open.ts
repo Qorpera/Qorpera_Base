@@ -1,9 +1,10 @@
 // W1c-3: a run's work log, its step lines and its work composer (RUNTIME-AGENT-MEMORY-TREE.md §4.5, §5.7, §7.5), as
 // production opens them before the run's first provider request. Where the log is decides:
-// - no log yet: an original attempt starts one; a resumed attempt whose earlier attempts made none (their company was
-//   not on the memory tree's list yet, or none of their steps landed) goes on without one, as they did;
+// - no log yet: an original attempt starts one; a resumed attempt whose earlier attempts made none (none of their steps
+//   landed) goes on without one, as they did;
 // - a log: only a resumed attempt continues it (W5b-2, `openCloudRunResume`); an original attempt refuses it;
-// - off (its company is not on the list, 20260930352000 until W1d, or the run has no conversation tree): no log;
+// - off (the run's recorded memory mode is Agent notebooks, 20260930508000, a permanent gate; or the run has no
+//   conversation tree): no log;
 // - gone (a log made once and no longer there): CloudRunLogGone, so the run ends as it does when its log goes mid-run,
 //   rather than go on unlogged past its earlier steps.
 import type { CloudNativeContextComposition, CloudNativeContextRequest } from "./cloud-native-context-composition.ts";

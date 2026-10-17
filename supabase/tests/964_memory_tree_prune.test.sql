@@ -59,6 +59,9 @@ declare
 	t constant text := root || '/tree.toml'; n constant text := 'agents/nora-skov/memory/profile.md';
 begin
 	perform pg_temp.service();
+	-- The company never chose Shared context (C5), so this prune runs with the beta off.
+	if public.qorpera_company_memory_mode_effective('70000000-0000-4000-8000-000000000010') is distinct from 'notebooks' then
+		raise exception 'Nora''s company never chose the beta'; end if;
 	if not public.qorpera_folder_gc_company('70000000-0000-4000-8000-000000000010') then
 		raise exception 'Folder GC serves the company'; end if;
 	perform pg_temp.keep('mi', pg_temp.version(b)); perform pg_temp.keep('ti', pg_temp.version(t));

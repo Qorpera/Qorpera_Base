@@ -345,7 +345,7 @@ async function fixture(
 				};
 			}
 			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
-			// The run's work log: a company off the memory tree's list keeps none yet (20260930352000).
+			// The run's work log: a run in Agent notebooks keeps none (20260930508000).
 			if (method === "qorpera_memory_run_log_place") {
 				expect(args).toEqual({ p_environment_id: f.authority.identity.environmentId, p_run_id: f.binding.runId });
 				return { off: true };
