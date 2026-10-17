@@ -1,6 +1,7 @@
-// What node --check cannot see in the P3 driver, which prove-coding-session-vm.sh checks before it builds anything: that
-// its imports link, and that no top-level binding is declared below the main flow's start (the flow's callbacks would
-// find it uninitialized: a run's ReferenceError at its first core call, 38 minutes in).
+// What node --check cannot see in the P3 driver: that its imports link, and that no top-level binding is declared below
+// the main flow's start (the flow's callbacks would find it uninitialized: a run's ReferenceError at its first core call,
+// 38 minutes in). The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it builds
+// anything.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
