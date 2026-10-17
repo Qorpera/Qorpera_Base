@@ -665,19 +665,15 @@ it("lists the routines from the index as many as fit, with a cursor, or one whol
 	expect(f.releases).toEqual([]);
 });
 
-it("is manage_routine's folder-v2 path: its description, its list arguments, the checks before review, the writer behind execute", async () => {
+it("is manage_routine: its description, its list arguments, the checks before review, the writer behind execute", async () => {
 	const f = await fixture(seeded());
-	const control = { call: vi.fn() };
-	const legacy = cloudRoutineTools(f.binding, f.identity, control)[0];
 	let settled = 0;
 	const tool = cloudRoutineTools(
 		f.binding,
 		f.identity,
-		control,
 		{ routineKey: "inbox", decisionOwed: () => false, settled: () => settled++ },
 		f.routines(),
 	)[0];
-	expect(legacy?.description).toBe(CLOUD_ROUTINE_TOOL_DESCRIPTION);
 	expect(tool?.description).not.toBe(CLOUD_ROUTINE_TOOL_DESCRIPTION);
 	expect(tool?.description).toContain("Each change goes through the automatic review first");
 	expect(tool?.description).toContain("routines/<routineKey>.md");
@@ -693,14 +689,12 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	expect(tool?.description).not.toMatch(/No member approval|not available/);
 	// The tool boundary takes a description of at most 4096 bytes.
 	expect(Buffer.byteLength(tool?.description ?? "")).toBeLessThanOrEqual(4096);
-	expect(legacy?.inputSchema).not.toHaveProperty("properties.cursor");
 	expect(tool?.inputSchema).toHaveProperty("properties.cursor");
 	// list: one routine, or a page from a cursor.
 	expect(tool?.parseArguments({ action: "list", routineKey: "inbox" })).toEqual({
 		action: "list",
 		routineKey: "inbox",
 	});
-	expect(() => legacy?.parseArguments({ action: "list", routineKey: "inbox" })).toThrow("Invalid routine request");
 	expect(() =>
 		tool?.parseArguments({ action: "list", routineKey: "inbox", cursor: "0f1a2b3c-8888-4888-8888-000000000001" }),
 	).toThrow(CloudToolArgumentRefusal);
@@ -765,7 +759,6 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 			schema as { properties: { trigger: { oneOf: { properties: { kind: { const: string } } }[] } } }
 		).properties.trigger.oneOf.map((item) => item.properties.kind.const);
 	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
-	expect(kinds(legacy?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
 	const list = parse((await tool?.execute({ action: "list" }, f.context)) as { value: unknown });
 	expect(list.routines.map((routine: { routineKey: string }) => routine.routineKey)).toEqual(["inbox"]);
 	// The run's own dynamic routine, concluded here, owes no decision.
@@ -784,5 +777,4 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	expect(() =>
 		tool?.parseArguments({ action: "conclude", operationKey: "end-1", routineKey: "inbox", summary: "Done." }),
 	).not.toThrow();
-	expect(control.call).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { isUuid, type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import { cloudActionEventWhen, cloudActionFileName } from "./cloud-action-review.ts";
 import type {
@@ -8,6 +9,7 @@ import type {
 	CloudCompanyFolderProposalUnit,
 	CloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
+import { cloudFolderRefusal } from "./cloud-folder-file-tools.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
@@ -250,6 +252,14 @@ function shownPath(path: string): string {
 	return head(path, PATH_BYTES);
 }
 
+/** Whether applying it may change the company's pages or tables (Interfaces I10): a path it names, or where it moves
+ * one, is under interfaces/ or tables/, or is one of them. An apply reads the proposal whole (`#whole`). */
+function touchesInterfaces(proposal: CloudCompanyFolderProposal): boolean {
+	return proposal.units.some((unit) =>
+		[unit.path, unit.to].some((path) => path !== null && /^(?:interfaces|tables)(?:\/|$)/.test(companyPathKey(path))),
+	);
+}
+
 /** The open proposals one run listed when its turn started, and the two tools that act on them. */
 export class CloudFolderProposals {
 	readonly #folder: CloudCompanyFolderClient;
@@ -343,7 +353,13 @@ export class CloudFolderProposals {
 				path: unit.path,
 				...(unit.to === null ? {} : { to: unit.to }),
 				...(unit.items === null ? {} : { items: unit.items }),
-				...(unit.contains.length > 0 ? { contains: unit.contains.map(({ path, kind }) => ({ path, kind })) } : {}),
+				...(unit.contains.length > 0
+					? {
+							contains: unit.contains.map(({ path, kind, target }) =>
+								target === undefined ? { path, kind } : { path, kind, target },
+							),
+						}
+					: {}),
 				...(unit.structured.length > 0
 					? { files: unit.structured.map(({ path, kind, parse }) => ({ path, kind, parse })) }
 					: {}),
@@ -404,6 +420,7 @@ export class CloudFolderProposals {
 				inputSchema: proposalId,
 				parseArguments: (value) => this.card(this.#whole(this.#parse(value))),
 				reviewContents: (value) => this.contents(this.#proposal(value)),
+				refused: cloudFolderRefusal,
 				execute: (value, context) => this.#apply(this.#proposal(value), operations, context),
 				denied: (value, context) => this.#decline(this.#proposal(value), context),
 			},
@@ -437,9 +454,13 @@ export class CloudFolderProposals {
 			proposal,
 			context.signal,
 		);
-		if (reviewId === null) throw new CloudToolRefusal(NOT_WAITING);
+		if (reviewId === null) {
+			// The repeat of a call that applied it but whose note failed (below) ends here: it notes what that one missed.
+			if (touchesInterfaces(proposal)) await this.#folder.noteInterfaceChanges(context.signal);
+			throw new CloudToolRefusal(NOT_WAITING);
+		}
 		const { proposalId } = proposal;
-		return operations.execute({
+		const content = await operations.execute({
 			operation: {
 				tool: "apply_proposal",
 				toolVersion: TOOL_VERSION,
@@ -450,6 +471,7 @@ export class CloudFolderProposals {
 			},
 			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
+			refused: cloudFolderRefusal,
 			perform: async (_operation, { receiptId, signal }) => {
 				const committed = await this.#folder.applyProposal(
 					`apply-proposal:${proposalId}`,
@@ -468,6 +490,11 @@ export class CloudFolderProposals {
 			signal: context.signal,
 			...(context.observation ? { observation: context.observation } : {}),
 		});
+		// A change of the company's pages and tables shows in the run's conversation, with Undo (Interfaces I10), even
+		// from a run with no computer: SQL notes each of the run's commits there once, a replay's too. Its failure is a
+		// folder error, never a refusal, so the call is unconfirmed; its repeat finds the proposal applied, and notes it.
+		if (touchesInterfaces(proposal)) await this.#folder.noteInterfaceChanges(context.signal);
+		return content;
 	}
 
 	async #decline(

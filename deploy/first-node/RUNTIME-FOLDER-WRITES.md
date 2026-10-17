@@ -24,7 +24,7 @@ a test machine's command) stays read-only until its step wires review in. So not
 
 **Not in step 3:** review of an agent's deletes, moves and delegation units, and proposals (steps 4–6, with the run
 that owns the view); per-command attribution (steps 4 and 6); desktop notifications (step 4); code areas (step 5);
-restore in the web app (the Interfaces session's file page; below).
+restore in the web app (RUNTIME-FOLDER-LINKS.md's LK6; below).
 
 ## The parts
 
@@ -113,8 +113,9 @@ A boundary publishes the view's pending changes as one change set.
 **When.** In step 3: when the machine asks (`qorpera-folder publish --view-file <file>`), for a mount configured with a quiet
 period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
 pending published first (below). Steps 4–6 add theirs: command end and output reads, and per-desktop quiet periods.
-A shell command's view (step 4b) publishes only when asked, or before a change that needs what is pending published
-first, and its last boundary is final: one change set with everything pending, or an empty one, which closes the view
+A shell command's view (step 4b) publishes when asked, or before a change that needs what is pending published first,
+and, while its command runs, about two seconds after its last change, as a desktop's (slice 4b-2, amended 14 October
+2026). Its last boundary is final: one change set with everything pending, or an empty one, which closes the view
 (RUNTIME-FOLDER-SERVICE.md "Step 4b").
 
 **What is left out** (§2 "Never published"):
@@ -128,6 +129,12 @@ first, and its last boundary is final: one change set with everything pending, o
 - a file created or changed: `write` (with `expectedVersion` when it had a base);
 - a rename or move, of a file or a folder: `move`; a temporary file renamed over its target is a `write` of the
   target;
+- a new file or link that replaces a live one (a temporary file renamed over it, `ln -sf`, or one made where the view
+  removed it): a `write` or `symlink` naming the version the machine saw there. The new file or link holds that version
+  itself from then on, and nothing else done at that path, spelled in any case, changes it: such a change is a unit of
+  its own, and the replacement conflicts if the version it names is gone. Removed, or moved to another path, it lets
+  the live one go: removed at that version, or shown again if another machine changed it since (renamed only in case
+  to the new one's name, too: the newer version shows there);
 - a new folder with everything created inside it: one `new_folder`;
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
@@ -151,15 +158,25 @@ before what goes in it. Then:
 - **A removal never takes a version the machine did not see.** A removal of a file names the version the name showed;
   if another machine's change reaches the feed before the boundary, the removal is dropped and the file shows again.
   A removed or moved folder names the view's position (`asOfSeq`), and the core refuses it if anything in it changed
-  since.
+  since. So the view hides a live entry only while a change holds it: a pending file, link or folder removed or moved
+  away hides at its path only what it held there (the entry it was made from, or the one it replaces), and anything
+  else the live folder has there shows again (another machine made it, or renamed it there only in case), so a
+  removal of its folder cannot take it unseen.
 
 **Changes that publish what is pending first.** A change that could not be published together with what is pending
 first publishes what is pending (a boundary, as when the machine asks), then is made on the live folder. These are:
 - any change inside a folder this view moved (the move publishes first, then the change lands at the new path);
-- moving or removing a folder with changes inside it, or one something was moved out of;
+- moving or removing a folder with changes inside it, or one something was moved out of (inside it spelled in any
+  case: a change made before another machine renamed it only in case is inside it in the core);
 - reusing a path a moved or removed folder left (`rm -rf D; mkdir D`);
 - changing a file this view moved, or moving a file this view changed;
-- the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`).
+- the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`);
+- a new name at a path that a pending file, link or folder spells otherwise, or below a pending new folder spelled
+  otherwise (another machine made or renamed the live one beside it): in the core it would be the pending path, whose
+  unit this one would need the version of, or go into the new folder's unit. A name never published is no unit, so it
+  folds with nothing until it is renamed to a published one, even only in case (`x.swp` to `x.SWP`). (A change to the
+  live entry beside it, spelled otherwise, needs nothing published first: it is a unit of its own at that path, before
+  or after the pending one's.)
 If what blocks it is still pending after that boundary (a file open for writing inside the folder being moved), the
 change fails with `EBUSY`. The machine sees the change take longer; nothing else differs.
 
@@ -181,8 +198,11 @@ journal until step 4 routes it to the desktop.
 ## Errors at once
 
 As §2 "Errors that happen at once", decided in the program or the service before anything is sent:
-- names the folder forbids (`EINVAL`), the adapter-only prefixes, symlinks, hard links, devices, FIFOs and sockets
-  (`EPERM`), a file over 256 MiB, the version-2 manifest's limit (`EFBIG`);
+- names the folder forbids (`EINVAL`), the adapter-only prefixes, devices, FIFOs and sockets (`EPERM`), a file over
+  256 MiB, the version-2 manifest's limit (`EFBIG`);
+- symbolic links and hard links (`EPERM`) only until their slices land: the 2026-10-14 amendment makes a symbolic link
+  an entry of its own and a hard link a copy that shares the stored bytes (items 4 and 5;
+  [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md));
 - deleting or moving a seeded path, a lone `agent.md` or `group.md`, or an agent's or group's folder out of place
   (`EPERM`);
 - `rename` with `RENAME_EXCHANGE` (`EINVAL`); a name that differs only in case from a sibling (`EEXIST`).
@@ -199,10 +219,10 @@ removal, the version the name showed):
 
 | Type | Request | Reply |
 | --- | --- | --- |
-| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `{handle, size, version}` |
+| `O` | open for writing `{path, base?, create, exclusive, truncate, draft?}` | `{handle, size, version}` |
 | `K` | one part of a chunk: a header `{handle, index, sha256, bytes, offset}` and up to 1 MiB of its bytes | `{}`; after the last part, once the gateway has the chunk |
 | `G` | part of a chunk the open file has `{handle, index, offset, length}` (at most 1 MiB) | its bytes |
-| `C` | close `{handle, size}` | `{version}` once staged |
+| `C` | close `{handle, size, discard?}` | `{version}` once staged; `{}` for a discard |
 | `M`, `U`, `D` | mkdir, unlink, rmdir `{path, base?}` | `{}` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `{}` |
 | `X` | the executable bit `{path, base?, executable}` | `{version}` |
@@ -262,7 +282,7 @@ extend it.
 
 | Slice | What | Tests |
 | --- | --- | --- |
-| 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
+| 3a | SQL: an upload holds its actor's own puts (migration `20260928489290`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
 | 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report (built as 3c-1, the pending changes and the boundary plan, #861; 3c-2, the protocol, staging and boundaries, #867; 3c-3, the hosted-db run, `scripts/test-folder-core-acceptance.mjs`'s F3-3c lines, #876) | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |
@@ -284,7 +304,8 @@ numbers decide whether step 4 needs more (packing small files, batching intents)
 
 **Restore in the web app** (§9 step 3) is a write of an old version's file reference through the member commit route.
 The core already lets an actor reference bytes of an old version it may read (C1D §7), so it needs no core change.
-It belongs with the web file page and history (P27, the Interfaces session).
+It is built in the web file page's history by RUNTIME-FOLDER-LINKS.md's LK6, one restore button for any old version,
+a file's or a link's (moved from P27 with the Interfaces session's agreement, 14 October).
 
 ## Proposals and questions
 

@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudControlRpcRefused, cloudControlRetryable } from "@qorpera/runtime/cloud-control-errors";
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 	type CloudNativeContextRequest,
 } from "@qorpera/runtime/cloud-native-context-composition";
-import type { CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudRunLogFolder, CloudRunLogGone, type CloudRunLogPlace } from "@qorpera/runtime/cloud-run-log";
 import { type CloudRunResumeRequest, CloudRunResumeRpc, openCloudRunResume } from "@qorpera/runtime/cloud-run-resume";
 import { MemoryCompactLane } from "@qorpera/runtime/memory-tree/compact";
 import { cloudRunStepText, RUN_STEP_OUTCOME_UNKNOWN } from "@qorpera/runtime/memory-tree/step-lines";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const signal = new AbortController().signal;
 const opened: NonNullable<Awaited<ReturnType<typeof openCloudRunResume>>>[] = [];
@@ -398,5 +400,55 @@ describe("resume binding RPC", () => {
 			"qorpera_memory_run_resume",
 			"qorpera_memory_run_resume_record",
 		]);
+	});
+
+	it("refuses a changed record replay (23505) at once through the HTTP client and the run's real retry", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const run = await CloudNativeToolRun.open(binding, { describeToolAuthority: async () => authority }, signal);
+		try {
+			// The same assignment reopened after appending steps: its stored record has a lower count.
+			const sent: CloudRunResumeRequest = {
+				stepsRead: 6,
+				unknownCalls: [{ call: "call_1", step: 1, receiptId: null }],
+			};
+			const refusal = { code: "23505", message: "Run resume was recorded otherwise", details: null, hint: null };
+			const resumeWith = (fetcher: typeof fetch) =>
+				new CloudRunResumeRpc({
+					run,
+					control: new HttpCloudCompanyPathControl({
+						supabaseUrl: "https://test.supabase.example",
+						serviceRoleKey: "test-key",
+						fetch: fetcher,
+					}),
+				});
+			// PostgREST answers a unique violation with 409.
+			const fetcher = vi.fn<typeof fetch>(async () => Response.json(refusal, { status: 409 }));
+			const resume = resumeWith(fetcher);
+			const error = await resume.record(sent, signal).catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(CloudControlRpcRefused);
+			expect((error as CloudControlRpcRefused).code).toBe("23505");
+			expect((error as CloudControlRpcRefused).detail).toBe(refusal.message);
+			expect(cloudControlRetryable(error)).toBe(false);
+			expect(fetcher).toHaveBeenCalledOnce();
+			expect(String(fetcher.mock.calls[0]?.[0]).split("/").at(-1)).toBe("qorpera_memory_run_resume_record");
+			expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ p_binding: binding, p_request: sent });
+			// The refusal ends this record only; the run's authority stands.
+			expect(run.signal.aborted).toBe(false);
+
+			// The real retry does ask a lost answer again, with the same request, and still stops at the refusal.
+			let answers = 0;
+			const lossy = vi.fn<typeof fetch>(async () => {
+				if (++answers === 1) return new Response("<html>bad gateway</html>", { status: 502 });
+				return Response.json(refusal, { status: 409 });
+			});
+			const retried = resumeWith(lossy);
+			const again = await retried.record(sent, signal).catch((error: unknown) => error);
+			expect(again).toBeInstanceOf(CloudControlRpcRefused);
+			expect((again as CloudControlRpcRefused).code).toBe("23505");
+			expect(lossy).toHaveBeenCalledTimes(2);
+			expect(lossy.mock.calls[1]?.[1]?.body).toBe(lossy.mock.calls[0]?.[1]?.body);
+		} finally {
+			run.close();
+		}
 	});
 });

@@ -38,6 +38,22 @@ export class CodingControlBusy extends Error {
 		super("CODING_CONTROL_BUSY");
 	}
 }
+/** The kernel refused the call (SQLSTATE 42501, or 22023 for a coding session's folder view) and rolled its transaction
+ * back whole: an answer, unlike an unconfirmed call. A control rejects with this only for the folder view open and
+ * close, and a test machine's take-in of reads: a test machine's boot acts on the open's (F3 6d) and the take-in's
+ * (6d-3b), a coding session's attach fails with its view's (F3 5g-4), and the code host's open (5e-3b) fails on it as
+ * on any other error. */
+export class CodingControlRefused extends Error {
+	/** The refusal's `qorpera.*` detail, when it gave one. */
+	readonly detail: string | null;
+	/** The kernel's own message, when it is one the control keeps for the method (a coding session's folder view). */
+	readonly reason: string | null;
+	constructor(detail: string | null, reason: string | null = null) {
+		super("CODING_CONTROL_REFUSED");
+		this.detail = detail;
+		this.reason = reason;
+	}
+}
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */

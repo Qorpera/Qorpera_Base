@@ -429,17 +429,21 @@ async function unitOverrides(names: readonly string[] = [providerUnit, namespace
 	const paths = command("/usr/bin/systemd-analyze", ["unit-paths"]).split("\n");
 	for (const name of names) {
 		const expected = `/etc/systemd/system/${name}`;
-		const fields = Object.fromEntries(
-			command("/usr/bin/systemctl", ["show", name, "--property=FragmentPath,SourcePath,DropInPaths"])
-				.split("\n")
-				.map((line) => {
-					const at = line.indexOf("=");
-					return [line.slice(0, at), line.slice(at + 1)];
-				}),
-		);
-		if (fields.DropInPaths || fields.SourcePath || (fields.FragmentPath && fields.FragmentPath !== expected))
-			throw new Error("OFFICE_INSTALL_UNIT_OVERRIDE");
 		const suffix = name.slice(name.lastIndexOf("."));
+		// The manager never loads a template itself (`systemctl show` refuses its name). Its instances take its
+		// fragment and drop-ins, which the disk checks below cover.
+		if (!name.endsWith(`@${suffix}`)) {
+			const fields = Object.fromEntries(
+				command("/usr/bin/systemctl", ["show", name, "--property=FragmentPath,SourcePath,DropInPaths"])
+					.split("\n")
+					.map((line) => {
+						const at = line.indexOf("=");
+						return [line.slice(0, at), line.slice(at + 1)];
+					}),
+			);
+			if (fields.DropInPaths || fields.SourcePath || (fields.FragmentPath && fields.FragmentPath !== expected))
+				throw new Error("OFFICE_INSTALL_UNIT_OVERRIDE");
+		}
 		const prefixes = [`${suffix.slice(1)}.d`, `${name}.d`];
 		for (let i = name.indexOf("-"); i >= 0; i = name.indexOf("-", i + 1))
 			prefixes.push(`${name.slice(0, i + 1)}${suffix}.d`);

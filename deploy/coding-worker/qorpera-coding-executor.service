@@ -14,8 +14,15 @@ SupplementaryGroups=lxd qorpera-agent-plug
 # The plug tool writes the client map entry and the lease, nothing else of the exit's state. Its lock (plug.lock,
 # which the exit makes) it opens read-only: flock needs no write access.
 ReadWritePaths=/var/lib/qorpera-agent-exit/clients /var/lib/qorpera-agent-exit/dhcp-hosts
+# The host leases of the member machines this executor holds, which qorpera-coding-host-watchdog.service reads
+# (README, "Host leases and the host watchdog"). Kept across restarts, so a restart inside the 90 s lease stops
+# no machine; gone at reboot.
+RuntimeDirectory=qorpera-coding-host
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 # Deployment must install a drop-in with RequiresMountsFor=<dedicated NAS mount>
-# and ReadWritePaths=<dedicated service-owned NAS root>. Missing mount fails closed.
+# and ReadWritePaths=<the same NAS mount point, the policy's mountPoint>. Missing mount fails closed.
+# Not a folder below it: its bind would be a mount whose root is that folder, which the storage check refuses.
 ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs
 LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json
 LoadCredential=qorpera-coding-registry:/etc/qorpera/coding-registry.key

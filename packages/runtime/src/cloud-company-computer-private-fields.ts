@@ -73,6 +73,20 @@ export const COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR = [
 /** What the agent sees instead of a private value. */
 export const COMPANY_COMPUTER_PRIVATE_VALUE = "[hidden]";
 
+/**
+ * Text shaped like a hook's signing secret (E3c-3's shape guard): `whsec_` and letters, digits, `+`, `/`, `=` or any
+ * percent escape, so a secret an address encodes once or more is hidden whole, never down to its first escape. It is
+ * private on every page, whoever revealed it (an agent that clicks Stripe's Reveal itself never reads the value):
+ * snapshots, titles and addresses hide it, and no screenshot is taken while a page shows it. E3b's HMAC secrets have
+ * this shape too. Global: make a copy before `test`ing with it.
+ */
+export const COMPANY_COMPUTER_SECRET_SHAPE = /whsec_(?:[A-Za-z0-9+/=]|%[0-9A-Fa-f]{2})+/g;
+
+/** The secret-shaped values `text` shows, each once. */
+export function companyComputerSecretShapes(text: string): string[] {
+	return [...new Set(text.match(COMPANY_COMPUTER_SECRET_SHAPE) ?? [])];
+}
+
 /** Values this short are hidden only where the page shows them in a box. */
 const MIN_HIDDEN_ELSEWHERE = 4;
 /** A value with this many letters and digits refuses a snapshot that still shows them, as a word of their own, in any form. */

@@ -12,7 +12,7 @@
 //!   to forget the name and the cached pages (`Inval`).
 //! - `changes` counts invalidations. A listing fetched while one happened is passed on but not kept.
 
-use crate::proto::{join, split, Entry, EntryKind};
+use crate::proto::{join, split, Authority, Entry, EntryKind};
 use std::collections::{HashMap, HashSet};
 
 pub const ROOT: u64 = 1;
@@ -25,20 +25,21 @@ pub struct Attr {
 	pub executable: bool,
 	/// The core's version of the path (an opaque id).
 	pub version: String,
+	pub authority: Option<Authority>,
 }
 
 impl Attr {
 	fn of(e: &Entry) -> Attr {
-		Attr { kind: e.kind, size: e.size, mtime_ms: e.mtime_ms, executable: e.executable, version: e.version.clone() }
+		Attr { kind: e.kind, size: e.size, mtime_ms: e.mtime_ms, executable: e.executable, version: e.version.clone(), authority: e.authority.clone() }
 	}
 	pub fn root() -> Attr {
-		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: String::new() }
+		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: String::new(), authority: None }
 	}
-	/// Whether `next` is another version of the file (or not the same kind of thing at all).
+	/// Whether `next` is another version of the file or link (or not the same kind of thing at all).
 	fn replaced_by(&self, next: &Attr) -> bool {
 		match (self.kind, next.kind) {
 			(EntryKind::Folder, EntryKind::Folder) => false,
-			(EntryKind::File, EntryKind::File) => self.version != next.version,
+			(a, b) if a == b => self.version != next.version,
 			_ => true,
 		}
 	}
@@ -310,6 +311,24 @@ impl Tree {
 		out
 	}
 
+	/// Forget the listing of the folder `path` and of each folder below it: the next lookup or listing in one asks the
+	/// node. Nodes the kernel holds keep their inodes and attributes; one only a dropped listing named goes. A listing
+	/// fetched across this is passed on but not kept. The kernel is told nothing: the caller's folders are ones it keeps
+	/// no names in (`fresh`).
+	pub fn drop_listings(&mut self, path: &str) {
+		self.changes += 1;
+		let below = format!("{path}/");
+		let dirs: Vec<u64> = self
+			.by_path
+			.iter()
+			.filter(|&(p, ino)| (p.as_str() == path || p.starts_with(&below)) && self.dirs.contains_key(ino))
+			.map(|(_, &ino)| ino)
+			.collect();
+		for dir in dirs {
+			self.drop_listing(dir);
+		}
+	}
+
 	/// Forget every listing and current attribute. Inode numbers the kernel holds stay valid; detached
 	/// versions keep their frozen attributes.
 	pub fn resync(&mut self) -> Vec<Inval> {
@@ -496,10 +515,10 @@ mod tests {
 	use super::*;
 
 	fn file(name: &str, size: u64, version: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::File, size, mtime_ms: 1, executable: false, version: version.into() }
+		Entry { name: name.into(), kind: EntryKind::File, size, mtime_ms: 1, executable: false, version: version.into(), authority: None }
 	}
 	fn folder(name: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::Folder, size: 0, mtime_ms: 1, executable: false, version: "f".into() }
+		Entry { name: name.into(), kind: EntryKind::Folder, size: 0, mtime_ms: 1, executable: false, version: "f".into(), authority: None }
 	}
 	fn ino_of(children: &[Child], name: &str) -> u64 {
 		children.iter().find(|c| c.name == name).unwrap().ino
@@ -592,6 +611,29 @@ mod tests {
 		assert!(!t.by_path.contains_key("docs/b.md"));
 		// a.md is held by the kernel, so its inode stays.
 		assert_eq!(t.path(a), Some("docs/a.md"));
+	}
+
+	#[test]
+	fn dropping_the_listings_below_a_folder_keeps_what_the_kernel_holds() {
+		let mut t = Tree::new();
+		let (root, _) = t.install(ROOT, vec![folder("refs"), folder("logs")], t.changes(), true, None);
+		let (refs, logs) = (ino_of(&root, "refs"), ino_of(&root, "logs"));
+		t.hold(refs);
+		t.hold(logs);
+		let (kids, _) = t.install(refs, vec![folder("heads"), folder("tags")], t.changes(), true, None);
+		let heads = ino_of(&kids, "heads");
+		t.hold(heads);
+		t.install(heads, vec![file("main", 41, "1"), file("topic", 41, "1")], t.changes(), true, None);
+		t.install(logs, vec![folder("refs")], t.changes(), true, None);
+		let started = t.changes();
+		t.drop_listings("refs");
+		assert!(t.listing(refs).is_none() && t.listing(heads).is_none(), "the folder's and those below it go");
+		assert!(t.listing(logs).is_some() && t.listing(ROOT).is_some(), "other listings stay");
+		assert_eq!(t.path(heads), Some("refs/heads"), "a folder the kernel holds keeps its inode");
+		assert!(!t.by_path.contains_key("refs/heads/topic"), "an entry only a dropped listing named goes");
+		let (kids, kept) = t.install(heads, vec![file("main", 41, "1")], started, true, None);
+		assert!(!kept, "a listing fetched across the drop is not kept");
+		assert_eq!(kids.len(), 1);
 	}
 
 	#[test]
@@ -710,7 +752,7 @@ mod tests {
 		t.hold(d);
 		t.hold(f);
 		// A file made here: held by the kernel's lookup; its folder lists again.
-		let new = Attr { kind: EntryKind::File, size: 0, mtime_ms: 5, executable: false, version: "p0".into() };
+		let new = Attr { kind: EntryKind::File, size: 0, mtime_ms: 5, executable: false, version: "p0".into(), authority: None };
 		let n = t.add_local(d, "new.md", new);
 		assert_eq!(t.path(n), Some("d/new.md"));
 		// Its save keeps the inode, and a listing that shows that version does too.

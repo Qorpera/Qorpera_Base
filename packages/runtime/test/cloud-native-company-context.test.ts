@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+	COMPANY_STATE_COFOUNDER_HANDLE,
+	COMPANY_STATE_FIRST_TODO_PATH,
+	companyStateSeedTree,
+} from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
@@ -13,6 +18,7 @@ import {
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -33,6 +39,14 @@ it("derives the agent, requester and company from closed cloud context, not a su
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/its human members and its AI agents/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/one live Company File/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
+});
+
+it("puts the computer's work in the company folder at /company, not on a workbench (F3 4f)", () => {
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"On the Company Computer the company folder is at /company: what you save there becomes a Company File change",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("nothing else on the computer is the Company File");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
 });
 
 it("tells agents to make folders for a category of files while a member's or assignment's folder always stands", () => {
@@ -630,6 +644,49 @@ it.each(["cofounder", "employee"] as const)(
 	},
 );
 
+it("points the Co-Founder at the company folder's own files, with no formation file or stages (P28b)", () => {
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	// The paths the creation's seed tree writes (companyStateSeedTree, #749).
+	for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
+	// Jonas, 4 October 2026: the first job is the onboarding. The Co-Founder drafts the vision in its own words and
+	// revises it until every founder approves; only then does it write the file, close its first todo and propose hires.
+	expect(cofounder).toContain("Your first job is the onboarding: building the vision with the founders");
+	expect(cofounder).toContain("Read vision/vision.md first");
+	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
+	expect(cofounder).toContain("write the whole vision in your own words, post it in the thread as a draft");
+	expect(cofounder).toContain("Revise it and post it again until every founder approves it");
+	expect(cofounder).toContain(
+		"Only then write it to vision/vision.md, with the company's name as its first line, and close your first todo, Start with the founders",
+	);
+	expect(cofounder).toContain("Then propose the first hires");
+	expect(cofounder).toContain("hire no one before the vision is agreed unless a founder asks you to");
+	expect(cofounder).not.toContain("blank page");
+	// Every path and the first todo's title it names are the seed tree's.
+	const seeded = companyStateSeedTree({
+		companyName: "Nordlys Kaffe",
+		cofounderId: "33333333-3333-4333-8333-333333333334",
+		firstTodo: { id: "44444444-4444-4444-8444-444444444445", requestedBy: null },
+	});
+	const paths = new Set(seeded.map((entry) => entry.path));
+	for (const path of ["vision/vision.md", "agents/sections.md"]) expect(paths.has(path)).toBe(true);
+	expect(paths.has(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
+	const todo = seeded.find((entry) => entry.path === COMPANY_STATE_FIRST_TODO_PATH);
+	expect(todo?.text).toContain("title: Start with the founders");
+	expect(todo?.text).toContain("Done when every founder has agreed their part of the vision.");
+	// Stage keys such as "research" are ordinary words; the snapshot-v1 formation file's stage list, schema and
+	// paths are not.
+	for (const overlay of [cofounder, cloudRuntimeHireBehavior("employee")]) {
+		for (const key of [
+			"source_inventory, discovery, research, vision_proposal, goals_ratified, responsibility_map, operating",
+			"stage keys",
+			"qorpera.company-formation/v1",
+			"formation.json",
+			"organization/",
+		])
+			expect(overlay).not.toContain(key);
+	}
+});
+
 it("keeps a large hire charter pageable with its admitted hash rather than silently dropping job instructions", async () => {
 	const f = nativeCompanyContextFixture();
 	const text = `${"a".repeat(4096)}\nVoice: candid. Escalation: material exceptions only.`;
@@ -824,9 +881,17 @@ it.each([
 	"agent-kind",
 	"missing-acknowledgement",
 	"invalid-acknowledgement",
+	"attachment-count",
+	"image-count",
+	"image-path",
+	"image-not-a-path",
+	"image-input-id",
+	"image-on-job",
+	"image-on-agent-send",
 ])("rejects mismatched context: %s", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const context = structuredClone(f.context);
+	const image = `agents/nora/memory/thread/images/${randomUUID()}/${"a".repeat(64)}.png`;
 	if (kind === "company") context.company.id = randomUUID();
 	else if (kind === "agent") context.agent.id = randomUUID();
 	else if (kind === "requester") context.currentInputs[0].authorUserId = f.authority.identity.sponsorUserId;
@@ -839,8 +904,48 @@ it.each([
 	else if (kind === "agent-kind") Object.assign(context, { agentKind: "administrator" });
 	else if (kind === "missing-acknowledgement") Reflect.deleteProperty(context, "initialAcknowledgementSatisfied");
 	else if (kind === "invalid-acknowledgement") Object.assign(context, { initialAcknowledgementSatisfied: "true" });
+	else if (kind === "attachment-count") Object.assign(context.currentInputs[0], { attachmentCount: 0 });
+	else if (kind === "image-count") context.currentInputs[0].images = Array.from({ length: 6 }, () => image);
+	else if (kind === "image-path") context.currentInputs[0].images = ["agents/nora/memory/thread/notes.md"];
+	else if (kind === "image-input-id")
+		context.currentInputs[0].images = [
+			`agents/nora/memory/thread/images/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/${"a".repeat(64)}.png`,
+		];
+	else if (kind === "image-not-a-path") Object.assign(context.currentInputs[0], { images: 1 });
+	else if (kind === "image-on-job") context.job.images = [image];
+	else if (kind === "image-on-agent-send")
+		context.history[0] = {
+			...context.history[0],
+			kind: "historical_agent_send",
+			actorKind: "staff_agent",
+			images: [image],
+		};
 	else context.currentInputs[0].content.nextOffset = -1;
 	expect(() => parseCloudNativeCompanyContext(context, f.binding)).toThrow();
+});
+
+it("lists a member's images by their folder paths, current and earlier, for company_read to open", () => {
+	const f = nativeCompanyContextFixture();
+	const thread = [1, 2].map((n) => `agents/nora/memory/thread/images/${randomUUID()}/${String(n).repeat(64)}.jpg`);
+	const group = `agents/groups/launch/memory/images/${randomUUID()}/${"c".repeat(64)}.webp`;
+	f.context.currentInputs[0].images = thread;
+	f.context.history[0] = {
+		...f.context.history[0],
+		kind: "historical_human_message",
+		actorKind: "human",
+		authorUserId: f.context.identity.requesterUserId,
+		images: [group],
+	};
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(context.currentInputs[0].images).toEqual(thread);
+	expect(context.history[0].images).toEqual([group]);
+	const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context));
+	expect(prompt.currentInputs[0].images).toEqual(thread);
+	expect(prompt.history[0].images).toEqual([group]);
+	expect(prompt.job.images).toEqual([]);
+	expect(compileCloudNativeCompanyInstructions(context)).toContain(
+		"lists the images the member attached as images, their paths in the company folder: open one with company_read to see it",
+	);
 });
 
 it("pages only an admitted source with stable provenance and its exact original hash", async () => {
@@ -997,33 +1102,39 @@ it.each([false, true])(
 it("rejects changed data or provenance on a later source page", async () => {
 	const f = nativeCompanyContextFixture();
 	const source = f.context.currentInputs[0];
-	const changed = {
-		...source,
-		content: {
-			...source.content,
-			text: "new",
-			originalBytes: 3,
-			sha256: createHash("sha256").update("new").digest("hex"),
+	const changed = [
+		{
+			...source,
+			content: {
+				...source.content,
+				text: "new",
+				originalBytes: 3,
+				sha256: createHash("sha256").update("new").digest("hex"),
+			},
 		},
-	};
-	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => changed);
-	const tool = cloudCompanyContextTool(f.context, f.binding, { call });
-	const args = tool.parseArguments({
-		sourceKind: "input",
-		id: source.id,
-		sha256: source.content.sha256,
-		offset: 0,
-		limit: 512,
-	});
-	await expect(
-		tool.execute(args, {
-			companyId: f.context.identity.companyId,
-			runId: f.binding.runId,
-			callId: "page",
-			argumentSha256: "b".repeat(64),
-			signal: new AbortController().signal,
-		}),
-	).rejects.toThrow("Context source changed");
+		// The same words with an image the run's context did not list.
+		{ ...source, images: [`agents/nora/memory/thread/images/${randomUUID()}/${"d".repeat(64)}.gif`] },
+	];
+	for (const [index, page] of changed.entries()) {
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => page);
+		const tool = cloudCompanyContextTool(f.context, f.binding, { call });
+		const args = tool.parseArguments({
+			sourceKind: "input",
+			id: source.id,
+			sha256: source.content.sha256,
+			offset: 0,
+			limit: 512,
+		});
+		await expect(
+			tool.execute(args, {
+				companyId: f.context.identity.companyId,
+				runId: f.binding.runId,
+				callId: `page-${index}`,
+				argumentSha256: "b".repeat(64),
+				signal: new AbortController().signal,
+			}),
+		).rejects.toThrow("Context source changed");
+	}
 });
 
 it("fences context errors and never turns their diagnostic text into instructions", async () => {
@@ -1115,6 +1226,45 @@ it("carries the run's service tier outside the shared tool identity", () => {
 			f.binding,
 		),
 	).toThrow();
+});
+
+it("carries a chain's origin for the action review only, never to the model (finding 881f1f21)", () => {
+	const f = nativeCompanyContextFixture();
+	const room = { ...f.source("history", randomUUID(), "Room post: keep the price list current."), sequence: 4 };
+	const origin = {
+		runId: randomUUID(),
+		inputs: [f.source("input", randomUUID(), "Keep the price list current."), room],
+		routineIntent: null,
+	};
+	const context = parseCloudNativeCompanyContext({ ...f.context, origin }, f.binding);
+	expect(context.origin).toEqual(origin);
+	expect(Object.hasOwn(parseCloudNativeCompanyContext(f.context, f.binding), "origin")).toBe(false);
+	const routine = { ...origin, inputs: [], routineIntent: "Renew the domains." };
+	expect(parseCloudNativeCompanyContext({ ...f.context, origin: routine }, f.binding).origin).toEqual(routine);
+	// The model's context message never names it: a worker starts blank, and the request is the member's, not the agent's.
+	const prompt = composeCloudNativeCompanyPrompt(context);
+	expect(prompt).not.toContain("price list");
+	expect(Object.hasOwn(JSON.parse(prompt), "origin")).toBe(false);
+	// Refused: an origin with nothing in it, this run itself, another member's input, a cut source, a repeated or
+	// non-request source, an extra key (a coworker's message is never part of it), a long or bad text, and null.
+	const other = { ...f.source("input", randomUUID(), "Not the requester's."), authorUserId: randomUUID() };
+	const cut = f.source("input", randomUUID(), "Cut.");
+	cut.content = { ...cut.content, offset: 1, truncated: true };
+	for (const bad of [
+		{ ...origin, inputs: [] },
+		{ ...origin, runId: f.binding.runId },
+		{ ...origin, runId: "not-a-run" },
+		{ ...origin, inputs: [other] },
+		{ ...origin, inputs: [cut] },
+		{ ...origin, inputs: [origin.inputs[0], origin.inputs[0]] },
+		{ ...origin, inputs: [f.source("job", f.binding.runId, "{}")] },
+		{ ...origin, kind: "worker-completion" },
+		{ ...origin, message: "Check the invoices." },
+		{ ...origin, routineIntent: "x".repeat(16385) },
+		{ ...origin, routineIntent: 1 },
+		null,
+	])
+		expect(() => parseCloudNativeCompanyContext({ ...f.context, origin: bad }, f.binding)).toThrow();
 });
 
 it("names the company's agent folders, and refuses a context that names none", () => {
@@ -1259,31 +1409,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 }
 
 // The sha256 of each run's developer instructions and prompt, taken from master at 1e2e3f773 (after M1b compose,
-// #980) before C-P9 + AF made the company folder the only kind of context. A change to either is a change to every
-// run's bytes.
+// #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
+// images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
+// folder at /company replaced the workbench line). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "b1dfe0d73fd35704e697d6d76e771d0b1d6e89cff88179807edfc6d209e1beda",
-			prompt: "35c1e010081296977564ebb88aee05cd6c94c195a75fab7b6f832cbe69a57058",
+			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
+			prompt: "d3a5be48814723d8be602def1afafd4c25c5a78c615914c9da145109c712a5c1",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "b20b98f09b5430f7caa5d7910bbf658d2ad196e96c31b68cb126e92038bbf62f",
-			prompt: "b84fbeb21c11a335f2bb8618541bca328beb04b78cc37db39f1c12985145e99f",
+			instructions: "cfa3ddb3dc778426040a4be2f55f4351786b04f237dd7f55fb5b234d4a8a2266",
+			prompt: "9cb23983db74e2dfc64b4ea036395590a03fbbad3c556f21d9a49b9bf3f615c1",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "b1dfe0d73fd35704e697d6d76e771d0b1d6e89cff88179807edfc6d209e1beda",
-			prompt: "705cb782127ccbd631ce2de685e399a096e2ba36975865241678e1c25d6ccca1",
+			instructions: "07e9e3e45ce56ad4d343068fac2a572bc3b10caec1ca8ae9fb6138c15c1fc90c",
+			prompt: "8f199493f9c81ce231ff2647695178ee3b7589da1dd80e9b0fbd9d4c97336a9c",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

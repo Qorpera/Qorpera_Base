@@ -36,7 +36,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("brands only a complete transaction denial (%i, %j)", async (status, body, denied) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error) => error);
 		expect(error instanceof CloudCompanyPathRpcRefusal).toBe(denied);
 		expect(String(error)).not.toContain("PRIVATE_DENIAL");
@@ -45,7 +45,7 @@ describe("Company File bounded control transport", () => {
 
 	it.each([
 		"qorpera_assert_company_path_reads",
-		"qorpera_verify_company_path_file",
+		"qorpera_assert_native_connector_operation",
 		"qorpera_native_presence_forget",
 	] as const)("accepts PostgREST no-content success for the void RPC %s", async (method) => {
 		const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
@@ -56,23 +56,14 @@ describe("Company File bounded control transport", () => {
 	it.each([
 		"qorpera_record_runtime_observation_batch",
 		"qorpera_begin_native_company_execution_v2",
+		"qorpera_begin_native_company_execution_v3",
+		"qorpera_bind_native_company_context",
+		"qorpera_memory_events_run",
+		"qorpera_memory_compaction_record",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
-		"qorpera_read_company_path_v2",
-		"qorpera_list_company_paths_v2",
-		"qorpera_read_company_path",
-		"qorpera_list_company_paths",
-		"qorpera_confirm_company_path_read",
 		"qorpera_record_native_context_view",
 		"qorpera_fence_native_context",
-		"qorpera_check_company_path_mutation",
-		"qorpera_verify_company_path_tree",
-		"qorpera_prepare_company_path_mutation",
-		"qorpera_commit_company_path_mutation",
-		"qorpera_native_company_file_write_source",
-		"qorpera_native_company_file_write",
-		"qorpera_prepare_company_path_approval",
-		"qorpera_apply_company_path_approval",
 		"qorpera_native_presence_register",
 		"qorpera_company_presence_scope",
 		"qorpera_native_presence_subject",
@@ -140,7 +131,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("distinguishes definite head conflict %i %j", async (status, body, conflict) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_commit_company_path_mutation", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error instanceof CloudCompanyHeadConflict).toBe(conflict);
 		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
@@ -159,7 +150,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("brands only a complete request precondition refusal (%i, %j)", async (status, body, precondition) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_check_company_path_mutation", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(precondition);
 		// Either way the diagnostic category stays what it was, and no database text leaks.
@@ -179,7 +170,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("brands only a complete missing-folder refusal (%i, %j)", async (status, body, missing) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_check_company_path_mutation", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error instanceof CloudCompanyPathRpcParentMissing).toBe(missing);
 		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(false);
@@ -227,7 +218,7 @@ describe("Company File bounded control transport", () => {
 		const transport = vi.fn<typeof fetch>(
 			async () => new Response(new ReadableStream<Uint8Array>({ cancel }), { status }),
 		);
-		const result = fixture(transport).call("qorpera_commit_company_path_mutation", {}, new AbortController().signal);
+		const result = fixture(transport).call("qorpera_describe_agent_open_work", {}, new AbortController().signal);
 		const rejected = expect(result).rejects.toThrow("unavailable");
 		await vi.advanceTimersByTimeAsync(3001);
 		await rejected;
@@ -238,7 +229,7 @@ describe("Company File bounded control transport", () => {
 	it("bounds an uncooperative fetch and never retries an uncertain write", async () => {
 		vi.useFakeTimers();
 		const transport = vi.fn<typeof fetch>(async () => new Promise<Response>(() => undefined));
-		const result = fixture(transport).call("qorpera_commit_company_path_mutation", {}, new AbortController().signal);
+		const result = fixture(transport).call("qorpera_send_agent_mail", {}, new AbortController().signal);
 		const rejected = expect(result).rejects.toThrow("unavailable");
 		await vi.advanceTimersByTimeAsync(3001);
 		await rejected;
@@ -267,6 +258,49 @@ describe("Company File bounded control transport", () => {
 		await expect(fenced).resolves.toEqual({ kept: [] });
 	});
 
+	it("waits a caller's own budget instead of its 3 s stop, and still cuts the call at that budget (16 Oct 2026)", async () => {
+		// Two TESTCO runs (62cd3036, 5ca8ded9) failed their run-start reads at 3 s, while the database had them waiting
+		// up to 4 s in line for the run's job row: the caller's 10 s never applied.
+		vi.useFakeTimers();
+		let answer: (response: Response) => void = () => undefined;
+		const transport = vi.fn<typeof fetch>(async (input) =>
+			String(input).endsWith("/qorpera_describe_company_run_context")
+				? new Promise<Response>((resolve) => {
+						answer = resolve;
+					})
+				: new Promise<Response>(() => undefined),
+		);
+		const control = fixture(transport);
+		const context = control.call("qorpera_describe_company_run_context", {}, new AbortController().signal, 10_000);
+		const wake = control.call("qorpera_read_native_wake", {}, new AbortController().signal, 10_000);
+		const wakeRejected = expect(wake).rejects.toMatchObject({ category: "timeout" });
+		// The same read with no budget of its own still stops at 3 s.
+		const unbudgeted = control.call("qorpera_read_native_wake", {}, new AbortController().signal);
+		const unbudgetedRejected = expect(unbudgeted).rejects.toMatchObject({ category: "timeout" });
+		await vi.advanceTimersByTimeAsync(3001);
+		await unbudgetedRejected;
+		// 4 s in, the run lock's longest wait: the budgeted calls are still waiting, and one answers.
+		await vi.advanceTimersByTimeAsync(1000);
+		answer(Response.json({ context: true }));
+		await expect(context).resolves.toEqual({ context: true });
+		// The one that never answers is cut at its budget, not before.
+		await vi.advanceTimersByTimeAsync(5998);
+		let settled = false;
+		void wake.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(2);
+		await wakeRejected;
+		expect(transport).toHaveBeenCalledTimes(3);
+	});
+
 	it("bounds responses and never interprets malformed errors as permission to retry", async () => {
 		for (const response of [
 			new Response("bad JSON", { status: 409 }),
@@ -274,7 +308,7 @@ describe("Company File bounded control transport", () => {
 			Response.json({ body: "x".repeat(300000) }),
 		]) {
 			const error = await fixture(async () => response)
-				.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+				.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 				.catch((error: unknown) => error);
 			expect(error).toBeInstanceOf(Error);
 			expect(error).not.toBeInstanceOf(CloudCompanyHeadConflict);
@@ -294,7 +328,7 @@ describe("Company File bounded control transport", () => {
 				Response.json({ code, message, details: null, hint: null }, { status }),
 			);
 			const error = await fixture(transport)
-				.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+				.call("qorpera_send_agent_mail", {}, new AbortController().signal)
 				.catch((error: unknown) => error);
 			expect(error).toBeInstanceOf(CloudControlRpcRefused);
 			expect((error as CloudControlRpcRefused).code).toBe(code);
@@ -316,7 +350,7 @@ describe("Company File bounded control transport", () => {
 			typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
 		);
 		const error = await fixture(transport)
-			.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+			.call("qorpera_send_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error).not.toBeInstanceOf(CloudControlRpcRefused);
 		expect(cloudControlRetryable(error)).toBe(true);
@@ -326,7 +360,7 @@ describe("Company File bounded control transport", () => {
 		const transport = vi.fn<typeof fetch>();
 		const abort = new AbortController();
 		abort.abort();
-		await expect(fixture(transport).call("qorpera_read_company_path_v2", {}, abort.signal)).rejects.toThrow();
+		await expect(fixture(transport).call("qorpera_find_agent_mail", {}, abort.signal)).rejects.toThrow();
 		expect(transport).not.toHaveBeenCalled();
 	});
 
@@ -334,7 +368,7 @@ describe("Company File bounded control transport", () => {
 	it.each([
 		"qorpera_describe_company_run_context",
 		"qorpera_assert_company_path_reads",
-		"qorpera_commit_company_path_mutation",
+		"qorpera_find_agent_mail",
 	] as const)("treats a lock timeout on %s as unavailable, never a refusal or a head conflict", async (method) => {
 		const transport = vi.fn<typeof fetch>(async () =>
 			Response.json(
@@ -364,7 +398,7 @@ describe("Company File bounded control transport", () => {
 			Response.json({ message: "PRIVATE_PATH PRIVATE_CREDENTIAL" }, { status }),
 		);
 		const error = await fixture(transport)
-			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
 		expect(error).toMatchObject({ category });
@@ -396,6 +430,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_close_proposal",
 		"qorpera_folder_archive_coding_worker",
 		"qorpera_folder_manage_hook",
+		"qorpera_folder_note_interface_changes",
 	] as const;
 
 	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {
@@ -463,7 +498,7 @@ describe("the folder core's entry points (core C3)", () => {
 	it("keeps today's mapping for every other RPC, and brands no incomplete folder error", async () => {
 		const denial = { code: "42501", message: "Run is unavailable", details: null, hint: null };
 		const other = await fixture(vi.fn<typeof fetch>(async () => Response.json(denial, { status: 403 })))
-			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(other).toBeInstanceOf(CloudCompanyPathRpcRefusal);
 		for (const body of [
@@ -516,7 +551,7 @@ describe("the folder core's entry points (core C3)", () => {
 			[504, page, "qorpera_folder_commit", "transport_unavailable"],
 			[502, "x".repeat(5000), "qorpera_folder_record_release", "transport_unavailable"],
 			// Any call's unreadable 5xx is a lost answer (control calls, 4 Oct 2026); only checks of a run ask again.
-			[504, page, "qorpera_read_company_path_v2", "transport_unavailable"],
+			[504, page, "qorpera_find_agent_mail", "transport_unavailable"],
 			[400, page, "qorpera_folder_commit", "invalid_response"],
 		] as const) {
 			const error = await fixture(vi.fn<typeof fetch>(async () => new Response(body, { status })))
@@ -530,12 +565,12 @@ describe("the folder core's entry points (core C3)", () => {
 	it("gives a listing page and a change set's outcomes room, and nothing else", async () => {
 		const sized = (bytes: number) => ({ padding: "x".repeat(bytes) });
 		for (const [method, bytes, fits] of [
-			["qorpera_folder_list", 1_900_000, true],
-			["qorpera_folder_list", 2_200_000, false],
+			["qorpera_folder_list", 8_000_000, true],
+			["qorpera_folder_list", 8_500_000, false],
 			["qorpera_folder_commit", 3_000_000, true],
 			["qorpera_folder_read", 300_000, false],
 			["qorpera_folder_record_release", 300_000, false],
-			["qorpera_read_company_path_v2", 300_000, false],
+			["qorpera_find_agent_mail", 300_000, false],
 		] as const) {
 			const result = await fixture(vi.fn<typeof fetch>(async () => Response.json(sized(bytes))))
 				.call(method, {}, new AbortController().signal)
@@ -548,5 +583,20 @@ describe("the folder core's entry points (core C3)", () => {
 				);
 			expect([method, bytes, result]).toEqual([method, bytes, fits]);
 		}
+	});
+
+	it("reads a listing page of 200 links with the longest paths and targets escaped at worst", async () => {
+		const entries = Array.from({ length: 200 }, (_, index) => ({
+			path: `${String(index).padStart(3, "0")}${'"'.repeat(4093)}`,
+			kind: "symlink",
+			receipt: "x".repeat(550),
+			target: "\u0001".repeat(4095),
+		}));
+		const answer = { schema: "fixture", entries, next: entries.at(-1)!.path };
+		expect(Buffer.byteLength(JSON.stringify(answer))).toBeGreaterThan(6_500_000);
+		const transport = vi.fn<typeof fetch>(async () => Response.json(answer));
+		await expect(fixture(transport).call("qorpera_folder_list", {}, new AbortController().signal)).resolves.toEqual(
+			answer,
+		);
 	});
 });

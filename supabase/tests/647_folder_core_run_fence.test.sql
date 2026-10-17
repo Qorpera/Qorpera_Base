@@ -114,15 +114,10 @@ end $$;
 
 -- The checks start here: a test that runs after this file's fixture part stops at this line.
 
--- 2. The lease check without locks is the legacy check without its three FOR SHARE, and nothing else.
+-- 2. The lease check takes no lock. (It was the legacy check without its three FOR SHARE; legacy sweep F1c,
+-- 20260930246000, dropped the legacy check.)
 do $$
 begin
-	if replace(pg_get_functiondef('public.qorpera_folder_native_lease_current(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure),
-			'FUNCTION public.qorpera_folder_native_lease_current(', 'FUNCTION public.qorpera_validate_native_provider_execution_lease_before_recover(')
-		is distinct from replace(pg_get_functiondef(
-			'public.qorpera_validate_native_provider_execution_lease_before_recover(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure),
-			E'\n\tfor share;', ';') then
-		raise exception 'The lock-free lease check differs from the legacy one'; end if;
 	if pg_get_functiondef('public.qorpera_folder_native_lease_current(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure)
 		~* 'for (update|share|no key update|key share)' then raise exception 'The folder lease check locks'; end if;
 end $$;
@@ -424,14 +419,10 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_folder_presence_routes(%L, %L, false)',
 		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']),
 		'42501', 'Company File authority is unavailable');
-	-- A member's shared exports: no company fence, and nothing listed yet.
-	perform pg_temp.path_claims('authenticated', c_member);
-	s := public.qorpera_list_member_file_exports(c_env);
-	if s -> 'items' <> '[]'::jsonb then raise exception 'Member exports: %', s; end if;
-	perform pg_temp.raises_like(format('select public.qorpera_member_file_export_source(%L, %L)', c_env,
-		jsonb_build_object('realm','object_storage','assetId',extensions.gen_random_uuid(),'sha256',repeat('a',64))), '42501',
-		'Completed shared export required');
-	perform pg_temp.path_claims('service_role');
+	-- A member's shared exports are gone (legacy sweep E3, 20260930450000); the member actor is in 6.
+	if to_regprocedure('public.qorpera_list_member_file_exports(uuid,uuid,integer)') is not null
+		or to_regprocedure('public.qorpera_member_file_export_source(uuid,jsonb)') is not null then
+		raise exception 'A member''s shared export functions must be gone'; end if;
 end $$;
 
 -- 8. The run context: the company name from the folder index and F2's agent folders (F2-1b, 20260929440000), whose
@@ -477,9 +468,9 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office's export and the self-approval until C1c-3 (machine start serves folder-v2 since C1c-3f, test
--- 824; an agent's office start and its descriptor since C1c-3l, test 890; an agent's screenshot capture since P06d, test
--- 910); the
+-- 9. Refusals: the shared file export's source and the self-approval until C1c-3 (machine start serves folder-v2 since
+-- C1c-3f, test 824; an agent's office start and its descriptor since C1c-3l, test 890; an agent's screenshot capture
+-- since P06d, test 910; legacy sweep D3, 20260930332000, dropped the office's export); the
 -- runner broker's send, direct receipts
 -- and transcript append until C3 (the native send, the interaction request and the tool operation receipts have folder
 -- bodies since C1c-2b, tests 650 and 652). The same calls on a snapshot-v1 company are not refused as folder-v2.
@@ -490,15 +481,8 @@ declare
 begin
 	foreach v in array array[b, s] loop
 		foreach v_sql in array array[
-			format('select public.qorpera_native_office_file_export(%L, %L, %L, %L, %L, %L, %L, %L)', v, '{}', '{}', '{}',
-				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_shared_file_export_source(%L, %L)', v, '{}'),
 			format('select public.qorpera_self_approve_organization_proposal(%L, %L)', v, extensions.gen_random_uuid()),
-			format('select public.qorpera_begin_run_operation_receipt(%L, %L, %L, %L, %L, %L, %L, %L, %L, %L, false)', v ->> 'runnerId',
-				repeat('f', 64), v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', extensions.gen_random_uuid(), 'k', 'tool', repeat('a', 64),
-				repeat('b', 64)),
-			format('select public.qorpera_complete_run_operation_receipt(%L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'runnerId', repeat('f', 64),
-				v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', extensions.gen_random_uuid(), repeat('a', 64), '{}'),
 			format('select public.qorpera_send_runner_agent_message(%L, %L, %L, %L, %L, %L, %L, %L)', v ->> 'runnerId', repeat('f', 64),
 				v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', 'k', 'Hello.', 'progress'),
 			format('select public.qorpera_append_runner_transcript_event(%L, %L, %L, %L, %L, %L, %L, %L, 0)', v ->> 'runnerId', repeat('f', 64),
@@ -515,12 +499,13 @@ begin
 		raise exception 'A refused effect must not count'; end if;
 end $$;
 
--- 10. Snapshot-v1 controls: each dispatcher runs its legacy body for a snapshot-v1 company.
+-- 10. Snapshot-v1 controls: each dispatcher runs its legacy body for a snapshot-v1 company. (Since legacy sweep F1c,
+-- 20260930246000, the run check and the lease check are the folder core's for every company.)
 do $$
 declare s jsonb := current_setting('qorpera_test.snapshot_binding')::jsonb; v jsonb;
 begin
-	-- The run check and the lease check fail in the legacy lease check (the stored tuple), not in the folder run check.
-	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', s), '42501', 'native execution binding is unavailable');
+	-- The run check fails in the folder run check; the lease check fails on the stored tuple.
+	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', s), '42501', 'native tool run is unavailable');
 	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', s), '42501', 'native execution binding is unavailable');
 	-- The context assertion runs the legacy loop: a run with no legacy read paths passes, with no folder actor.
 	perform public.qorpera_company_path_assert_context(jsonb_build_object('environmentId', '64700000-0000-4000-8000-000000000021',

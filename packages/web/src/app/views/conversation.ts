@@ -1,5 +1,12 @@
+import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import {
+	type InterfaceChange,
+	type InterfaceChangeSubject,
+	interfaceChangeUndoable,
+} from "../../cloud/interface-changes.ts";
+import { type MessageErase, MessageEraseError } from "../../cloud/message-erases.ts";
 import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -23,15 +30,21 @@ import {
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionSlot, codingSessionLine, harnessMark } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
+import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import {
 	conversationTimestampLabel,
 	conversationTimestampTitle,
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
+import { confirmDialog, fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
+import {
+	type InterfaceUndoState,
+	interfaceChangeText,
+	renderInterfaceChangeLine,
+} from "../../ui/interface-change-line.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
@@ -68,6 +81,7 @@ import {
 } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { InterfacePreview, proposedSave } from "./interface-preview.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -113,6 +127,47 @@ interface MessageParts {
 	/** Received files: disposed with their part (it may hold an open preview). */
 	files?: { key: string; view: ReceivedAttachments };
 	caption?: HTMLElement;
+}
+
+/** The member's erase of one message here, as its line above the composer tells it: which message (its author and
+ * time, never a file), how far the erase got, and why it stopped if it did. */
+interface EraseLine {
+	readonly messageId: string;
+	readonly what: { readonly author: string; readonly time: string };
+	erase?: MessageErase;
+	failure?: string;
+}
+
+/** Which message an erase line is about. Mid-sentence, the member's own message is "from you", not "from You". */
+function eraseWhat(item: TranscriptMessage, author: string, mine: boolean): EraseLine["what"] {
+	return { author: mine ? t("you") : author, time: fmtTime(item.createdAt) };
+}
+
+/** A line with nothing more to say: refused, failed, or done with no copy left to name. */
+function eraseSettled({ erase, failure }: EraseLine): boolean {
+	return failure !== undefined || erase?.state === "refused" || (erase?.state === "done" && !erase.copies.length);
+}
+
+/** Waits `ms`, or less if `signal` aborts first. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal.addEventListener("abort", done, { once: true });
+	});
+}
+
+/** Why an erase could not be asked for, in the member's words. A 401 is the member's sign-in, not their role. */
+function eraseFailure(error: unknown, what: EraseLine["what"]): string {
+	const status = error instanceof MessageEraseError ? error.status : null;
+	if (status === 403) return t("Only an owner or admin can erase messages.");
+	if (status === 404) return t("The message from {author} at {time} can't be erased.", what);
+	if (status === 423) return t("The company is paused, so no message can be erased now.");
+	return t("Could not erase the message from {author} at {time}. Try again.", what);
 }
 
 /** Elements that hold a handler of their own or what the member typed or opened. */
@@ -255,6 +310,18 @@ export class ConversationView {
 	readonly #lifetime = new AbortController();
 	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
+	/** Undo of an agent's interface change, by its commit, while the member is in this thread. */
+	readonly #undos = new Map<string, InterfaceUndoState>();
+	/** Each message drawn in the thread: what it is and who wrote it, for its right-click menu. */
+	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string; mine: boolean }>();
+	/** What opens the next message menu: "key" after Shift+F10 or the menu key in the thread, else the type of the
+	 * pointer last pressed there ("mouse", "pen", "touch"). */
+	#menuInput = "";
+	/** Why the last Copy from a message's menu failed, said above the composer until a Copy works. */
+	#copyFailure: string | undefined;
+	/** The member's erases of messages here, one line each, oldest first, each read until it is done or fails (summary
+	 * trees M3c). */
+	#erases: EraseLine[] = [];
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
@@ -289,6 +356,9 @@ export class ConversationView {
 	#runNotificationKey = "";
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
+	/** A waiting approval card's preview of the pages its save would leave (I10), by review id: kept across re-renders
+	 * and drawn again as the folder is read. Null: its call saves no page. */
+	readonly #previews = new Map<string, InterfacePreview | null>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
 	#focusReview: string | undefined;
 	/** Every item of the last render by its id: a redraw keeps the nodes of unchanged items. */
@@ -655,6 +725,19 @@ export class ConversationView {
 			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
+		// A message's own menu: a right-click, a long press, or Shift+F10 or the menu key from a link in it. Also on an
+		// earlier page's message, which stands outside the live log. A browser fires the keyboard's at the focused element's
+		// place, not at 0,0, so the key itself is noted (on Windows the menu key opens it on release), and so is the type of
+		// the pointer pressed last.
+		const menuKey = (event: KeyboardEvent) => {
+			if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) this.#menuInput = "key";
+		};
+		this.#messages.addEventListener("keydown", menuKey);
+		this.#messages.addEventListener("keyup", menuKey);
+		this.#messages.addEventListener("pointerdown", (event) => {
+			this.#menuInput = event.pointerType;
+		});
+		this.#messages.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
 			this.#sizes.observe(this.#messages);
@@ -729,6 +812,9 @@ export class ConversationView {
 		this.#sharedDrafts.dispose();
 		for (const drawn of this.#drawn.values()) drawn.message?.files?.view.dispose();
 		this.#drawn.clear();
+		for (const preview of this.#previews.values()) preview?.dispose();
+		this.#previews.clear();
+		this.#actions.previewInterfaces?.(this, []);
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
@@ -959,6 +1045,316 @@ export class ConversationView {
 		} catch {
 			// The controller keeps the reason in the conversation state.
 		}
+	}
+
+	/** Undo an agent's interface change as the member; its line says how it went. One at a time per change. */
+	async #undoInterfaceChange(change: InterfaceChange): Promise<void> {
+		const undo = this.#actions.undoInterfaceChange;
+		if (!undo || this.#undos.get(change.commitId)?.state === "sending") return;
+		this.#undos.set(change.commitId, { state: "sending" });
+		this.update();
+		let state: InterfaceUndoState;
+		try {
+			state = { state: "answered", answer: await undo(change, this.#lifetime.signal) };
+		} catch {
+			state = { state: "failed" };
+		}
+		if (this.#lifetime.signal.aborted) return;
+		this.#undos.set(change.commitId, state);
+		this.update();
+	}
+
+	/** A message's menu, for an owner or admin, the roles the erase route takes (M3c): Erase, or for a message already
+	 * erased, how its erase went (its copies included), read again. A message on its way has none, and with nothing to
+	 * offer the browser's own menu stays. So it does for a right-click or a long press on a link, an image or attachment
+	 * (Open link, Copy link address, Save image), and for a mouse or pen right-click on text the member selected in the
+	 * message (Copy). The keyboard (Shift+F10, the menu key) still opens the message's there, since a link is its only way
+	 * into a message. So does a long press on the message's text (Android; iOS Safari sends no menu for a touch, so there
+	 * a pointer or a keyboard opens it), and the message's menu then offers Copy in place of the browser's: Chrome selects
+	 * the word under the finger before the menu comes, which Copy takes, while Firefox would select it only after an
+	 * untaken menu, so with nothing selected it offers Copy message, the message's whole text. */
+	#openMessageMenu(event: MouseEvent): void {
+		// What opened it: a key noted, else the event's own pointer (Chrome and Firefox send the menu as a pointer event,
+		// with no pointer type for a key), else the pointer pressed last.
+		const input = this.#menuInput;
+		this.#menuInput = "";
+		const pointer = (event as Partial<PointerEvent>).pointerType;
+		const keyboard = input === "key" || pointer === "" || !(event.clientX || event.clientY);
+		const touch = (pointer || input) === "touch";
+		const target = event.target instanceof Element ? event.target : null;
+		const element = target?.closest<HTMLElement>("article.message") ?? null;
+		const drawn = element ? this.#messageItems.get(element) : undefined;
+		const role = this.#company.store.get().team?.role;
+		if (
+			!target ||
+			!element ||
+			!drawn ||
+			drawn.item.pending ||
+			!this.#actions.messageErases ||
+			(role !== "owner" && role !== "admin")
+		)
+			return;
+		const selection = document.getSelection();
+		const selected =
+			selection &&
+			!selection.isCollapsed &&
+			selection.toString().trim() &&
+			(element.contains(selection.anchorNode) || element.contains(selection.focusNode))
+				? selection.toString()
+				: "";
+		if (!keyboard && (target.closest("a[href], img, video, audio, .received-attachments") || (!touch && selected)))
+			return;
+		event.preventDefault();
+		const { item, author, mine } = drawn;
+		const copy =
+			!touch || item.erased || !navigator.clipboard
+				? undefined
+				: selected
+					? { label: t("Copy"), text: selected }
+					: item.text.trim()
+						? { label: t("Copy message"), text: item.text }
+						: undefined;
+		const point = menuPoint(event, element);
+		// Focus goes back to the link the menu was opened from, else to the message itself.
+		const focused = document.activeElement;
+		const opener = focused instanceof HTMLElement && element.contains(focused) ? focused : this.#focusable(element);
+		openContextMenu({
+			label: t("Message from {name}", { name: author }),
+			x: point.x,
+			y: point.y,
+			items: [
+				...(copy
+					? [
+							{
+								label: copy.label,
+								icon: "copy",
+								select: () =>
+									void navigator.clipboard.writeText(copy.text).then(
+										() => this.#copied(undefined),
+										() => this.#copied(t("The text could not be copied.")),
+									),
+							},
+						]
+					: []),
+				item.erased
+					? {
+							label: t("Show how the erase went"),
+							icon: "trash",
+							select: () => void this.#showErase(item, author, mine),
+						}
+					: {
+							label: t("Erase message"),
+							icon: "trash",
+							danger: true,
+							select: () => void this.#eraseMessage(item, author, mine),
+						},
+			],
+			opener,
+			// The message is redrawn as it changes; focus goes back to the new one.
+			findOpener: () => this.#threadMessage(item.id) ?? null,
+		});
+	}
+
+	/** A message of the thread (the live log or an earlier page), ready for the keyboard. */
+	#threadMessage(id: string): HTMLElement | undefined {
+		const message = [...this.#messages.querySelectorAll<HTMLElement>("article.message")].find(
+			(element) => element.dataset.messageId === id,
+		);
+		return message && this.#focusable(message);
+	}
+
+	/** Gives the keyboard to a message of the thread, or to the thread itself when the message is no longer there. */
+	#focusMessage(id: string): void {
+		const target = this.#threadMessage(id);
+		if (target) target.focus({ preventScroll: true });
+		else {
+			this.#messages.tabIndex = -1;
+			this.#messages.focus({ preventScroll: true });
+		}
+	}
+
+	/** A message has no tab stop of its own; it takes focus only when given back to it. */
+	#focusable(message: HTMLElement): HTMLElement {
+		if (!message.hasAttribute("tabindex")) message.tabIndex = -1;
+		return message;
+	}
+
+	/** Erase one message for the whole company once the member confirms. The line above the composer says how it goes,
+	 * and the thread shows "(erased)" in its place once the cloud has blanked it (a full read, M3d). */
+	async #eraseMessage(item: TranscriptMessage, author: string, mine: boolean): Promise<void> {
+		const erases = this.#actions.messageErases;
+		const signal = this.#lifetime.signal;
+		const what = eraseWhat(item, author, mine);
+		if (
+			!erases ||
+			!(await confirmDialog(
+				t(
+					"Erase the message from {author} at {time}? It is erased for everyone: the thread shows (erased) in its place, and the company's memory forgets it. This can't be undone.",
+					what,
+				),
+				t("Erase"),
+				true,
+				undefined,
+				signal,
+			)) ||
+			signal.aborted
+		) {
+			// Cancelled: the dialog gave focus back to the link or message the menu was on, or, if a redraw took that, the
+			// message has it (the thread, if the message is gone).
+			if (!signal.aborted && (!document.activeElement?.isConnected || document.activeElement === document.body))
+				this.#focusMessage(item.id);
+			return;
+		}
+		await this.#followErase(item, what, (error) => eraseFailure(error, what));
+	}
+
+	/** A Copy from a message's menu ended: says so above the composer when it failed, and clears that once one works. */
+	#copied(failure: string | undefined): void {
+		if (this.#lifetime.signal.aborted || failure === this.#copyFailure) return;
+		this.#copyFailure = failure;
+		this.update();
+	}
+
+	/** How the erase of a message already erased went, read again without asking: the erase route answers an erased
+	 * message with the erase that did it, its copies included (an erase this view lost track of, or another member's). */
+	async #showErase(item: TranscriptMessage, author: string, mine: boolean): Promise<void> {
+		const what = eraseWhat(item, author, mine);
+		await this.#followErase(item, what, () =>
+			t("Could not read how the erase of the message from {author} at {time} is going.", what),
+		);
+	}
+
+	/** Asks the erase route for one message's erase and gives it a line of its own above the composer, read again until
+	 * it is done or refused, while the member erases other messages. A new line replaces the message's earlier one and
+	 * takes the place of the lines with nothing more to say (refused, failed, or done with no copy left). */
+	async #followErase(
+		item: TranscriptMessage,
+		what: EraseLine["what"],
+		failure: (error: unknown) => string,
+	): Promise<void> {
+		const erases = this.#actions.messageErases;
+		const signal = this.#lifetime.signal;
+		if (!erases || signal.aborted) return;
+		const line: EraseLine = { messageId: item.id, what };
+		this.#erases = [...this.#erases.filter((other) => other.messageId !== item.id && !eraseSettled(other)), line];
+		this.update();
+		const followed = () => !signal.aborted && this.#erases.includes(line);
+		let erase: MessageErase;
+		try {
+			erase = await erases.request(this.#sessionId, item.id, signal);
+		} catch (error) {
+			if (!followed()) return;
+			line.failure = failure(error);
+			this.update();
+			return;
+		}
+		// Read again after 1, 2, 4… seconds, then every 30 seconds, until it is done or refused.
+		let reread = item.erased === true;
+		for (let wait = 1000; ; wait = Math.min(wait * 2, 30_000)) {
+			if (!followed()) return;
+			// From `open` on the message is blank in the cloud: a full read draws it as "(erased)".
+			if (!reread && erase.state !== "pending" && erase.state !== "refused") {
+				reread = true;
+				void this.#company.loadConversation(this.#sessionId);
+			}
+			line.erase = erase;
+			this.update();
+			if (erase.state === "done" || erase.state === "refused") return;
+			await pause(wait, signal);
+			if (!followed()) return;
+			try {
+				erase = await erases.status(erase, signal);
+			} catch (error) {
+				const status = error instanceof MessageEraseError ? error.status : null;
+				// Refused or gone for this member: say so once. Anything else is read again at the next turn.
+				if (status === 401 || status === 403 || status === 404) {
+					if (!followed()) return;
+					line.failure = t("Could not read how the erase of the message from {author} at {time} is going.", what);
+					this.update();
+					return;
+				}
+			}
+		}
+	}
+
+	/** How the member's erase goes, in plain words: which message, where it is gone from so far, and each file at
+	 * another path that still holds a copy (the one exception to showing changes rather than files: the member erases
+	 * such a copy by its path). */
+	#eraseNotice({ what, erase, failure }: EraseLine): HTMLElement {
+		if (failure) return notice("danger", failure);
+		const here = this.#company.profile.environmentId.toLowerCase();
+		const copies = (erase?.copies ?? []).map(({ environmentId, path, live }) =>
+			h(
+				"div",
+				{ class: "erase-copy" },
+				environmentId === here
+					? live
+						? t("A copy stays in {path}.", { path })
+						: t("A copy stays in the history of {path}, which is deleted.", { path })
+					: live
+						? t("A copy stays in {path} in another Company File.", { path })
+						: t("A copy stays in the history of {path} in another Company File, where it is deleted.", { path }),
+			),
+		);
+		switch (erase?.state) {
+			case undefined:
+			case "pending":
+				return notice("neutral", t("Erasing the message from {author} at {time}…", what));
+			case "refused":
+				return notice(
+					"danger",
+					t(
+						"The message from {author} at {time} was not erased: only an owner or admin can erase messages.",
+						what,
+					),
+				);
+			case "done":
+				return copies.length
+					? notice(
+							"warn",
+							h(
+								"div",
+								{},
+								t(
+									"Erased the message from {author} at {time} from the thread and from the company's memory, but not from files that hold a copy of it.",
+									what,
+								),
+							),
+							...copies,
+						)
+					: notice(
+							"ok",
+							t(
+								"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.",
+								what,
+							),
+						);
+			default:
+				return notice(
+					"neutral",
+					h(
+						"div",
+						{},
+						t(
+							"The message from {author} at {time} is erased from the thread. Clearing it from the company's memory…",
+							what,
+						),
+					),
+					...copies,
+				);
+		}
+	}
+
+	/** The preview of a waiting approval card's save (I10), made the first time the card is drawn; none when its call
+	 * saves no page. */
+	#previewOf(review: ActionReviewCard): InterfacePreview | undefined {
+		let preview = this.#previews.get(review.reviewId);
+		if (preview === undefined) {
+			const save = proposedSave(review);
+			preview = save ? new InterfacePreview(this.#company, review.reviewId, save) : null;
+			this.#previews.set(review.reviewId, preview);
+		}
+		return preview ?? undefined;
 	}
 
 	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
@@ -1587,6 +1983,13 @@ export class ConversationView {
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
+		// Read before any message is drawn: a message brought up to date in place (erased) drops a link in it that had
+		// the keyboard.
+		const focused = document.activeElement;
+		const focusedMessage =
+			focused instanceof HTMLElement && this.#messages.contains(focused)
+				? focused.closest<HTMLElement>("article.message[data-message-id]")?.dataset.messageId
+				: undefined;
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -1635,6 +2038,22 @@ export class ConversationView {
 			const staff = this.#company.staffById(staffId);
 			return [staff?.id, staff?.displayName, staff?.appearance, staff?.templateId];
 		};
+		// An agent's interface change names each interface and table by its title as the folder has it now (a folder's
+		// name is one name in any case).
+		const folder = this.#company.store.get().interfaceFolder;
+		const titleOf = (subject: InterfaceChangeSubject) => {
+			const name = companyPathKey(subject.name);
+			if (subject.kind === "interface")
+				return folder?.pages.find((page) => companyPathKey(page.name) === name)?.file?.name;
+			for (const [table, read] of folder?.tables ?? []) if (companyPathKey(table) === name) return read.table?.name;
+			return undefined;
+		};
+		const changeLines = new Map(
+			items.flatMap((item) =>
+				item.kind === "interface_change" ? [[item.id, interfaceChangeText(item.change, titleOf)] as const] : [],
+			),
+		);
+		const undoes = Boolean(this.#actions.undoInterfaceChange) && this.#company.store.get().team?.capabilities.write;
 		const key = JSON.stringify([
 			items,
 			mentionTargets,
@@ -1670,9 +2089,14 @@ export class ConversationView {
 			clock,
 			skillNames,
 			items.flatMap((item) => (item.kind === "peer_link" ? [coworker(item.counterpartStaffId)] : [])),
+			[...changeLines.values()],
+			undoes,
+			[...this.#undos],
 			// A sent message learns its input id: the element passes on by it (see `handedOver`).
 			conversation.optimistic.map((item) => item.inputId ?? null),
 		]);
+		// A waiting card's preview is drawn again as the folder is read, whether or not the thread changed.
+		for (const preview of this.#previews.values()) preview?.refresh();
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
 		const decisions = new Map<string, TranscriptCard>();
@@ -1722,6 +2146,8 @@ export class ConversationView {
 		const taken = new Set<DrawnItem>();
 		/** A card drawn anew → the element it replaces, whose day separator stays with it. */
 		const replaced = new Map<HTMLElement, HTMLElement>();
+		/** The waiting approval cards this render draws, by review id: the previews of all others go. */
+		const waitingCards = new Set<string>();
 		const slotFor = (id: string) => {
 			let slot = id;
 			for (let copy = 1; drawn.has(slot); copy++) slot = `${id}#${copy}`;
@@ -1801,6 +2227,7 @@ export class ConversationView {
 			if (base?.key === itemKey && base.time === time) {
 				base.input = input;
 				drawn.set(slot, base);
+				this.#messageItems.set(base.element, { item, author, mine });
 				return base.element;
 			}
 			const entry = this.#drawMessage(
@@ -1809,7 +2236,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -1824,6 +2251,7 @@ export class ConversationView {
 			const former = this.#drawn.get(slot)?.element;
 			if (!base && former) replaced.set(entry.element, former);
 			drawn.set(slot, entry);
+			this.#messageItems.set(entry.element, { item, author, mine });
 			return entry.element;
 		};
 		// A card's actions reach the thread's agent as it is when clicked, not as it was drawn.
@@ -1984,6 +2412,20 @@ export class ConversationView {
 						h("div", { class: "conversation-note", role: "note" }, item.text),
 					),
 				);
+			} else if (item.kind === "interface_change") {
+				// An agent's change to the interfaces or tables, saved without review: one line, with Undo when the
+				// member can write and Undo can take it back.
+				const text = changeLines.get(item.id) ?? "";
+				const state = this.#undos.get(item.change.commitId);
+				const offered = undoes && interfaceChangeUndoable(item.change);
+				nodes.push(
+					keep(item.id, JSON.stringify([item.change, text, state, offered]), "", () =>
+						renderInterfaceChangeLine(item.change, text, {
+							...(state ? { state } : {}),
+							...(offered ? { undo: () => void this.#undoInterfaceChange(item.change) } : {}),
+						}),
+					),
+				);
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
 				const review = reviews.get(item.id.toLowerCase())!;
 				// A decided card needs no editor any more.
@@ -1998,6 +2440,10 @@ export class ConversationView {
 				const answerFailed = item.answerFailed === true && !given;
 				const answers =
 					canWrite && session?.status === "open" && answersActionReview(review, this.#company.userId, role);
+				// While it waits, a card whose call saves pages shows them as they would look (I10). Its preview is
+				// kept, and moves into the card when the card is drawn anew.
+				const preview = resolution === undefined ? this.#previewOf(review) : undefined;
+				if (resolution === undefined) waitingCards.add(review.reviewId);
 				// The Always allow draft is not part of the key: a kept card keeps the member's editor as it
 				// is. The card shows no time.
 				nodes.push(
@@ -2010,6 +2456,7 @@ export class ConversationView {
 								? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
 								: undefined,
 							memberName: (userId) => this.#company.memberName(userId),
+							...(preview ? { preview: preview.element } : {}),
 						}),
 					),
 				);
@@ -2149,6 +2596,16 @@ export class ConversationView {
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
 		this.#drawn = drawn;
+		// So do the previews of cards answered or gone; the folder reader reads what the others draw.
+		for (const [reviewId, preview] of this.#previews)
+			if (!waitingCards.has(reviewId)) {
+				preview?.dispose();
+				this.#previews.delete(reviewId);
+			}
+		this.#actions.previewInterfaces?.(
+			this,
+			[...this.#previews.values()].flatMap((preview) => preview?.pages ?? []),
+		);
 		const placeholderShown = this.#messagesPlaceholder?.isConnected === true;
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();
@@ -2238,6 +2695,7 @@ export class ConversationView {
 		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		const proposalCard = active?.closest<HTMLElement>("[data-proposal-id]")?.dataset.proposalId;
+		const changeLine = active?.closest<HTMLElement>("[data-interface-change]")?.dataset.interfaceChange;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
@@ -2425,6 +2883,19 @@ export class ConversationView {
 				this.#messages.focus({ preventScroll: true });
 			}
 		}
+		// So does an interface change's line as its Undo is sent and answered: its Undo while it can be pressed, else the
+		// line.
+		if (changeLine && active && !active.isConnected) {
+			const line = [...this.#messages.querySelectorAll<HTMLElement>("[data-interface-change]")].find(
+				(element) => element.dataset.interfaceChange === changeLine,
+			);
+			const retry = line?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+			(retry ?? line)?.focus({ preventScroll: true });
+		}
+		// A link in a message that was redrawn without it (the message erased) leaves the keyboard on the message, and a
+		// message gone from the thread leaves it on the thread.
+		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))
+			this.#focusMessage(focusedMessage);
 		this.#pinToBottom();
 	}
 
@@ -2462,6 +2933,7 @@ export class ConversationView {
 			item.kind === "agent" ? "from-agent" : "from-member",
 			mine && "mine",
 			item.phase === "progress" && "message-progress",
+			item.erased && "message-erased",
 			item.pending && `pending-${item.pending}`,
 			// A message still coming in keeps coming in while it changes ("Queued" to "Processing").
 			element.classList.contains("is-arriving") && "is-arriving",
@@ -2482,17 +2954,19 @@ export class ConversationView {
 		let body = before?.body;
 		if (body?.key !== keys.body) {
 			const nodes = (
-				item.kind === "agent"
-					? markdownBubbles(item.text)
-					: item.text || !item.attachmentCount
-						? [
-								h(
-									"div",
-									{ class: "text" },
-									...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
-								),
-							]
-						: []
+				item.erased
+					? [h("div", { class: "text" }, t("(erased)"))]
+					: item.kind === "agent"
+						? markdownBubbles(item.text)
+						: item.text || !item.attachmentCount
+							? [
+									h(
+										"div",
+										{ class: "text" },
+										...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
+									),
+								]
+							: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.
 			this.#markSkills(nodes);
@@ -2558,6 +3032,8 @@ export class ConversationView {
 			company.waitingForHours,
 			minutes,
 			stoppable,
+			this.#erases.map(({ what, erase, failure }) => [what, erase?.state, erase?.copies, failure]),
+			this.#copyFailure,
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
@@ -2565,6 +3041,8 @@ export class ConversationView {
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
 		if (conversation.interactionError) children.push(notice("danger", conversation.interactionError));
+		for (const line of this.#erases) children.push(this.#eraseNotice(line));
+		if (this.#copyFailure) children.push(notice("danger", this.#copyFailure));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(

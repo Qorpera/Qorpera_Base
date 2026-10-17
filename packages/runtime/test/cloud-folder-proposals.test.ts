@@ -1,4 +1,5 @@
 import type { JsonValue } from "@qorpera/contracts";
+import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudFolderProposals } from "@qorpera/runtime/cloud-folder-proposals";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -8,6 +9,7 @@ import {
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
+import { CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
@@ -352,6 +354,28 @@ it("gives the review every change in full, where the card counts the rest and cu
 	});
 });
 
+it("gives the review each link a parked new folder holds with its target, and a link's own change at its path", async () => {
+	// A view makes links (LK1): one in a new folder is listed with its target; a link's own unit, as a write's, with
+	// its path.
+	const contains = [...hireUnit.contains, { path: "agents/mira/latest", kind: "symlink", target: "notes.md" }];
+	const units = [
+		{ ...hireUnit, items: 3, contains },
+		{ unit: 2, op: "symlink", path: "docs/latest" },
+	];
+	const f = await fixture({ listed: () => page([proposal(HIRE, units)]) });
+	const card = f.apply.parseArguments({ proposalId: HIRE }) as { details: { key: string; value: string }[] };
+	expect(card.details).toContainEqual({ key: "change 2", value: "Change “Latest”" });
+	expect(f.apply.reviewContents?.(card)).toEqual({
+		proposalId: HIRE,
+		savedFrom: "computer_desktop",
+		createsAgent: true,
+		changes: [
+			{ op: "new_folder", path: "agents/mira", items: 3, contains, files: hireUnit.structured },
+			{ op: "symlink", path: "docs/latest" },
+		],
+	});
+});
+
 it("records the review of the proposal's units before its receipt, then applies it under that receipt", async () => {
 	const f = await fixture({
 		apply: () => committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "saved", version: VERSION }]),
@@ -417,7 +441,18 @@ it("says which changes were not applied and why", async () => {
 				{ unit: 5, op: "write", path: "docs/b.md", outcome: "conflict", reason: "exists" },
 			]),
 	});
-	const result = parse(await f.apply.execute({ proposalId: MIXED }, f.context));
+	// An apply that saved nothing is observed as denied with why, never as succeeded (P5 pass 2 finding 1).
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async () => {},
+	});
+	const observed = async (x: typeof f, proposalId: string) => {
+		const span = observability.start("apply_proposal");
+		const answer = parse(await x.apply.execute({ proposalId }, { ...x.context, observation: span }));
+		return { answer, observed: [span.result?.status, span.result?.errorCategory] };
+	};
+	const { answer: result, observed: mixed } = await observed(f, MIXED);
+	expect(mixed).toEqual(["succeeded", null]);
 	expect(result).toMatchObject({
 		outcome: "applied",
 		saved: 1,
@@ -440,7 +475,8 @@ it("says which changes were not applied and why", async () => {
 		apply: () =>
 			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "conflict", reason: "exists" }]),
 	});
-	const none = parse(await g.apply.execute({ proposalId: HIRE }, g.context));
+	const { answer: none, observed: stale } = await observed(g, HIRE);
+	expect(stale).toEqual(["denied", "stale_version"]);
 	expect(none).toMatchObject({ outcome: "not_applied", saved: 0, notSaved: [{ path: "agents/mira" }] });
 	expect(none.hired).toBeUndefined();
 	// The commit is still the receipt's: nothing was saved, and the receipt says so.
@@ -450,7 +486,8 @@ it("says which changes were not applied and why", async () => {
 		apply: () =>
 			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "denied", reason: "review_required" }]),
 	});
-	const decided = parse(await h.apply.execute({ proposalId: HIRE }, h.context));
+	const { answer: decided, observed: gone } = await observed(h, HIRE);
+	expect(gone).toEqual(["denied", "invalid_arguments"]);
 	expect(decided).toMatchObject({
 		outcome: "not_applied",
 		saved: 0,
@@ -458,6 +495,7 @@ it("says which changes were not applied and why", async () => {
 	});
 	expect(decided.notSaved).toBeUndefined();
 	expect(h.operationControl.completeFolderToolOperation.mock.calls[0]?.[1]).toMatchObject({ folderCommitId: COMMIT });
+	await observability.close();
 });
 
 it("refuses before any receipt when the proposal is no longer open, or the call has no approval", async () => {
@@ -533,6 +571,73 @@ it("ends refused, not unconfirmed, when a member discarded the proposal after it
 		expect(error, JSON.stringify(extra)).toBeInstanceOf(Error);
 		expect(error, JSON.stringify(extra)).not.toBeInstanceOf(CloudToolRefusal);
 	}
+});
+
+it("notes an applied change of the company's pages or tables in the run's conversation (I10)", async () => {
+	const TABLE = "5b0c2d3e-8888-4888-8888-888888888888";
+	// What a computer parked for review: a draft moved into a table's folder (in any case, the same path).
+	const move = { unit: 1, op: "move", path: "docs/leads.toml", to: "Tables/leads/table.toml" };
+	const tableFixture = () => {
+		// The recorder replays a call's own review; once the proposal is applied, it is open to no other call.
+		let applied = false;
+		let approved: unknown;
+		return fixture({
+			listed: () => page([proposal(TABLE, [move], { effect: "destructive", createsAgent: false })]),
+			recorder: (request) => {
+				if (applied && request.actionReviewId !== approved)
+					throw new CloudCompanyFolderRpcError("42501", "This proposal is not open for this run");
+				approved = request.actionReviewId;
+				return { schema: "qorpera.folder-review/v1", reviewId: REVIEW, approvedBy: null, units: 1 };
+			},
+			apply: () => {
+				applied = true;
+				return committed([{ ...move, outcome: "saved", version: VERSION }]);
+			},
+		});
+	};
+	const call = { proposalId: TABLE };
+	const asked = (f: { binding: unknown }) => ({ p_binding: f.binding, p_request: {} });
+	const applies = (f: { calls: { method: string }[] }) =>
+		f.calls.filter(({ method }) => method === "qorpera_folder_apply_proposal");
+	const f = await tableFixture();
+	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
+	const result = parse(await f.apply.execute(f.apply.parseArguments(call), f.context));
+	expect(result).toMatchObject({ outcome: "applied", saved: 1 });
+	// Noted once the call's receipt holds the commit.
+	expect(f.notes).toEqual([asked(f)]);
+	expect(note.mock.invocationCallOrder[0]).toBeGreaterThan(
+		f.operationControl.completeFolderToolOperation.mock.invocationCallOrder[0] as number,
+	);
+	// The call replayed under its own approval: its receipt answers, nothing is applied twice, and it notes again.
+	const replay = f.proposals?.tools(f.operations())[0] as CloudNativeTool;
+	expect(parse(await replay.execute(replay.parseArguments(call), f.context))).toMatchObject({ outcome: "applied" });
+	expect(applies(f)).toHaveLength(1);
+	expect(f.notes).toEqual([asked(f), asked(f)]);
+	// A proposal with no page or table in it asks for no note.
+	const g = await fixture({
+		apply: () => committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "saved", version: VERSION }]),
+	});
+	await g.apply.execute(g.apply.parseArguments({ proposalId: HIRE }), g.context);
+	expect(applies(g)).toHaveLength(1);
+	expect(g.notes).toEqual([]);
+	// A note that fails after the apply is a folder error, never a refusal (which says nothing happened): the call is
+	// unconfirmed.
+	const h = await tableFixture();
+	vi.spyOn(h.folder, "noteInterfaceChanges").mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	const error = await h.apply.execute(h.apply.parseArguments(call), h.context).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect(error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
+	expect(applies(h)).toHaveLength(1);
+	expect(h.notes).toEqual([]);
+	// Its repeat, a later call with its own approval, finds the proposal applied: nothing is applied again, and the
+	// change gets its note.
+	const later = { ...h.context, actionReviewId: "6c1d2e3f-9999-4999-8999-999999999999" };
+	await refuses(h.apply.execute(h.apply.parseArguments(call), later), "no longer waiting for this conversation");
+	expect(applies(h)).toHaveLength(1);
+	expect(h.notes).toEqual([asked(h)]);
 });
 
 it("closes a denied proposal as declined, and drops a discarded one", async () => {

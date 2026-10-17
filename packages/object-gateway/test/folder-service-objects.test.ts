@@ -75,7 +75,6 @@ async function fixture() {
 			authority,
 			replication,
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 			nativeObjects: { token: nativeToken, folder: authority },
 			folderServiceObjects: { token, authority },
 		}),
@@ -235,7 +234,7 @@ describe("the folder service's credential", () => {
 			authority,
 		);
 		const token = randomBytes(32).toString("base64url");
-		const base = { store, authority, controlToken: "synthetic-control", verifierToken: "synthetic-verifier" };
+		const base = { store, authority, controlToken: "synthetic-control" };
 		expect(() => createObjectGatewayHandler({ ...base, folderServiceObjects: { token, authority } })).toThrow();
 		expect(() =>
 			createObjectGatewayHandler({ ...base, replication, folderServiceObjects: { token: "short", authority } }),

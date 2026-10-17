@@ -3,6 +3,7 @@ import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-acti
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
+	type CloudCodexOpening,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -21,6 +22,7 @@ import {
 import {
 	type CloudNativeActionReview,
 	type CloudNativeFencedResult,
+	type CloudNativeFolderReports,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
@@ -37,8 +39,11 @@ import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
 	captures?: CloudNativeCaptureImages;
-	/** Revalidate the context's path/audience read set, not only run admission. */
-	assertContext: (signal: AbortSignal) => Promise<void>;
+	/** The run's desktop folder reports (F3 4f-2b): its tool results show them. */
+	folderReports?: CloudNativeFolderReports;
+	/** Revalidate the context's path/audience read set, not only run admission. `timeoutMs` is the caller's
+	 * budget for the read, all the way to the transport. */
+	assertContext: (signal: AbortSignal, timeoutMs?: number) => Promise<void>;
 	recordContextView: (
 		frame: CloudNativeFenceRequest,
 		outputs: readonly CloudNativeFencedResult[],
@@ -84,10 +89,16 @@ export async function runCloudNativeRunToolSession(options: {
 	) => CloudNativeRunToolAdapters | Promise<CloudNativeRunToolAdapters>;
 	command: readonly [string, ...string[]];
 	binarySha256: string;
-	prompt: string;
+	prompt?: string;
 	runtimeInstructions?: string;
 	/** Composes each model request's input; absent sends it as Codex built it (cloudNativeContextIdentity). */
 	composeContext?: CloudCodexContextComposer;
+	/** The run's opening (RUNTIME-AGENT-MEMORY-TREE.md §5.4): after the admission and before the agent's thread, it
+	 * gives the agent's input in place of prompt, runtimeInstructions and composeContext. */
+	opening?: (signal: AbortSignal) => Promise<CloudCodexOpening>;
+	/** The memory compactor and closing (§7.1), as runCloudCodexToolSession takes them. */
+	compactor?: MemoryCompactChannel;
+	closing?: (signal: AbortSignal) => Promise<void>;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
@@ -99,8 +110,6 @@ export async function runCloudNativeRunToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
-	/** The memory compactor's calls (RUNTIME-AGENT-MEMORY-TREE.md §7.1): this run's Codex session answers them. */
-	compactor?: MemoryCompactChannel;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
@@ -132,11 +141,12 @@ export async function runCloudNativeRunToolSession(options: {
 			const observation = options.observability?.start("context_authority");
 			try {
 				// Two independent reads, both required: the run's admission and its context read set.
-				// Both lock the run's job row, so each gets the pair's budget, not one read's. Each is asked again
-				// while its answer is lost or late, until the run's authority would lapse; a refusal stops the run.
+				// Both lock the run's job row, so each gets the pair's budget, not one read's, down to the transport.
+				// Each is asked again while its answer is lost or late, until the run's authority would lapse; a
+				// refusal stops the run.
 				const admission = run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
 				const context = run.retry(
-					(requestSignal) => activeAdapters.assertContext(requestSignal),
+					(requestSignal) => activeAdapters.assertContext(requestSignal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS),
 					signal,
 					CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 				);
@@ -195,6 +205,7 @@ export async function runCloudNativeRunToolSession(options: {
 			identity: run.identity,
 			tools: adapters.tools,
 			captures: adapters.captures,
+			...(adapters.folderReports ? { folderReports: adapters.folderReports } : {}),
 			assertActive,
 			signal: run.signal,
 			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),
@@ -212,6 +223,28 @@ export async function runCloudNativeRunToolSession(options: {
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			...(options.composeContext ? { composeContext: options.composeContext } : {}),
+			// The bind rechecks the run's lease, and the first request's fence its authority.
+			...(options.opening ? { opening: options.opening } : {}),
+			...(options.compactor ? { compactor: options.compactor } : {}),
+			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
+			// conversation lines close (§7.1).
+			...(runLog || options.closing
+				? {
+						closing: async (signal: AbortSignal) => {
+							closingStarted = true;
+							try {
+								if (runLog)
+									try {
+										await runLog.log.close(signal);
+									} finally {
+										await runLog.lines.finish(signal);
+									}
+							} finally {
+								await options.closing?.(signal);
+							}
+						},
+					}
+				: {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
@@ -219,19 +252,6 @@ export async function runCloudNativeRunToolSession(options: {
 			signal: run.signal,
 			timeoutMs: options.timeoutMs,
 			...(reviewer ? { reviewer } : {}),
-			...(options.compactor ? { compactor: options.compactor } : {}),
-			...(runLog
-				? {
-						closing: async (signal: AbortSignal) => {
-							closingStarted = true;
-							try {
-								await runLog.log.close(signal);
-							} finally {
-								await runLog.lines.finish(signal);
-							}
-						},
-					}
-				: {}),
 			beforeModelStart: async (signal) => {
 				await assertActive(signal);
 				await cloudToolRequest(

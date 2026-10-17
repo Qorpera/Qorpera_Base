@@ -68,7 +68,7 @@ async function shell(command: CompanyComputerLinuxCommands, script: string) {
 		program: "/bin/bash",
 		args: ["--noprofile", "--norc", "-c", script],
 		environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-		workingDirectory: layout.workbenchRoot,
+		workingDirectory: "/home/qorpera",
 		timeoutMs: 5000,
 		maxOutputBytes: 16384,
 		signal,
@@ -81,7 +81,7 @@ async function xdo(command: CompanyComputerLinuxCommands, binding: CompanyComput
 		program: "/usr/bin/xdotool",
 		args,
 		environment: { DISPLAY: `:${binding.screenOrdinal}`, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-		workingDirectory: layout.workbenchRoot,
+		workingDirectory: "/home/qorpera",
 		timeoutMs: 5000,
 		maxOutputBytes: 16384,
 		signal,
@@ -241,13 +241,13 @@ try {
 	const firstCommands = commands(bindings[0]);
 	const secondCommands = commands(bindings[1]);
 	assert.notEqual(launcher.xSocket(bindings[0]), launcher.xSocket(bindings[1]));
-	await shell(firstCommands, "printf shared-from-first > shared.txt");
+	await shell(firstCommands, "printf shared-from-first > /srv/workbench/shared.txt");
 	await xdo(firstCommands, bindings[0], "mousemove", "120", "230");
 	assert.match(
 		await xdo(firstCommands, bindings[0], "getmouselocation", "--shell"),
 		/^X=120\nY=230\nSCREEN=0\nWINDOW=[0-9]+$/,
 	);
-	assert.equal(await shell(secondCommands, "cat shared.txt"), "shared-from-first");
+	assert.equal(await shell(secondCommands, "cat /srv/workbench/shared.txt"), "shared-from-first");
 	await xdo(secondCommands, bindings[1], "mousemove", "420", "530");
 	assert.match(await xdo(firstCommands, bindings[0], "getmouselocation", "--shell"), /^X=120\nY=230\n/);
 	assert.match(await xdo(secondCommands, bindings[1], "getmouselocation", "--shell"), /^X=420\nY=530\n/);
@@ -293,7 +293,7 @@ try {
 		await readFile(`/srv/screens/${bindings[0].screenId}/preserved-setting`, "utf8"),
 		"survives-close-and-reopen",
 	);
-	assert.equal(await shell(secondCommands, "cat shared.txt"), "shared-from-first");
+	assert.equal(await shell(secondCommands, "cat /srv/workbench/shared.txt"), "shared-from-first");
 	const reopened = await launcher.launch(bindings[0], signal);
 	await reopened.ready;
 	await reopened.stop();

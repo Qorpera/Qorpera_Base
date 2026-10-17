@@ -322,6 +322,10 @@ export interface InterfaceStatePath {
 }
 
 const UUID = UUID_PATTERN;
+/** The id a new interface or table is given, as its refusal says: the pattern refuses many a made-up one, like
+ * 11111111-2222-3333-4444-555555555555, so "a lowercase uuid" alone does not say what to change. */
+const NEW_UUID =
+	"a new random lowercase uuid (version 4): 8-4-4-4-12 hex digits, the third group starting with 4 and the fourth with 8, 9, a or b";
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COLUMN = /^[a-z][a-z0-9_]*$/;
@@ -867,7 +871,7 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 	const head = reader.table(bag, "interface", "", true) ?? {};
 	reader.keys(head, "interface", INTERFACE_KEYS);
 	const id = reader.text(head, "id", "interface", { required: true, max: 36 });
-	if (id !== null && !UUID.test(id)) reader.add("interface.id", "bad_value", "interface.id must be a lowercase uuid.");
+	if (id !== null && !UUID.test(id)) reader.add("interface.id", "bad_value", `interface.id must be ${NEW_UUID}.`);
 	const name = reader.text(head, "name", "interface", { required: true, max: 60 });
 	const about = reader.text(head, "about", "interface", { max: 280 });
 	const emblem = reader.choice(head, "emblem", "interface", INTERFACE_EMBLEMS, null);
@@ -1211,7 +1215,9 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 		reader.add(
 			`${path}.from`,
 			"missing_key",
-			kind === "text" ? "A text block needs from or text." : "This block needs from.",
+			kind === "text"
+				? "A text block needs from or text."
+				: 'This block needs from: the source it shows, like "table:<name>". Only a text block holds its own text.',
 		);
 	}
 	if (kind === "text" && text !== null && from.length > 0)
@@ -1442,7 +1448,7 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 	const head = reader.table(bag, "table", "", true) ?? {};
 	reader.keys(head, "table", TABLE_KEYS);
 	const id = reader.text(head, "id", "table", { required: true, max: 36 });
-	if (id !== null && !UUID.test(id)) reader.add("table.id", "bad_value", "table.id must be a lowercase uuid.");
+	if (id !== null && !UUID.test(id)) reader.add("table.id", "bad_value", `table.id must be ${NEW_UUID}.`);
 	const name = reader.text(head, "name", "table", { required: true, max: 60 });
 	const about = reader.text(head, "about", "table", { max: 280 });
 	const rows = head.rows;

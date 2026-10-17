@@ -2,6 +2,7 @@ import { isUuid, parseRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { ObjectDependency, ObjectDependencyError } from "../dependency.ts";
 import { supabaseRequestHeaders } from "../supabase-headers.ts";
 import { nodeRequest, type Transport } from "./https-request.ts";
+import { validTarget } from "./protocol.ts";
 
 /** Who a mount reads as. A step 1 operator mount reads as a member or the platform; a machine view (step 2 on) as
  * the core's view actor, whose pass the folder service holds. */
@@ -27,9 +28,11 @@ export interface CoreReceipt {
 /** An entry as `qorpera_folder_entry_json` gives it (20260928120000). */
 export interface CoreEntry {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	/** The core's version id of the path (a uuid). */
 	readonly version: string;
+	/** A link's target (20260930380000), as written; only a link has one. */
+	readonly target?: string;
 	readonly manifestSha256?: string;
 	readonly fileSha256?: string;
 	readonly bytes?: number;
@@ -88,8 +91,19 @@ export interface FolderCore {
 	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
 	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). An open
 	 * answer says what the view is and which machine it belongs to (F3 4a). `unsavedSince`: since when the view has
-	 * had changes not published (an ISO time), or null; a desktop's keeps its seat in use. */
-	renewView(viewId: string, pass: string, unsavedSince: string | null, signal?: AbortSignal): Promise<ViewRenewal>;
+	 * had changes not published (an ISO time), or null; a desktop's keeps its seat in use. `service`: this service's id
+	 * (F3 5a `served_by`): a coding view's first renewal names its service, and a renewal from another service while
+	 * that one has not stopped cleanly closes the view (`service_crashed`). Other kinds ignore it. */
+	renewView(
+		viewId: string,
+		pass: string,
+		unsavedSince: string | null,
+		service: string,
+		signal?: AbortSignal,
+	): Promise<ViewRenewal>;
+	/** Clears `served_by` on every view this service served (F3 5a `qorpera_folder_service_stopped`), once every read it
+	 * recorded is released and everything is published; the views stay open for the next service. The views cleared. */
+	serviceStopped(service: string, signal?: AbortSignal): Promise<number>;
 	/** Opens an upload intent for a manifest (C1D §3.1): which of its objects the actor holds already. */
 	openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal): Promise<UploadOpen>;
 	/** The company an intent's object goes to (C1D §3.2's authorization, a plain read): the storage profile, for a view
@@ -116,15 +130,58 @@ export interface FolderCore {
 	): Promise<CommitAnswer>;
 	/** The files one commit kept as conflict copies on its receipt (P17), by unit and file. */
 	conflictCopies(environmentId: string, commitId: string, signal?: AbortSignal): Promise<readonly ConflictCopy[]>;
+	/** Releases a view's reads (core §6, at most 10,000): the core files them in the view's read set, and in its run's
+	 * when it acts for one. The same id with the same reads replays; with other reads it is refused. */
+	releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+		signal?: AbortSignal,
+	): Promise<ReleaseAnswer>;
+	/** Takes the lease on one shared git file for a view creating its lock file `<path>.lock` (5b, core §6): the view
+	 * holds it until it renames the lock onto the file (`gitPublish`) or removes it (`gitLeaseRelease`). */
+	gitLeaseTake(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		path: string,
+		signal?: AbortSignal,
+	): Promise<GitLease>;
+	/** Ends a lease: with no units it publishes nothing; with deletes of the file and its reflog it publishes those. */
+	gitLeaseRelease(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		units: readonly unknown[] | null,
+		signal?: AbortSignal,
+	): Promise<GitPublish | null>;
+	/** Drops every lease the view holds, as at a boundary; answers the files whose leases it dropped. */
+	gitLeasesDrop(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		signal?: AbortSignal,
+	): Promise<readonly string[]>;
+	/** Publishes a lease's file and reflog with the objects they name, whole or not at all; a publish ends the lease. */
+	gitPublish(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		operationKey: string,
+		units: readonly unknown[],
+		signal?: AbortSignal,
+	): Promise<GitPublish>;
 }
 
-/** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
-export interface ConflictCopy {
+/** One file or link a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it.
+ * A link's copy holds its target and no manifest. */
+export type ConflictCopy = {
 	readonly unit: number;
 	readonly file: number;
 	readonly path: string;
-	readonly manifestSha256: string;
-}
+} & (
+	| { readonly kind: "file"; readonly manifestSha256: string }
+	| { readonly kind: "symlink"; readonly target: string }
+);
 
 export interface UploadOpen {
 	readonly intentId: string;
@@ -163,6 +220,10 @@ export interface CommitAnswer {
 }
 
 const OUTCOMES = new Set(["saved", "conflict", "refused", "denied", "waiting_for_review"]);
+
+/** The output hash a view's release names: none (the core wants 64 hex digits; a run's release names the text it
+ * showed). */
+const NO_OUTPUT = "0".repeat(64);
 
 function hashOf(value: unknown, what: string): string {
 	if (typeof value !== "string" || !SHA256_HEX_PATTERN.test(value)) invalidAnswer(what);
@@ -235,25 +296,39 @@ export function parseConflictCopies(value: unknown): ConflictCopy[] {
 			return n;
 		};
 		if (typeof c.path !== "string") invalidAnswer("conflict copy");
-		return {
-			unit: count(c.unit),
-			file: count(c.file),
-			path: c.path,
-			manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest"),
-		};
+		const at = { unit: count(c.unit), file: count(c.file), path: c.path };
+		if (c.kind === undefined)
+			return { ...at, kind: "file", manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest") };
+		if (c.kind !== "symlink" || c.manifestSha256 !== undefined || !validTarget(c.target))
+			invalidAnswer("conflict copy");
+		return { ...at, kind: "symlink", target: c.target };
 	});
 }
 
-/** An open view's `kind` (`run_box`, `computer_desktop`, `coding_session`, …) and `machineId`: the machine allocation
- * it was opened on (migration 20260930104000), null for a run box. */
+/** An open view's `kind` (`run_box`, `computer_desktop`, `coding_session`, `code_host`, …), `machineId`: the machine
+ * allocation it was opened on (migration 20260930104000), null for a run box and a code host's; `companyId`: its
+ * company (the storage profile, every kind); `codingMachineId`: a coding session's machine (F3 5a,
+ * `qorpera_coding_machines.id`), null for every other kind. `service_crashed`: the service that served a coding view
+ * did not stop cleanly, so reads it served may never have been released (F3 5a). */
 export type ViewRenewal =
 	| {
 			readonly state: "open";
 			readonly leaseUntil: string;
 			readonly kind: string;
 			readonly machineId: string | null;
+			readonly companyId: string;
+			readonly codingMachineId: string | null;
 	  }
-	| { readonly state: "closed"; readonly reason: "closed" | "superseded" | "ended" | "expired" };
+	| {
+			readonly state: "closed";
+			readonly reason: "closed" | "superseded" | "ended" | "expired" | "service_crashed";
+	  };
+
+const CLOSED_REASONS = new Set(["closed", "superseded", "ended", "expired", "service_crashed"]);
+
+function uuidOrNull(value: unknown): value is string | null {
+	return value === null || (typeof value === "string" && isUuid(value));
+}
 
 export function parseViewRenewal(value: unknown): ViewRenewal {
 	const answer = answerRecord(value, "view renewal");
@@ -264,31 +339,143 @@ export function parseViewRenewal(value: unknown): ViewRenewal {
 		!Number.isNaN(Date.parse(answer.leaseUntil)) &&
 		typeof answer.kind === "string" &&
 		answer.kind !== "" &&
-		(answer.machineId === null || (typeof answer.machineId === "string" && isUuid(answer.machineId)))
+		uuidOrNull(answer.machineId) &&
+		typeof answer.companyId === "string" &&
+		isUuid(answer.companyId) &&
+		uuidOrNull(answer.codingMachineId)
 	)
-		return { state: "open", leaseUntil: answer.leaseUntil, kind: answer.kind, machineId: answer.machineId };
-	if (
-		answer.state === "closed" &&
-		(answer.reason === "closed" ||
-			answer.reason === "superseded" ||
-			answer.reason === "ended" ||
-			answer.reason === "expired")
-	)
-		return { state: "closed", reason: answer.reason };
+		return {
+			state: "open",
+			leaseUntil: answer.leaseUntil,
+			kind: answer.kind,
+			machineId: answer.machineId,
+			companyId: answer.companyId,
+			codingMachineId: answer.codingMachineId,
+		};
+	if (answer.state === "closed" && typeof answer.reason === "string" && CLOSED_REASONS.has(answer.reason))
+		return { state: "closed", reason: answer.reason as Extract<ViewRenewal, { state: "closed" }>["reason"] };
 	invalidAnswer("view renewal");
 }
 
-/** The core refused: `denied` (42501, the actor may not read this any more), `stopped` (55000, the company is paused
- * or being deleted), `invalid` (the request or the company does not fit: 22023, 0A000, P0002). The database
- * answered, so the dependency circuit stays closed. */
+/** The core refused: `denied` (42501, the actor may not read this any more), `unreadable` (42501, a read being
+ * released is no longer readable: the view's saves wait until its reads are released, which never happens now),
+ * `run_ended` (42501, the run the view acts for has ended), `stopped` (55000, the company is paused or being deleted),
+ * `invalid` (the request or the company does not fit: 22023, 0A000, P0002). `said` keeps the core's message. The
+ * database answered, so the dependency circuit stays closed. */
 export class CoreRefusal extends ObjectDependencyError {
-	readonly reason: "denied" | "stopped" | "invalid";
-	constructor(reason: "denied" | "stopped" | "invalid") {
-		super(reason === "denied" ? 403 : reason === "stopped" ? 423 : 400);
+	readonly reason: "denied" | "unreadable" | "run_ended" | "stopped" | "invalid";
+	readonly said: string | undefined;
+	constructor(reason: CoreRefusal["reason"], said?: string) {
+		super(reason === "stopped" ? 423 : reason === "invalid" ? 400 : 403);
 		this.name = "CoreRefusal";
 		this.message = `Folder core refused: ${reason}`;
 		this.reason = reason;
+		this.said = said;
 	}
+
+	/** 42501, for whichever reason: the actor may not do this (any more). */
+	get forbidden(): boolean {
+		return this.status === 403;
+	}
+}
+
+/** The core's refusal of a member-held view's release (20260928259230): such a view records no reads. */
+export const MEMBER_HELD_READS = "A member-held view records no reads";
+
+/** The core's refusal of a command view's save after its command ended (20260930183000): only the final one saves
+ * now, so the view waits for it. */
+export const COMMAND_ENDED = "Folder view command has ended";
+
+/** The core's refusal of a save whose actor's read set holds a read no longer readable (a run's, and from F3 5a a
+ * coding machine's, rechecked at rank 10). Kept `denied` for a run box, a desktop and a command (4c); a coding view's
+ * is `unreadable`, which moves its machine (F3 step 5, "Reads" rule 4). */
+export const READ_UNREADABLE = "A read is no longer readable";
+
+/** One read a view releases, as `qorpera_folder_record_release` takes it: the path, the version read (null for a
+ * folder's listing), and the receipt it was read under. */
+export interface ReleasedRead {
+	readonly path: string;
+	readonly version: string | null;
+	readonly authority: CoreReceipt;
+}
+
+export interface ReleaseAnswer {
+	readonly releaseId: string;
+	/** True when the core had filed this release already (the same id and reads). */
+	readonly replay: boolean;
+}
+
+export function parseReleaseAnswer(value: unknown, releaseId: string, reads: number): ReleaseAnswer {
+	const answer = answerRecord(value, "release");
+	if (
+		answer.schema !== "qorpera.folder-release/v1" ||
+		answer.releaseId !== releaseId ||
+		answer.reads !== reads ||
+		typeof answer.replay !== "boolean"
+	)
+		invalidAnswer("release");
+	return { releaseId, replay: answer.replay };
+}
+
+/** The versions a git lease's holder writes over (5b): the file, its reflog and `packed-refs`, each null when no such
+ * file is live. */
+export interface GitVersions {
+	readonly file: string | null;
+	readonly reflog: string | null;
+	readonly packedRefs: string | null;
+}
+
+/** A lease on one shared git file (5b `qorpera_folder_git_lease_take`, core §6's lock protocol): held by this view,
+ * busy while another view (or the platform's maintenance) holds it, or refused for the path. */
+export type GitLease =
+	| { readonly state: "held"; readonly leaseId: string; readonly path: string; readonly versions: GitVersions }
+	| { readonly state: "busy"; readonly leaseUntil: string; readonly reason: string | null }
+	| { readonly state: "refused"; readonly reason: string };
+
+/** A git publish: one change set, saved whole or not at all. */
+export interface GitPublish extends CommitAnswer {
+	readonly published: boolean;
+}
+
+export function parseGitLease(value: unknown, path: string): GitLease {
+	const answer = answerRecord(value, "git lease");
+	if (answer.schema !== "qorpera.folder-git-lease/v1") invalidAnswer("git lease");
+	if (answer.state === "held") {
+		if (typeof answer.leaseId !== "string" || answer.leaseId === "" || answer.path !== path)
+			invalidAnswer("git lease");
+		const versions = answerRecord(answer.versions, "git lease versions");
+		return {
+			state: "held",
+			leaseId: answer.leaseId,
+			path,
+			versions: {
+				file: liveVersionOf(versions.file),
+				reflog: liveVersionOf(versions.reflog),
+				packedRefs: liveVersionOf(versions.packedRefs),
+			},
+		};
+	}
+	if (answer.state === "busy") {
+		const reason = answer.reason ?? null;
+		if (typeof answer.leaseUntil !== "string" || (reason !== null && typeof reason !== "string"))
+			invalidAnswer("git lease busy");
+		return { state: "busy", leaseUntil: answer.leaseUntil, reason };
+	}
+	if (answer.state === "refused" && typeof answer.reason === "string")
+		return { state: "refused", reason: answer.reason };
+	invalidAnswer("git lease state");
+}
+
+export function parseGitPublish(value: unknown, units: number): GitPublish {
+	const answer = parseCommitAnswer(value, units);
+	const published = answerRecord(value, "git publish").published;
+	if (typeof published !== "boolean") invalidAnswer("git publish");
+	return { ...answer, published };
+}
+
+export function parseDroppedLeases(value: unknown): readonly string[] {
+	if (!Array.isArray(value) || value.some((path) => typeof path !== "string")) invalidAnswer("dropped git leases");
+	return value as string[];
 }
 
 /** The core's answer did not have the shape this service knows. Counted as an unavailable dependency. */
@@ -320,6 +507,10 @@ function versionOf(value: unknown): string {
 	return value;
 }
 
+function liveVersionOf(value: unknown): string | null {
+	return value === null || value === undefined ? null : versionOf(value);
+}
+
 function seqOf(value: unknown, what: string): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) invalidAnswer(what);
 	return value;
@@ -346,15 +537,21 @@ function receiptOf(value: unknown): CoreReceipt {
 }
 
 /** An entry or a feed change, checked field by field; unknown fields (seq, priorVersion) are dropped. A removal on the
- * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). */
+ * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). A
+ * link holds its target and nothing of a file's; the feed gives every other change a null target. */
 function entryOf(value: unknown, removal = false): CoreEntry {
 	const e = answerRecord(value, "entry");
-	if (typeof e.path !== "string" || e.path === "" || (e.kind !== "file" && e.kind !== "folder"))
+	if (
+		typeof e.path !== "string" ||
+		e.path === "" ||
+		(e.kind !== "file" && e.kind !== "folder" && e.kind !== "symlink")
+	)
 		invalidAnswer("entry");
 	const out: {
 		path: string;
-		kind: "file" | "folder";
+		kind: "file" | "folder" | "symlink";
 		version: string;
+		target?: string;
 		manifestSha256?: string;
 		fileSha256?: string;
 		bytes?: number;
@@ -387,6 +584,20 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 	}
 	if (!removal && out.kind === "file" && (out.manifestSha256 === undefined || out.bytes === undefined))
 		invalidAnswer("file entry");
+	if (e.target !== undefined && e.target !== null) {
+		if (out.kind !== "symlink" || removal || !validTarget(e.target)) invalidAnswer("link target");
+		out.target = e.target;
+	}
+	if (
+		!removal &&
+		out.kind === "symlink" &&
+		(out.target === undefined ||
+			out.manifestSha256 !== undefined ||
+			out.fileSha256 !== undefined ||
+			out.bytes !== undefined ||
+			out.executable === true)
+	)
+		invalidAnswer("link entry");
 	return out;
 }
 
@@ -461,6 +672,10 @@ function actorJson(actor: FolderActor): Record<string, string> {
 	}
 }
 
+/** Entries per list page and changes per feed page. An entry can hold a 4,096-byte path (twice that escaped) and a
+ * link's 4,095-byte target (control characters escaped, six times): about 33 KB, so 200 fit an answer's 8 MiB. */
+export const CORE_PAGE = 200;
+
 interface SupabaseFolderCoreOptions {
 	readonly projectUrl: string;
 	readonly secretKey: string;
@@ -497,7 +712,7 @@ export class SupabaseFolderCore implements FolderCore {
 					p_actor: actorJson(actor),
 					p_parent: "",
 					p_after: after,
-					p_limit: 1000,
+					p_limit: CORE_PAGE,
 					p_recursive: true,
 				},
 				signal,
@@ -519,7 +734,7 @@ export class SupabaseFolderCore implements FolderCore {
 					p_environment_id: environmentId,
 					p_actor: actorJson(actor),
 					p_after_seq: afterSeq,
-					p_limit: 1000,
+					p_limit: CORE_PAGE,
 					p_cursor: cursor,
 				},
 				signal,
@@ -564,15 +779,20 @@ export class SupabaseFolderCore implements FolderCore {
 		viewId: string,
 		pass: string,
 		unsavedSince: string | null,
+		service: string,
 		signal?: AbortSignal,
 	): Promise<ViewRenewal> {
 		return parseViewRenewal(
 			await this.#rpc(
 				"qorpera_folder_view_renew",
-				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: unsavedSince },
+				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: unsavedSince, p_service: service },
 				signal,
 			),
 		);
+	}
+
+	async serviceStopped(service: string, signal?: AbortSignal): Promise<number> {
+		return seqOf(await this.#rpc("qorpera_folder_service_stopped", { p_service: service }, signal), "views cleared");
 	}
 
 	async openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal) {
@@ -673,6 +893,95 @@ export class SupabaseFolderCore implements FolderCore {
 		);
 	}
 
+	async releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+		signal?: AbortSignal,
+	) {
+		return parseReleaseAnswer(
+			await this.#rpc(
+				"qorpera_folder_record_release",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_release_id: releaseId,
+					p_reads: reads,
+					p_output_sha256: NO_OUTPUT,
+				},
+				signal,
+			),
+			releaseId,
+			reads.length,
+		);
+	}
+
+	async gitLeaseTake(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		path: string,
+		signal?: AbortSignal,
+	) {
+		return parseGitLease(
+			await this.#rpc(
+				"qorpera_folder_git_lease_take",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_path: path },
+				signal,
+			),
+			path,
+		);
+	}
+
+	async gitLeaseRelease(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		units: readonly unknown[] | null,
+		signal?: AbortSignal,
+	) {
+		const answer = await this.#rpc(
+			"qorpera_folder_git_lease_release",
+			{ p_environment_id: environmentId, p_actor: actorJson(actor), p_lease_id: leaseId, p_units: units },
+			signal,
+		);
+		return units === null ? null : parseGitPublish(answer, units.length);
+	}
+
+	async gitLeasesDrop(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>, signal?: AbortSignal) {
+		return parseDroppedLeases(
+			await this.#rpc(
+				"qorpera_folder_git_leases_drop",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor) },
+				signal,
+			),
+		);
+	}
+
+	async gitPublish(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		operationKey: string,
+		units: readonly unknown[],
+		signal?: AbortSignal,
+	) {
+		return parseGitPublish(
+			await this.#rpc(
+				"qorpera_folder_git_publish",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_lease_id: leaseId,
+					p_operation_key: operationKey,
+					p_units: units,
+				},
+				signal,
+			),
+			units.length,
+		);
+	}
+
 	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal);
 	}
@@ -697,10 +1006,20 @@ export class SupabaseFolderCore implements FolderCore {
 			}
 			if (response.status < 200 || response.status > 299) {
 				// PostgREST's error code: the core's refusals are one company's state, not the database's health.
-				const code = value && typeof value === "object" && "code" in value ? value.code : undefined;
-				if (code === "42501") throw new CoreRefusal("denied");
-				if (code === "55000") throw new CoreRefusal("stopped");
-				if (code === "22023" || code === "0A000" || code === "P0002") throw new CoreRefusal("invalid");
+				const error = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+				const said = typeof error.message === "string" ? error.message : undefined;
+				if (error.code === "42501")
+					throw new CoreRefusal(
+						said === "A released read is no longer readable"
+							? "unreadable"
+							: said === "Run is unavailable"
+								? "run_ended"
+								: "denied",
+						said,
+					);
+				if (error.code === "55000") throw new CoreRefusal("stopped", said);
+				if (error.code === "22023" || error.code === "0A000" || error.code === "P0002")
+					throw new CoreRefusal("invalid", said);
 				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}
 			if (value === undefined) invalidAnswer("JSON");

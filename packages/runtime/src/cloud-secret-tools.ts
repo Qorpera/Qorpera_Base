@@ -1,7 +1,7 @@
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
-import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { CLOUD_PAIRED_REQUEST_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool, CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperation, CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
@@ -437,9 +437,18 @@ export async function describeCloudSecretTools(
 	binding: CloudNativeToolBinding,
 	signal: AbortSignal,
 ): Promise<readonly CloudNativeConnectorToolDescriptor[]> {
+	// It locks the run's job row and is asked alongside the run's other reads that do, so it gets the pair's
+	// budget, down to the transport: a 3 s stop failed a run that waited 4 s for the row (16 Oct 2026).
 	const value = await cloudToolRequest(
-		(requestSignal) => control.call("qorpera_list_native_connector_tools", { p_binding: binding }, requestSignal),
+		(requestSignal) =>
+			control.call(
+				"qorpera_list_native_connector_tools",
+				{ p_binding: binding },
+				requestSignal,
+				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+			),
 		signal,
+		CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	);
 	if (!Array.isArray(value) || value.length > 32) throw new Error("Native connector tool catalog is invalid");
 	const descriptors = value.map(parseDescriptor);

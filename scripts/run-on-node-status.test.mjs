@@ -54,6 +54,13 @@ test("statuses name the machine the run used", () => {
 	assert.equal(machineLabel("node02"), "node 2");
 	assert.equal(machineLabel("node12"), "node 12");
 	assert.equal(machineLabel("custom"), "custom");
+	// A run in parts (changed --parts) names each part's machine.
+	assert.equal(machineLabel("node02+node01"), "node 2 + node 1");
+	assert.equal(machineLabel("node02+node02"), "node 2 + node 2");
+	assert.equal(
+		statusDescription({ machine: "node02+node01", result: "passed", elapsedSeconds: 301, runner: "ci03+ci05", changed: { steps: ["lint", "web", "scripts"] } }),
+		"passed on node 2 + node 1 in 5m01s: 3 steps (ci03+ci05)",
+	);
 });
 
 test("results map to GitHub states and short descriptions", () => {
@@ -72,6 +79,15 @@ test("results map to GitHub states and short descriptions", () => {
 	assert.equal(
 		statusDescription({ machine: "node02", result: "failed", elapsedSeconds: 41, runner: "ci01", failedSteps: ["runtime", "scripts"] }),
 		"failed on node 2 in 41s: runtime, scripts (ci01)",
+	);
+	// --fail-fast: the steps it stopped, by their number.
+	assert.equal(
+		statusDescription({ machine: "node02+node01", result: "failed", elapsedSeconds: 75, runner: "ci01+ci04", failedSteps: ["hosted-db"], stoppedSteps: ["runtime", "runner-orchestrator"] }),
+		"failed on node 2 + node 1 in 1m15s: hosted-db, 2 stopped (ci01+ci04)",
+	);
+	assert.equal(
+		statusDescription({ machine: "node01", result: "failed", elapsedSeconds: 75, runner: "ci04", stoppedSteps: ["runtime"] }),
+		"failed on node 1 in 1m15s: 1 stopped (ci04)",
 	);
 	assert.equal(
 		statusDescription({ machine: "node01", result: "setup-failed", elapsedSeconds: 3, runner: null }),

@@ -72,6 +72,37 @@ export const CONVERSATION: Record<string, string> = {
 	"Agent {id}": "Agent {id}",
 	"Agent reply · speaker unavailable": "Agentsvar · afsender ukendt",
 	"(empty)": "(tom)",
+	"(erased)": "(slettet)",
+	"Erase message": "Slet besked",
+	"Show how the erase went": "Vis, hvordan sletningen gik",
+	"Copy message": "Kopiér besked",
+	"The text could not be copied.": "Teksten kunne ikke kopieres.",
+	Erase: "Slet",
+	"Erase the message from {author} at {time}? It is erased for everyone: the thread shows (erased) in its place, and the company's memory forgets it. This can't be undone.":
+		"Slet beskeden fra {author} kl. {time}? Den slettes for alle: tråden viser (slettet) i stedet, og virksomhedens hukommelse glemmer den. Det kan ikke fortrydes.",
+	"Erasing the message from {author} at {time}…": "Sletter beskeden fra {author} kl. {time}…",
+	"The message from {author} at {time} is erased from the thread. Clearing it from the company's memory…":
+		"Beskeden fra {author} kl. {time} er slettet fra tråden. Fjerner den fra virksomhedens hukommelse…",
+	"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.":
+		"Beskeden fra {author} kl. {time} er slettet: den er væk fra tråden og fra virksomhedens hukommelse.",
+	"Erased the message from {author} at {time} from the thread and from the company's memory, but not from files that hold a copy of it.":
+		"Beskeden fra {author} kl. {time} er slettet fra tråden og fra virksomhedens hukommelse, men ikke fra filer, der har en kopi af den.",
+	"A copy stays in {path}.": "En kopi ligger stadig i {path}.",
+	"A copy stays in the history of {path}, which is deleted.":
+		"En kopi ligger stadig i historikken for {path}, som er slettet.",
+	"A copy stays in {path} in another Company File.": "En kopi ligger stadig i {path} i en anden virksomhedsfil.",
+	"A copy stays in the history of {path} in another Company File, where it is deleted.":
+		"En kopi ligger stadig i historikken for {path} i en anden virksomhedsfil, hvor den er slettet.",
+	"The message from {author} at {time} was not erased: only an owner or admin can erase messages.":
+		"Beskeden fra {author} kl. {time} blev ikke slettet: kun en ejer eller administrator kan slette beskeder.",
+	"Only an owner or admin can erase messages.": "Kun en ejer eller administrator kan slette beskeder.",
+	"The message from {author} at {time} can't be erased.": "Beskeden fra {author} kl. {time} kan ikke slettes.",
+	"The company is paused, so no message can be erased now.":
+		"Virksomheden er sat på pause, så ingen besked kan slettes lige nu.",
+	"Could not erase the message from {author} at {time}. Try again.":
+		"Kunne ikke slette beskeden fra {author} kl. {time}. Prøv igen.",
+	"Could not read how the erase of the message from {author} at {time} is going.":
+		"Kunne ikke læse, hvordan sletningen af beskeden fra {author} kl. {time} går.",
 	Failed: "Mislykkedes",
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",
@@ -124,6 +155,15 @@ export const CONVERSATION: Record<string, string> = {
 	"{agent}'s routine no longer runs on your login. {member} moved it to {payer}'s login.":
 		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til {payer}s login.",
 	"another member": "et andet medlem",
+	// An area's supervisor who no longer supervises its agents (views/execution-notices.ts)
+	"{member} stopped supervising the agents in {area}.": "{member} holdt op med at have tilsyn med agenterne i {area}.",
+	"{member} no longer supervises the agents in {area}.": "{member} har ikke længere tilsyn med agenterne i {area}.",
+	"{member} no longer supervises the agents in {area}: the area is gone.":
+		"{member} har ikke længere tilsyn med agenterne i {area}: området findes ikke længere.",
+	"{member} left the company, so the agents in {area} have no supervisor.":
+		"{member} har forladt virksomheden, så agenterne i {area} har ingen tilsynsførende.",
+	"the area {name}": "området {name}",
+	"an area": "et område",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)
 	"The agent": "Agenten",
@@ -394,6 +434,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Approvals are not available here yet. Reply in a message instead.":
 		"Godkendelser er ikke tilgængelige her endnu. Svar i en besked i stedet.",
 	"No details provided.": "Ingen detaljer angivet.",
+	"How the page will look": "Sådan kommer siden til at se ud",
 
 	// Message formatting (ui/markdown.ts)
 	"Task status": "Opgavestatus",
@@ -426,4 +467,30 @@ export const CONVERSATION: Record<string, string> = {
 	"a test machine": "en testmaskine",
 	"the agent's workspace": "agentens arbejdsområde",
 	"More saved changes wait after these.": "Flere gemte ændringer venter efter disse.",
+
+	// An agent's interface change, with Undo (ui/interface-change-line.ts)
+	"the interface “{name}”": "interfacet “{name}”",
+	"the table “{name}”": "tabellen “{name}”",
+	"the order of the interfaces": "rækkefølgen af interfaces",
+	"made {things}": "oprettede {things}",
+	"changed {things}": "ændrede {things}",
+	"deleted {things}": "slettede {things}",
+	"1 other change": "1 anden ændring",
+	"{count} other changes": "{count} andre ændringer",
+	Undo: "Fortryd",
+	"Undoing…": "Fortryder…",
+	"Undo: {change}": "Fortryd: {change}",
+	"Undone.": "Fortrudt.",
+	"Not undone: it changed again since.": "Ikke fortrudt: det er ændret igen siden.",
+	"This change is too large to undo here. Ask the agent to change it back.":
+		"Ændringen er for stor til at fortryde her. Bed agenten om at ændre det tilbage.",
+	"This change can't be undone here. Ask the agent to change it back.":
+		"Ændringen kan ikke fortrydes her. Bed agenten om at ændre det tilbage.",
+	"You don't have access to change this.": "Du har ikke adgang til at ændre dette.",
+	"The Company File refused it.": "Virksomhedsfilen afviste det.",
+	"It changed again since.": "Det er ændret igen siden.",
+	"It wasn't saved.": "Det blev ikke gemt.",
+	"Undone in part. {reason}": "Delvist fortrudt. {reason}",
+	"Not undone. {reason}": "Ikke fortrudt. {reason}",
+	"Could not undo. Try again.": "Kunne ikke fortryde. Prøv igen.",
 };

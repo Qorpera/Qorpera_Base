@@ -1,17 +1,23 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { parseCloudCompanyInnerPath, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	companyStatePath,
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
 import { companyPathKey } from "@qorpera/cloud-client/company-state-shared";
+import { SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import type { MemberRequestObservationSpan } from "./member-observability.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
-import { type FolderWriterActor, type PlatformFileReference, PlatformFolderWriter } from "./platform-folder-writer.ts";
+import {
+	type FolderWriterActor,
+	type PlatformFileReference,
+	PlatformFolderProblem,
+	PlatformFolderWriter,
+} from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
 /*
@@ -20,13 +26,16 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * actor for that token (`qorpera_member_folder_writer`); the gateway stages each file's bytes and commits the change set
  * as that actor with the service key, and the core checks the member's authority on every path, as for any member.
  * Each state file carries its parse from the shared parser, made from the bytes staged, or its problems, as the
- * runtime's commits do. A unit at or under human-tasks/ is refused until P31 delivers the wakes a person's save there
- * queues (H2c). Members share the platform's operation-key scope in the core, so the member's key is sent as
- * `member:<userId>:<key>`, a namespace the platform's writers never use. Every shape, size and the hold are checked
- * before any byte is staged, and a member has at most one change set in flight here. After a commit that saved
- * anything, the route asks the core to follow it up at once (F2's P15: a hire's grants, connectors and first run, an
- * archive's clean-up), one subject a call while it says there is more, as a best effort: the core's own step does
- * whatever is left within seconds.
+ * runtime's commits do. A `symlink` unit saves a link with its target exactly as sent, no bytes staged
+ * (RUNTIME-FOLDER-LINKS.md, LK3), so a restore of a link's old version saves its target. A `write` names its text, or
+ * a file already in the folder by its reference (the restore of a file's old version, LK6): the core checks that the
+ * member may read it, and at a state path the gateway reads those bytes back for the parse. A unit at or under
+ * human-tasks/ is refused until P31 delivers the wakes a person's save there queues (H2c). Members share the platform's
+ * operation-key scope in the core, so the member's key is sent as `member:<userId>:<key>`, a namespace the platform's
+ * writers never use. Every shape, size and the hold are checked before any byte is staged, and a member has at most
+ * one change set in flight here. After a commit that saved anything, the route asks the core to follow it up at once
+ * (F2's P15: a hire's grants, connectors and first run, an archive's clean-up), one subject a call while it says there
+ * is more, as a best effort: the core's own step does whatever is left within seconds.
  */
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -34,9 +43,13 @@ const MAX_UNITS = 16;
 const MAX_CONTENTS = 64;
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_TEXT_BYTES = 512 * 1024;
+/** A link's target, as the core bounds it. */
+const MAX_TARGET_BYTES = 4095;
 /** Files staged one after another must fit the member gateway's 25 s; a hire sends two. */
 const MAX_FILES = 32;
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+/** A file's media type, as the core checks it. */
+const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** Follow-up calls after one commit, the time they may take, and how late in the request they may still start: the
  * member gateway's bridge gives a request 25 s, and a saved commit's answer must reach the member inside it. */
 const MAX_FOLLOW_UPS = 8;
@@ -65,6 +78,13 @@ type Content =
 /** One unit as the member sends it, checked. */
 type Unit =
 	| { readonly op: "write"; readonly path: string; readonly text: string; readonly expectedVersion?: string }
+	| {
+			readonly op: "write";
+			readonly path: string;
+			readonly file: PlatformFileReference;
+			readonly expectedVersion?: string;
+	  }
+	| { readonly op: "symlink"; readonly path: string; readonly target: string; readonly expectedVersion?: string }
 	| { readonly op: "mkdir"; readonly path: string }
 	| { readonly op: "new_folder"; readonly path: string; readonly contents: readonly Content[] }
 	| { readonly op: "delete"; readonly path: string; readonly expectedVersion?: string; readonly asOfSeq?: number }
@@ -101,10 +121,49 @@ function path(value: unknown): string {
 	}
 }
 
+function innerPath(folder: string, value: unknown): string {
+	try {
+		return parseCloudCompanyInnerPath(folder, value);
+	} catch {
+		return invalid();
+	}
+}
+
 function text(value: unknown): string {
 	if (typeof value !== "string" || LONE_SURROGATE.test(value)) return invalid();
 	if (Buffer.byteLength(value) > MAX_FILE_BYTES) throw new ObjectDependencyError(413);
 	return value;
+}
+
+/** A link's target: 1 to 4,095 bytes of text, kept exactly and never resolved. */
+function target(value: unknown): string {
+	if (typeof value !== "string" || !value || value.includes("\0") || LONE_SURROGATE.test(value)) return invalid();
+	if (Buffer.byteLength(value) > MAX_TARGET_BYTES) return invalid();
+	return value;
+}
+
+/** A file already in the folder, as an entry or a version names it: the core checks the member may read its bytes. */
+function reference(value: unknown): PlatformFileReference {
+	const input = object(value, ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"]);
+	if (
+		typeof input.manifestSha256 !== "string" ||
+		!SHA256_HEX_PATTERN.test(input.manifestSha256) ||
+		typeof input.fileSha256 !== "string" ||
+		!SHA256_HEX_PATTERN.test(input.fileSha256) ||
+		!Number.isSafeInteger(input.bytes) ||
+		(input.bytes as number) < 0 ||
+		typeof input.mediaType !== "string" ||
+		!MEDIA_TYPE.test(input.mediaType) ||
+		typeof input.executable !== "boolean"
+	)
+		return invalid();
+	return {
+		manifestSha256: input.manifestSha256,
+		fileSha256: input.fileSha256,
+		bytes: input.bytes as number,
+		mediaType: input.mediaType,
+		executable: input.executable,
+	};
 }
 
 function version(input: Record<string, unknown>): { expectedVersion?: string } {
@@ -123,8 +182,16 @@ function unit(value: unknown): Unit {
 	const op = (value as { op?: unknown } | null)?.op;
 	switch (op) {
 		case "write": {
-			const input = object(value, ["op", "path", "text"], ["expectedVersion"]);
-			return { op, path: path(input.path), text: text(input.text), ...version(input) };
+			// Its text, or a file already in the folder: exactly one.
+			const input = object(value, ["op", "path"], ["text", "file", "expectedVersion"]);
+			if (Object.hasOwn(input, "text") === Object.hasOwn(input, "file")) return invalid();
+			return Object.hasOwn(input, "text")
+				? { op, path: path(input.path), text: text(input.text), ...version(input) }
+				: { op, path: path(input.path), file: reference(input.file), ...version(input) };
+		}
+		case "symlink": {
+			const input = object(value, ["op", "path", "target"], ["expectedVersion"]);
+			return { op, path: path(input.path), target: target(input.target), ...version(input) };
 		}
 		case "mkdir":
 			return { op, path: path(object(value, ["op", "path"]).path) };
@@ -137,16 +204,12 @@ function unit(value: unknown): Unit {
 				path: folder,
 				contents: input.contents.map((item): Content => {
 					const kind = (item as { kind?: unknown } | null)?.kind;
-					// Each entry's joined path is checked here too, so a refusal never follows staged bytes.
-					if (kind === "folder") {
-						const inner = path(object(item, ["path", "kind"]).path);
-						path(`${folder}/${inner}`);
-						return { path: inner, kind };
-					}
+					// Each entry's joined path is checked here, as the core checks it, so a refusal never follows staged bytes.
+					if (kind === "folder") return { path: innerPath(folder, object(item, ["path", "kind"]).path), kind };
 					if (kind !== "file") return invalid();
 					const file = object(item, ["path", "kind", "text"]);
-					const inner = path(file.path);
-					return { path: inner, whole: path(`${folder}/${inner}`), kind, text: text(file.text) };
+					const inner = innerPath(folder, file.path);
+					return { path: inner, whole: `${folder}/${inner}`, kind, text: text(file.text) };
 				}),
 			};
 		}
@@ -173,8 +236,14 @@ export function memberFolderCommitRequest(value: unknown): { operationKey: strin
 	let total = 0;
 	let files = 0;
 	for (const item of units) {
-		if (item.op === "write") {
+		if (item.op === "write" && "text" in item) {
 			total += Buffer.byteLength(item.text);
+			files++;
+		}
+		// A state file's bytes are read back for its parse, as a text is staged; any other file is the core's alone.
+		if (item.op === "write" && "file" in item && companyStatePath(item.path)) {
+			if (item.file.bytes > MAX_FILE_BYTES) throw new ObjectDependencyError(413);
+			total += item.file.bytes;
 			files++;
 		}
 		if (item.op === "new_folder")
@@ -215,6 +284,24 @@ export function memberFolderStructured(filePath: string, fileText: string): Reco
 		: { path: filePath, kind: where.kind, problems: parsed.problems };
 }
 
+/** As `memberFolderStructured`, from a file's bytes: bytes that are not strict UTF-8 are the writer's own `encoding`
+ * problem (RUNTIME-COMPANY-STATE-FILES.md §8). */
+export function memberFolderStructuredBytes(filePath: string, bytes: Uint8Array): Record<string, unknown> | null {
+	const where = companyStatePath(filePath);
+	if (!where) return null;
+	let fileText: string;
+	try {
+		fileText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return {
+			path: filePath,
+			kind: where.kind,
+			problems: [{ line: null, key: null, code: "encoding", message: "the file must be plain UTF-8 text" }],
+		};
+	}
+	return memberFolderStructured(filePath, fileText);
+}
+
 const mediaType = (filePath: string) => (filePath.toLowerCase().endsWith(".md") ? "text/markdown" : "text/plain");
 
 async function body(request: IncomingMessage, observation?: MemberRequestObservationSpan): Promise<unknown> {
@@ -243,8 +330,8 @@ async function body(request: IncomingMessage, observation?: MemberRequestObserva
 
 type MemberActor = Extract<FolderWriterActor, { kind: "member" }>;
 
-/** The writer check's answer: the member's own actor and the company. */
-function writer(value: unknown): { actor: MemberActor; profileId: string } {
+/** The writer check's answer: the member's own actor and the company (the chat image route's member too). */
+export function memberFolderWriter(value: unknown): { actor: MemberActor; profileId: string } {
 	const input = value as { schema?: unknown; actor?: unknown; profileId?: unknown } | null;
 	const actor = input?.actor as { kind?: unknown; userId?: unknown } | null | undefined;
 	if (
@@ -314,7 +401,7 @@ export async function serveMemberFolderCommit(
 	const signal = controller.signal;
 	let held: string | undefined;
 	try {
-		const member = writer(
+		const member = memberFolderWriter(
 			await options.authority.member(
 				"qorpera_member_folder_writer",
 				token,
@@ -341,16 +428,30 @@ export async function serveMemberFolderCommit(
 				{ mediaType: mediaType(filePath), executable: false },
 				signal,
 			);
+		// A state file named by its reference is read back for its parse before any byte is staged, as the member may
+		// read it: bytes it may not read, or that are not the reference's, refuse the change set.
+		const readBack = new Map<Unit, Record<string, unknown> | null>();
+		for (const item of units)
+			if (item.op === "write" && "file" in item && companyStatePath(item.path)) {
+				let bytes: Uint8Array;
+				try {
+					bytes = await folder.read(environmentId, item.file, MAX_FILE_BYTES, signal);
+				} catch (error) {
+					if (!(error instanceof PlatformFolderProblem)) throw error;
+					throw new ObjectDependencyError(error.code === "file_too_large" ? 413 : 400);
+				}
+				readBack.set(item, memberFolderStructuredBytes(item.path, bytes));
+			}
 		const sent: Record<string, unknown>[] = [];
 		for (const item of units) {
 			switch (item.op) {
 				case "write": {
-					const entry = memberFolderStructured(item.path, item.text);
+					const entry = "text" in item ? memberFolderStructured(item.path, item.text) : readBack.get(item);
 					sent.push({
 						op: "write",
 						path: item.path,
 						...(item.expectedVersion ? { expectedVersion: item.expectedVersion } : {}),
-						file: await stage(item.path, item.text),
+						file: "text" in item ? await stage(item.path, item.text) : item.file,
 						...(entry ? { structured: [entry] } : {}),
 					});
 					break;

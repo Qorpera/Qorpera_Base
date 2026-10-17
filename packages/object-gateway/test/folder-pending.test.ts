@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
+import { folderKey } from "@qorpera/contracts";
 import { describe, expect, it } from "vitest";
 import {
 	CHUNK_BYTES,
 	type ChunkRef,
 	type FileRef,
-	folderKey,
 	type PendingFile,
 	PendingView,
 	PublishFirst,
@@ -19,23 +19,30 @@ const version = () => `00000000-0000-4000-8000-${(++versions).toString(16).padSt
 
 interface State {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	readonly version: string;
 	readonly manifest?: string;
+	/** A link's (protocol 4). */
+	readonly target?: string;
 }
 
 /** The live folder as the core keeps it: by folded key, each with its spelled path. */
 type Folder = Map<string, State>;
 
-function folderOf(paths: Record<string, string | null>): Folder {
+/** A path's content: a file's text, a folder (null), or a link's target. */
+type Content = string | null | { readonly link: string };
+
+function folderOf(paths: Record<string, Content>): Folder {
 	const state: Folder = new Map();
 	for (const [path, content] of Object.entries(paths))
-		state.set(folderKey(path), {
-			path,
-			kind: content === null ? "folder" : "file",
-			version: version(),
-			...(content === null ? {} : { manifest: hash(`manifest:${content}`) }),
-		});
+		state.set(
+			folderKey(path),
+			content === null
+				? { path, kind: "folder", version: version() }
+				: typeof content === "object"
+					? { path, kind: "symlink", version: version(), target: content.link }
+					: { path, kind: "file", version: version(), manifest: hash(`manifest:${content}`) },
+		);
 	return state;
 }
 
@@ -45,16 +52,18 @@ function treeOf(state: Folder): ViewTree {
 		tree.put(
 			e.kind === "folder"
 				? { path: e.path, kind: "folder", version: e.version }
-				: {
-						path: e.path,
-						kind: "file",
-						version: e.version,
-						manifestSha256: e.manifest!,
-						fileSha256: hash(e.manifest!),
-						bytes: 3,
-						mediaType: "text/plain",
-						executable: false,
-					},
+				: e.kind === "symlink"
+					? { path: e.path, kind: "symlink", version: e.version, target: e.target! }
+					: {
+							path: e.path,
+							kind: "file",
+							version: e.version,
+							manifestSha256: e.manifest!,
+							fileSha256: hash(e.manifest!),
+							bytes: 3,
+							mediaType: "text/plain",
+							executable: false,
+						},
 		);
 	return tree;
 }
@@ -65,8 +74,9 @@ const chunk = (text: string, bytes = text.length): ChunkRef => ({ sha256: hash(`
 /** What a staged file's reference would be: named after its chunks and bit. */
 function staged(node: PendingFile): FileRef {
 	const chunks = node.content?.chunks ?? [];
-	const size = node.content?.size ?? node.origin?.entry?.bytes ?? 0;
-	const id = node.content ? chunks.map((c) => c.sha256).join(",") : `as:${node.origin?.entry?.manifestSha256}`;
+	const origin = node.origin?.entry ?? node.copyOf;
+	const size = node.content?.size ?? origin?.bytes ?? 0;
+	const id = node.content ? chunks.map((c) => c.sha256).join(",") : `as:${origin?.manifestSha256}`;
 	return {
 		manifestSha256: hash(`manifest:${id}:${node.executable}`),
 		fileSha256: hash(id),
@@ -77,7 +87,8 @@ function staged(node: PendingFile): FileRef {
 }
 
 /** A view over a live folder; `publish` commits a boundary into it and settles the view, as the service does. */
-function setup(paths: Record<string, string | null>) {
+/** `codeHost`: the code host's view (5d), which writes git's session-local files. */
+function setup(paths: Record<string, Content>, codeHost = false) {
 	let state = folderOf(paths);
 	let tree = treeOf(state);
 	let seq = 10;
@@ -85,6 +96,7 @@ function setup(paths: Record<string, string | null>) {
 		() => tree,
 		() => seq,
 		() => 1_000,
+		codeHost,
 	);
 	return {
 		view,
@@ -105,6 +117,29 @@ function setup(paths: Record<string, string | null>) {
 			seq++;
 			view.liveChanged([path]);
 		},
+		/** Another machine's new files, folders and links. */
+		make(paths: Record<string, Content>) {
+			for (const [key, e] of folderOf(paths)) state.set(key, e);
+			tree = treeOf(state);
+			seq++;
+			view.liveChanged(Object.keys(paths));
+		},
+		/** Another machine's move of a file, or a folder with what is in it (a rename only in case, too): a new version
+		 * at each new path. */
+		move(from: string, to: string) {
+			const key = folderKey(from);
+			const moved = [...state].filter(([k]) => k === key || k.startsWith(`${key}/`)).map(([, e]) => e);
+			for (const e of moved) state.delete(folderKey(e.path));
+			const paths: string[] = [];
+			for (const e of moved) {
+				const path = to + e.path.slice(from.length);
+				state.set(folderKey(path), { ...e, path, version: version() });
+				paths.push(e.path, path);
+			}
+			tree = treeOf(state);
+			seq++;
+			view.liveChanged(paths);
+		},
 		/** Publishes the boundary: every unit must save, and the folder must then be what the view showed (but what the
 		 * boundary keeps pending). */
 		publish(): CommitUnit[] {
@@ -118,7 +153,8 @@ function setup(paths: Record<string, string | null>) {
 			seq++;
 			view.settle(plan.keep);
 			const now: Record<string, string> = {};
-			for (const e of state.values()) now[e.path] = e.kind === "folder" ? "folder" : e.manifest!;
+			for (const e of state.values())
+				now[e.path] = e.kind === "folder" ? "folder" : e.kind === "symlink" ? `link:${e.target}` : e.manifest!;
 			const expected = Object.fromEntries(Object.entries(before).filter(([p]) => !plan.keep.has(p)));
 			for (const p of plan.keep) delete now[p];
 			expect(now).toEqual(expected);
@@ -147,17 +183,23 @@ function commit(folder: Folder, units: readonly CommitUnit[]) {
 		[...state.keys()].filter((k) => k === folderKey(path) || k.startsWith(`${folderKey(path)}/`));
 	const outcomes = units.map((u) => {
 		switch (u.op) {
-			case "write": {
+			case "write":
+			case "symlink": {
+				// Either replaces a file or a link at the version it names.
 				const now = state.get(folderKey(u.path));
-				if (u.expectedVersion !== undefined ? now?.kind !== "file" || now.version !== u.expectedVersion : now)
+				if (
+					u.expectedVersion !== undefined
+						? now === undefined || now.kind === "folder" || now.version !== u.expectedVersion
+						: now
+				)
 					return "conflict";
 				if (!parentOk(u.path)) return "refused";
-				state.set(folderKey(u.path), {
-					path: u.path,
-					kind: "file",
-					version: version(),
-					manifest: u.file.manifestSha256,
-				});
+				state.set(
+					folderKey(u.path),
+					u.op === "symlink"
+						? { path: u.path, kind: "symlink", version: version(), target: u.target }
+						: { path: u.path, kind: "file", version: version(), manifest: u.file.manifestSha256 },
+				);
 				return "saved";
 			}
 			case "mkdir":
@@ -172,6 +214,7 @@ function commit(folder: Folder, units: readonly CommitUnit[]) {
 							kind: c.kind,
 							version: version(),
 							...(c.file ? { manifest: c.file.manifestSha256 } : {}),
+							...(c.target !== undefined ? { target: c.target } : {}),
 						});
 				return "saved";
 			}
@@ -202,7 +245,7 @@ function commit(folder: Folder, units: readonly CommitUnit[]) {
 	return { outcomes, state };
 }
 
-/** The folder as the view shows it: each path's kind and, for a file, its bytes' identity. */
+/** The folder as the view shows it: each path's kind and, for a file, its bytes' identity; for a link, its target. */
 function shown(view: PendingView, path = ""): Record<string, string> {
 	const out: Record<string, string> = {};
 	const page = view.children(path, undefined, 100_000);
@@ -213,10 +256,12 @@ function shown(view: PendingView, path = ""): Record<string, string> {
 		if (entry.kind === "folder") {
 			out[child] = "folder";
 			Object.assign(out, shown(view, child));
-		} else if (r.kind === "live") out[child] = r.entry.manifestSha256!;
+		} else if (entry.kind === "symlink") out[child] = `link:${view.get(child)!.target}`;
+		else if (r.kind === "live") out[child] = r.entry.manifestSha256!;
 		else {
 			const node = r.node as PendingFile;
-			const changed = node.content !== undefined || node.executable !== node.origin?.entry?.executable;
+			const changed =
+				node.content !== undefined || !node.origin || node.executable !== node.origin.entry?.executable;
 			out[child] = changed ? staged(node).manifestSha256 : node.origin!.entry!.manifestSha256!;
 		}
 	}
@@ -501,16 +546,17 @@ describe("a view's pending changes", () => {
 		f.change("D/f", "v2");
 		// The machine's name still showed v1: the removal is refused, and it looks again.
 		refused(() => f.view.unlink("D/f", seen), "STALE");
-		// A save over it with a stale base keeps that base (it would conflict); if the saved file then goes and the
-		// folder with it, the folder's removal is not published, since it would take v2 unseen.
+		// A save over it with a stale base keeps that base (it would conflict). If the saved file then goes, v2 shows
+		// again, as a changed file's newer version does (below), so no removal of D/f or of the folder can take it unseen.
 		write(f.view, "D/t", "mine");
 		f.view.rename("D/t", "D/f", { noReplace: false, toBase: seen });
 		f.view.unlink("D/f");
 		f.view.unlink("D/g");
-		f.view.rmdir("D");
-		const plan = f.plan();
-		expect(plan.units).toEqual([]);
-		expect(plan.dropped.map((d) => d.path).sort()).toEqual(["D", "D/f", "D/g"]);
+		expect(shown(f.view)).toEqual({ D: "folder", "D/f": hash("manifest:v2") });
+		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+		expect(f.plan().units.map((u) => u.unit)).toEqual([
+			{ op: "delete", path: "D/g", expectedVersion: f.tree().get("D/g")!.version },
+		]);
 	});
 
 	it("drops a removed change whose file moved on, and shows the newer version", () => {
@@ -529,6 +575,74 @@ describe("a view's pending changes", () => {
 		f.view.unlink("out");
 		expect(shown(f.view)).toEqual({ D: "folder", "D/f": hash("manifest:v2") });
 		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+	});
+
+	it("shows the newer version another machine renamed only in case to a replacement's name when the replacement goes", () => {
+		const kinds: [string, Content, (f: ReturnType<typeof setup>) => void][] = [
+			["a file", "v1", (f) => write(f.view, "D/a", "mine")],
+			["a link", { link: "v1.md" }, (f) => f.view.symlink("D/a", "v2.md")],
+		];
+		const goes: [string, (f: ReturnType<typeof setup>) => void][] = [
+			["removed", (f) => f.view.unlink("D/a")],
+			["moved away", (f) => f.view.rename("D/a", "out")],
+		];
+		for (const [kind, live, make] of kinds)
+			for (const [how, go] of goes) {
+				const f = setup({ D: null, "D/A": live });
+				f.view.unlink("D/A", f.view.get("D/A")!.version);
+				make(f);
+				// Another machine renames the removed one only in case, to the new one's name: a new version there.
+				f.move("D/A", "D/a");
+				const theirs = f.tree().get("D/a")!.version;
+				go(f);
+				// The base the new one let go is gone; the newer version shows at its name, so the folder is not empty.
+				expect(f.view.get("D/a")?.version, `${kind} ${how}`).toBe(theirs);
+				refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+				f.publish();
+				expect(f.tree().get("D/a")?.version, `${kind} ${how}`).toBe(theirs);
+			}
+	});
+
+	it("shows what another machine made at a new name when the view's new one there goes", () => {
+		const kinds: [string, Record<string, Content>, (f: ReturnType<typeof setup>) => void][] = [
+			["a file", { "D/x": "theirs" }, (f) => write(f.view, "D/x", "mine")],
+			["a link", { "D/x": "theirs" }, (f) => f.view.symlink("D/x", "v2.md")],
+			["a folder", { "D/x": null, "D/x/f": "theirs" }, (f) => f.view.mkdir("D/x")],
+		];
+		for (const [kind, theirs, make] of kinds)
+			for (const how of ["removed", "moved away"]) {
+				const f = setup({ D: null });
+				make(f);
+				// Another machine makes the same name: in the core it is new, as the view's is not published yet.
+				f.make(theirs);
+				const made = f.tree().get("D/x")!.version;
+				if (how === "moved away") f.view.rename("D/x", "y");
+				else if (kind === "a folder") f.view.rmdir("D/x");
+				else f.view.unlink("D/x");
+				expect(f.view.get("D/x")?.version, `${kind} ${how}`).toBe(made);
+				refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+				f.publish();
+				expect(f.tree().get("D/x")?.version, `${kind} ${how}`).toBe(made);
+			}
+	});
+
+	it("keeps what the view moved away hidden when a new file or link made where it left goes", () => {
+		const kinds: [string, Content, (f: ReturnType<typeof setup>) => void][] = [
+			["a file", "v1", (f) => write(f.view, "D/a", "mine")],
+			["a link", { link: "v1.md" }, (f) => f.view.symlink("D/a", "v2.md")],
+		];
+		for (const [kind, live, make] of kinds)
+			for (const how of ["removed", "moved away"]) {
+				const f = setup({ D: null, "D/a": live });
+				f.view.rename("D/a", "D/b");
+				make(f);
+				if (how === "moved away") f.view.rename("D/a", "D/c");
+				else f.view.unlink("D/a");
+				// The live one is at its new name in this view: it does not show where it left as well.
+				expect(f.view.get("D/a"), `${kind} ${how}`).toBeUndefined();
+				f.publish();
+				expect(f.tree().get("D/a"), `${kind} ${how}`).toBeUndefined();
+			}
 	});
 
 	it("removes a folder as of the oldest position of the folders removed in it", () => {
@@ -592,6 +706,170 @@ describe("a view's pending changes", () => {
 		]);
 	});
 
+	it("keeps a pending save's own base whatever changes at a path it spells otherwise", () => {
+		// Each a unit of its own: in the core it is at the save's path too, where it runs before or after the save.
+		const changes: [string, (f: ReturnType<typeof setup>, moved: string) => void][] = [
+			[
+				"a second save renamed over it",
+				(f, moved) => {
+					write(f.view, "next.tmp", "next");
+					f.view.rename("next.tmp", "Plan.md", { noReplace: false, toBase: moved });
+				},
+			],
+			["an edit", (f, moved) => write(f.view, "Plan.md", "edited", { base: moved })],
+			["a mode change", (f, moved) => f.view.setExecutable("Plan.md", true, moved)],
+			["a move away", (f, moved) => f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved })],
+			[
+				"a move away, then its removal",
+				(f, moved) => {
+					f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved });
+					f.view.unlink("moved.md");
+				},
+			],
+			[
+				"a move away, then a save over it",
+				(f, moved) => {
+					f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved });
+					write(f.view, "next.tmp", "next");
+					f.view.rename("next.tmp", "moved.md", { noReplace: false });
+				},
+			],
+			["a removal", (f, moved) => f.view.unlink("Plan.md", moved)],
+		];
+		for (const [what, change] of changes) {
+			const f = setup({ "plan.md": "v1" });
+			const base = f.view.get("plan.md")!.version;
+			write(f.view, "plan.md.new", "mine");
+			f.view.rename("plan.md.new", "plan.md", { noReplace: false, toBase: base });
+			// Another machine renames the file only in case: both names show.
+			f.move("plan.md", "Plan.md");
+			const moved = f.view.get("Plan.md")!.version;
+			change(f, moved);
+			// The save still replaces the version it saw, and nothing else does: the core's conflict, whatever the order.
+			const units = f.plan().units.map((u) => u.unit);
+			expect(
+				units.filter((u) => "expectedVersion" in u && u.expectedVersion === base),
+				what,
+			).toEqual([expect.objectContaining({ op: "write", path: "plan.md" })]);
+			expect(f.commit(units), what).toEqual(
+				units.map((u) => (u.op === "write" && u.path === "plan.md" ? "conflict" : "saved")),
+			);
+		}
+	});
+
+	it("publishes first a new name at a path, or below a folder, that a pending one spells otherwise", () => {
+		const f = setup({ "v2.md": "two", Docs: null });
+		write(f.view, "Docs/new.md", "mine");
+		f.view.mkdir("site");
+		// Another machine renames the folder only in case, and makes a folder the new one's name spells otherwise.
+		f.move("Docs", "docs");
+		f.make({ Site: null, "Site/latest": { link: "v1.md" } });
+		// In the core a new name there is the pending file's path, or goes into the pending folder's unit (a conflict).
+		publishFirst(() => write(f.view, "docs/new.md", "again"));
+		publishFirst(() => f.view.symlink("Site/CuXXXXXX", "v2.md"));
+		publishFirst(() => f.view.mkdir("Site/sub"));
+		publishFirst(() => f.view.link("v2.md", "Site/v2.md", undefined, () => undefined));
+		publishFirst(() => f.view.rename("v2.md", "Site/v2.md"));
+		// A name never published is no unit, until it is renamed, even only in case, to a published one.
+		write(f.view, "Site/draft.swp", "swap");
+		publishFirst(() => f.view.rename("Site/draft.swp", "Site/draft.SWP"));
+		// Inside the pending folder itself a new name is its own.
+		write(f.view, "site/index.html", "<p>");
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "Docs/new.md" }),
+				expect.objectContaining({
+					op: "new_folder",
+					path: "site",
+					contents: [expect.objectContaining({ path: "index.html", kind: "file" })],
+				}),
+			]),
+		);
+		expect(f.commit(units)).toEqual(units.map((u) => (u.op === "new_folder" ? "conflict" : "saved")));
+	});
+
+	it("publishes first the move or removal of a folder another machine renamed only in case after a change in it", () => {
+		const f = setup({ docs: null, "docs/a.md": "a", notes: null });
+		const base = f.view.get("docs/a.md")!.version;
+		write(f.view, "docs/a.md", "mine", { base });
+		write(f.view, "notes/new.md", "new");
+		f.move("docs", "Docs");
+		f.move("notes", "Notes");
+		// Neither change shows under the new spelling, but in the core each is in the folder.
+		expect(Object.keys(shown(f.view)).sort()).toEqual(["Docs", "Docs/a.md", "Notes"]);
+		publishFirst(() => f.view.rename("Docs", "docs"));
+		publishFirst(() => f.view.rename("Notes", "elsewhere"));
+		publishFirst(() => f.view.rmdir("Notes"));
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "docs/a.md", expectedVersion: base }),
+				expect.objectContaining({ op: "write", path: "notes/new.md" }),
+			]),
+		);
+		// The save conflicts (the move made a new version); the new file goes into the folder.
+		expect(f.commit(units)).toEqual(
+			units.map((u) => (u.op === "write" && u.path === "docs/a.md" ? "conflict" : "saved")),
+		);
+	});
+
+	it("folds a name never published with nothing", () => {
+		const f = setup({ "plan.md": "v1" });
+		write(f.view, "notes.md.swp", "swap");
+		f.create("notes.md.SWP", "theirs");
+		const theirs = f.view.get("notes.md.SWP")!.version;
+		// A swap file is no unit, so a save at a published name it spells otherwise does not wait for it.
+		write(f.view, "notes.md.SWP", "mine", { base: theirs });
+		expect(f.publish()).toEqual([
+			{ op: "write", path: "notes.md.SWP", file: expect.any(Object), expectedVersion: theirs },
+		]);
+		expect(f.view.get("notes.md.swp")).toMatchObject({ kind: "file", bytes: 4 });
+	});
+
+	it("publishes a name never published, renamed only in case to where the view removed a file, as its next version", () => {
+		const f = setup({ "notes.SWP": "v1" });
+		const base = f.view.get("notes.SWP")!.version;
+		f.view.unlink("notes.SWP", base);
+		write(f.view, "notes.swp", "mine");
+		f.view.rename("notes.swp", "notes.SWP");
+		expect(f.publish()).toEqual([
+			{ op: "write", path: "notes.SWP", file: expect.any(Object), expectedVersion: base },
+		]);
+	});
+
+	it("keeps a pending save's own base when what it replaced, renamed to a name never published here, is removed", () => {
+		const f = setup({ "notes.SWP": "v1", docs: null, "docs/latest.SWP": { link: "v1.md" } });
+		const file = f.view.get("notes.SWP")!.version;
+		const link = f.view.get("docs/latest.SWP")!.version;
+		write(f.view, "notes.SWP.new", "mine");
+		f.view.rename("notes.SWP.new", "notes.SWP", { noReplace: false, toBase: file });
+		f.view.symlink("docs/CuXXXXXX", "v2.md");
+		f.view.rename("docs/CuXXXXXX", "docs/latest.SWP", { noReplace: false, toBase: link });
+		// Another machine renames each only in case, to a name this machine never publishes (the member route takes it);
+		// the machine then removes it there.
+		f.move("notes.SWP", "notes.swp");
+		f.move("docs/latest.SWP", "docs/latest.swp");
+		const theirs = f.view.get("notes.swp")!.version;
+		const theirLink = f.view.get("docs/latest.swp")!.version;
+		f.view.unlink("notes.swp", theirs);
+		f.view.unlink("docs/latest.swp", theirLink);
+		// Each removal is a unit of its own; each save still replaces the version it saw, so it conflicts.
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(4);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "delete", path: "notes.swp", expectedVersion: theirs },
+				{ op: "delete", path: "docs/latest.swp", expectedVersion: theirLink },
+				expect.objectContaining({ op: "write", path: "notes.SWP", expectedVersion: file }),
+				{ op: "symlink", path: "docs/latest.SWP", target: "v2.md", expectedVersion: link },
+			]),
+		);
+		expect(f.commit(units)).toEqual(units.map((u) => (u.op === "delete" ? "saved" : "conflict")));
+	});
+
 	it("refuses at once what the folder never takes, folded as the core folds", () => {
 		const f = setup({
 			vision: null,
@@ -612,7 +890,15 @@ describe("a view's pending changes", () => {
 		refused(() => f.view.mkdir("Secrets"), "NOT_PERMITTED");
 		refused(() => f.view.mkdir("docs/.git"), "NOT_PERMITTED");
 		refused(() => f.view.mkdir("docs/NODE_MODULES"), "NOT_PERMITTED");
-		f.view.mkdir("code/repo/.git");
+		// git's directories only below code/<owner>/<name>/; there a name may hold '%' and ':' or be a device name.
+		refused(() => f.view.mkdir("code/repo/.git"), "NOT_PERMITTED");
+		refused(() => f.view.mkdir("docs/repo.git"), "NOT_PERMITTED");
+		refused(() => f.view.mkdir("docs/a%b"), "BAD_REQUEST");
+		f.view.mkdir("code/repo/app");
+		f.view.mkdir("code/repo/app/repo.git");
+		f.view.mkdir("code/repo/app/.git");
+		f.view.mkdir("code/repo/app/a%b:c");
+		f.view.mkdir("code/repo/app/CON.txt");
 		refused(() => f.view.mkdir("docs/plan.md"), "EXISTS");
 		refused(() => f.view.rmdir("docs"), "NOT_EMPTY");
 		refused(() => f.view.rename("docs", "docs/inside"), "BAD_REQUEST");
@@ -622,5 +908,250 @@ describe("a view's pending changes", () => {
 		expect(f.view.get("docs/plan.md")).toBeDefined();
 		expect(f.view.get("docs/Plan.md")).toBeUndefined();
 		f.publish();
+	});
+
+	it("moves a new folder only where the folder takes every name in it; a refused move leaves the rest to publish", () => {
+		const f = setup({ code: null, "code/acme": null, "code/acme/app": null, docs: null });
+		f.view.mkdir("code/acme/app/tmp");
+		f.view.mkdir("code/acme/app/tmp/a%b");
+		f.view.mkdir("code/acme/app/tmp/.git");
+		f.view.mkdir("docs/kept");
+		const before = shown(f.view);
+		// '%' only under code/, and '.git' only below code/<owner>/<name>/.
+		refused(() => f.view.rename("code/acme/app/tmp", "docs/tmp"), "BAD_REQUEST");
+		refused(() => f.view.rename("code/acme/app/tmp", "code/tmp"), "NOT_PERMITTED");
+		expect(shown(f.view)).toEqual(before);
+		const units = f.publish();
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "mkdir", path: "docs/kept" },
+				{
+					op: "new_folder",
+					path: "code/acme/app/tmp",
+					contents: expect.arrayContaining([
+						{ path: "a%b", kind: "folder" },
+						{ path: ".git", kind: "folder" },
+					]),
+				},
+			]),
+		);
+	});
+
+	it("moves a new folder to git's session-local files, and what is in it, only in the code host's view (5d)", () => {
+		const repo = "code/acme/app/repo.git";
+		const paths = { code: null, "code/acme": null, "code/acme/app": null, [repo]: null };
+		// A session's view: git keeps its hooks on the machine.
+		const session = setup(paths);
+		session.view.mkdir(`${repo}/staged`);
+		session.view.mkdir(`${repo}/staged/sample`);
+		const before = shown(session.view);
+		refused(() => session.view.rename(`${repo}/staged`, `${repo}/hooks`), "NOT_PERMITTED");
+		expect(shown(session.view)).toEqual(before);
+		// The code host's view publishes the hooks sessions seed theirs from: the folder's names are hooks too.
+		const host = setup(paths, true);
+		host.view.mkdir(`${repo}/staged`);
+		host.view.mkdir(`${repo}/staged/sample`);
+		host.view.rename(`${repo}/staged`, `${repo}/hooks`);
+		expect(host.publish()).toEqual([
+			{ op: "new_folder", path: `${repo}/hooks`, contents: [{ path: "sample", kind: "folder" }] },
+		]);
+	});
+
+	it("makes a session's new folder in a git directory a mkdir with its files one by one, for 5b's rule per key (5d)", () => {
+		const repo = "code/acme/app/repo.git";
+		const own = `${repo}/worktrees/w1`;
+		const tree = "code/acme/app/worktrees/w1";
+		const paths = {
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			[repo]: null,
+			[`${repo}/worktrees`]: null,
+			[own]: null,
+			"code/acme/app/worktrees": null,
+			[tree]: null,
+		};
+		// A worktree's first commit makes its git files' `logs` and `logs/HEAD`; 5b refuses a session's `new_folder` in a
+		// git directory, and saves the `mkdir` and the write. A new folder in the worktree itself is still one unit.
+		const session = setup(paths);
+		session.view.mkdir(`${own}/logs`);
+		write(session.view, `${own}/logs/HEAD`, "0000 1111 commit (initial): first");
+		session.view.mkdir(`${tree}/src`);
+		write(session.view, `${tree}/src/a.txt`, "one");
+		const units = session.publish();
+		expect(units).toHaveLength(3);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "mkdir", path: `${own}/logs` },
+				{ op: "write", path: `${own}/logs/HEAD`, file: expect.any(Object) },
+				{
+					op: "new_folder",
+					path: `${tree}/src`,
+					contents: [{ path: "a.txt", kind: "file", file: expect.any(Object) }],
+				},
+			]),
+		);
+		// The code host's view is the platform's, which 5b gives no git rule: there it stays one unit.
+		const host = setup(paths, true);
+		host.view.mkdir(`${own}/logs`);
+		write(host.view, `${own}/logs/HEAD`, "0000 1111 commit (initial): first");
+		expect(host.publish()).toEqual([
+			{
+				op: "new_folder",
+				path: `${own}/logs`,
+				contents: [{ path: "HEAD", kind: "file", file: expect.any(Object) }],
+			},
+		]);
+	});
+});
+
+describe("a view's links (protocol 4)", () => {
+	/** No live version replaced: `J` from a version the view no longer serves. */
+	const none = () => undefined;
+
+	it("shows a new link at once with its target, and publishes it as a symlink of an absent path", () => {
+		const f = setup({ docs: null, "docs/v1.md": "one" });
+		const version = f.view.symlink("docs/latest", "v1.md");
+		expect(f.view.get("docs/latest")).toMatchObject({ kind: "symlink", version, bytes: 5, target: "v1.md" });
+		expect(f.view.source("docs/latest", version)).toEqual({ target: "v1.md", live: undefined });
+		refused(() => f.view.symlink("docs/latest", "v2.md"), "EXISTS");
+		refused(() => f.view.mkdir("docs/latest"), "EXISTS");
+		refused(() => f.view.openWrite("docs/latest", { create: true, exclusive: false, truncate: true }), "EXISTS");
+		// A link is never followed: nothing is below one.
+		refused(() => f.view.mkdir("docs/latest/x"), "NOT_A_FOLDER");
+		expect(f.view.get("docs/latest/x")).toBeUndefined();
+		// Below protocol 4 a listing leaves it out.
+		const page = f.view.children("docs", undefined, 100, false);
+		expect(typeof page === "object" && page.entries.map((e) => e.name)).toEqual(["v1.md"]);
+		expect(f.publish()).toEqual([{ op: "symlink", path: "docs/latest", target: "v1.md" }]);
+		expect(f.tree().get("docs/latest")).toMatchObject({ kind: "symlink", target: "v1.md" });
+	});
+
+	it("publishes ln -sf (a link renamed over the old one) as one symlink unit at the replaced version", () => {
+		const f = setup({ docs: null, "docs/latest": { link: "v1.md" } });
+		const old = f.tree().get("docs/latest")!.version;
+		f.view.symlink("docs/CuXXXXXX", "v2.md");
+		f.view.rename("docs/CuXXXXXX", "docs/latest", { noReplace: false, toBase: old });
+		expect(f.publish()).toEqual([{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: old }]);
+	});
+
+	it("publishes a new file renamed over a link, and a new link renamed over a file, at the replaced version", () => {
+		const f = setup({ "notes.md": { link: "real.md" }, "plan.md": "text" });
+		const link = f.tree().get("notes.md")!.version;
+		const file = f.tree().get("plan.md")!.version;
+		write(f.view, ".notes.md.tmp", "own text");
+		f.view.rename(".notes.md.tmp", "notes.md", { noReplace: false, toBase: link });
+		f.view.symlink("plan.md.new", "elsewhere.md");
+		f.view.rename("plan.md.new", "plan.md", { noReplace: false, toBase: file });
+		expect(f.publish()).toEqual([
+			{ op: "write", path: "notes.md", file: expect.any(Object), expectedVersion: link },
+			{ op: "symlink", path: "plan.md", target: "elsewhere.md", expectedVersion: file },
+		]);
+	});
+
+	it("publishes a removed link as a delete and a renamed one as a move; a folder holding one is not empty", () => {
+		const f = setup({ D: null, "D/l": { link: "x" }, gone: { link: "a" }, old: { link: "b" } });
+		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+		f.view.unlink("gone");
+		f.view.rename("old", "new");
+		expect(f.publish()).toEqual([
+			{ op: "delete", path: "gone", expectedVersion: expect.any(String) },
+			{ op: "move", from: "old", to: "new", expectedVersion: expect.any(String) },
+		]);
+		f.view.unlink("D/l");
+		f.view.rmdir("D");
+		expect(f.publish()).toEqual([{ op: "delete", path: "D", expectedVersion: expect.any(String), asOfSeq: 11 }]);
+	});
+
+	it("publishes links made in a new folder with its content", () => {
+		const f = setup({});
+		f.view.mkdir("site");
+		f.view.mkdir("site/assets");
+		write(f.view, "site/index.html", "<p>");
+		f.view.symlink("site/home.html", "index.html");
+		f.view.symlink("site/assets/logo", "../logo.svg");
+		expect(f.publish()).toEqual([
+			{
+				op: "new_folder",
+				path: "site",
+				contents: [
+					{ path: "assets", kind: "folder" },
+					{ path: "index.html", kind: "file", file: expect.any(Object) },
+					{ path: "home.html", kind: "symlink", target: "index.html" },
+					{ path: "assets/logo", kind: "symlink", target: "../logo.svg" },
+				],
+			},
+		]);
+	});
+
+	it("publishes J from a live file as a new file over the source's bytes", () => {
+		const f = setup({ "a.md": "a" });
+		const source = f.tree().get("a.md")!;
+		const version = f.view.link("a.md", "b.md", undefined, none);
+		expect(f.view.get("b.md")).toMatchObject({ kind: "file", version, bytes: source.bytes });
+		expect(f.view.source("b.md", version)).toEqual({ live: source });
+		expect((f.view.nodes().get("b.md") as PendingFile).copyOf).toBe(source);
+		const [unit] = f.publish();
+		expect(unit).toEqual({ op: "write", path: "b.md", file: expect.any(Object) });
+	});
+
+	it("publishes J from a version another machine replaced as that version's bytes", () => {
+		const f = setup({ "a.md": "v1" });
+		const read = f.tree().get("a.md")!;
+		f.change("a.md", "v2");
+		refused(() => f.view.link("a.md", "b.md", read.version, none), "STALE");
+		f.view.link("a.md", "b.md", read.version, (path, version) =>
+			path === "a.md" && version === read.version ? read : undefined,
+		);
+		expect((f.view.nodes().get("b.md") as PendingFile).copyOf).toBe(read);
+		f.publish();
+	});
+
+	it("publishes J from a pending file as a second write of the same staged bytes", () => {
+		const f = setup({ "a.md": "old" });
+		write(f.view, "a.md", "new text");
+		write(f.view, "fresh.md", "fresh");
+		f.view.link("a.md", "b.md", undefined, none);
+		f.view.link("fresh.md", "c.md", f.view.get("fresh.md")!.version, none);
+		const units = f.publish();
+		const file = (path: string) => units.find((u) => u.op === "write" && u.path === path)!;
+		expect(units).toHaveLength(4);
+		expect(file("b.md")).toEqual({ ...file("a.md"), path: "b.md", expectedVersion: undefined });
+		expect(file("c.md")).toEqual({ ...file("fresh.md"), path: "c.md" });
+	});
+
+	it("publishes J from a link as a link with its target", () => {
+		const f = setup({ latest: { link: "v1.md" } });
+		f.view.link("latest", "also", undefined, none);
+		f.view.symlink("mine", "v2.md");
+		f.view.link("mine", "mine2", undefined, none);
+		expect(f.publish()).toEqual([
+			{ op: "symlink", path: "also", target: "v1.md" },
+			{ op: "symlink", path: "mine", target: "v2.md" },
+			{ op: "symlink", path: "mine2", target: "v2.md" },
+		]);
+	});
+
+	it("refuses J from a file open for writing, onto a present name, from a stale version, and from a folder", () => {
+		const f = setup({ D: null, "a.md": "a", "c.md": "c" });
+		f.view.openWrite("open.md", { create: true, exclusive: false, truncate: true });
+		refused(() => f.view.link("open.md", "b.md", undefined, none), "BUSY");
+		refused(() => f.view.link("a.md", "c.md", undefined, none), "EXISTS");
+		refused(() => f.view.link("a.md", "b.md", "00000000-0000-4000-8000-ffffffffffff", none), "STALE");
+		refused(() => f.view.link("D", "E", undefined, none), "NOT_PERMITTED");
+		refused(() => f.view.link("missing", "b.md", undefined, none), "NOT_FOUND");
+		write(f.view, "new.md", "n");
+		refused(() => f.view.link("new.md", "b.md", "00000000-0000-4000-8000-ffffffffffff", none), "STALE");
+		expect(f.view.get("b.md")).toBeUndefined();
+	});
+
+	it("never publishes a lock link, and counts it as no unsaved work", () => {
+		const f = setup({ "notes.md": "n" });
+		f.view.symlink(".#notes.md", "jonas@mac.local.4242:1760000000");
+		expect(f.view.unsaved).toBe(false);
+		expect(f.plan().keep).toEqual(new Set([".#notes.md"]));
+		expect(f.publish()).toEqual([]);
+		expect(f.view.get(".#notes.md")).toMatchObject({ kind: "symlink" });
 	});
 });

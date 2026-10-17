@@ -56,10 +56,10 @@ feed takes acknowledgements alone). A machine on protocol 1 reads only. On a wri
 
 | Type | Request | Answer |
 | --- | --- | --- |
-| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `o` `{handle, size, version}` |
+| `O` | open for writing `{path, base?, create, exclusive, truncate, draft?}`: `draft` (with `truncate`) keeps the file out of the view until its close | `o` `{handle, size, version}` |
 | `K` | one part of a chunk: `[u32 header length][{handle, index, sha256, bytes, offset}][≤ 1 MiB]`, in order from offset 0 | `k` once stored (the last part) |
 | `G` | `{handle, index, offset, length ≤ 1 MiB}`: part of a pending chunk back | `d` the bytes |
-| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks | `k` `{version}` |
+| `C` | close `{handle, size, discard?}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks; `discard` gives the handle up instead | `k` `{version}`; `k` `{}` for a discard |
 | `M` | mkdir `{path}` | `k` |
 | `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
@@ -70,7 +70,22 @@ A truncate of a file not open is an open, the chunk that ends it when the cut is
 the 4 MiB grid, or to nothing, sends no chunk: the close cuts the file's chunks, from its origin's when none of it was
 sent. A file whose manifest is not on the 4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
 the connection that opened it (the folder program pools its connections); a file still open when the view's last
-connection ends is abandoned, and what it held at its last close stays pending.
+connection ends is abandoned, and what it held at its last close stays pending. A protocol-3 core view's handles
+outlive its connections instead: they are abandoned only when a program holding the mount's `daemon.lock` says the
+program before it is gone (a restarted mount, or a publisher), or when the view ends (Step 4c-3).
+
+A draft's file joins the view only when its close lands it there (step 5d): until then the view keeps what it had at
+the path, so no boundary publishes the draft half written. It lands as the view's newest change at the path: over what
+this view itself did there since the open (a save, a removal or a move, published or not), and against what another
+machine did there since, which is a conflict when it is published, not overwritten. Where the view's move of the
+path's file away is still pending at the close, the draft lands as a new file there, as a create would; if the boundary
+then lets that move go, the new file meets the file the move left and is a conflict (both are kept). A removal or move
+the boundary lets go before the close leaves the draft landing against the file it would have taken away, as one opened
+over that file. The draft takes the executable bit of what it lands over (none as a new file). Over the view's own unsaved file,
+the draft holds that file unpublished, as an open handle does, and its close is the file's next save. A discard gives a
+handle up as the end of its connection does; a draft's leaves nothing, and the quiet period then publishes a file it held.
+A close that cannot land the draft (a folder is at its path now, say) gives it up the same way.
+The mount writes a cache it moves into the folder as drafts, so a move it gives up leaves no file behind.
 
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
@@ -85,6 +100,21 @@ Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_F
 `STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`
 ENOTEMPTY, `NOT_PERMITTED` EPERM, `TOO_LARGE` EFBIG, `READ_ONLY` EROFS, `NOT_HERE` EXDEV and `BUSY` EBUSY.
 `VIEW_CLOSED` and `VIEW_REFUSED` unmount the folder; the program exits 3 and its unit does not restart it.
+
+**The `notices` role (protocol 4, F3 4f-2b-2: `RUNTIME-FOLDER-COMPANY-MACHINES.md`, "How 4f-2 carries the report").**
+The office's folder helper, not the folder program, says `role: "notices"` in a protocol-4 hello with a view's id and
+pass (no `previous`, no `abandon`), through the program's `relay`, so the service checks it as it would the machine
+that holds the mount. `h` answers `{protocol, viewId}`. The connection then only asks `Q` `{after, nonce}` and is
+answered `q` `{nonce, notices, last, more}`: what came of each change set the view's boundaries no machine asked for
+asked (a quiet period's, the last connection's leaving, one a change needed first, or one with no answer asked again
+before a change, whose notice comes before the boundary's own), each `{n, at, commitId, seq}` for a change set
+committed or `{n, at, refused, paths, pathCount}` for one refused whole (at most 20 of its own paths, sorted). A view
+keeps its last 32, and they go with it when the service lets it go. A `nonce` other
+than the view's starts from its first; `last` is the next ask's `after`; `more` says the answer was cut at about
+1 MiB. Such a connection never opens or holds a view: one the service does not hold, or whose pass the core has not
+checked yet, answers `{nonce: null, notices: [], last: 0, more: false}`, and a pass, company folder or machine that
+does not match is `VIEW_REFUSED`. Any other frame is `BAD_REQUEST`, and any error ends the connection. A service
+before this role answers the hello `BAD_REQUEST` ("Bad role"), which the helper reads as no notices.
 
 `version` is the core's version id of the path (a uuid), opaque to the machine. A read names the version the machine
 was shown, and the service serves exactly that version: the current one, or one of the last 16 replaced on the
@@ -192,9 +222,15 @@ for this (`FUSE_NOTIFY_INC_EPOCH`, kernel 6.16), which would also drop every oth
   only the new one, a change shown at once, a new file, a removal, a feed that breaks and comes back, a view closed,
   a view refused), and a third that races 300 lookups against removals and new versions and requires every one to
   show the change within a second;
-- then the built program in `node:24.21.0-bookworm-slim` against this package's folder service with a stand-in core
-  and share (`packages/object-gateway/test/folder-mount-e2e.test.ts`): a 3 MiB file across chunks, a member's edit
-  shown in under a second, a folder taken away disappearing, SIGTERM unmounting.
+- beside them, the release build in the same image and its check against the build record, then the built program
+  in `node:24.21.0-bookworm` (not slim: it has git and python3) against this package's folder service with a
+  stand-in core and share (`packages/object-gateway/test/folder-mount-e2e.test.ts`): a 3 MiB file across chunks, a
+  member's edit shown in under a second, a folder taken away disappearing, SIGTERM unmounting, and links made, read
+  and cloned by git, Python and Node.
+
+`scripts/folder-program-step.mjs` runs the step. Compiled crates stay between runs in a volume of the runner user's
+own, emptied when the image, `Cargo.toml` or `Cargo.lock` changes; the folder program itself is built again every
+run.
 
 The service's own tests (`packages/object-gateway/test/folder-service.test.ts`) cover the protocol checks, the tree,
 the share reader (tampered chunks, links, mismatched manifests) and the service over its socket (refusals by pass,
@@ -384,14 +420,16 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
   and machine allocation (#880), and from then on the service serves:
   - a run box only to a `runBoxHosts` machine, read-only;
   - a computer desktop only to the company machine named after its allocation, read-write;
-  - any other kind (a coding session's: step 5) to no machine yet.
+  - any other kind to no machine yet (a coding session's and a code host's from step 5c, below).
   A hello from any other machine is `VIEW_REFUSED`, like every refusal, also when it joins a view that is open. The
   core never changes a view's kind or machine; a renewal that says otherwise closes the view, losing what it had
   pending.
 - **Writes.** A desktop's view writes as an operator mount with `write` does (RUNTIME-FOLDER-WRITES.md), acting as the
   view. It publishes 2 s after its last change (`DESKTOP_QUIET_MS`, the desktop rule of RUNTIME-COMPANY-FOLDER.md §2),
   when its machine asks, and when its last connection leaves: what is pending then is published under the lease it
-  still has, and the view is dropped after. A machine that comes back meanwhile joins it.
+  still has, and the view is dropped after, unless that publish has no answer or a refusal that may lift (then it is
+  kept: Step 4c, "Kept"). A machine that comes back meanwhile joins it. A file its program still holds open waits
+  (Step 4c-3): what was closed publishes, and the view is kept for the open files.
 - **The seat in use.** Each renewal tells the core since when the view has had changes not published
   (`p_unsaved_since`, C1b-3 §9), or null. Unsaved means what a boundary publishes: a removal, or a new, moved or
   changed file or folder. A lock, swap, backup or trash name a program holds is never published and is none, nor is a
@@ -409,16 +447,23 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
 ## Step 4b: shell commands
 
 In slice 4b the core opens a view of its own for an offline shell command (`computer_shell_command`, migration
-`20260930183000`; RUNTIME-COMPANY-FOLDER-C1B.md §8), and the folder service serves it:
+`20260930183000`; RUNTIME-COMPANY-FOLDER-C1B.md §8), and from slice 4b-2 for a networked one too (migration
+`20260930342000`), and the folder service serves it:
 
 - **Which machine.** Like a desktop's: only to the company machine named after the view's allocation, read-write.
-- **Publishing.** Only when the machine asks, or before a change that needs what is pending published first: no quiet
-  period. The command's last call sends `P` with `final: true`. The final publishes everything the view has pending as
-  one change set, or an empty one when nothing is, and the core closes the view with it, whether it saved anything or
-  not: the report says `closed`, and the view is closed on every connection. A path still waiting (a file open for
-  writing) holds the whole final back, with nothing committed: each path stays pending, and the machine asks again. A
-  final from any other view is `BAD_REQUEST`; one on a view that has closed otherwise is `VIEW_CLOSED` with why it
-  closed.
+- **Publishing.** While the command runs, as a desktop's (slice 4b-2; the contract's 14 October 2026 amendment, item
+  3): 2 s after its last change (`DESKTOP_QUIET_MS`), each boundary releasing the reads first (Step 4c), and when the
+  machine asks, or before a change that needs what is pending published first. A view no machine holds publishes on
+  no quiet period: a change that waited behind a boundary and lands after the last connection left starts none, and a
+  quiet period that ended while the view was held, but waited behind a boundary while its last connection left,
+  publishes nothing (not even a boundary that got no answer is asked again). Its changes wait for the boundary its
+  machine asks. The command's last call sends `P` with `final: true`, and a quiet period still to come ends with
+  it: a command that ends inside its quiet period publishes once, final. The final publishes everything the view has
+  pending as one change set, or an empty one when nothing is, and the core closes the view with it, whether it saved
+  anything or not: the report says `closed`, and the view is closed on every connection. A path still waiting (a file
+  open for writing) holds the whole final back, with nothing committed: each path stays pending, and the machine asks
+  again. A final from any other view is `BAD_REQUEST`; one on a view that has closed otherwise is `VIEW_CLOSED` with
+  why it closed.
 - **No answer.** A final whose commit got no answer is asked again, final, under its key and as the actor it was asked
   as, before anything else; until then the report says each path's save did not get through yet. The core may have
   applied it, and so closed the view, and a renewal may then close the view here before the answer comes, while the
@@ -427,7 +472,8 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   view's pass, asks the final again, and since the core answers a replay on a closed view, given its pass, its answer
   is the report (`closed`). If the core refuses it instead, the final did not close the view: the view goes, and the
   machine hears `VIEW_CLOSED` with why it closed. Such a view does nothing else (`VIEW_CLOSED`, a `P` without `final`
-  included), and a hello with another pass is `VIEW_REFUSED`.
+  included; it takes a read log's `I` and keeps none of it: Step 4c, "A final asked again"), and a hello with another
+  pass is `VIEW_REFUSED`.
 - **Refused whole.** The core may refuse a change set whole, a final included: `denied` (42501: among others, a read
   of the command's that is no longer readable, or a change set other than the final once the command has ended),
   `stopped` (55000: the company is paused) or `invalid` (22023: among others, more than the core's 1000 units in one
@@ -438,18 +484,303 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   after any final refused for good, the office service closes that view itself (slice 4d,
   RUNTIME-FOLDER-COMPANY-MACHINES.md).
 - **The command's end.** Once the command's end is recorded (C1B §8), the core saves only the final. A change set it
-  refuses whole stays pending, so the final carries it.
+  refuses whole (a quiet period's included) stays pending, so the final carries it.
 - **Kept for the final.** A command's view that its own machine has held is kept when its last connection leaves: its
-  pending changes stay, nothing is published, and its lease is still renewed, until the final closes it or the core
-  does. Its renewals always say nothing is unsaved (no seat waits on a command).
+  pending changes stay, nothing is published (its quiet period ends with the connection), and its lease is still
+  renewed, until the final closes it or the core does, or a boundary of it is refused for good (then it is dropped:
+  Step 4c, "Kept"). Its renewals always say nothing is unsaved (no seat waits on a command).
 - **Tests.** `packages/object-gateway/test/folder-command-views.test.ts`, with the stand-in core, which saves only the
   final of a view whose command ended, closes the view with the final, and answers a replay on a closed view given its
-  pass, as the core does. Among them: a final refused whole, empty or not; a final whose answers were all lost while
-  a renewal closed the view, after its tries or between them, asked again on the same connection and on a new one; and
-  a final refused once a renewal closed the view between its ask and its answer.
+  pass, as the core does. Among them: a running command's changes published after its quiet period, its reads released
+  first; a command that ends inside its quiet period, published once, final, its final held back or not; a view let go
+  or kept with no connection, which its quiet period does not publish, nor a change or a quiet period that waited
+  behind a boundary while its last connection left; a final refused whole, empty or not; a final
+  whose answers were all lost while a renewal closed the view, after its tries or between them, asked again on the
+  same connection and on a new one; and a final refused once a renewal closed the view between its ask and its answer.
+
+## Step 4c: read releases
+
+In slice 4c-1 the folder service takes the reads a company machine logs on a core view, and releases them to the core
+with the view as the actor before anything made from them is published (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"):
+
+- **Protocol 3.** A machine that logs its reads says protocol 3 in its hello. A core view (a desktop's or a command's)
+  takes writes only from it: on protocol 2 its hello says `readOnly`. An operator mount's view still writes from
+  protocol 2. On a writing connection the machine sends `I` with consecutive entries of its log,
+  `{log, reads: [{seq, path, version, authority?}], lost?}`: `log` is the mount's (new each time the mount is made),
+  `version` the version the read showed (null for a folder's listing) and `authority` the receipt the service gave the
+  path. The answer, `i`, says how far the view holds the log: every entry up to `taken`, and up to `released` the core
+  has them. A batch that leaves a gap is not taken, and the machine sends it again from `taken`. A path is never empty,
+  so the program logs no listing of the root (slice 4c-2): a company-wide view opens only when its actor reads the
+  root resource (C1b-3 §2).
+- **Reads before writes.** The service releases only the entries it holds, and a desktop's view, or a running
+  command's, publishes on its own quiet period. So a machine has a read's entry taken (an answer with `taken` at or past its `seq`) before it sends
+  any change made after that read, on any of its connections, and before `P`: a change that arrived first could be
+  published with the read not released.
+- **Releases.** Each boundary (a quiet publish, a `P`, the last connection leaving) first releases the reads the core
+  does not have yet, at most 10,000 in one release (`RELEASE_READS`, the core's bound), and publishes only once they are
+  released (the log's rule 1). A read goes with its version only when that names bytes the core made that the view
+  showed (a file the view saved and has not published goes with the live version under it, or none), and with no
+  receipt when it was logged without one: the core then checks the path again. A release with no answer, or refused, is
+  asked again first under the same id, and the core replays it. A member-held desktop view records no reads: the core
+  refuses its release (22023), and its reads count as released. So do an operator mount's, which has no read set.
+- **Refused.** A boundary whose release the core refuses publishes nothing, and its report has `refused` with the
+  release's reason: `unreadable` (42501, "A released read is no longer readable": a read's access narrowed before it was
+  released), `run_ended` (42501, "Run is unavailable": the run the view acts for has ended, or its deadline passed while
+  its job is still leased), `denied` (any other 42501), `stopped` (55000, the pause) or `invalid`. A release with no
+  answer after three tries leaves the boundary with none: each path's save did not get through yet. A change set refused
+  because a read released earlier is no longer readable ("A read is no longer readable") is `denied`, as before.
+- **A log that cannot be shown complete.** A batch with `lost: true` says the machine cannot show its log complete (the
+  log's rule 4). From then on every boundary of the view is refused `unproven`, a boundary with no answer asked again
+  included; the office service's way out (slice 4d) stops the mount's users and closes the view. The service keeps
+  this with the view, in memory: a view dropped or closed, or a folder service restarted, forgets it. So after every
+  new hello on the mount the machine's first `I`, before any change, says `lost: true` again, until the mount is made
+  again.
+- **Kept.** A desktop's view whose last connection leaves while its last boundary had no answer, or a refusal that may
+  lift (the pause, the run check), is kept like a command's: its pending changes and unreleased reads stay and its lease
+  is renewed, and a later publish from its machine publishes it; nothing else does (its quiet period ends with its last
+  connection). Once a boundary hears another answer (a save, or a refusal for good) it is dropped like any other view
+  no machine holds. A command's view is kept for its final unless its last boundary was refused for good. A boundary
+  still running when the last connection leaves, or one that runs after it (a change that landed then), decides again
+  when it ends: the view stays kept, or is let go. Until then the view is not forgotten as idle, however long the
+  boundary takes. A desktop's change set refused by the pause or the run check stays
+  pending, as a command's does, for a later boundary to carry.
+- **A final asked again.** A command's view that closed while its final had no answer (Step 4b, "No answer") takes `I`
+  and keeps none of it, a `lost` included: the core answers that view nothing but the final's replay, which publishes
+  nothing new, so nothing can come of those reads. The answer says every entry taken and released. So a dead
+  program's `qorpera-folder publish --state-dir --final` (slice 4c-2) hands its log over first, as for any view, then
+  asks the final again.
+- **Twice.** A view keeps its reads in memory only: after it connects again a machine sends every read it has not heard
+  released. A view dropped, or a folder service restarted, may so have some released twice, which files nothing new. A
+  view that goes takes its unreleased reads with it: they reached no save of it.
+- **Tests.** `packages/object-gateway/test/folder-read-releases.test.ts`, with the stand-in core, which releases as the
+  core does and refuses as it does; and the acceptance script's F3-4c lines on the hosted database: a desktop view's
+  read released through the service before its save; after a narrowing of a read's path, every later save of the view
+  refused (two in a row); and a read not yet released when a narrowing comes, every later boundary refused
+  `unreadable`.
+
+### Slice 4c-2: the program's durable log
+
+The Rust program speaks protocol 3. Writable mounts log every file open, including cached and empty files, and every non-root
+folder open before answering FUSE, with the version and receipt shown. `reads.jsonl` in its private `--state-dir`
+keeps the mount UUID, consecutive entries and synced released markers. Threads and separate publishers take an OS
+lock on `reads.lock`, whose inode stays fixed across journal compaction. A program restart reopens the same log; a
+new mount starts with empty state. `/run` outlives these processes, not a VM restart.
+
+Before each mutation and `P`, on that same connection, the program sends entries beyond both the durable released
+prefix and that connection's `i.taken`. Each new connection starts without a taken watermark, and sends at least one
+intake, including an empty log's lost flag. Later empty intakes are skipped unless the journal becomes lost. The lock
+spans that handover and the mutation's send, so no earlier completed open can be left behind. Batches index directly
+into the consecutive retained suffix. A dropped acknowledgement is replayed before the mutation; `taken` is never durable proof. Only a synced
+released marker permits prefix compaction. A missing or corrupt journal leaves a permanent lost marker, reports
+`lost: true` after reconnects and refuses further opens; a torn unanswered last append alone can be trimmed.
+
+`publish --view-file <file> --state-dir <dir> [--final] [--json]` reads that same journal, even after the mount died.
+It never creates a missing state directory: that fails locally, without contacting or poisoning the healthy view.
+Missing proof inside an existing state directory still marks the journal lost.
+An ordinary boundary's report is followed by an empty `I` to prove the captured prefix released: an unanswered
+no-write release otherwise has the same empty paths as a successful one. A final's success requires `closed: true`.
+JSON mode prints only the report to stdout and diagnostics to stderr. Exit 0 is success, 1 failed/unknown, 2 usage,
+3 closed/refused view and 4 a boundary or path refused. An answered report remains printed if a later release poll or
+closure check fails, with exit 1: its receipts remain useful, but completion is unproven. Exit 1 or 3 can have no report;
+the helper must use the code.
+
+Tests: Rust journal, CLI, link and actual FUSE tests; `folder-mount-e2e.test.ts` runs the built program against the
+actual service with a stand-in core and share. It covers cached/empty/listing receipts, a lost intake answer before a
+write, durable released prefixes and unsubmitted reads across service restarts, automatic quiet saves, a dead mount's
+publisher, unanswered/no-report boundaries, final closure, and permanently lost proof. Office helper lifecycle and
+live deployment remain later slices.
+
+### Slice 4c-3: a desktop's successor view
+
+Protocol-3 hello can include `previous: {viewId, pass}`. The target and old view must name the same company and
+machine, both desktop views, and the old pass must match the service's accepted hash. Each accepted move keeps a
+tombstone pointing to its successor, so a repeated hello, including an older accepted proof after rapid file
+replacements, cannot move an overlay twice. A service that restarted has no old pending overlay; the new view still
+authenticates normally and the program replays its durable log before writing.
+
+The service fences both views before waiting for admitted requests, publication, feed work and renewals. It then
+moves pending nodes, open write handles, remembered versions, unreleased read logs and byte-retention roots as one
+synchronous transition. New old-view requests are refused. Cached staged proofs, including an open handle's fixed
+snapshot, are invalidated: successor writes need seals in their own upload scope. An uncertain commit keeps its
+original actor, operation key and units; only a definitive old-view-ended answer permits replanning under the new
+view. A closed desktop retains its pending state for a fixed minute without renewed authority, then is discarded.
+
+The Rust program watches atomic replacement of its primary view file and checkpoints the last accepted credentials
+in its private state directory under a fixed interprocess `view.lock`. It sends that proof until hello succeeds.
+Every stream carries its accepted epoch and its own volatile read-intake watermark; idle old streams and feeds are
+closed on acceptance, and late old reads/refusals cannot contaminate the successor. Inodes, open descriptors, the
+version map and journal stay in place. A closed desktop waits one minute for an accepted replacement, then unmounts
+with exit 3; an invalid replacement never restarts the deadline. Use the same explicit `--state-dir` for the mount,
+all replacements, restarts and independent publishers.
+
+A private fixed `daemon.lock` is held for the mounted program's full lifetime, before any state mutation or hello.
+Stream loss alone no longer abandons a protocol-3 core view's handles. Holding the lock proves no earlier program on
+the same state is alive, so a writable mount, once its feed has accepted the view and before it serves a file, sends
+one IO hello with `abandon: true`: what a program systemd restarted after a crash left open goes back to its last
+fixed save and publishes after the quiet period, as any change does. None of its later hellos carries it, so it never
+abandons its own handles. A publisher unable to take the lock treats the mount as alive. If it acquires the lock, it
+retains it through publication and sends `abandon: true` on its authenticated IO hello, restoring orphan writes to
+their last fixed saves. This excludes a restart while publishing dead-program state. A publisher creates neither a
+missing state directory nor its missing lifetime-lock file. A desktop view kept only for files still open publishes
+what was closed when its last connection leaves; the open files wait.
+
+Tests include actual FUSE descriptors across disconnection and replacement, lost hello answers, SIGKILL between
+primary replacement and hello, a SIGKILLed mount restarted on the same state that abandons what it left open,
+publication of closed files on last leave while one stays open, dead-program publication, strict successor-scoped
+seals, uncertain-commit replay, fixed grace expiry, stale pooled replies and retained lost logs. This is implementation and test coverage, not a
+live rollout record; the production helper remains slice 4d.
+
+## Step 5c: coding views
+
+In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-CODING-MACHINES.md, "Views and machines",
+"Reads" and "Boundaries"), against 5a's core (migration `20260930396000`):
+
+- **Which machine.** A renewal's open answer also says the view's company (`companyId`, every kind) and coding machine
+  (`codingMachineId`, a coding session's; null otherwise). A `coding_session` view is served only to the machine named
+  after its coding machine, `qorpera-coding-machine-<its id without dashes>`, in one of the node's
+  `codingMachineProjects`; a `code_host` view only to a machine in its company's code host project,
+  `qorpera-codehost-<company id without dashes>`. Both write over protocol 3 and publish 2 s after their last change. A
+  core view's hello is also taken from those machines; the first renewal decides, as in 4a. An open answer without a
+  company is not one the service takes: it needs 5a's core.
+- **Which service.** Every renewal names this run of the service (`p_service`, a random uuid new at each start). The
+  core marks a coding or code host view with the first one (`served_by`) and closes it for any other
+  (`service_crashed`): a run that did not stop cleanly may have served reads it never released, so its views end, and
+  the executor restarts their machines and opens them again (the plan's rule 4).
+- **The read record.** With root, one session can read through another session's mount, so the service, not the
+  machine, records a coding session's reads, in memory, before the answer leaves (rule 1): a folder's listing (but the
+  root's), a file's bytes, a search's reads, and an existing file opened for writing, each with the version and
+  receipt shown. A read recorded once is not recorded again. The machine's `I` frames are taken and answered as in 4c
+  and count for nothing, `lost` included: its root could rewrite that log. A code host's view records nothing; its
+  reads reach no model (5a).
+- **Releases.** Before any commit of a coding machine's view (a quiet publish, a `P`, a boundary) the service releases
+  the recorded reads of every view of that machine, each with its own view as the actor, under 4c's rules (at most
+  10,000 at a time, the same id asked again). The core fans each release out to the machine's read set and to every
+  turn leased on the machine.
+- **Boundaries.** The coding executor asks for a machine's boundary on a host-local control socket
+  (`/run/qorpera-folder-control/control.sock`, `qorpera-folder-control.socket`), one JSON line each way, in order:
+  `{"op":"boundary","machine":"<coding machine id>","final":["<view id>", …]}` answers
+  `{"boundary":{"machine","reads","views":[{"viewId","report" or "error"}…]}}` or `{"error":{"code","message"}}`. Every view of
+  the machine with something pending publishes, then the reads served meanwhile are released, and only then does the
+  answer leave (rule 3). One view may be served more while another's release is out, so the release is asked again
+  until, in the step that answers, no open view of the machine holds a read unreleased; after 8 rounds the boundary
+  answers `unanswered`. `reads` is `released`, the release's refusal (4c's reasons), `unanswered`, or `unproven`;
+  each view's report is 4c's, with its reasons. A view named final that this service does not hold open is a
+  `VIEW_CLOSED` entry in `views`. `{"op":"restarted","machine":"<coding machine id>"}` answers
+  `{"restarted":{"machine"}}`: the executor sends it once it has stopped the machine and before the machine starts
+  again (below).
+- **Held.** A coding view's refused boundary holds what it had pending, its bytes and folders alike, and the view stays
+  kept until the core closes it: `stopped` and `run_ended` may lift, `denied` holds, `unreadable` (a release's, or a
+  commit's "A read is no longer readable", which 4c calls `denied`) moves the machine. At a boundary that names the
+  view final, a refusal is final: what has no bytes (a folder) is let go, and changed files stay pending for the
+  executor to report.
+- **A view that goes with reads unreleased.** Its reads reached its machine, where any session may save what was made
+  of them, even once every view of it has closed. So the machine is lost: its boundaries answer `reads: "unproven"`,
+  and every view of it open now or opened later answers its own boundaries `unproven`, until the executor says it
+  restarted the machine (`restarted`). A view opened after that is proven again; one still open then stays
+  `unproven`, and if one of those still held a read unreleased, all of them lose their logs. A boundary of the machine
+  still out at the restart answers `unproven`: a view may have gone meanwhile with a read the restart cleared. The lost state is kept in
+  memory only (the plan's durable read ledger, P3, is not built): a run that ends with a machine lost does not stop
+  cleanly, so the next run's renewals close the machine's views (`service_crashed`), and the host stops a machine
+  whose last attachment ended.
+- **Who may connect.** Node cannot read a Unix connection's peer credentials (`SO_PEERCRED`), so the kernel checks the
+  uid: connecting needs write permission on the socket's file. The unit makes the file the executor's
+  (`qorpera-coding-executor`), mode 0600, in a root-owned folder (0755). The service serves a connection only while the
+  file is a socket of the configured `codingExecutorUid`, with no group or other bits, under folders only root or the
+  executor may change (or sticky ones); otherwise it answers `VIEW_REFUSED`, closes the connection and logs why. No
+  uid configured refuses every connection. Root may connect, as it may do anything on the host.
+- **A clean stop.** On SIGTERM the service stops serving, waits for what is running, asks a boundary of every coding
+  machine it serves and publishes every code host view, for up to 45 s (`TimeoutStopSec=60s`). When every such view
+  has every read released and nothing pending, and no machine is lost, it calls `qorpera_folder_service_stopped` and
+  the core clears `served_by`: the next run serves those views. Otherwise `served_by` stays and the next run's
+  renewals close them (`service_crashed`). A lost machine counts even with none of its views open: a view this run let
+  go may still be open in the core, marked as served by it.
+- **Tests.** `packages/object-gateway/test/folder-coding-views.test.ts`, against the stand-in core: a coding view is
+  refused from another coding machine, an office, the execution host, an unlisted project and the code host, and a
+  code host's from another company's code host and a coding machine; a read is recorded before its answer; a boundary
+  is answered only after every read of the machine is released, one served during the last release included; a
+  refused release holds, as do `unreadable` and `denied` until the final; a machine that lost a read stays `unproven`
+  after its last view closes and until `restarted`, and keeps the service from stopping cleanly; a boundary a restart
+  crossed answers `unproven`; a clean stop clears
+  `served_by` and an unclean one keeps it; the control socket refuses a file another uid could connect through and
+  answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
+  tests.
+
+## Step 6b: test machine views
+
+In slice 6b the folder service serves agents' test machines' views (RUNTIME-FOLDER-TEST-MACHINES.md, "Views and
+machines", "Commands and credit" and "Boundaries"), against 6a's core (migration slots `20260930420000`–`429000`):
+
+- **Which machine.** A `test_machine` view's machine is its placement (`machineId`). It is served only to the instance
+  named after it, `qorpera-machine-<placement id without dashes>`, in one of the node's `testMachineProjects`; an image
+  builder (`qorpera-machine-build-…`) never is. It writes over protocol 3 and publishes 2 s after its last change. A
+  project listed there and in `companyMachineProjects` or `codingMachineProjects` stops the service at start.
+- **As a coding machine.** The control socket's `machine` is the placement id, and 5c's machine rules hold as they are:
+  the read record, the releases before each commit, the boundaries, held refusals, a lost machine and `restarted`,
+  `served_by` and the clean stop.
+- **Command windows.** The executor opens a window when a command starts on the machine:
+  `{"op":"open","machine":"<placement id>","commandId","runId","staffAgentId","requestedByUserId"}` answers
+  `{"opened":{"machine","commandId"}}`. Opening it again is a no-op; the same command with other ids is `BAD_REQUEST`.
+  `{"op":"close","machine","commandId"}` closes it, runs the machine's boundary (the command's end boundary) and answers
+  as a boundary does. Closing a window that is not open is a no-op. Windows are kept in memory only: a restart of the
+  service, `restarted` and the machine's final boundary close them all, and the executor opens them again (6d).
+- **Tags and credits.** Each change a test machine's view takes (an open that creates or truncates, a write, a close
+  that cuts a file, a folder made or removed, a file removed, the executable bit, a rename) is tagged, as it enters,
+  with the commands whose windows are open, or with the starter when none is. Tags are kept on the two things a boundary
+  publishes, and nowhere else. A pending file or folder keeps the tags of its changes through renames (a new folder's
+  with what it has inside) until it is removed, settled, or left with nothing to publish (a move moved back, a file made
+  and removed again). A pending removal of a live path is kept by that path, which no rename moves: it takes the
+  remover's tags and those of the file or folder it took, and holds them only while it is the removal pending there.
+  Chunks take the windows open as they arrive and become the file's in the step of the close that fixes them, so a
+  change made after the close (a removal waiting behind the same boundary) takes them with the file; a file abandoned,
+  or removed, with chunks unfixed loses them and their tags. A draft (5d) is out of the view until its close: its
+  chunks' tags are kept on the draft, and its close, tagged with the windows open then, gives them to the file it lands
+  as. Landed on the view's own unsaved file at its path, the draft's bytes are that file's next save: the file keeps its
+  own tags and takes the draft's, and loses those of its chunks no close fixed, which the draft's bytes replace. A draft
+  discarded, or one its close cannot land, leaves no tags; the view's own file it held, with no handle left on it, goes
+  back to the bytes its last close fixed and loses the tags of the chunks no close fixed. Each change and its tags are
+  made in one synchronous step, after the change's last wait, and so are a boundary's plan and its credits, and its
+  settling: no other change sees one without the other. Each unit's `credits` are read from what it publishes as the
+  boundary plans it: a removal's from the removals it names, any other unit's from its files and folders, and a new file
+  published as the next version of a live file the view removed also from that removal. They are the sorted commands,
+  and none when only the starter changed them. A unit that mixes both is credited to the commands alone: `credits`
+  cannot name the starter, and leaving it out would credit the commands' changes to the starter. A commit tried again,
+  or replayed under its key at the next boundary, sends the same credits. A new file the core refused and the boundary
+  keeps pending takes the tags of the removal it carried as the settling drops that removal, so a unit kept pending goes
+  again with the same credits. Every tag goes with the view.
+- **`command_ended`.** A unit the core refuses because a command it is credited to has ended is kept, as any refused
+  unit, and sent again at each boundary with the same credits, until the final. It is never credited to the starter
+  instead.
+- **The final.** A test machine's view named in a boundary's `final` clears its quiet period and publishes with `final`;
+  the core closes the view.
+- **Git (5d).** A test machine's view takes no git lock: creating a lock file in a `repo.git` is refused
+  `NOT_PERMITTED` (`EPERM`), so git there changes no shared git file, and reads them as anywhere. A git publish carries
+  no credits, and its changes would be the starter's. Credited git units need the core's git functions to take credits
+  (a follow-up).
+- **Tests.** `packages/object-gateway/test/folder-test-machine-views.test.ts`, against the stand-in core: a test
+  machine's view is refused from another test machine, an office, a coding machine, an image builder, an unlisted
+  project and the execution host, and an overlapping project stops the service; a change made in one window is credited
+  to it, one made in two windows to both, one in none to the starter (no `credits`); a rename keeps its tags; a moved
+  file's removal is credited at its origin, also when a new file made there replaces the moved one; a file removed and
+  made again is credited to its maker alone, not to the command whose refused boundary left it pending; a file a command
+  wrote, closed and removed by the starter while a boundary runs, both waiting for it, has its removal credited to the
+  command; a refused new file that took in a command's removal is sent with the same credits at three boundaries; a cut
+  takes the windows open at its close; an undone change's tags go; a retry sends the same credits; a `command_ended`
+  refusal is kept and sent again; a draft is credited to the windows its chunks came under and the one its close landed
+  it under; a draft landed over the view's own unsaved file keeps that file's credits too; a discarded draft is credited
+  nothing; a file a draft held, the draft discarded or its close refused, publishes its own bytes with their credits
+  alone; a git lock file's create is refused; a quiet publish comes about 2 s after the last change; a close publishes
+  the command's changes before it answers; the final boundary publishes with `final`; the control socket refuses a
+  window from another uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files:
+  writes, renames, renames over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended,
+  several in a row, and boundaries held at their commit while the machine closes a file it wrote before the boundary
+  began, may remove it, and writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and
+  credits against a model: a unit is credited to exactly the commands whose windows were open when a change now in it
+  was made. It also checks that a unit a boundary kept pending, or refused whole, goes again with the same credits until
+  a change is made to it. The model holds a file open only across a held boundary.
 
 ## Not here
 
-The read log and moves to a newer view (slice 4c); the office service's side of a command's view (opening it,
-mounting it for the command, and the final boundary at the command's end: slice 4d); coding machines and test machines
-(each with its own mount). Each is a later step.
+The office service's side of a command's view (opening it, mounting it for the command, and the final
+boundary at the command's end: slice 4d); a coding machine's flush of its folder programs before a boundary and git on
+the mount (slice 5d); the executor's side of coding views (opening them, mounting them, asking boundaries: slice 5g);
+the rest of step 6 (6a's core, 6c's image and folder program, 6d's executor). Each is a later slice.

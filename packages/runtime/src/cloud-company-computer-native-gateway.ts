@@ -13,6 +13,7 @@ import {
 	type CompanyComputerScope,
 	type CompanyComputerScreenLease,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type { CompanyComputerDesktopFolderReport } from "./cloud-company-computer-desktop-folder.ts";
 import { CloudCompanyComputerEffectControl } from "./cloud-company-computer-effect-control.ts";
 import type { CompanyComputerGuestEndpoint } from "./cloud-company-computer-endpoint.ts";
 import {
@@ -44,6 +45,15 @@ export interface CompanyComputerNativeGuestSession {
 	ended?(): boolean;
 	/** A screenshot published without storage (folder-v2): its pixels, once, for the perform answer. */
 	screenshot?(receiptId: string): Uint8Array | undefined;
+	/** A vault_capture's signing secret sealed to the vault's capture key (E3c-3): its box, once, for the perform answer. */
+	capture?(receiptId: string): Readonly<Record<string, string>> | undefined;
+	/** What the company folder did with the run's desktop changes since the report marked `shown` (F3 4f-2b,
+	 * `CompanyComputerDesktopFolders.report`), with this report's mark; nothing when nothing is new. It outlives a
+	 * drain that ended the session: the run's report is kept while its run lives. */
+	folderReport?(
+		shown: string,
+		signal: AbortSignal,
+	): Promise<{ mark: string; report: CompanyComputerDesktopFolderReport } | undefined>;
 }
 /** The guest refused to create a session and created nothing; the gateway keeps no capacity for it. */
 export class CompanyComputerGuestSessionRefusedError extends Error {
@@ -288,7 +298,8 @@ export class CompanyComputerNativeGateway {
 	/**
 	 * G2-6c: the run's own lease proves the binding (its x-qorpera-identity holder, qorpera_native_binding_proven with
 	 * this computer's registry key) before anything else is asked about it: on every perform, the session's open
-	 * included, and on every release, which ends the session and records its screen lease's release. A gate only; the
+	 * included, on every release, which ends the session and records its screen lease's release, and on every folder
+	 * report (F3 4f-2b). A gate only; the
 	 * descriptor and the effect receipts still check the run. The holder never reaches a log or an error.
 	 */
 	async #prove(binding: CloudNativeToolBinding, holder: unknown, signal: AbortSignal): Promise<void> {
@@ -310,11 +321,16 @@ export class CompanyComputerNativeGateway {
 			value,
 			action === "release"
 				? "action,lease,nativeBinding,schema"
-				: sealed
-					? "action,fill,lease,nativeBinding,operation,receipt,schema"
-					: "action,lease,nativeBinding,operation,receipt,schema",
+				: action === "folder_report"
+					? "action,lease,nativeBinding,schema,shown"
+					: sealed
+						? "action,fill,lease,nativeBinding,operation,receipt,schema"
+						: "action,lease,nativeBinding,operation,receipt,schema",
 		);
-		if (body.schema !== COMPANY_COMPUTER_NATIVE_SCHEMA || (action !== "perform" && action !== "release"))
+		if (
+			body.schema !== COMPANY_COMPUTER_NATIVE_SCHEMA ||
+			(action !== "perform" && action !== "release" && action !== "folder_report")
+		)
 			throw new Error("INVALID_OFFICE_NATIVE_MESSAGE");
 		const binding = parseCloudNativeToolBinding(body.nativeBinding);
 		const lease = body.lease as CompanyComputerScreenLease;
@@ -330,6 +346,25 @@ export class CompanyComputerNativeGateway {
 			if (!sameLease(lease, session.lease)) throw new Error("OFFICE_NATIVE_BINDING_CHANGED");
 			await cloudToolRequest(() => this.#close(session), signal, 20000);
 			return { schema: COMPANY_COMPUTER_NATIVE_SCHEMA, state: "released", leaseId: lease.leaseId };
+		}
+		if (action === "folder_report") {
+			// What the company folder did with the run's desktop changes (F3 4f-2b), for its next tool result. It starts
+			// no work and opens no session: a lease with no session here, or one closed, has nothing to report.
+			if (typeof body.shown !== "string" || !/^(|[0-9a-f-]{36}:[0-9]{1,15})$/.test(body.shown))
+				throw new Error("INVALID_OFFICE_NATIVE_MESSAGE");
+			await this.#prove(binding, holder, signal);
+			const pending = this.#sessions.get(key);
+			const session = pending ? await cloudToolRequest(() => pending, signal).catch(() => undefined) : undefined;
+			if (!session) return { schema: COMPANY_COMPUTER_NATIVE_SCHEMA };
+			this.#checkLease(lease, session.run);
+			if (!sameLease(lease, session.lease)) throw new Error("OFFICE_NATIVE_BINDING_CHANGED");
+			const reported =
+				session.closed || !session.guest.folderReport
+					? undefined
+					: await session.guest.folderReport(body.shown, AbortSignal.any([signal, session.run.signal]));
+			return reported
+				? { schema: COMPANY_COMPUTER_NATIVE_SCHEMA, mark: reported.mark, report: reported.report }
+				: { schema: COMPANY_COMPUTER_NATIVE_SCHEMA };
 		}
 		this.#admitWork();
 		const op = officeNativeRecord(
@@ -408,12 +443,28 @@ export class CompanyComputerNativeGateway {
 				operation.tool === "computer_screenshot"
 					? session.guest.screenshot?.(receipt.receiptId as string)
 					: undefined;
+			// A vault_capture's box travels in its answer, to the vault (E3c-3); a site stop's answer has none. A capture
+			// that read the secret but lost its box (its session ended under it) never answers as done.
+			const capture = parsedAction.kind === "browser" && parsedAction.action === "vault_capture";
+			const box = capture ? session.guest.capture?.(receipt.receiptId as string) : undefined;
+			const answer = content.kind === "json" ? content.value : null;
+			if (
+				capture &&
+				!box &&
+				typeof answer === "object" &&
+				answer !== null &&
+				!Array.isArray(answer) &&
+				answer.completed === true &&
+				!("stop" in answer)
+			)
+				throw new Error("VAULT_CAPTURE_LOST");
 			return {
 				schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
 				receiptId: receipt.receiptId,
 				idempotencyKey: receipt.idempotencyKey,
 				content,
 				...(image ? { image: Buffer.from(image).toString("base64") } : {}),
+				...(box ? { box } : {}),
 			};
 		})();
 		session.active.add(result);

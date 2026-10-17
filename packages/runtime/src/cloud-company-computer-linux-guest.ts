@@ -24,7 +24,14 @@ import {
 	CompanyComputerBrowserLogins,
 	type CompanyComputerLoginContext,
 } from "./cloud-company-computer-browser-logins.ts";
+import type { CompanyComputerCommandFolders } from "./cloud-company-computer-command-folder.ts";
 import { prepareCompanyComputerScreenWallpaper } from "./cloud-company-computer-desktop.ts";
+import {
+	COMPANY_COMPUTER_CAPTURE_RESTARTED,
+	type CompanyComputerDesktopCompany,
+	type CompanyComputerDesktopFolders,
+	type CompanyComputerScreenHolder,
+} from "./cloud-company-computer-desktop-folder.ts";
 import { CompanyComputerGuestEndpoint } from "./cloud-company-computer-endpoint.ts";
 import {
 	type CompanyComputerBrowserSession,
@@ -33,6 +40,7 @@ import {
 	type CompanyComputerScreenshotPublisher,
 	PersistentCompanyComputerBrowser,
 } from "./cloud-company-computer-guest.ts";
+import { CompanyComputerHookCaptureBoxes } from "./cloud-company-computer-hook-capture.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
 	CompanyComputerActionFailedError,
@@ -41,7 +49,10 @@ import {
 } from "./cloud-company-computer-leases.ts";
 import { createCompanyComputerLinuxBrowserLaunch } from "./cloud-company-computer-linux-browser.ts";
 import { CompanyComputerLinuxCommands } from "./cloud-company-computer-linux-commands.ts";
-import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-linux-desktop.ts";
+import {
+	COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT,
+	CompanyComputerLinuxDesktopLauncher,
+} from "./cloud-company-computer-linux-desktop.ts";
 import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linux-host.ts";
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
 import {
@@ -73,6 +84,7 @@ import type { CompanyComputerScreenSessionHandle } from "./cloud-company-compute
 import type { CompanyComputerServiceGuest } from "./cloud-company-computer-service.ts";
 import { CloudCompanyComputerSharedSurfaceControl } from "./cloud-company-computer-shared-surface-control.ts";
 import { CompanyComputerSiteStops } from "./cloud-company-computer-site-stops.ts";
+import type { CompanyComputerFolderRefusal } from "./cloud-company-computer-tools.ts";
 import type { RecoveryDirectoryMount } from "./cloud-identity-recovery-filesystems.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
@@ -133,6 +145,10 @@ interface SharedScreen {
 	/** The screen agent's long-running shell; its commands outlive runs, not the screen. */
 	shell?: CompanyComputerLinuxShell;
 	lifecycle?: CompanyComputerScreenLifetime;
+	/** The mount of the company folder the running desktop binds (`CompanyComputerDesktopCompany.epoch`), if any. */
+	companyEpoch?: number;
+	/** Counts the desktop's starts on this screen: a run's commands and browser belong to one of them. */
+	desktop: number;
 }
 interface PrivateSurface {
 	challenge: CompanyComputerPrivacyChallenge;
@@ -167,6 +183,10 @@ export interface CompanyComputerLinuxGuestOptions {
 	/** Verify adopted VM/image/mount identity. This does not assert that an X display already exists. */
 	boundary: CompanyComputerGuestBoundary;
 	screenshots: (run: CloudNativeToolRun) => CompanyComputerScreenshotPublisher;
+	/** Each desktop's mount of the company folder (F3 4d); without the folder helper, desktops have no `/company`. */
+	folders?: CompanyComputerDesktopFolders;
+	/** Each shell command's mount of the company folder (F3 4d); without the folder helper, shells have no `/company`. */
+	commandFolders?: CompanyComputerCommandFolders;
 	onFailure(error: Error): void;
 }
 
@@ -174,6 +194,10 @@ export interface CompanyComputerLinuxGuestOptions {
 const SHELL_REPORT_ATTEMPTS = 10;
 /** The most commands of each kind (open, ended) one report names for a screen. */
 const SHELL_REPORT_ITEMS = 64;
+/** How long a run's folder report waits for its read of the core: a tool result waits for its report. */
+const FOLDER_REPORT_WAIT_MS = 800;
+/** A desktop's notice not shown this long (its desktop was not ready) is dropped: it would come too late to help. */
+const DESKTOP_NOTICE_KEPT_MS = 120000;
 
 /** One screen's shell in a report: whole when its lists name every command it has, open and ended. */
 export interface CompanyComputerShellReportScreen {
@@ -263,6 +287,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #shellActivity: ReturnType<typeof setInterval>;
 	/** Ends the heaviest shell before the machine runs out of memory or tasks. */
 	readonly #shellPressure: CompanyComputerShellPressureGuard;
+	/** Each screen's notices from the company folder not yet left for its desktop, oldest first. */
+	readonly #desktopNotices = new Map<string, { text: string; at: number }[]>();
+	readonly #unlisten?: () => void;
 
 	constructor(options: CompanyComputerLinuxGuestOptions) {
 		assertCompanyComputerScope(options.scope, options.scope);
@@ -300,6 +327,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		});
 		this.#shellActivity = setInterval(() => void this.#reportShellActivity(), 30000);
 		this.#shellActivity.unref?.();
+		this.#unlisten = options.folders?.listen((screenId, text) => this.#desktopNotice(screenId, text));
 		this.#shellPressure = new CompanyComputerShellPressureGuard({
 			shells: () => [...this.#screens.values()].flatMap((screen) => (screen.shell ? [screen.shell] : [])),
 		});
@@ -414,18 +442,21 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	#screenShell(screen: SharedScreen): CompanyComputerLinuxShell {
 		if (screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
 		const binding = screen.binding;
+		const folders = this.#options.commandFolders;
 		screen.shell ??= new CompanyComputerLinuxShell(
 			createCompanyComputerLinuxShellLauncher({
 				...this.#options,
 				binding,
 				runtimeRoot: this.#options.displayRuntimeRoot,
 				timeZone: this.#options.desktopTimeZone,
+				company: folders !== undefined,
 				boundary: {
 					assertReady: async (exact, signal) => {
 						await this.#assertShared(exact, AbortSignal.any([signal, screen.stop.signal]));
 					},
 				},
 			}),
+			folders ? { folders, environmentId: binding.environmentId, screenId: binding.screenId } : {},
 		);
 		return screen.shell;
 	}
@@ -455,8 +486,41 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			throw new Error("OFFICE_PRIVACY_FENCED");
 		return state;
 	}
-	async #ensureScreen(binding: CompanyComputerScreenBinding, signal: AbortSignal): Promise<void> {
+	/**
+	 * Reuse or start the screen's desktop. With a holder, the screen's mount of the company folder takes the holder's
+	 * view first (F3 4d, "A desktop's mount"). A run whose view the core refused, or did not open by `replyBy`
+	 * (performance.now()), gets that answer and no desktop; a member keeps the desktop, without `/company` when it
+	 * starts now. A run's desktop that runs on an older mount, or on none, starts again on the new one.
+	 */
+	async #ensureScreen(
+		binding: CompanyComputerScreenBinding,
+		signal: AbortSignal,
+		holder?: CompanyComputerScreenHolder,
+		replyBy?: number,
+	): Promise<CompanyComputerFolderRefusal | undefined> {
 		await this.#assertShared(binding, signal);
+		const folders = this.#options.folders;
+		let company: CompanyComputerDesktopCompany | undefined;
+		if (folders && holder) {
+			// A mount that no desktop will use goes, unless one starts or the screen is held again first. The release
+			// runs after the screen's helper requests before it, so it also finds a mount made after its caller left.
+			const unused = (): void => {
+				if (!this.#screens.has(binding.screenOrdinal))
+					folders.releaseLater(binding.screenId, () => !this.#screens.has(binding.screenOrdinal));
+			};
+			const held = await folders
+				.hold(binding, holder, AbortSignal.any([signal, this.#stop.signal]), replyBy ?? performance.now() + 5000)
+				.catch((error: unknown) => {
+					// Cancelled while the helper works on.
+					unused();
+					throw error;
+				});
+			if (!("code" in held)) company = held;
+			else if (holder.kind === "run") {
+				unused();
+				return held;
+			}
+		} else company = folders?.mounted(binding.screenId);
 		let screen = this.#screens.get(binding.screenOrdinal);
 		if (screen) {
 			assertCompanyComputerScreenBinding(binding, screen.binding);
@@ -467,6 +531,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				stop: new AbortController(),
 				opening: Promise.resolve(),
 				lifecycle: this.#options.screenLifecycle?.create(binding, null),
+				companyEpoch: company?.epoch,
+				desktop: 0,
 			};
 			this.#screens.set(binding.screenOrdinal, current);
 			// A desktop start belongs to the office, not to whoever asked first: a
@@ -495,26 +561,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					},
 					startup,
 				);
-				current.handle = await this.#desktop.launch(binding, startup);
-				await current.handle.ready;
+				const handle = await this.#desktop.launch(binding, startup, { company });
+				current.handle = handle;
+				await handle.ready;
 				startup.throwIfAborted();
-				void current.handle.exited.then(
-					() => {
-						if (!current.closing && !current.stop.signal.aborted && !this.#closing) {
-							void current.lifecycle
-								?.failed("DESKTOP_EXITED", new AbortController().signal)
-								.then(() => current.lifecycle?.closed(new AbortController().signal))
-								.catch(() => undefined);
-							this.#fail(new Error("OFFICE_DESKTOP_EXITED"));
-						}
-					},
-					(error) => {
-						void current.lifecycle
-							?.failed("DESKTOP_DRAIN_UNCONFIRMED", new AbortController().signal)
-							.catch(() => undefined);
-						this.#fail(new Error("OFFICE_DESKTOP_DRAIN_UNCONFIRMED", { cause: error }));
-					},
-				);
+				this.#watchDesktop(current, handle);
 				await current.lifecycle?.ready(startup);
 				startup.throwIfAborted();
 				let confirmedAt = performance.now();
@@ -548,13 +599,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 									renew();
 									return;
 								}
-								void this.stopResources(binding, new AbortController().signal, "AUTHORITY_LOST").catch(
-									(error) =>
-										this.#fail(
-											new Error("OFFICE_SHARED_PULSE_FAILED", {
-												cause: new AggregateError([pulseError, error]),
-											}),
-										),
+								void this.stopResources(binding, new AbortController().signal, {
+									reason: "AUTHORITY_LOST",
+								}).catch((error) =>
+									this.#fail(
+										new Error("OFFICE_SHARED_PULSE_FAILED", {
+											cause: new AggregateError([pulseError, error]),
+										}),
+									),
 								);
 							},
 						);
@@ -580,14 +632,112 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				// Confirmed reaped: the next request starts a fresh desktop instead of
 				// finding this failed one forever.
 				if (this.#screens.get(binding.screenOrdinal) === current) this.#screens.delete(binding.screenOrdinal);
+				void folders?.release(binding.screenId, () => !this.#screens.has(binding.screenOrdinal));
 				throw error;
 			});
 			void current.opening.catch(() => undefined);
 			screen = current;
 		}
-		await cloudToolRequest(() => screen.opening, signal, 20000);
-		signal.throwIfAborted();
+		for (;;) {
+			const opening = screen.opening;
+			await cloudToolRequest(() => opening, signal, 20000);
+			signal.throwIfAborted();
+			if (screen.opening !== opening) continue;
+			if (!screen.handle) {
+				// A desktop that rule 4's way out stopped starts again for whoever comes next: on the holder's mount if
+				// it is still the screen's, and for anyone else on the screen's mount as it is now.
+				const now = folders?.mounted(binding.screenId);
+				company = !holder || (company && now?.epoch === company.epoch) ? now : undefined;
+			} else if (!company || holder?.kind !== "run" || screen.companyEpoch === company.epoch) break;
+			if (screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
+			screen.opening = this.#relaunch(screen, company);
+			void screen.opening.catch(() => undefined);
+		}
 		await this.#assertShared(binding, signal);
+	}
+
+	/** A desktop that exits by itself fails the office; one its screen stopped (a drain, a new mount) does not. */
+	#watchDesktop(screen: SharedScreen, handle: CompanyComputerScreenSessionHandle): void {
+		void handle.exited.then(
+			() => {
+				if (screen.handle === handle && !screen.closing && !screen.stop.signal.aborted && !this.#closing) {
+					void screen.lifecycle
+						?.failed("DESKTOP_EXITED", new AbortController().signal)
+						.then(() => screen.lifecycle?.closed(new AbortController().signal))
+						.catch(() => undefined);
+					this.#fail(new Error("OFFICE_DESKTOP_EXITED"));
+				}
+			},
+			(error) => {
+				void screen.lifecycle
+					?.failed("DESKTOP_DRAIN_UNCONFIRMED", new AbortController().signal)
+					.catch(() => undefined);
+				this.#fail(new Error("OFFICE_DESKTOP_DRAIN_UNCONFIRMED", { cause: error }));
+			},
+		);
+	}
+
+	/**
+	 * Start the screen's desktop again, on the screen's current mount when it has one: a mount made again never
+	 * reaches a desktop that runs on the old one (Q3, #1007). A start that fails drains the screen.
+	 */
+	async #relaunch(screen: SharedScreen, company: CompanyComputerDesktopCompany | undefined): Promise<void> {
+		const startup = AbortSignal.any([this.#stop.signal, screen.stop.signal]);
+		try {
+			await this.#stopDesktop(screen);
+			startup.throwIfAborted();
+			const handle = await this.#desktop.launch(screen.binding, startup, { company });
+			screen.handle = handle;
+			await handle.ready;
+			startup.throwIfAborted();
+			screen.companyEpoch = company?.epoch;
+			this.#watchDesktop(screen, handle);
+		} catch (error) {
+			void this.stopResources(screen.binding, new AbortController().signal, { reason: "AUTHORITY_LOST" }).catch(
+				(drainError) =>
+					this.#fail(
+						new Error("OFFICE_DESKTOP_RESTART_FAILED", { cause: new AggregateError([error, drainError]) }),
+					),
+			);
+			throw error;
+		}
+	}
+
+	/** The screen's desktop stops: its windows and its browser end, as at a restart; its shell and the commands in it
+	 * go on. A run's commands and browser belong to the desktop that stopped. */
+	async #stopDesktop(screen: SharedScreen): Promise<void> {
+		await this.#closeBrowser(screen);
+		screen.browser = undefined;
+		const old = screen.handle;
+		screen.handle = undefined;
+		screen.companyEpoch = undefined;
+		screen.desktop++;
+		await old?.stop();
+	}
+
+	/**
+	 * Rule 4's way out on the screen's mount (`CompanyComputerDesktopFolders.capture`): the desktop that uses it stops
+	 * before the mount goes, after the screen's start or restart under way, and starts again for whoever comes next. A
+	 * screen being drained stops its desktop itself. A stop that fails drains the screen: the mount goes once the drain
+	 * confirms the desktop and its browser gone, and stays for the stop control when it cannot.
+	 */
+	#stopForRefusal(screen: SharedScreen): Promise<void> {
+		// Not inside the screen's opening: the drain waits for that.
+		if (screen.closing) return screen.closing;
+		const before = screen.opening;
+		const stopping = (async () => {
+			await before.catch(() => undefined);
+			if (this.#screens.get(screen.binding.screenOrdinal) !== screen) return;
+			await this.#stopDesktop(screen);
+		})();
+		screen.opening = stopping;
+		return stopping.catch((error: unknown) => {
+			void this.stopResources(screen.binding, new AbortController().signal, { reason: "AUTHORITY_LOST" }).catch(
+				(drainError) =>
+					this.#fail(new Error("OFFICE_DESKTOP_STOP_FAILED", { cause: new AggregateError([error, drainError]) })),
+			);
+			throw error;
+		});
 	}
 
 	/** The secrets typed on one screen, one store per screen for this service's lifetime. */
@@ -611,7 +761,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const poll = (): void => {
 			if (screen.closing || screen.stop.signal.aborted || this.#closing || this.#stop.signal.aborted) return;
 			screen.requests = setTimeout(() => {
-				void Promise.resolve()
+				void this.#deliverDesktopNotices(screen)
 					.then(() => this.#desktop.takeBrowserRequest(screen.binding))
 					.then(async (requested) => {
 						if (!requested || screen.closing || screen.stop.signal.aborted) return;
@@ -626,6 +776,37 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			}, 500);
 		};
 		poll();
+	}
+
+	/** What the company folder did with a desktop's changes ("Notifications"), kept for its desktop: at most
+	 * `COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT` a screen, for `DESKTOP_NOTICE_KEPT_MS`. */
+	#desktopNotice(screenId: string, text: string): void {
+		const now = performance.now();
+		for (const [id, queued] of this.#desktopNotices)
+			if (queued.every((notice) => now - notice.at >= DESKTOP_NOTICE_KEPT_MS)) this.#desktopNotices.delete(id);
+		const queued = this.#desktopNotices.get(screenId) ?? [];
+		queued.push({ text, at: now });
+		queued.splice(0, Math.max(0, queued.length - COMPANY_COMPUTER_DESKTOP_NOTICES_KEPT));
+		this.#desktopNotices.set(screenId, queued);
+	}
+
+	/** The screen's kept notices, oldest first, left for its desktop's watcher with each poll. One the launcher refuses
+	 * is dropped; any other failure (the desktop is not ready) leaves the rest for the next poll. Never fails. */
+	async #deliverDesktopNotices(screen: SharedScreen): Promise<void> {
+		const queued = this.#desktopNotices.get(screen.binding.screenId);
+		while (queued?.length) {
+			const notice = queued[0];
+			if (performance.now() - notice.at < DESKTOP_NOTICE_KEPT_MS)
+				try {
+					await this.#desktop.notify(screen.binding, notice.text);
+				} catch (error) {
+					if (!(error instanceof Error && error.message === "INVALID_OFFICE_DESKTOP_NOTICE")) return;
+				}
+			const at = queued.indexOf(notice);
+			if (at >= 0) queued.splice(at, 1);
+		}
+		if (queued && this.#desktopNotices.get(screen.binding.screenId) === queued)
+			this.#desktopNotices.delete(screen.binding.screenId);
 	}
 
 	/**
@@ -749,9 +930,17 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		 * that never touched the browser has no say over a window a member opened. */
 		let driving: CompanyComputerBrowserSession | "attaching" | undefined;
 		let automation: CompanyComputerGuestAutomation | undefined;
+		/** The screen's desktop start this run's commands and automation were made for. */
+		let seen: number | undefined;
 		// One publisher for the session's whole life: a capture it keeps for the perform answer outlives a new automation.
 		const screenshots = this.#options.screenshots(input.run);
+		// So are the boxes its hook captures sealed (E3c-3), each kept for its perform answer only.
+		const captures = new CompanyComputerHookCaptureBoxes();
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
+		// The run's folder report (F3 4f-2b) is kept while the run lives, not the session: a drain ends the session
+		// before its own report can be read, and the next session of the same run reads it.
+		const folders = this.#options.folders;
+		folders?.follow(input.run.identity.runId, input.run.signal);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
 			signal.throwIfAborted();
@@ -857,6 +1046,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						browser = undefined;
 						driving = undefined;
 						automation = undefined;
+						captures.clear();
 						// Settled failures whose drain got no answer mid-run get one more try
 						// before the lease is released, so an outage does not drain the desktop.
 						await cloudToolRequest(
@@ -884,18 +1074,36 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			gate: input.gate,
 			effects: input.effects,
 			assertScreenAdmitted: admitted,
-			prepareScreen: async (exact, checked) => {
-				await this.#ensureScreen(exact, AbortSignal.any([signal, checked]));
+			prepareScreen: async (exact, checked, replyBy) => {
+				// The mount takes this run's view first; the rest of the reply budget is for the way back.
+				const refusal = await this.#ensureScreen(
+					exact,
+					AbortSignal.any([signal, checked]),
+					{ kind: "run", runId: input.run.identity.runId },
+					replyBy - 2000,
+				);
+				if (refusal) return refusal;
 				signal.throwIfAborted();
 				checked.throwIfAborted();
+				const screen = this.#screens.get(binding.screenOrdinal);
+				if (!screen) throw new Error("OFFICE_SCREEN_DRAINING");
+				if (seen !== undefined && seen !== screen.desktop) {
+					// The desktop started again on a new mount: what this run held on the old one is gone.
+					const leaving = { commands, automation };
+					commands = undefined;
+					browser = undefined;
+					driving = undefined;
+					automation = undefined;
+					await leaving.automation?.release().catch(() => undefined);
+					await leaving.commands?.close();
+				}
+				seen = screen.desktop;
 				commands ??= new CompanyComputerLinuxCommands({
 					...this.#options,
 					binding,
 					boundary,
 					xSocket: this.#desktop.xSocket(binding),
 				});
-				const screen = this.#screens.get(binding.screenOrdinal);
-				if (!screen) throw new Error("OFFICE_SCREEN_DRAINING");
 				shell ??= this.#screenShell(screen);
 			},
 			automation: {
@@ -926,7 +1134,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					await current?.close();
 					if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
 				},
-				perform: async (action, currentLease, context, operation) => {
+				perform: async (action, currentLease, context, operation, replyBy) => {
 					const checked = AbortSignal.any([signal, context.signal]);
 					checked.throwIfAborted();
 					if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
@@ -960,12 +1168,34 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						fillKey: this.#options.fillKey,
 						filled: this.#filledOn(binding.screenOrdinal),
 						siteStops: this.#siteStops,
+						// Asked with the mount the desktop runs on now. Rule 4's way out stops that desktop, never this
+						// session: the action holds the capture back until the way out ends, and no longer.
+						capture: (captured, until) => {
+							const folders = this.#options.folders;
+							const screen = this.#screens.get(binding.screenOrdinal);
+							if (!folders) return Promise.resolve(undefined);
+							// The desktop stopped or started again since the action began: what it shows may come from a
+							// mount that went.
+							if (!screen || screen.desktop !== seen) return Promise.resolve(COMPANY_COMPUTER_CAPTURE_RESTARTED);
+							return folders.capture(binding.screenId, screen.companyEpoch, captured, until, () =>
+								this.#stopForRefusal(screen),
+							);
+						},
+						captureTarget: (target, checked) => input.effects.hookCaptureTarget(target, checked),
+						captures,
 					});
-					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
+					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
 				},
-				settle: (action, content, requestSignal, replyBy) =>
+				settle: (action, content, requestSignal, replyBy, runId, receiptId) =>
 					automation
-						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy)
+						? automation.settle(
+								action,
+								content,
+								AbortSignal.any([signal, requestSignal]),
+								replyBy,
+								runId,
+								receiptId,
+							)
 						: Promise.resolve(content),
 			},
 		});
@@ -973,6 +1203,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			close: session.close,
 			ended: () => ended,
 			screenshot: (receiptId) => screenshots.takeInline?.(receiptId),
+			capture: (receiptId) => captures.take(receiptId),
+			...(folders
+				? {
+						folderReport: (shown: string, asked: AbortSignal) =>
+							folders.report(input.run.identity.runId, shown, asked, performance.now() + FOLDER_REPORT_WAIT_MS),
+					}
+				: {}),
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,
@@ -1150,7 +1387,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				(grant.mode === "control" && state.epoch !== grant.screenEpoch)
 			)
 				throw new Error("OFFICE_VIEWER_CHANGED");
-			await this.#ensureScreen(grant.binding, signal);
+			// A member in control holds the mount for their own view; one only watching changes nothing.
+			await this.#ensureScreen(
+				grant.binding,
+				signal,
+				grant.mode === "control" ? { kind: "member", userId: grant.memberId } : undefined,
+				performance.now() + 5000,
+			);
 			const socket = await this.#desktop.connectRfb(grant.binding, signal);
 			socket.pause();
 			// A viewer arriving opens nothing: the desktop is shown as it is. The
@@ -1189,11 +1432,18 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			signal.throwIfAborted();
 		},
 	};
-	/** `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. */
+	/**
+	 * `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. A drain request
+	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary, and each mount of its shell's
+	 * commands its final boundary, before it answers (F3 4d, "Drains and stops"), and the drain fails when a mount is
+	 * still there by then. Any other stop lets the mount go after it. A stop that cannot confirm what it closed gone (the
+	 * screen's sessions, private surface, browser or shell) fails, and the mount stays for the stop control: the
+	 * browser's namespace, say, may still read it.
+	 */
 	async stopResources(
 		binding: CompanyComputerScreenBinding,
 		signal: AbortSignal,
-		reason?: Extract<ScreenClosingReason, "AUTHORITY_LOST">,
+		stop: { reason?: Extract<ScreenClosingReason, "AUTHORITY_LOST">; until?: number } = {},
 	): Promise<void> {
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#options.scope);
@@ -1216,7 +1466,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						? "OFFICE_SERVICE_STOPPING"
 						: this.#privacy?.state === "entering"
 							? "PRIVACY_FENCE"
-							: (reason ?? "SCREEN_DRAIN_REQUESTED"),
+							: (stop.reason ?? "SCREEN_DRAIN_REQUESTED"),
 					new AbortController().signal,
 				)
 				.catch(() => undefined);
@@ -1238,6 +1488,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					{ screenId: screen.binding.screenId, shell: screen.shell },
 				].slice(-32);
 			if (screen) this.#shellSamples.delete(screen.binding.screenId);
+			const rejected = results.find((result) => result.status === "rejected");
 			if (screen) {
 				await screen.opening.catch(() => undefined);
 				try {
@@ -1249,18 +1500,41 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						.catch(() => undefined);
 					throw error;
 				}
+				// No desktop uses the screen's mount now; it goes, unless a new desktop of the screen took it meanwhile, or
+				// something else that may use it is not confirmed gone. A drain request's boundary follows below instead.
+				if (stop.until === undefined && !rejected)
+					void this.#options.folders?.release(binding.screenId, () => {
+						const now = this.#screens.get(binding.screenOrdinal);
+						return !now || now === screen;
+					});
 				await screen.lifecycle?.closed(new AbortController().signal);
 			}
-			const rejected = results.find((result) => result.status === "rejected");
 			if (rejected) throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 			if (screen && this.#screens.get(binding.screenOrdinal) === screen) this.#screens.delete(binding.screenOrdinal);
 		};
 		if (screen) screen.closing ??= drain();
 		await cloudToolRequest(() => screen?.closing ?? drain(), signal, 30000);
+		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it; and
+		// the mounts of the shell's commands, which ended with it, go once their final boundaries have their answers.
+		if (stop.until !== undefined) {
+			const until = stop.until;
+			const drained = await Promise.allSettled([
+				this.#options.folders?.drain(
+					binding.screenId,
+					signal,
+					until,
+					() => !this.#screens.has(binding.screenOrdinal),
+				),
+				this.#options.commandFolders?.drain(binding.screenId, signal, until),
+			]);
+			const failed = drained.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failed) throw failed.reason;
+		}
 	}
 	close(): Promise<void> {
 		this.#stop.abort();
 		clearInterval(this.#shellActivity);
+		this.#unlisten?.();
 		this.#shellPressure.close();
 		this.#closing ??= Promise.resolve().then(() =>
 			cloudToolRequest(

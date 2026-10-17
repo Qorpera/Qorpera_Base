@@ -1,8 +1,10 @@
 -- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-3a (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6): a member's posts and writes on the
 -- folder fence. The enter helper; posting in an agent's thread and in a group chat with no agent; a room delivery's
--- retry; an email draft and a member's own review rule without the company row FOR UPDATE; plain conversations,
--- attachments and images refusing folder-v2. Races are in 661.
+-- retry; an email draft and a member's own review rule without the company row FOR UPDATE; plain conversations refusing
+-- folder-v2, the snapshot-v1 attachment upload gone (legacy sweep D17), and images that were not uploaded refusing (chat
+-- images are 410).
+-- Races are in 661.
 
 create function pg_temp.post(p_room uuid, p_client uuid, p_body jsonb, p_binding uuid default '63400000-0000-4000-8000-0000000000b1')
 returns jsonb language sql as $$
@@ -40,7 +42,8 @@ begin
 end $$;
 
 -- 3. Posting in an agent's thread: the input, the transcript events, admission and the agent's room wake; a replay adds
--- nothing; images, a non-member and the pause refuse; images refuse first, before the pause and the login checks.
+-- nothing; images not uploaded, a non-member and the pause refuse; images refuse first, before the pause and the login
+-- checks.
 do $$
 declare
 	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; v_room uuid := pg_temp.thread_room(c_a);
@@ -62,26 +65,27 @@ begin
 		pg_temp.prompt('Something else')), '23505', 'Room input id is bound to different content');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(),
 		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
-			'bytes', 100, 'mediaType', 'image/png')))), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
+			'bytes', 100, 'mediaType', 'image/png')))), '42501', 'Attachment bytes must be uploaded for this exact member input');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L, %L)', v_room, extensions.gen_random_uuid(),
 		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
-			'bytes', 100, 'mediaType', 'image/png'))), extensions.gen_random_uuid()), '0A000',
-		'Images in conversations do not serve folder-v2 companies yet');
+			'bytes', 100, 'mediaType', 'image/png'))), extensions.gen_random_uuid()), '42501',
+		'Attachment bytes must be uploaded for this exact member input');
 	perform pg_temp.fx('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values
 		(''63400000-0000-4000-8000-000000000010'', ''63400000-0000-4000-8000-000000000001'', ''test'')');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(),
 		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
-			'bytes', 100, 'mediaType', 'image/png')))), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
+			'bytes', 100, 'mediaType', 'image/png')))), '42501', 'Attachment bytes must be uploaded for this exact member input');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(), pg_temp.prompt('Hi')),
 		'55000', 'Company execution is paused');
 	perform pg_temp.fx('delete from public.qorpera_company_execution_pauses where profile_id = ''63400000-0000-4000-8000-000000000010''');
 	perform pg_temp.path_claims('authenticated', '64700000-0000-4000-8000-0000000000ff');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(), pg_temp.prompt('Hi')),
 		'42501', 'Room is unavailable');
-	-- The snapshot-v1 post is not refused as folder-v2 (the control company has no room: its own refusal).
+	-- Folder-v2 only since legacy sweep F1e (20260930248000): a snapshot-v1 member's post goes to the folder core, which
+	-- does not find the room.
 	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000001');
-	perform pg_temp.not_refused(format('select pg_temp.post(%L, %L, %L)', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		pg_temp.prompt('Hi')));
+	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		pg_temp.prompt('Hi')), '42501', 'Room is unavailable');
 	perform pg_temp.path_claims('service_role');
 end $$;
 
@@ -172,10 +176,10 @@ begin
 	perform pg_temp.path_claims('service_role');
 end $$;
 
--- 8. Plain conversations, their attachments and images in any folder-v2 input, inserted or changed, refuse.
+-- 8. Plain conversations refuse, and the snapshot-v1 attachment upload is gone (legacy sweep D17, 20260930416000); an
+-- input inserted with images nobody uploaded, and images added to a submitted input, refuse.
 do $$
 declare c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; v_session uuid;
-	v_upload uuid := extensions.gen_random_uuid();
 begin
 	v_session := (select session_id from public.qorpera_company_rooms where id = pg_temp.thread_room(c_a));
 	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000001');
@@ -187,25 +191,20 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_request_session_turn_v2(%L, %L, %L, %L, %L, null, null, null, null, null)',
 		v_session, extensions.gen_random_uuid(), extensions.gen_random_uuid(), pg_temp.prompt('Hi'), 'member_connection'),
 		'0A000', 'This conversation does not serve folder-v2 companies yet');
-	perform pg_temp.raises_like(format('select public.qorpera_begin_member_session_attachment_upload(%L, %L, %L, 100, %L)', v_session,
-		extensions.gen_random_uuid(), repeat('a', 64), 'image/png'), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
-	perform pg_temp.path_claims('service_role');
-	perform pg_temp.fx(format($f$insert into public.qorpera_member_session_attachment_uploads(id, profile_id, session_id, user_id,
-		client_input_id, sha256, bytes, media_type, expires_at) values (%L, '63400000-0000-4000-8000-000000000010', %L,
-		'63400000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), repeat('a', 64), 100, 'image/png',
-		clock_timestamp() + interval '1 hour')$f$, v_upload, v_session));
-	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000001');
-	perform pg_temp.raises_like(format('select public.qorpera_stage_member_session_attachment(%L, true)', v_upload), '0A000',
-		'Images in conversations do not serve folder-v2 companies yet');
+	if to_regprocedure('public.qorpera_begin_member_session_attachment_upload(uuid,uuid,text,bigint,text)') is not null
+		or to_regprocedure('public.qorpera_stage_member_session_attachment(uuid,boolean)') is not null
+		or to_regprocedure('public.qorpera_authorize_member_session_attachment(uuid,uuid,text)') is not null
+		or to_regclass('public.qorpera_member_session_attachment_uploads') is not null then
+		raise exception 'The snapshot-v1 attachment upload must be gone'; end if;
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.raises_like(format($f$insert into public.qorpera_session_inputs(session_id, client_input_id, kind, author_user_id, body)
 		values (%L, extensions.gen_random_uuid(), 'user_message', '63400000-0000-4000-8000-000000000001', %L)$f$, v_session,
 		pg_temp.prompt('See this') || jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64),
-			'bytes', 100, 'mediaType', 'image/png')))), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
+			'bytes', 100, 'mediaType', 'image/png')))), '42501', 'Attachment bytes must be uploaded for this exact member input');
 	perform pg_temp.raises_like(format($f$update public.qorpera_session_inputs set body = body || %L
 		where session_id = %L and client_input_id = '66000000-0000-4000-8000-0000000000c1'$f$,
 		jsonb_build_object('images', jsonb_build_array(jsonb_build_object('objectSha256', repeat('a', 64), 'bytes', 100,
-			'mediaType', 'image/png'))), v_session), '0A000', 'Images in conversations do not serve folder-v2 companies yet');
+			'mediaType', 'image/png'))), v_session), '42501', 'Submitted input attachments cannot change');
 end $$;
 
 -- 9. Privileges: the new functions are postgres-only.

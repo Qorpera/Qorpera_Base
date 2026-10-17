@@ -199,7 +199,14 @@ describe("folder protocol", () => {
 		expect(parseHello(json({ protocol: 2, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
 			2,
 		);
-		expect(() => parseHello(json({ protocol: 3, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
+		expect(parseHello(json({ protocol: 3, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			3,
+		);
+		expect(parseHello(json({ protocol: 4, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			4,
+		);
+		for (const protocol of [0, 5, "4", 3.5])
+			expect(() => parseHello(json({ protocol, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
 		expect(() =>
 			parseHello(json({ protocol: 1, environmentId: ENV, viewId: "v", pass: "p", role: "io", x: 1 })),
 		).toThrow();
@@ -529,6 +536,53 @@ describe("folder service", () => {
 		forged.send(Kind.bridge, { cid: 7, lookup: "none" });
 		expect((await forged.json()).body.code).toBe("BAD_REQUEST");
 		expect(await forged.next()).toBeUndefined();
+	});
+
+	it("answers the notices role with the view's notices, and ends it at any other frame (F3 4f-2b-2)", async () => {
+		const root = await tempdir();
+		const core = await company(root);
+		const { path } = await serve(core, root);
+		const notices = async (hello: Record<string, unknown> = {}, pass = PASS) => {
+			const client = await Client.open(path);
+			client.send(Kind.bridge, BRIDGE);
+			client.send(Kind.hello, { protocol: 4, environmentId: ENV, viewId: "proof", pass, role: "notices", ...hello });
+			return { client, answer: await client.json() };
+		};
+		const { client, answer } = await notices();
+		expect(answer).toEqual({ kind: Kind.helloOk, body: { protocol: 4, viewId: "proof" } });
+		// No machine holds the view: none to give, and nothing listed for the asking.
+		client.send(Kind.notices, { after: 0, nonce: null });
+		expect(await client.json()).toEqual({
+			kind: Kind.noticed,
+			body: { nonce: null, notices: [], last: 0, more: false },
+		});
+		expect(core.listCalls).toBe(0);
+		const io = await Client.open(path);
+		expect((await io.hello("io")).kind).toBe(Kind.helloOk);
+		client.send(Kind.notices, { after: 0, nonce: null });
+		const { kind, body } = await client.json();
+		expect(kind).toBe(Kind.noticed);
+		expect(body).toMatchObject({ notices: [], last: 0, more: false });
+		expect(body.nonce).toMatch(/^[0-9a-f-]{36}$/);
+		// It only asks for notices: anything else, or a bad ask, ends it.
+		client.send(Kind.list, { path: "" });
+		expect((await client.json()).body.code).toBe("BAD_REQUEST");
+		expect(await client.next()).toBeUndefined();
+		const badAsk = (await notices()).client;
+		badAsk.send(Kind.notices, { after: 0, nonce: "not-a-series" });
+		expect((await badAsk.json()).body.code).toBe("BAD_REQUEST");
+		expect(await badAsk.next()).toBeUndefined();
+		// Protocol 4 only, joining no mount; and a wrong pass is refused at the hello.
+		for (const hello of [{ protocol: 3 }, { previous: { viewId: "old", pass: PASS } }, { abandon: true }]) {
+			const bad = await notices(hello);
+			expect(bad.answer.body.code).toBe("BAD_REQUEST");
+			expect(await bad.client.next()).toBeUndefined();
+		}
+		const wrong = await notices({}, "not-the-pass");
+		expect(wrong.answer.body.code).toBe("VIEW_REFUSED");
+		expect(await wrong.client.next()).toBeUndefined();
+		// The machine that holds the view is served as before.
+		expect(await io.list("docs")).toEqual(["plan.md"]);
 	});
 
 	it("lists the view's whole tree and reads bytes", async () => {

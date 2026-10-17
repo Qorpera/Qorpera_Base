@@ -1,16 +1,20 @@
 /** Folder protocol v1: what a machine's folder program and its node's folder service say to each other. The
- * machine side is `crates/qorpera-folder/src/proto.rs` and `frame.rs`; keep the two in step.
+ * machine side is `crates/qorpera-folder/src/proto.rs` and `frame.rs`; keep the two in step. The `notices` role (F3
+ * 4f-2b-2, below) is the one part the folder program never speaks: the office's folder helper asks it, through the
+ * program's relay, so `proto.rs` carries neither Q nor q.
  *
  * A frame is a u32 big-endian length (of the type byte plus the payload), one type byte, then the payload. Control
  * messages carry JSON; a read reply carries the bytes as they are. */
 
 import { isUuid } from "@qorpera/contracts";
-import type { CoreReceipt } from "./core.ts";
+import type { CoreReceipt, CoreRefusal } from "./core.ts";
 
 /** Version 2 adds writes (F3 step 3, deploy/first-node/RUNTIME-FOLDER-WRITES.md, "Protocol v2"); a machine on version
- * 1 reads only. */
-export const PROTOCOL = 2;
-export const PROTOCOLS = [1, 2] as const;
+ * 1 reads only. Version 3 adds the read log (F3 4c, RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"): a core view takes
+ * writes only from a machine that sends it. Version 4 adds links (RUNTIME-FOLDER-LINKS.md, "Protocol 4"): a machine
+ * below it never sees one. */
+export const PROTOCOL = 4;
+export const PROTOCOLS = [1, 2, 3, 4] as const;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** Before a machine's hello is accepted, frames (the bridge's and the hello) are small: an unfinished large frame
  * would otherwise hold memory for any machine on the node, with no pass. */
@@ -50,6 +54,15 @@ export const Kind = {
 	done: 0x6b, // k: a write request's answer
 	publish: 0x50, // P
 	report: 0x70, // p
+	// The read log (protocol 3).
+	reads: 0x49, // I: entries of the mount's read log
+	readsOk: 0x69, // i
+	// Links (protocol 4), answered with k.
+	symlink: 0x59, // Y: a symbolic link
+	link: 0x4a, // J: a hard link
+	// Notices (protocol 4, the `notices` role only).
+	notices: 0x51, // Q: a view's notices after one
+	noticed: 0x71, // q
 } as const;
 
 export const ErrorCode = {
@@ -134,7 +147,9 @@ export class FrameReader {
 	}
 }
 
-export type Role = "io" | "feed";
+/** `notices` (protocol 4): the office's folder helper asks for the notices of a view the service holds, and nothing
+ * else (F3 4f-2b-2, "Notices" below). */
+export type Role = "io" | "feed" | "notices";
 
 export interface Hello {
 	readonly protocol: number;
@@ -142,11 +157,16 @@ export interface Hello {
 	readonly viewId: string;
 	readonly pass: string;
 	readonly role: Role;
+	/** The last view accepted by this mount; only same-machine core desktops may transfer pending state. */
+	readonly previous?: { readonly viewId: string; readonly pass: string };
+	/** The caller holds the mount's process-lifetime lock: no mounted program can still use its handles. */
+	readonly abandon?: true;
 }
 
 export interface WireEntry {
 	readonly name: string;
-	readonly kind: "file" | "folder";
+	/** A link only at protocol 4; its size is its target's length in bytes, and the listing carries no target. */
+	readonly kind: "file" | "folder" | "symlink";
 	readonly size: number;
 	readonly mtimeMs: number;
 	readonly executable: boolean;
@@ -238,22 +258,41 @@ export function parseBridge(payload: Buffer): BridgeInfo {
 
 export function parseHello(payload: Buffer): Hello {
 	const value = object(payload);
-	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"]);
-	if (value.protocol !== 1 && value.protocol !== 2)
+	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"], ["previous", "abandon"]);
+	if (!PROTOCOLS.includes(value.protocol as (typeof PROTOCOLS)[number]))
 		throw new ProtocolError(ErrorCode.viewRefused, "Unsupported folder protocol");
+	const protocol = value.protocol as (typeof PROTOCOLS)[number];
 	if (typeof value.environmentId !== "string" || !isUuid(value.environmentId))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad environment id");
 	const printable = (v: unknown): v is string =>
 		typeof v === "string" && v.length > 0 && v.length <= 256 && /^[\x21-\x7e]+$/.test(v);
 	if (!printable(value.viewId) || !printable(value.pass))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad view id or pass");
-	if (value.role !== "io" && value.role !== "feed") throw new ProtocolError(ErrorCode.badRequest, "Bad role");
+	if (value.role !== "io" && value.role !== "feed" && value.role !== "notices")
+		throw new ProtocolError(ErrorCode.badRequest, "Bad role");
+	// Notices join no mount: no previous view and no abandoned program.
+	if (value.role === "notices" && (protocol < 4 || value.previous !== undefined || value.abandon !== undefined))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad notices request");
+	let previous: Hello["previous"];
+	if (value.previous !== undefined) {
+		const old = value.previous as Record<string, unknown>;
+		if (!old || typeof old !== "object" || Array.isArray(old))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad previous view proof");
+		exactKeys(old, ["viewId", "pass"]);
+		if (protocol < 3 || !printable(old.viewId) || !printable(old.pass) || old.viewId === value.viewId)
+			throw new ProtocolError(ErrorCode.badRequest, "Bad previous view proof");
+		previous = { viewId: old.viewId, pass: old.pass };
+	}
+	if (value.abandon !== undefined && (value.abandon !== true || protocol < 3 || value.role !== "io"))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad abandoned-program request");
 	return {
-		protocol: value.protocol,
+		protocol,
 		environmentId: value.environmentId,
 		viewId: value.viewId,
 		pass: value.pass,
 		role: value.role,
+		...(previous ? { previous } : {}),
+		...(value.abandon === true ? { abandon: true } : {}),
 	};
 }
 
@@ -377,18 +416,23 @@ export interface OpenRequest {
 	readonly create: boolean;
 	readonly exclusive: boolean;
 	readonly truncate: boolean;
+	/** The file joins the view only when this handle closes; until then the view keeps what it had. */
+	readonly draft?: boolean;
 }
 
 export function parseOpen(payload: Buffer): OpenRequest {
 	const value = object(payload);
-	exactKeys(value, ["path", "create", "exclusive", "truncate"], ["base"]);
+	exactKeys(value, ["path", "create", "exclusive", "truncate"], ["base", "draft"]);
 	const b = base(value.base);
+	const draft = value.draft === undefined ? false : flag(value.draft);
+	if (draft && value.truncate !== true) throw new ProtocolError(ErrorCode.badRequest, "A draft starts empty");
 	return {
 		path: path(value.path),
 		...(b ? { base: b } : {}),
 		create: flag(value.create),
 		exclusive: flag(value.exclusive),
 		truncate: flag(value.truncate),
+		...(draft ? { draft: true } : {}),
 	};
 }
 
@@ -449,10 +493,22 @@ export function parseGetChunk(payload: Buffer): {
 	};
 }
 
-export function parseClose(payload: Buffer): { readonly handle: number; readonly size: number } {
+export interface CloseRequest {
+	readonly handle: number;
+	readonly size: number;
+	/** Give the handle up: its writes are dropped, as when its connection ends (a draft's leave nothing). */
+	readonly discard?: boolean;
+}
+
+export function parseClose(payload: Buffer): CloseRequest {
 	const value = object(payload);
-	exactKeys(value, ["handle", "size"]);
-	return { handle: count(value.handle, 0xffff_ffff), size: count(value.size, 64 * CHUNK_MAX) };
+	exactKeys(value, ["handle", "size"], ["discard"]);
+	const discard = value.discard === undefined ? false : flag(value.discard);
+	return {
+		handle: count(value.handle, 0xffff_ffff),
+		size: count(value.size, 64 * CHUNK_MAX),
+		...(discard ? { discard: true } : {}),
+	};
 }
 
 export function parseMkdir(payload: Buffer): { readonly path: string } {
@@ -507,4 +563,154 @@ export function parsePublish(payload: Buffer): { readonly final: boolean } {
 	const value = object(payload);
 	exactKeys(value, [], ["final"]);
 	return { final: value.final === undefined ? false : flag(value.final) };
+}
+
+// ---- The read log (protocol 3) ------------------------------------------------------------------------------------------
+
+/** One entry of a mount's read log (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"): an open of a file at the version
+ * it showed, or a listing of a folder (version null), with the receipt the service gave the path. `seq` numbers the
+ * log's entries from 1. An entry without a receipt is released under none: the core refuses it while the path is
+ * not readable. */
+export interface ReadLogEntry {
+	readonly seq: number;
+	readonly path: string;
+	readonly version: string | null;
+	readonly authority?: CoreReceipt;
+}
+
+/** Consecutive entries of one log (`log`: the mount's, new each time the mount is made). `lost`: the program cannot
+ * show its log complete (rule 4), so every later publish of the view is refused. */
+export interface ReadsRequest {
+	readonly log: string;
+	readonly reads: readonly ReadLogEntry[];
+	readonly lost: boolean;
+}
+
+/** How far the service holds the log: every entry up to `taken`, and up to `released` the core has them. */
+export interface ReadsAnswer {
+	readonly log: string;
+	readonly taken: number;
+	readonly released: number;
+}
+
+function receipt(value: unknown): CoreReceipt {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad receipt");
+	const r = value as Record<string, unknown>;
+	exactKeys(r, ["resourceId", "resourceRevision", "grantId", "grantRevision"]);
+	if (typeof r.resourceId !== "string" || !isUuid(r.resourceId))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad receipt");
+	const grant = r.grantId === null && r.grantRevision === null;
+	if (!grant && (typeof r.grantId !== "string" || !isUuid(r.grantId)))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad receipt");
+	return {
+		resourceId: r.resourceId,
+		resourceRevision: count(r.resourceRevision, Number.MAX_SAFE_INTEGER),
+		grantId: grant ? null : (r.grantId as string),
+		grantRevision: grant ? null : count(r.grantRevision, Number.MAX_SAFE_INTEGER),
+	};
+}
+
+export function parseReads(payload: Buffer): ReadsRequest {
+	const value = object(payload);
+	exactKeys(value, ["log", "reads"], ["lost"]);
+	if (typeof value.log !== "string" || !isUuid(value.log)) throw new ProtocolError(ErrorCode.badRequest, "Bad log");
+	if (!Array.isArray(value.reads)) throw new ProtocolError(ErrorCode.badRequest, "Bad reads");
+	const reads: ReadLogEntry[] = [];
+	let next = 0;
+	for (const item of value.reads) {
+		if (!item || typeof item !== "object" || Array.isArray(item))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad read");
+		const read = item as Record<string, unknown>;
+		exactKeys(read, ["seq", "path", "version"], ["authority"]);
+		const seq = count(read.seq, Number.MAX_SAFE_INTEGER);
+		if (seq < 1 || (next !== 0 && seq !== next))
+			throw new ProtocolError(ErrorCode.badRequest, "Reads are not consecutive");
+		next = seq + 1;
+		if (read.version !== null && (typeof read.version !== "string" || !/^[0-9a-f-]{0,64}$/.test(read.version)))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad version");
+		reads.push({
+			seq,
+			path: path(read.path),
+			version: read.version as string | null,
+			...(read.authority === undefined ? {} : { authority: receipt(read.authority) }),
+		});
+	}
+	return { log: value.log, reads, lost: value.lost === undefined ? false : flag(value.lost) };
+}
+
+// ---- Links (protocol 4) -------------------------------------------------------------------------------------------------
+
+/** A link's target: 1 to 4,095 bytes of UTF-8 (the kernel's bound), with no NUL; nothing else about it is checked. */
+export const MAX_TARGET = 4095;
+
+export function validTarget(target: unknown): target is string {
+	return (
+		typeof target === "string" &&
+		target !== "" &&
+		!target.includes("\0") &&
+		!/\p{Surrogate}/u.test(target) &&
+		Buffer.byteLength(target) <= MAX_TARGET
+	);
+}
+
+export function parseSymlink(payload: Buffer): { readonly path: string; readonly target: string } {
+	const value = object(payload);
+	exactKeys(value, ["path", "target"]);
+	if (!validTarget(value.target)) throw new ProtocolError(ErrorCode.badRequest, "Bad link target");
+	return { path: path(value.path), target: value.target };
+}
+
+/** A hard link names its source as a rename does: `fromBase` is the version the machine showed. */
+export interface LinkRequest {
+	readonly from: string;
+	readonly fromBase?: string;
+	readonly to: string;
+}
+
+export function parseLink(payload: Buffer): LinkRequest {
+	const value = object(payload);
+	exactKeys(value, ["from", "to"], ["fromBase"]);
+	const fromBase = base(value.fromBase);
+	return { from: path(value.from), ...(fromBase ? { fromBase } : {}), to: path(value.to) };
+}
+
+// ---- Notices (protocol 4, F3 4f-2b-2; RUNTIME-FOLDER-COMPANY-MACHINES.md, "How 4f-2 carries the report") -------------
+
+/** A boundary of a view no machine asked for (a quiet period's, the last connection's leaving, one a change needed
+ * first, or one with no answer asked again before a change), as the view keeps it: the change set it committed, or its refusal whole, with why and the paths it carried
+ * (at most 20, sorted; `pathCount` says how many). `n` counts the view's notices from 1; `at` is when (ms). */
+export type Notice =
+	| { readonly n: number; readonly at: number; readonly commitId: string; readonly seq: number | null }
+	| {
+			readonly n: number;
+			readonly at: number;
+			readonly refused: CoreRefusal["reason"] | "unproven";
+			readonly paths: readonly string[];
+			readonly pathCount: number;
+	  };
+
+/** The notices after `after`, in the series `nonce` names (null: none yet). */
+export interface NoticesRequest {
+	readonly after: number;
+	readonly nonce: string | null;
+}
+
+export interface NoticesAnswer {
+	/** The view's series: null when the service holds no view the pass has been checked for. Another series than the
+	 * one asked about starts from its first notice. */
+	readonly nonce: string | null;
+	readonly notices: readonly Notice[];
+	/** The next ask's `after`: the last notice's `n`, or the `after` this answer started from. */
+	readonly last: number;
+	/** More notices follow; ask after `last`. */
+	readonly more: boolean;
+}
+
+export function parseNotices(payload: Buffer): NoticesRequest {
+	const value = object(payload);
+	exactKeys(value, ["after", "nonce"]);
+	if (value.nonce !== null && (typeof value.nonce !== "string" || !isUuid(value.nonce)))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad nonce");
+	return { after: count(value.after, Number.MAX_SAFE_INTEGER), nonce: value.nonce };
 }

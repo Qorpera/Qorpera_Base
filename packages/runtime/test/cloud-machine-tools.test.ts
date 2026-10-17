@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import { type CloudMachineCommandGateway, CloudMachineCommandRefusal } from "../src/cloud-machine-command-http.ts";
 import { cloudMachineTools } from "../src/cloud-machine-tools.ts";
@@ -527,6 +528,59 @@ describe("machine tools", () => {
 			].entries())
 				expect((await f.boundary.invoke(`bad-${index}`, "qorpera", "machine_start", bad)).success).toBe(false);
 		} finally {
+			f.boundary.close();
+		}
+	});
+
+	// F3 6d: an agent's command and a worker's go to the review under the run's own binding, from which the review takes
+	// the run's agent and member and their rules; starting and listing machines do not.
+	it.each([
+		["an agent", false],
+		["a worker", true],
+	] as const)("sends %s's command to the review before it starts (F3 6d)", async (_who, worker) => {
+		const f = fixture(undefined, worker);
+		const control = vi.fn<CloudActionReviewControl["call"]>(async () => ({
+			state: "declined",
+			reviewId: "review-0",
+		}));
+		const reviewer = { review: vi.fn() };
+		const boundary = new CloudNativeToolBoundary({
+			companyId: f.identity.companyId,
+			runId: f.identity.runId,
+			identity: f.identity,
+			tools: f.tools,
+			assertActive: async () => undefined,
+			signal: f.run.signal,
+			review: new CloudActionReviewGate({
+				binding: f.binding,
+				control: { call: control },
+				reviewer,
+				request: "",
+				holdMs: 0,
+			}),
+		});
+		try {
+			const start = { operationKey: "wake", machine: "build-a" };
+			expect((await boundary.invoke("s", "qorpera", "machine_start", start)).success).toBe(true);
+			expect((await boundary.invoke("l", "qorpera", "machine_list", {})).success).toBe(true);
+			expect(control).not.toHaveBeenCalled();
+			const command = { operationKey: "suite:1", machine: "build-a", command: "npm test" };
+			const denied = await boundary.invoke("r", "qorpera", "machine_run", command);
+			expect(denied.success).toBe(false);
+			expect(denied.contentItems[0].text).toContain("REVIEW_DENIED");
+			expect(control.mock.calls.map(([method, args]) => [method, args])).toEqual([
+				[
+					"qorpera_begin_action_review",
+					{
+						p_binding: f.binding,
+						p_call: { tool: "machine_run", argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+					},
+				],
+			]);
+			expect(f.gateway.start).not.toHaveBeenCalled();
+			expect(reviewer.review).not.toHaveBeenCalled();
+		} finally {
+			boundary.close();
 			f.boundary.close();
 		}
 	});

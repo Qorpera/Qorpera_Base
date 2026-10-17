@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { parseCloudCompanyInnerPath, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	type CompanyStateProblem,
@@ -45,7 +45,8 @@ const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The commit's bound on units in one change set. */
 const MAX_UNITS = 1000;
 /** One listing page. SQL accepts up to 1000. An entry with its receipt is about 550 bytes plus its path (at most
- * 4096, twice that escaped), so 200 fit the control's 2 MiB bound for listings. */
+ * 4096, twice that escaped) and a link's target (at most 4095, six times that escaped): about 33 KB, so 200 fit the
+ * control's 8 MiB bound for listings. */
 const LIST_PAGE = 200;
 /** A release names at most this many reads (SQL's bound). */
 const MAX_RELEASED = 10_000;
@@ -69,6 +70,7 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_archive_coding_worker",
+	"qorpera_folder_note_interface_changes",
 ]);
 /** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
  * session has a new turn (`qorpera_coding_question_stale`). */
@@ -95,7 +97,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "Only a signed hook names the site its secret is typed into"],
 			["22023", "An HMAC hook names the site its secret is typed into"],
 			["22023", "A site is a host name such as github.com"],
-			["0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"],
+			["22023", "A Stripe hook's secret is taken from dashboard.stripe.com"],
 			["22023", "A mailbox name is 1 to 64 lowercase letters, digits, dots, hyphens and underscores"],
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
@@ -209,9 +211,12 @@ interface CloudCompanyFolderEntryBase {
 	readonly authority: CloudCompanyFolderAuthority;
 }
 
+/** A link (`symlink`, made through a view, LK1) holds its target exactly as written: 1 to 4,095 bytes naming any path,
+ * which the folder never follows. Nothing is below a link. */
 export type CloudCompanyFolderEntry =
 	| (CloudCompanyFolderEntryBase & { readonly kind: "file"; readonly file: CloudCompanyFolderFile })
-	| (CloudCompanyFolderEntryBase & { readonly kind: "folder" });
+	| (CloudCompanyFolderEntryBase & { readonly kind: "folder" })
+	| (CloudCompanyFolderEntryBase & { readonly kind: "symlink"; readonly target: string });
 
 export type CloudCompanyFolderFileEntry = Extract<CloudCompanyFolderEntry, { kind: "file" }>;
 
@@ -264,11 +269,16 @@ export interface CloudCompanyFolderRoutinePage {
  * structured files it writes with their parses (SQL leaves out a parse's null fields). */
 export interface CloudCompanyFolderProposalUnit {
 	readonly unit: number;
-	readonly op: CloudCompanyFolderUnit["op"];
+	readonly op: CloudCompanyFolderOp;
 	readonly path: string;
 	readonly to: string | null;
 	readonly items: number | null;
-	readonly contains: readonly { readonly path: string; readonly kind: "file" | "folder" }[];
+	/** A link's item carries its target. */
+	readonly contains: readonly {
+		readonly path: string;
+		readonly kind: "file" | "folder" | "symlink";
+		readonly target?: string;
+	}[];
 	readonly structured: readonly {
 		readonly path: string;
 		readonly kind: string;
@@ -410,11 +420,15 @@ export type CloudCompanyFolderUnit =
 	  }
 	| { readonly op: "copy"; readonly from: string; readonly to: string; readonly expectedVersion?: string };
 
+/** A unit's op as the core answers it. A run's change set never makes a link, but a view's does (`symlink`, LK1), and
+ * a view's parked change set is listed and applied with it. */
+export type CloudCompanyFolderOp = CloudCompanyFolderUnit["op"] | "symlink";
+
 export type CloudCompanyFolderOutcome = "saved" | "conflict" | "refused" | "denied" | "waiting_for_review";
 
 export interface CloudCompanyFolderUnitResult {
 	readonly unit: number;
-	readonly op: CloudCompanyFolderUnit["op"];
+	readonly op: CloudCompanyFolderOp;
 	/** The path as stored for a saved write, mkdir, new folder or delete; the requested path of a unit that was not
 	 * saved; and the source of a move or copy, whose target is `to`. */
 	readonly path: string;
@@ -721,9 +735,17 @@ function authority(value: unknown): CloudCompanyFolderAuthority {
 const ENTRY_KEYS = ["path", "kind", "version", "seq", "updatedAt", "authority"] as const;
 const FILE_KEYS = ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"] as const;
 
+/** Whether a link's target is one the core keeps: a string of 1 to 4,095 UTF-8 bytes. */
+function linkTarget(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && new TextEncoder().encode(value).byteLength <= 4095;
+}
+
 function entry(value: unknown): CloudCompanyFolderEntry {
 	const kind = (value as { kind?: unknown } | null)?.kind;
-	const input = record(value, kind === "file" ? [...ENTRY_KEYS, ...FILE_KEYS] : ENTRY_KEYS);
+	const input = record(
+		value,
+		kind === "file" ? [...ENTRY_KEYS, ...FILE_KEYS] : kind === "symlink" ? [...ENTRY_KEYS, "target"] : ENTRY_KEYS,
+	);
 	if (typeof input.path !== "string" || !input.path || typeof input.updatedAt !== "string") invalid();
 	const base = {
 		path: input.path,
@@ -733,6 +755,10 @@ function entry(value: unknown): CloudCompanyFolderEntry {
 		authority: authority(input.authority),
 	};
 	if (input.kind === "folder") return { ...base, kind: "folder" };
+	if (input.kind === "symlink") {
+		if (!linkTarget(input.target)) invalid();
+		return { ...base, kind: "symlink", target: input.target };
+	}
 	if (
 		input.kind !== "file" ||
 		typeof input.manifestSha256 !== "string" ||
@@ -779,18 +805,14 @@ function problems(value: unknown): CompanyStateProblem[] {
 
 const OUTCOMES: readonly CloudCompanyFolderOutcome[] = ["saved", "conflict", "refused", "denied", "waiting_for_review"];
 
-const OPS: readonly CloudCompanyFolderUnit["op"][] = ["write", "mkdir", "new_folder", "delete", "move", "copy"];
+const OPS: readonly CloudCompanyFolderOp[] = ["write", "mkdir", "new_folder", "delete", "move", "copy", "symlink"];
 
 /** A commit's answer for one unit, whose op is the one sent (undefined: a proposal's unit past its list, any op). */
-function unitResult(
-	value: unknown,
-	index: number,
-	op: CloudCompanyFolderUnit["op"] | undefined,
-): CloudCompanyFolderUnitResult {
+function unitResult(value: unknown, index: number, op: CloudCompanyFolderOp | undefined): CloudCompanyFolderUnitResult {
 	const input = record(value, ["unit", "op", "path", "outcome"], ["to", "version", "reason", "problems"]);
 	if (
 		input.unit !== index + 1 ||
-		!OPS.includes(input.op as CloudCompanyFolderUnit["op"]) ||
+		!OPS.includes(input.op as CloudCompanyFolderOp) ||
 		(op !== undefined && input.op !== op) ||
 		typeof input.path !== "string" ||
 		!OUTCOMES.includes(input.outcome as CloudCompanyFolderOutcome) ||
@@ -801,7 +823,7 @@ function unitResult(
 		invalid();
 	return {
 		unit: index + 1,
-		op: input.op as CloudCompanyFolderUnit["op"],
+		op: input.op as CloudCompanyFolderOp,
 		path: input.path,
 		to: (input.to as string | undefined) ?? null,
 		version: input.version === undefined ? null : uuid(input.version),
@@ -893,9 +915,9 @@ function plan(unit: CloudCompanyFolderUnit): PlannedUnit {
 				op: "new_folder",
 				sql: { op: "new_folder", path },
 				contents: unit.contents.map((item) => {
-					const inner = parseCloudCompanyPath(item.path);
-					// SQL checks the joined path for the whole change set; a bad one is this unit's, not a defect.
-					const whole = parseCloudCompanyPath(`${path}/${inner}`);
+					// SQL checks only the joined path, for the whole change set; a bad one is this unit's, not a defect.
+					const inner = parseCloudCompanyInnerPath(path, item.path);
+					const whole = `${path}/${inner}`;
 					return item.kind === "folder" ? { path: inner } : { path: inner, file: planned(item.content, whole) };
 				}),
 			};
@@ -1226,7 +1248,8 @@ export class CloudCompanyFolderClient {
 	 * deadlock is asked again. SQL's refusals come back as `refused`, unless an earlier call with the key ended without
 	 * a checked answer: that call may have changed the hook, so the outcome is unknown. A signed hook's creation goes
 	 * through the secret broker, which makes its secret and opens it under the same key (E3b-2); its answer names the
-	 * site the secret may be typed into, and the hook's secret is there. */
+	 * site the secret may be typed into, and the hook's secret is there. A Stripe hook's secret is Stripe's: it opens
+	 * with none, and the vault reads it off dashboard.stripe.com later (E3c-2). */
 	async manageHook(
 		request: CloudCompanyFolderHookRequest,
 		signal: AbortSignal,
@@ -1264,7 +1287,8 @@ export class CloudCompanyFolderClient {
 				hook.environmentId !== this.#identity.environmentId ||
 				hook.status !== HOOK_STATUS[request.action] ||
 				// A signed hook's creation names the site its secret may be typed into, and the secret is the hook's own and
-				// there; an unsigned creation has none. A change to a hook already open may find either.
+				// there; a Stripe hook's is not yet, until the vault reads it off Stripe's page (E3c). An unsigned creation
+				// has none. A change to a hook already open may find either.
 				(signed
 					? input.secretSite !== signed.site ||
 						!signingSecret ||
@@ -1273,7 +1297,7 @@ export class CloudCompanyFolderClient {
 						Object.keys(signingSecret).length !== 3 ||
 						(signingSecret as Record<string, unknown>).connectorId !== "event_hook" ||
 						(signingSecret as Record<string, unknown>).secretName !== `h${String(hook.id).replaceAll("-", "")}` ||
-						(signingSecret as Record<string, unknown>).ready !== true
+						(signingSecret as Record<string, unknown>).ready !== (signed.proof !== "stripe")
 					: request.action === "create" && signingSecret !== undefined) ||
 				(request.action !== "create"
 					? hook.name !== request.hook || address !== undefined
@@ -1477,7 +1501,7 @@ export class CloudCompanyFolderClient {
 				const unit = record(item, ["unit", "op", "path"], ["to", "items", "contains", "structured"]);
 				if (
 					unit.unit !== index + 1 ||
-					!OPS.includes(unit.op as CloudCompanyFolderUnit["op"]) ||
+					!OPS.includes(unit.op as CloudCompanyFolderOp) ||
 					typeof unit.path !== "string" ||
 					(unit.to !== undefined && typeof unit.to !== "string") ||
 					(unit.contains !== undefined && (unit.op !== "new_folder" || !Array.isArray(unit.contains))) ||
@@ -1486,19 +1510,23 @@ export class CloudCompanyFolderClient {
 					invalid();
 				return {
 					unit: index + 1,
-					op: unit.op as CloudCompanyFolderUnit["op"],
+					op: unit.op as CloudCompanyFolderOp,
 					path: unit.path,
 					to: (unit.to as string | undefined) ?? null,
 					items: unit.items === undefined ? null : counter(unit.items),
 					contains: ((unit.contains as unknown[] | undefined) ?? []).map((entry) => {
-						const contained = record(entry, ["path", "kind"]);
+						const contained = record(entry, ["path", "kind"], ["target"]);
 						if (
 							typeof contained.path !== "string" ||
 							!contained.path ||
-							(contained.kind !== "file" && contained.kind !== "folder")
+							(contained.kind !== "file" && contained.kind !== "folder" && contained.kind !== "symlink") ||
+							(contained.kind === "symlink") !== (contained.target !== undefined) ||
+							(contained.target !== undefined && !linkTarget(contained.target))
 						)
 							invalid();
-						return { path: contained.path, kind: contained.kind };
+						return contained.kind === "symlink"
+							? { path: contained.path, kind: "symlink", target: contained.target as string }
+							: { path: contained.path, kind: contained.kind };
 					}),
 					structured: ((unit.structured as unknown[] | undefined) ?? []).map((file) => {
 						const entry = record(file, ["path", "kind", "parse"]);
@@ -1681,8 +1709,29 @@ export class CloudCompanyFolderClient {
 		return input.status as (typeof PROPOSAL_STATUSES)[number];
 	}
 
-	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
-	 * `maxBytes`, or bytes that are not UTF-8 text are not text here. */
+	/** Notes the run's changes under interfaces/ and tables/ in its conversation (I10,
+	 * `qorpera_folder_note_interface_changes`, a run effect): each of the run's commits there that has no note gets one,
+	 * which the web draws with Undo, whatever tool or machine saved it. Answers how many it made: 0 when the run has no
+	 * open conversation, or every such commit has its note. */
+	async noteInterfaceChanges(signal: AbortSignal): Promise<number> {
+		const value = await this.#retried(
+			"qorpera_folder_note_interface_changes",
+			{ p_binding: this.#binding, p_request: {} },
+			RECORD_RETRY,
+			signal,
+		);
+		const input = record(value, ["schema", "noted"]);
+		if (
+			input.schema !== "qorpera.interface-change-notes/v1" ||
+			!Number.isSafeInteger(input.noted) ||
+			(input.noted as number) < 0
+		)
+			invalid();
+		return input.noted as number;
+	}
+
+	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a link (not followed),
+	 * a file larger than `maxBytes`, or bytes that are not UTF-8 text are not text here. */
 	async readText(
 		path: string,
 		maxBytes: number,
@@ -1691,6 +1740,7 @@ export class CloudCompanyFolderClient {
 		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("Invalid Company folder text bound");
 		const { entry: found } = await this.read(path, signal);
 		if (!found) return null;
+		if (found.kind === "symlink") throw new CloudCompanyPathNotText("Company folder path is a link");
 		if (found.kind !== "file") throw new CloudCompanyPathNotText("Company folder path is a folder");
 		if (found.file.bytes > maxBytes)
 			throw new CloudCompanyPathNotText("Company folder file is larger than text here");
@@ -1884,6 +1934,27 @@ export class CloudCompanyFolderClient {
 		return this.#commitStaged(
 			"qorpera_folder_memory_commit",
 			{ p_preconditions: { runLog, ...(runGenerations === undefined ? {} : { runGenerations }) } },
+			operationKey,
+			changeSet,
+			{},
+			signal,
+		);
+	}
+
+	/** The platform's own conversation-tree batch (M1b-4b-2): with no runLog, a run writes only its own conversation's
+	 * tree, and every unit names exactly that conversation's generation. Otherwise as `memoryCommitStaged`. */
+	async memorySessionCommitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		session: { readonly sessionId: string; readonly generation: number },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		const { sessionId, generation } = session;
+		if (!UUID.test(sessionId) || !Number.isSafeInteger(generation) || generation < 0)
+			throw new Error("Invalid conversation tree generation");
+		return this.#commitStaged(
+			"qorpera_folder_memory_commit",
+			{ p_preconditions: { sessionGenerations: [{ sessionId, generation }] } },
 			operationKey,
 			changeSet,
 			{},

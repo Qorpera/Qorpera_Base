@@ -1,8 +1,9 @@
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { LxdOfficePreparationClient } from "./lxd-client.ts";
 import { LxdOfficeControlJournal } from "./lxd-office-control-journal.ts";
-import { checkDirectory } from "./lxd-office-journal-files.ts";
+import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 
 /** LXD retains a completed exec operation for only five seconds. Capture its
  * terminal fact while the lifecycle worker may be busy with other IO. Both
@@ -16,7 +17,7 @@ export async function observeLxdOfficeControlJournals(
 	signal.throwIfAborted();
 	await checkDirectory(root);
 	const names = (await readdir(root)).filter((name) =>
-		/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart|reset-configuration|reset-service-start|reset-service-restart)-[0-9a-f-]+$/.test(
+		/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop-retry|service-stop|service-restart|reset-configuration|reset-service-start|reset-service-restart)-[0-9a-f-]+$/.test(
 			name,
 		),
 	);
@@ -34,6 +35,15 @@ export async function observeLxdOfficeControlJournals(
 						signal,
 					);
 				} catch (error) {
+					// The stop worker may retire its preceding retry during this pass.
+					// Only a vanished retry directory is gone; corrupted survivors fail.
+					if (name.startsWith("service-stop-retry-")) {
+						try {
+							await lstat(join(root, name));
+						} catch (gone) {
+							if (code(gone, "ENOENT")) continue;
+						}
+					}
 					firstError ??= error;
 				}
 			}

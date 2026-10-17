@@ -1,0 +1,33 @@
+{
+  "schema": "qorpera.coding-image-pins/v1",
+  "base": "ubuntu:26.04",
+  "node": {
+    "version": "24.21.0",
+    "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
+    "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
+  },
+  "git": {
+    "version": "2.56.0",
+    "url": "https://mirrors.edge.kernel.org/pub/software/scm/git/git-2.56.0.tar.xz",
+    "sha256": "26c56c296b38c0695b26fa95f475f1d01704d2d38e73465ca30b0b2f5dc789d3"
+  },
+  "chromium": {
+    "version": "151.0.7922.34",
+    "url": "https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip",
+    "sha256": "ae8736ac28bc69278551500f219fc749575648263c43ec5990749eff43b9fcf8"
+  },
+  "uv": {
+    "version": "0.13.1",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220"
+  },
+  "mise": {
+    "version": "2026.10.10",
+    "url": "https://github.com/jdx/mise/releases/download/v2026.10.10/mise-v2026.10.10-linux-x64",
+    "sha256": "7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be"
+  },
+  "npm": {
+    "typescript": "7.0.2",
+    "tsx": "4.23.15"
+  }
+}

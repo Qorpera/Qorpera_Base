@@ -4,8 +4,8 @@
 use qorpera_folder::frame::{kind, read_frame, write_frame};
 use qorpera_folder::proto::{
 	code, Change, ChunkHeader, CloseRequest, Entry, EntryKind, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
-	ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, RemoveRequest, RenameRequest, Report, Role,
-	CHUNK,
+	LinkRequest, ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, ReadsRequest, ReadsAnswer, RemoveRequest, RenameRequest, Report, Role,
+	SymlinkRequest, CHUNK,
 };
 use sha2::{Digest, Sha256};
 use qorpera_folder::transport::Stream;
@@ -19,6 +19,8 @@ pub const PASS: &str = "right-pass";
 #[derive(Clone)]
 struct Node {
 	folder: bool,
+	/// A symbolic link: `content` is its target.
+	link: bool,
 	version: u64,
 	content: Vec<u8>,
 	executable: bool,
@@ -28,6 +30,8 @@ struct Node {
 struct Open {
 	path: String,
 	chunks: Vec<Vec<u8>>,
+	/// The file is in the tree only once this handle's close lands it.
+	draft: bool,
 }
 
 #[derive(Default)]
@@ -47,12 +51,19 @@ struct State {
 	/// Every open for writing: its path and the base it named.
 	opens: Vec<(String, Option<String>)>,
 	renames: Vec<RenameRequest>,
+	links: Vec<LinkRequest>,
 	publishes: usize,
 	/// Chunks asked back.
 	gets: usize,
-	/// How many of the next chunks and closes to answer BUSY (a boundary settling).
+	/// How many of the next chunks, closes, discards and links to answer BUSY (a boundary settling).
 	busy_chunks: usize,
 	busy_closes: usize,
+	busy_discards: usize,
+	busy_links: usize,
+	logs: std::collections::HashMap<String, u64>,
+	/// Every read the machine handed over, as (path, version).
+	logged: Vec<(String, Option<String>)>,
+	unproven: bool,
 }
 
 pub struct FakeNode {
@@ -100,12 +111,21 @@ impl FakeNode {
 
 	/// Writes a file (and the folders above it), then tells every feed.
 	pub fn put(&self, path: &str, content: &str, executable: bool) {
+		self.place(path, content, executable, false);
+	}
+
+	/// Makes a symbolic link (and the folders above it), or replaces what the path held, then tells every feed.
+	pub fn put_link(&self, path: &str, target: &str) {
+		self.place(path, target, false, true);
+	}
+
+	fn place(&self, path: &str, content: &str, executable: bool, link: bool) {
 		let mut s = self.state.lock().unwrap();
 		let mut changed = vec![path.to_string()];
 		let mut p = parent(path);
 		while !p.is_empty() {
 			if !s.entries.contains_key(p) {
-				s.entries.insert(p.to_string(), Node { folder: true, version: 1, content: Vec::new(), executable: false });
+				s.entries.insert(p.to_string(), Node { folder: true, link: false, version: 1, content: Vec::new(), executable: false });
 				changed.push(p.to_string());
 			}
 			p = parent(p);
@@ -114,7 +134,7 @@ impl FakeNode {
 			s.old.insert((path.to_string(), format!("v{}", n.version)), n.content);
 		}
 		let version = s.entries.get(path).map_or(1, |n| n.version + 1);
-		s.entries.insert(path.to_string(), Node { folder: false, version, content: content.as_bytes().to_vec(), executable });
+		s.entries.insert(path.to_string(), Node { folder: false, link, version, content: content.as_bytes().to_vec(), executable });
 		notify(&mut s, changed, false);
 	}
 
@@ -128,7 +148,7 @@ impl FakeNode {
 	pub fn put_quietly(&self, path: &str, content: &str) {
 		let mut s = self.state.lock().unwrap();
 		let version = s.entries.get(path).map_or(1, |n| n.version + 1);
-		s.entries.insert(path.to_string(), Node { folder: false, version, content: content.as_bytes().to_vec(), executable: false });
+		s.entries.insert(path.to_string(), Node { folder: false, link: false, version, content: content.as_bytes().to_vec(), executable: false });
 		s.seq += 1;
 	}
 
@@ -167,7 +187,17 @@ impl FakeNode {
 	}
 
 	pub fn content(&self, path: &str) -> Option<Vec<u8>> {
-		self.state.lock().unwrap().entries.get(path).filter(|n| !n.folder).map(|n| n.content.clone())
+		self.state.lock().unwrap().entries.get(path).filter(|n| !n.folder && !n.link).map(|n| n.content.clone())
+	}
+
+	/// A link's target.
+	pub fn target(&self, path: &str) -> Option<String> {
+		self.state.lock().unwrap().entries.get(path).filter(|n| n.link).map(|n| String::from_utf8(n.content.clone()).unwrap())
+	}
+
+	/// Every hard link asked for.
+	pub fn links(&self) -> Vec<LinkRequest> {
+		self.state.lock().unwrap().links.clone()
 	}
 
 	pub fn exists(&self, path: &str) -> bool {
@@ -184,6 +214,11 @@ impl FakeNode {
 
 	pub fn renames(&self) -> Vec<RenameRequest> {
 		self.state.lock().unwrap().renames.clone()
+	}
+
+	/// Every read the machine handed over (it hands them over before each change), as (path, version).
+	pub fn logged(&self) -> Vec<(String, Option<String>)> {
+		self.state.lock().unwrap().logged.clone()
 	}
 
 	pub fn publishes(&self) -> usize {
@@ -208,6 +243,21 @@ impl FakeNode {
 		let mut s = self.state.lock().unwrap();
 		s.busy_chunks = chunks;
 		s.busy_closes = closes;
+	}
+
+	/// The next `discards` discards of a handle are answered BUSY.
+	pub fn busy_discards(&self, discards: usize) {
+		self.state.lock().unwrap().busy_discards = discards;
+	}
+
+	/// The next `links` symbolic links are answered BUSY.
+	pub fn busy_links(&self, links: usize) {
+		self.state.lock().unwrap().busy_links = links;
+	}
+
+	/// How many of the discards `busy_discards` asked for were not answered BUSY yet.
+	pub fn busy_discards_left(&self) -> usize {
+		self.state.lock().unwrap().busy_discards
 	}
 }
 
@@ -235,7 +285,7 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 		}
 		// As the node does: the machine's protocol echoed.
 		let ok =
-			HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: !st.writable };
+			HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: !st.writable, switchable: false, code_host: false };
 		send_json(&mut s, kind::HELLO_OK, &ok).unwrap();
 	}
 	if hello.role == Role::Feed {
@@ -259,11 +309,18 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 						.filter(|(p, _)| parent(p) == req.path && p.as_str() != req.path)
 						.map(|(p, n)| Entry {
 							name: p.rsplit('/').next().unwrap().to_string(),
-							kind: if n.folder { EntryKind::Folder } else { EntryKind::File },
+							kind: if n.folder {
+								EntryKind::Folder
+							} else if n.link {
+								EntryKind::Symlink
+							} else {
+								EntryKind::File
+							},
 							size: n.content.len() as u64,
 							mtime_ms: 1_700_000_000_000,
 							executable: n.executable,
 							version: format!("v{}", n.version),
+							authority: None,
 						})
 						.collect();
 					send_json(&mut s, kind::LISTING, &Listing { entries, next: None })
@@ -312,16 +369,39 @@ fn version_of(n: &Node) -> String {
 fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<()> {
 	let folder = |st: &State, p: &str| p.is_empty() || st.entries.get(p).is_some_and(|n| n.folder);
 	match k {
+		kind::READS => {
+			let req: ReadsRequest = serde_json::from_slice(body).unwrap();
+			st.unproven |= req.lost;
+			let mut taken = st.logs.get(&req.log).copied().unwrap_or_else(|| req.reads.first().map_or(0, |r| r.seq - 1));
+			for read in &req.reads {
+				if read.seq <= taken { continue; }
+				assert_eq!(read.seq, taken + 1);
+				taken = read.seq;
+				st.logged.push((read.path.clone(), read.version.clone()));
+			}
+			st.logs.insert(req.log.clone(), taken);
+			// This stand-in's operator view has no read set: every read is released immediately.
+			send_json(s, kind::READS_OK, &ReadsAnswer { log: req.log, taken, released: taken })
+		}
 		kind::OPEN => {
 			let req: OpenRequest = serde_json::from_slice(body).unwrap();
 			st.opens.push((req.path.clone(), req.base.clone()));
 			match st.entries.get(&req.path).cloned() {
 				Some(n) if n.folder => return error(s, code::NOT_A_FILE),
 				Some(_) if req.exclusive => return error(s, code::EXISTS),
+				// As the node: the kernel follows a link before it opens, so one that reaches here was to be new.
+				Some(n) if n.link => return error(s, code::EXISTS),
 				None if !req.create => return error(s, code::NOT_FOUND),
 				None if !folder(st, parent(&req.path)) => return error(s, code::NOT_FOUND),
+				// A draft starts empty, and the tree keeps what it had until its close.
+				_ if req.draft => {
+					st.next_handle += 1;
+					let handle = st.next_handle;
+					st.handles.insert(handle, Open { path: req.path, chunks: Vec::new(), draft: true });
+					return send_json(s, kind::OPENED, &Opened { handle, size: 0, version: "draft".into() });
+				}
 				None => {
-					st.entries.insert(req.path.clone(), Node { folder: false, version: 1, content: Vec::new(), executable: false });
+					st.entries.insert(req.path.clone(), Node { folder: false, link: false, version: 1, content: Vec::new(), executable: false });
 				}
 				Some(n) if req.truncate && !n.content.is_empty() => {
 					st.old.insert((req.path.clone(), version_of(&n)), n.content.clone());
@@ -335,7 +415,7 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 			let chunks = n.content.chunks(CHUNK as usize).map(<[u8]>::to_vec).collect();
 			st.next_handle += 1;
 			let handle = st.next_handle;
-			st.handles.insert(handle, Open { path: req.path, chunks });
+			st.handles.insert(handle, Open { path: req.path, chunks, draft: false });
 			send_json(s, kind::OPENED, &Opened { handle, size: n.content.len() as u64, version: version_of(&n) })
 		}
 		kind::CHUNK => {
@@ -378,6 +458,14 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::CLOSE => {
 			let req: CloseRequest = serde_json::from_slice(body).unwrap();
+			if req.discard {
+				if st.busy_discards > 0 {
+					st.busy_discards -= 1;
+					return error(s, code::BUSY);
+				}
+				st.handles.remove(&req.handle).expect("an open handle");
+				return write_frame(s, kind::DONE, b"{}");
+			}
 			if st.busy_closes > 0 {
 				st.busy_closes -= 1;
 				return error(s, code::BUSY);
@@ -390,6 +478,9 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 				assert_eq!(c.len() as u64, want, "chunk {i} does not tile the size");
 			}
 			let content = open.chunks[..count].concat();
+			if open.draft && !st.entries.contains_key(&open.path) {
+				st.entries.insert(open.path.clone(), Node { folder: false, link: false, version: 1, content: Vec::new(), executable: false });
+			}
 			let n = st.entries.get(&open.path).cloned().expect("the file");
 			if n.content != content {
 				st.old.insert((open.path.clone(), version_of(&n)), n.content.clone());
@@ -408,7 +499,7 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 			if !folder(st, parent(&req.path)) {
 				return error(s, code::NOT_FOUND);
 			}
-			st.entries.insert(req.path, Node { folder: true, version: 1, content: Vec::new(), executable: false });
+			st.entries.insert(req.path, Node { folder: true, link: false, version: 1, content: Vec::new(), executable: false });
 			write_frame(s, kind::DONE, b"{}")
 		}
 		kind::UNLINK | kind::RMDIR => {
@@ -450,6 +541,42 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 			}
 			write_frame(s, kind::DONE, b"{}")
 		}
+		kind::SYMLINK => {
+			let req: SymlinkRequest = serde_json::from_slice(body).unwrap();
+			if st.busy_links > 0 {
+				st.busy_links -= 1;
+				return error(s, code::BUSY);
+			}
+			if st.entries.contains_key(&req.path) {
+				return error(s, code::EXISTS);
+			}
+			if !folder(st, parent(&req.path)) {
+				return error(s, code::NOT_FOUND);
+			}
+			st.entries.insert(req.path, Node { folder: false, link: true, version: 1, content: req.target.into_bytes(), executable: false });
+			send_json(s, kind::DONE, &serde_json::json!({ "version": "v1" }))
+		}
+		kind::LINK => {
+			let req: LinkRequest = serde_json::from_slice(body).unwrap();
+			st.links.push(req.clone());
+			let Some(mut n) = st.entries.get(&req.from).cloned() else { return error(s, code::NOT_FOUND) };
+			if n.folder {
+				return error(s, code::NOT_PERMITTED);
+			}
+			// The new name gets what the source was at the version the machine showed, if the node still has it.
+			if let Some(base) = req.from_base.as_ref().filter(|b| **b != version_of(&n)) {
+				let Some(content) = st.old.get(&(req.from.clone(), base.clone())) else { return error(s, code::STALE) };
+				n.content = content.clone();
+			}
+			if st.entries.contains_key(&req.to) {
+				return error(s, code::EXISTS);
+			}
+			if !folder(st, parent(&req.to)) {
+				return error(s, code::NOT_FOUND);
+			}
+			st.entries.insert(req.to, Node { version: 1, ..n });
+			send_json(s, kind::DONE, &serde_json::json!({ "version": "v1" }))
+		}
 		kind::EXECUTABLE => {
 			let req: ExecutableRequest = serde_json::from_slice(body).unwrap();
 			let Some(n) = st.entries.get_mut(&req.path) else { return error(s, code::NOT_FOUND) };
@@ -462,7 +589,11 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::PUBLISH => {
 			st.publishes += 1;
-			send_json(s, kind::REPORT, &Report { commit_id: Some("c".into()), seq: Some(st.seq), paths: Vec::new() })
+			send_json(s, kind::REPORT, &Report {
+				commit_id: Some("c".into()), seq: Some(st.seq), paths: Vec::new(),
+				refused: st.unproven.then(|| "unproven".into()),
+				closed: !st.unproven && serde_json::from_slice::<serde_json::Value>(body).unwrap()["final"].as_bool() == Some(true),
+			})
 		}
 		_ => error(s, code::BAD_REQUEST),
 	}

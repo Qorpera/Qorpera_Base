@@ -4,7 +4,8 @@ Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-n
 After=qorpera-guest-guard.service
 # Up before LXD starts machines that plug into qagent0; at shutdown LXD stops them first, so the exit then stops clean.
 Before=snap.lxd.daemon.service
-Wants=qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
+Wants=qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service \
+	qorpera-agent-exit-names.service
 
 [Service]
 Type=oneshot
@@ -12,9 +13,10 @@ RemainAfterExit=yes
 # LXD waits for this unit at boot; a hung start must not hold it for long.
 TimeoutStartSec=60
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
-# A restart (stop, then start) stops the name, log and plug services in `down`; start them again.
+# A restart (stop, then start) stops the name, log, plug and names services in `down`; start them again (the names
+# reconciler starts the companies' resolvers).
 ExecStartPost=/bin/systemctl start --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
-	qorpera-agent-plug.service
+	qorpera-agent-plug.service qorpera-agent-exit-names.service
 # Reload repairs in place: rules reload in one transaction each; links, addresses and routes are made right again.
 ExecReload=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
 # Stop removes the exit only when no machine is plugged in. With a machine plugged in it fails and changes nothing:

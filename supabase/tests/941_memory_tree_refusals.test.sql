@@ -324,7 +324,7 @@ declare
 	cs uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0');
 	root constant text := 'agents/nora/memory/thread'; oroot constant text := 'agents/otto/memory/thread'; r jsonb;
 	block0 constant text := 'agents/nora/memory/thread/t0/00000000.jsonl';
-	only_tree constant text := 'a summary tree holds only tree.toml and its blocks; only blocks are deleted';
+	only_tree constant text := 'a summary tree holds only tree.toml, its blocks and its images; only blocks and images are deleted';
 	no_generation constant text := 'a summary tree''s change names its conversation''s generation';
 	mismatch constant text := 'a level-0 line does not match its message (seq, hash and number)';
 begin
