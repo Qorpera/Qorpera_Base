@@ -186,6 +186,12 @@ export class CompanyInterfaceFolder {
 		if (this.#sourcesKey() !== before) this.#schedule();
 	}
 
+	/** Reads the folder again soon, as its hint would: after a change a page could not make, so it shows what is there
+	 * now. */
+	sync(): void {
+		this.#schedule();
+	}
+
 	// ---- lifetime -------------------------------------------------------------
 
 	#signal(): AbortSignal {

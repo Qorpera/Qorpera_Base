@@ -40,6 +40,7 @@ import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { CompanyMail, type MailList, type MailListRequest } from "../company-mail.ts";
+import { AgentInAreaError, addArea, agentList, setAreaAgents } from "../interface-areas.ts";
 import { type BoardLane, boardLanes } from "../interface-board.ts";
 import { type ClaimVerb, claimFailure, claimTableCell, type InterfaceWrites } from "../interface-claims.ts";
 import type { FolderProblem } from "../interface-folder.ts";
@@ -65,7 +66,11 @@ import {
 	interfaceSource,
 	interfaceViews,
 	isLiveSource,
+	leaverName,
+	memberIds,
 	memberMayWriteRows,
+	memberOffers,
+	namesLeaver,
 	offeredRow,
 	QUOTE_RECORD_COLUMNS,
 	rowHasCard,
@@ -173,6 +178,10 @@ interface PageState {
 	/** The area cards the member took or accepted here, which ask whether they supervise its agents too (step I9b), by
 	 * card. */
 	askSupervise: string[];
+	/** The area the member is adding, as typed so far, while its form is open (Interfaces C6d). */
+	areaDraft: { area: string; about: string } | null;
+	/** The area whose Add an agent lists the agents it may add, by its row's key (Interfaces C6d). */
+	addingAgents: string | null;
 	/** A refused save's problems, listed under the error. */
 	errorProblems: string[];
 	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
@@ -194,6 +203,8 @@ function pageState(key: string): PageState {
 			claiming: {},
 			offering: null,
 			askSupervise: [],
+			areaDraft: null,
+			addingAgents: null,
 			errorProblems: [],
 			focus: null,
 		};
@@ -424,7 +435,11 @@ export function renderInterfaceFile(
 	const today = new Date();
 	today.setHours(0, 0, 0, 0);
 	const clock = { now, startOfToday: today.getTime() };
-	const memberName = (id: string) => state.team?.members.find((member) => member.userId === id)?.displayName;
+	/** A member's name, or how the page names someone who left (Interfaces C6d). */
+	const memberName = (id: string) =>
+		namesLeaver(company, id)
+			? leaverName(company, id)
+			: state.team?.members.find((member) => member.userId === id)?.displayName;
 	/** A cell as text: an agent's or a member's name for an id its source's column holds (§5), else its value. */
 	const namesFor =
 		(source: string) =>
@@ -654,8 +669,9 @@ export function renderInterfaceFile(
 	const memberNames = [...new Set(named("member"))].map((id) => [id, memberName(id)]);
 	const live = state.realtime === "connected";
 	const canWrite = state.team?.capabilities.write === true;
-	// Offers are drawn only where the page can make and answer them, once they are read (step I9c).
-	const offers = writes?.offers && state.interfaceOffers ? state.interfaceOffers.offers : null;
+	// Offers are drawn only where the page can make and answer them, once they are read (step I9c); one from someone
+	// who left is not (Interfaces C6d).
+	const offers = (writes?.offers && memberOffers(company)) || null;
 	// An area's supervision is drawn the same way, once its consents are read (step I9b).
 	const supervisions = writes?.offers && state.interfaceOffers ? state.interfaceOffers.supervisions : null;
 	const areas = supervisions === null ? null : tableDefinition(company, AREAS_SOURCE);
@@ -735,6 +751,11 @@ export function renderInterfaceFile(
 		// column and whether the member may change its rows (step I9b).
 		supervisions,
 		page.askSupervise,
+		// Whether an area is being added, and the area whose agents are being chosen with the agents that may be chosen
+		// (Interfaces C6d).
+		page.areaDraft !== null,
+		page.addingAgents,
+		page.addingAgents === null ? null : areaAgentChoices(company).map((agent) => [agent.id, agent.displayName]),
 		areas && [
 			areas.id,
 			areas.columns.find((column) => column.name === "supervisor") ?? null,
@@ -1342,6 +1363,7 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 			? h("div", { class: "interface-detail-text" }, markdown(text, { links: false }))
 			: null,
 		detailSupervision(context, drawn, open, lineId),
+		detailAgents(context, drawn, open, lineId),
 		actions,
 	);
 }
@@ -1444,6 +1466,7 @@ function boardBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		" interface-board-block",
 		block.title,
 		...notes,
+		...parts.flatMap((part) => areaAdder(drawn, part, context) ?? []),
 		lanes.length
 			? h(
 					"div",
@@ -1560,8 +1583,9 @@ function boardCard(
 					...body,
 				)
 			: h("div", { class: "interface-card-body" }, ...body);
-	// Take on a card no one holds, Release on the member's own, in any lane of a members board (a Shared card too),
-	// where the block lists them and the table lets members write; the platform's own answer is not drawn on a board.
+	// Take on a card no one holds, or one whose holder left (Interfaces C6d), Release on the member's own, in any lane of
+	// a members board (a Shared card too), where the block lists them and the table lets members write; the platform's
+	// own answer is not drawn on a board.
 	const verbs = new Set(drawn.block.buttons);
 	const holder = part.definition?.holder ?? null;
 	const claimable =
@@ -1571,9 +1595,10 @@ function boardCard(
 		places.own !== undefined &&
 		part.definition?.columns.some((column) => column.name === holder) === true;
 	const held = holder === null ? undefined : row[holder];
+	const free = emptyCell(held) || namesLeaver(context.company, held);
 	const verb: ClaimVerb | null = !claimable
 		? null
-		: emptyCell(held) && verbs.has("take")
+		: free && verbs.has("take")
 			? "take"
 			: held === context.company.userId && verbs.has("release")
 				? "release"
@@ -1594,12 +1619,12 @@ function boardCard(
 					},
 					verb === "take" ? t("Take") : t("Release"),
 				);
-	// Offer on a card no one holds or the member's own, to each other member who may change its table's rows and hasn't
-	// been offered it yet, where the block lists offer (step I9c).
+	// Offer on a card no one holds (or whose holder left) or the member's own, to each other member who may change its
+	// table's rows and hasn't been offered it yet, where the block lists offer (step I9c).
 	const offers = cardOffers(context, part, item);
 	const offerKey = `${drawn.key}|${card}`;
 	const candidates =
-		claimable && context.offers !== null && verbs.has("offer") && (emptyCell(held) || held === context.company.userId)
+		claimable && context.offers !== null && verbs.has("offer") && (free || held === context.company.userId)
 			? offerCandidates(context, part, offers)
 			: [];
 	const offerBusy = context.page.pending.includes(`offer:${offerKey}`);
@@ -1684,8 +1709,10 @@ function boardCard(
 	return element;
 }
 
-/** A member's name on the page, or "A member" for one the company no longer lists. */
+/** A member's name on the page, or how it names someone who left (Interfaces C6d); "A member" while the members are not
+ * read. */
 function memberLabel(context: BlockContext, id: string): string {
+	if (namesLeaver(context.company, id)) return leaverName(context.company, id);
 	const member = context.company.store.get().team?.members.find((each) => each.userId === id);
 	return member?.displayName || member?.email || t("A member");
 }
@@ -1924,9 +1951,9 @@ async function closeOffer(
 /** How long a card whose save landed may stay where it was, saving, waiting for the board to show it moved. */
 const CLAIM_LANDED_WAIT = 10_000;
 
-/** A failed take, release or accept as the page's error: a cell someone else changed says so, and a refused save lists
- * why under `failure`. */
-function claimError(page: PageState, verb: ClaimVerb, error: unknown, failure = claimFailure(verb)): void {
+/** A failed take, release or accept, or a change of an area (Interfaces C6d), as the page's error: a cell someone else
+ * changed says so, and a refused save lists why under `failure`. */
+function claimError(page: PageState, error: unknown, failure: string): void {
 	const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
 	// Every read found the cell still free (or still the member's, or as the offer read it), so the file kept changing
 	// elsewhere; a cell that was lost says so itself (ClaimLostError).
@@ -1967,6 +1994,7 @@ async function claimCard(
 				? { offer: { column: accepted.column, from: accepted.offer.from, was: accepted.offer.was } }
 				: {}),
 			memberId: company.userId,
+			members: memberIds(company),
 			signal: company.signal,
 			check: () => {
 				company.signal.throwIfAborted();
@@ -1974,7 +2002,7 @@ async function claimCard(
 			},
 		});
 	} catch (error) {
-		claimError(page, verb, error);
+		claimError(page, error, claimFailure(verb));
 	}
 	const without = () => Object.fromEntries(Object.entries(page.claiming).filter(([other]) => other !== card));
 	if (wrote) {
@@ -2156,6 +2184,7 @@ async function acceptOffer(context: BlockContext, offer: MemberInterfaceOffer, t
 			verb: "accept",
 			offer: { column, from: offer.from, was: offer.was },
 			memberId: company.userId,
+			members: memberIds(company),
 			signal: company.signal,
 			check: () => {
 				company.signal.throwIfAborted();
@@ -2164,7 +2193,7 @@ async function acceptOffer(context: BlockContext, offer: MemberInterfaceOffer, t
 		});
 		await writes.offers?.refresh();
 	} catch (error) {
-		claimError(page, "accept", error);
+		claimError(page, error, claimFailure("accept"));
 	}
 	page.pending = page.pending.filter((other) => other !== busy);
 	if (context.stillShown()) context.redraw();
@@ -2203,10 +2232,11 @@ function areaSupervision(
 	const live = supervisions.find(
 		(each) => each.state === "live" && each.table === table && each.key !== null && JSON.stringify(each.key) === key,
 	);
+	// A cell that names someone who left counts as empty (Interfaces C6d): their consent ended when they left.
 	const cell = row.supervisor;
 	return {
 		key,
-		supervisor: live?.user ?? (typeof cell === "string" && cell !== "" ? cell : null),
+		supervisor: live?.user ?? (typeof cell === "string" && cell !== "" && !namesLeaver(company, cell) ? cell : null),
 		live,
 		mayWrite: memberMayWriteRows(company, definition),
 	};
@@ -2391,6 +2421,7 @@ async function superviseArea(
 				verb,
 				column: "supervisor",
 				memberId: company.userId,
+				members: memberIds(company),
 				signal: company.signal,
 				check: () => {
 					company.signal.throwIfAborted();
@@ -2401,12 +2432,356 @@ async function superviseArea(
 			done = true;
 		}
 	} catch (error) {
-		if (verb === "take" || verb === "release")
-			claimError(page, verb, error, t("The supervisor could not be changed."));
+		if (verb === "take" || verb === "release") claimError(page, error, t("The supervisor could not be changed."));
 		else pageError(page, describeError(error));
 	}
 	page.pending = page.pending.filter((other) => other !== busy);
 	if (done && card !== undefined) page.askSupervise = page.askSupervise.filter((other) => other !== card);
+	if (context.stillShown()) context.redraw();
+}
+
+/** The agents a member may add to an area, by name: those that work here and are in no area yet (an agent is in one
+ * area only, §5.1). */
+function areaAgentChoices(company: CompanyController): HostedStaffAgent[] {
+	const placed = new Set((interfaceRows(company, AREAS_SOURCE) ?? []).flatMap(({ row }) => agentList(row.agents)));
+	const collator = new Intl.Collator(presentationLocale(), { sensitivity: "base" });
+	return company.store
+		.get()
+		.staff.filter((agent) => agent.employmentStatus === "active" && !placed.has(agent.id))
+		.sort((a, b) => collator.compare(a.displayName, b.displayName) || (a.id < b.id ? -1 : 1));
+}
+
+/** The areas' part's Add an area (Interfaces C6d): where the member may change the areas' rows, a button that opens a
+ * form for the new area's name and what it is about, which adds it as theirs. With no areas yet it says so first. */
+function areaAdder(drawn: DrawnBlock, part: DrawnPart, context: BlockContext): HTMLElement | null {
+	const { page } = context;
+	if (part.source !== AREAS_SOURCE || !part.readable) return null;
+	const none = interfaceRows(context.company, AREAS_SOURCE)?.length
+		? null
+		: h("p", { class: "interface-empty" }, t("No areas yet."));
+	if (!context.writes || !part.mayWrite) return none;
+	const where = `add-area:${drawn.key}:${part.index}`;
+	const draft = page.areaDraft;
+	if (draft === null)
+		return h(
+			"div",
+			{ class: "interface-area-add" },
+			none,
+			h(
+				"button",
+				{
+					type: "button",
+					class: "interface-button",
+					"data-focus-key": where,
+					onclick: () => {
+						page.areaDraft = { area: "", about: "" };
+						page.focus = `${where}:area`;
+						context.redraw();
+					},
+				},
+				t("Add an area"),
+			),
+		);
+	const busy = page.pending.includes(where);
+	const close = () => {
+		page.areaDraft = null;
+		page.focus = where;
+		context.redraw();
+	};
+	// What is typed stays in the page's state, so a redraw while the form is open keeps it.
+	const field = (name: "area" | "about", label: string) => {
+		const column = part.definition?.columns.find((each) => each.name === name);
+		if (column === undefined) return null;
+		return h(
+			"label",
+			{ class: "interface-area-field" },
+			h("span", null, label),
+			h("input", {
+				type: "text",
+				value: draft[name],
+				maxlength: column.max === null ? null : String(column.max),
+				"data-focus-key": `${where}:${name}`,
+				oninput: (event: Event) => {
+					draft[name] = (event.target as HTMLInputElement).value;
+				},
+			}),
+		);
+	};
+	return h(
+		"form",
+		{
+			class: "interface-area-form",
+			"aria-label": t("Add an area"),
+			onsubmit: (event: Event) => {
+				event.preventDefault();
+				void addAreaRow(context, where);
+			},
+			onkeydown: (event: KeyboardEvent) => {
+				if (event.key !== "Escape") return;
+				event.preventDefault();
+				close();
+			},
+		},
+		field("area", t("Name")),
+		field("about", t("About")),
+		h(
+			"span",
+			{ class: "interface-actions" },
+			h(
+				"button",
+				{
+					type: "submit",
+					class: "interface-button",
+					"data-focus-key": `${where}:save`,
+					"aria-disabled": busy ? "true" : null,
+				},
+				busy ? t("Saving…") : t("Save"),
+			),
+			h(
+				"button",
+				{ type: "button", class: "interface-button", "data-focus-key": `${where}:cancel`, onclick: close },
+				t("Cancel"),
+			),
+		),
+	);
+}
+
+/** Adds the area the form holds, as the member's (Interfaces C6d; app/interface-areas.ts writes the areas table first
+ * where the folder has none yet). The form closes once it is saved, and the board shows the area once the folder is
+ * read again; a refusal says why under the form's words, and the folder is read again. */
+async function addAreaRow(context: BlockContext, where: string): Promise<void> {
+	const { page, company, writes } = context;
+	const draft = page.areaDraft;
+	if (draft === null || !writes || page.pending.includes(where)) return;
+	const area = draft.area.trim();
+	if (!area) {
+		pageError(page, t("An area needs a name."));
+		page.focus = `${where}:area`;
+		context.redraw();
+		return;
+	}
+	page.pending = [...page.pending, where];
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	try {
+		await addArea({
+			folder: writes.folder(),
+			memberId: company.userId,
+			members: memberIds(company),
+			signal: company.signal,
+			check: () => {
+				company.signal.throwIfAborted();
+				writes.current();
+			},
+			area,
+			about: draft.about,
+		});
+		page.areaDraft = null;
+		page.focus = where;
+	} catch (error) {
+		claimError(page, error, t("The area could not be added."));
+		writes.reread?.();
+	}
+	page.pending = page.pending.filter((other) => other !== where);
+	if (context.stillShown()) context.redraw();
+}
+
+/** An area's change of its agents on its way, by its row: its Remove and Add an agent wait. */
+const agentsBusy = (area: AreaSupervision) => `agents:${area.key}`;
+
+/** The rules' words (§5.1, rule 9) for the two refusals of an area's new agent, which the page says in its own:
+ * the agent is in another area, or someone's yes to supervise the area's agents is live and only they add them. */
+const ONE_AREA_ONLY = "an agent is in one area only";
+const SUPERVISOR_ADDS = "only the area's supervisor adds its agents";
+
+/** An area's agents in its detail (Interfaces C6d; §5.1), with what the rules let the member do, whatever their role:
+ * Remove for each where they may change the areas' rows; Add an agent where they may and no one's yes to supervise the
+ * area's agents is live, or it is theirs. While someone else's is, it says that only they add agents. Each Remove
+ * hands the focus to the next one, then to Add an agent. Null where the page can't change the area's agents. */
+function detailAgents(
+	context: BlockContext,
+	drawn: DrawnBlock,
+	open: InterfaceRow,
+	lineId: string,
+): HTMLElement | null {
+	const { company, page } = context;
+	const area = areaSupervision(context, drawn.source, open.row);
+	const definition = tableDefinition(company, drawn.source);
+	if (area === null || !definition?.columns.some((column) => column.name === "agents" && column.type === "agents"))
+		return null;
+	const agents = agentList(open.row.agents);
+	const where = `agents:${drawn.key}:${open.key}`;
+	const add = `${where}:add`;
+	const remove = (agent: string) => `${where}:remove:${agent}`;
+	const busy = page.pending.includes(agentsBusy(area));
+	const control = (label: string, focus: string, then: readonly string[], act: () => void) =>
+		h(
+			"button",
+			{
+				type: "button",
+				class: "interface-button",
+				"data-focus-key": focus,
+				"data-focus-then": JSON.stringify(then),
+				"aria-describedby": lineId,
+				"aria-disabled": busy ? "true" : null,
+				onclick: () => {
+					if (!busy) act();
+				},
+			},
+			label,
+		);
+	const removes = area.mayWrite
+		? agents.map((agent, index) =>
+				control(
+					t("Remove {name}", { name: drawn.nameOf("agents", [agent]) }),
+					remove(agent),
+					[...agents.slice(index + 1), ...agents.slice(0, index).reverse()].map(remove).concat(add),
+					() =>
+						void changeAreaAgents(
+							context,
+							area,
+							agents,
+							agents.filter((other) => other !== agent),
+						),
+				),
+			)
+		: [];
+	const { live } = area;
+	const adds =
+		area.mayWrite && (live === undefined || live.user === company.userId)
+			? page.addingAgents === area.key
+				? [agentPicker(context, area, agents, where, lineId)]
+				: [
+						control(t("Add an agent"), add, [], () => {
+							const first = areaAgentChoices(company)[0];
+							page.addingAgents = area.key;
+							page.focus = first ? `${where}:choose:${first.id}` : `${where}:choose-cancel`;
+							context.redraw();
+						}),
+					]
+			: [];
+	const others =
+		live !== undefined && live.user !== company.userId
+			? h(
+					"p",
+					null,
+					t("Only {name}, who supervises its agents, adds agents.", { name: memberLabel(context, live.user) }),
+				)
+			: null;
+	if (!removes.length && !adds.length && others === null) return null;
+	return h(
+		"div",
+		{ class: "interface-area-agents" },
+		others,
+		removes.length || adds.length ? h("span", { class: "interface-actions" }, ...removes, ...adds) : null,
+	);
+}
+
+/** The agents an area may get, each a button that adds it, and Cancel; Escape closes it too. With none left it says
+ * so. An added agent's Remove takes the focus once the area shows it. */
+function agentPicker(
+	context: BlockContext,
+	area: AreaSupervision,
+	agents: readonly string[],
+	where: string,
+	lineId: string,
+): HTMLElement {
+	const { page } = context;
+	const close = () => {
+		page.addingAgents = null;
+		page.focus = `${where}:add`;
+		context.redraw();
+	};
+	const choices = areaAgentChoices(context.company);
+	const picker = h(
+		"span",
+		{ class: "interface-actions interface-offer-picker", role: "group", "aria-label": t("Add an agent") },
+		choices.length
+			? null
+			: h("span", { class: "interface-offer-picker-label" }, t("Every agent is in an area already.")),
+		...choices.map((agent) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: "interface-button",
+					"data-focus-key": `${where}:choose:${agent.id}`,
+					"data-focus-then": JSON.stringify([`${where}:remove:${agent.id}`, `${where}:add`]),
+					"aria-describedby": lineId,
+					onclick: () => void changeAreaAgents(context, area, agents, [...agents, agent.id], agent.id),
+				},
+				agent.displayName,
+			),
+		),
+		h(
+			"button",
+			{ type: "button", class: "interface-button", "data-focus-key": `${where}:choose-cancel`, onclick: close },
+			t("Cancel"),
+		),
+	);
+	picker.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		event.preventDefault();
+		close();
+	});
+	return picker;
+}
+
+/** Sets an area's agents, from those its detail showed (Interfaces C6d). An agent another area has by now, or an area
+ * whose agents only its supervisor adds by now, is said in plain words; an area that changed meanwhile says that. After
+ * any of them the folder and the consents are read again, so the detail shows the area as it is now. */
+async function changeAreaAgents(
+	context: BlockContext,
+	area: AreaSupervision,
+	shown: readonly string[],
+	agents: readonly string[],
+	added?: string,
+): Promise<void> {
+	const { page, company, writes } = context;
+	const busy = agentsBusy(area);
+	if (page.pending.includes(busy) || !writes) return;
+	page.pending = [...page.pending, busy];
+	page.addingAgents = null;
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	try {
+		await setAreaAgents({
+			folder: writes.folder(),
+			memberId: company.userId,
+			members: memberIds(company),
+			signal: company.signal,
+			check: () => {
+				company.signal.throwIfAborted();
+				writes.current();
+			},
+			key: area.key,
+			shown,
+			agents,
+		});
+	} catch (error) {
+		const refused = error instanceof WebCompanyFolderRejectedError ? error.problems : [];
+		const elsewhere =
+			error instanceof AgentInAreaError
+				? error.agent
+				: refused.some((problem) => problem.includes(ONE_AREA_ONLY))
+					? added
+					: undefined;
+		if (elsewhere !== undefined)
+			pageError(
+				page,
+				t("{name} is already in another area.", {
+					name: company.staffById(elsewhere)?.displayName ?? t("That agent"),
+				}),
+			);
+		else if (refused.some((problem) => problem.includes(SUPERVISOR_ADDS)))
+			pageError(page, t("Only the area's supervisor adds its agents now."));
+		else claimError(page, error, t("The area's agents could not be changed."));
+		writes.reread?.();
+		void writes.offers?.refresh();
+	}
+	page.pending = page.pending.filter((other) => other !== busy);
 	if (context.stillShown()) context.redraw();
 }
 

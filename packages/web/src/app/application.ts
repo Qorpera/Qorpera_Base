@@ -1403,11 +1403,12 @@ export function mountApplication(
 				return;
 			case "interface":
 				// A board's take and release write the member's own rows with the same rechecks (step I9a); its offers go
-				// through the company's offers reader (step I9c).
+				// through the company's offers reader (step I9c). A change that could not be made reads the folder again.
 				renderInterface(main, controller, route.id ?? "", {
 					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 					current: companyCurrent,
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
+					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
 				});
 				return;
 			case "team":
