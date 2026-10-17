@@ -89,6 +89,11 @@ create function pg_temp.platform(p_block jsonb) returns jsonb language sql immut
 	select p_block || '{"authority":{"platform":true}}'::jsonb
 $$;
 
+-- The company chose Shared context, the beta its place on the test list offers, so its runs are recorded in the beta
+-- (C5, 20260930508000).
+insert into public.qorpera_memory_tree_companies(profile_id) values ('63400000-0000-4000-8000-000000000010');
+insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400000-0000-4000-8000-000000000010', 'tree');
+
 -- The setup: Nora's hire; the release run (Agent A's, for the member); Nora's tree, a tier-0 block (a pair and a four)
 -- and a tier-1 block (a sixteen).
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'release-setup', '[{"op":"mkdir","path":"agents"}]'), 1, 'saved') \g /dev/null

@@ -121,7 +121,11 @@ $$;
 -- launch, design, hiring, press (removed later) and board (retired later); Otto in launch and ops; Pia in design,
 -- hiring, ops, press and board. The runs: Nora's and Otto's, each in its own thread. The transcripts, newest last:
 -- launch 1-3, Otto's thread 5, Nora's thread 10-11, design 15, ops 20, press 30, board 35, and a session_info (not an
--- included event) in hiring at 40 and in Pia's thread at 41. Otto's tree, with one line.
+-- included event) in hiring at 40 and in Pia's thread at 41. Otto's tree, with one line. The company chose Shared
+-- context, the beta its place on the test list offers, so its runs are recorded in the beta (C5, 20260930508000); the
+-- files that build on this fixture (946, 947, 951, 971) have the choice too.
+insert into public.qorpera_memory_tree_companies(profile_id) values ('63400000-0000-4000-8000-000000000010');
+insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400000-0000-4000-8000-000000000010', 'tree');
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'branches-setup',
 	'[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/groups"}]'), 2, 'saved') \g /dev/null
 do $$
