@@ -54,7 +54,10 @@ import {
 	type CodingMachineJournalPlan,
 	type CodingMachineStorage,
 	checkCodingMachineReceipt,
+	codingMachineLastStart,
+	codingMachineStartDropped,
 	codingMachineStartOperation,
+	dropCodingMachineStart,
 	type LxdCodingMachineBinding,
 	lxdCodingMachineJournalPlan,
 	lxdCodingMachineName,
@@ -62,6 +65,7 @@ import {
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
+	undropCodingMachineStart,
 } from "./coding-machine.ts";
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "./coding-vm.ts";
@@ -1261,9 +1265,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// Stopped, right before each start: the folder service hears the machine restarted (the plan's rule 4), so a
 			// read it was served on its last boot and never released no longer leaves the views it opens unproven, and
 			// then SQL records a restart for the folder, if the machine was marked for one, named by the effect the start
-			// follows. Either not confirmed, the machine does not start.
+			// follows. Either not confirmed, the machine does not start. Whether a read of its last boot may have gone
+			// unreleased (F3 5g-5) is written down first, against that boot's start, and taken back only when the service
+			// answers no to the call after that write: an answer unheard may have been yes, and no later call says so
+			// again. The boot's commands then keep nothing more of what it left on the machine's disk.
 			async (afterOperationId, checked) => {
-				await folder.control.restarted(machine.machineId, checked);
+				const journalRoot = await this.#directory("machines", checked);
+				const boot = await codingMachineLastStart(journalRoot, journal);
+				const marked = boot !== null && (await dropCodingMachineStart(journalRoot, journal, boot));
+				const dropped = await folder.control.restarted(machine.machineId, checked);
+				if (boot !== null && marked && !dropped) await undropCodingMachineStart(journalRoot, journal, boot);
 				await this.#recordFolderRestart(machine, afterOperationId, checked);
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
@@ -2551,6 +2562,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
 				guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
 				control: folder.control,
+				dropped: async (startOperationId, checked) =>
+					codingMachineStartDropped(
+						await this.#directory("machines", checked),
+						lxdCodingMachineJournalPlan(ready.machine, this.#placement),
+						startOperationId,
+					),
 				authorize: checkedAuthorize,
 			});
 		return new LxdCodingCommandTransport({

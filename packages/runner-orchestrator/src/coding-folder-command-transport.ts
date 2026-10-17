@@ -539,6 +539,10 @@ export interface LxdCodingFolderCommandTransportOptions {
 	readonly limitBytes: number;
 	readonly guest: Pick<LxdCodingGuestClient, "run" | "output" | "cancel">;
 	readonly control: Pick<CodingFolderControl, "boundary">;
+	/** Whether the folder service could not say that every read the machine was served in the boot this LXD operation
+	 * started was released (F3 5g-5, from the machine's journal): a command of that boot keeps nothing more of what it
+	 * left on the machine's disk. */
+	readonly dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
 	/** As the NAS transport's: checks the request's authority before each call's work and again before its answer. */
@@ -558,6 +562,7 @@ export class LxdCodingFolderCommandTransport {
 	readonly #limitBytes: number;
 	readonly #guest: LxdCodingFolderCommandTransportOptions["guest"];
 	readonly #control: LxdCodingFolderCommandTransportOptions["control"];
+	readonly #dropped: LxdCodingFolderCommandTransportOptions["dropped"];
 	readonly #secrets: CodingCommandSecrets;
 	readonly #authorize: Authorize;
 	constructor(options: LxdCodingFolderCommandTransportOptions) {
@@ -595,6 +600,7 @@ export class LxdCodingFolderCommandTransport {
 		this.#limitBytes = options.limitBytes;
 		this.#guest = options.guest;
 		this.#control = options.control;
+		this.#dropped = options.dropped;
 		this.#secrets = options.secrets ?? noCodingCommandSecrets;
 		this.#authorize = options.authorize;
 	}
@@ -818,6 +824,10 @@ export class LxdCodingFolderCommandTransport {
 			commandId = request.commandId;
 		// The machine started again since the command did.
 		const moved = request.startOperationId !== this.#startOperationId;
+		// ...and the folder service could not say every read the machine was served before then was released (F3 5g-5):
+		// what the command left on the machine's disk is not kept, and it ended with the machine.
+		if (moved && (await this.#dropped(request.startOperationId, budget)))
+			return this.#unknown(folder, progress, moved, budget, signal);
 		// Past the limit nothing more is kept: only where the command is.
 		const skip = progress.limitReached;
 		const pages: { offset: number; gap: number; bytes: Buffer }[] = [];
@@ -922,7 +932,8 @@ export class LxdCodingFolderCommandTransport {
 	}
 
 	/** The guest has no record of the command: its start hasn't landed, or the session's records went with the session
-	 * or with the machine. Bytes it printed that the host didn't keep are counted lost. */
+	 * or with the machine. Or its record is not to be read: the boot it ran in may have been served a read that went
+	 * unreleased (F3 5g-5). Bytes it printed that the host didn't keep are counted lost. */
 	async #unknown(
 		folder: string,
 		progress: Progress,

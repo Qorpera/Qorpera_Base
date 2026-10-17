@@ -509,6 +509,13 @@ export class LxdCompanyMachineHost {
 		if (e.bootId !== bootId) {
 			// The boot before ends first: its views' final boundary, before the new boot is recorded.
 			if (folder && e.runningAt !== null && e.bootId !== null) await this.#endFolder(e, e.bootId, signal, true);
+			else if (folder) {
+				// No boot before that SQL counts as running (a first boot, or one after a stop): the machine is said to have
+				// restarted all the same, before the boot's view opens (F3 5g-5). A folder service run that started since its
+				// boot before does not vouch for it otherwise, and its first boundary would answer unproven.
+				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
+				await folder.restarted(e.placementId, checked).catch(() => undefined);
+			}
 			const marked = record(
 				await this.#custody(e, "qorpera_mark_company_machine_running", signal, { p_boot_id: bootId }),
 				"COMPANY_MACHINE_RUNNING_INVALID",

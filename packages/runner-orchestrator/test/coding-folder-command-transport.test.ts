@@ -234,6 +234,8 @@ async function fixture(
 		),
 	};
 	const authorize = vi.fn<LxdCodingFolderCommandTransportOptions["authorize"]>(async () => undefined);
+	// No boot's reads were dropped (F3 5g-5) unless a test says so.
+	const dropped = vi.fn<LxdCodingFolderCommandTransportOptions["dropped"]>(async () => false);
 	const limitBytes = setup.limitBytes ?? LIMIT;
 	const session = { uid: UID, gid: GID, cwd: CWD, environment: setup.environment ?? { GIT_CONFIG_COUNT: "0" } };
 	const options: LxdCodingFolderCommandTransportOptions = {
@@ -245,6 +247,7 @@ async function fixture(
 		limitBytes,
 		guest: guest.client,
 		control,
+		dropped,
 		authorize,
 		...(setup.secrets ? { secrets: setup.secrets } : {}),
 	};
@@ -260,8 +263,11 @@ async function fixture(
 		guest,
 		held,
 		control,
+		dropped,
 		authorize,
 		session,
+		/** The LXD operation that started the boot the transport's commands run in. */
+		startOperationId: options.startOperationId,
 		transport,
 		another,
 		input: (command = "npm test", more: Partial<Input> = {}): Input => ({
@@ -587,6 +593,51 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		const restarted = at.another({ startOperationId: randomUUID() });
 		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(stopped);
 		expect(await at.read(input.commandId)).toStrictEqual(stopped);
+	});
+
+	it("keeps nothing more of a command whose boot may have been served a read that went unreleased (F3 5g-5)", async () => {
+		const at = await fixture();
+		const input = at.input();
+		at.guest.print(input.commandId, "kept\n");
+		const kept = at.receipt(input, { state: "running", output: "kept\n" });
+		expect(await at.start(input)).toStrictEqual(kept);
+		// Printed while the boot's boundary held its reads, and still on the machine's disk after the machine started
+		// again: the guest says the command was lost, and has its output.
+		at.guest.print(input.commandId, "unreleased\n");
+		at.held.reads = "unanswered";
+		expect(await at.read(input.commandId)).toStrictEqual(kept);
+		at.guest.end(input.commandId, "lost");
+		// The commands of the transport's own boot are never asked about.
+		expect(at.dropped).not.toHaveBeenCalled();
+		// The folder service could not say every read that boot was served was released.
+		at.dropped.mockResolvedValue(true);
+		const restarted = at.another({ startOperationId: randomUUID() });
+		const outputs = at.guest.client.output.mock.calls.length;
+		// While the new boot's boundary holds, the command shows running, with what was kept.
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(kept);
+		await absent(join(at.folder(input.commandId), "outcome.json"));
+		// A mark that cannot be read fails the call, and ends nothing.
+		at.held.reads = "released";
+		at.dropped.mockRejectedValueOnce(new Error("CODING_MACHINE_JOURNAL_INVALID"));
+		expect(await rejected(restarted.read(at.scope, { commandId: input.commandId }, signal))).toBe(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+		await absent(join(at.folder(input.commandId), "outcome.json"));
+		// Released, the command ended with the machine, and what it printed the host never kept is counted lost.
+		const stopped = at.receipt(input, { state: "machine_stopped", output: "kept\n", log: { gapBytes: 11 } });
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(stopped);
+		expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
+		expect(at.dropped.mock.calls).toEqual(Array(3).fill([at.startOperationId, expect.any(AbortSignal)]));
+		expect(await json(join(at.folder(input.commandId), "outcome.json"))).toStrictEqual({
+			schema: "qorpera.coding-host-command-outcome/v1",
+			state: "machine_stopped",
+			exitCode: null,
+		});
+		// It stands: later reads ask neither the guest nor the mark again.
+		expect(await at.read(input.commandId)).toStrictEqual(stopped);
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(stopped);
+		expect(at.dropped).toHaveBeenCalledTimes(3);
+		expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
 	});
 
 	it("answers the same command again without running it twice, and refuses another under its id", async () => {

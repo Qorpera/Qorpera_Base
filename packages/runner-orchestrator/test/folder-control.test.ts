@@ -111,9 +111,20 @@ describe("the folder service's control socket client (F3 6d)", () => {
 		const { control } = await serve(() => answers.shift());
 		for (const _ of bad)
 			await expect(control.boundary(machine, [], signal())).rejects.toThrow("FOLDER_CONTROL_ANSWER_INVALID");
-		// The answers of the other requests are checked the same way.
-		answers.push(JSON.stringify({ restarted: { machine: randomUUID() } }));
-		await expect(control.restarted(machine, signal())).rejects.toThrow("FOLDER_CONTROL_ANSWER_INVALID");
+		// The answers of the other requests are checked the same way. A restart's `dropped` (F3 5g-5) is not read here,
+		// but it is a boolean, and nothing else comes with it.
+		for (const restarted of [
+			{ machine: randomUUID() },
+			{ machine, dropped: "yes" },
+			{ machine, dropped: false, at: 1 },
+		]) {
+			answers.push(JSON.stringify({ restarted }));
+			await expect(control.restarted(machine, signal())).rejects.toThrow("FOLDER_CONTROL_ANSWER_INVALID");
+		}
+		for (const dropped of [true, false]) {
+			answers.push(JSON.stringify({ restarted: { machine, dropped } }));
+			await expect(control.restarted(machine, signal())).resolves.toBeUndefined();
+		}
 		answers.push(JSON.stringify({ opened: { machine, commandId: randomUUID() } }));
 		const window = { commandId: randomUUID(), runId: viewId, staffAgentId: viewId, requestedByUserId: viewId };
 		await expect(control.openWindow(machine, window, signal())).rejects.toThrow("FOLDER_CONTROL_ANSWER_INVALID");
