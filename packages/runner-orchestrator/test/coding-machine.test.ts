@@ -9,13 +9,17 @@ import {
 	type CodingMachineAdmissionReceipt,
 	type CodingMachineIntent,
 	type CodingMachineJournalPlan,
+	codingMachineLastStart,
+	codingMachineStartDropped,
 	codingMachineStartOperation,
+	dropCodingMachineStart,
 	type LxdCodingMachineBinding,
 	lxdCodingMachineJournalPlan,
 	lxdCodingMachinePlan,
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
+	undropCodingMachineStart,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "../src/coding-vm.ts";
 import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
@@ -616,6 +620,100 @@ describe("a coding machine's journaled lifecycle", () => {
 		expect(await codingMachineStartOperation(f.journalRoot, f.journal)).toBe(started);
 		await expect(codingMachineStartOperation(f.journalRoot, { ...f.journal, selfStops: undefined })).rejects.toThrow(
 			"CODING_MACHINE_CHECKPOINT_INVALID",
+		);
+	});
+	it("reads the start a member's machine last ran under right before each start (F3 5g-5)", async () => {
+		const f = await fixture();
+		const lastStarts: (string | null)[] = [];
+		const starting = vi.fn(async () => {
+			lastStarts.push(await codingMachineLastStart(f.journalRoot, f.journal));
+		});
+		const reconcile = (desiredState: "running" | "stopped") =>
+			reconcileCodingMachine({ ...f.options, desiredState, starting });
+		for (const expected of ["pending", "pending", "running"])
+			expect((await reconcile("running")).state).toBe(expected);
+		for (const expected of ["pending", "stopped"]) expect((await reconcile("stopped")).state).toBe(expected);
+		for (const expected of ["pending", "running"]) expect((await reconcile("running")).state).toBe(expected);
+		const instance = f.instance();
+		if (!instance) throw new Error("missing fixture VM");
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		for (const expected of ["pending", "running"]) expect((await reconcile("running")).state).toBe(expected);
+		// The fake LXD numbers each operation by its submission: the create 11, the starts 12, 14 and 15, the stop 13.
+		// Before the first start none ran; then the start the stop ended, then the start the machine stopped after.
+		expect(lastStarts).toEqual([null, id(12), id(14)]);
+		await expect(codingMachineLastStart(f.journalRoot, { ...f.journal, selfStops: undefined })).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+	});
+	it("reads the start a member's machine last ran under back in the segment before, each record checked (F3 5g-5)", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 381);
+		// The full segment ends with a stop (triplet 126), after the start of triplet 125.
+		expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(id(1125));
+		const lastStarts: (string | null)[] = [];
+		const starting = vi.fn(async () => {
+			lastStarts.push(await codingMachineLastStart(f.journalRoot, f.journal));
+		});
+		const reconcile = (desiredState: "running" | "stopped" = "running") =>
+			reconcileCodingMachine({ ...f.options, desiredState, starting });
+		// Rolled over, the new segment holds nothing yet: the start is read back in the old one.
+		expect((await reconcile()).state).toBe("pending");
+		expect(await readdir(join(root, "segment-000001"))).toEqual(["checkpoint.json"]);
+		expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(id(1125));
+		// A record that is not the one the record after it names is refused.
+		const retained = await readFile(join(root, "000378.json"));
+		await writeFile(join(root, "000378.json"), Buffer.concat([retained.subarray(0, -1), Buffer.from(" \n")]));
+		await expect(codingMachineLastStart(f.journalRoot, f.journal)).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+		await writeFile(join(root, "000378.json"), retained);
+		for (const expected of ["pending", "running"]) expect((await reconcile()).state).toBe(expected);
+		expect(lastStarts).toEqual([id(1125)]);
+		// Once the new segment holds a start, it is that one.
+		const started = id(10 + f.client.submitInstanceOperation.mock.calls.length);
+		for (const expected of ["pending", "stopped"]) expect((await reconcile("stopped")).state).toBe(expected);
+		expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(started);
+	});
+	it("reads the start a member's machine last ran under from a rollover that carried it (F3 5g-5)", async () => {
+		const f = await fixture();
+		await retainedHistory(f, 381, "succeeded", "start");
+		expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(id(1126));
+		expect((await f.reconcile()).state).toBe("pending");
+		expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(id(1126));
+	});
+	it("marks a start dropped next to the machine's journal once, reads the mark, and takes it back (F3 5g-5)", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		const start = id(12);
+		expect(await codingMachineStartDropped(f.journalRoot, f.journal, start)).toBe(false);
+		// The call that wrote the mark says so; one after it finds it written.
+		expect(await dropCodingMachineStart(f.journalRoot, f.journal, start)).toBe(true);
+		expect(await dropCodingMachineStart(f.journalRoot, f.journal, start)).toBe(false);
+		expect(await codingMachineStartDropped(f.journalRoot, f.journal, start)).toBe(true);
+		expect(await codingMachineStartDropped(f.journalRoot, f.journal, id(14))).toBe(false);
+		const mark = join(f.journalRoot, f.value.machineId, `dropped-start-${start}.json`);
+		expect(JSON.parse(await readFile(mark, "utf8"))).toEqual({
+			schema: "qorpera.coding-machine-dropped-start/v1",
+			operationId: start,
+		});
+		// The journal reads past it.
+		expect((await f.reconcile()).state).toBe("running");
+		await undropCodingMachineStart(f.journalRoot, f.journal, start);
+		expect(await codingMachineStartDropped(f.journalRoot, f.journal, start)).toBe(false);
+		await undropCodingMachineStart(f.journalRoot, f.journal, start);
+		// A mark that is not the one for its start, or a start that is not an operation id, is refused.
+		await writeFile(
+			mark,
+			`${JSON.stringify({ schema: "qorpera.coding-machine-dropped-start/v1", operationId: id(14) })}\n`,
+			{ mode: 0o600 },
+		);
+		await expect(codingMachineStartDropped(f.journalRoot, f.journal, start)).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+		await expect(codingMachineStartDropped(f.journalRoot, f.journal, "start")).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+		await expect(dropCodingMachineStart(f.journalRoot, f.journal, "../start")).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
 		);
 	});
 	it("never takes a member's VM that LXD shows in any other state for stopped", async () => {

@@ -203,10 +203,17 @@ describe("the folder service's control socket", () => {
 		},
 	);
 
-	it("says a machine restarted", async () => {
-		const f = await control(reply({ restarted: { machine: MACHINE } }));
-		await expect(f.client.restarted(MACHINE, signal())).resolves.toBeUndefined();
-		expect(f.requests).toEqual([`${JSON.stringify({ op: "restarted", machine: MACHINE })}\n`]);
+	it("says a machine restarted, and hears whether a read it was served before may have gone unreleased", async () => {
+		for (const [answer, dropped] of [
+			[{ machine: MACHINE, dropped: false }, false],
+			[{ dropped: true, machine: MACHINE }, true],
+			// A service from before F3 5g-5 does not say: the same as yes.
+			[{ machine: MACHINE }, true],
+		] as const) {
+			const f = await control(reply({ restarted: answer }));
+			await expect(f.client.restarted(MACHINE, signal())).resolves.toBe(dropped);
+			expect(f.requests).toEqual([`${JSON.stringify({ op: "restarted", machine: MACHINE })}\n`]);
+		}
 	});
 
 	it.each([
@@ -332,6 +339,9 @@ describe("the folder service's control socket", () => {
 	it.each([
 		["another machine", { restarted: { machine: OTHER } }],
 		["another key", { restarted: { machine: MACHINE, at: 1 } }],
+		["another key beside dropped", { restarted: { machine: MACHINE, dropped: false, at: 1 } }],
+		["a dropped that is not a boolean", { restarted: { machine: MACHINE, dropped: "no" } }],
+		["a dropped of null", { restarted: { machine: MACHINE, dropped: null } }],
 		["a boundary's answer", boundary()],
 	])("refuses a restart's answer for %s", async (_name, answer) => {
 		const f = await control(reply(answer));

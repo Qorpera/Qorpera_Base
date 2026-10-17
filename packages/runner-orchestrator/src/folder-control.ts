@@ -73,7 +73,8 @@ export interface FolderControl {
 	 * machine's final closes its view in the core). */
 	boundary(machine: string, final: readonly string[], signal: AbortSignal): Promise<MachineBoundary>;
 	/** The machine stopped and starts again: a read it lost no longer makes its views unproven, and its command windows
-	 * end. */
+	 * end. Whether a read it was served before may have gone unreleased (the answer's `dropped`, F3 5g-5) is not read
+	 * here: a test machine's commands end with its boot. */
 	restarted(machine: string, signal: AbortSignal): Promise<void>;
 	/** A test machine's command started (said again, it changes nothing). */
 	openWindow(machine: string, window: FolderCommandWindow, signal: AbortSignal): Promise<void>;
@@ -146,7 +147,12 @@ export class UnixFolderControl implements FolderControl {
 	async restarted(machine: string, signal: AbortSignal): Promise<void> {
 		if (!isUuid(machine)) throw new Error("FOLDER_CONTROL_REQUEST_INVALID");
 		const answer = object(await this.#ask({ op: "restarted", machine }, "restarted", signal));
-		if (Object.keys(answer).join() !== "machine" || answer.machine !== machine)
+		const keys = Object.keys(answer).sort().join();
+		if (
+			(keys !== "machine" && keys !== "dropped,machine") ||
+			answer.machine !== machine ||
+			(keys !== "machine" && typeof answer.dropped !== "boolean")
+		)
 			throw new Error("FOLDER_CONTROL_ANSWER_INVALID");
 	}
 	async openWindow(machine: string, window: FolderCommandWindow, signal: AbortSignal): Promise<void> {
