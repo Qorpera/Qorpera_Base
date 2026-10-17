@@ -1432,7 +1432,8 @@ it("refuses a call to a page tool the scope reset took out, without an effect, a
 		content: expect.objectContaining({ text: "TOOL_UNAVAILABLE" }),
 	});
 	expect(refusals).toEqual([refusal, refusal]);
-	// Neither name is the catalog's any more: no review, no work log, no effect; each is observed as an unknown tool.
+	// Neither name is the catalog's any more: no review, no tool-operation receipt, no effect; each is observed as an
+	// unknown tool.
 	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
 	const refused = f.observations.filter((row) => row.operation === "unknown_tool" && row.phase === "finish");
