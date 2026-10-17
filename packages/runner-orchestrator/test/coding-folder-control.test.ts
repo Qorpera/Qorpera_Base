@@ -11,6 +11,7 @@ import {
 	CodingFolderControlRefused,
 	type CodingFolderReads,
 	codingFolderBoundaryHeld,
+	codingFolderSaveRefused,
 	codingFolderViewSaved,
 } from "../src/coding-folder-control.ts";
 import { CodingFolderSecretKey, type CodingFolderSecretSet } from "../src/coding-folder-secrets.ts";
@@ -143,6 +144,30 @@ describe("the folder service's control socket", () => {
 			// Refused whole: what it carried stays pending.
 			{ commitId: null, seq: null, refused: "stopped", paths: [{ path: CANARY, outcome: "refused", kept: true }] },
 			{ commitId: null, seq: null, refused: "unproven", paths: [] },
+			// The save check's refusals (5j-5 (a)): for a secret value in a file, a name or a link's target, or a change
+			// waiting on one. A file it could not finish checking, or a refusal of the core's own, found no value.
+			{
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: CANARY, outcome: "refused", reason: "it carries a secret value", kept: true },
+					{ path: CANARY, outcome: "refused", reason: "a name in this folder carries a secret value", kept: true },
+					{ path: CANARY, outcome: "refused", reason: "its link's target carries a secret value", kept: true },
+					{ path: CANARY, outcome: "refused", reason: "it waits for a change that carries a secret value" },
+					{ path: CANARY, outcome: "refused", reason: "it could not be checked for secret values", kept: true },
+					{ path: CANARY, outcome: "refused", reason: "structured_invalid", kept: true },
+					{ path: CANARY, outcome: "refused", kept: true },
+					{ path: CANARY, outcome: "denied", reason: "it carries a secret value" },
+				],
+			},
+			{
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: CANARY, outcome: "saved" },
+					{ path: CANARY, outcome: "refused", reason: "it carries a secret value", kept: true },
+				],
+			},
 		].map((report) => ({ viewId: randomUUID(), report }));
 		const f = await control(reply(boundary({ views })));
 		const answer = await f.client.boundary(MACHINE, [], signal());
@@ -152,14 +177,61 @@ describe("the folder service's control socket", () => {
 			{ viewId: views[2].viewId, unsaved: 2, unsavedOutcome: "not_applied" },
 			{ viewId: views[3].viewId, unsaved: 1, unsavedOutcome: "refused", refused: "stopped" },
 			{ viewId: views[4].viewId, unsaved: 0, refused: "unproven" },
+			{ viewId: views[5].viewId, unsaved: 8, unsavedOutcome: "refused", secretRefused: 4 },
+			{ viewId: views[6].viewId, unsaved: 1, unsavedOutcome: "refused", secretRefused: 1 },
 		]);
 		expect(JSON.stringify(answer)).not.toContain(CANARY);
-		expect(answer.views.map((view) => codingFolderViewSaved(view))).toEqual([true, false, false, false, false]);
+		expect(answer.views.map((view) => codingFolderViewSaved(view))).toEqual([
+			true,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+		]);
 		expect(codingFolderViewSaved({ viewId: VIEW, error: "VIEW_CLOSED" })).toBe(false);
 		expect(codingFolderViewSaved(undefined)).toBe(false);
-		expect(
-			answer.views.map((view) => codingFolderBoundaryHeld({ machine: MACHINE, reads: "released", views: [view] })),
-		).toEqual([undefined, "UNSAVED_CONFLICT", "UNSAVED_NOT_APPLIED", "REFUSED_STOPPED", "REFUSED_UNPROVEN"]);
+		const one = (view: CodingFolderBoundaryView) => ({ machine: MACHINE, reads: "released" as const, views: [view] });
+		expect(answer.views.map((view) => codingFolderBoundaryHeld(one(view)))).toEqual([
+			undefined,
+			"UNSAVED_CONFLICT",
+			"UNSAVED_NOT_APPLIED",
+			"REFUSED_STOPPED",
+			"REFUSED_UNPROVEN",
+			"UNSAVED_REFUSED",
+			"UNSAVED_REFUSED",
+		]);
+		expect(answer.views.map((view) => codingFolderSaveRefused(one(view)))).toEqual([
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			true,
+		]);
+	});
+
+	it("tells a save held back only by paths that carry a secret value (5j-5 (a)) from any other", () => {
+		const refused = (reads: CodingFolderReads, ...views: CodingFolderBoundaryView[]) =>
+			codingFolderSaveRefused({ machine: MACHINE, reads, views });
+		const saved = { viewId: VIEW, unsaved: 0 };
+		const carries = { viewId: FINAL, unsaved: 2, unsavedOutcome: "refused", secretRefused: 2 };
+		expect(refused("released", saved, carries)).toBe(true);
+		expect(refused("released", carries, { ...carries, viewId: OTHER })).toBe(true);
+		// Saved, so nothing is held.
+		expect(refused("released")).toBe(false);
+		expect(refused("released", saved)).toBe(false);
+		// Held for something else too: the reads, a path refused for no value found or left waiting, an error, a change
+		// set refused whole, or a view with no report.
+		expect(refused("unproven", carries)).toBe(false);
+		expect(refused("released", { ...carries, secretRefused: 1 })).toBe(false);
+		expect(refused("released", { viewId: FINAL, unsaved: 1, unsavedOutcome: "refused" })).toBe(false);
+		expect(refused("released", carries, { viewId: OTHER, unsaved: 1, unsavedOutcome: "waiting" })).toBe(false);
+		expect(refused("released", carries, { viewId: OTHER, error: "VIEW_CLOSED" })).toBe(false);
+		expect(refused("released", { ...carries, refused: "stopped" })).toBe(false);
+		expect(refused("released", carries, { viewId: OTHER })).toBe(false);
 	});
 
 	it("names why a boundary holds the output back, from its reads or its first view not saved", () => {
@@ -433,6 +505,99 @@ describe("the machine's secret values for the save check (5j-5 (a))", () => {
 		expect(f.requests[0]?.replaceAll(MACHINE, "")).not.toContain("12345678");
 		await f.client.boundary(MACHINE, [FINAL], signal());
 		expect(f.requests.slice(1).map((request) => JSON.parse(request).op)).toEqual(["secrets", "boundary"]);
+	});
+
+	/** A service that holds each secrets request, unanswered and its connection open, until the test answers it; a
+	 * boundary it answers at once. */
+	async function holding(secrets: () => CodingFolderSecretSet | undefined, timeoutMs?: number) {
+		const held: { values: unknown[]; closed: boolean; answer: () => void }[] = [];
+		const f = await listen((socket) => {
+			const chunks: Buffer[] = [];
+			socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+			socket.on("end", () => {
+				const request = JSON.parse(Buffer.concat(chunks).toString());
+				if (request.op !== "secrets") {
+					reply(boundary())(socket);
+					return;
+				}
+				const each = {
+					values: request.values,
+					closed: false,
+					answer: () => reply({ secrets: { machine: MACHINE, values: request.values.length } })(socket),
+				};
+				socket.on("close", () => {
+					each.closed = true;
+				});
+				held.push(each);
+			});
+		});
+		const client = new CodingFolderControl({
+			path: f.path,
+			secrets,
+			...(timeoutMs === undefined ? {} : { timeoutMs }),
+		});
+		return { ...f, client, held };
+	}
+	const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+	it("sends a machine's sets one at a time, each as it is when its send starts: an older one never follows a newer", async () => {
+		let set = key.set([VALUE]).set;
+		const f = await holding(() => set);
+		const first = f.client.secrets(MACHINE, signal());
+		await expect.poll(() => f.held.length).toBe(1);
+		// The values grow while the first send waits for its answer. The callers since wait for the next send, which
+		// starts once the first was answered and sends what the machine has by then.
+		set = two;
+		const second = f.client.secrets(MACHINE, signal());
+		const boundaryAsked = f.client.boundary(MACHINE, [], signal());
+		await pause(50);
+		expect(f.connections()).toBe(1);
+		f.held[0]?.answer();
+		await expect(first).resolves.toBe(1);
+		await expect.poll(() => f.held.length).toBe(2);
+		expect(f.held.map((each) => each.values)).toEqual([key.set([VALUE]).set.values, two.values]);
+		// The boundary is asked only once the set it waited for is in.
+		expect(f.connections()).toBe(2);
+		f.held[1]?.answer();
+		await expect(second).resolves.toBe(2);
+		await expect(boundaryAsked).resolves.toMatchObject({ machine: MACHINE });
+		// The callers that waited together shared one send.
+		expect(f.connections()).toBe(3);
+	});
+
+	it("goes on with a send when its caller stops waiting, and sends the next only after its answer", async () => {
+		const f = await holding(() => two, 200);
+		const controller = new AbortController();
+		const aborted = f.client.secrets(MACHINE, controller.signal);
+		await expect.poll(() => f.held.length).toBe(1);
+		controller.abort(new Error("turn ended"));
+		await expect(aborted).rejects.toThrow("turn ended");
+		await expect(f.client.secrets(MACHINE, signal())).rejects.toThrow("CODING_FOLDER_CONTROL_TIMEOUT");
+		await expect(f.client.boundary(MACHINE, [], signal())).rejects.toThrow("CODING_FOLDER_CONTROL_TIMEOUT");
+		// The first request is still where the service may read it, so nothing was sent after it.
+		expect(f.held[0]?.closed).toBe(false);
+		expect(f.connections()).toBe(1);
+		f.held[0]?.answer();
+		await expect.poll(() => f.held.length).toBe(2);
+		f.held[1]?.answer();
+		await expect.poll(() => f.held[1]?.closed).toBe(true);
+		// A caller's own abort, as it asks, does not send.
+		const gone = new AbortController();
+		gone.abort(new Error("turn ended"));
+		await expect(f.client.secrets(MACHINE, gone.signal)).rejects.toThrow("turn ended");
+		expect(f.connections()).toBe(2);
+	});
+
+	it("sends the next set once a send's connection ends unanswered", async () => {
+		const f = await holding(() => two);
+		const first = f.client.secrets(MACHINE, signal());
+		await expect.poll(() => f.held.length).toBe(1);
+		const second = f.client.secrets(MACHINE, signal());
+		for (const socket of sockets) socket.destroy();
+		await expect(first).rejects.toThrow("CODING_FOLDER_CONTROL_UNAVAILABLE");
+		await expect.poll(() => f.held.length).toBe(2);
+		f.held[1]?.answer();
+		await expect(second).resolves.toBe(2);
 	});
 
 	it("sends an empty set as one: a machine whose member has no secrets", async () => {

@@ -53,18 +53,41 @@ export interface CodingFolderBoundary {
 /** One view at a boundary: the code of the error it had instead of a report; or, from its report, how many of its
  * changed paths are not saved (`unsaved`: a commit with no answer yet, waiting on an open file, refused, denied, a
  * conflict, parked for review; a final boundary keeps none of them pending), the outcome of the first of them
- * (`unsavedOutcome`, such as `not_applied` or `waiting`), and why the core refused the change set whole (`refused`). */
+ * (`unsavedOutcome`, such as `not_applied` or `waiting`), how many of them the save check refused because they carry one
+ * of the machine's secret values (`secretRefused`, 5j-5 (a); absent when none), and why the core refused the change set
+ * whole (`refused`). */
 export interface CodingFolderBoundaryView {
 	readonly viewId: string;
 	readonly error?: string;
 	readonly unsaved?: number;
 	readonly unsavedOutcome?: string;
+	readonly secretRefused?: number;
 	readonly refused?: string;
 }
 
 /** Whether a view's boundary saved all it had: a report, with every changed path saved and nothing refused whole. */
 export function codingFolderViewSaved(view: CodingFolderBoundaryView | undefined): boolean {
 	return view !== undefined && view.error === undefined && view.unsaved === 0 && view.refused === undefined;
+}
+
+/** Whether a boundary that released its reads holds the output back only because the save check refused paths that carry
+ * one of the machine's secret values (5j-5 (a)): every path any view left unsaved is one, and no view had an error or a
+ * change set refused whole. A path the check could not finish checking, or one the core refused for another reason, is
+ * not: no value was found in it. */
+export function codingFolderSaveRefused(boundary: CodingFolderBoundary): boolean {
+	const unsaved = boundary.views.filter((view) => !codingFolderViewSaved(view));
+	return (
+		boundary.reads === "released" &&
+		unsaved.length > 0 &&
+		unsaved.every(
+			(view) =>
+				view.error === undefined &&
+				view.refused === undefined &&
+				view.unsaved !== undefined &&
+				view.unsaved > 0 &&
+				view.secretRefused === view.unsaved,
+		)
+	);
 }
 
 /** Why a boundary holds the machine's output back, as a code's reason (`[A-Z][A-Z0-9_]{0,63}`), or undefined when it
@@ -106,6 +129,15 @@ const REFUSALS: readonly string[] = READS.filter((reads) => reads !== "released"
 const REPORT_KEYS: readonly string[] = ["closed", "commitId", "paths", "refused", "seq"];
 /** `target`: a conflicting link's target (the service's protocol 4), not kept like the rest of the entry. */
 const ENTRY_KEYS: readonly string[] = ["kept", "outcome", "path", "reason", "receipt", "target"];
+/** Why the service's save check refuses a path (object-gateway's folder-service secret-scan.ts and plan.ts): its
+ * contents, its name or its link's target carry one of the machine's secret values, or it waits for a change whose name
+ * does. Its refusal of a file it could not finish checking ("it could not be checked for secret values") is not one. */
+const SECRET_CARRIED: readonly string[] = [
+	"it carries a secret value",
+	"a name in this folder carries a secret value",
+	"its link's target carries a secret value",
+	"it waits for a change that carries a secret value",
+];
 
 const INVALID = "CODING_FOLDER_CONTROL_ANSWER_INVALID";
 /** Views one boundary may name final, as the service takes them. */
@@ -126,6 +158,9 @@ export interface CodingFolderControlOptions {
 	readonly secrets?: (machine: string) => CodingFolderSecretSet | undefined;
 }
 
+/** What a send of a machine's set came to (`CodingFolderControl.secrets`). */
+type SecretsSent = number | null | "unsupported";
+
 /** The control socket's client. A request that is not well formed rejects with CODING_FOLDER_CONTROL_REQUEST_INVALID
  * before anything connects; no socket, or a connection that ends without an answer, with
  * CODING_FOLDER_CONTROL_UNAVAILABLE; no answer in time with CODING_FOLDER_CONTROL_TIMEOUT; the caller's abort with its
@@ -135,6 +170,10 @@ export class CodingFolderControl {
 	readonly #path: string;
 	readonly #timeoutMs: number;
 	readonly #secrets: CodingFolderControlOptions["secrets"];
+	/** Each machine's send of its set in flight (`running`), and the one that starts once it has ended (`next`), which
+	 * every caller from then on waits for: a send takes the set when it starts, so the service never gets an older set
+	 * after a newer one. */
+	readonly #secretSends = new Map<string, { running: Promise<SecretsSent>; next?: Promise<SecretsSent> }>();
 	constructor(options: CodingFolderControlOptions = {}) {
 		const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS)
@@ -201,9 +240,44 @@ export class CodingFolderControl {
 	 * are sent again before each boundary and while the machine has sessions, never one this process does not know (a
 	 * restarted executor's would replace the set its predecessor sent). Answers how many values the service holds, null
 	 * when nothing was sent, or "unsupported" when the service is from before the check (it answers BAD_REQUEST, and
-	 * checks no save). */
+	 * checks no save).
+	 *
+	 * The service takes a set as soon as it reads it, on whichever connection, so a machine's sends go one at a time:
+	 * each waits until the one before it was answered or its connection ended, and then takes the machine's set as it is
+	 * by then. A caller waits for a send that starts after it asked, shared with the callers that asked meanwhile. Its
+	 * abort or timeout ends only its wait: the send goes on until the service answers, since a request cut off could still
+	 * be read after a newer one. */
 	async secrets(machine: string, signal: AbortSignal): Promise<number | null | "unsupported"> {
 		if (!isUuid(machine)) throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
+		if (this.#secrets === undefined) return null;
+		signal.throwIfAborted();
+		return this.#waitFor(this.#nextSecretSend(machine), signal);
+	}
+
+	/** The send that takes the machine's set next: the one waiting, or a new one that starts once the one in flight has
+	 * ended. */
+	#nextSecretSend(machine: string): Promise<SecretsSent> {
+		const sends = this.#secretSends.get(machine);
+		if (sends?.next !== undefined) return sends.next;
+		const send: Promise<SecretsSent> = (async () => {
+			if (sends !== undefined) {
+				await sends.running.catch(() => undefined);
+				this.#secretSends.set(machine, { running: send });
+			}
+			try {
+				return await this.#sendSecrets(machine);
+			} finally {
+				const now = this.#secretSends.get(machine);
+				if (now?.running === send && now.next === undefined) this.#secretSends.delete(machine);
+			}
+		})();
+		if (sends === undefined) this.#secretSends.set(machine, { running: send });
+		else sends.next = send;
+		return send;
+	}
+
+	/** One send of the machine's set as it is now, with no timeout or abort (`secrets`). */
+	async #sendSecrets(machine: string): Promise<SecretsSent> {
 		const set = this.#secrets?.(machine);
 		if (set === undefined) return null;
 		if (!secretSetValid(set)) throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
@@ -211,7 +285,7 @@ export class CodingFolderControl {
 		const request = { op: "secrets", machine, key: set.key, values };
 		let answer: Record<string, unknown> | undefined;
 		try {
-			answer = objectOf(await this.#ask(request, "secrets", signal));
+			answer = objectOf(await this.#ask(request, "secrets", null));
 		} catch (error) {
 			if (error instanceof CodingFolderControlRefused && error.code === "BAD_REQUEST") return "unsupported";
 			throw error;
@@ -228,9 +302,31 @@ export class CodingFolderControl {
 		return answer.values as number;
 	}
 
-	/** One request on a connection of its own, and what the answer holds under `key`. */
-	async #ask(request: Record<string, unknown>, key: string, signal: AbortSignal): Promise<unknown> {
-		signal.throwIfAborted();
+	/** What `sent` comes to, unless the caller's abort or this client's timeout comes first; `sent` goes on either way. */
+	#waitFor<T>(sent: Promise<T>, signal: AbortSignal): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			const finish = (settle: () => void) => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", aborted);
+				settle();
+			};
+			const aborted = () => finish(() => reject(signal.reason));
+			const timer = setTimeout(
+				() => finish(() => reject(new Error("CODING_FOLDER_CONTROL_TIMEOUT"))),
+				this.#timeoutMs,
+			);
+			signal.addEventListener("abort", aborted, { once: true });
+			void sent.then(
+				(value) => finish(() => resolve(value)),
+				(error: unknown) => finish(() => reject(error)),
+			);
+		});
+	}
+
+	/** One request on a connection of its own, and what the answer holds under `key`. With no signal, it has no timeout
+	 * either, and the connection stays until the service answers or ends it. */
+	async #ask(request: Record<string, unknown>, key: string, signal: AbortSignal | null): Promise<unknown> {
+		signal?.throwIfAborted();
 		const bytes = await new Promise<Buffer>((resolve, reject) => {
 			// Half open: our side ends after the request, and the service still answers.
 			const socket = connect({ path: this.#path, allowHalfOpen: true });
@@ -241,12 +337,12 @@ export class CodingFolderControl {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
-				signal.removeEventListener("abort", aborted);
+				signal?.removeEventListener("abort", aborted);
 				socket.destroy();
 				settle();
 			};
 			const fail = (message: string) => finish(() => reject(new Error(message)));
-			const aborted = () => finish(() => reject(signal.reason));
+			const aborted = () => finish(() => reject(signal?.reason));
 			// The service ends its side after its answer, so what came until then is all of it. One that refuses this uid
 			// answers and closes without reading the request, which may reach us as a reset after the answer. Without a
 			// whole line, nothing was answered.
@@ -255,8 +351,9 @@ export class CodingFolderControl {
 				if (bytes.includes(0x0a)) finish(() => resolve(bytes));
 				else fail("CODING_FOLDER_CONTROL_UNAVAILABLE");
 			};
-			const timer = setTimeout(() => fail("CODING_FOLDER_CONTROL_TIMEOUT"), this.#timeoutMs);
-			signal.addEventListener("abort", aborted, { once: true });
+			const timer =
+				signal === null ? undefined : setTimeout(() => fail("CODING_FOLDER_CONTROL_TIMEOUT"), this.#timeoutMs);
+			signal?.addEventListener("abort", aborted, { once: true });
 			socket.on("data", (chunk: Buffer) => {
 				chunks.push(chunk);
 				length += chunk.length;
@@ -300,8 +397,14 @@ function errorCode(value: unknown): string {
 }
 
 /** What a view's report (the service's Report) says of the save: how many paths are not saved, the outcome of the first
- * of them, and a whole refusal. Its paths, reasons and receipts are checked for shape and not kept. */
-function reportOf(value: unknown): { unsaved: number; unsavedOutcome?: string; refused?: string } {
+ * of them, how many of them carry a secret value, and a whole refusal. Its paths, reasons and receipts are checked for
+ * shape and not kept. */
+function reportOf(value: unknown): {
+	unsaved: number;
+	unsavedOutcome?: string;
+	secretRefused?: number;
+	refused?: string;
+} {
 	const report = objectOf(value);
 	if (
 		!report ||
@@ -315,6 +418,7 @@ function reportOf(value: unknown): { unsaved: number; unsavedOutcome?: string; r
 		throw new Error(INVALID);
 	let unsaved = 0;
 	let unsavedOutcome: string | undefined;
+	let secretRefused = 0;
 	for (const value of report.paths) {
 		const entry = objectOf(value);
 		if (
@@ -331,10 +435,12 @@ function reportOf(value: unknown): { unsaved: number; unsavedOutcome?: string; r
 		if (entry.outcome === "saved") continue;
 		unsaved++;
 		unsavedOutcome ??= entry.outcome as string;
+		if (entry.outcome === "refused" && SECRET_CARRIED.includes(entry.reason as string)) secretRefused++;
 	}
 	return {
 		unsaved,
 		...(unsavedOutcome === undefined ? {} : { unsavedOutcome }),
+		...(secretRefused === 0 ? {} : { secretRefused }),
 		...(report.refused === undefined ? {} : { refused: report.refused as string }),
 	};
 }

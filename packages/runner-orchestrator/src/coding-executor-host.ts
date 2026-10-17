@@ -34,7 +34,11 @@ import type {
 } from "./coding-executor.ts";
 import { CodingMachineUnavailable, CodingPushRefused, CodingSaveRefused } from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
-import { type CodingFolderControl, codingFolderBoundaryHeld } from "./coding-folder-control.ts";
+import {
+	type CodingFolderControl,
+	codingFolderBoundaryHeld,
+	codingFolderSaveRefused,
+} from "./coding-folder-control.ts";
 import {
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
@@ -1708,7 +1712,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// a path any view left unsaved holds the publication. The error's reason says why, without a path.
 			const { machine, storage } = ready;
 			const starts = this.#folderStarts.get(machine.machineId) ?? 0;
-			const held = codingFolderBoundaryHeld(await folder.control.boundary(machine.machineId, [], signal));
+			const boundary = await folder.control.boundary(machine.machineId, [], signal);
+			const held = codingFolderBoundaryHeld(boundary);
 			if (held === "READS_UNPROVEN")
 				// What the machine read can't be proven released (rule 4): it restarts before a view opens on it again,
 				// unless it started since this boundary was asked. The session attaches anew at its next turn.
@@ -1719,9 +1724,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					await this.#stopForFolder(folder, machine, journal, signal);
 					await this.#runFolder(folder, claim, machine, storage, journal, signal);
 				});
-			// A path the folder refused (one that carries a secret value, 5j-5 a) stays refused until the session changes
-			// it, so its turn fails with what to do and the session stays attached.
-			if (held === "UNSAVED_REFUSED") throw new CodingSaveRefused();
+			// Paths the folder refused because they carry a secret value (5j-5 a) stay refused until the session changes
+			// them, so its turn fails with what to do and the session stays attached. Any other refusal, or one the check
+			// could not finish, holds the publication as before.
+			if (codingFolderSaveRefused(boundary)) throw new CodingSaveRefused();
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(

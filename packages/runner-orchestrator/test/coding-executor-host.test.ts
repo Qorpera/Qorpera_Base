@@ -3727,6 +3727,31 @@ describe("a coding session on the folder model", () => {
 			"UNREPORTED",
 			{ reads: "released" as const, views: [{ viewId: randomUUID() }] },
 		],
+		// Refusals that found no secret value (5j-5 a): the core's own, or a file the check could not finish.
+		[
+			"refused a view's paths, none for a secret value",
+			"UNSAVED_REFUSED",
+			{ reads: "released" as const, views: [{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "refused" }] },
+		],
+		[
+			"refused a view's paths, only some for a secret value",
+			"UNSAVED_REFUSED",
+			{
+				reads: "released" as const,
+				views: [{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", secretRefused: 1 }],
+			},
+		],
+		[
+			"refused one view's paths for a secret value and left another's waiting",
+			"UNSAVED_REFUSED",
+			{
+				reads: "released" as const,
+				views: [
+					{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "refused", secretRefused: 1 },
+					{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "waiting" },
+				],
+			},
+		],
 	])("publishes nothing when the boundary %s, and says why", async (_case, held, answer) => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
@@ -3737,13 +3762,16 @@ describe("a coding session on the folder model", () => {
 		expect(f.repositories.export).not.toHaveBeenCalled();
 		expect(mocked.push).not.toHaveBeenCalled();
 	});
-	it("throws a save the folder refused (5j-5 a) as one the turn fails with, naming no path, and publishes nothing", async () => {
+	it("throws a save the folder refused for secret values (5j-5 a) as one the turn fails with, naming no path, and publishes nothing", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.boundary.mockResolvedValueOnce({
 			machine: f.machine.machineId,
 			reads: "released" as const,
-			views: [{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "refused" }],
+			views: [
+				{ viewId: randomUUID(), unsaved: 0 },
+				{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", secretRefused: 2 },
+			],
 		});
 		const error = await f.host.publish(f.claim, f.submission, f.signal).catch((caught: unknown) => caught);
 		expect(error).toBeInstanceOf(CodingSaveRefused);
