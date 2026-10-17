@@ -169,7 +169,7 @@ export interface LxdCodingExecutorHostOptions {
 	 * Absent, the NAS model. */
 	folder?: {
 		views: Pick<CodingFolderViews, "attach" | "held" | "end" | "endMachine">;
-		control: Pick<CodingFolderControl, "boundary">;
+		control: Pick<CodingFolderControl, "boundary" | "restarted">;
 		/** The guest agent's exec client (the executor's LXD client). */
 		client: LxdInstanceExecStreamClient;
 		/** Where a session's commands start and what its finished turn exports (default: none, at /company). */
@@ -647,13 +647,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** Drives one machine's journal to the desired state, polling pending LXD
 	 * operations, within its budget. A member's machine found stopped from
-	 * outside is handed to `stoppedFromOutside` before anything else is done to it. */
+	 * outside is handed to `stoppedFromOutside` before anything else is done to it,
+	 * and a stopped one to `starting` right before each start. */
 	async #reconcile(
 		journal: CodingMachineJournalPlan,
 		desiredState: CodingMachineDesiredState,
 		authorize: (intent: CodingMachineIntent, signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
+		starting?: (signal: AbortSignal) => Promise<void>,
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -671,6 +673,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				signal: checked,
 				plug: this.#options.agentPlug,
 				stoppedFromOutside,
+				starting,
 			});
 			checked.throwIfAborted();
 			if (result.state === "pending") {
@@ -1158,6 +1161,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					if (ends.some((end) => !end.saved)) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
 					if (ends.some((end) => !end.closed)) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
 				},
+				// Stopped, right before each start: the folder service hears the machine restarted (the plan's rule 4), so a
+				// read it was served on its last boot and never released no longer leaves the views it opens unproven. Not
+				// heard, the machine does not start.
+				(checked) => folder.control.restarted(machine.machineId, checked),
 			);
 			const receipt = await this.#run(claim, machine, storage, signal);
 			// Each session runs as its own user, which SQL assigns in the guest agent's range.

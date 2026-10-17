@@ -546,8 +546,11 @@ async function fixture() {
 		if (state.stoppedFromOutside && lxd.exists && !lxd.running)
 			await input.stoppedFromOutside?.(state.startOperationId, input.signal);
 		if (input.desiredState === "running") {
-			// Starting a stopped machine is a new LXD operation.
-			if (!lxd.running) state.startOperationId = randomUUID();
+			// Starting a stopped machine is a new LXD operation, which the executor hears of first.
+			if (!lxd.running) {
+				await input.starting?.(input.signal);
+				state.startOperationId = randomUUID();
+			}
 			lxd.exists = true;
 			lxd.running = true;
 			state.stoppedFromOutside = false;
@@ -2535,6 +2538,7 @@ async function folderFixture(repositories = true) {
 		reads: "released",
 		views: [{ viewId, unsaved: 0 }],
 	}));
+	const restarted = vi.fn<CodingFolderControl["restarted"]>(async () => {});
 	const sessionRepositories = {
 		prepare: vi.fn<CodingFolderRepositories["prepare"]>(async () => ({ cwd })),
 		export: vi.fn<CodingFolderRepositories["export"]>(async () => Buffer.from("bundle")),
@@ -2542,7 +2546,7 @@ async function folderFixture(repositories = true) {
 	const onMount = vi.fn();
 	const folder = {
 		views,
-		control: { boundary },
+		control: { boundary, restarted },
 		client: {} as LxdInstanceExecStreamClient,
 		...(repositories ? { repositories: sessionRepositories } : {}),
 		onMount,
@@ -2552,7 +2556,7 @@ async function folderFixture(repositories = true) {
 	const executor = (real: Awaited<ReturnType<typeof realViews>>) =>
 		new LxdCodingExecutorHost({
 			...f.options,
-			folder: { ...folder, views: real.views(), control: { boundary: real.boundary } },
+			folder: { ...folder, views: real.views(), control: { boundary: real.boundary, restarted } },
 		});
 	return {
 		...f,
@@ -2561,6 +2565,7 @@ async function folderFixture(repositories = true) {
 		executor,
 		views,
 		boundary,
+		restarted,
 		repositories: sessionRepositories,
 		onMount,
 		startOperationId,
@@ -3136,6 +3141,46 @@ describe("a coding session on the folder model", () => {
 			expect(f.calls("qorpera_attach_coding_session").at(-1)).toMatchObject({ p_guest_generation: null });
 		},
 	);
+	it("says the machine restarted right before each start, after an outside stop is told, and starts it only once heard", async () => {
+		const f = await folderFixture();
+		// Whether the machine ran each time the folder service heard it restarted.
+		const running: boolean[] = [];
+		f.restarted.mockImplementation(async () => {
+			running.push(f.lxd.running);
+		});
+		const nextTurn = (sequence: number) => {
+			f.renew(f.claim);
+			f.claim.sequence = sequence;
+			f.sequences.set(f.claim.workerId, sequence);
+			return f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		};
+		// Its first start is said too; a turn on the running machine says nothing.
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		await nextTurn(2);
+		f.host.endTurn(f.claim);
+		expect(f.restarted.mock.calls).toEqual([[f.machine.machineId, expect.any(AbortSignal)]]);
+		// Stopped from outside: its views end and its stop is recorded first. Not heard, the machine stays stopped.
+		f.lxd.running = false;
+		f.state.stoppedFromOutside = true;
+		f.restarted.mockRejectedValueOnce(new Error("CODING_FOLDER_CONTROL_UNAVAILABLE"));
+		await expect(nextTurn(3)).rejects.toThrow("CODING_FOLDER_CONTROL_UNAVAILABLE");
+		expect(f.lxd.running).toBe(false);
+		expect(f.restarted).toHaveBeenCalledTimes(2);
+		const recorded = () =>
+			f.call.mock.calls.flatMap((call, index) =>
+				call[0] === "qorpera_record_coding_machine_stopped" ? [f.call.mock.invocationCallOrder[index]!] : [],
+			);
+		expect(f.views.endMachine.mock.invocationCallOrder[0]).toBeLessThan(recorded()[0]!);
+		expect(recorded()[0]).toBeLessThan(f.restarted.mock.invocationCallOrder[1]!);
+		// The next try tells the same stop again, and once heard the machine starts.
+		await nextTurn(3);
+		expect(f.lxd.running).toBe(true);
+		expect(f.restarted.mock.calls.map((call) => call[0])).toEqual(Array(3).fill(f.machine.machineId));
+		expect(recorded()).toHaveLength(2);
+		expect(recorded()[1]).toBeLessThan(f.restarted.mock.invocationCallOrder[2]!);
+		expect(running).toEqual([false, false]);
+	});
 	it("publishes what the machine's boundary saved: the boundary first, then the session's bundle, pushed and opened as a draft", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
