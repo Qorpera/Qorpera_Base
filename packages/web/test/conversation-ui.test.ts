@@ -449,6 +449,17 @@ describe("conversation UI boundaries", () => {
 		const erased = messageMenu(messages()[1]!);
 		expect(erased.items.map((item) => item.textContent)).toEqual(["Show how the erase went"]);
 		erased.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// Its words are gone, so a long press on it offers nothing to copy, even with text selected in it.
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn() } });
+		try {
+			document.getSelection()!.selectAllChildren(messages()[1]!);
+			const pressed = messageMenu(messages()[1]!, "touch");
+			expect(pressed.items.map((item) => item.textContent)).toEqual(["Show how the erase went"]);
+			pressed.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		} finally {
+			Reflect.deleteProperty(navigator, "clipboard");
+			document.getSelection()!.removeAllRanges();
+		}
 		expect(messageMenu(messages()[2]!).offered).toBe(false);
 		// The route takes owners and admins: a contributor or a viewer is not offered it.
 		for (const role of ["admin", "contributor", "viewer"] as const) {
@@ -885,8 +896,8 @@ describe("conversation UI boundaries", () => {
 		selection.selectAllChildren(bubble);
 		const text = selection.toString();
 		expect(messageMenu(bubble).offered).toBe(false);
-		// A long press selects the word under the finger before the menu comes: the message's, with Copy in place of the
-		// browser's. A Copy that fails says so above the composer, until one works.
+		// Chrome's long press selects the word under the finger before the menu comes: the message's, with Copy in place of
+		// the browser's. A Copy that fails says so above the composer, until one works.
 		const writeText = vi.fn(async (_text: string) => {});
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
 		try {
@@ -903,12 +914,18 @@ describe("conversation UI boundaries", () => {
 			await settle();
 			expect(writeText).toHaveBeenCalledTimes(2);
 			expect(notices(f.view.el)).toEqual([]);
+			// Firefox's selects only after a menu nobody took, so nothing is selected yet: Copy message, its whole text.
+			selection.removeAllRanges();
+			const whole = messageMenu(bubble, "touch");
+			expect(whole.items.map((item) => item.textContent)).toEqual(["Copy message", "Erase message"]);
+			whole.items[0]!.click();
+			await settle();
+			expect(writeText).toHaveBeenLastCalledWith(reply.text);
 			expect(route.request).not.toHaveBeenCalled();
 		} finally {
 			Reflect.deleteProperty(navigator, "clipboard");
 		}
-		// Without text selected in it, a long press gives the message's menu alone.
-		selection.removeAllRanges();
+		// With no clipboard (a page that isn't secure), a long press gives the message's menu alone.
 		const plain = messageMenu(bubble, "touch");
 		expect(plain.items.map((item) => item.textContent)).toEqual(["Erase message"]);
 		pressEscape(plain.menu);

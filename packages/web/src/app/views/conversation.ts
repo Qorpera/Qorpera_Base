@@ -1069,8 +1069,10 @@ export class ConversationView {
 	 * offer the browser's own menu stays. So it does for a right-click or a long press on a link, an image or attachment
 	 * (Open link, Copy link address, Save image), and for a mouse or pen right-click on text the member selected in the
 	 * message (Copy). The keyboard (Shift+F10, the menu key) still opens the message's there, since a link is its only way
-	 * into a message. So does a long press on the message's text, which selects the word under the finger before the menu
-	 * comes; the message's menu then offers Copy in place of the browser's. */
+	 * into a message. So does a long press on the message's text (Android; iOS Safari sends no menu for a touch, so there
+	 * a pointer or a keyboard opens it), and the message's menu then offers Copy in place of the browser's: Chrome selects
+	 * the word under the finger before the menu comes, which Copy takes, while Firefox would select it only after an
+	 * untaken menu, so with nothing selected it offers Copy message, the message's whole text. */
 	#openMessageMenu(event: MouseEvent): void {
 		// What opened it: a key noted, else the event's own pointer (Chrome and Firefox send the menu as a pointer event,
 		// with no pointer type for a key), else the pointer pressed last.
@@ -1104,6 +1106,14 @@ export class ConversationView {
 			return;
 		event.preventDefault();
 		const { item, author, mine } = drawn;
+		const copy =
+			!touch || item.erased || !navigator.clipboard
+				? undefined
+				: selected
+					? { label: t("Copy"), text: selected }
+					: item.text.trim()
+						? { label: t("Copy message"), text: item.text }
+						: undefined;
 		const point = menuPoint(event, element);
 		// Focus goes back to the link the menu was opened from, else to the message itself.
 		const focused = document.activeElement;
@@ -1113,13 +1123,13 @@ export class ConversationView {
 			x: point.x,
 			y: point.y,
 			items: [
-				...(touch && selected && navigator.clipboard
+				...(copy
 					? [
 							{
-								label: t("Copy"),
+								label: copy.label,
 								icon: "copy",
 								select: () =>
-									void navigator.clipboard.writeText(selected).then(
+									void navigator.clipboard.writeText(copy.text).then(
 										() => this.#copied(undefined),
 										() => this.#copied(t("The text could not be copied.")),
 									),
