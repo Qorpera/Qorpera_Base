@@ -34,8 +34,16 @@ import {
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
 import { NOTICES_KEPT, noticeOf, pageOfNotices } from "./notices.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
-import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
-import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
+import {
+	CHUNK_BYTES,
+	type ChunkRef,
+	type Content,
+	type FileRef,
+	type PendingFile,
+	PendingView,
+	PublishFirst,
+} from "./pending.ts";
+import { type BoundaryPlan, type CommitUnit, planBoundary, type SecretCheck } from "./plan.ts";
 import {
 	type BridgeInfo,
 	type ChunkPart,
@@ -58,6 +66,7 @@ import {
 	type WireEntry,
 } from "./protocol.ts";
 import { type SearchAnswer, searchView } from "./search.ts";
+import { CARRIES, SecretRefusal, type SecretSet } from "./secret-scan.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
 import {
@@ -358,6 +367,31 @@ function waitingOf(plan: BoundaryPlan): ReportEntry[] {
 	return plan.waiting.map((w): ReportEntry => ({ path: w.path, outcome: "waiting", reason: w.reason, kept: true }));
 }
 
+/** The paths a coding view's boundary refused for its machine's secret values (5j-5), kept pending but at the view's
+ * last boundary. */
+function refusedOf(plan: BoundaryPlan, last: boolean): ReportEntry[] {
+	return plan.refused.map(
+		(r): ReportEntry =>
+			last
+				? { path: r.path, outcome: "refused", reason: r.reason }
+				: { path: r.path, outcome: "refused", reason: r.reason, kept: true },
+	);
+}
+
+/** Why a coding view's changes wait while its machine's secret values have not come (5j-5). */
+const SECRETS_WAIT = "waiting for the machine's secret check";
+
+/** The report of a boundary of a coding view whose machine's secret values have not come: every change waits, its
+ * names not checked yet, so nothing but the machine's own report names them (#publishLogged). */
+function uncheckedOf(plan: BoundaryPlan): ReportEntry[] {
+	return [
+		...plan.waiting.map(
+			(w): ReportEntry => ({ path: w.path, outcome: "not_applied", reason: SECRETS_WAIT, kept: true }),
+		),
+		...held(plan, () => ({ outcome: "not_applied", reason: SECRETS_WAIT })),
+	];
+}
+
 /** Whether the git directory `target` is in, or a folder above it, is new in the view (`git init` made it): not in the
  * folder yet. */
 function gitDirNew(pending: PendingView, target: string): boolean {
@@ -631,6 +665,15 @@ export class FolderService {
 	readonly #restarts = new Map<string, number>();
 	/** The command windows open on the test machines (F3 6b), which the executor opens and closes. */
 	readonly #windows = new CommandWindows();
+	/** Each coding machine's secret values, as its executor last sent them (`secrets`, 5j-5), for this run only. */
+	readonly #secrets = new Map<string, SecretSet>();
+	/** The values each staged file's bytes were checked against: checked again, they are checked for the others alone. */
+	readonly #checked = new WeakMap<FileRef, SecretSet>();
+	/** Each file the check refused: at which version, under which values, and why. */
+	readonly #refusals = new WeakMap<
+		PendingFile,
+		{ readonly version: string; readonly secrets: SecretSet; readonly reason: string }
+	>();
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -704,6 +747,21 @@ export class FolderService {
 		if (lost)
 			this.#log(`folder-service: machine ${machine} restarted; its views opened from now on are proven again`);
 		return lost || unreleased;
+	}
+
+	/** A coding machine's secret values (5j-5; RUNTIME-FOLDER-CODING-MACHINES.md, "Masking"), as keyed hashes
+	 * (secret-scan.ts), which its executor sends over the control socket before the machine's sessions run and as
+	 * their values change: they replace those it sent before. Each boundary of the machine's views checks what it
+	 * publishes against the values held when it began (#planned), and until the first come none of them publishes. The
+	 * service never holds a value. How many it holds for the machine. */
+	secrets(machine: string, set: SecretSet): number {
+		const before = this.#secrets.get(machine);
+		// The same values keep the set checked against: what was checked against it needs no check again.
+		if (before?.equals(set)) return before.size;
+		this.#secrets.set(machine, set);
+		// What waited for the first values goes at the next quiet period.
+		if (!before) for (const view of this.#machineViews(machine)) this.#resumeQuiet(view);
+		return set.size;
 	}
 
 	/** The machines this run vouches for (#vouched), for the note its clean stop leaves the next run (`clean-stop.ts`).
@@ -2132,7 +2190,7 @@ export class FolderService {
 		const made: { path: string; at: string; version: string }[] = [];
 		for (const file of files) {
 			const version = file.node.version;
-			const staged = await this.#stage(view, file.node, file.path);
+			const staged = await this.#gitStage(view, file.node, file.path);
 			if (!staged) {
 				if (file.expectedVersion === undefined) continue;
 				throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
@@ -2287,7 +2345,7 @@ export class FolderService {
 			if (lock.replaced.has(reflog) && log?.kind === "file" && log.content !== undefined) {
 				if (log.open > 0) throw new ProtocolError(ErrorCode.busy, "The git log is still open");
 				made = log.version;
-				const staged = await this.#stage(view, log, reflog);
+				const staged = await this.#gitStage(view, log, reflog);
 				if (!staged) throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
 				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
 			}
@@ -2477,11 +2535,18 @@ export class FolderService {
 	async #publishLogged(view: View, quiet = false): Promise<void> {
 		try {
 			const report = await this.#publish(view, false, quiet, true);
+			// A name not checked for the machine's secret values yet is not named (5j-5).
+			let unchecked = 0;
 			for (const entry of report.paths)
-				if (entry.outcome !== "saved")
+				if (entry.reason === SECRETS_WAIT) unchecked++;
+				else if (entry.outcome !== "saved")
 					this.#log(
 						`folder-service: ${view.key}: ${entry.path}: ${entry.outcome}${entry.reason ? ` (${entry.reason})` : ""}`,
 					);
+			if (unchecked > 0)
+				this.#log(
+					`folder-service: ${view.key}: ${unchecked === 1 ? "1 change waits" : `${unchecked} changes wait`} for the machine's secret check`,
+				);
 		} catch (error) {
 			this.#log(`folder-service: ${view.key}: publish failed: ${(error as Error).message}`);
 		}
@@ -2665,16 +2730,71 @@ export class FolderService {
 	}
 
 	/** Stages a closed file's current version (its bytes, its origin's chunks under a new bit, or a hard link's copy of
-	 * another file's) at `path`, once; the intent it is sealed under is renewed while the file is pending. */
-	async #stage(view: View, node: PendingFile, path: string): Promise<FileRef | undefined> {
+	 * another file's) at `path`, once; the intent it is sealed under is renewed while the file is pending. A coding
+	 * view's bytes (5j-5) are checked against its machine's secret values first, and staged only if they carry none: a
+	 * staging checked against older values is checked again for the new ones. Nothing is staged while the machine's
+	 * values have not come. Only the machine's own bytes are checked: a live file's are in the folder already. */
+	async #stage(
+		view: View,
+		node: PendingFile,
+		path: string,
+		secrets = this.#secretsOf(view),
+	): Promise<FileRef | undefined> {
 		const staging = this.#staging;
 		const changed = node.content !== undefined || !node.origin || node.executable !== node.origin.entry?.executable;
-		if (!staging || node.open > 0 || !changed) return undefined;
+		if (!staging || node.open > 0 || !changed || secrets === null) return undefined;
+		const check = node.content === undefined ? undefined : secrets;
+		if (check && this.#refusalOf(node, check)) return undefined;
 		const version = node.version;
-		if (this.#stagedNow(view, node, path)) return node.staged?.file;
+		if (this.#stagedNow(view, node, path)) {
+			const file = node.staged?.file;
+			if (!check || !file || this.#checked.get(file) === check) return file;
+			const bytes = await this.#bytesOf(view, node);
+			try {
+				if (bytes) await staging.check(bytes.profile, bytes.content, check.since(this.#checked.get(file)));
+			} catch (error) {
+				if (!(error instanceof SecretRefusal)) throw error;
+				if (node.version === version) {
+					this.#refusals.set(node, { version, secrets: check, reason: error.message });
+					node.staged = undefined;
+				}
+				return undefined;
+			}
+			this.#checked.set(file, check);
+			return file;
+		}
 		// A staging for another version or media type is never used again.
 		node.staged = undefined;
 		const mediaType = this.#mediaType(view, node, path);
+		const bytes = await this.#bytesOf(view, node);
+		if (!bytes) return undefined;
+		let staged: { readonly file: FileRef; readonly intentId: string };
+		try {
+			staged = await staging.stageFile(
+				view.environmentId,
+				view.actor,
+				bytes.profile,
+				bytes.content,
+				mediaType,
+				node.executable,
+				check,
+			);
+		} catch (error) {
+			if (!(error instanceof SecretRefusal) || !check) throw error;
+			if (node.version === version) this.#refusals.set(node, { version, secrets: check, reason: error.message });
+			return undefined;
+		}
+		if (check) this.#checked.set(staged.file, check);
+		if (node.version === version) {
+			node.staged = { version, file: staged.file };
+			view.intents.set(staged.intentId, { renewed: this.#now(), node, staged: staged.file });
+		}
+		return staged.file;
+	}
+
+	/** A file's bytes as staging reads them (its own, or its origin's or a hard link's copied file's chunks), and the
+	 * profile they are read under. */
+	async #bytesOf(view: View, node: PendingFile): Promise<{ content: Content; profile: string } | undefined> {
 		let content = node.content;
 		const origin = node.origin?.entry ?? node.copyOf;
 		if (!content && origin)
@@ -2689,19 +2809,60 @@ export class FolderService {
 			: content.chunks.length > 0
 				? await this.#uploadProfile(view)
 				: "";
-		const staged = await staging.stageFile(
-			view.environmentId,
-			view.actor,
-			profile,
-			content,
-			mediaType,
-			node.executable,
+		return { content, profile };
+	}
+
+	/** The secret values a view's boundary checks what it publishes against (5j-5): a coding session's machine's, as its
+	 * executor last sent them; `null` while it sent none, so nothing of the view is staged or published. Any other view
+	 * (a test machine's, an office's, the code host's) is not checked: `undefined`. */
+	#secretsOf(view: View): SecretSet | null | undefined {
+		if (view.identity?.kind !== "coding_session") return undefined;
+		const machine = view.access?.machine;
+		return machine === undefined ? null : (this.#secrets.get(machine) ?? null);
+	}
+
+	/** Why the check refused a file's bytes as they are now, under `secrets`, if it did. */
+	#refusalOf(node: PendingFile, secrets: SecretSet): string | undefined {
+		const refusal = this.#refusals.get(node);
+		return refusal?.version === node.version && refusal.secrets === secrets ? refusal.reason : undefined;
+	}
+
+	/** A node's staged file, if it is for the node's version and, where its bytes are checked, checked against
+	 * `secrets`. */
+	#stagedFor(node: PendingFile, secrets: SecretSet | undefined): FileRef | undefined {
+		const file = node.staged?.version === node.version ? node.staged.file : undefined;
+		if (!file || !secrets || node.content === undefined) return file;
+		return this.#checked.get(file) === secrets ? file : undefined;
+	}
+
+	/** What a boundary checks against `secrets` (plan.ts). */
+	#checkOf(secrets: SecretSet | undefined): SecretCheck | undefined {
+		return (
+			secrets && {
+				carries: (text) => secrets.carries(text),
+				refused: (node) => this.#refusalOf(node, secrets),
+			}
 		);
-		if (node.version === version) {
-			node.staged = { version, file: staged.file };
-			view.intents.set(staged.intentId, { renewed: this.#now(), node, staged: staged.file });
-		}
-		return staged.file;
+	}
+
+	/** Stages a file a git lease publishes (§6). A coding view's is checked as a boundary checks it (5j-5), its name
+	 * first: the git change waits for the machine's values, and one that carries a value is refused whole. */
+	async #gitStage(view: View, node: PendingFile, path: string): Promise<FileRef | undefined> {
+		const secrets = this.#secretsOf(view);
+		if (secrets === null)
+			throw new ProtocolError(ErrorCode.busy, "The git change waits for the machine's secret check");
+		if (secrets?.carries(path))
+			throw new ProtocolError(ErrorCode.notPermitted, "The git change carries a secret value");
+		const staged = await this.#stage(view, node, path, secrets);
+		const refusal = secrets && node.content !== undefined ? this.#refusalOf(node, secrets) : undefined;
+		if (refusal)
+			throw new ProtocolError(
+				ErrorCode.notPermitted,
+				refusal === CARRIES
+					? "The git change carries a secret value"
+					: "The git change could not be checked for secret values",
+			);
+		return staged;
 	}
 
 	/** The path a node is shown at now. */
@@ -2758,16 +2919,26 @@ export class FolderService {
 	}
 
 	/** The report of a boundary of a view whose machine cannot show its reads complete: it publishes nothing. */
-	#unprovenReport(view: View, pending: PendingView, entries: readonly ReportEntry[] = []): Report {
+	#unprovenReport(view: View, pending: PendingView): Report {
 		view.heard = "refused";
-		const plan = planBoundary(pending, (node) =>
-			node.staged?.version === node.version ? node.staged.file : undefined,
-		);
+		const secrets = this.#secretsOf(view);
+		if (secrets === null)
+			return {
+				commitId: null,
+				seq: null,
+				refused: "unproven",
+				paths: uncheckedOf(planBoundary(pending, () => undefined)),
+			};
+		const plan = planBoundary(pending, (node) => this.#stagedFor(node, secrets), this.#checkOf(secrets));
 		return {
 			commitId: null,
 			seq: null,
 			refused: "unproven",
-			paths: [...entries, ...waitingOf(plan), ...held(plan, () => ({ outcome: "refused", reason: "unproven" }))],
+			paths: [
+				...waitingOf(plan),
+				...refusedOf(plan, false),
+				...held(plan, () => ({ outcome: "refused", reason: "unproven" })),
+			],
 		};
 	}
 
@@ -2843,15 +3014,20 @@ export class FolderService {
 	/** A boundary's own change set, planned from what is pending now, after any asked again (#boundaryOf). */
 	async #planned(view: View, pending: PendingView, final: boolean, last: boolean): Promise<Report> {
 		const entries: ReportEntry[] = [];
-		await this.#stageAll(view);
-		const plan = planBoundary(pending, (node) =>
-			node.staged?.version === node.version ? node.staged.file : undefined,
-		);
+		// A coding view's boundary checks against the values its machine's executor sent last when it began (5j-5): values
+		// sent while it runs are the next boundary's. Until the first come, it publishes nothing.
+		const secrets = this.#secretsOf(view);
+		if (secrets === null) {
+			view.heard = "open";
+			return { commitId: null, seq: null, paths: uncheckedOf(planBoundary(pending, () => undefined)) };
+		}
+		await this.#stageAll(view, secrets);
+		const plan = planBoundary(pending, (node) => this.#stagedFor(node, secrets), this.#checkOf(secrets));
 		// A test machine's units are credited from what they publish, as planned (F3 6b). A change undone before it was
 		// published, as a move moved back, leaves nothing to publish: its tags go, even when nothing is published.
 		const credited = view.credit.credits(plan.units, pending);
 		view.credit.prune(pending);
-		entries.push(...waitingOf(plan));
+		entries.push(...waitingOf(plan), ...refusedOf(plan, final || last));
 		if (final && plan.waiting.length > 0) {
 			view.heard = "open";
 			return {
@@ -2869,7 +3045,7 @@ export class FolderService {
 		const machine = view.access?.machine;
 		const release = machine === undefined ? await this.#releaseReads(view) : await this.#releaseMachine(machine);
 		// Another view of the machine went while the release ran, with reads it never released.
-		if (view.unproven) return this.#unprovenReport(view, pending, entries);
+		if (view.unproven) return this.#unprovenReport(view, pending);
 		if (release !== "released") {
 			view.heard = release === "unanswered" || mayLift(release) ? "open" : "refused";
 			return release === "unanswered"
@@ -3125,16 +3301,20 @@ export class FolderService {
 		return { commitId: answer.commitId, seq: answer.seq, paths: [...entries, ...outcomes], closed: true };
 	}
 
-	/** Stages every closed, changed file not staged yet, a few at a time. */
-	async #stageAll(view: View): Promise<void> {
+	/** Stages every closed, changed file not staged yet (or, in a coding view, not checked against `secrets` yet), a few
+	 * at a time. */
+	async #stageAll(view: View, secrets: SecretSet | undefined): Promise<void> {
 		const nodes = [...(view.pending?.nodes() ?? [])].filter(
 			(entry): entry is [string, PendingFile] =>
-				entry[1].kind === "file" && entry[1].open === 0 && !this.#stagedNow(view, entry[1], entry[0]),
+				entry[1].kind === "file" &&
+				entry[1].open === 0 &&
+				!(this.#stagedNow(view, entry[1], entry[0]) && this.#stagedFor(entry[1], secrets)) &&
+				!(secrets && this.#refusalOf(entry[1], secrets)),
 		);
 		for (let i = 0; i < nodes.length; i += STAGING_PARALLEL)
 			await Promise.all(
 				nodes.slice(i, i + STAGING_PARALLEL).map(([path, node]) =>
-					this.#stage(view, node, path).catch((error: unknown) => {
+					this.#stage(view, node, path, secrets).catch((error: unknown) => {
 						this.#log(`folder-service: ${view.key}: a file could not be staged: ${(error as Error).message}`);
 					}),
 				),

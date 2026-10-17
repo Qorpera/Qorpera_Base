@@ -7,6 +7,7 @@ import { createControlServer, socketRefusal } from "../src/folder-service/contro
 import { DESKTOP_QUIET_MS } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import type { BridgeInfo, Hello } from "../src/folder-service/protocol.ts";
+import type { SecretSet } from "../src/folder-service/secret-scan.ts";
 import { FolderService, type MachineBoundary, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
@@ -20,6 +21,7 @@ import {
 	FakeUploads,
 	folder,
 	hashOf,
+	noSecrets,
 	OFFICE,
 	PROFILE,
 	storeFile,
@@ -83,6 +85,7 @@ async function company(vouched?: readonly string[]) {
 			...(next === undefined ? {} : { vouched: next }),
 			log: () => undefined,
 		});
+		service.secrets(CODING_MACHINE_ID, noSecrets());
 		services.push(service);
 		return service;
 	};
@@ -585,6 +588,16 @@ describe("coding views", () => {
 });
 
 describe("the control socket", () => {
+	/** A machine's key and one value's hashes under it, from secret-scan.test.ts's vectors (the value "test-value-0001"). */
+	const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+	const VALUE = { length: 15, start: 629920, whole: "5X_nxV1CHyqs5ZYNTg0gzw" };
+	/** `count` values, each written as long as a value's hashes are. */
+	const most = (count: number) =>
+		Array.from({ length: count }, (_, i) => {
+			const whole = Buffer.alloc(16);
+			whole.writeUInt32BE(i, 12);
+			return { length: 32 * 1024, start: 2 ** 20 - 1, whole: whole.toString("base64url") };
+		});
 	/** One connection: the lines sent, if any (then its side ends), and each answer until the service ended its side. A
 	 * refusal closes the connection once it is out: an error after it is the close. */
 	const ask = (path: string, text = "") =>
@@ -607,7 +620,7 @@ describe("the control socket", () => {
 			if (text !== "") socket.end(text);
 		});
 
-	it("answers the coding executor's boundaries and restarts, and refuses every peer while the socket's file lets another connect", async () => {
+	it("answers the coding executor's boundaries, restarts and secret values, and refuses every peer while the socket's file lets another connect", async () => {
 		// Under /tmp (root's, sticky), not $TMPDIR: every folder above the socket counts.
 		const dir = await realpath(await mkdtemp("/tmp/qfc-"));
 		cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -615,6 +628,7 @@ describe("the control socket", () => {
 		const uid = process.getuid?.() ?? 0;
 		const asked: [string, readonly string[]][] = [];
 		const restarts: string[] = [];
+		const sets: [string, SecretSet][] = [];
 		const target = {
 			boundary: async (machine: string, final: readonly string[]): Promise<MachineBoundary> => {
 				asked.push([machine, final]);
@@ -627,6 +641,10 @@ describe("the control socket", () => {
 			},
 			openWindow: () => undefined,
 			closeWindow: async (machine: string): Promise<MachineBoundary> => ({ machine, reads: "released", views: [] }),
+			secrets: (machine: string, set: SecretSet) => {
+				sets.push([machine, set]);
+				return set.size;
+			},
 		};
 		const close = (server: Server) => new Promise<void>((resolve) => server.close(() => resolve()));
 		/** A control server on the socket, for an executor of `executorUid`, the socket's file made `mode`. */
@@ -679,13 +697,39 @@ describe("the control socket", () => {
 				{ op: "restarted", machine: CODING_MACHINE_ID },
 				{ op: "restarted", machine: CODING_MACHINE_ID, dropped: false },
 				{ op: "restarted", machine: CODING_MACHINE_ID },
+				// A coding machine's secret values (5j-5): keyed hashes, each once. The most a request holds fits a line.
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [VALUE, VALUE] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: most(4096) },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: most(4097) },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [], value: "x" },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: `${KEY}=`, values: [] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: `${KEY.slice(0, -1)}9`, values: [] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY.slice(0, -1), values: [] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [{ ...VALUE, length: 7 }] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [{ ...VALUE, length: 32 * 1024 + 1 }] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [{ ...VALUE, start: 2 ** 20 }] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [{ ...VALUE, start: -1 }] },
+				{
+					op: "secrets",
+					machine: CODING_MACHINE_ID,
+					key: KEY,
+					values: [{ ...VALUE, whole: VALUE.whole.slice(1) }],
+				},
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [{ ...VALUE, value: "test-value-0001" }] },
+				{ op: "secrets", machine: CODING_MACHINE_ID, key: KEY, values: [[15, 629920, VALUE.whole]] },
+				{ op: "secrets", machine: "machine-1", key: KEY, values: [] },
 			]
 				.map((line) => `${JSON.stringify(line)}\n`)
 				.join(""),
 		);
+		const VALUES =
+			"values is a list of at most 4096 values, each {length, start, whole}: a length of 8 to 32768 bytes, a start below 2^20, and 16 bytes base64url";
+		const KEY_IS = "key is 32 bytes, base64url";
 		expect(answers).toEqual([
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
-			{ error: { code: "BAD_REQUEST", message: "A request's op is boundary, restarted, open or close" } },
+			{ error: { code: "BAD_REQUEST", message: "A request's op is boundary, restarted, open, close or secrets" } },
 			{ error: { code: "BAD_REQUEST", message: MACHINE } },
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
 			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },
@@ -693,11 +737,30 @@ describe("the control socket", () => {
 			{ restarted: { machine: CODING_MACHINE_ID, dropped: true } },
 			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },
 			{ restarted: { machine: CODING_MACHINE_ID, dropped: false } },
+			{ secrets: { machine: CODING_MACHINE_ID, values: 1 } },
+			{ secrets: { machine: CODING_MACHINE_ID, values: 0 } },
+			{ secrets: { machine: CODING_MACHINE_ID, values: 4096 } },
+			{ error: { code: "BAD_REQUEST", message: VALUES } },
+			{ error: { code: "BAD_REQUEST", message: VALUES } },
+			{ error: { code: "BAD_REQUEST", message: "A secrets request is {op, machine, key, values}" } },
+			{ error: { code: "BAD_REQUEST", message: KEY_IS } },
+			{ error: { code: "BAD_REQUEST", message: KEY_IS } },
+			{ error: { code: "BAD_REQUEST", message: KEY_IS } },
+			...Array.from({ length: 7 }, () => ({ error: { code: "BAD_REQUEST", message: VALUES } })),
+			{ error: { code: "BAD_REQUEST", message: MACHINE } },
 		]);
 		expect(asked).toEqual([
 			[CODING_MACHINE_ID, []],
 			[CODING_MACHINE_ID, [SESSION]],
 		]);
 		expect(restarts).toEqual([CODING_MACHINE_ID, CODING_MACHINE_ID]);
+		expect(sets.map(([machine, set]) => [machine, set.size])).toEqual([
+			[CODING_MACHINE_ID, 1],
+			[CODING_MACHINE_ID, 0],
+			[CODING_MACHINE_ID, 4096],
+		]);
+		// What the service takes are the hashes the executor made (secret-scan.test.ts), under its key.
+		expect(sets[0]?.[1].carries("a test-value-0001 in a name")).toBe(true);
+		expect(sets[0]?.[1].carries("a test-value-0002 in a name")).toBe(false);
 	});
 });

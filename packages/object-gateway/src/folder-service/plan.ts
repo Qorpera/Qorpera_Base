@@ -56,7 +56,25 @@ export interface BoundaryPlan {
 	readonly dropped: readonly { readonly path: string; readonly reason: string }[];
 	/** The nodes the boundary leaves pending whatever its units' outcomes. */
 	readonly keep: ReadonlySet<string>;
+	/** Paths the secret check refused (`SecretCheck`), and those held back as they wait on a change it refused, and
+	 * why; kept pending, but never waiting: a final does not wait for them. A name it refused is shown as the folder
+	 * above it, whose own name carries no value. */
+	readonly refused: readonly { readonly path: string; readonly reason: string }[];
 }
+
+/** What a coding machine's boundary is checked against (5j-5): its secret values (secret-scan.ts). */
+export interface SecretCheck {
+	/** Whether a name or a link's target carries one of the values. */
+	carries(text: string): boolean;
+	/** Why a changed file's bytes, as they are now, are not published (they carry a value, or could not be checked), or
+	 * nothing. */
+	refused(node: PendingFile): string | undefined;
+}
+
+/** What a refusal of the check says: never the name or the value, nor where in it the value is. */
+export const NAME_CARRIES = "a name in this folder carries a secret value";
+export const TARGET_CARRIES = "its link's target carries a secret value";
+export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret value";
 
 type Item =
 	| { kind: "write"; path: string; file: FileRef; expected: string; paths: string[] }
@@ -76,6 +94,14 @@ function below(path: string, folder: string): boolean {
 	return folderKey(path).startsWith(`${folderKey(folder)}/`);
 }
 
+/** The folder above the first name in `path` that carries a secret value, or nothing if none does. */
+function carrierOf(path: string, check: SecretCheck): string | undefined {
+	if (!check.carries(path)) return undefined;
+	for (let slash = path.indexOf("/"); slash !== -1; slash = path.indexOf("/", slash + 1))
+		if (check.carries(path.slice(0, slash))) return parentOf(path.slice(0, slash));
+	return parentOf(path);
+}
+
 /**
  * The units of one boundary (RUNTIME-FOLDER-WRITES.md, "A boundary"): everything pending but files still open for
  * writing, bytes not staged yet, and names never published, as one change set. `PendingView` keeps every pending
@@ -84,11 +110,30 @@ function below(path: string, folder: string): boolean {
  * is new is one `new_folder`; a new file or link that replaces a live one names the version it replaces, which its
  * node holds (`PendingView`). Units are ordered so a path is freed before it is filled, and a new folder made before
  * what goes in it.
+ *
+ * With `check` (a coding machine's view, 5j-5), a name new in the view that carries one of the machine's secret
+ * values, a new link's target that does, and a file whose bytes do are not published but refused, and kept pending:
+ * the names before anything else, so no list holds one. A refused move keeps its source where it is, so what needs a
+ * refused change waits with it: a change into the path it would free or into the folder it would make, and the removal
+ * or move of a folder that holds a source it keeps.
  */
-export function planBoundary(view: PendingView, staged: (node: PendingFile) => FileRef | undefined): BoundaryPlan {
+export function planBoundary(
+	view: PendingView,
+	staged: (node: PendingFile) => FileRef | undefined,
+	check?: SecretCheck,
+): BoundaryPlan {
 	const keep = new Set<string>();
 	const waiting: { path: string; reason: string }[] = [];
 	const dropped: { path: string; reason: string }[] = [];
+	const refused: { path: string; reason: string }[] = [];
+	const refusedOnce = new Set<string>();
+	const refuse = (path: string, reason: string): void => {
+		if (refusedOnce.has(`${reason}\n${path}`)) return;
+		refusedOnce.add(`${reason}\n${path}`);
+		refused.push({ path, reason });
+	};
+	// The refused moves and new folders, which what needs them waits on.
+	const refusedItems: Item[] = [];
 	const writes: (Item & { kind: "write" })[] = [];
 	const creates: (Item & { kind: "create" })[] = [];
 	const moves: (Item & { kind: "move" })[] = [];
@@ -102,6 +147,15 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 			keep.add(path);
 			continue;
 		}
+		const carrier = check && (!node.origin || node.origin.path !== path) ? carrierOf(path, check) : undefined;
+		if (carrier !== undefined) {
+			keep.add(path);
+			refuse(carrier, NAME_CARRIES);
+			if (node.origin)
+				refusedItems.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
+			else if (node.kind === "folder") refusedItems.push({ kind: "create", path, contents: null, paths: [path] });
+			continue;
+		}
 		if (node.kind === "folder") {
 			if (!node.origin) creates.push({ kind: "create", path, contents: null, paths: [path] });
 			else if (node.origin.path !== path)
@@ -110,7 +164,10 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		}
 		if (node.kind === "symlink") {
 			// A link is never changed in place: made, or moved.
-			if (!node.origin)
+			if (!node.origin && check?.carries(node.target)) {
+				keep.add(path);
+				refuse(path, TARGET_CARRIES);
+			} else if (!node.origin)
 				links.push({ kind: "link", path, target: node.target, expected: node.replaces?.version, paths: [path] });
 			else if (node.origin.path !== path)
 				moves.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
@@ -129,6 +186,12 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		const changed =
 			node.content !== undefined || (origin !== undefined && node.executable !== origin.entry?.executable);
 		if (origin && !changed) continue;
+		const refusal = check?.refused(node);
+		if (refusal) {
+			keep.add(path);
+			refuse(path, refusal);
+			continue;
+		}
 		const file = staged(node);
 		if (!file) {
 			keep.add(path);
@@ -212,9 +275,35 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		...news.filter((i) => !absorbed.has(i)),
 		...links.filter((i) => !absorbed.has(i)),
 	];
+	// What needs a refused change waits with it, and so on: a move it holds back keeps its source too.
+	const blocked = new Set<Item>(refusedItems);
+	for (let grew = blocked.size > 0; grew; ) {
+		grew = false;
+		const sources = [...blocked].flatMap((b) => (b.kind === "move" ? [b.from] : []));
+		for (const item of items) {
+			if (blocked.has(item)) continue;
+			const from = item.kind === "delete" ? item.path : item.kind === "move" ? item.from : undefined;
+			const holds = from !== undefined && sources.some((s) => folderKey(s) === folderKey(from) || below(s, from));
+			if (holds || [...blocked].some((b) => needs(item, b))) {
+				blocked.add(item);
+				grew = true;
+			}
+		}
+	}
+	for (const item of items)
+		if (blocked.has(item))
+			for (const path of item.paths) {
+				keep.add(path);
+				refuse(path, WAITS_FOR_REFUSED);
+			}
 	const units: PlannedUnit[] = [];
-	for (const item of schedule(items, waiting, keep)) units.push(unitOf(item));
-	return { units, waiting, dropped, keep };
+	for (const item of schedule(
+		items.filter((i) => !blocked.has(i)),
+		waiting,
+		keep,
+	))
+		units.push(unitOf(item));
+	return { units, waiting, dropped, keep, refused };
 }
 
 function unitOf(item: Item): PlannedUnit {
@@ -293,17 +382,19 @@ function frees(item: Item): string | undefined {
 	return path === undefined ? undefined : folderKey(path);
 }
 
+/** `item` runs after `other`: it fills the path `other` frees, or goes in the new folder `other` makes. */
+function needs(item: Item, other: Item): boolean {
+	if (item === other) return false;
+	const target = fills(item);
+	if (target === undefined) return false;
+	if (frees(other) === target) return true;
+	return other.kind === "create" && folderKey(other.path) === folderKey(parentOf(target));
+}
+
 /** Orders the items so each runs after what it needs (Kahn's algorithm, in the given order where free): a path freed
  * before it is filled, a new folder before what goes in it. PendingView never lets two wait on each other; if they
  * ever did, they would wait for the next boundary rather than be published out of order. */
 function schedule(items: Item[], waiting: { path: string; reason: string }[], keep: Set<string>): Item[] {
-	const needs = (item: Item, other: Item): boolean => {
-		if (item === other) return false;
-		const target = fills(item);
-		if (target === undefined) return false;
-		if (frees(other) === target) return true;
-		return other.kind === "create" && folderKey(other.path) === folderKey(parentOf(target));
-	};
 	const order: Item[] = [];
 	let left = [...items];
 	while (left.length > 0) {

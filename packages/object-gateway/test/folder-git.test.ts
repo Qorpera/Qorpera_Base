@@ -18,6 +18,7 @@ import {
 import type { Transport } from "../src/folder-service/https-request.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { type BridgeInfo, type Hello, ProtocolError, type ReadLogEntry } from "../src/folder-service/protocol.ts";
+import type { SecretSet } from "../src/folder-service/secret-scan.ts";
 import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
@@ -32,8 +33,10 @@ import {
 	FakeUploads,
 	folder,
 	hashOf,
+	noSecrets,
 	OFFICE,
 	PASS,
+	secretsOf,
 	storeFile,
 	v,
 } from "./folder-service-fixtures.ts";
@@ -362,8 +365,9 @@ const receipt = (n: number): CoreReceipt => ({
 const readOfMain = (seq: number): ReadLogEntry => ({ seq, path: MAIN, version: v(101), authority: receipt(1) });
 
 /** A code area's git directory with two branches, two shell commands' views on it (two sessions, as the core opens
- * them), and the node's service. `coding`: the two are coding sessions' views on one coding machine (F3 5c). */
-async function repo(grants = companyGrants(), coding = false) {
+ * them), and the node's service. `coding`: the two are coding sessions' views on one coding machine (F3 5c), whose
+ * executor sent `secrets` as its secret values (5j-5), or none yet. */
+async function repo(grants = companyGrants(), coding = false, secrets: SecretSet | null = noSecrets()) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-git-"));
 	const core = new FakeCore();
 	const folders = ["code", "code/acme", "code/acme/app", R, `${R}/objects`, `${R}/objects/ab`, `${R}/refs`];
@@ -391,6 +395,7 @@ async function repo(grants = companyGrants(), coding = false) {
 		staging: new FolderStaging(core, new FakeUploads(root, core), objects),
 		log: () => undefined,
 	});
+	if (coding && secrets) service.secrets(CODING_MACHINE_ID, secrets);
 	const handles: ViewHandle[] = [];
 	cleanups.push(async () => {
 		for (const h of handles) h.release();
@@ -867,6 +872,30 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitPublishes).toEqual([]);
 		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
 		expect(core.entries.has(TOPIC)).toBe(true);
+	});
+
+	it("holds a coding machine's git change until its executor sent the machine's secret values (5j-5)", async () => {
+		const { core, service, open } = await repo(codingGrants(), true, null);
+		const view = await open("first");
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "BUSY");
+		expect(core.gitPublishes).toEqual([]);
+		// Once they are in, git's retry publishes it.
+		service.secrets(CODING_MACHINE_ID, noSecrets());
+		await view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
+		expect(core.gitPublishes).toMatchObject([{ published: true }]);
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("3333\n"));
+	});
+
+	it("refuses a coding machine's git change whose log carries one of the member's secret values (5j-5)", async () => {
+		const { core, open } = await repo(codingGrants(), true, secretsOf("test-value-0001"));
+		const view = await open("first");
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await write(view, MAIN_LOG, "0000 1111\n1111 3333 commit: test-value-0001\n");
+		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "NOT_PERMITTED");
+		expect(core.gitPublishes).toEqual([]);
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
+		expect(core.entries.get(MAIN_LOG)?.fileSha256).toBe(hashOf("0000 1111\n"));
 	});
 
 	it("publishes no git change once the machine lost its read log, but still gives an unused lease back", async () => {
