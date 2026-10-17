@@ -442,7 +442,7 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      the old disk still holds. Then the machine starts. Before the rebuild goes out, the executor checks that the image
      is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
-     until the image is back or the machine is removed; the new disk's record clears that error. A model hears of it only
+     until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it
      through a stopped command's entry: a session that was not attached gets no event.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.
