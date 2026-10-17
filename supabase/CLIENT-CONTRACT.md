@@ -734,8 +734,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `mail-attachments` Edge Function.
 - Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
-  (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
-  `qorpera_member_mail_thread(p_environment_id, p_thread)` (`{thread, address, messages, more?, waiting}`),
+  (`{address?, state?, direction?: "received" | "sent", before?: {lastAt, thread}, limit ≤ 50}` →
+  `{threads, nextBefore?}`; `direction`, 20260930512000, keeps the threads whose newest message went that way),
+  `qorpera_member_mail_thread(p_environment_id, p_thread, p_before?)` (`{thread, address, messages, more?, nextBefore?,
+  waiting}`: the newest 50 messages, oldest first; while `more`, `nextBefore` is `{at, kind, id}`, and given back as
+  `p_before` (20260930512000) the answer is the 50 before it),
   `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
   Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
   thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is

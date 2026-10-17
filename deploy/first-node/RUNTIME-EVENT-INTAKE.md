@@ -627,13 +627,17 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
   anything else; no lock; empty while mail is off):
   - `qorpera_member_mail_addresses(environment)`: the live mailboxes with `status`, the routines that listen on each
     (`routines`, with their agents in `handledBy`) and `last7Days`.
-  - `qorpera_member_mail_threads(environment, {address?, state?, before?, limit ≤ 50})`: threads newest first with
+  - `qorpera_member_mail_threads(environment, {address?, state?, direction?, before?, limit ≤ 50})`: threads newest first with
     `thread, address, fromName, fromAddress, subject, lastAt, state, handledBy, direction, unread, messages`.
     `state` is `waiting` (an open send_mail review card answers it), `handled` (a reply that has not failed or been
     cancelled followed the newest received message, or nothing was received) or `new`. `handledBy` is the last replier, else the agent whose
     routine woke on the newest received message. `nextBefore` is `{lastAt, thread}`. An address filter takes a
-    mailbox's address, a +tag included; a state filter looks at the newest 2000 threads a page.
-  - `qorpera_member_mail_thread(environment, thread)`: the newest 50 messages, oldest first. Received ones have the
+    mailbox's address, a +tag included; a state filter looks at the newest 2000 threads a page. A direction filter
+    (`received` or `sent`, 20260930512000) keeps the threads whose newest message went that way, the `direction` each
+    row shows, before the page is cut: the Mailbox's Sent view pages through every sent thread.
+  - `qorpera_member_mail_thread(environment, thread, before?)`: the newest 50 messages, oldest first. With `more`, it
+    names `nextBefore` (`{at, kind, id}`, 20260930512000: its oldest message); given back as `before`, the answer is the
+    50 messages before that one, in the same order and drawn the same way. Received ones have the
     sender, `to`, `cc`, subject, text (cut to 16,000 characters while kept, `textCleared` after), the SPF, DKIM and
     DMARC results, `automated` and the attachments' descriptions. Sent ones have the agent, status, text while kept
     and the attached files. `waiting` lists the open send_mail cards that answer the thread, with their arguments;

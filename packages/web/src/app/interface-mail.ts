@@ -2,12 +2,12 @@
  * mail as app/company-mail.ts keeps it. They are sources only once that read is open: a page that names them is not
  * drawn before.
  *
- * A `mail` block reads the list its view asks for: a view's or a block's `where` that names one `state` or one
- * `address` asks the threads call for just those (the call filters by them itself); any other column (`direction`,
- * `unread`, ...) is filtered here, on the threads read, as a table's columns are. */
+ * A `mail` block reads the list its view asks for: a view's or a block's `where` that names one `state`, one `address`
+ * or one `direction` asks the threads call for just those (the call filters by them itself, so Sent pages through every
+ * sent thread); any other column (`unread`, ...) is filtered here, on the threads read, as a table's columns are. */
 
 import type { InterfaceQuery, TableRow } from "@qorpera/cloud-client/interfaces";
-import type { MailThreadState, MailThreadSummary } from "../cloud/mail.ts";
+import { MAIL_DIRECTIONS, type MailDirection, type MailThreadState, type MailThreadSummary } from "../cloud/mail.ts";
 import type { CompanyController } from "./company.ts";
 import type { MailList, MailListRequest } from "./company-mail.ts";
 import { mailListKey } from "./company-mail.ts";
@@ -67,10 +67,14 @@ export function mailRequest(
 	const wheres = where ? [...narrow, where] : narrow;
 	const state = single(wheres, "state");
 	const address = single(wheres, "address");
+	const direction = single(wheres, "direction");
 	return {
 		...(address?.trim() ? { address } : {}),
 		...(state !== undefined && (STATES as readonly string[]).includes(state)
 			? { state: state as MailThreadState }
+			: {}),
+		...(direction !== undefined && (MAIL_DIRECTIONS as readonly string[]).includes(direction)
+			? { direction: direction as MailDirection }
 			: {}),
 	};
 }
