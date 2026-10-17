@@ -3,7 +3,7 @@ import { connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type CoreEntry, parseFeedPage, parseListPage } from "../src/folder-service/core.ts";
+import { type CoreEntry, parseCommitAnswer, parseFeedPage, parseListPage } from "../src/folder-service/core.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
 import { NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
 import {
@@ -329,6 +329,44 @@ describe("folder core answers", () => {
 				more: false,
 			}),
 		).toThrow();
+	});
+
+	it("keeps the first problem a rule names with a unit's refusal, and only a problem with a code and a message", () => {
+		const unit = (n: number, problems?: unknown) => ({
+			unit: n,
+			outcome: "refused",
+			reason: "structured_rule",
+			...(problems === undefined ? {} : { problems }),
+		});
+		const answer = parseCommitAnswer(
+			{
+				schema: "qorpera.folder-commit/v1",
+				commitId: "6a1f3c2e-8b4d-4e5f-9a6b-7c8d9e0f1a2b",
+				seq: null,
+				units: [
+					unit(1, [
+						{
+							line: null,
+							key: null,
+							code: "layout_authoring",
+							message: "page and table layout authoring is not available",
+						},
+						{ line: 2, key: "name", code: "other", message: "Another." },
+					]),
+					unit(2, [{ line: 1, key: "x", code: null, message: "No code." }]),
+					unit(3, "not a list"),
+					unit(4),
+				],
+			},
+			4,
+		);
+		expect(answer.units.map((u) => u.problem)).toEqual([
+			{ code: "layout_authoring", message: "page and table layout authoring is not available" },
+			undefined,
+			undefined,
+			undefined,
+		]);
+		expect(answer.units.every((u) => u.reason === "structured_rule")).toBe(true);
 	});
 });
 

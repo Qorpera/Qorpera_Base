@@ -143,7 +143,9 @@ export type InterfaceProblemCode =
 	| "main"
 	| "owners"
 	| "write"
-	| "areas";
+	| "areas"
+	/** An agent's change to a page or a table's layout (20260930510000, C6): agents author none. */
+	| "layout_authoring";
 
 /** One reason a file can't be saved, or a row can't be read. Lines count from 1 over the whole file; `key` is
  * the dotted place in the file, `view[1].block[0].from`. */

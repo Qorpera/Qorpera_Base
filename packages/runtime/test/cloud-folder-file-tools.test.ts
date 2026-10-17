@@ -559,6 +559,43 @@ it("answers a stale version and a missing folder as not applied, with what to do
 	expect(f.text("docs/plan.md")).toBe("one");
 });
 
+it("tells the model a page or table layout change is never made, and another rule's refusal can be fixed", async () => {
+	const layout = { code: "layout_authoring", message: "page and table layout authoring is not available" };
+	const f = await fixture(
+		{ folders: ["interfaces", "docs"] },
+		{
+			hook: (path) =>
+				path.startsWith("interfaces/")
+					? { outcome: "refused", reason: "structured_rule", problems: [layout] }
+					: path === "docs/rule.md"
+						? {
+								outcome: "refused",
+								reason: "structured_rule",
+								problems: [{ code: "other_rule", message: "fix it" }],
+							}
+						: null,
+		},
+	);
+	const write = async (path: string, operationKey: string) =>
+		parse(await f.call("company_write", { path, operationKey, expectedVersion: null, text: "x" }));
+	const page = await write("interfaces/page.md", "write-page");
+	expect(page).toMatchObject({
+		state: "not_applied",
+		outcome: "refused",
+		reason: "structured_rule",
+		problems: [layout],
+	});
+	expect(page.next).toContain("COMPANY_FILE_LAYOUT_AUTHORING: nothing was written");
+	expect(page.next).toContain("Do not make this change again");
+	expect(page.next).not.toContain("call again");
+	const other = await write("docs/rule.md", "write-rule");
+	expect(other).toMatchObject({ state: "not_applied", outcome: "refused", reason: "structured_rule" });
+	expect(other.next).not.toContain("COMPANY_FILE_LAYOUT_AUTHORING");
+	expect(other.next).toContain("call again with a new operationKey");
+	expect(f.text("interfaces/page.md")).toBeNull();
+	expect(f.text("docs/rule.md")).toBeNull();
+});
+
 it("observes a change that was not saved as denied with why, a replay too, and a parked one as proposed", async () => {
 	const f = await fixture(
 		{ files: { "docs/plan.md": "one" }, folders: ["docs", "held"] },
