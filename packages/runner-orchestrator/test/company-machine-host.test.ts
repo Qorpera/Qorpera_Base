@@ -2684,7 +2684,7 @@ describe("company machine host's report of the company folder on each receipt (F
 		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
 	});
 
-	it("says a write the folder refused while its view keeps it pending once, and one still on its way once it settles", async () => {
+	it("says a write the folder refused on every receipt while its view keeps it pending, and one on its way once it settles", async () => {
 		const f = await fixture({ folder: true });
 		await f.host.pass(f.signal);
 		f.running();
@@ -2692,7 +2692,7 @@ describe("company machine host's report of the company folder on each receipt (F
 		f.result(finished);
 		// The service keeps a refused write with new bytes pending: each boundary tries it again and reports it again, as
 		// it does an open file and a save not answered yet.
-		f.service.report = {
+		const refusing = {
 			commitId: randomUUID(),
 			seq: 5,
 			paths: [
@@ -2702,16 +2702,26 @@ describe("company machine host's report of the company folder on each receipt (F
 				{ path: "notes/later.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
 			],
 		};
+		f.service.report = refusing;
 		expect(await f.host.pass(f.signal)).toEqual([quiet]);
 		expect(told(await start(f, commandId))).toEqual({ company: "mounted", heldBack: held.start });
-		expect(told(await read(f, commandId))).toEqual({
+		const both = {
 			company: "mounted",
 			notSaved: [
 				{ path: "people/pay.md", outcome: "denied", reason: "denied" },
 				{ path: "reports/q3.md", outcome: "refused", reason: "command_ended" },
 			],
-		});
+		};
+		// Said once on a receipt, though the pass's boundary and the read's both reported them; and again on the next
+		// receipt, as long as the view still keeps them refused.
+		expect(told(await read(f, commandId))).toEqual(both);
+		expect(told(await read(f, commandId))).toEqual(both);
+		// A quiet publish saved them meanwhile (only the service's notices say so): the view keeps nothing pending, and
+		// nothing is said. Written and refused again the same way, they are said again.
+		f.service.report = { commitId: null, seq: null, paths: [] };
 		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
+		f.service.report = refusing;
+		expect(told(await read(f, commandId))).toEqual(both);
 		// A change set refused whole by the pause keeps what it carried for a later boundary: nothing is said for it yet.
 		f.service.report = {
 			commitId: null,
@@ -2720,14 +2730,13 @@ describe("company machine host's report of the company folder on each receipt (F
 			paths: [{ path: "notes/paused.md", outcome: "refused", reason: "stopped", kept: true }],
 		};
 		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
-		// Once they settle: a path that was on its way is said with its answer, one said already is not said again, and
-		// one saved and then refused again is said again.
+		// Once they settle, a path that was on its way is said once with its answer, and one still refused while kept is
+		// said beside it.
 		f.service.report = {
 			commitId: randomUUID(),
 			seq: 6,
 			paths: [
 				{ path: "people/pay.md", outcome: "saved" },
-				{ path: "reports/q3.md", outcome: "refused", reason: "command_ended" },
 				{ path: "notes/open.md", outcome: "saved" },
 				{ path: "notes/later.md", outcome: "conflict", reason: "changed meanwhile", receipt: randomUUID() },
 				{ path: "notes/paused.md", outcome: "denied", reason: "denied", kept: true },
@@ -2741,14 +2750,17 @@ describe("company machine host's report of the company folder on each receipt (F
 			],
 		});
 		f.service.report = {
-			commitId: randomUUID(),
-			seq: 7,
-			paths: [{ path: "people/pay.md", outcome: "denied", reason: "denied", kept: true }],
+			commitId: null,
+			seq: null,
+			paths: [{ path: "notes/paused.md", outcome: "denied", reason: "denied", kept: true }],
 		};
 		expect(told(await read(f, commandId))).toEqual({
 			company: "mounted",
-			notSaved: [{ path: "people/pay.md", outcome: "denied", reason: "denied" }],
+			notSaved: [{ path: "notes/paused.md", outcome: "denied", reason: "denied" }],
 		});
+		// A view the service no longer lists keeps nothing pending.
+		f.service.held = [];
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
 	});
 });
 

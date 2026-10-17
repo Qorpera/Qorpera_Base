@@ -370,11 +370,11 @@ Each `machine_run`, `machine_read` and `machine_cancel` receipt carries `company
   helper, a view the node closed each time it was handed, a boot whose folder ended (a restart by rule 5, or its disk's
   retirement, with the cause), or a refused open (the starter's authority, or the core's words);
 - `heldBack`: why the output and the end are not shown yet (the reasons in "Boundaries" above);
-- `notSaved`: the files the folder did not take from the machine, with the outcome and reason, each said once, on the
-  boot's next receipt whose output leaves; at most 8, the rest counted in `moreNotSaved`. A write the core refused is
-  said even while its view keeps it pending for the next boundary to try again (said again only if the answer changes,
-  or after it was saved); a file still on its way (open, or its save not answered yet), or held by a pause or the run
-  check, is said once it settles;
+- `notSaved`: the files the folder did not take from the machine, with the outcome and reason, on the boot's receipts
+  whose output leaves; at most 8, the rest counted in `moreNotSaved`. A file the folder let go unsaved is said once, on
+  the next such receipt. A write the core refused that the machine's view keeps pending for the next boundary to try
+  again is said on every such receipt while the view's newest boundary still reports it refused; a file still on its
+  way (open, or its save not answered yet), or held by a pause or the run check, is said once it settles;
 - `lost`: for a lost command, why its machine lost it: restarted by rule 5 (its reads unproven, its view closed, or its
   view lost by the service), or moved to a new disk (used without the root-read check, the starter's authority
   narrowing, or a read no longer readable; "Access"). SQL keeps the cause on the command
