@@ -352,6 +352,23 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
+### Company memory (2) — C5, `20260930508000_memory_mode.sql`
+
+- `qorpera_company_memory_mode(p_profile_id)` → `qorpera.company-memory-mode/v1`:
+  `mode` (the company's choice: `notebooks`, Agent notebooks, the default, or
+  `tree`, Shared context — Beta), `setAt` (null until first chosen),
+  `effective` (what new runs get: `tree` only while the choice is `tree` and
+  the beta is offered), `betaOffered` (false: show the beta as unavailable),
+  `canManage` (owner or admin), and `runsInOtherMode` (runs made before the
+  last change that are still queued or running in the other mode; each
+  finishes in its own mode). Any member, viewers included.
+- `qorpera_set_company_memory_mode(p_profile_id, p_mode)`: owners and admins
+  (42501 otherwise); `p_mode` `notebooks|tree` (22023 otherwise). `tree` is
+  refused with 55000 while `betaOffered` is false; `notebooks` always works.
+  The same choice again changes nothing. Returns the same object as the read.
+  A change applies to runs made after it: a run keeps the mode it was made
+  with, also when it resumes. Switching deletes and rewrites nothing.
+
 ### Conversations, turns, wakes (13)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
