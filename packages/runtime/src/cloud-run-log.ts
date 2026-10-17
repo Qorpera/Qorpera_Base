@@ -31,8 +31,8 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   their result without any `address`, `path` or `url`, and name no path of it.
  * - The protection port classifies every step before any bytes are staged. A narrow step and every later step keep
  *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. Production
- *   builds a log for a run once its place answers where it goes: until W1d (erasure of work) is live, only for the
- *   companies on the memory tree's list (20260930352000).
+ *   builds a log for a run once its place answers where it goes: only for a run recorded in the Shared context beta
+ *   (20260930508000, a permanent gate); a run in Agent notebooks gets none.
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
  *   its batches check the run's generation: they are derived, and are refused when it moved.

@@ -137,6 +137,9 @@ declare
 	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
 	r jsonb; i integer; e7 uuid; e2 uuid;
 begin
+	-- The company never chose Shared context (C5), so this erasure runs with the beta off.
+	perform pg_temp.same(to_jsonb(public.qorpera_company_memory_mode_effective('70000000-0000-4000-8000-000000000010')), '"notebooks"',
+		'The company never chose the beta');
 	perform pg_temp.events(s, 34);
 	r := pg_temp.memory('m3-tree-1', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path',root),
