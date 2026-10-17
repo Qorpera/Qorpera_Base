@@ -1213,17 +1213,27 @@ fn a_cache_made_while_the_index_cannot_be_read_moves_in_once_it_is_read_and_trac
 	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
 	assert!(git.join("HEAD").is_file());
 	// Git puts an index that tracks c.log in place while the worktree has no caches: found stale. A new c.log reads it,
-	// and the node cannot give it: a cache, whose making asks for the move of what the index tracks.
+	// and the node cannot give it: a cache, whose making asks for the move of what the index tracks. Its writer keeps it
+	// open.
 	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log"])).unwrap();
 	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
-	node.fail_reads("code/o/n/repo.git/worktrees/w/index", true);
-	std::fs::write(w.join("c.log"), "c.log").unwrap();
+	let index = "code/o/n/repo.git/worktrees/w/index";
+	node.fail_reads(index, true);
+	let mut c = std::fs::File::create(w.join("c.log")).unwrap();
+	c.write_all(b"c.").unwrap();
 	assert!(!node.exists(&format!("{at}/c.log")));
 	let (marker, list) = (node.dir.join("state/caches.moving"), node.dir.join("state/local/cache-left.jsonl"));
 	assert!(eventually(Duration::from_secs(10), || marker.exists()));
 	assert!(std::fs::read_to_string(&list).unwrap().contains(r#"{"w":"code/o/n/worktrees/w","n":"/"}"#));
-	// Once the node gives it, the mover reads it and moves c.log in, with no other name made.
-	node.fail_reads("code/o/n/repo.git/worktrees/w/index", false);
+	// Once the node gives it, the mover reads it; c.log moves in only once its writer is done with it, with all it
+	// wrote, and with no other name made.
+	let read = node.reads_of(index);
+	node.fail_reads(index, false);
+	assert!(eventually(Duration::from_secs(10), || node.reads_of(index) > read));
+	std::thread::sleep(Duration::from_secs(1));
+	assert!(!node.exists(&format!("{at}/c.log")) && marker.exists());
+	c.write_all(b"log").unwrap();
+	drop(c);
 	let moved = || node.content(&format!("{at}/c.log")).as_deref() == Some(b"c.log".as_slice());
 	assert!(eventually(Duration::from_secs(20), || moved() && !marker.exists()), "moved: {}, marker: {}", moved(), marker.exists());
 	// What it does not track stays a cache.

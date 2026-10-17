@@ -35,7 +35,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, UNIX_EPOCH};
 
 /// The bit local inodes and handles have.
@@ -102,6 +102,19 @@ pub fn seeded_names(seed: &str) -> &'static [&'static str] {
 }
 
 type Names = HashMap<u64, Vec<(Up, String, Area)>>;
+
+/// A local file the mount has open: the file, its inode, and whether the handle writes to it (`Local::seal`).
+struct Handle {
+	file: File,
+	ino: u64,
+	writes: bool,
+}
+
+/// An error of a local file found again after a wait for a cache move (`Local::unsealed`): one not there any more is in
+/// the folder now, so the name or inode it was asked by is stale, for the kernel to look up again (ESTALE).
+fn stale(waited: bool) -> impl Fn(i32) -> i32 {
+	move |e| if waited && e == libc::ENOENT { libc::ESTALE } else { e }
+}
 
 /// `ino` is known by `name` in `up`, its latest name.
 fn known(names: &mut Names, ino: u64, up: Up, name: &str, area: Area) {
@@ -205,8 +218,12 @@ pub struct Local {
 	seeded: Mutex<HashSet<String>>,
 	/// Held while a seed is copied, so a second lookup waits for it rather than finding half of it.
 	pub seeding: Mutex<()>,
-	handles: Mutex<HashMap<u64, File>>,
+	/// The local files open, by handle; each kept with the names held (`hold`).
+	handles: Mutex<HashMap<u64, Handle>>,
 	next_fh: AtomicU64,
+	/// The local files a cache move is writing into the folder, by inode (`seal`), and the wait for one to be done.
+	sealed: Mutex<HashSet<u64>>,
+	lifted: Condvar,
 	pub cache: Mutex<CacheList>,
 	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same; with the writes of a
 	/// move the node did not take, by the file's path, so the next move goes on through the same handle.
@@ -264,6 +281,8 @@ impl Local {
 			seeding: Mutex::new(()),
 			handles: Mutex::new(HashMap::new()),
 			next_fh: AtomicU64::new(1),
+			sealed: Mutex::new(HashSet::new()),
+			lifted: Condvar::new(),
 			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
 			moving: Mutex::new(HashMap::new()),
 			folders: Mutex::new(0),
@@ -641,13 +660,18 @@ impl Local {
 		if flags & libc::O_EXCL != 0 {
 			options.create_new(true);
 		}
-		let mut names = self.names.lock().unwrap();
+		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, &up, name, area));
+		if waited && self.ino_under(&names, &up, name, area).is_none() {
+			// The file of that name a cache move had is in the folder now, not made again here.
+			return Err(libc::ESTALE);
+		}
 		let (disk, area) = self.disk_under(&names, &up, name, area)?;
 		let file = options.open(&disk).map_err(errno)?;
 		let meta = file.metadata().map_err(errno)?;
 		known(&mut names, meta.ino() | LOCAL, up, name, area);
+		let fh = self.hold(file, meta.ino() | LOCAL, flags);
 		drop(names);
-		Ok((self.attr(&meta), self.hold(file)))
+		Ok((self.attr(&meta), fh))
 	}
 
 	pub fn mkdir(&self, up: Up, name: &str, area: Area, mode: u32) -> Result<FileAttr, i32> {
@@ -686,9 +710,9 @@ impl Local {
 	}
 
 	pub fn unlink(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
-		let mut names = self.names.lock().unwrap();
-		let (disk, _) = self.disk_under(&names, up, name, area)?;
-		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
+		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, up, name, area));
+		let (disk, _) = self.disk_under(&names, up, name, area).map_err(stale(waited))?;
+		let ino = fs::symlink_metadata(&disk).map_err(errno).map_err(stale(waited))?.ino() | LOCAL;
 		fs::remove_file(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
 		Ok(())
@@ -708,6 +732,21 @@ impl Local {
 	pub fn moved_out(&self, disk: &Path) -> Result<(), i32> {
 		let mut names = self.names.lock().unwrap();
 		let meta = fs::symlink_metadata(disk).map_err(errno)?;
+		self.take_off(&mut names, disk, &meta)
+	}
+
+	/// `moved_out` for the file a cache move sealed (`seal`) as `ino`: not one that took its place at `disk` since
+	/// (`EBUSY`), which the move is made again for.
+	pub fn moved_file_out(&self, disk: &Path, ino: u64) -> Result<(), i32> {
+		let mut names = self.names.lock().unwrap();
+		let meta = fs::symlink_metadata(disk).map_err(errno)?;
+		if meta.ino() | LOCAL != ino {
+			return Err(libc::EBUSY);
+		}
+		self.take_off(&mut names, disk, &meta)
+	}
+
+	fn take_off(&self, names: &mut Names, disk: &Path, meta: &fs::Metadata) -> Result<(), i32> {
 		let removed = if meta.is_dir() { fs::remove_dir(disk) } else { fs::remove_file(disk) };
 		removed.map_err(errno)?;
 		let ino = meta.ino() | LOCAL;
@@ -715,13 +754,64 @@ impl Local {
 			.get(&ino)
 			.into_iter()
 			.flatten()
-			.filter(|(up, name, area)| self.disk_under(&names, up, name, *area).is_ok_and(|(at, _)| at == disk))
+			.filter(|(up, name, area)| self.disk_under(names, up, name, *area).is_ok_and(|(at, _)| at == disk))
 			.map(|(up, name, _)| (up.clone(), name.clone()))
 			.collect();
 		for (up, name) in gone {
-			forget(&mut names, ino, &up, &name);
+			forget(names, ino, &up, &name);
 		}
 		Ok(())
+	}
+
+	/// Seals the local file at `disk` for a cache move that writes it into the folder (`mount/on_disk.rs`): the file,
+	/// opened for reading, and its inode. Until `unseal`, an open of it for writing, a change of its attributes and one
+	/// of a name it has wait (`unsealed`), so what the move reads is all that was written to it, and nothing is written
+	/// to it once the move takes it off the disk. One the mount has open for writing is not sealed (`EBUSY`): the move
+	/// is made again until its writers are done.
+	pub fn seal(&self, disk: &Path) -> Result<(File, u64), i32> {
+		let _names = self.names.lock().unwrap();
+		// Not a pipe that took its place since it was listed, whose open would wait with the names held.
+		let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+		let file = OpenOptions::new().read(true).custom_flags(flags).open(disk).map_err(errno)?;
+		let meta = file.metadata().map_err(errno)?;
+		let ino = meta.ino() | LOCAL;
+		if !meta.is_file() || self.handles.lock().unwrap().values().any(|h| h.writes && h.ino == ino) {
+			return Err(libc::EBUSY);
+		}
+		self.sealed.lock().unwrap().insert(ino);
+		Ok((file, ino))
+	}
+
+	/// The cache move is done with the local file `ino` (`seal`).
+	pub fn unseal(&self, ino: u64) {
+		self.sealed.lock().unwrap().remove(&ino);
+		self.lifted.notify_all();
+	}
+
+	/// The names, held once no cache move has the local file `changed` gives (with them held) sealed (`seal`), and
+	/// whether that waited for one, with the names let go of meanwhile.
+	fn unsealed(&self, changed: impl Fn(&Names) -> Option<u64>) -> (MutexGuard<'_, Names>, bool) {
+		let mut waited = false;
+		loop {
+			let names = self.names.lock().unwrap();
+			let Some(ino) = changed(&names) else { return (names, waited) };
+			let mut sealed = self.sealed.lock().unwrap();
+			if !sealed.contains(&ino) {
+				drop(sealed);
+				return (names, waited);
+			}
+			drop(names);
+			while sealed.contains(&ino) {
+				sealed = self.lifted.wait(sealed).unwrap();
+			}
+			waited = true;
+		}
+	}
+
+	/// The local inode of the file `name` in `up` names, if one is on the disk.
+	fn ino_under(&self, names: &Names, up: &Up, name: &str, area: Area) -> Option<u64> {
+		let (disk, _) = self.disk_under(names, up, name, area).ok()?;
+		fs::symlink_metadata(disk).ok().map(|m| m.ino() | LOCAL)
 	}
 
 	/// Renames within one area; `exchange` swaps the two (RENAME_EXCHANGE), `no_replace` refuses an existing target.
@@ -733,9 +823,11 @@ impl Local {
 		no_replace: bool,
 		exchange: bool,
 	) -> Result<(), i32> {
-		let mut names = self.names.lock().unwrap();
-		let (source, from_area) = self.disk_under(&names, from.0, from.1, area)?;
-		let (target, to_area) = self.disk_under(&names, to.0, to.1, area)?;
+		// A file a cache move has, renamed once it is in the folder; one that takes its name meanwhile is moved again
+		// (`moved_file_out`).
+		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, from.0, from.1, area));
+		let (source, from_area) = self.disk_under(&names, from.0, from.1, area).map_err(stale(waited))?;
+		let (target, to_area) = self.disk_under(&names, to.0, to.1, area).map_err(stale(waited))?;
 		if from_area != to_area {
 			return Err(libc::EXDEV);
 		}
@@ -756,7 +848,7 @@ impl Local {
 			libc::renameat2(libc::AT_FDCWD, source_c.as_ptr(), libc::AT_FDCWD, target_c.as_ptr(), flags)
 		};
 		if done != 0 {
-			return Err(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+			return Err(stale(waited)(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)));
 		}
 		if moved.is_some() && moved == replaced {
 			// Two names of one file: the rename left both.
@@ -783,8 +875,8 @@ impl Local {
 		size: Option<u64>,
 		times: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
 	) -> Result<FileAttr, i32> {
-		let names = self.names.lock().unwrap();
-		let (disk, _) = self.disk_at(&names, ino)?;
+		let (names, waited) = self.unsealed(|_| Some(ino));
+		let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
 		if let Some(mode) = mode {
 			fs::set_permissions(&disk, fs::Permissions::from_mode(mode & 0o7777)).map_err(errno)?;
 		}
@@ -806,32 +898,39 @@ impl Local {
 		self.getattr(ino)
 	}
 
-	/// Opens a local file: the handle. It is found and opened with the names held (`disk_at`), and what was opened is
-	/// checked to be `ino` before a truncate touches it.
+	/// Opens a local file: the handle. It is found, opened and kept with the names held (`disk_at`, `hold`), once no
+	/// cache move has it sealed where the open changes it (`unsealed`), and what was opened is checked to be `ino` before
+	/// a truncate touches it.
 	pub fn open_file(&self, ino: u64, flags: i32) -> Result<u64, i32> {
-		let names = self.names.lock().unwrap();
-		let (disk, _) = self.disk_at(&names, ino)?;
-		let file = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(disk).map_err(errno)?;
-		drop(names);
+		let changes = flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
+		let (names, waited) = self.unsealed(|_| changes.then_some(ino));
+		let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
+		let options = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(disk);
+		let file = options.map_err(errno).map_err(stale(waited))?;
 		if file.metadata().map_err(errno)?.ino() | LOCAL != ino {
 			return Err(libc::ESTALE);
 		}
 		if flags & libc::O_TRUNC != 0 {
 			file.set_len(0).map_err(errno)?;
 		}
-		Ok(self.hold(file))
+		let fh = self.hold(file, ino, flags);
+		drop(names);
+		Ok(fh)
 	}
 
-	fn hold(&self, file: File) -> u64 {
+	/// Keeps `file`, the local file `ino` opened with `flags`: its handle. With the names held, so a cache move's `seal`
+	/// sees every handle that writes to the file.
+	fn hold(&self, file: File, ino: u64, flags: i32) -> u64 {
 		let fh = self.next_fh.fetch_add(1, Ordering::SeqCst) | LOCAL;
-		self.handles.lock().unwrap().insert(fh, file);
+		let writes = flags & libc::O_ACCMODE != libc::O_RDONLY;
+		self.handles.lock().unwrap().insert(fh, Handle { file, ino, writes });
 		fh
 	}
 
 	pub fn read(&self, fh: u64, offset: u64, size: u32) -> Result<Vec<u8>, i32> {
 		use std::os::unix::fs::FileExt;
 		let handles = self.handles.lock().unwrap();
-		let file = handles.get(&fh).ok_or(libc::EBADF)?.try_clone().map_err(errno)?;
+		let file = handles.get(&fh).ok_or(libc::EBADF)?.file.try_clone().map_err(errno)?;
 		drop(handles);
 		let mut buf = vec![0; size as usize];
 		let mut read = 0;
@@ -850,7 +949,7 @@ impl Local {
 	pub fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Result<u32, i32> {
 		use std::os::unix::fs::FileExt;
 		let handles = self.handles.lock().unwrap();
-		let file = handles.get(&fh).ok_or(libc::EBADF)?.try_clone().map_err(errno)?;
+		let file = handles.get(&fh).ok_or(libc::EBADF)?.file.try_clone().map_err(errno)?;
 		drop(handles);
 		file.write_all_at(data, offset).map_err(errno)?;
 		Ok(data.len() as u32)
@@ -858,7 +957,7 @@ impl Local {
 
 	pub fn fsync(&self, fh: u64) -> Result<(), i32> {
 		let handles = self.handles.lock().unwrap();
-		handles.get(&fh).ok_or(libc::EBADF)?.sync_data().map_err(errno)
+		handles.get(&fh).ok_or(libc::EBADF)?.file.sync_data().map_err(errno)
 	}
 
 	pub fn release(&self, fh: u64) {
@@ -935,6 +1034,15 @@ mod tests {
 	fn local(tag: &str, view: &str) -> (Local, PathBuf) {
 		let dir = std::env::temp_dir().join(format!("qorpera-local-{tag}-{}", std::process::id()));
 		(Local::open(&dir, view, (1000, 1000), None).unwrap(), dir)
+	}
+
+	/// A sealed file, unsealed when dropped: a check that fails lets the changes waiting on it end, and the test fail.
+	struct Sealed<'a>(&'a Local, u64);
+
+	impl Drop for Sealed<'_> {
+		fn drop(&mut self) {
+			self.0.unseal(self.1);
+		}
 	}
 
 	#[test]
@@ -1109,6 +1217,71 @@ mod tests {
 		assert_eq!(l.path(a), Some(("code/o/n/worktrees/w/target/a".to_string(), Area::Cache)));
 		assert_eq!(l.getattr(a).map(|attr| attr.nlink), Ok(1));
 		l.release(l.open_file(a, libc::O_RDONLY).unwrap());
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_file_a_cache_move_has_sealed_changes_only_once_the_move_is_done() {
+		use std::io::Read;
+		let (l, dir) = local("sealed", "v1");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let (attr, fh) = l.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		let (a, disk) = (attr.ino.0, l.disk(Area::Cache, "code/o/n/worktrees/w/target/a"));
+		// Open for writing: the move waits for its writer.
+		assert_eq!(l.seal(&disk).map(|(_, ino)| ino), Err(libc::EBUSY));
+		assert_eq!(l.write(fh, 0, b"ab").unwrap(), 2);
+		l.release(fh);
+		let (mut file, ino) = l.seal(&disk).unwrap();
+		assert_eq!(ino, a);
+		std::thread::scope(|s| {
+			let sealed = Sealed(&l, ino);
+			// An open for writing, a truncate, a create, an unlink or a rename waits until the move is done with the
+			// file; a read does not.
+			let opened = s.spawn(|| l.open_file(a, libc::O_WRONLY).map(drop));
+			let truncated = s.spawn(|| l.setattr(a, None, Some(0), (None, None)).map(drop));
+			let made = s.spawn(|| l.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).map(drop));
+			let removed = s.spawn(|| l.unlink(&up, "a", Area::Cache));
+			let renamed = s.spawn(|| l.rename((&up, "a"), (&up, "z"), Area::Cache, false, false));
+			std::thread::sleep(Duration::from_millis(300));
+			let waiting = [&opened, &truncated, &removed, &renamed].iter().all(|t| !t.is_finished());
+			assert!(waiting && !made.is_finished());
+			let fh = l.open_file(a, libc::O_RDONLY).unwrap();
+			assert_eq!(l.read(fh, 0, 100).unwrap(), b"ab");
+			l.release(fh);
+			let mut read = Vec::new();
+			file.read_to_end(&mut read).unwrap();
+			assert_eq!(read, b"ab");
+			// In the folder now: the name and the inode they asked by are stale, to be looked up again.
+			l.moved_file_out(&disk, ino).unwrap();
+			drop(sealed);
+			for waited in [opened, truncated, made, removed, renamed] {
+				assert_eq!(waited.join().unwrap(), Err(libc::ESTALE));
+			}
+		});
+		assert!(!disk.exists() && !l.disk(Area::Cache, "code/o/n/worktrees/w/target/z").exists());
+		// A move that did not finish: the change goes on, with the file on the disk still.
+		let (attr, fh) = l.create(up.clone(), "b", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		l.release(fh);
+		let disk = l.disk(Area::Cache, "code/o/n/worktrees/w/target/b");
+		let (_, ino) = l.seal(&disk).unwrap();
+		std::thread::scope(|s| {
+			let sealed = Sealed(&l, ino);
+			let opened = s.spawn(|| l.open_file(attr.ino.0, libc::O_WRONLY | libc::O_TRUNC));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!opened.is_finished());
+			drop(sealed);
+			let fh = opened.join().unwrap().unwrap();
+			assert_eq!(l.seal(&disk).map(|(_, ino)| ino), Err(libc::EBUSY));
+			l.release(fh);
+		});
+		// A file that took its name meanwhile stays on the disk, for the move to be made again.
+		let (_, ino) = l.seal(&disk).unwrap();
+		let (_, fh) = l.create(up.clone(), "c", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		l.release(fh);
+		l.rename((&up, "c"), (&up, "b"), Area::Cache, false, false).unwrap();
+		assert_eq!(l.moved_file_out(&disk, ino), Err(libc::EBUSY));
+		l.unseal(ino);
+		assert!(disk.exists());
 		fs::remove_dir_all(&dir).unwrap();
 	}
 

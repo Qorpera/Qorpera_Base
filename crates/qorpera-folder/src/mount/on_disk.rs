@@ -523,8 +523,7 @@ impl Shared {
 						self.move_folder(local, held, &path, &entry.path())?;
 					}
 				} else if meta.is_file() {
-					self.write_in(held, &path, &entry.path(), meta.permissions().mode() & 0o100 != 0)?;
-					local.moved_out(&entry.path())?;
+					self.write_in(local, held, &path, &entry.path())?;
 				} else if meta.file_type().is_symlink() {
 					if self.link_in(&path, &entry.path())? {
 						local.moved_out(&entry.path())?;
@@ -553,8 +552,9 @@ impl Shared {
 	}
 
 	/// Each file leaves the disk once it is in the folder, and each folder once it is empty, with their names there
-	/// (`Local::moved_out`); a link moves as the folder's link. What stays is what has not moved yet, and what cannot
-	/// (a link the folder does not take, anything else not a file or a folder), seen in the folder's place as a cache's are.
+	/// (`write_in`, `Local::moved_out`); a link moves as the folder's link. What stays is what has not moved yet, and
+	/// what cannot (a link the folder does not take, anything else not a file or a folder), seen in the folder's place
+	/// as a cache's are.
 	/// A file or a link the node did not take now fails the move, which is tried again (`move_caches`).
 	fn move_folder(&self, local: &Local, held: &mut HashMap<String, Writer>, path: &str, disk: &Path) -> Result<(), i32> {
 		let made = |p: &str| match self.link.mkdir(p) {
@@ -568,8 +568,7 @@ impl Shared {
 			if meta.is_dir() {
 				made(&to)?;
 			} else if meta.is_file() {
-				self.write_in(held, &to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
-				local.moved_out(&disk.join(rel))?;
+				self.write_in(local, held, &to, &disk.join(rel))?;
 			} else if meta.file_type().is_symlink() {
 				if self.link_in(&to, &disk.join(rel))? {
 					local.moved_out(&disk.join(rel))?;
@@ -608,12 +607,31 @@ impl Shared {
 		}
 	}
 
-	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file. The write is a draft: the file
-	/// is in the folder only once its close lands it there, so no boundary publishes it half written, and a write given
-	/// up leaves nothing (`move_caches`). One the node did not take is kept in `held` with its handle, as the mount
-	/// keeps a close it did not take (`again`), and the next move writes the file again from the start through it.
-	fn write_in(&self, held: &mut HashMap<String, Writer>, path: &str, disk: &Path, executable: bool) -> Result<(), i32> {
-		let mut file = fs::File::open(disk).map_err(local::errno)?;
+	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file, and takes it off the disk
+	/// (`Local::moved_file_out`). It is sealed meanwhile (`Local::seal`): an open of it for writing waits until it is in
+	/// the folder, and one open for writing already defers the move until its writers are done, so no write to it is
+	/// lost. The write is a draft: the file is in the folder only once its close lands it there, so no boundary
+	/// publishes it half written, and a write given up leaves nothing (`move_caches`). One the node did not take is kept
+	/// in `held` with its handle, as the mount keeps a close it did not take (`again`), and the next move writes the file
+	/// again from the start through it.
+	fn write_in(&self, local: &Local, held: &mut HashMap<String, Writer>, path: &str, disk: &Path) -> Result<(), i32> {
+		let (file, ino) = local.seal(disk)?;
+		let moved = self.write_sealed(local, held, path, disk, file, ino);
+		local.unseal(ino);
+		moved
+	}
+
+	/// `write_in` of the sealed file: `file`, opened for reading, and `ino`, its inode.
+	fn write_sealed(
+		&self,
+		local: &Local,
+		held: &mut HashMap<String, Writer>,
+		path: &str,
+		disk: &Path,
+		mut file: fs::File,
+		ino: u64,
+	) -> Result<(), i32> {
+		let executable = file.metadata().map_err(local::errno)?.permissions().mode() & 0o100 != 0;
 		let mut writer = match held.remove(path) {
 			Some(writer) => writer,
 			None => {
@@ -641,7 +659,7 @@ impl Shared {
 			version = self.link.set_executable(path, Some(version), true).map_err(|f| f.errno())?;
 		}
 		self.versions.lock().unwrap().saved(path, &version);
-		Ok(())
+		local.moved_file_out(disk, ino)
 	}
 
 	/// Writes `file` through `writer` from its start and closes it: the version the close made.

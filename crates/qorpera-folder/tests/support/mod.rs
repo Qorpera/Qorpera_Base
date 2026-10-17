@@ -69,6 +69,8 @@ struct State {
 	slow_lists: Vec<(String, u64)>,
 	/// Files whose reads are answered UNAVAILABLE.
 	failing_reads: Vec<String>,
+	/// The reads not answered so, by file.
+	reads_of: std::collections::HashMap<String, usize>,
 	logs: std::collections::HashMap<String, u64>,
 	/// Every read the machine handed over, as (path, version).
 	logged: Vec<(String, Option<String>)>,
@@ -181,6 +183,11 @@ impl FakeNode {
 
 	pub fn reads(&self) -> usize {
 		self.state.lock().unwrap().reads
+	}
+
+	/// The reads of `path` not answered UNAVAILABLE (`fail_reads`).
+	pub fn reads_of(&self, path: &str) -> usize {
+		self.state.lock().unwrap().reads_of.get(path).copied().unwrap_or(0)
 	}
 
 	/// A node whose view takes writes.
@@ -424,6 +431,9 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			kind::READ => {
 				let req: ReadRequest = serde_json::from_slice(&body).unwrap();
 				st.reads += 1;
+				if !st.failing_reads.contains(&req.path) {
+					*st.reads_of.entry(req.path.clone()).or_default() += 1;
+				}
 				match st.entries.get(&req.path) {
 					_ if st.failing_reads.contains(&req.path) => error(&mut s, code::UNAVAILABLE),
 					Some(n) if !n.folder && format!("v{}", n.version) == req.version => {
