@@ -357,7 +357,19 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
 4. **What can't be proven is refused.**
    - **A crashed service.** A view whose `served_by` is still set by a service that did not stop cleanly may have
      served reads that were never released. Every coding view that service served is refused, the VM is restarted and
-     the sessions reopen their views. The machine's read set keeps what was released.
+     the sessions reopen their views. The machine's read set keeps what was released. Built (5g-5): the renewal that
+     closes a coding view as `service_crashed` marks its machine (`folder_restart_at`) and closes the machine's other
+     open coding views; `qorpera_folder_view_open` refuses a coding view on a marked machine ("Coding machine must
+     restart first"). The executor restarts the machine for the folder when a view it holds was closed (`VIEW_CLOSED`),
+     when the open is refused for the mark, when a view's final boundary answers `unproven` before another view opens
+     on the machine, and when a publication answers `READS_UNPROVEN`: it marks the machine
+     (`qorpera_mark_coding_machine_folder_restart`), ends its views, stops it (custody grants the stop of a marked
+     machine under a leased turn), says `restarted`, and records the restart before the start
+     (`qorpera_record_coding_machine_folder_restart`). The record detaches every session attached to the machine with
+     a `FOLDER_RESTART` event, which is not an outside stop, and clears the mark. Each record is named by the start
+     it comes before (the LXD operation of the effect that start follows) and kept with its answer, so a second record
+     of the same start replays that answer and changes nothing. The session then attaches again,
+     once; a second refusal fails its turn. A guest that rebooted itself costs one more restart.
    - **`unreadable`** (a released read the core can no longer place) moves the machine's sessions to a new machine id
      with a new disk, or archives them; the old disk is removed.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`

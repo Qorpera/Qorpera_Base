@@ -35,7 +35,11 @@ import {
 	type CodingFolderRepositorySession,
 	codingFolderNoRepositories,
 } from "./coding-folder-repositories.ts";
-import type { CodingFolderViewEnd, CodingFolderViews } from "./coding-folder-views.ts";
+import {
+	CodingFolderRestartRequired,
+	type CodingFolderViewEnd,
+	type CodingFolderViews,
+} from "./coding-folder-views.ts";
 import { type CodingBrokerGitRunner, pushCloudCodingBundle } from "./coding-git.ts";
 import { fetchCloudCodingSeed, resolveCloudCodingBase } from "./coding-git-seed.ts";
 import { LxdCodingGitTransfer } from "./coding-git-transfer.ts";
@@ -87,6 +91,9 @@ export const CODING_HOST_RPCS = [
 	// A session's coding view on the folder model (coding-folder-views.ts).
 	"qorpera_folder_view_open",
 	"qorpera_folder_view_close",
+	// A machine restarted for the company folder (the folder model's rule 4).
+	"qorpera_mark_coding_machine_folder_restart",
+	"qorpera_record_coding_machine_folder_restart",
 ] as const;
 
 /** The leased session a repository token is asked for (bundle v88): the
@@ -381,6 +388,16 @@ function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_HOST_RECEIPT_INVALID");
 	return value as Record<string, unknown>;
 }
+/** A record's `detached`: each session SQL detached, by its attachment; null when it is not a list of them. */
+function detachedSessions(value: unknown): { workerId: string; attachmentToken: string }[] | null {
+	if (!Array.isArray(value)) return null;
+	const ended = value.flatMap((item) => {
+		if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+		const { workerId, attachmentToken } = item as Record<string, unknown>;
+		return isUuid(workerId) && isUuid(attachmentToken) ? [{ workerId, attachmentToken }] : [];
+	});
+	return ended.length === value.length ? ended : null;
+}
 /** A fixed identifier for an error: its code, or UNCLASSIFIED. */
 function errorCodeOf(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
@@ -442,6 +459,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #helperBoots = new Map<string, string>();
 	/** Per machine, the boot this process has seen finish (the folder model). */
 	readonly #settledBoots = new Map<string, string>();
+	/** Per machine, how many times this process started it on the folder model: a turn that found the machine must
+	 * restart for the folder leaves it running if it started since that turn's start, another turn's restart included. */
+	readonly #folderStarts = new Map<string, number>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -655,7 +675,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		authorize: (intent: CodingMachineIntent, signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
-		starting?: (signal: AbortSignal) => Promise<void>,
+		starting?: (afterOperationId: string, signal: AbortSignal) => Promise<void>,
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -1133,7 +1153,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * made ready in the company folder and published there, and then the session is attached in SQL and its view mounted
 	 * at /company under that attachment, so a view mounted now lists the session's worktree from its first listing.
 	 * Nothing is hot-plugged, installed or seeded in the machine, and no guest lease is taken: the session's view is held
-	 * under its attachment, which the keeper renews. */
+	 * under its attachment, which the keeper renews. A machine that must restart for the folder before its view opens
+	 * (rule 4) restarts, and the session attaches again, once. */
 	async #prepareFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1143,39 +1164,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		journal: CodingMachineJournalPlan,
 		signal: AbortSignal,
 	): Promise<CodingWorkspace> {
-		const { bootId, uid, startOperationId } = await this.#exclusive(machine.machineId, signal, async () => {
-			await this.#run(claim, machine, storage, signal, true);
-			// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
-			await this.#hostLeases.renew(journal);
-			await this.#reconcile(
-				journal,
-				"running",
-				async (_intent, checked) => this.#run(claim, machine, storage, checked),
-				signal,
-				// Stopped from outside: its views end while their attachments are still the live ones, so their final
-				// boundary saves what they had pending, and then SQL ends every attachment on it, all before it starts
-				// again. A view that ended unsaved or not confirmed closed is reported once the stop is recorded.
-				async (startOperationId, checked) => {
-					const ends = await folder.views.endMachine(machine.machineId, checked);
-					await this.#recordMachineStopped(machine, startOperationId, checked);
-					if (ends.some((end) => !end.saved)) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
-					if (ends.some((end) => !end.closed)) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
-				},
-				// Stopped, right before each start: the folder service hears the machine restarted (the plan's rule 4), so a
-				// read it was served on its last boot and never released no longer leaves the views it opens unproven. Not
-				// heard, the machine does not start.
-				(checked) => folder.control.restarted(machine.machineId, checked),
-			);
-			const receipt = await this.#run(claim, machine, storage, signal);
-			// Each session runs as its own user, which SQL assigns in the guest agent's range.
-			const uid = receipt.guestUid;
-			if (uid === null || uid < CODING_GUEST.minUid || uid > CODING_GUEST.maxUid)
-				throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
-			const bootId = await this.#folderReady(machine, signal);
-			// The start this boot came from: a command's start names it, so a read after a restart knows its boot.
-			const startOperationId = await codingMachineStartOperation(await this.#directory("machines", signal), journal);
-			return { bootId, uid, startOperationId };
-		});
+		let started = await this.#startFolder(folder, claim, machine, storage, journal, signal);
 		const authorize = async () => {
 			await this.#run(claim, machine, storage, signal);
 		};
@@ -1183,11 +1172,25 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const scope = codingTurnScope(claim.workerId, machine.machineId, claim.sequence);
 		if (scope.requestId !== turn.turnId) throw new Error("CODING_HOST_TURN_ID_DIFFERS");
 		const { cwd } = await (folder.repositories ?? codingFolderNoRepositories).prepare(
-			this.#repositorySession(claim, machine, storage, uid, baseSha, root),
+			this.#repositorySession(claim, machine, storage, started.uid, baseSha, root),
 			signal,
 		);
-		const guest = { bootId, guestConfigSha256: this.#folderSessionSha(claim.workerId, machine.machineId, bootId) };
-		await this.#attachSession(claim, machine, storage, { ...guest, folder: { uid } }, scope, signal);
+		const attach = async ({ bootId, uid }: { bootId: string; uid: number }) => {
+			const guest = { bootId, guestConfigSha256: this.#folderSessionSha(claim.workerId, machine.machineId, bootId) };
+			await this.#attachSession(claim, machine, storage, { ...guest, folder: { uid } }, scope, signal);
+			return guest;
+		};
+		let guest: { bootId: string; guestConfigSha256: string };
+		try {
+			guest = await attach(started);
+		} catch (error) {
+			if (!(error instanceof CodingFolderRestartRequired)) throw error;
+			// No view opened: the machine stops, unless it started since this turn's start, and starts again, and its
+			// restart's record detached the session, which attaches anew on the new boot.
+			started = await this.#startFolder(folder, claim, machine, storage, journal, signal, started.starts);
+			guest = await attach(started);
+		}
+		const { startOperationId, uid } = started;
 		const ready: Prepared = {
 			claim,
 			machine,
@@ -1199,6 +1202,112 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		};
 		this.#prepared.set(claim.workerId, ready);
 		return { vmId: machine.machineId, baseSha };
+	}
+	/** One lifecycle step on the folder model: the machine runs this plan and its LXD agent answers, and the session's
+	 * user, the boot and the start it came from are read, with how many times this process started the machine so far.
+	 * With `restart` (that count when a turn found the machine must restart for the folder), it stops first, unless it
+	 * started since. */
+	#startFolder(
+		folder: FolderOptions,
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		storage: Readonly<CloudCodingStorageBinding>,
+		journal: CodingMachineJournalPlan,
+		signal: AbortSignal,
+		restart?: number,
+	): Promise<{ bootId: string; uid: number; startOperationId: string; starts: number }> {
+		return this.#exclusive(machine.machineId, signal, async () => {
+			await this.#run(claim, machine, storage, signal, true);
+			if (restart !== undefined && (this.#folderStarts.get(machine.machineId) ?? 0) === restart)
+				await this.#stopForFolder(folder, machine, journal, signal);
+			await this.#runFolder(folder, claim, machine, storage, journal, signal);
+			const receipt = await this.#run(claim, machine, storage, signal);
+			// Each session runs as its own user, which SQL assigns in the guest agent's range.
+			const uid = receipt.guestUid;
+			if (uid === null || uid < CODING_GUEST.minUid || uid > CODING_GUEST.maxUid)
+				throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
+			const bootId = await this.#folderReady(machine, signal);
+			// The start this boot came from: a command's start names it, so a read after a restart knows its boot.
+			const startOperationId = await codingMachineStartOperation(await this.#directory("machines", signal), journal);
+			return { bootId, uid, startOperationId, starts: this.#folderStarts.get(machine.machineId) ?? 0 };
+		});
+	}
+	/** The folder model's machine runs, started if it was stopped, under the turn's run authority. Called under
+	 * #exclusive. */
+	async #runFolder(
+		folder: FolderOptions,
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		storage: Readonly<CloudCodingStorageBinding>,
+		journal: CodingMachineJournalPlan,
+		signal: AbortSignal,
+	): Promise<void> {
+		// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
+		await this.#hostLeases.renew(journal);
+		await this.#reconcile(
+			journal,
+			"running",
+			async (_intent, checked) => this.#run(claim, machine, storage, checked),
+			signal,
+			// Stopped from outside: its views end while their attachments are still the live ones, so their final
+			// boundary saves what they had pending, and then SQL ends every attachment on it, all before it starts
+			// again. A view that ended unsaved or not confirmed closed is reported once the stop is recorded.
+			async (startOperationId, checked) => {
+				const ends = await folder.views.endMachine(machine.machineId, checked);
+				await this.#recordMachineStopped(machine, startOperationId, checked);
+				if (ends.some((end) => !end.saved)) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
+				if (ends.some((end) => !end.closed)) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
+			},
+			// Stopped, right before each start: the folder service hears the machine restarted (the plan's rule 4), so a
+			// read it was served on its last boot and never released no longer leaves the views it opens unproven, and
+			// then SQL records a restart for the folder, if the machine was marked for one, named by the effect the start
+			// follows. Either not confirmed, the machine does not start.
+			async (afterOperationId, checked) => {
+				await folder.control.restarted(machine.machineId, checked);
+				await this.#recordFolderRestart(machine, afterOperationId, checked);
+				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
+			},
+		);
+	}
+	/** Rule 4 (RUNTIME-FOLDER-CODING-MACHINES.md): the machine's reads can't be proven released, so it stops before any
+	 * view opens on it again. SQL marks it first: from then on no coding view opens on it, its open ones close at their
+	 * next renewal, and its stop is granted while a turn uses it; the start's record clears the mark. Its views end, their
+	 * final boundary saving what it still can: a machine whose reads are unproven saves nothing, and a view whose record
+	 * stays is ended by its session's next attach. Called under #exclusive. */
+	async #stopForFolder(
+		folder: FolderOptions,
+		machine: Readonly<LxdCodingMachineBinding>,
+		journal: CodingMachineJournalPlan,
+		signal: AbortSignal,
+	): Promise<void> {
+		const text = lxdCodingMachinePlan(machine).text;
+		const value = record(
+			await this.#call(
+				"qorpera_mark_coding_machine_folder_restart",
+				{
+					p_machine_id: machine.machineId,
+					p_owner: this.#options.owner,
+					p_binding_text: text,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+				},
+				signal,
+			),
+		);
+		if (
+			value.schema !== "qorpera.coding-machine-folder-restart/v1" ||
+			value.machineId !== machine.machineId ||
+			value.state !== "marked"
+		)
+			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
+		await folder.views.endMachine(machine.machineId, signal).catch(() => undefined);
+		await this.#reconcile(
+			journal,
+			"stopped",
+			async (_intent, checked) => this.#custody(journal, text, "stop", checked),
+			signal,
+			// Stopped from outside meanwhile: each attachment ends as MACHINE_STOPPED, and the restart's record finds none.
+			(startOperationId, checked) => this.#recordMachineStopped(machine, startOperationId, checked),
+		);
 	}
 	/** The folder model's readiness: the machine runs this plan and its LXD agent answers, waited for (bounded) while
 	 * it starts, and its boot has finished (#bootSettled). Returns the boot id. The session's view writes the guest agent
@@ -1418,7 +1527,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				uid: guest.folder.uid,
 			};
 			// Its view, under the attachment and while SQL keeps it, never beside the machine's lifecycle steps. A view it
-			// replaces is one whose attachment SQL let lapse, or one the node closed: how that one ended is reported.
+			// replaces is one whose attachment SQL let lapse: how that one ended is reported. One the node closed is not
+			// replaced: the machine must restart first (CodingFolderRestartRequired, #prepareFolder).
 			const { viewId, replaced } = await this.#exclusive(machine.machineId, signal, () =>
 				folder.views.attach(
 					session,
@@ -1529,7 +1639,19 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (folder && ready.folder) {
 			// What the machine's views have pending is saved first: the export reads the session's work from the folder, so
 			// a path any view left unsaved holds the publication. The error's reason says why, without a path.
-			const held = codingFolderBoundaryHeld(await folder.control.boundary(ready.machine.machineId, [], signal));
+			const { machine, storage } = ready;
+			const starts = this.#folderStarts.get(machine.machineId) ?? 0;
+			const held = codingFolderBoundaryHeld(await folder.control.boundary(machine.machineId, [], signal));
+			if (held === "READS_UNPROVEN")
+				// What the machine read can't be proven released (rule 4): it restarts before a view opens on it again,
+				// unless it started since this boundary was asked. The session attaches anew at its next turn.
+				await this.#exclusive(machine.machineId, signal, async () => {
+					if ((this.#folderStarts.get(machine.machineId) ?? 0) !== starts) return;
+					const journal = lxdCodingMachineJournalPlan(machine, this.#placement);
+					await this.#run(claim, machine, storage, signal);
+					await this.#stopForFolder(folder, machine, journal, signal);
+					await this.#runFolder(folder, claim, machine, storage, journal, signal);
+				});
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(
@@ -1806,19 +1928,47 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				signal,
 			),
 		);
-		const detached = Array.isArray(value.detached) ? (value.detached as unknown[]) : null;
-		const ended = (detached ?? []).flatMap((item) => {
-			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-			const { workerId, attachmentToken } = item as Record<string, unknown>;
-			return isUuid(workerId) && isUuid(attachmentToken) ? [{ workerId, attachmentToken }] : [];
-		});
-		if (
-			value.schema !== "qorpera.coding-machine-stopped/v1" ||
-			value.machineId !== machine.machineId ||
-			!detached ||
-			ended.length !== detached.length
-		)
+		const ended = detachedSessions(value.detached);
+		if (value.schema !== "qorpera.coding-machine-stopped/v1" || value.machineId !== machine.machineId || !ended)
 			throw new Error("CODING_HOST_MACHINE_STOPPED_UNCONFIRMED");
+		this.#forgetDetached(ended);
+		this.#helperBoots.delete(machine.machineId);
+	}
+	/** A stopped machine is about to start: if SQL marked it to restart for the company folder (the folder model's rule
+	 * 4), the restart is recorded, each attachment on it ending as FOLDER_RESTART (not an outside stop: its sessions
+	 * attach again on the new boot) and the mark cleared, so views open on it again. An unmarked machine changes
+	 * nothing. `afterOperationId` names the start (the LXD operation of the effect it follows): SQL answers a second
+	 * record of the same start, however late, what it answered the first and changes nothing. */
+	async #recordFolderRestart(
+		machine: Readonly<LxdCodingMachineBinding>,
+		afterOperationId: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const value = record(
+			await this.#call(
+				"qorpera_record_coding_machine_folder_restart",
+				{
+					p_machine_id: machine.machineId,
+					p_operation_id: afterOperationId,
+					p_owner: this.#options.owner,
+					p_binding_text: lxdCodingMachinePlan(machine).text,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+				},
+				signal,
+			),
+		);
+		const ended = detachedSessions(value.detached);
+		if (
+			value.schema !== "qorpera.coding-machine-folder-restart/v1" ||
+			value.machineId !== machine.machineId ||
+			(value.state !== "restarted" && value.state !== "unmarked") ||
+			!ended
+		)
+			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
+		this.#forgetDetached(ended);
+	}
+	/** The sessions SQL detached are no longer attached here. */
+	#forgetDetached(ended: readonly { workerId: string; attachmentToken: string }[]): void {
 		for (const { workerId, attachmentToken } of ended) {
 			if (this.#attachments.get(workerId)?.token === attachmentToken) {
 				this.#attachments.delete(workerId);
@@ -1826,7 +1976,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			this.#samples.delete(workerId);
 		}
-		this.#helperBoots.delete(machine.machineId);
 	}
 	/** A stopped member machine's session folders unplugged under `authorize`:
 	 * the base devices, with the machine's own agent card (its plug MAC is not in

@@ -114,6 +114,13 @@ describe("dedicated coding executor control", () => {
 				refusal("22023", "Folder view anchor is invalid"),
 				"Folder view anchor is invalid",
 			],
+			// A coding machine SQL marked to restart for the folder (F3 5g-5).
+			[
+				"qorpera_folder_view_open",
+				403,
+				refusal("42501", "Coding machine must restart first"),
+				"Coding machine must restart first",
+			],
 			[
 				"qorpera_folder_view_close",
 				403,

@@ -13,7 +13,12 @@ import {
 } from "../src/coding-executor-host.ts";
 import type { CodingFolderControl } from "../src/coding-folder-control.ts";
 import type { CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
-import { type CodingFolderViewEnd, type CodingFolderViewHeld, CodingFolderViews } from "../src/coding-folder-views.ts";
+import {
+	CodingFolderRestartRequired,
+	type CodingFolderViewEnd,
+	type CodingFolderViewHeld,
+	CodingFolderViews,
+} from "../src/coding-folder-views.ts";
 import { CodingHostLeases, judgeCodingHostLease } from "../src/coding-host-lease.ts";
 import {
 	type CodingMachineReconcileOptions,
@@ -286,6 +291,10 @@ async function fixture() {
 		stoppedFromOutside: false,
 		/** The LXD operation of the machine's latest start, which names a stop from outside after it. */
 		startOperationId: "",
+		/** SQL marked the machine to restart for the company folder: its next start's record clears it. */
+		folderRestart: false,
+		/** The LXD operations of the machine's create, starts and stops, in order: a start follows the last. */
+		effects: [] as string[],
 	};
 	// The watchdog: a generation's lease renews while live and never again once run out.
 	mocked.refresh.mockImplementation(async (scope: { workerId: string }, tokenSha256: string, ttlMs: number) => {
@@ -298,6 +307,8 @@ async function fixture() {
 	const attachments = new Map<string, string>();
 	// Stops from outside as SQL keeps them: the start each ended -> the attachments its record ended.
 	const outsideStops = new Map<string, { workerId: string; attachmentToken: string }[]>();
+	// Folder restarts' records as SQL keeps them: the effect each start followed -> what its record answered.
+	const folderRestarts = new Map<string, Record<string, unknown>>();
 	const receipt = (intent: string, workerId: string | null, guestUid: number | null) => ({
 		schema: "qorpera.coding-machine-admission/v1",
 		machineId: machine.machineId,
@@ -428,6 +439,40 @@ async function fixture() {
 					detached: outsideStops.get(stop),
 				};
 			}
+			case "qorpera_mark_coding_machine_folder_restart":
+				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
+					throw new Error("Coding machine custody differs");
+				state.folderRestart = true;
+				return {
+					schema: "qorpera.coding-machine-folder-restart/v1",
+					machineId: args.p_machine_id,
+					state: "marked",
+				};
+			case "qorpera_record_coding_machine_folder_restart": {
+				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
+					throw new Error("Coding machine custody differs");
+				if (typeof args.p_operation_id !== "string" || !args.p_operation_id)
+					throw new Error("Coding machine input invalid");
+				// A second record of the same start answers what the first did and changes nothing.
+				const recorded = folderRestarts.get(args.p_operation_id);
+				if (recorded) return recorded;
+				// A marked machine's restart ends every attachment on it as FOLDER_RESTART and clears the mark; an
+				// unmarked one's changes nothing.
+				const detached = state.folderRestart
+					? [...attachments].map(([workerId, attachmentToken]) => ({ workerId, attachmentToken }))
+					: [];
+				if (state.folderRestart) attachments.clear();
+				const restarted = state.folderRestart;
+				state.folderRestart = false;
+				const answer = {
+					schema: "qorpera.coding-machine-folder-restart/v1",
+					machineId: args.p_machine_id,
+					state: restarted ? "restarted" : "unmarked",
+					detached,
+				};
+				folderRestarts.set(args.p_operation_id, answer);
+				return answer;
+			}
 			case "qorpera_archive_quiet_coding_sessions":
 				return 0;
 		}
@@ -546,16 +591,21 @@ async function fixture() {
 		if (state.stoppedFromOutside && lxd.exists && !lxd.running)
 			await input.stoppedFromOutside?.(state.startOperationId, input.signal);
 		if (input.desiredState === "running") {
-			// Starting a stopped machine is a new LXD operation, which the executor hears of first.
+			// Starting a stopped machine is a new LXD operation, which the executor hears of first, named by the effect
+			// it follows (its create, the first time).
 			if (!lxd.running) {
-				await input.starting?.(input.signal);
+				if (!state.effects.length) state.effects.push(randomUUID());
+				await input.starting?.(state.effects.at(-1) as string, input.signal);
 				state.startOperationId = randomUUID();
+				state.effects.push(state.startOperationId);
 			}
 			lxd.exists = true;
 			lxd.running = true;
 			state.stoppedFromOutside = false;
-		} else if (input.desiredState === "stopped") lxd.running = false;
-		else lxd.exists = false;
+		} else if (input.desiredState === "stopped") {
+			if (lxd.running) state.effects.push(randomUUID());
+			lxd.running = false;
+		} else lxd.exists = false;
 		return { state: input.desiredState };
 	});
 	mocked.resolveBase.mockResolvedValue(baseSha);
@@ -3180,6 +3230,231 @@ describe("a coding session on the folder model", () => {
 		expect(recorded()).toHaveLength(2);
 		expect(recorded()[1]).toBeLessThan(f.restarted.mock.invocationCallOrder[2]!);
 		expect(running).toEqual([false, false]);
+	});
+	/** The order of each control call of `method` (with `intent` for custody), as the fixture's calls were made. */
+	const callOrder = (f: Fixture, method: string, intent?: string) =>
+		f.call.mock.calls.flatMap((call, index) =>
+			call[0] === method && (intent === undefined || call[1].p_intent === intent)
+				? [f.call.mock.invocationCallOrder[index]!]
+				: [],
+		);
+	/** Each start boots the machine anew: its boot_id file names a new boot once the folder service hears it restarted. */
+	const bootsAnew = (f: Awaited<ReturnType<typeof folderFixture>>) =>
+		f.restarted.mockImplementation(async () => {
+			f.files.set("/proc/sys/kernel/random/boot_id", {
+				uid: 0,
+				gid: 0,
+				mode: 0o444,
+				content: Buffer.from(`${randomUUID()}\n`),
+			});
+		});
+	it.each([
+		["the node closed the session's view under its mount", "VIEW_CLOSED"],
+		["the boundary answered the machine's reads unproven", "READS_UNPROVEN"],
+		["the core marked the machine", "MACHINE_RESTART_REQUIRED"],
+	])(
+		"restarts the machine for the folder when %s, and attaches the session again on the new boot",
+		async (_case, code) => {
+			const f = await folderFixture();
+			bootsAnew(f);
+			f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired(code));
+			await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+			// SQL marks it first, its views end, it stops under its custody, and before it starts again the folder service
+			// hears it restarted and SQL records the restart, which ends the attachment the refused view was under.
+			const [mark] = callOrder(f, "qorpera_mark_coding_machine_folder_restart");
+			const [stop] = callOrder(f, "qorpera_authorize_coding_machine_custody", "stop");
+			const records = callOrder(f, "qorpera_record_coding_machine_folder_restart");
+			expect(callOrder(f, "qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
+			expect(callOrder(f, "qorpera_authorize_coding_machine_custody", "stop")).toHaveLength(1);
+			expect(f.views.endMachine).toHaveBeenCalledTimes(1);
+			expect(f.restarted).toHaveBeenCalledTimes(2);
+			expect(records).toHaveLength(2);
+			expect(f.views.attach.mock.invocationCallOrder[0]).toBeLessThan(mark!);
+			expect(mark).toBeLessThan(f.views.endMachine.mock.invocationCallOrder[0]!);
+			expect(f.views.endMachine.mock.invocationCallOrder[0]).toBeLessThan(stop!);
+			expect(stop).toBeLessThan(f.restarted.mock.invocationCallOrder[1]!);
+			expect(f.restarted.mock.invocationCallOrder[1]).toBeLessThan(records[1]!);
+			expect(records[1]).toBeLessThan(f.views.attach.mock.invocationCallOrder[1]!);
+			const answers = (await Promise.all(
+				f.call.mock.results.flatMap((result, index) =>
+					f.call.mock.calls[index]?.[0] === "qorpera_record_coding_machine_folder_restart" ? [result.value] : [],
+				),
+			)) as { state: string; detached: unknown }[];
+			const refused = f.views.attach.mock.calls[0]![0],
+				attached = f.views.attach.mock.calls[1]![0];
+			expect(answers.map((answer) => answer.state)).toEqual(["unmarked", "restarted"]);
+			expect(answers[1]?.detached).toEqual([
+				{ workerId: f.claim.workerId, attachmentToken: refused.attachmentToken },
+			]);
+			// Each record names its start by the effect that start follows: the create, then the restart's stop.
+			expect(f.state.effects).toHaveLength(4);
+			expect(f.calls("qorpera_record_coding_machine_folder_restart").map((args) => args.p_operation_id)).toEqual([
+				f.state.effects[0],
+				f.state.effects[2],
+			]);
+			expect(f.calls("qorpera_attach_coding_session")).toHaveLength(2);
+			// The session attached anew, its view under the new attachment on the new boot.
+			expect(f.lxd.running).toBe(true);
+			expect(f.state.folderRestart).toBe(false);
+			expect(f.attachments.get(f.claim.workerId)).toBe(attached.attachmentToken);
+			expect(attached.attachmentToken).not.toBe(refused.attachmentToken);
+			expect(attached.bootId).not.toBe(refused.bootId);
+			expect(f.onMount).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("fails the turn when the view is refused again after the restart, and restarts only once", async () => {
+		const f = await folderFixture();
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("VIEW_CLOSED"));
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("MACHINE_RESTART_REQUIRED"));
+		const failed = f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await expect(failed).rejects.toBeInstanceOf(CodingFolderRestartRequired);
+		await expect(failed).rejects.toMatchObject({ code: "MACHINE_RESTART_REQUIRED" });
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
+		expect(f.calls("qorpera_authorize_coding_machine_custody")).toEqual([
+			expect.objectContaining({ p_intent: "stop" }),
+		]);
+		expect(f.views.attach).toHaveBeenCalledTimes(2);
+	});
+	it.each([
+		["mark", "qorpera_mark_coding_machine_folder_restart", true],
+		["record", "qorpera_record_coding_machine_folder_restart", false],
+	])("does not go on when SQL's %s of the restart is not confirmed", async (_case, method, running) => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		const answer = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (called, args, signal) =>
+			called === method
+				? { schema: "qorpera.coding-machine-folder-restart/v1", machineId: f.machine.machineId }
+				: answer(called, args, signal),
+		);
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("READS_UNPROVEN"));
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_HOST_FOLDER_RESTART_UNCONFIRMED",
+		);
+		// Not marked, the machine is not stopped; stopped but its restart not recorded, it does not start.
+		expect(f.lxd.running).toBe(running);
+		expect(f.calls("qorpera_authorize_coding_machine_custody")).toHaveLength(running ? 0 : 1);
+		expect(f.views.attach).toHaveBeenCalledTimes(2);
+	});
+	it("records a restart whose answer was lost again under the same start, and goes on with what SQL answered first", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		// SQL records the restart, and its answer is lost.
+		const answer = f.call.getMockImplementation()!;
+		let lost = false;
+		f.call.mockImplementation(async (called, args, signal) => {
+			const value = await answer(called, args, signal);
+			if (called === "qorpera_record_coding_machine_folder_restart" && !lost && f.state.effects.length > 2) {
+				lost = true;
+				throw new Error("CODING_HOST_CONTROL_TIMEOUT");
+			}
+			return value;
+		});
+		const nextTurn = (sequence: number) => {
+			f.renew(f.claim);
+			f.claim.sequence = sequence;
+			f.sequences.set(f.claim.workerId, sequence);
+			return f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		};
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("VIEW_CLOSED"));
+		await expect(nextTurn(2)).rejects.toThrow("CODING_HOST_CONTROL_TIMEOUT");
+		expect(f.lxd.running).toBe(false);
+		const refused = f.views.attach.mock.calls[1]![0];
+		// The next turn records the same start again: SQL answers what it did, the machine starts, and the session
+		// attaches anew.
+		await nextTurn(3);
+		const records = f.calls("qorpera_record_coding_machine_folder_restart");
+		expect(records.map((args) => args.p_operation_id)).toEqual([
+			f.state.effects[0],
+			f.state.effects[2],
+			f.state.effects[2],
+		]);
+		const answers = (await Promise.all(
+			f.call.mock.results.flatMap((result, index) =>
+				f.call.mock.calls[index]?.[0] === "qorpera_record_coding_machine_folder_restart"
+					? [Promise.resolve(result.value).catch(() => "lost")]
+					: [],
+			),
+		)) as unknown[];
+		expect(answers.slice(1)).toEqual([
+			"lost",
+			{
+				schema: "qorpera.coding-machine-folder-restart/v1",
+				machineId: f.machine.machineId,
+				state: "restarted",
+				detached: [{ workerId: f.claim.workerId, attachmentToken: refused.attachmentToken }],
+			},
+		]);
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.effects).toHaveLength(4);
+		const attached = f.views.attach.mock.calls.at(-1)![0];
+		expect(attached.attachmentToken).not.toBe(refused.attachmentToken);
+		expect(f.attachments.get(f.claim.workerId)).toBe(attached.attachmentToken);
+	});
+	it("restarts the machine when the boundary before a publication answers its reads unproven, and publishes nothing", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.attachments.has(f.claim.workerId)).toBe(true);
+		f.boundary.mockResolvedValueOnce({ machine: f.machine.machineId, reads: "unproven", views: [] });
+		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow(
+			new Error("CODING_FOLDER_BOUNDARY_HELD:READS_UNPROVEN"),
+		);
+		const [mark] = callOrder(f, "qorpera_mark_coding_machine_folder_restart");
+		const [stop] = callOrder(f, "qorpera_authorize_coding_machine_custody", "stop");
+		const records = callOrder(f, "qorpera_record_coding_machine_folder_restart");
+		expect(f.boundary.mock.invocationCallOrder[0]).toBeLessThan(mark!);
+		expect(mark).toBeLessThan(f.views.endMachine.mock.invocationCallOrder[0]!);
+		expect(f.views.endMachine.mock.invocationCallOrder[0]).toBeLessThan(stop!);
+		expect(stop).toBeLessThan(f.restarted.mock.invocationCallOrder[1]!);
+		expect(f.restarted.mock.invocationCallOrder[1]).toBeLessThan(records[1]!);
+		// It runs again, the session no longer attached to it: its next turn attaches anew.
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.folderRestart).toBe(false);
+		expect(f.attachments.has(f.claim.workerId)).toBe(false);
+		expect(f.repositories.export).not.toHaveBeenCalled();
+		expect(mocked.push).not.toHaveBeenCalled();
+	});
+	it("does not restart the machine again for a turn when another turn restarted it since that turn's start", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// The second session's view is refused while the first one's publication finds the machine's reads unproven: the
+		// publication's restart waits for the attach, and the second session's restart then finds it done.
+		let heard!: () => void;
+		const asked = new Promise<void>((resolve) => {
+			heard = resolve;
+		});
+		f.boundary.mockImplementationOnce(async (machine) => {
+			heard();
+			return { machine, reads: "unproven", views: [] };
+		});
+		let published: Promise<unknown> | undefined;
+		f.views.attach.mockImplementationOnce(async () => {
+			published = f.host.publish(f.claim, f.submission, f.signal);
+			// Its outcome is read once the second session attached.
+			published.catch(() => undefined);
+			await asked;
+			await new Promise((resolve) => setImmediate(resolve));
+			throw new CodingFolderRestartRequired("VIEW_CLOSED");
+		});
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		await expect(published).rejects.toThrow(new Error("CODING_FOLDER_BOUNDARY_HELD:READS_UNPROVEN"));
+		// One restart, the publication's: the second session attached after it, on the machine it left running.
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
+		expect(f.calls("qorpera_authorize_coding_machine_custody")).toEqual([
+			expect.objectContaining({ p_intent: "stop" }),
+		]);
+		expect(f.restarted).toHaveBeenCalledTimes(2);
+		expect(f.restarted.mock.invocationCallOrder[1]).toBeLessThan(f.views.attach.mock.invocationCallOrder.at(-1)!);
+		expect(f.lxd.running).toBe(true);
+		expect([...f.attachments.keys()]).toEqual([second.workerId]);
+		expect(f.views.attach.mock.calls.at(-1)?.[0].attachmentToken).toBe(f.attachments.get(second.workerId));
 	});
 	it("publishes what the machine's boundary saved: the boundary first, then the session's bundle, pushed and opened as a draft", async () => {
 		const f = await folderFixture();

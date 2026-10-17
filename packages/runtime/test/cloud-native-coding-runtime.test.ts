@@ -578,6 +578,7 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("When no reply decides it");
 		expect(instructions).toContain("call coding_ask again");
 		expect(instructions).toContain("MACHINE_STOPPED: the machine stopped from outside");
+		expect(instructions).toContain("FOLDER_RESTART: the machine restarted because the company folder");
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",
@@ -690,7 +691,7 @@ describe("the coding composition of a native turn", () => {
 		]);
 		expect(context.earlierTurns[1].outcome?.needs).toBe("Keep 250 ms, or raise to 500 ms?");
 	});
-	it("takes a command the machine's stop from outside ended, and refuses a reason it does not know", () => {
+	it("takes a command the machine's stop from outside or its restart for the folder ended, and refuses a reason it does not know", () => {
 		const workerId = randomUUID(),
 			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
 		const stopped = { commandId: randomUUID(), turn: 1, command: "npm run dev", reason: "MACHINE_STOPPED" };
@@ -706,6 +707,9 @@ describe("the coding composition of a native turn", () => {
 		expect(
 			parseCloudCodingTurnContext(context("MACHINE_STOPPED"), { workerId, sequence: 2 }, repository).commands,
 		).toEqual({ running: [], stopped: [stopped], omitted: 0 });
+		expect(
+			parseCloudCodingTurnContext(context("FOLDER_RESTART"), { workerId, sequence: 2 }, repository).commands,
+		).toEqual({ running: [], stopped: [{ ...stopped, reason: "FOLDER_RESTART" }], omitted: 0 });
 		expect(() => parseCloudCodingTurnContext(context("UNPLUGGED"), { workerId, sequence: 2 }, repository)).toThrow(
 			/^CODING_TURN_CONTEXT_INVALID$/,
 		);
