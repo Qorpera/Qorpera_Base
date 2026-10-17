@@ -94,6 +94,17 @@ function pushRefusal(refused: CodingPushRefused): string {
 						: `a file or folder name in "${carrier.path}"`;
 	return `The push was refused: ${where} carries one of the session's secret values. Remove it from the history and finish again.`;
 }
+/** The company folder refused a path the session's machine wrote (F3 5j-5 a): its contents or its name carry one of the
+ * machine's secret values. It is not saved and stays on the machine, nothing was published, and the error names no
+ * path. */
+export class CodingSaveRefused extends Error {
+	constructor() {
+		super("CODING_FOLDER_SAVE_REFUSED");
+	}
+}
+/** The reason a publication held by a refused save fails its turn with: what to change, never the value or the path. */
+const SAVE_REFUSAL =
+	"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again.";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -106,10 +117,12 @@ export interface CodingHousekeepingOutcome {
 /** One keeper step on one attached session (or its whole machine), for the executor's log. */
 export interface CodingKeepOutcome {
 	machineId: string;
-	/** Null when the machine's observation or renewal failed as a whole. */
+	/** Null when the machine's observation or renewal failed as a whole, and for its secrets. */
 	workerId: string | null;
-	/** keep: attachment and guest lease renewed; detach: the session was taken off. */
-	step: "keep" | "detach";
+	/** keep: attachment and guest lease renewed; detach: the session was taken off; secrets: the folder service was given
+	 * the machine's secret values again (5j-5 (a)), reported only when that failed, or was not-now because the service is
+	 * from before the check. */
+	step: "keep" | "detach" | "secrets";
 	state: "done" | "not-now" | "failed";
 	code?: string;
 }
@@ -568,11 +581,12 @@ export class CloudCodingExecutor {
 				try {
 					publication = await this.#host.publish(claimed, submission, active);
 				} catch (error) {
-					if (!(error instanceof CodingPushRefused) || active.aborted) throw error;
+					if (!(error instanceof CodingPushRefused || error instanceof CodingSaveRefused) || active.aborted)
+						throw error;
 					// Nothing went out, and the same work would be refused again: the turn fails with what to change, and the
 					// session's next turn can finish again.
 					end();
-					await complete("failed", pushRefusal(error));
+					await complete("failed", error instanceof CodingSaveRefused ? SAVE_REFUSAL : pushRefusal(error));
 					return "failed";
 				}
 				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");

@@ -11,7 +11,9 @@ import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdC
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { CodingFolderControl } from "../../packages/runner-orchestrator/src/coding-folder-control.ts";
+import { CodingFolderSecretKey } from "../../packages/runner-orchestrator/src/coding-folder-secrets.ts";
 import { CodingFolderViews } from "../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
@@ -235,8 +237,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	// The same broker gives each command its session's vault environment (5j-4).
-	const commandEnvironment = config.broker ? new BrokerCodingEnvironment({ origin: config.broker.origin,
-		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
+	const commandSecrets = config.broker ? new CodingMachineCommandSecrets(new BrokerCodingEnvironment({ origin: config.broker.origin,
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner })) : null;
 	const storage = createCodingNasStorage(config.storagePolicy);
 	const journalRoot = await storage.prepareControl();
 	const lxd = new LxdUnixClient();
@@ -246,7 +248,21 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
-		const folderControl = new CodingFolderControl(config.folder.controlSocket ? { path: config.folder.controlSocket } : {});
+		// The folder service refuses a coding view's save that holds one of its machine's secret values (5j-5 (a)): it
+		// gets them as keyed hashes, the key made here, from what this executor masks. Without a broker there are none.
+		const folderSecretKey = new CodingFolderSecretKey();
+		const omitted = new Map<string, number>();
+		const secrets = (machineId: string) => {
+			const values = commandSecrets ? commandSecrets.values(machineId) : [];
+			if (values === undefined) return undefined;
+			const { set, omitted: count } = folderSecretKey.set(values);
+			// How many no save is checked for, when that changes: a count, never a value.
+			if ((omitted.get(machineId) ?? 0) !== count) console.log(JSON.stringify({ event: "coding-folder-secrets-omitted", machineId, omitted: count }));
+			if (count) omitted.set(machineId, count);
+			else omitted.delete(machineId);
+			return set;
+		};
+		const folderControl = new CodingFolderControl({ ...(config.folder.controlSocket ? { path: config.folder.controlSocket } : {}), secrets });
 		// The views it holds are recorded beside its journals, on the NAS: a restarted executor still ends them.
 		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		folder = {
@@ -261,7 +277,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
-		...(commandEnvironment ? { commandEnvironment } : {}),
+		...(commandSecrets ? { commandSecrets } : {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();
