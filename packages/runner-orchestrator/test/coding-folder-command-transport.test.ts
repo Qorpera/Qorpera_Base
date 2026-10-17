@@ -89,13 +89,13 @@ async function modesOf(folder: string): Promise<Record<string, number>> {
 	);
 }
 
-/** Secrets whose mask hides SECRET. */
-function maskedSecrets(environment: Record<string, string> = { TOKEN: SECRET }) {
+/** Secrets whose mask hides `value`. */
+function maskedSecrets(environment: Record<string, string> = { TOKEN: SECRET }, value = SECRET) {
+	const mask = () => new CodingSecretMask([value]).stream();
 	return {
-		resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({
-			environment,
-			mask: () => new CodingSecretMask([SECRET]).stream(),
-		})),
+		resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({ environment, mask })),
+		output: vi.fn<CodingCommandSecrets["output"]>(async () => mask),
+		accepted: vi.fn<CodingCommandSecrets["accepted"]>(),
 	};
 }
 
@@ -434,6 +434,11 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 				kind: "command",
 			},
 			expect.any(AbortSignal),
+		);
+		// The guest took the start, so its environment masks the command's output.
+		expect(secrets.accepted).toHaveBeenCalledExactlyOnceWith(secrets.resolve.mock.calls[0][0]);
+		expect(at.guest.client.run.mock.invocationCallOrder[0]).toBeLessThan(
+			secrets.accepted.mock.invocationCallOrder[0],
 		);
 		const asked = ["start", at.scope, input.commandId, input.inputSha256, signal];
 		expect(at.authorize.mock.calls).toStrictEqual([asked, asked]);
@@ -1232,7 +1237,8 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			at.receipt(input, { state: "succeeded", exitCode: 0, output: masked }),
 		);
 		expect(await readFile(join(at.folder(input.commandId), "output.log"), "utf8")).toBe(masked);
-		expect(secrets.resolve).toHaveBeenCalledTimes(2);
+		expect(secrets.resolve).toHaveBeenCalledOnce();
+		expect(secrets.output).toHaveBeenCalledOnce();
 		// A tail that may start the secret waits for what follows it.
 		const next = at.input();
 		at.guest.print(next.commandId, `token=${SECRET.slice(0, 5)}`);
@@ -1256,12 +1262,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		// The value overlaps itself: once its eight bytes match, the next seven may start another match, so the mask
 		// shows `***` and holds them back for the next read.
 		const value = "aaaaaaaa";
-		const secrets = {
-			resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({
-				environment: { TOKEN: value },
-				mask: () => new CodingSecretMask([value]).stream(),
-			})),
-		};
+		const secrets = maskedSecrets({ TOKEN: value }, value);
 		const at = await fixture({ secrets });
 		const ended = at.input();
 		at.guest.print(ended.commandId, value);
@@ -1299,12 +1300,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 
 	it("keeps the bytes past a gap that the kept *** already covers behind it, and matches afresh after them", async () => {
 		const value = "aaaaaaaa";
-		const secrets = {
-			resolve: vi.fn<CodingCommandSecrets["resolve"]>(async () => ({
-				environment: { TOKEN: value },
-				mask: () => new CodingSecretMask([value]).stream(),
-			})),
-		};
+		const secrets = maskedSecrets({ TOKEN: value }, value);
 		const at = await fixture({ secrets });
 		const input = at.input();
 		const folder = at.folder(input.commandId);

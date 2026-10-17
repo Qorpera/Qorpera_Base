@@ -22,6 +22,7 @@ import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-c
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
+import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import { authorizeMachineCommand } from "./machine-command-authority.ts";
 import { MachineCommandRouter } from "./machine-command-routing.ts";
@@ -233,6 +234,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
+	// The same broker gives each command its session's vault environment (5j-4).
+	const commandEnvironment = config.broker ? new BrokerCodingEnvironment({ origin: config.broker.origin,
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	const storage = createCodingNasStorage(config.storagePolicy);
 	const journalRoot = await storage.prepareControl();
 	const lxd = new LxdUnixClient();
@@ -257,6 +261,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
+		...(commandEnvironment ? { commandEnvironment } : {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();
