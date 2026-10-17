@@ -1,11 +1,13 @@
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
 	CLOUD_INTERACTION_PAYLOAD_SCHEMA,
 	CLOUD_INTERACTION_SURFACES,
 	cloudAskMemberFinalKey,
+	cloudAskMemberInstructions,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 	parseCloudInteractionRequestData,
@@ -32,6 +34,42 @@ describe("thread interaction requests", () => {
 		expect(() =>
 			parseCloudInteractionRequestData({ ...secret, payload: { ...secret.payload, value: "xoxb-secret" } }),
 		).toThrow(/Invalid interaction request/);
+	});
+
+	it("accepts a connect card only for a service of the connector catalog, and with nothing secret in it", () => {
+		const connect = {
+			schema: "qorpera.interaction/v1",
+			surface: "connect",
+			title: "Connect Gmail",
+			payload: { connectorId: "gmail", purpose: "Reading the invoices in the inbox." },
+		};
+		expect(parseCloudInteractionRequestData(connect).payload).toEqual(connect.payload);
+		for (const connectorId of ["slack", "Gmail", "linear"])
+			expect(() =>
+				parseCloudInteractionRequestData({ ...connect, payload: { ...connect.payload, connectorId } }),
+			).toThrow(/Invalid interaction request/);
+		expect(() =>
+			parseCloudInteractionRequestData({ ...connect, payload: { ...connect.payload, token: "ya29.secret" } }),
+		).toThrow(/Invalid interaction request/);
+		expect(() =>
+			parseCloudAskMemberInput({
+				idempotencyKey: "slack",
+				text: "I need Slack.",
+				surface: "connect",
+				title: "Connect Slack",
+				payload: { connectorId: "slack", purpose: "Posting." },
+			}),
+		).toThrow(/^the connect payload must be \{connectorId: github\|gmail\|google_drive, purpose\}/);
+	});
+
+	it("names the catalog services a run has no tools for, which a connect card asks for", () => {
+		expect(cloudAskMemberInstructions(["gmail", "linear"])).toBe(
+			`${CLOUD_ASK_MEMBER_INSTRUCTIONS} Catalog services with no tools in this run: github, google_drive.`,
+		);
+		expect(cloudAskMemberInstructions(["github", "gmail", "google_drive"])).toBe(
+			`${CLOUD_ASK_MEMBER_INSTRUCTIONS} Every catalog service has its tools in this run: raise no connect card.`,
+		);
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain("catalog service (github, gmail, google_drive)");
 	});
 
 	it("keeps the same card id for a retried ask", () => {
@@ -170,6 +208,10 @@ const PAYLOADS = {
 	credential: {
 		minimal: { name: "example", domain: "app.example.com" },
 		maximal: { name: "example", domain: "app.example.com", purpose: "Signing in." },
+	},
+	connect: {
+		minimal: { connectorId: "gmail", purpose: "Reading the invoices in the inbox." },
+		maximal: { connectorId: "google_drive", purpose: "Filing the invoices." },
 	},
 } as const;
 

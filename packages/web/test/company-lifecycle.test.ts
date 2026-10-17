@@ -8,12 +8,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
 import type {
 	HostedRunRecovery,
 	HostedSession,
 	HostedSessionEvent,
 	HostedStaffExecutionActivity,
+	JsonValue,
 } from "../src/cloud/types.ts";
 import {
 	deferred,
@@ -349,7 +351,19 @@ describe("answering a card", () => {
 		executionScope: { roomId: id(95), agentThread: true },
 	};
 	const answered = { inputId: id(96), position: 7 };
-	function card(sequence: number, actorUserId: string): HostedSessionEvent {
+	const question = {
+		schema: "qorpera.interaction/v1",
+		surface: "question",
+		title: "Which channel?",
+		payload: { options: [{ label: "#general", value: "general" }] },
+	};
+	const connectGmail = {
+		schema: "qorpera.interaction/v1",
+		surface: "connect",
+		title: "Connect Gmail",
+		payload: { connectorId: "gmail", purpose: "Reading the invoices in the inbox." },
+	};
+	function card(sequence: number, actorUserId: string, data: JsonValue = question): HostedSessionEvent {
 		const eventId = id(3000 + sequence);
 		return {
 			...event(sequence),
@@ -365,12 +379,7 @@ describe("answering a card", () => {
 					id: eventId,
 					parentId: null,
 					timestamp: "2026-09-24T20:00:00.000Z",
-					data: {
-						schema: "qorpera.interaction/v1",
-						surface: "question",
-						title: "Which channel?",
-						payload: { options: [{ label: "#general", value: "general" }] },
-					},
+					data,
 				},
 			},
 		};
@@ -508,6 +517,110 @@ describe("answering a card", () => {
 		expect(cards).toHaveLength(2);
 		expect(cards[0]!.querySelector("button")).not.toBeNull();
 		expect(cards[1]!.querySelector("button")).toBeNull();
+	});
+
+	it("offers a connect card's sign-in only to an owner or admin; anyone who answers may say it is connected", async () => {
+		const labels = async (role: "owner" | "admin" | "contributor") => {
+			const f = company();
+			f.controller.store.set({ loading: false, team: { ...team, role } });
+			vi.mocked(f.api.readSessionEvents).mockResolvedValue([card(1, userA.id, connectGmail)]);
+			void f.controller.loadConversation(session.sessionId);
+			const view = new ConversationView(f.controller, session.sessionId, {
+				sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+			});
+			cleanup.push(() => view.dispose());
+			document.body.append(view.el);
+			await settle();
+			return [...view.el.querySelectorAll<HTMLElement>(".interaction-card .interaction-actions .btn")].map(
+				(pill) => pill.textContent,
+			);
+		};
+		expect(await labels("owner")).toEqual(["Connect Gmail", "It's connected", "Skip"]);
+		expect(await labels("admin")).toEqual(["Connect Gmail", "It's connected", "Skip"]);
+		expect(await labels("contributor")).toEqual(["It's connected", "Skip"]);
+	});
+
+	describe("starting a connect card's sign-in", () => {
+		const request: InteractionRequest = {
+			surface: "connect",
+			title: connectGmail.title,
+			payload: connectGmail.payload,
+		};
+		const origin = "https://company41-node-01.tailbb15c7.ts.net:10000";
+		const signInPage = "https://accounts.google.com/o/oauth2/v2/auth?state=abc";
+		function broker(f: ReturnType<typeof company>) {
+			vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+				if (name === "qorpera_list_cloud_secret_connections")
+					return [1, 3, 2].map((version) => ({
+						schema: "qorpera.cloud-secret-descriptor/v1",
+						secretId: id(30 + version),
+						version,
+						connectorId: "gmail",
+						secretName: "primary",
+						ownerKind: "company",
+						status: version === 3 ? "revoked" : "active",
+					}));
+				if (name === "qorpera_begin_cloud_secret_capture")
+					return {
+						schema: "qorpera.cloud-secret-capture/v1",
+						ticketId: id(20),
+						captureCapability: "c".repeat(43),
+						serviceOrigin: origin,
+						expiresAt: "2026-09-24T21:00:00Z",
+					};
+				throw new Error(`Unexpected RPC ${name}`);
+			});
+			const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+				Response.json({ schema: "qorpera.cloud-connector-oauth-started/v1", authorizationUrl: signInPage }),
+			);
+			vi.stubGlobal("fetch", fetch);
+			cleanup.push(() => {
+				vi.unstubAllGlobals();
+				// The proof the started sign-in left for this tab.
+				sessionStorage.clear();
+			});
+			return fetch;
+		}
+
+		it("starts it as Settings does, replacing the company's newest active connection", async () => {
+			const f = company();
+			const fetch = broker(f);
+			await expect(f.controller.beginConnectSignIn(session.sessionId, request)).resolves.toBe(signInPage);
+			expect(f.cloud.rpc).toHaveBeenCalledWith(
+				"qorpera_begin_cloud_secret_capture",
+				expect.objectContaining({
+					p_owner_kind: "company",
+					p_owner_user_id: null,
+					p_connector_id: "gmail",
+					p_existing_secret_id: id(32),
+				}),
+			);
+			expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/oauth/${id(20)}/start?company=${profileA.profileId}`);
+			expect(f.controller.conversation(session.sessionId).get().interactionError).toBeUndefined();
+		});
+
+		it("refuses a member who is not an owner or admin, and a service outside the catalog, saying why", async () => {
+			const f = company();
+			const fetch = broker(f);
+			f.controller.store.set({ team: { ...team, role: "contributor" } });
+			await expect(f.controller.beginConnectSignIn(session.sessionId, request)).rejects.toThrow(
+				"Only founders and admins can connect the company's services.",
+			);
+			expect(f.controller.conversation(session.sessionId).get().interactionError).toBe(
+				"Only founders and admins can connect the company's services.",
+			);
+			f.controller.store.set({ team });
+			await expect(
+				f.controller.beginConnectSignIn(session.sessionId, {
+					...request,
+					payload: { connectorId: "slack", purpose: "Posting the digest." },
+				}),
+			).rejects.toThrow("This service cannot be connected here.");
+			const called = vi.mocked(f.cloud.rpc).mock.calls.map(([name]) => name);
+			expect(called).not.toContain("qorpera_list_cloud_secret_connections");
+			expect(called).not.toContain("qorpera_begin_cloud_secret_capture");
+			expect(fetch).not.toHaveBeenCalled();
+		});
 	});
 });
 

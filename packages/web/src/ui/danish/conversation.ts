@@ -389,6 +389,13 @@ export const CONVERSATION: Record<string, string> = {
 		"Tjek Gmail, før du sender igen. Leveringen er ikke bekræftet.",
 	"Signing in to {domain} through this card is unavailable.": "Du kan ikke logge ind på {domain} via dette kort.",
 	"Signing in through this card is unavailable.": "Du kan ikke logge ind via dette kort.",
+	Connection: "Forbindelse",
+	"The sign-in ends in Company connections. Then come back here and press It's connected.":
+		"Login slutter i Virksomhedens forbindelser. Kom derefter tilbage hertil, og tryk på Den er forbundet.",
+	"Only founders and admins can connect {service}. When one has, press It's connected.":
+		"Kun stiftere og administratorer kan forbinde {service}. Tryk på Den er forbundet, når det er gjort.",
+	"Connect {service}": "Forbind {service}",
+	"It's connected": "Den er forbundet",
 	"{kind} from {name}: {title}": "{kind} fra {name}: {title}",
 
 	// Approval cards (ui/authorization-card.ts)

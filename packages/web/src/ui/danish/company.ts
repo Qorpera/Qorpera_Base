@@ -59,6 +59,9 @@ export const COMPANY: Record<string, string> = {
 	"Select an active model account, then try again.": "Vælg en aktiv modelkonto, og prøv igen.",
 	"Answering cards here is not available yet. Reply in a message instead.":
 		"Det er endnu ikke muligt at besvare kort her. Svar i en besked i stedet.",
+	"This service cannot be connected here.": "Tjenesten kan ikke forbindes her.",
+	"Only founders and admins can connect the company's services.":
+		"Kun stiftere og administratorer kan forbinde virksomhedens tjenester.",
 	"This run was already handled.": "Denne kørsel er allerede håndteret.",
 	"This run already did part of its work, so it cannot be repeated. Send the message again instead.":
 		"Kørslen har allerede gjort en del af sit arbejde, så den kan ikke gentages. Send beskeden igen i stedet.",

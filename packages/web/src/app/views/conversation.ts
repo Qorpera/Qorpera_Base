@@ -2509,11 +2509,14 @@ export class ConversationView {
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
+				// Only an owner or admin connects a company service; anyone who answers can say it is connected.
+				const connects = item.request.surface === "connect" && canDecide(item.actorUserId);
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
 					answer && [answer.outcome, answer.answer, answer.answeredBy, answer.answeredAt, answer.pending],
 					answers,
+					connects,
 					item.answerFailed,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
 					agentName,
@@ -2560,6 +2563,14 @@ export class ConversationView {
 									? {
 											provideSecret: (value: string) =>
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+										}
+									: {}),
+								...(connects
+									? {
+											connect: async () =>
+												location.assign(
+													await this.#company.beginConnectSignIn(this.#sessionId, item.request),
+												),
 										}
 									: {}),
 							},

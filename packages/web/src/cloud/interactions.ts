@@ -10,7 +10,15 @@ import type { JsonValue } from "./types.ts";
 export const INTERACTION_SCHEMA = "qorpera.interaction/v1";
 export const INTERACTION_ANSWER_SCHEMA = "qorpera.interaction-answer/v1";
 
-export const INTERACTION_SURFACES = ["question", "secret", "form", "takeover", "draft", "credential"] as const;
+export const INTERACTION_SURFACES = [
+	"question",
+	"secret",
+	"form",
+	"takeover",
+	"draft",
+	"credential",
+	"connect",
+] as const;
 export type InteractionSurface = (typeof INTERACTION_SURFACES)[number];
 
 export interface QuestionOption {
@@ -37,7 +45,8 @@ export type InteractionOutcome =
 	| "dismissed"
 	| "sent"
 	| "discarded"
-	| "approved";
+	| "approved"
+	| "connected";
 
 export interface InteractionAnswer {
 	outcome: InteractionOutcome;
@@ -57,6 +66,7 @@ export const OUTCOMES: Record<InteractionSurface, readonly InteractionOutcome[]>
 	takeover: ["handed_back", "dismissed"],
 	draft: ["sent", "discarded"],
 	credential: [],
+	connect: ["connected", "declined"],
 };
 
 function asRecord(value: unknown): Record<string, JsonValue> | undefined {
