@@ -78,6 +78,10 @@ const INSTRUCTIONS =
 	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended (a turn marked shortened had its long texts cut to fit); input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
 	"This session stays on its machine between turns: commands keep running after the turn that started them. commands.running lists earlier turns' commands still running at the last check (read one with coding_read_command before starting it again); commands.stopped lists ones stopped since your previous turn, with the reason (SLEEP: the machine slept after a quiet period; ARCHIVED: the session was archived; EXPIRED: the coding service lost track of the session; MACHINE_STOPPED: the machine stopped from outside, such as a node restart, so check what those commands left before you rely on it; FOLDER_RESTART: the machine restarted because the company folder could not confirm what it had read, so check those commands the same way; MACHINE_NEW_DISK: the machine got a new disk because files it had read from the company folder are no longer readable, so check those commands the same way). Files in the repository, home and cache folders are kept, except after MACHINE_NEW_DISK: a new disk keeps only /company, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh. " +
 	"When input.answers is set, it is a question you asked in an earlier turn that is still open. Its reply is input.text or, when that does not decide it, a reply in earlierTurns after that question (a turn that ended without a submission). A reply of the first words of a choice selects that choice; a single letter selects the choice at that position (A is the first) or, when there is no choice at that position, the only choice that starts with that letter. When a reply decides the question, act on it: do not ask it again or infer a different decision from the repository. When no reply decides it (a clarifying question, or other instructions), do not guess: do what you can without the decision, then call coding_ask again.";
+/** Added to the instructions only on a turn whose context says machine.newDisk (C2): the session may not have been
+ * attached when the disk was replaced, so no command of it ended as MACHINE_NEW_DISK to say so. */
+const NEW_DISK =
+	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh.";
 
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
@@ -104,6 +108,9 @@ export interface CloudCodingTurnContext {
 		stopped: (CloudCodingTurnCommand & { reason: string })[];
 		omitted: number;
 	};
+	/** Whether the session's machine got a new disk since the previous turn started (false on a first turn): only
+	 * /company was kept. A kernel from before 20260930515000 does not say, which reads as false. */
+	machine: { newDisk: boolean };
 }
 export interface CloudCodingTurnCommand {
 	commandId: string;
@@ -143,9 +150,15 @@ export interface CloudCodingEarlierTurn {
 	} | null;
 }
 
-function closedRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
+/** Exactly `keys`, and each of `optional` it has. */
+function closedRecord(
+	value: unknown,
+	keys: readonly string[],
+	optional: readonly string[] = [],
+): Record<string, unknown> {
 	const item = record(value, "CODING_TURN_CONTEXT_INVALID");
-	if (Object.keys(item).sort().join() !== [...keys].sort().join()) throw new Error("CODING_TURN_CONTEXT_INVALID");
+	const expected = [...keys, ...optional.filter((key) => Object.hasOwn(item, key))];
+	if (Object.keys(item).sort().join() !== expected.sort().join()) throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return item;
 }
 /** Non-empty and bounded. What counts as blank was decided by the kernel when the
@@ -209,15 +222,12 @@ export function parseCloudCodingTurnContext(
 	scope: { workerId: string; sequence: number },
 	repository: CloudCodingRepository,
 ): CloudCodingTurnContext {
-	const item = closedRecord(value, [
-		"schema",
-		"workerId",
-		"sequence",
-		"input",
-		"earlierTurns",
-		"omittedEarlierTurns",
-		"commands",
-	]);
+	const item = closedRecord(
+		value,
+		["schema", "workerId", "sequence", "input", "earlierTurns", "omittedEarlierTurns", "commands"],
+		// 20260930515000 adds `machine`; the runtime rolls before it, so a context without it is read as no new disk.
+		["machine"],
+	);
 	if (
 		item.schema !== "qorpera.coding-turn-context/v2" ||
 		item.workerId !== scope.workerId ||
@@ -300,6 +310,8 @@ export function parseCloudCodingTurnContext(
 		Number(commands.omitted) < 0
 	)
 		throw new Error("CODING_TURN_CONTEXT_INVALID");
+	const machine = Object.hasOwn(item, "machine") ? closedRecord(item.machine, ["newDisk"]) : { newDisk: false };
+	if (typeof machine.newDisk !== "boolean") throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return {
 		input: { from: current.from, text: current.text, answers },
 		earlierTurns,
@@ -322,6 +334,7 @@ export function parseCloudCodingTurnContext(
 			}),
 			omitted: Number(commands.omitted),
 		},
+		machine: { newDisk: machine.newDisk },
 	};
 }
 
@@ -441,6 +454,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					earlierTurns: kept,
 					omittedEarlierTurns: turn.omittedEarlierTurns + turn.earlierTurns.length - kept.length,
 					commands: turn.commands,
+					machine: turn.machine,
 					input: turn.input,
 				},
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.
@@ -619,7 +633,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			isolation: this.#isolation,
 			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 			prompt,
-			runtimeInstructions: INSTRUCTIONS,
+			runtimeInstructions: turn.machine.newDisk ? `${INSTRUCTIONS} ${NEW_DISK}` : INSTRUCTIONS,
 			signal,
 			timeoutMs: this.#timeoutMs,
 			observability: context.observability,
