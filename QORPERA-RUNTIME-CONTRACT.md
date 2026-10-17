@@ -4539,9 +4539,9 @@ and can still be renamed. Formats:
 
 > **Scope reset, 2026-10-17.** The [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
 > item 2, narrows this amendment to two pages Qorpera makes, Mailbox and member-to-agent ownership. Both stay off
-> until a member turns them on. Company Pulse and the main interface, work-card boards, custom pages, pages agents
-> create or change (`save_interface`), library updates, the table store and the marketplace are outside the
-> rebuild. The items below stay as the record of what was approved on 2 October. Items 7, 8 and 11 carry a mark
+> until an authorized member turns them on. Company Pulse and the main interface, work-card boards, custom pages,
+> pages agents create or change (`save_interface`), library updates, the table store and the marketplace are outside
+> the rebuild. The items below stay as the record of what was approved on 2 October. Items 7, 8 and 11 carry a mark
 > where they changed, and wherever an item says otherwise the scope amendment wins.
 
 Ratified 2 October 2026 (Jonas). He named Interfaces and set their direction:
@@ -5283,10 +5283,10 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 > **Scope reset, 2026-10-17.** The [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
 > item 1, makes this amendment an optional beta. The tree does not replace the notebook: it is the mode a company
 > chooses as **Shared context — Beta** in Settings, and **Agent notebooks** is the default. The older text holds
-> for a company unless it has chosen the beta, and a run keeps the mode it started with. Cancelled: switching the
-> tree on for every company and trimming the notebook at M5 (item 9), and removing the mode gate after W1d. M5 is
-> now the reversible Settings choice, and item 14's erasure condition now comes before the beta is offered. The
-> items below stay as the record of what was approved on 5 and 6 October.
+> for a company unless it has chosen the beta, and a run keeps the mode recorded when it is made. Cancelled:
+> switching the tree on for every company and trimming the notebook at M5 (item 9), and removing the mode gate after
+> W1d. M5 is now the reversible Settings choice, and item 14's erasure condition now comes before the beta is
+> offered. The items below stay as the record of what was approved on 5 and 6 October.
 
 Founder decisions of 5 and 6 October 2026. Jonas asked for this design on 5 October, after reading Victor Taelin's
 OptChat design, and widened it the same day: "This isn't just memory, it's a shared unlimited context window in the
@@ -5712,8 +5712,9 @@ the proofs and the list of documents, is
      notebooks, removing the gate after W1d, and M5's trimming of notebook tiers and tools. M5 is now the reversible
      Settings choice.
    - The chosen mode applies to everything at once: conversation views, new run logs, context folding and
-     composition, and the tree's background work. A run keeps the mode it started with until it ends or is stopped.
-     A change applies from the next run, and Settings says when one is pending.
+     composition, and the tree's background work. A run keeps the mode recorded when it is made until it ends or is
+     stopped, so a run queued before a change keeps the old mode. A change applies to the runs made after it, and
+     Settings says when one is pending.
    - Switching deletes and rewrites nothing: notebooks, transcripts, tree files and run logs stay. Erasure and
      retention hold with the beta off, and turning it on again never brings back what was erased. There is no
      conversion, dual writing or history migration between the modes.
@@ -5722,14 +5723,15 @@ the proofs and the list of documents, is
      unavailable until its checks pass.
    - The gate is kept by a forward change. No applied migration is edited, and the gate's planned removal (the note
      in `20260930352000_memory_run_log_gate.sql`) does not happen.
-2. **Interfaces: two pages made by Qorpera, which a member turns on.**
-   - Interfaces are pages Qorpera designs. A member turns one on and connects it to data they may already read. The
-     first scope is exactly two pages:
+2. **Interfaces: two pages made by Qorpera, which an authorized member turns on.**
+   - Interfaces are pages Qorpera designs. An authorized member turns one on for the company and connects it to data
+     they may already read. The first scope is exactly two pages:
      - **Mailbox:** the company's chosen mail source, its threads and messages, and the mail actions and protections
-       that already exist;
+       that already exist. In this rebuild the source is the company's own mail addresses; a connected outside
+       mailbox as a source is deferred;
      - **Member-to-agent ownership:** who owns or supervises which agent, with the consent, transfer and departure
        handling that keep it right.
-   - The member picks the connections, accounts and other source settings. It is not a general data binding editor.
+   - The member sets only the page's allowed activation and source fields. It is not a general data binding editor.
    - Outside this rebuild: Company Pulse, general work-card boards, custom interfaces, pages agents design, a page
      builder, more page types, a marketplace, template updates, a larger table store and the arrival animation.
    - Both pages start off. Turning a page on or off changes only what is shown, never ownership, payment, consent or
@@ -5740,8 +5742,9 @@ the proofs and the list of documents, is
    - Layouts and actions are the platform's. Agents do not create or redesign pages. Writing custom pages leaves the
      agent tools, and the same boundary holds for older or replayed tool calls, ordinary file writes and writes
      through a mounted folder.
-   - The table reads and writes the two pages and other kept behavior need stay. Mail's outside-content marks and
-     quoting, the account mail limits, the viewer's authority and safe actions stay as they are.
+   - The table reads and writes the two pages and other kept behavior need stay. Generic table schema and layout
+     authoring is not a requirement. Mail's outside-content marks and quoting, the account mail limits, the viewer's
+     authority and safe actions stay as they are.
    - Stored files, rows, offers and consent records are kept. No mass deletion, storage migration or framework
      removal comes from this.
 3. **Coding extras are deferred.**

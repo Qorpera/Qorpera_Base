@@ -20,7 +20,8 @@ ratified.
 > - The gate between the modes stays for good, kept by a forward change. No applied migration is edited, and the
 >   removal planned in the comments of `20260930352000_memory_run_log_gate.sql` does not happen.
 > - The mode applies to conversation views, new run logs, folding and composition, and the tree's background work.
->   A run keeps the mode it started with, and a change applies from the next run.
+>   A run keeps the mode recorded when it is made, so a run queued before a change keeps the old mode. A change
+>   applies to the runs made after it.
 > - Switching deletes and rewrites nothing. Erasure and retention hold with the beta off, and turning the beta on
 >   again never brings back what was erased.
 > - §13's targets and §14's gates now decide when the beta may be offered, not a rollout. The beta's quality,

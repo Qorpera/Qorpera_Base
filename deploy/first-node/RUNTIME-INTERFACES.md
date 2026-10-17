@@ -5,6 +5,26 @@ he approved the design page (https://claude.ai/artifact/PXouSQFWVSHTc6Vko3Gm7G) 
 (§9). The contract text is the "2026-10-02 amendment: interfaces project company state from the company folder" in
 section 19 of `QORPERA-RUNTIME-CONTRACT.md`. Where this document and the contract differ, the contract governs.
 
+> **Scope reset, 2026-10-17.** Jonas narrowed Interfaces on 17 October 2026. See the
+> [scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §2, and the contract's
+> [2026-10-17 amendment](../../QORPERA-RUNTIME-CONTRACT.md#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 2. Where this document says otherwise, the amendment wins.
+> - Interfaces are pages Qorpera designs, and the rebuild has exactly two: **Mailbox**, and **Members**
+>   (member-to-agent ownership: who owns or supervises which agent). Both start off. An owner or admin (the
+>   amendment's authorized member) turns one on for the whole company and sets only the page's allowed source
+>   fields. In this rebuild the Mailbox's source is the company's own mail addresses; a connected outside mailbox
+>   as a source is deferred. Turning a page on or off changes only what is shown.
+> - Layouts and actions are the platform's. Agents do not create or redesign pages. Only the two pages can be
+>   active, on every route.
+> - Out of this rebuild: Company Pulse and the main interface, general work-card boards, custom interfaces, pages
+>   agents design, a page builder, more page types, the library's update offers and outside templates (the
+>   marketplace), a larger table store and the arrival animation.
+> - Stored files, rows, offers and consent records are kept. Nothing is deleted or migrated because of this.
+>
+> In this rebuild the format of §§3–6 is needed only as far as the two pages need it. The text below stays as the
+> record of what was approved on 2 October; §§1–2 and 7–10 carry a mark. This note records scope; it says
+> nothing about what is built.
+
 The page showed the format, the three first interfaces in it, the contract text and the build plan. This document
 gives the exact keys, limits and refusals the parser enforces. Where it adds detail the page did not show, the detail
 is marked **proposed** and can change in review without a new founder decision, as long as it keeps the page's rules.
@@ -29,6 +49,11 @@ item 7: there is no page code to isolate.
 Members and agents use the same pages. A member opens one from the rail's Interfaces tab. An agent reads one as text
 with `interface_read`, and changes one with `save_interface` (§7).
 
+> **Scope reset, 2026-10-17.** Mailbox and Members are the only interfaces. Qorpera makes their layouts and
+> actions, and an owner or admin sets only their allowed source fields. Custom definitions, stored or new, never
+> show as active pages, and none can take a supported page's name. Agents do not create or redesign pages, so
+> writing pages leaves the agent tools (§7). A member opens the two pages from the Interfaces tab once they are on.
+
 ## 2. Where things live
 
 ```
@@ -51,6 +76,11 @@ tables/                           seeded; can't be deleted or moved
   - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
   - `tables/`, and the `tables/areas/` folder, which the platform reads supervision from (§5.1);
   - `table.toml` and `rows.csv` on their own: deleting a table's folder deletes the table.
+
+> **Scope reset, 2026-10-17.** Seeding Pulse and the `numbers` and `cards` tables is no longer required, and there
+> is no main interface to keep from deletion. What the two pages and other kept behavior need stays. The larger
+> table store (decision 1) is out of this rebuild. Folders and files a company already has stay; none is deleted or
+> moved because of this.
 
 ### Structured files
 
@@ -758,7 +788,21 @@ F2's) gains `save_interface`, classified as §7 says, for a call whose units are
   the change with Undo (decision 2).
 - **Coding sessions** see `interfaces/` and table definitions read-only.
 
+> **Scope reset, 2026-10-17.** Agents do not create or redesign pages. Writing pages leaves the agent tools
+> (`save_interface`, with its review recorder part and Undo), and the same boundary holds for older or replayed tool
+> calls, ordinary file writes and writes through a mounted folder. So the review of an agent creating an interface,
+> adding a button or changing `[access]` has nothing left to count. Agents also do not create, change, move or delete
+> a table's definition (`tables/<table>/table.toml`) or a table's folder. They keep writing a table's rows
+> (`rows.csv`) under the claim rule, and the table reads and writes the two pages and other kept behavior need stay.
+> Members and the platform keep their file writes. Even so, layouts and actions are the platform's for members too:
+> an owner or admin turns a page on or off and sets its allowed source fields.
+
 ## 8. Library, seeding and updates
+
+> **Scope reset, 2026-10-17.** The library, adding interfaces from it, update offers and outside templates are out
+> of this rebuild, and so are Pulse and the main interface. Mailbox and Members are the platform's pages and start
+> off. The Interfaces tab lists only the pages that are on, so `interfaces/order.md`'s Pulse line and its rule for
+> the main interface no longer hold. Stored copies and order files stay.
 
 - **The library.** Qorpera's library holds interfaces in this same format: a folder of an `interface.toml`, its
   tables and a README. Pulse, Mailbox and Members are its first three.
@@ -799,7 +843,23 @@ wherever it is listed. Interfaces not listed follow by name.
    pays for an agent's work alone. On a plan login, supervision brings the agents' questions, cards and personal
    rules, and payment follows today's rule. The payment half applies only to logins whose terms allow it.
 
+> **Scope reset, 2026-10-17.** Decision 2 no longer applies: agents do not make or change pages. In decision 1,
+> rows stay in a CSV file, and the larger table store is out of this rebuild. Decisions 3 and 4 are not changed.
+
 ## 10. Build order
+
+> **Scope reset, 2026-10-17.** The steps are bounded to the two pages (the scope amendment's §5):
+> - I1 holds for the two pages only: the rail's Interfaces tab lists Mailbox and Members once they are on, and
+>   `#/c/{id}/i/{interface}`, a direct link or a fallback opens no other page;
+> - I2, I3, I6, I7 and I9 hold as far as the two pages need them, and so do the parts of I5 and I11 the Mailbox
+>   needs;
+> - stopped: I4 (Pulse), the custom-page part of I8 (`save_interface`, its main switch and the review recorder's
+>   part) and I10 (pages agents make);
+> - the library with update offers, the table store and the marketplace, under the table, are out of this
+>   rebuild rather than later steps.
+>
+> Steps this note does not name are not changed by it. The rows and the Built notes below stay as the record.
+> This note records scope; it says nothing about what is built.
 
 Each step is one PR, handed to the coordinator with an exact-head review and a node 2 run.
 
