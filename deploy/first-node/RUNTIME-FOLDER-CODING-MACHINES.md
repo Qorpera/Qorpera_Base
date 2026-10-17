@@ -378,7 +378,13 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      boot before down as dropped (`dropped-start-<start operation id>.json` next to the machine's journal), and takes
      that back only when the service answers no. A command moved onto the new boot whose start is written down so ends
      `machine_stopped` (or `cancelled`) host-side, at the boundary's release, with what its boot printed past the last
-     output the host kept counted lost: the guest is not asked for it. A test machine says `restarted` at its first
+     output the host kept counted lost: the guest is not asked for it. Each command starts, and is read, under
+     the start the machine runs at that moment, read again after each start, whichever start its session or its
+     transport was made under: none starts while the machine starts again, none runs once the machine started again
+     before its run went out, and a turn that kept its transport across another session's restart reads its commands
+     as moved. Every command's output is kept only if its start is still not written down right before it is kept,
+     since a restart writes the mark before the boundary answers `released` again; so a call begun before that restart
+     keeps nothing of the dropped boot either. A test machine says `restarted` at its first
      boot too, and at each boot after a stop, before SQL hears of the boot; it keeps nothing of a boot before.
    - **`unreadable`** (a released read the core can no longer place) moves the machine's sessions to a new machine id
      with a new disk, or archives them; the old disk is removed.

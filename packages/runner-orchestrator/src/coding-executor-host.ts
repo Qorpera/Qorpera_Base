@@ -203,8 +203,8 @@ interface Prepared extends Attached {
 	bootId: string;
 	guestConfigSha256: string;
 	baseSha: string;
-	/** On the folder model: the LXD operation that started the machine, the session's user, and where its commands start. */
-	folder?: { startOperationId: string; uid: number; cwd: string };
+	/** On the folder model: the session's user, and where its commands start. */
+	folder?: { uid: number; cwd: string };
 }
 /** A session attached to one of this executor's machines under its SQL
  * attachment, standing by or in a turn: what renewing its guest lease needs. */
@@ -466,6 +466,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** Per machine, how many times this process started it on the folder model: a turn that found the machine must
 	 * restart for the folder leaves it running if it started since that turn's start, another turn's restart included. */
 	readonly #folderStarts = new Map<string, number>();
+	/** Per machine on the folder model, the LXD operation that started it as it runs now, read each time a turn found it
+	 * running or started it: every session's commands on it start and are read under that start as it is at that moment,
+	 * whenever the session was prepared or its transport made. None from right before it starts again until that start
+	 * is read. */
+	readonly #folderStartOperations = new Map<string, string>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -1194,7 +1199,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			started = await this.#startFolder(folder, claim, machine, storage, journal, signal, started.starts);
 			guest = await attach(started);
 		}
-		const { startOperationId, uid } = started;
 		const ready: Prepared = {
 			claim,
 			machine,
@@ -1202,15 +1206,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			scope,
 			...guest,
 			baseSha,
-			folder: { startOperationId, uid, cwd },
+			folder: { uid: started.uid, cwd },
 		};
 		this.#prepared.set(claim.workerId, ready);
 		return { vmId: machine.machineId, baseSha };
 	}
 	/** One lifecycle step on the folder model: the machine runs this plan and its LXD agent answers, and the session's
-	 * user, the boot and the start it came from are read, with how many times this process started the machine so far.
-	 * With `restart` (that count when a turn found the machine must restart for the folder), it stops first, unless it
-	 * started since. */
+	 * user and the boot are read, with how many times this process started the machine so far. With `restart` (that
+	 * count when a turn found the machine must restart for the folder), it stops first, unless it started since. */
 	#startFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1219,7 +1222,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		journal: CodingMachineJournalPlan,
 		signal: AbortSignal,
 		restart?: number,
-	): Promise<{ bootId: string; uid: number; startOperationId: string; starts: number }> {
+	): Promise<{ bootId: string; uid: number; starts: number }> {
 		return this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
 			if (restart !== undefined && (this.#folderStarts.get(machine.machineId) ?? 0) === restart)
@@ -1231,13 +1234,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (uid === null || uid < CODING_GUEST.minUid || uid > CODING_GUEST.maxUid)
 				throw new Error("CODING_FOLDER_SESSION_UID_MISSING");
 			const bootId = await this.#folderReady(machine, signal);
-			// The start this boot came from: a command's start names it, so a read after a restart knows its boot.
-			const startOperationId = await codingMachineStartOperation(await this.#directory("machines", signal), journal);
-			return { bootId, uid, startOperationId, starts: this.#folderStarts.get(machine.machineId) ?? 0 };
+			return { bootId, uid, starts: this.#folderStarts.get(machine.machineId) ?? 0 };
 		});
 	}
-	/** The folder model's machine runs, started if it was stopped, under the turn's run authority. Called under
-	 * #exclusive. */
+	/** The folder model's machine runs, started if it was stopped, under the turn's run authority, and the start it runs
+	 * under is read (#folderStartOperations). Called under #exclusive. */
 	async #runFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1268,8 +1269,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// follows. Either not confirmed, the machine does not start. Whether a read of its last boot may have gone
 			// unreleased (F3 5g-5) is written down first, against that boot's start, and taken back only when the service
 			// answers no to the call after that write: an answer unheard may have been yes, and no later call says so
-			// again. The boot's commands then keep nothing more of what it left on the machine's disk.
+			// again. The boot's commands then keep nothing more of what it left on the machine's disk. Before all that,
+			// no session's command starts, or is read, under that boot's start any more.
 			async (afterOperationId, checked) => {
+				this.#folderStartOperations.delete(machine.machineId);
 				const journalRoot = await this.#directory("machines", checked);
 				const boot = await codingMachineLastStart(journalRoot, journal);
 				const marked = boot !== null && (await dropCodingMachineStart(journalRoot, journal, boot));
@@ -1278,6 +1281,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				await this.#recordFolderRestart(machine, afterOperationId, checked);
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
+		);
+		// The start this boot came from: a command's start names it, so a read after a restart knows its boot.
+		this.#folderStartOperations.set(
+			machine.machineId,
+			await codingMachineStartOperation(await this.#directory("machines", signal), journal),
 		);
 	}
 	/** Rule 4 (RUNTIME-FOLDER-CODING-MACHINES.md): the machine's reads can't be proven released, so it stops before any
@@ -2545,13 +2553,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
 		const folder = this.#options.folder;
-		if (folder && ready.folder)
+		if (folder && ready.folder) {
 			// The session's own user runs each command through the guest agent, at its worktree, with Git's settings for
-			// the company folder; the host keeps each command's start and output in the session's custody folder.
+			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
+			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
+			const { machineId } = ready.machine;
 			return new LxdCodingFolderCommandTransport({
 				machine: ready.machine,
 				scope: ready.scope,
-				startOperationId: ready.folder.startOperationId,
+				currentStart: () => this.#folderStartOperations.get(machineId),
 				session: {
 					uid: ready.folder.uid,
 					gid: ready.folder.uid,
@@ -2570,6 +2580,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					),
 				authorize: checkedAuthorize,
 			});
+		}
 		return new LxdCodingCommandTransport({
 			machine: ready.machine,
 			storage: this.#placement,

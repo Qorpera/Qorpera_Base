@@ -2763,7 +2763,7 @@ describe("a coding session on the folder model", () => {
 			expect.objectContaining({
 				machine: f.machine,
 				scope: f.scope(),
-				startOperationId: f.startOperationId,
+				currentStart: expect.any(Function),
 				session: { uid: 200000, gid: 200000, cwd: f.cwd, environment: CODING_FOLDER_GIT_ENVIRONMENT },
 				custody: lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId).custodySource,
 				limitBytes: 67108864,
@@ -2776,8 +2776,12 @@ describe("a coding session on the folder model", () => {
 			GIT_CONFIG_KEY_12: "protocol.ext.allow",
 			GIT_CONFIG_VALUE_12: "never",
 		});
+		const transport = mocked.folderTransports[0] as {
+			currentStart: () => string | undefined;
+			authorize: (...args: unknown[]) => Promise<void>;
+		};
+		expect(transport.currentStart()).toBe(f.startOperationId);
 		// Each of its steps asks the turn's own authority first.
-		const transport = mocked.folderTransports[0] as { authorize: (...args: unknown[]) => Promise<void> };
 		const runs = f.calls("qorpera_authorize_coding_machine_run").length;
 		await transport.authorize("start", f.scope(), randomUUID(), "a".repeat(64), f.signal);
 		expect(f.calls("qorpera_authorize_coding_machine_run")).toHaveLength(runs + 1);
@@ -3536,6 +3540,48 @@ describe("a coding session on the folder model", () => {
 		expect(f.lxd.running).toBe(true);
 		expect([...f.attachments.keys()]).toEqual([second.workerId]);
 		expect(f.views.attach.mock.calls.at(-1)?.[0].attachmentToken).toBe(f.attachments.get(second.workerId));
+	});
+	it("runs a session's commands under the start the machine runs now, after another session restarted it (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		// The machine's journal names the start it last ran under.
+		mocked.startOperation.mockImplementation(async () => f.state.startOperationId);
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const first = f.state.startOperationId;
+		type Transport = { currentStart: () => string | undefined };
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const transport = mocked.folderTransports.at(-1) as Transport;
+		expect(transport.currentStart()).toBe(first);
+		// The second session's view is refused, so the machine restarts while the first session's turn goes on: from
+		// right before it starts again, no command starts or is read under the boot before's start.
+		let during: string | undefined | null = null;
+		f.restarted.mockImplementationOnce(async () => {
+			f.files.set("/proc/sys/kernel/random/boot_id", {
+				uid: 0,
+				gid: 0,
+				mode: 0o444,
+				content: Buffer.from(`${randomUUID()}\n`),
+			});
+			during = transport.currentStart();
+			return false;
+		});
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("VIEW_CLOSED"));
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		expect(during).toBeUndefined();
+		expect(f.state.startOperationId).not.toBe(first);
+		// The first session's transport was made under the start before: its commands now run under the new one, as every
+		// session's do, so a command of the boot before is judged by its own start's mark.
+		expect(transport.currentStart()).toBe(f.state.startOperationId);
+		await f.host.commandTransport(
+			f.scope(second),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		expect((mocked.folderTransports.at(-1) as Transport).currentStart()).toBe(f.state.startOperationId);
 	});
 	it("publishes what the machine's boundary saved: the boundary first, then the session's bundle, pushed and opened as a draft", async () => {
 		const f = await folderFixture();

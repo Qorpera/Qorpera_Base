@@ -530,8 +530,10 @@ export interface LxdCodingFolderCommandSession {
 export interface LxdCodingFolderCommandTransportOptions {
 	readonly machine: LxdCodingMachineBinding;
 	readonly scope: CloudCodingCommandScope;
-	/** The LXD operation that started the machine this turn runs on, from the machine's journal. */
-	readonly startOperationId: string;
+	/** The LXD operation that started the machine as it runs now, from the machine's journal, read each time it is
+	 * needed: none while the machine starts again. A command starts under it and runs only while it stays the same; a
+	 * command of any other start ended with its boot, whenever the transport was made. */
+	readonly currentStart: () => string | undefined;
 	readonly session: LxdCodingFolderCommandSession;
 	/** The worker's custody folder on the host: the executor's, and out of the machine's reach. */
 	readonly custody: string;
@@ -541,7 +543,7 @@ export interface LxdCodingFolderCommandTransportOptions {
 	readonly control: Pick<CodingFolderControl, "boundary">;
 	/** Whether the folder service could not say that every read the machine was served in the boot this LXD operation
 	 * started was released (F3 5g-5, from the machine's journal): a command of that boot keeps nothing more of what it
-	 * left on the machine's disk. */
+	 * left on the machine's disk. Asked of the command's own start each time its output is about to be kept. */
 	readonly dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
@@ -556,13 +558,13 @@ export class LxdCodingFolderCommandTransport {
 	readonly #scope: Readonly<CloudCodingCommandScope>;
 	readonly #companyId: string;
 	readonly #machineId: string;
-	readonly #startOperationId: string;
 	readonly #session: Readonly<Required<LxdCodingFolderCommandSession>>;
 	readonly #custody: string;
 	readonly #limitBytes: number;
 	readonly #guest: LxdCodingFolderCommandTransportOptions["guest"];
 	readonly #control: LxdCodingFolderCommandTransportOptions["control"];
 	readonly #dropped: LxdCodingFolderCommandTransportOptions["dropped"];
+	readonly #currentStart: LxdCodingFolderCommandTransportOptions["currentStart"];
 	readonly #secrets: CodingCommandSecrets;
 	readonly #authorize: Authorize;
 	constructor(options: LxdCodingFolderCommandTransportOptions) {
@@ -575,7 +577,6 @@ export class LxdCodingFolderCommandTransport {
 			!isUuid(scope.requestId) ||
 			!Number.isSafeInteger(scope.turn) ||
 			scope.turn < 1 ||
-			!isUuid(options.startOperationId) ||
 			![session.uid, session.gid].every(
 				(id) => Number.isSafeInteger(id) && id >= CODING_GUEST.minUid && id <= CODING_GUEST.maxUid,
 			) ||
@@ -589,7 +590,6 @@ export class LxdCodingFolderCommandTransport {
 		this.#scope = Object.freeze({ ...scope });
 		this.#companyId = machine.companyId;
 		this.#machineId = machine.machineId;
-		this.#startOperationId = options.startOperationId;
 		this.#session = Object.freeze({
 			uid: session.uid,
 			gid: session.gid,
@@ -601,6 +601,7 @@ export class LxdCodingFolderCommandTransport {
 		this.#guest = options.guest;
 		this.#control = options.control;
 		this.#dropped = options.dropped;
+		this.#currentStart = options.currentStart;
 		this.#secrets = options.secrets ?? noCodingCommandSecrets;
 		this.#authorize = options.authorize;
 	}
@@ -687,6 +688,10 @@ export class LxdCodingFolderCommandTransport {
 			throw new Error("CODING_COMMAND_INPUT_INVALID");
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
 		const receipt = await this.#within(input.commandId, signal, true, async (folder, budget) => {
+			// A command starts under the start the machine runs now, whenever this transport was made; none while it starts
+			// again.
+			const start = this.#currentStart();
+			if (start === undefined || !isUuid(start)) throw new Error("CODING_MACHINE_START_UNCONFIRMED");
 			await linkOnce(folder, "request.json", {
 				schema: "qorpera.coding-host-command/v1",
 				workerId: this.#scope.workerId,
@@ -696,7 +701,7 @@ export class LxdCodingFolderCommandTransport {
 				timeoutMs: input.timeoutMs,
 				limitBytes: this.#limitBytes,
 				turn: this.#scope.turn,
-				startOperationId: this.#startOperationId,
+				startOperationId: start,
 			} satisfies Request);
 			const records = await this.#records(folder, input.commandId);
 			const { request, outcome } = records;
@@ -709,14 +714,13 @@ export class LxdCodingFolderCommandTransport {
 			)
 				throw new Error("CODING_COMMAND_CONFLICT");
 			// Only on the machine it was first started on: one that started again since may have run it already.
-			if (
-				!outcome &&
-				!progress.acknowledged &&
-				!progress.cancelled &&
-				request.startOperationId === this.#startOperationId
-			) {
+			if (!outcome && !progress.acknowledged && !progress.cancelled && request.startOperationId === start) {
 				const secrets = await this.#secrets.resolve(this.#secretRequest(input.commandId), budget);
 				const { uid, gid, cwd, environment } = this.#session;
+				// Nor once it started again while the secrets were read: the command then ended with the boot it was started
+				// under, before it ran.
+				if (request.startOperationId !== this.#currentStart())
+					return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
 				try {
 					await this.#guest.run(
 						{
@@ -810,8 +814,8 @@ export class LxdCodingFolderCommandTransport {
 	}
 
 	/** Pulls what the command printed since the host last kept its output, and keeps it once the machine's boundary
-	 * released every read the machine was served until then. Without that release nothing is kept, and the command
-	 * shows `running`. */
+	 * released every read the machine was served until then, unless the command's boot is then written down as dropped.
+	 * Without that release nothing is kept, and the command shows `running`. */
 	async #advance(
 		folder: string,
 		request: Request,
@@ -822,8 +826,8 @@ export class LxdCodingFolderCommandTransport {
 	): Promise<{ progress: Progress; outcome?: Outcome; shown: State }> {
 		const workerId = this.#scope.workerId,
 			commandId = request.commandId;
-		// The machine started again since the command did.
-		const moved = request.startOperationId !== this.#startOperationId;
+		// The machine started again since the command did, or starts again now.
+		const moved = request.startOperationId !== this.#currentStart();
 		// ...and the folder service could not say every read the machine was served before then was released (F3 5g-5):
 		// what the command left on the machine's disk is not kept, and it ended with the machine.
 		if (moved && (await this.#dropped(request.startOperationId, budget)))
@@ -914,6 +918,17 @@ export class LxdCodingFolderCommandTransport {
 		const bytes = Buffer.concat(kept),
 			room = request.limitBytes - progress.logBytes,
 			full = bytes.length > room;
+		// A restart writes the command's boot down as dropped before the machine's boundary answers released again, and
+		// this call may have begun before that restart: the mark is read again now. A boot written down keeps nothing of
+		// what was pulled, which is counted lost.
+		if (await this.#dropped(request.startOperationId, budget))
+			return this.#unknown(
+				folder,
+				await this.#note(folder, progress, { acknowledged: true, end }),
+				true,
+				budget,
+				signal,
+			);
 		await keepOutput(folder, progress.logBytes, full ? bytes.subarray(0, room) : bytes);
 		const next = await this.#save(folder, {
 			...progress,
