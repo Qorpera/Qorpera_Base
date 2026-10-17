@@ -187,6 +187,9 @@ begin
 		'public.qorpera_memory_message_erase_scrub(uuid,uuid)'] loop
 		if to_regprocedure(v_name) is null then raise exception 'Erasure or retention lost %', v_name; end if;
 	end loop;
+	-- The next activation's check for 20260928549230 reads the test list's comment (#1273 review r1).
+	if coalesce(obj_description(to_regclass('public.qorpera_memory_tree_companies'), 'pg_class'), '') not like '%group chat%' then
+		raise exception 'The test list''s comment lost the activation''s marker for 20260928549230'; end if;
 end $$;
 
 -- 4. Erasure with the beta off (the company off the test list, no choice left): the platform deletes a block of Otto's

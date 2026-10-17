@@ -53,8 +53,10 @@ comment on table public.qorpera_company_memory_modes is
 	'— Beta). No row is notebooks. Read through qorpera_company_memory_mode_effective; set by owners and admins.';
 
 comment on table public.qorpera_memory_tree_companies is
-	'Summary trees M1, C5 (20260930508000): the operator''s test list, the companies that may choose Shared context — '
-	'Beta in Settings. The list alone never turns the beta on (qorpera_company_memory_modes).';
+	'Summary trees M1 (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M4c), C5 (20260930508000): the operator''s test list, the '
+	'companies that may choose Shared context — Beta in Settings. A run recorded in the beta, on a post in its agent''s '
+	'own thread or a group chat, sees the primary view instead of the history. The list alone never turns the beta on '
+	'(qorpera_company_memory_modes).';
 
 create function public.qorpera_company_memory_beta_offered(p_profile_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
@@ -131,6 +133,7 @@ grant execute on function public.qorpera_company_memory_mode(uuid) to authentica
 -- nothing (not even setAt).
 create function public.qorpera_set_company_memory_mode(p_profile_id uuid, p_mode text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_role text;
 begin
 	if auth.uid() is null then raise exception 'authentication required' using errcode = '42501'; end if;
 	if p_mode is null or p_mode not in ('notebooks', 'tree') then
@@ -139,8 +142,16 @@ begin
 		raise exception 'Only members of this company can change its memory' using errcode = '42501'; end if;
 	if not public.qorpera_can_authorize_profile(p_profile_id) then
 		raise exception 'Only owners and admins change the company''s memory' using errcode = '42501'; end if;
-	-- No lock on the company row (core §3): the upsert's row lock orders two choices, and its foreign key keeps the
-	-- company while the first is written.
+	-- The company row KEY SHARE (rank 0, never stronger: core §3), then the caller's member row shared (rank 1), so a
+	-- role change or removal waits for this choice, and one that commits while this waits is read here (test 611). The
+	-- choice's row comes after both.
+	perform 1 from public.qorpera_profiles where id = p_profile_id for key share;
+	select m.role into v_role from public.qorpera_profile_members m
+	where m.profile_id = p_profile_id and m.user_id = auth.uid() for share;
+	if v_role is null then
+		raise exception 'Only members of this company can change its memory' using errcode = '42501'; end if;
+	if v_role not in ('owner', 'admin') then
+		raise exception 'Only owners and admins change the company''s memory' using errcode = '42501'; end if;
 	if p_mode = 'tree' and not public.qorpera_company_memory_beta_offered(p_profile_id) then
 		raise exception 'Shared context is not available for this company yet' using errcode = '55000'; end if;
 	insert into public.qorpera_company_memory_modes as m (profile_id, mode) values (p_profile_id, p_mode)
