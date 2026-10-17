@@ -5527,8 +5527,8 @@ comes later, in an amendment of its own."
 
 It amends item 3 of the
 [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), "Sources are a
-closed list": runtime state gains the exit log. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md` §7 and
-`deploy/first-node/RUNTIME-INTERFACES.md` §4.
+closed list": runtime state gains the exit log. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md` §7.1; the source's
+rows in `deploy/first-node/RUNTIME-INTERFACES.md` §4 come with E10c.
 
 1. **A source of its own.** Interfaces get a new runtime-state source, `exit_log`.
    - It holds one company's lines from the exit log, one day (UTC) at a time, newest first.
@@ -5567,14 +5567,15 @@ closed list": runtime state gains the exit log. Design: `deploy/first-node/RUNTI
      company's lines apart: nothing of another company leaves the node, and for a member, nothing of another machine.
 
 **For the build** (not founder decisions; the designs carry them):
-- E10a: this amendment and the designs. A function for `authenticated` tells the object gateway what a viewer may read
-  of a company's exit log: owners and admins read the company's lines; any other member reads their own coding
-  machines' lines; anyone else is refused, and so is a company being deleted (migration 20260930507000, SQL test 685).
+- E10a: this amendment and the agent exit design. A function for `authenticated` tells the object gateway what a
+  viewer may read of a company's exit log: owners and admins read the company's lines; any other member reads their
+  own coding machines' lines; anyone else is refused, and so is a company being deleted (migration 20260930507000, SQL
+  test 685).
 - E10b: the tool's new `view` command. It runs as root behind a socket that only the object gateway may open. The
   tool reads the share the way the lookup does, and keeps one company's lines and the unknown stretches. Also in
   E10b: the object gateway's member route, and the member company gateway's allowlist.
 - E10c: the source in cloud-client, the web client (the day steps) and the runtime's interface tools ("not shown" for
-  agents).
+  agents), and its rows in the interfaces design.
 
 ## 20. Enforcement matrix
 

@@ -304,10 +304,10 @@ the node's own disk, the way the lookup reads it:
 It answers `{"schema":"qorpera.agent-exit-view/v1","company","day","rows","unknown","next"}`, newest first, with at
 most 2,000 rows a page.
 
-**Rows** (the source's columns, RUNTIME-INTERFACES.md §4): `at`, `until`, `kind` (`connection`, `refused`, `braked`
-or `unknown`), `machine`, `machine_kind` (`machine`, `coding` or `office`), `member`, `to` (address and port),
-`protocol`, `name`, `sent`, `received`, and `why` (the rule that refused, the brake's reason, or why a stretch is
-unknown). `name` is outside content.
+**Rows** (the source's columns; RUNTIME-INTERFACES.md §4 lists them with E10c): `at`, `until`, `kind`
+(`connection`, `refused`, `braked` or `unknown`), `machine`, `machine_kind` (`machine`, `coding` or `office`),
+`member`, `to` (address and port), `protocol`, `name`, `sent`, `received`, and `why` (the rule that refused, the
+brake's reason, or why a stretch is unknown). `name` is outside content.
 
 **Limits.**
 - Today never shows. A day shows about two hours after it ends: it is closed then, and sealed and shipped within the
@@ -524,7 +524,7 @@ server name check.
 | E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
 | E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c-1 "only listed" by address; E8c-2 its server name check | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
-| E10 | Each company's own log view (§7.1, its own amendment): E10a the amendment, the designs and the scope function; E10b the reader and the gateways' route; E10c the `exit_log` source in the clients | companies see it |
+| E10 | Each company's own log view (§7.1, its own amendment): E10a the amendment, this design and the scope function; E10b the reader and the gateways' route; E10c the `exit_log` source in the clients and the interfaces design | companies see it |
 
 Each step is a small PR with an exact-head independent review and a `run-on-node.mjs changed` run on the node 2 test
 machine. The coordinator merges and installs.
