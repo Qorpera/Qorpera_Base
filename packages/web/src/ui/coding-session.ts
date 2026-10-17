@@ -978,7 +978,9 @@ export class CodingSessionElement {
 										? t("The machine stopped")
 										: body.reason === "FOLDER_RESTART"
 											? t("The machine restarted")
-											: undefined;
+											: body.reason === "MACHINE_NEW_DISK"
+												? t("The machine got a new disk")
+												: undefined;
 		const stopped = count
 			? count === 1
 				? t("1 command stopped")

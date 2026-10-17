@@ -7,7 +7,8 @@
 -- - after a narrowing, every coding view on the machine refuses to save, a session that never read the file too;
 -- - a reopened view carries nothing of its own, yet still refuses (the machine's set holds the read);
 -- - the executor's disk call is refused while a session is attached, empties the set when none is, and needs custody;
--- - a turn's later take-in keeps what it took in before a new disk, so narrowing that read refuses the turn's recheck.
+-- - a turn's later take-in keeps what it took in before a new disk, so narrowing that read refuses the turn's recheck;
+-- - a take-in of a read the turn can no longer place marks the machine for a new disk instead (20260930505000).
 -- Not here: the take-in when run authority moves a session onto a machine (qorpera_authorize_coding_machine_run). It
 -- needs 485's node, inventory and plan setup, so 485's H covers it.
 -- Runs, workers and sessions are built by hand, as in 634 and 639, with 647's native rows for the wake read.
@@ -58,7 +59,7 @@ declare
 	p jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
 	s1 jsonb; s2 jsonb; s3 jsonb; v1 jsonb; v2 jsonb; t1 jsonb; t2 jsonb; t3 jsonb; f jsonb; g jsonb; r jsonb; n bigint;
 	rid uuid := extensions.gen_random_uuid(); v_res uuid; v_take uuid;
-	s4 jsonb; s5 jsonb; v4 jsonb; v5 jsonb; t4 jsonb; b4 jsonb;
+	s4 jsonb; s5 jsonb; v4 jsonb; v5 jsonb; t4 jsonb; b4 jsonb; s6 jsonb; t6 jsonb;
 begin
 	-- The machine, as its own allocation, with binding {} pinned by its digest (the disk call's custody); the agent's
 	-- repository grant and the executor. Three sessions run on it.
@@ -196,6 +197,24 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_folder_run_reads_current(%L, %L, %L)', c_env, c_profile,
 		public.qorpera_folder_run_resolve(c_env, c_profile, t4) - 'lockTargets' - 'attribution'), '42501',
 		'A read is no longer readable');
+
+	-- 9. A read the turn can no longer place marks the machine for a new disk (20260930505000). mtake/g narrows, so the
+	-- machine's set holds G, which agent A can no longer read. S6's turn, leased after, takes in nothing at its wake read,
+	-- which goes on: the machine is marked (both marks), and no coding view opens on it. S4's turn's own reads (F) still
+	-- refuse its wake read: only the take-in's refusal is caught.
+	if (select new_disk_at from public.qorpera_coding_machines where id = c_m) is not null then
+		raise exception 'New disk: the machine is not marked before'; end if;
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'mtake/g', 'subtree', 'company_shared', 'normal');
+	s6 := pg_temp.session(p);
+	t6 := pg_temp.run(c_a, 'agent', c_member, 'worker-dispatch', p, (s6 ->> 'workerId')::uuid);
+	perform public.qorpera_read_native_wake(pg_temp.native(t6));
+	if not exists (select 1 from public.qorpera_coding_machines where id = c_m and new_disk_at is not null and folder_restart_at is not null)
+		then raise exception 'New disk: the take-in''s refusal marks the machine'; end if;
+	if exists (select 1 from public.qorpera_folder_run_read_records where run_id = (t6 ->> 'runId')::uuid)
+		or exists (select 1 from public.qorpera_folder_run_reads where run_id = (t6 ->> 'runId')::uuid) then
+		raise exception 'New disk: S6''s turn takes in nothing'; end if;
+	perform pg_temp.raises_like(format('select pg_temp.open(%L)', s6), '42501', 'Coding machine must restart first');
+	perform pg_temp.raises_like(format('select public.qorpera_read_native_wake(%L)', b4), '42501', 'A read is no longer readable');
 end $$;
 
 rollback;
