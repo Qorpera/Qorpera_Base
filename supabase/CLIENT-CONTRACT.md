@@ -948,6 +948,20 @@ environment.
   never the member who ended it. A key the supervisor
   changed in their own save that consents to the renamed row tells nobody.
 
+> **Scope reset, 2026-10-17.** Interfaces are two pages Qorpera makes, Mailbox and member-to-agent ownership
+> ([the scope amendment](../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §2). The calls for the company's pages
+> must cover these rules, and a client keeps to them:
+> - **listing:** only the two supported pages are listed, each with whether it is on; both start off;
+> - **fixed layouts:** a page's layout and actions are the platform's, never a definition a company or an agent
+>   wrote;
+> - **turning on and off, and source settings:** only an authorized member changes them, for the whole company,
+>   and only the allowed fields. It changes what is shown, never ownership, payment, consent or data;
+> - **direct routes and fallbacks:** a direct link, a stored route or a fallback opens only a supported page that
+>   is on, and never a Pulse or custom definition, whatever its name.
+>
+> Consent records stay. No call for the page set is listed here yet. This note records scope; it says nothing
+> about what is built.
+
 ### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
@@ -1222,6 +1236,10 @@ machine.
 | Connectors (Gmail, Google Drive, GitHub), company-owned | Order 7 (bundle v87) | web Settings → Connections → Services |
 | Coding sessions (thread element: list, read, answer, delegate) | Order 9 part 1 (PR #211); no executor yet, so no session exists in production until part 3 | build the thread element against the RPCs above; render nothing when the list RPC is not deployed |
 | Repositories, coding executors, preview route | Order 9 parts 3–4 | later |
+
+> **Scope reset, 2026-10-17.** The preview route (development server previews, step 5i) is deferred and outside
+> this rebuild ([the scope amendment](../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §3). Repositories and
+> coding executors stay.
 
 ### Thread interactions (typed cards, bundle v75)
 

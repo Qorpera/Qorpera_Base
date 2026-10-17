@@ -2487,6 +2487,17 @@ types, the fixtures `interface-state.json` and `table-rows-typed.json`, and `int
 the hook runs them. Folder-v2 only (the founder decision of 3 October): no snapshot-v1 branches and no pins of old
 function text.
 
+> **Scope reset, 2026-10-17.** Interfaces are now two pages Qorpera makes, Mailbox and member-to-agent ownership
+> ([the scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §2). So, for this plan:
+> - seeding Pulse and the `numbers` and `cards` tables is no longer required, and there is no main interface: rule
+>   3 (Main) and the main interface's protection serve no page in the rebuild;
+> - agents do not create or change pages or table definitions, on any write path (RUNTIME-INTERFACES.md §7's
+>   note), so the review classes below for an agent's page or table change have nothing left to count;
+> - the kinds, the parse, placement, the coding sessions' protection and the rows checks hold as far as the two
+>   pages and other kept behavior need them, and the data a company has stays.
+>
+> The plan below stays as the record. This note records scope; it says nothing about what is built.
+
 *The kinds.* `qorpera_structured_path_kind` names four new kinds by the path's shape alone, whatever the name:
 `interfaces/order.md` (`interface-order`), `interfaces/*/interface.toml` (`interface`), `tables/*/table.toml`
 (`table`) and `tables/*/rows.csv` (`table-rows`). So a badly named folder's file is still checked, and refused. The
@@ -2627,6 +2638,10 @@ interface folder and each table folder one `new_folder` unit, with media types b
 `.md`, `text/plain` for `.toml` and `.csv`). Its ids are random on each attempt: a creation commits whole, and a
 completed one answers from its row.
 
+> **Scope reset, 2026-10-17.** Founding no longer has to copy Pulse or the `numbers` and `cards` tables, or list
+> Pulse in `interfaces/order.md`. A new company needs only what the two pages and other kept behavior read, and
+> both pages start off. Files a company already has are kept.
+
 *Hand-overs.* P18b's erasure under `tables/` deletes retired table rows at rank 5, in the lock function's table
 order. I9b: when an agent gets a self (its area's supervisor), its rows save reads `tables/areas` and must lock the
 areas row in the same rank-5 pass; offers will need their own lock.
@@ -2645,6 +2660,12 @@ areas row in the same rank-5 pass; offers will need their own lock.
   P16a and #751. A creation before P16a would send kinds the hook refuses.
 
 ## 9. The seeded tree
+
+> **Scope reset, 2026-10-17.** The list below leaves out P16's seed, which §8 says also adds
+> `interfaces/` and `tables/`. Of that, Pulse, the main interface and the `numbers` and `cards`
+> tables are no longer required; a new company needs only what Mailbox, member-to-agent ownership
+> and other kept behavior read ([the scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md),
+> §2). This note records scope; it says nothing about what is built.
 
 `companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new
 company's folder holds, parents first, and C2's creation commit writes it in one change set as the

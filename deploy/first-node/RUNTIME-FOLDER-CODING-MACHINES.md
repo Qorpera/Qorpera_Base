@@ -13,6 +13,24 @@ W6a #986: `qorpera_memory_run_machine_narrow` and `qorpera_coding_turn_mark_narr
 them, it says so and why. Links in the folder are [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)'s. Facts about
 today's coding machines are from master at dc4988f7a.
 
+> **Scope reset, 2026-10-17.** Jonas narrowed the rebuild on 17 October 2026: see the
+> [scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §3, and the contract's
+> [2026-10-17 amendment](../../QORPERA-RUNTIME-CONTRACT.md#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 3. Where this plan says otherwise, the amendment wins. For step 5:
+> - **deferred, outside core acceptance:** the rest of 5h (the setup file's automation, the builder VM and
+>   snapshots), 5i (previews, their proxy and the agent's browser), and support for other setup systems (Cursor's
+>   file, devcontainers) beyond what core execution needs. The merged setup parser and snapshot records (#1100 and
+>   #1131) stay, unused; nothing is removed or undone for this. A coding machine with no setup is the accepted
+>   core baseline, and ordinary package installs stay;
+> - **parked:** 5k (a second machine when one is full), which is capacity work, and 5l (the retirements after
+>   step 6), both on the coordinator's list of deferred work of 17 October. Their unmerged work is kept;
+> - **kept:** machine and coding execution, folder access, root and Docker, code custody, the vault, MCP and
+>   credential handling, connectors, persistence, recovery and access control. The CPU and byte measurements that
+>   idle sleep and quiet-day archival need are core.
+>
+> The places below that serve only deferred or parked work carry a mark. The status line above dates from the
+> plan's review. This note records scope; it says nothing about which slices are built.
+
 ## What step 5 delivers
 
 Every coding session works in the company folder at `/company`, on a machine that works like a cloud coding machine
@@ -54,6 +72,8 @@ save is credited to its session as well as root allows, as on test machines).
 - **The preview proxy** (new, 5i) and **the vault relay** (new, 5j), both host-side.
 - **The host watchdog** (new, 5g): a host timer that force-stops a coding VM whose lease has lapsed.
 
+> **Scope reset, 2026-10-17.** The builder VM (5h) and the preview proxy (5i) are deferred (the note at the top).
+
 ## Capabilities on our nodes
 
 Each capability of item 11, and how it works on our nodes. "The VM" is the member's coding machine.
@@ -75,6 +95,10 @@ Each capability of item 11, and how it works on our nodes. "The VM" is the membe
 | Unreviewed sessions | Coding views commit without review, as today (C1b-3 §2). | 5a |
 | Each session mounts with its own authority | One view per session, served only to its own machine (below). | 5a, 5c, 5g |
 | Branches leave only as PRs | The code host bundles the session's branch; the broker checks and pushes it and opens a draft PR. | 5e |
+
+> **Scope reset, 2026-10-17.** The rows for a setup file and snapshots (5h) and for ports and the browser (5i)
+> are deferred, and the second machine (5k) is parked (the note at the top). "Any language" holds through the
+> base image and ordinary package installs; its setup file part is deferred.
 
 ## What stays outside the machine
 
@@ -414,6 +438,11 @@ A boundary's answer carries step 4's reasons per view (4c), so the turn's report
 
 ## Setup file and snapshots
 
+> **Scope reset, 2026-10-17.** This section is deferred with the rest of 5h, the Cursor and devcontainer
+> mappings included (the note at the top). The merged setup parser and snapshot records (#1100 and #1131) stay,
+> unused, with their tables and migrations. A coding machine with no setup is the accepted core baseline. The
+> section stays as the record.
+
 **Which file.** The first that exists at the root of the default branch: ours (`.qorpera/environment.json`, with
 Cursor's keys), then `.cursor/environment.json`, then `.devcontainer/devcontainer.json`. The code host reads it with
 `git show` (5e) and the executor parses it host-side under a strict schema; an unknown key is refused with a report, as
@@ -467,6 +496,9 @@ host starts into the session's network namespace; the VM listens on nothing the 
 type, screenshot). Its traffic is the session's, through the exit. A screenshot reaches the model only after a
 boundary.
 
+> **Scope reset, 2026-10-17.** Previews and the browser (5i), with Q6, are deferred (the note at the top). This
+> note does not change the terminals.
+
 ## Secrets, MCP and the vault relay
 
 **The kind.** A vault "environment secret": a name and a value, scoped to the member or to the company. A company
@@ -513,6 +545,9 @@ namespace: `/company` there is the session's only if the path is the full `/run/
 Docker and compose on a nested VM first; Q11 asks for the fallback if the proof fails.
 
 ## More machines
+
+> **Scope reset, 2026-10-17.** 5k and Q9 are parked: capacity work, stopped in this rebuild. 5k's unmerged work
+> is kept (the note at the top).
 
 When a machine is full, a new attach opens the member's next machine for the same coding agent, repository and setup
 digest (`number` + 1), from the same snapshot (5k). What "full" means is Q9 (recommended: counted by size, the sessions'
@@ -580,6 +615,10 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 folder before 5g. 5h, 5i, 5j and 5k each need 5g and can run side by side (5j's SQL can land earlier). 5l needs 5g and
 step 6. 5m comes last.
 
+> **Scope reset, 2026-10-17.** The rest of 5h (after the merged setup parser and snapshot records) and 5i are
+> deferred, and 5k and 5l are parked (the note at the top). 5m's proofs are split below into core proofs and
+> proofs for those later features.
+
 **Live proof (5m)**, on a test company, without Codex:
 - a snapshot builds for each setup format (ours, Cursor's, a devcontainer with a feature); a broken `install` keeps the
   old snapshot and the member sees the log;
@@ -596,6 +635,17 @@ members, with a race on one ref; a pull request from a session's branch; a previ
 screenshot reaching the model; a secret masked in a tool result and refused in a save; an MCP server with a sign-in; a
 second machine when the first is full; a narrowing during a turn on a shared machine stopping every turn on it; the
 numbers (attach time with and without a snapshot, the folder program's memory per session).
+
+> **Scope reset, 2026-10-17.** The proofs above split as follows:
+> - **core (5m):** the code host seeds a repository and its `main/` shows, with gc holding leases (5e); the host
+>   watchdog (5g); the refused vsock probe, with nothing else answering (5c, 5g); the node host unchanged (5f,
+>   5g);
+> - **later features, outside core acceptance:** a snapshot for each setup format, with a broken `install`
+>   keeping the old one, and a secret masked in the build log (5h);
+> - **in the list deferred for Codex,** the preview and the browser screenshot (5i), the second machine (5k) and
+>   the attach time with a snapshot (5h) are later-feature proofs; the rest stay core.
+>
+> This note records scope; it says nothing about which proofs have run.
 
 **Settled in step 5's implementation.** This plan fixes the rules and the tests above. The mechanics behind them are
 designed in their slice's PR and reviewed there against those rules, each pinned by the tests named in its row:
@@ -657,3 +707,6 @@ only if a rule is wrong.
 - **Q12 (coordinator, only if 5h's proof fails).** Image and Dockerfile setups if commands can't run in the built
   container.
 - **Q13 (coordinator).** Packs over 256 MiB (§6's open question 4).
+
+> **Scope reset, 2026-10-17.** Q6 (5i), Q7 and Q12 (5h) and Q9 (5k) wait with their deferred or parked slices.
+> In Q3, retiring the private repository folder waits with 5l.

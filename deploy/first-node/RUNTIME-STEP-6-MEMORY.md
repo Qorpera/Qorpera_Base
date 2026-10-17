@@ -4,6 +4,16 @@ Date: 2026-09-22, company first since 2026-09-24. Status: **source implemented
 and unit-tested; bundle v85 declared; not applied live; Grok import
 deferred**.
 
+> **Scope reset, 2026-10-17.** The notebook this page describes stays supported
+> and is the default memory, **Agent notebooks**. Each agent keeps its own
+> profile, log and notes, with `update_memory` (every tier) and
+> `recall_memory`, as below. The shared summary tree
+> ([RUNTIME-AGENT-MEMORY-TREE.md](RUNTIME-AGENT-MEMORY-TREE.md)) is an optional
+> beta a company chooses in Settings, and it never retires or trims the
+> notebook. See the
+> [scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §1.
+> This note records scope; it says nothing new about what is built or live.
+
 ## Decision
 
 Contract §5.4 and §15.1 originally described memory as retrieval indexes over

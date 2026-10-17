@@ -7,6 +7,29 @@ it with its four open items on 6 October ("I approve, move it along"). M0 is don
 spec. Where this page and `QORPERA-RUNTIME-CONTRACT.md` differ, the contract governs until the amendment in §16 is
 ratified.
 
+> **Scope reset, 2026-10-17.** Jonas corrected the scope on 17 October 2026: the tree is an optional beta, not the
+> notebook's successor. See the
+> [scope amendment](../../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §1, and the contract's
+> [2026-10-17 amendment](../../QORPERA-RUNTIME-CONTRACT.md#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+> - Agent notebooks stay supported and are the default. The tree is the mode a company chooses as **Shared
+>   context — Beta** in Settings, and an authorized member can switch back to **Agent notebooks**. The choice is
+>   the company's, not each agent's.
+> - Cancelled: switching the tree on for every company, trimming the notebook's tiers and tools, and removing the
+>   mode gate after W1d. M5 is now the reversible Settings choice.
+> - The gate between the modes stays for good, kept by a forward change. No applied migration is edited, and the
+>   removal planned in the comments of `20260930352000_memory_run_log_gate.sql` does not happen.
+> - The mode applies to conversation views, new run logs, folding and composition, and the tree's background work.
+>   A run keeps the mode recorded when it is made, so a run queued before a change keeps the old mode. A change
+>   applies to the runs made after it.
+> - Switching deletes and rewrites nothing. Erasure and retention hold with the beta off, and turning the beta on
+>   again never brings back what was erased.
+> - §13's targets and §14's gates now decide when the beta may be offered, not a rollout. The beta's quality,
+>   speed, compaction, resume (W5) and rollout work does not hold the core.
+>
+> The text below stays as the record of what was approved on 5 and 6 October. Where it says otherwise, the scope
+> amendment wins. Part 1's step 10 and decisions 1 and 4, and §§11, 13, 14 and 16 carry a mark.
+
 Revised on 5 October:
 - **Company-first and agent-first, with no compromise.** Members are not a boundary. Everything is stored as if all
   members were one, and every agent may read every conversation (§9, §15).
@@ -180,6 +203,8 @@ M steps build the tree of words. W steps make it the whole context.
 8. **M4.** Group chats, each agent's other conversations, and the Co-Founder's branches.
 9. **W4.** Helpers start from their agent's view.
 10. **M5.** Switch it on for every company, and shrink the notebook.
+    *Scope reset, 2026-10-17: cancelled as written. M5 is now the company's reversible Settings choice, and the
+    notebook is never shrunk.*
 11. **W5.** An answer that is cut off goes on from where it was. An answer that hits a usage limit pauses.
 12. **W6.** Coding sessions. Claude Code cannot be changed, so on a Claude login the folder is given at the start of
     each answer only.
@@ -194,6 +219,9 @@ M steps build the tree of words. W steps make it the whole context.
    run writes missing summaries on its own login. Owners and admins erase messages, as they erase files.
 4. **The tree is the agents' whole context**, shared by all agents in the company folder. The work sits in its own
    logs, which an agent opens like a file in a folder.
+
+> **Scope reset, 2026-10-17.** Decisions 1 and 4 now hold only for a company that chose the beta in Settings. With
+> **Agent notebooks**, the default, the tree replaces nothing: the diary, the notes and the recent conversation stay.
 
 ## Approved by Jonas (6 October)
 
@@ -1749,6 +1777,11 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
 
 ## 11. What the tree replaces
 
+> **Scope reset, 2026-10-17.** In notebook mode, the default, the tree replaces nothing. Trimming the notebook at
+> M5 is cancelled: the `log` and `note` tiers, `recall_memory` and every `update_memory` tier stay in both modes,
+> hiring keeps seeding `memory/log/`, and the log composer stays. The tree stands in for `history` only in a run
+> recorded in the beta. Replacing the profile page with pins is separate future work.
+
 Decided by Jonas on 5 October: the tree replaces the diary and `history`, and the profile page stays. Widened the
 same day: the tree is the agents' whole context, so it also replaces Codex's own history inside a run.
 
@@ -1836,6 +1869,9 @@ item 9, #877).
 
 ## 13. What we measure
 
+> **Scope reset, 2026-10-17.** The tree is never switched on everywhere. The targets below now say when the beta
+> may be offered in Settings; they do not hold the core.
+
 **Recorded per run** (existing records, plus new observation kinds):
 - `model_turn` (exists): `inputTokens`, `cachedInputTokens`, `reasoningOutputTokens` and `totalTokens`.
   `context_bytes` on the launch (exists).
@@ -1919,6 +1955,13 @@ after 6 October (Jonas, 6 October); each PR lists its own under "Deferred (needs
 - W2 reaches real companies only after its probes meet §13's targets.
 - W5 waits for its contract amendment (#877).
 
+> **Scope reset, 2026-10-17.** M5's row is replaced: M5 is the company's reversible Settings choice between **Agent
+> notebooks** (the default) and **Shared context — Beta**, with the mode recorded per run and the mode gate kept for
+> good. Its smallest form, with the beta shown as unavailable, is core work (the scope amendment's §4). "On for
+> every folder-v2 company" and the notebook's trimming are cancelled. The gates above now gate offering the beta,
+> not reaching every company, and M1's deploy-config list is an operator's test list, not the member's choice. The
+> steps' work for the beta (M2's tuning, W2's probes, W5 and the rest) does not hold the core.
+
 ## 15. Alternatives we rejected
 
 - **The tree in database tables.** It is new company data, so it belongs in the folder (founder rule, 3 October). The
@@ -1956,6 +1999,11 @@ after 6 October (Jonas, 6 October); each PR lists its own under "Deferred (needs
   member's Claude login run, so it cannot be patched. There the tree can only be given per answer (W6).
 
 ## 16. Contract amendment (approved 6 October)
+
+> **Scope reset, 2026-10-17.** The amendment outlined here is the contract's 2026-10-06 amendment. The contract's
+> [2026-10-17 amendment](../../QORPERA-RUNTIME-CONTRACT.md#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1, makes it hold only in the beta, and cancels the notebook's trimming and the rollout to every company
+> below.
 
 Jonas approved this outline on 6 October, the items below that asked for his sign-off included ("I approve, move it
 along"). It is drafted as "2026-10-06 amendment: agent context as a folder of summary trees" in #877, which also adds
