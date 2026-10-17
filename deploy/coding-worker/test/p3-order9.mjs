@@ -59,8 +59,8 @@ export async function awaitIdle(db, workerId, machine) {
 			and s.observed_at > ${since} + interval '40 seconds'`), 120000, "a keep 40 s after the turn");
 	if (seen.busy)
 		throw new Error(`a command that only waits keeps the session busy, so its machine never sleeps and it is never quiet: ` +
-			`a keep 40 s after the turn marked it busy (the folder model counts a session busy while any command runs, and ` +
-			`applies no idle rule): ${JSON.stringify(seen)}`);
+			`a keep 40 s after the turn marked it busy (the folder model counts a session busy while any command runs, until ` +
+			`C1, #1265, applies the idle rule to its processor time and bytes): ${JSON.stringify(seen)}`);
 	return seen;
 }
 
