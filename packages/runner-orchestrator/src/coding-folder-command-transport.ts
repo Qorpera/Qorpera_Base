@@ -79,6 +79,8 @@ interface Request {
 	readonly turn: number;
 	/** The machine's LXD start the command was started under. */
 	readonly startOperationId: string;
+	/** The rebuild that gave the machine the disk the command was started on, null for the disk it was made with. */
+	readonly diskOperationId: string | null;
 }
 const REQUEST_KEYS = [
 	"schema",
@@ -90,6 +92,7 @@ const REQUEST_KEYS = [
 	"limitBytes",
 	"turn",
 	"startOperationId",
+	"diskOperationId",
 ];
 
 /** `progress.json`: how far the host kept the command's output. Replaced whole. */
@@ -186,7 +189,8 @@ const requestOf = (bytes: Buffer, limit: { workerId: string; commandId: string }
 			(value.limitBytes as number) >= 1_048_576 &&
 			(value.limitBytes as number) <= 1_073_741_824 &&
 			count(value.turn) &&
-			isUuid(value.startOperationId),
+			isUuid(value.startOperationId) &&
+			(value.diskOperationId === null || isUuid(value.diskOperationId)),
 	);
 const progressOf = (bytes: Buffer, limitBytes: number) =>
 	custodyRecord<Progress>(
@@ -559,6 +563,11 @@ export interface LxdCodingFolderCommandTransportOptions {
 	 * hold a read the turn can no longer read): nothing more of a command's output is kept, and a cancel, which still
 	 * goes, answers none of it. Asked after the machine's boundary releases; no answer withholds. Never by default. */
 	readonly withheld?: (signal: AbortSignal) => Promise<boolean>;
+	/** The rebuild that gave the machine the disk it has now (F3 5g-5, from next to its journal), or null for the disk
+	 * it was made with. A command starts on it, and nothing it printed on a disk the machine no longer has is shown or
+	 * kept, whatever the folder service and SQL say now: the reads that disk may have held went with it, not with the
+	 * command's custody. Asked before each answer; no answer shows nothing. Never replaced by default. */
+	readonly disk?: (signal: AbortSignal) => Promise<string | null>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
 	/** As the NAS transport's: checks the request's authority before each call's work and again before its answer. */
@@ -579,6 +588,7 @@ export class LxdCodingFolderCommandTransport {
 	readonly #control: LxdCodingFolderCommandTransportOptions["control"];
 	readonly #dropped: LxdCodingFolderCommandTransportOptions["dropped"];
 	readonly #withheld: NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>;
+	readonly #disk: NonNullable<LxdCodingFolderCommandTransportOptions["disk"]>;
 	readonly #currentStart: LxdCodingFolderCommandTransportOptions["currentStart"];
 	readonly #secrets: CodingCommandSecrets;
 	readonly #authorize: Authorize;
@@ -617,6 +627,7 @@ export class LxdCodingFolderCommandTransport {
 		this.#control = options.control;
 		this.#dropped = options.dropped;
 		this.#withheld = options.withheld ?? (async () => false);
+		this.#disk = options.disk ?? (async () => null);
 		this.#currentStart = options.currentStart;
 		this.#secrets = options.secrets ?? noCodingCommandSecrets;
 		this.#authorize = options.authorize;
@@ -708,6 +719,10 @@ export class LxdCodingFolderCommandTransport {
 			// again.
 			const start = this.#currentStart();
 			if (start === undefined || !isUuid(start)) throw new Error("CODING_MACHINE_START_UNCONFIRMED");
+			// ...and on the disk the machine has now. A rebuild in between changed the start first: the command does not
+			// run under the one read here (below).
+			const disk = await this.#disk(budget);
+			if (disk !== null && !isUuid(disk)) throw new Error("CODING_MACHINE_DISK_UNCONFIRMED");
 			await linkOnce(folder, "request.json", {
 				schema: "qorpera.coding-host-command/v1",
 				workerId: this.#scope.workerId,
@@ -718,6 +733,7 @@ export class LxdCodingFolderCommandTransport {
 				limitBytes: this.#limitBytes,
 				turn: this.#scope.turn,
 				startOperationId: start,
+				diskOperationId: disk,
 			} satisfies Request);
 			const records = await this.#records(folder, input.commandId);
 			const { request, outcome } = records;
@@ -821,7 +837,7 @@ export class LxdCodingFolderCommandTransport {
 		if (!outcome)
 			({ progress, outcome, shown } = await this.#advance(folder, request, progress, budget, signal, cancelSent));
 		const page = await readPage(folder, progress, request.limitBytes, outcome !== undefined, read);
-		return parseCloudCodingCommandReceipt({
+		const receipt = parseCloudCodingCommandReceipt({
 			schema: "qorpera.coding-command-result/v2",
 			workerId: request.workerId,
 			commandId: request.commandId,
@@ -832,6 +848,9 @@ export class LxdCodingFolderCommandTransport {
 			truncated: page.truncated,
 			log: { ...page.log, ...(progress.gapBytes > 0 ? { gapBytes: progress.gapBytes } : {}) },
 		});
+		// A command of a disk the machine no longer has shows none of what was kept of it, though it ended and nothing
+		// asks the machine about it any more: the reads it may hold were cleared with that disk.
+		return (await this.#replaced(request, budget, signal)) ? withoutOutput(receipt) : receipt;
 	}
 
 	/** Pulls what the command printed since the host last kept its output, and keeps it once the machine's boundary
@@ -849,9 +868,14 @@ export class LxdCodingFolderCommandTransport {
 			commandId = request.commandId;
 		// The machine started again since the command did, or starts again now.
 		const moved = request.startOperationId !== this.#currentStart();
-		// ...and the folder service could not say every read the machine was served before then was released (F3 5g-5):
-		// what the command left on the machine's disk is not kept, and it ended with the machine.
-		if (moved && (await this.#dropped(request.startOperationId, budget)))
+		// ...and the machine has had a new disk since, or the folder service could not say every read the machine was
+		// served before then was released (F3 5g-5): what the command left on the machine's disk is not kept, and it
+		// ended with the machine.
+		if (
+			moved &&
+			((await this.#disk(budget)) !== request.diskOperationId ||
+				(await this.#dropped(request.startOperationId, budget)))
+		)
 			return this.#unknown(folder, progress, moved, budget, signal);
 		// Past the limit nothing more is kept: only where the command is.
 		const skip = progress.limitReached;
@@ -948,10 +972,13 @@ export class LxdCodingFolderCommandTransport {
 		const bytes = Buffer.concat(kept),
 			room = request.limitBytes - progress.logBytes,
 			full = bytes.length > room;
-		// A restart writes the command's boot down as dropped before the machine's boundary answers released again, and
-		// this call may have begun before that restart: the mark is read again now. A boot written down keeps nothing of
-		// what was pulled, which is counted lost.
-		if (await this.#dropped(request.startOperationId, budget))
+		// A restart writes the command's boot down as dropped before the machine's boundary answers released again, and a
+		// rebuild its new disk, and this call may have begun before either: both are read again now. Either keeps nothing
+		// of what was pulled, which is counted lost.
+		if (
+			(await this.#disk(budget)) !== request.diskOperationId ||
+			(await this.#dropped(request.startOperationId, budget))
+		)
 			return this.#unknown(
 				folder,
 				await this.#note(folder, progress, { acknowledged: true, end }),
@@ -1017,6 +1044,16 @@ export class LxdCodingFolderCommandTransport {
 			return false;
 		}
 		return !(await this.#withholds(budget, signal));
+	}
+
+	/** Whether the command was started on a disk the machine no longer has. No answer is a disk replaced. */
+	async #replaced(request: Request, budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
+		try {
+			return (await this.#disk(budget)) !== request.diskOperationId;
+		} catch {
+			signal.throwIfAborted();
+			return true;
+		}
 	}
 
 	/** Whether the machine shows nothing of its commands now. No answer withholds. */

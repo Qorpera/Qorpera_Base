@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, stat, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readdir, rename, stat, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -759,6 +760,64 @@ export async function codingMachineStartDropped(
 	if (!isDeepStrictEqual(value, { schema: DROPPED_START_SCHEMA, operationId: startOperationId }))
 		throw new Error("CODING_MACHINE_JOURNAL_INVALID");
 	return true;
+}
+
+const DISK_SCHEMA = "qorpera.coding-machine-disk/v1";
+
+/** Writes down next to the machine's journal that the rebuild `operationId` gave the machine a new disk (F3 5g-5), in
+ * place of the record of the disk before. The folder model's commands are kept under the disk they started on, and
+ * nothing a command printed on a disk the machine no longer has is shown (coding-folder-command-transport.ts). Written
+ * before SQL clears the marks that withhold those commands until then, so no moment shows them. */
+export async function recordCodingMachineDisk(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+	operationId: string,
+): Promise<void> {
+	if (!UUID.test(operationId)) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	const root = join(journalRoot, plan.journalName);
+	await checkDirectory(root);
+	const temporary = join(root, `.write-${randomUUID()}`);
+	try {
+		const file = await open(
+			temporary,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+			0o600,
+		);
+		try {
+			await file.writeFile(encode({ schema: DISK_SCHEMA, operationId }));
+			await file.sync();
+		} finally {
+			await file.close();
+		}
+		await rename(temporary, join(root, "disk.json"));
+	} finally {
+		await unlink(temporary).catch((error: unknown) => {
+			if (!code(error, "ENOENT")) throw error;
+		});
+		await syncDirectory(root);
+	}
+}
+
+/** The rebuild that gave the machine the disk it has now (recordCodingMachineDisk), or null for the disk it was made
+ * with. */
+export async function codingMachineDisk(journalRoot: string, plan: CodingMachineJournalPlan): Promise<string | null> {
+	const root = join(journalRoot, plan.journalName);
+	await checkDirectory(root);
+	let value: unknown;
+	try {
+		({ value } = await readRecord(join(root, "disk.json")));
+	} catch (error) {
+		if (code(error, "ENOENT")) return null;
+		throw error;
+	}
+	const operationId = (value as { operationId?: unknown } | null)?.operationId;
+	if (
+		typeof operationId !== "string" ||
+		!UUID.test(operationId) ||
+		!isDeepStrictEqual(value, { schema: DISK_SCHEMA, operationId })
+	)
+		throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	return operationId;
 }
 
 /** One bounded physical reconciliation of one machine against its journal on

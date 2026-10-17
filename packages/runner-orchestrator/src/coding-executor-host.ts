@@ -64,6 +64,7 @@ import {
 	type CodingMachineReconcileOptions,
 	type CodingMachineStorage,
 	checkCodingMachineReceipt,
+	codingMachineDisk,
 	codingMachineLastStart,
 	codingMachineStartDropped,
 	codingMachineStartOperation,
@@ -75,6 +76,7 @@ import {
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
+	recordCodingMachineDisk,
 	undropCodingMachineStart,
 } from "./coding-machine.ts";
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
@@ -1324,7 +1326,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// again. The boot's commands then keep nothing more of what it left on the machine's disk. Before all that,
 			// no session's command starts, or is read, under that boot's start any more. A machine marked for a new disk
 			// (rule 4, `unreadable`) is rebuilt first, and the start after the rebuild comes here again and records the
-			// new disk.
+			// new disk: next to the journal first, so the old disk's commands show nothing from then on, and then in SQL,
+			// which clears the marks that withheld them until then.
 			async (afterOperationId, checked, after) => {
 				this.#folderStartOperations.delete(machine.machineId);
 				const journalRoot = await this.#directory("machines", checked);
@@ -1332,8 +1335,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				const marked = boot !== null && (await dropCodingMachineStart(journalRoot, journal, boot));
 				const dropped = await folder.control.restarted(machine.machineId, checked);
 				if (boot !== null && marked && !dropped) await undropCodingMachineStart(journalRoot, journal, boot);
-				if (after === "rebuild") await this.#recordNewDisk(machine, afterOperationId, checked);
-				else if (await this.#recordFolderRestart(machine, afterOperationId, checked)) return "rebuild";
+				if (after === "rebuild") {
+					await recordCodingMachineDisk(journalRoot, journal, afterOperationId);
+					await this.#recordNewDisk(machine, afterOperationId, checked);
+				} else if (await this.#recordFolderRestart(machine, afterOperationId, checked)) return "rebuild";
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
 		).catch(async (error: unknown) => {
@@ -2725,6 +2730,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// The session's own user runs each command through the guest agent, at its worktree, with Git's settings for
 			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
 			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
+			// That folder outlives a new disk: what a command printed on a disk the machine no longer has is never shown,
+			// whichever turn asks (the transport's `disk`, from next to the machine's journal).
 			const { machineId } = ready.machine;
 			// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
 			// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
@@ -2755,6 +2762,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
 				control,
 				withheld: (checked) => this.#newDiskDue(ready.machine, checked),
+				disk: async (checked) =>
+					codingMachineDisk(
+						await this.#directory("machines", checked),
+						lxdCodingMachineJournalPlan(ready.machine, this.#placement),
+					),
 				dropped: async (startOperationId, checked) =>
 					codingMachineStartDropped(
 						await this.#directory("machines", checked),

@@ -445,7 +445,12 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      `qorpera_record_coding_machine_new_disk`, named by the rebuild's LXD operation and replayed like the restart's
      record, detaches any session attached since, empties the machine's read set, clears both marks and answers
      `replaced`. It refuses a machine not marked for a new disk, so a record with no rebuild behind it never drops reads
-     the old disk still holds. Then the machine starts. Before the rebuild goes out, the executor checks that the image
+     the old disk still holds. Right before that record, the executor writes the rebuild down in `disk.json` next to
+     the machine's journal, and each command's kept start names the disk it started on (`diskOperationId`, null for
+     the machine's first disk): once the marks are cleared, a command from a disk the machine no longer has still
+     shows none of its output, read or cancelled in any later turn, ended or not, and one that had not ended is
+     `machine_stopped`. The command logs on the host outlive the disk, but nothing of them is shown, since the reads
+     that output came from left with the disk. A `disk.json` that can't be read withholds. Then the machine starts. Before the rebuild goes out, the executor checks that the image
      is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
      until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it

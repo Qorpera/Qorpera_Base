@@ -9,6 +9,7 @@ import {
 	type CodingMachineAdmissionReceipt,
 	type CodingMachineIntent,
 	type CodingMachineJournalPlan,
+	codingMachineDisk,
 	codingMachineLastStart,
 	codingMachineStartDropped,
 	codingMachineStartOperation,
@@ -19,6 +20,7 @@ import {
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
+	recordCodingMachineDisk,
 	undropCodingMachineStart,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "../src/coding-vm.ts";
@@ -720,6 +722,37 @@ describe("a coding machine's journaled lifecycle", () => {
 			"CODING_MACHINE_JOURNAL_INVALID",
 		);
 		await expect(dropCodingMachineStart(f.journalRoot, f.journal, "../start")).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+	});
+	it("writes down next to the machine's journal the rebuild that gave it its disk, and reads it (F3 5g-5)", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		// The disk it was made with.
+		expect(await codingMachineDisk(f.journalRoot, f.journal)).toBeNull();
+		await recordCodingMachineDisk(f.journalRoot, f.journal, id(20));
+		expect(await codingMachineDisk(f.journalRoot, f.journal)).toBe(id(20));
+		// The next rebuild's disk takes its place, written whole.
+		await recordCodingMachineDisk(f.journalRoot, f.journal, id(21));
+		expect(await codingMachineDisk(f.journalRoot, f.journal)).toBe(id(21));
+		const root = join(f.journalRoot, f.value.machineId);
+		expect(JSON.parse(await readFile(join(root, "disk.json"), "utf8"))).toEqual({
+			schema: "qorpera.coding-machine-disk/v1",
+			operationId: id(21),
+		});
+		expect((await readdir(root)).filter((name) => name.startsWith("."))).toEqual([]);
+		// The journal reads past it.
+		expect((await f.reconcile()).state).toBe("running");
+		// A record that is not one, or a rebuild that is not an operation id, is refused.
+		for (const value of [
+			{ schema: "qorpera.coding-machine-disk/v1", operationId: "rebuild" },
+			{ schema: "qorpera.coding-machine-disk/v1", operationId: id(21), extra: 1 },
+			{ schema: "qorpera.coding-machine-dropped-start/v1", operationId: id(21) },
+		]) {
+			await writeFile(join(root, "disk.json"), `${JSON.stringify(value)}\n`, { mode: 0o600 });
+			await expect(codingMachineDisk(f.journalRoot, f.journal)).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+		}
+		await expect(recordCodingMachineDisk(f.journalRoot, f.journal, "../rebuild")).rejects.toThrow(
 			"CODING_MACHINE_JOURNAL_INVALID",
 		);
 	});

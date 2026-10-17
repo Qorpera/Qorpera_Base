@@ -65,6 +65,8 @@ const mocked = vi.hoisted(() => ({
 	dropStart: vi.fn(),
 	undropStart: vi.fn(),
 	startDropped: vi.fn(),
+	recordDisk: vi.fn(),
+	disk: vi.fn(),
 	keptCommand: vi.fn(),
 	guestCancel: vi.fn(),
 	guestQuiesce: vi.fn(),
@@ -126,6 +128,8 @@ vi.mock("../src/coding-machine.ts", async (original) => ({
 	dropCodingMachineStart: mocked.dropStart,
 	undropCodingMachineStart: mocked.undropStart,
 	codingMachineStartDropped: mocked.startDropped,
+	recordCodingMachineDisk: mocked.recordDisk,
+	codingMachineDisk: mocked.disk,
 }));
 vi.mock("../src/coding-git-seed.ts", () => ({
 	resolveCloudCodingBase: mocked.resolveBase,
@@ -326,6 +330,8 @@ async function fixture() {
 		effects: [] as string[],
 		/** What each of those operations was. */
 		kinds: new Map<string, "create" | "start" | "stop" | "rebuild">(),
+		/** The rebuild that gave the machine the disk it has, as written down next to its journal: none for its first. */
+		disk: null as string | null,
 	};
 	// The watchdog: a generation's lease renews while live and never again once run out.
 	mocked.refresh.mockImplementation(async (scope: { workerId: string }, tokenSha256: string, ttlMs: number) => {
@@ -694,6 +700,10 @@ async function fixture() {
 	mocked.dropStart.mockResolvedValue(true);
 	mocked.undropStart.mockResolvedValue(undefined);
 	mocked.startDropped.mockResolvedValue(false);
+	mocked.recordDisk.mockImplementation(async (_root: string, _plan: unknown, operationId: string) => {
+		state.disk = operationId;
+	});
+	mocked.disk.mockImplementation(async () => state.disk);
 	mocked.resolveBase.mockResolvedValue(baseSha);
 	mocked.seedFetch.mockResolvedValue({ headSha: baseSha, bundle: Buffer.from("seed"), bundleSha256: hash("seed") });
 	mocked.seedTransfer.mockResolvedValue({});
@@ -4078,6 +4088,143 @@ describe("a coding session on the folder model", () => {
 		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\n");
 		expect(f.lxd.running).toBe(true);
 		expect(f.state.newDisk).toBe(true);
+	});
+	it("shows none of what a command printed on the disk a rebuild replaced, read or cancelled in a later turn, though it ended, through the folder model's own command transport (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		// The machine's journal names the start it last ran under.
+		mocked.startOperation.mockImplementation(async () => f.state.startOperationId);
+		bootsAnew(f);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const options = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		const { LxdCodingFolderCommandTransport } = await vi.importActual<
+			typeof import("../src/coding-folder-command-transport.ts")
+		>("../src/coding-folder-command-transport.ts");
+		await mkdir(options.custody, { recursive: true, mode: 0o700 });
+		await chmod(options.custody, 0o700);
+		// The guest agent's commands on the machine's disk, answering as the real agent does.
+		const { workerId } = f.scope();
+		const commands = new Map<
+			string,
+			{
+				state: CodingGuestCommandState;
+				exit: { code: number | null; signal: string | null } | null;
+				printed: Buffer;
+			}
+		>();
+		const stateOf = (commandId: string) => {
+			const found = commands.get(commandId);
+			if (!found) throw new Error("FAKE_GUEST_COMMAND_UNKNOWN");
+			return { commandId, state: found.state, exit: found.exit, end: found.printed.length };
+		};
+		const guest = {
+			run: vi.fn<LxdCodingGuestClient["run"]>(async (request) => ({
+				schema: "qorpera.coding-guest-command/v1",
+				workerId,
+				...stateOf(parseCodingGuestRequest("run", request).commandId),
+			})),
+			output: vi.fn<LxdCodingGuestClient["output"]>(async (request) => {
+				const asked = parseCodingGuestRequest("output", request);
+				const at = stateOf(asked.commandId);
+				const bytes = Buffer.from(
+					commands.get(asked.commandId)!.printed.subarray(asked.offset, asked.offset + asked.maxBytes),
+				);
+				const answer = parseCodingGuestAnswer("output", asked, {
+					schema: "qorpera.coding-guest-output/v1",
+					workerId,
+					...at,
+					offset: asked.offset,
+					bytes: bytes.length,
+					gap: 0,
+				});
+				return { answer, bytes };
+			}),
+			cancel: vi.fn<LxdCodingGuestClient["cancel"]>(async (request) => ({
+				schema: "qorpera.coding-guest-command/v1",
+				workerId,
+				...stateOf(parseCodingGuestRequest("cancel", request).commandId),
+			})),
+		};
+		const first = new LxdCodingFolderCommandTransport({ ...options, guest });
+		const done = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "cat notes", timeoutMs: null };
+		const running = { commandId: randomUUID(), inputSha256: "b".repeat(64), command: "make", timeoutMs: null };
+		commands.set(done.commandId, {
+			state: "exited",
+			exit: { code: 0, signal: null },
+			printed: Buffer.from("secret\n"),
+		});
+		commands.set(running.commandId, { state: "running", exit: null, printed: Buffer.from("before\n") });
+		expect(await first.start(f.scope(), done, f.signal)).toMatchObject({ state: "succeeded", output: "secret\n" });
+		expect(await first.start(f.scope(), running, f.signal)).toMatchObject({ state: "running", output: "before\n" });
+		f.host.endTurn(f.claim);
+		// The session's next view is refused for a read no longer readable: the machine is rebuilt, its commands going with
+		// its old disk, and starts on its new disk, which is written down next to its journal before SQL records it and
+		// clears the marks that withheld the old disk's commands until then.
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("READS_UNREADABLE"));
+		await turnAt(f, 2);
+		commands.clear();
+		const outputs = guest.output.mock.calls.length;
+		expect(f.state.kinds.get(f.state.effects[3]!)).toBe("rebuild");
+		const { plan, journalRoot } = mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions;
+		expect(mocked.recordDisk.mock.calls).toEqual([
+			[
+				journalRoot,
+				expect.objectContaining({ machineId: plan.machineId, journalName: plan.journalName }),
+				f.state.effects[3],
+			],
+		]);
+		const [replaced] = callOrder(f, "qorpera_record_coding_machine_new_disk");
+		expect(mocked.recordDisk.mock.invocationCallOrder[0]).toBeLessThan(replaced!);
+		expect(f.state.newDisk).toBe(false);
+		expect(f.state.folderRestart).toBe(false);
+		// The later turn reads and cancels both commands of the old disk: SQL lets it, every read is released and nothing
+		// withholds, but it is shown nothing the custody kept of them, and the guest is not asked.
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const later = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		expect(later.custody).toBe(options.custody);
+		const second = new LxdCodingFolderCommandTransport({ ...later, guest });
+		const shows = (state: string, totalBytes: number) => ({
+			state,
+			output: "",
+			truncated: true,
+			log: { offset: 0, nextOffset: 0, totalBytes },
+		});
+		for (const call of [
+			() => second.read(f.scope(), { commandId: done.commandId }, f.signal),
+			() => second.cancel(f.scope(), done.commandId, f.signal),
+		])
+			expect(await call()).toMatchObject({ ...shows("succeeded", 7), exitCode: 0 });
+		for (const call of [
+			() => second.read(f.scope(), { commandId: running.commandId }, f.signal),
+			() => second.cancel(f.scope(), running.commandId, f.signal),
+		])
+			expect(await call()).toMatchObject(shows("machine_stopped", 7));
+		expect(guest.output).toHaveBeenCalledTimes(outputs);
+		expect(guest.cancel).not.toHaveBeenCalled();
+		const kept = (commandId: string) => join(options.custody, "host-commands", commandId.replaceAll("-", ""));
+		expect(await readFile(join(kept(done.commandId), "output.log"), "utf8")).toBe("secret\n");
+		// A command on the new disk is shown.
+		const fresh = { commandId: randomUUID(), inputSha256: "c".repeat(64), command: "echo new", timeoutMs: null };
+		commands.set(fresh.commandId, {
+			state: "exited",
+			exit: { code: 0, signal: null },
+			printed: Buffer.from("new\n"),
+		});
+		expect(await second.start(f.scope(), fresh, f.signal)).toMatchObject({ state: "succeeded", output: "new\n" });
+		expect(await second.read(f.scope(), { commandId: fresh.commandId }, f.signal)).toMatchObject({ output: "new\n" });
+		expect(JSON.parse(await readFile(join(kept(fresh.commandId), "request.json"), "utf8"))).toMatchObject({
+			turn: 2,
+			startOperationId: f.state.startOperationId,
+			diskOperationId: f.state.effects[3],
+		});
 	});
 	it("gives the machine its new disk in the same turn when a view is refused for a read no longer readable after another turn started it since (F3 5g-5)", async () => {
 		const f = await folderFixture();
