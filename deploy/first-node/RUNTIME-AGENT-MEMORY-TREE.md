@@ -1026,6 +1026,14 @@ leaves out is lost. `historyTruncated` then holds only when the view cut nothing
 current inputs and `branches` after them. The run records its first request (§13) once its context is hashed and the
 lines shown are released; the record's folder clock is the view reference's `asOfSeq` for W4.
 
+**Since C5** (migration `20260930508000`, SQL tests 686 and 687; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md`), the
+tree is a beta a company chooses in Settings: "Agent notebooks" (the default) or "Shared context — Beta", which only a
+company on the operator's test list (`qorpera_memory_tree_companies`) is offered. Each run records the mode its company
+had when the run was made (`qorpera_execution_runs.memory_mode`), and keeps it, also when it resumes. Only a run
+recorded in the beta gets a view, branches, zoom, a run log or tree writes; any other run, one made before C5 included,
+gets none of them and composes its notebook. The gate stays until an explicit product decision; it supersedes W1c-3's
+note (`20260930352000`) that W1d drops the test list's gate. Erasure and retention read no mode.
+
 For `gpt-6-astra`, our default model, Codex uses Responses Lite (M0). Parts 1 and 2 are then not request fields but
 the first two input items, in the order tools (`additional_tools`), then the base instructions as a developer
 message. Codex also gives every item ids, and every message a turn id and a creation time, that differ per run:

@@ -1030,6 +1030,8 @@ const finished = {
 	log: { offset: 0, nextOffset: 3, totalBytes: 3, limitBytes: 67108864, limitReached: false },
 };
 const idle = { at: 0, cpuUsec: 0, ioBytes: 0 };
+/** What a boot's first pass asks the folder service when SQL counts no boot of the machine as running (F3 5g-5). */
+const firstBoot = { op: "restarted", machine: id(6) };
 const recorded = (f: Fixture) =>
 	f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").map((call) => call.args.p_ended);
 
@@ -1073,6 +1075,31 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(f.handovers).toHaveLength(1);
 	});
 
+	it("says the machine restarted before SQL knows a boot with none running before it, and boots on unanswered (F3 5g-5)", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		// A folder service run vouches only for the machines it was told of: told first, its boot's boundaries can prove.
+		expect(f.service.requests).toEqual([firstBoot]);
+		const at = (step: string) => f.order.indexOf(step);
+		expect(at("sql:qorpera_mark_company_machine_running")).toBeGreaterThan(at("folder:restarted"));
+		expect(at("sql:qorpera_folder_view_open")).toBeGreaterThan(at("folder:restarted"));
+		expect(at("folder:restarted")).toBeGreaterThan(-1);
+		// Once a boot: its next pass asks it no more.
+		f.running();
+		await f.host.pass(f.signal);
+		expect(f.service.requests.filter((request) => request.op === "restarted")).toHaveLength(1);
+		// Unanswered, it holds the boot back in nothing: the boot's first unproven boundary restarts the machine instead.
+		const g = await fixture({ folder: true });
+		g.service.down = true;
+		expect(await g.host.pass(g.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(g.service.requests).toEqual([firstBoot]);
+		expect(g.order.indexOf("sql:qorpera_mark_company_machine_running")).toBeGreaterThan(
+			g.order.indexOf("folder:restarted"),
+		);
+	});
+
 	it("runs a boot without /company when SQL refuses its first view and the service holds none", async () => {
 		const f = await fixture({ folder: true });
 		f.views.refusal = null;
@@ -1087,7 +1114,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.result(finished);
 		expect(await start(f)).toMatchObject({ state: "succeeded", exitCode: 0, output: "ok\n" });
 		// One plain boundary showed no view of the machine and its reads released; then no window and no boundary.
-		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
+		expect(f.service.requests).toEqual([firstBoot, { op: "boundary", machine: id(6), final: [] }]);
 		expect(f.methods().filter((method) => method === "qorpera_folder_view_open")).toHaveLength(1);
 		// A refusal without the new disk's detail moves nothing.
 		expect(f.methods()).not.toContain("qorpera_retire_company_machine");
@@ -1129,7 +1156,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		const started = start(f);
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(f.order).not.toContain("push");
-		expect(f.service.requests).toEqual([]);
+		expect(f.service.requests).toEqual([firstBoot]);
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_MOUNTED" },
 		]);
@@ -1161,12 +1188,12 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		);
 		// The guest had the passes, and may have read with them: its commands get windows, and wait for released reads.
 		// Its boot is watched each pass from then on (6d-2), with a plain boundary.
-		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
+		expect(f.service.requests).toEqual([firstBoot, { op: "boundary", machine: id(6), final: [] }]);
 		f.service.reads = "denied";
 		f.result(finished);
 		const commandId = randomUUID();
 		expect(await start(f, commandId)).toMatchObject({ state: "running", output: "" });
-		expect(f.service.requests.slice(1)).toEqual([expect.objectContaining({ op: "open", commandId })]);
+		expect(f.service.requests.slice(2)).toEqual([expect.objectContaining({ op: "open", commandId })]);
 		expect(await read(f, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
 		f.running([commandId]);
 		f.observe({ ...idle, ended: [{ commandId, state: "succeeded", exitCode: 0, outputTail: "ok" }] });
@@ -1198,7 +1225,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		const commandId = randomUUID();
 		await start(f, commandId);
 		expect(await read(f, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
-		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "boundary"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "open", "boundary"]);
 	});
 
 	it("refuses a start it cannot fence: no boot, no run to credit, or no window", async () => {
@@ -1211,7 +1238,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		await expect(start(f, randomUUID(), { ...credit(), bootId: null })).rejects.toThrow(
 			"COMPANY_MACHINE_FOLDER_UNANSWERED",
 		);
-		expect(f.service.requests).toEqual([]);
+		expect(f.service.requests).toEqual([firstBoot]);
 		f.service.down = true;
 		await expect(start(f)).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
 		expect(f.order).not.toContain("push");
@@ -1226,7 +1253,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		const who = credit();
 		f.result(finished);
 		const receipt = await start(f, commandId, who);
-		expect(f.service.requests).toEqual([{ op: "open", machine: id(6), commandId, ...who }]);
+		expect(f.service.requests).toEqual([firstBoot, { op: "open", machine: id(6), commandId, ...who }]);
 		// A start asks no boundary (the gateway's time is mostly spent): its output waits for the next read. A held
 		// receipt says nothing of the guest's: not its log's size, its end or its exit.
 		const log = { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false };
@@ -1244,7 +1271,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(await read(f, commandId)).toMatchObject(finished);
 		// Each read asked the machine's boundary, naming no view final.
 		const boundary = { op: "boundary", machine: id(6), final: [] };
-		expect(f.service.requests.slice(1)).toEqual([boundary, boundary, boundary, boundary, boundary]);
+		expect(f.service.requests.slice(2)).toEqual([boundary, boundary, boundary, boundary, boundary]);
 		// A read from an offset is held where its reader stands.
 		f.service.reads = "unproven";
 		const from = await read(f, commandId, 2);
@@ -1253,7 +1280,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		// Nothing printed and no end: nothing to hold, and nothing asked.
 		f.result({});
 		expect(await read(f, commandId)).toMatchObject(kept);
-		expect(f.service.requests).toHaveLength(7);
+		expect(f.service.requests).toHaveLength(8);
 	});
 
 	it("holds an end with nothing printed, cancelled or lost, until the machine's reads are released", async () => {
@@ -1343,7 +1370,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(takeIns().map((call) => call.args)).toEqual([
 			{ p_placement_id: id(6), p_boot_id: f.boot, p_run_id: starter.runId, p_inherit_id: expect.any(String) },
 		]);
-		expect(f.service.requests.map((request) => request.op)).toEqual(["boundary"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "boundary"]);
 		// A take-in that fails holds the start's output for the next read.
 		const kept = { state: "running", exitCode: null, output: "", truncated: false };
 		const commandId = randomUUID();
@@ -1351,7 +1378,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(await start(f, commandId)).toMatchObject(kept);
 		expect(await read(f, commandId)).toMatchObject(finished);
 		expect(takeIns()).toHaveLength(3);
-		expect(f.service.requests.map((request) => request.op)).toEqual(["boundary"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "boundary"]);
 	});
 
 	it("records an end only once its command's window closed with the machine's reads released", async () => {
@@ -1362,7 +1389,10 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.observe({ ...idle, ended });
 		f.service.closes.push("released", "denied", "unanswered");
 		await f.host.pass(f.signal);
-		expect(f.service.requests).toEqual([7, 8, 9].map((n) => ({ op: "close", machine: id(6), commandId: id(n) })));
+		expect(f.service.requests).toEqual([
+			firstBoot,
+			...[7, 8, 9].map((n) => ({ op: "close", machine: id(6), commandId: id(n) })),
+		]);
 		// How a command ended, its exit and its tail are output too: an unreleased or unanswered close leaves the end
 		// for a later pass.
 		expect(recorded(f)).toEqual([[ended[0]]]);
@@ -1401,13 +1431,19 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.observe({ ...idle, ended: [{ commandId, state: "lost" }] });
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
 		// Not opened again either (#reopen), and the pass's plain boundary watched the boot.
-		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "boundary"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "open", "boundary"]);
 		expect(recorded(f)).toEqual([]);
 		deliver();
 		expect(await started).toMatchObject({ state: "running" });
 		// Delivered, a command its guest calls lost is ended: its window closes first (opened again before the look).
 		await f.host.pass(f.signal);
-		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "boundary", "open", "close"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual([
+			"restarted",
+			"open",
+			"boundary",
+			"open",
+			"close",
+		]);
 		expect(recorded(f)).toEqual([[{ commandId, state: "lost", outputTail: "" }]]);
 	});
 
@@ -1438,11 +1474,17 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(await passed).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
 		// That answer is from before the guest had the command: its window stays open, and nothing is recorded. The
 		// pass's plain boundary watched the boot.
-		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "boundary"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "open", "boundary"]);
 		expect(recorded(f)).toEqual([]);
 		// A look after the delivery decides (the window opened again before it).
 		await f.host.pass(f.signal);
-		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "boundary", "open", "close"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual([
+			"restarted",
+			"open",
+			"boundary",
+			"open",
+			"close",
+		]);
 		expect(recorded(f)).toEqual([[{ commandId, state: "lost", outputTail: "" }]]);
 	});
 
@@ -1465,7 +1507,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		answer();
 		await passed;
 		expect(await started).toMatchObject({ state: "running" });
-		expect(f.service.requests.map((request) => request.op)).toEqual(["close", "open"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "close", "open"]);
 		expect(f.order.indexOf("push")).toBeGreaterThan(f.order.indexOf("folder:open"));
 		// The start came while that close was on its way: the pass does not end it.
 		expect(recorded(f)).toEqual([]);
@@ -1484,6 +1526,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		// The final boundary of its view, the view's close in SQL, and once powered off, its windows end (after the plain
 		// boundary that watched the boot the pass before).
 		expect(f.service.requests).toEqual([
+			firstBoot,
 			{ op: "boundary", machine: id(6), final: [] },
 			{ op: "boundary", machine: id(6), final: [view.viewId] },
 			{ op: "restarted", machine: id(6) },
@@ -1514,6 +1557,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
 		]);
 		expect(f.service.requests).toEqual([
+			firstBoot,
 			{ op: "boundary", machine: id(6), final: [old.viewId] },
 			{ op: "restarted", machine: id(6) },
 		]);
@@ -1546,7 +1590,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		Object.assign(f.entry, { desiredState: "deleted", removeDue: true, reserved: false });
 		const from = f.order.length;
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
-		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [view.viewId] }]);
+		expect(f.service.requests).toEqual([firstBoot, { op: "boundary", machine: id(6), final: [view.viewId] }]);
 		const after = f.order.slice(from);
 		expect(after.indexOf("sql:qorpera_folder_view_close")).toBeGreaterThan(after.indexOf("folder:boundary"));
 		expect(after.findIndex((step) => step.startsWith("lxd:"))).toBeGreaterThan(
@@ -1563,7 +1607,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_HELD" },
 		]);
-		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
+		expect(f.service.requests).toEqual([firstBoot, { op: "boundary", machine: id(6), final: [] }]);
 		expect(f.views.opened).toHaveLength(1);
 		expect(f.handovers).toHaveLength(1);
 		// Its commands stay fenced.
@@ -1618,7 +1662,10 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		const commandId = randomUUID();
 		f.result(finished);
 		await start(f, commandId);
-		expect(f.service.requests).toEqual([expect.objectContaining({ op: "open", machine: id(6), commandId })]);
+		expect(f.service.requests).toEqual([
+			firstBoot,
+			expect.objectContaining({ op: "open", machine: id(6), commandId }),
+		]);
 		f.service.reads = "unproven";
 		expect(await read(f, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
 		f.service.reads = "released";
@@ -1663,7 +1710,7 @@ describe("company machine host when a test machine's folder can never be proven 
 		expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RETIRED:UNCHECKED" }]);
 		expect(f.order).not.toContain("exec:observe");
 		expect(f.methods().filter((method) => method === "qorpera_retire_company_machine")).toHaveLength(1);
-		expect(f.service.requests).toEqual([]);
+		expect(f.service.requests).toEqual([firstBoot]);
 		expect(reboots(f)).toBe(0);
 		// The retired placement is stopped and deleted as any retired one, and admission puts the machine on a new one.
 		Object.assign(f.entry, { retired: true, desiredState: "deleted", stopDue: true, removeDue: true });
@@ -1695,7 +1742,7 @@ describe("company machine host when a test machine's folder can never be proven 
 				f.service.closes.push("unreadable");
 			} else f.service.reads = "unreadable";
 			expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RETIRED:UNREADABLE" }]);
-			expect(f.service.requests.map((request) => request.op)).toEqual([via]);
+			expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", via]);
 			expect(f.calls.find((call) => call.method === "qorpera_retire_company_machine")?.args).toMatchObject({
 				p_placement_id: id(6),
 				p_boot_id: f.boot,
@@ -1721,7 +1768,7 @@ describe("company machine host when a test machine's folder can never be proven 
 		};
 		expect(f.service.reads).toBe("released");
 		expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RETIRED:UNREADABLE" }]);
-		expect(f.service.requests.map((request) => request.op)).toEqual(["boundary"]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["restarted", "boundary"]);
 		expect(f.calls.find((call) => call.method === "qorpera_retire_company_machine")?.args).toMatchObject({
 			p_placement_id: id(6),
 			p_boot_id: f.boot,
@@ -1945,14 +1992,14 @@ describe("company machine host when a test machine's folder can never be proven 
 			...who,
 		});
 		const plain = { op: "boundary", machine: id(6), final: [] };
-		expect(f.service.requests).toEqual([opened(a, first), opened(b, second)]);
+		expect(f.service.requests).toEqual([firstBoot, opened(a, first), opened(b, second)]);
 		// A restarted service lost them: each pass says them again, with the same credit, before it looks.
 		await f.host.pass(f.signal);
-		expect(f.service.requests.slice(2)).toEqual([opened(a, first), opened(b, second), plain]);
+		expect(f.service.requests.slice(3)).toEqual([opened(a, first), opened(b, second), plain]);
 		// b ended: its window closes, and is not opened again.
 		f.observe({ ...idle, ended: [{ commandId: b, state: "succeeded", exitCode: 0, outputTail: "ok" }] });
 		await f.host.pass(f.signal);
-		expect(f.service.requests.slice(5)).toEqual([
+		expect(f.service.requests.slice(6)).toEqual([
 			opened(a, first),
 			opened(b, second),
 			{ op: "close", machine: id(6), commandId: b },
@@ -1960,12 +2007,12 @@ describe("company machine host when a test machine's folder can never be proven 
 		expect(recorded(f)).toEqual([[{ commandId: b, state: "succeeded", exitCode: 0, outputTail: "ok" }]]);
 		f.running([a, b]);
 		await f.host.pass(f.signal);
-		expect(f.service.requests.slice(8)).toEqual([opened(a, first), { op: "close", machine: id(6), commandId: b }]);
+		expect(f.service.requests.slice(9)).toEqual([opened(a, first), { op: "close", machine: id(6), commandId: b }]);
 		// SQL no longer lists a (it ended it): its window is left to its close.
 		f.observe({ ...idle, ended: [] });
 		f.running([]);
 		await f.host.pass(f.signal);
-		expect(f.service.requests.slice(10)).toEqual([plain]);
+		expect(f.service.requests.slice(11)).toEqual([plain]);
 	});
 
 	it("holds what a boot whose folder ended prints, though its reboot failed and a boundary releases its reads", async () => {

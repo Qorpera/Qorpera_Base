@@ -1,4 +1,3 @@
-import type { InterfaceFile } from "@qorpera/cloud-client/interfaces";
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
@@ -7,8 +6,8 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
-import { undoInterfaceChange } from "../cloud/interface-changes.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
+import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
@@ -31,6 +30,8 @@ import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
+import { CompanyInterfacePages } from "./interface-pages.ts";
+import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
@@ -139,6 +140,10 @@ export function mountApplication(
 			() => closeSettings(),
 			companyRemovedHandler(),
 			tab,
+			// A page switched on or off in the open company shows or leaves its Interfaces tab at once.
+			(environmentId) => {
+				if (company?.profile.environmentId === environmentId) void interfacePages?.refresh();
+			},
 		);
 		frame.inert = true;
 		root.append(settings.el);
@@ -218,10 +223,10 @@ export function mountApplication(
 
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
-	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
+	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
+	let interfacePages: CompanyInterfacePages | undefined;
+	/** What the open company's pages read from its folder, its tables and files, followed there (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
-	/** The pages each thread's review cards preview, which every reader of the folder reads too (Interfaces I10). */
-	const interfacePreviews = new Map<object, readonly InterfaceFile[]>();
 	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
@@ -362,6 +367,8 @@ export function mountApplication(
 		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
+		interfacePages?.dispose();
+		interfacePages = undefined;
 		interfaceFolder?.dispose();
 		interfaceFolder = undefined;
 		interfaceOffers?.dispose();
@@ -830,6 +837,8 @@ export function mountApplication(
 		if (state.accessLost) {
 			notices?.dispose();
 			notices = undefined;
+			interfacePages?.dispose();
+			interfacePages = undefined;
 			interfaceFolder?.dispose();
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
@@ -919,9 +928,13 @@ export function mountApplication(
 			);
 			executionNotices.append(notices.el);
 		}
-		// The company's interfaces come from its folder, read with the member's own access as the Company File page
-		// reads it, and followed while the company is open; until the first read lands the rail draws the library's.
+		// The company's pages are the two the web ships, shown once they are on (Interfaces C6a). What they read comes from
+		// its folder, read with the member's own access as the Company File page reads it, and followed while the
+		// company is open.
 		if (interfaceFolder && !state.team?.capabilities.read) {
+			interfacePages?.dispose();
+			interfacePages = undefined;
+			controller.store.set({ interfacePages: undefined });
 			interfaceFolder.dispose();
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
@@ -960,10 +973,21 @@ export function mountApplication(
 				controller.store.set({ interfaceFolder: folder });
 				void offers.refresh();
 			});
+			// The folder is read for the pages that are on: a page switched on is read for at the next sync.
+			const pages = new CompanyInterfacePages(
+				interfacePageCalls(cloud, controller.profile.environmentId),
+				(next) => {
+					if (interfacePages !== pages) return;
+					controller.store.set({ interfacePages: next });
+					reader.read(pagesOn(next));
+				},
+				controller.signal,
+			);
+			interfacePages = pages;
 			interfaceFolder = reader;
 			interfaceOffers = offers;
-			for (const [owner, pages] of interfacePreviews) reader.preview(owner, pages);
 			offers.open();
+			pages.open();
 			void reader.open();
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
@@ -1250,20 +1274,8 @@ export function mountApplication(
 								checkConversationAccess,
 								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 							),
-							// An agent's interface change is undone as the member's own change set, by a member who can write.
-							undoInterfaceChange: (change, signal) => {
-								const check = () => {
-									checkConversationAccess();
-									if (!controller.store.get().team?.capabilities.write)
-										throw new Error(t("Conversation access changed."));
-								};
-								return undoInterfaceChange(
-									memberFolder(check, t("Conversation access changed.")),
-									change,
-									AbortSignal.any([controller.signal, signal]),
-									check,
-								);
-							},
+							// No Undo on an agent's interface change: agents don't make pages (Interfaces C6a), and the save
+							// check refuses an agent's change under interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
 							messageErases: {
@@ -1271,11 +1283,6 @@ export function mountApplication(
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),
 								status: (erase, signal) =>
 									messageErases(() => checkConversationAccess(erase.sessionId)).status(erase, signal),
-							},
-							previewInterfaces: (owner, pages) => {
-								if (pages.length > 0) interfacePreviews.set(owner, pages);
-								else interfacePreviews.delete(owner);
-								interfaceFolder?.preview(owner, pages);
 							},
 							...agentActions,
 							...workspaceActions,

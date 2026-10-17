@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - `CLOUD_MACHINE_GUEST_PATHS.repository` (`/mnt/repository`) is gone (F3 6e-1): a company machine has no repository disk; a coding session's work is in the company folder at `/company`.
+- A coding session's guest status is `qorpera.coding-guest-status/v2` (C1: idle sleep and the quiet-day archive on the folder model; P3 phase B run 11): beside its commands it carries the session's usage, `CodingGuestUsage` (`bootId`, `uptimeMs` from `/proc/uptime`, `cpuUsageUsec`, `ioBytes`, and `ioComplete`, false when the machine ran more processes than one status reads, `CODING_GUEST.usageProcesses` = 8192), for the executor's one idle rule. `parseCodingGuestAnswer` refuses a v1 status, a missing or malformed usage and any other key in it.
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 

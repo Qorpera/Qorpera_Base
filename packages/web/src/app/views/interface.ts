@@ -197,12 +197,6 @@ function pageState(key: string): PageState {
 	return state;
 }
 
-/** Forgets what was chosen on a page drawn as `name`: a review card's preview, once its card is answered (step I10,
- * views/interface-preview.ts). */
-export function forgetInterfacePage(company: CompanyController, name: string): void {
-	pages.delete(`${company.userId}/${company.profile.profileId}/${name}`);
-}
-
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
 /** An id an element can carry, from any text. */
@@ -312,12 +306,8 @@ export function renderInterface(
 		);
 		return;
 	}
-	if (entry.file === null) {
-		renderBrokenInterface(container, company, name, entry.problems);
-		return;
-	}
-	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the file changed)
-	// finds the definition again, so a page never draws a definition the company has since changed or broken.
+	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the page was switched
+	// off) finds the page again, so a page switched off is never drawn.
 	renderInterfaceFile(
 		container,
 		company,
@@ -346,44 +336,6 @@ function problemList(problems: readonly FolderProblem[]): HTMLElement {
 		{ class: "interface-problems" },
 		...problems.map(({ line, message }) =>
 			h("li", null, line === null ? message : t("Line {line}: {problem}", { line, problem: message })),
-		),
-	);
-}
-
-/** A page whose text doesn't parse (RUNTIME-INTERFACES.md §10, I7): its name and its problems, and nothing drawn from
- * it, so none of its buttons. */
-function renderBrokenInterface(
-	container: HTMLElement,
-	company: CompanyController,
-	name: string,
-	problems: readonly FolderProblem[],
-): void {
-	const profileId = company.profile.profileId;
-	// An error from before the text broke (a message that failed) belongs to a page that is gone: it isn't shown
-	// when the page parses again.
-	const page = pageState(`${company.userId}/${profileId}/${name}`);
-	page.error = null;
-	page.errorShown = false;
-	show(container, JSON.stringify(["broken", profileId, presentationLocale(), name, problems]), () =>
-		h(
-			"section",
-			{ class: "interface interface-broken", "data-interface": name, "data-profile": profileId },
-			h(
-				"header",
-				{ class: "interface-head" },
-				interfaceEmblem(null, null, 30),
-				h("div", { class: "interface-title" }, h("h1", null, name)),
-			),
-			h(
-				"div",
-				{ class: "interface-page" },
-				h(
-					"section",
-					{ class: "interface-block interface-width-full interface-problem" },
-					h("p", null, t("This page has a problem.")),
-					problemList(problems),
-				),
-			),
 		),
 	);
 }

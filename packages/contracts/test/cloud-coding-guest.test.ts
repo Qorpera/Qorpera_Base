@@ -113,6 +113,7 @@ describe("coding guest answers", () => {
 		exit: { code: 0, signal: null },
 		end: 120,
 	};
+	const usage = { bootId: commandId, uptimeMs: 60000, cpuUsageUsec: 1500000, ioBytes: 4096, ioComplete: true };
 	it("reads each verb's answer", () => {
 		expect(parseCodingGuestAnswer("run", runRequest, command)).toEqual(command);
 		expect(
@@ -155,15 +156,18 @@ describe("coding guest answers", () => {
 				"Invalid coding guest answer",
 			);
 		const status = parseCodingGuestAnswer("status", session, {
-			schema: "qorpera.coding-guest-status/v1",
+			schema: "qorpera.coding-guest-status/v2",
 			workerId,
 			commands: [
 				{ commandId, state: "running", exit: null, end: 0 },
 				{ commandId: workerId, state: "lost", exit: null, end: 5 },
 			],
+			usage,
 		});
 		expect(status.commands.map((entry) => entry.state)).toEqual(["running", "lost"]);
 		expect(Object.isFrozen(status.commands)).toBe(true);
+		expect(status.usage).toEqual(usage);
+		expect(Object.isFrozen(status.usage)).toBe(true);
 	});
 	it.each<[string, unknown]>([
 		["another worker's answer", { ...command, workerId: commandId }],
@@ -190,7 +194,7 @@ describe("coding guest answers", () => {
 		const page = { ...command, schema: "qorpera.coding-guest-output/v1", offset: 100, bytes: 10, gap: 0, ...change };
 		expect(() => parseCodingGuestAnswer("output", outputRequest, page)).toThrow("Invalid coding guest answer");
 	});
-	it("refuses a mount answer for another view or not one string, and a status with repeated, too many or malformed commands", () => {
+	it("refuses a mount answer for another view or not one string, and a status with repeated, too many or malformed commands or a malformed usage", () => {
 		for (const [viewId, state] of [
 			["view-2", "mounted"],
 			["view-1", ["mounted"]],
@@ -205,14 +209,31 @@ describe("coding guest answers", () => {
 			).toThrow("Invalid coding guest answer");
 		const session = { schema: "qorpera.coding-guest-session/v1", workerId } as const;
 		const entry = { commandId, state: "running", exit: null, end: 0 };
+		const status = { schema: "qorpera.coding-guest-status/v2", workerId, commands: [entry], usage };
+		expect(parseCodingGuestAnswer("status", session, status).usage).toEqual(usage);
+		const partial = { ...usage, ioComplete: false };
+		expect(parseCodingGuestAnswer("status", session, { ...status, usage: partial }).usage).toEqual(partial);
 		for (const commands of [
 			[entry, entry],
 			Array.from({ length: CODING_GUEST.maxStatusCommands + 1 }, () => entry),
 			[{ ...entry, state: ["lost"] }],
 		])
-			expect(() =>
-				parseCodingGuestAnswer("status", session, { schema: "qorpera.coding-guest-status/v1", workerId, commands }),
-			).toThrow("Invalid coding guest answer");
+			expect(() => parseCodingGuestAnswer("status", session, { ...status, commands })).toThrow(
+				"Invalid coding guest answer",
+			);
+		for (const value of [
+			{ ...status, schema: "qorpera.coding-guest-status/v1" },
+			Object.fromEntries(Object.entries(status).filter(([key]) => key !== "usage")),
+			{ ...status, usage: null },
+			{ ...status, usage: { ...usage, bootId: "not-a-boot" } },
+			{ ...status, usage: { ...usage, cpuUsageUsec: -1 } },
+			{ ...status, usage: { ...usage, ioBytes: 1.5 } },
+			{ ...status, usage: { ...usage, uptimeMs: "60000" } },
+			{ ...status, usage: Object.fromEntries(Object.entries(usage).filter(([key]) => key !== "ioComplete")) },
+			{ ...status, usage: { ...usage, ioComplete: "true" } },
+			{ ...status, usage: { ...usage, pids: 3 } },
+		])
+			expect(() => parseCodingGuestAnswer("status", session, value)).toThrow("Invalid coding guest answer");
 	});
 	it("reads a refusal's code and nothing else", () => {
 		expect(parseCodingGuestRefusal({ schema: "qorpera.coding-guest-refusal/v1", code: "COMMAND_CONFLICT" })).toEqual({

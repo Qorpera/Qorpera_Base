@@ -113,6 +113,11 @@ test("packages the folder service, the folder program, the units and the install
 		assert.match(control, /^FileDescriptorName=control$/m);
 		assert.match(control, /^Service=qorpera-folder-service\.service$/m);
 		assert.match(service, /^TimeoutStopSec=60s$/m);
+		// The clean stop's note (clean-stop.ts) outlives every stop and start, a restart's included, and is the service's
+		// alone.
+		assert.match(service, /^RuntimeDirectory=qorpera-folder-service$/m);
+		assert.match(service, /^RuntimeDirectoryMode=0700$/m);
+		assert.match(service, /^RuntimeDirectoryPreserve=yes$/m);
 		// The mount unit ships in the shared-execution package; it must land in PID 1's mount namespace.
 		const mount = await readFile(join(repositoryRoot, "deploy/folder-service/qorpera-folder-mount@.service"), "utf8");
 		for (const option of ["ProtectSystem", "PrivateTmp", "PrivateDevices", "ProtectHome", "ReadWritePaths", "InaccessiblePaths"])

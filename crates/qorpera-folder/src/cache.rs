@@ -1,15 +1,18 @@
-//! Each worktree's cache list (§6 "The per-session cache"; RUNTIME-FOLDER-CODING-MACHINES.md "The cache list"): the
-//! folder names whose folders in the worktree live on the machine's disk (`local.rs`), never published, unseen by
-//! other views. It starts from `git::CACHE_NAMES`. A name under which the worktree's own index has entries leaves the
-//! list, and stays off it, so files already published never fall back into a cache; the names that left are written
-//! through to a file beside the cached folders and read back by a program started again. The cache folders of a name
-//! that left move into the folder (`mount/on_disk.rs`); a move not finished is written through too, tried again, and
-//! while one is left a marker in the mount's state directory (`MOVING`) makes `qorpera-folder publish` refuse, so no
-//! boundary leaves out files git tracks.
+//! The machine's caches (deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md "The rules"): the folder names whose new
+//! folders live on the machine's disk (`local.rs`), never published, unseen by other views. One table (`NAMES`)
+//! decides them: rule 2's dependency names in any folder, rule 3's build names in a folder holding a project file
+//! (`PROJECT_FILES`), and, in a worktree, each worktree's cache list (rule 4; RUNTIME-FOLDER-CODING-MACHINES.md "The
+//! cache list").
+//!
+//! A worktree's list starts from the table's names but `out`. A name under which the worktree's own index has entries
+//! leaves the list, and stays off it, so files already published never fall back into a cache; the names that left are
+//! written through to a file beside the cached folders and read back by a program started again. The cache folders of
+//! a name that left move into the folder (`mount/on_disk.rs`); a move not finished is written through too, tried
+//! again, and while one is left a marker in the mount's state directory (`MOVING`) makes `qorpera-folder publish`
+//! refuse, so no boundary leaves out files git tracks.
 //!
 //! A wrong list only keeps the session's own files unpublished, which root in the machine could do anyway.
 
-use crate::git::CACHE_NAMES;
 use crate::index;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -20,6 +23,79 @@ use std::path::{Path, PathBuf};
 
 /// The marker in a mount's state directory that is there while a move is unfinished.
 pub const MOVING: &str = "caches.moving";
+
+/// What makes a new folder of a name a cache. Names match exactly (rule 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+	/// Rule 2: in any folder.
+	Dependency,
+	/// Rule 3: in a project, and at any depth in a worktree (rule 4).
+	Build,
+	/// Rule 3's `out`: in a project; in a worktree only when git ignores it (rule 4).
+	Out,
+}
+
+/// The cache names, one table for every rule.
+pub const NAMES: [(&str, Named); 21] = [
+	("node_modules", Named::Dependency),
+	(".pnpm-store", Named::Dependency),
+	(".venv", Named::Dependency),
+	("venv", Named::Dependency),
+	("__pycache__", Named::Dependency),
+	(".pytest_cache", Named::Dependency),
+	(".mypy_cache", Named::Dependency),
+	(".ruff_cache", Named::Dependency),
+	(".tox", Named::Dependency),
+	(".gradle", Named::Dependency),
+	(".turbo", Named::Dependency),
+	(".next", Named::Dependency),
+	(".nuxt", Named::Dependency),
+	(".svelte-kit", Named::Dependency),
+	(".parcel-cache", Named::Dependency),
+	("dist", Named::Build),
+	("build", Named::Build),
+	("target", Named::Build),
+	("coverage", Named::Build),
+	(".cache", Named::Build),
+	("out", Named::Out),
+];
+
+/// The files that make the folder holding one a project (rule 3).
+pub const PROJECT_FILES: [&str; 14] = [
+	"package.json",
+	"Cargo.toml",
+	"pyproject.toml",
+	"setup.py",
+	"requirements.txt",
+	"go.mod",
+	"pom.xml",
+	"build.gradle",
+	"build.gradle.kts",
+	"Gemfile",
+	"composer.json",
+	"mix.exs",
+	"deno.json",
+	"CMakeLists.txt",
+];
+
+pub fn named(name: &str) -> Option<Named> {
+	NAMES.iter().find(|(n, _)| *n == name).map(|(_, kind)| *kind)
+}
+
+/// Whether a new folder `name` outside the code areas is a cache (rules 2 and 3). `project` says whether its parent
+/// holds one of `PROJECT_FILES`; it is asked only for a build name.
+pub fn outside(name: &str, project: impl FnOnce() -> bool) -> bool {
+	match named(name) {
+		Some(Named::Dependency) => true,
+		Some(Named::Build | Named::Out) => project(),
+		None => false,
+	}
+}
+
+/// Whether `name` starts on a worktree's list (rule 4).
+pub fn on_worktree_list(name: &str) -> bool {
+	matches!(named(name), Some(Named::Dependency | Named::Build))
+}
 
 /// One line of the file: a name that left a worktree's list, or (`moved`) whose cache folders all moved into the folder.
 #[derive(Serialize, Deserialize)]
@@ -81,7 +157,7 @@ impl CacheList {
 
 	/// Whether a folder named `name` in `worktree` is a cache.
 	pub fn listed(&self, worktree: &str, name: &str) -> bool {
-		CACHE_NAMES.contains(&name) && !self.worktrees.get(worktree).is_some_and(|w| w.left.contains(name))
+		on_worktree_list(name) && !self.worktrees.get(worktree).is_some_and(|w| w.left.contains(name))
 	}
 
 	/// Whether `worktree`'s index was read since the program started.
@@ -103,7 +179,7 @@ impl CacheList {
 		let mut leaving = BTreeSet::new();
 		for path in paths {
 			for name in index::folders(path) {
-				if CACHE_NAMES.contains(&name) && !w.left.contains(name) {
+				if on_worktree_list(name) && !w.left.contains(name) {
 					leaving.insert(name.to_string());
 				}
 			}
@@ -165,6 +241,20 @@ impl CacheList {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn the_table_decides_by_rule_and_exact_name() {
+		let never = || -> bool { panic!("asked for a project") };
+		assert!(outside("node_modules", never) && outside(".pnpm-store", never) && outside(".venv", never));
+		assert!(outside("build", || true) && outside("out", || true) && !outside("build", || false));
+		assert!(!outside("Build", never) && !outside("BUILD", never) && !outside("vendor", never));
+		assert!(!outside(".yarn", never) && !outside("src", never));
+		let list = CacheList::memory();
+		let w = "code/o/n/worktrees/w";
+		assert!(list.listed(w, ".svelte-kit") && list.listed(w, "coverage") && !list.listed(w, "out"));
+		assert_eq!(NAMES.iter().filter(|(n, _)| on_worktree_list(n)).count(), 20);
+		assert!(PROJECT_FILES.contains(&"Cargo.toml") && !PROJECT_FILES.contains(&"cargo.toml"));
+	}
 
 	#[test]
 	fn names_leave_once_tracked_and_stay_off() {

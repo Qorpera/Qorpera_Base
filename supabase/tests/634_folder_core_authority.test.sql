@@ -145,15 +145,17 @@ begin
 		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
 	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
 		p_requester, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '1 hour', v_run);
+	-- The memory mode as the run row's trigger pins it (C5, 20260930508000), which replica turns off.
 	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
 		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
 		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
-		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids, memory_mode)
 	values (v_run, v_profile, v_env, case when p_kind = 'human' then 'session_turn' else 'wake' end,
 		case when p_kind = 'human' then v_input else v_wake end, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
 		p_staff, 1, v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, p_requester, p_requester, 'openai', 'gpt-test',
 		'provider_default', 'company', v_bundle, repeat('b', 64), v_session,
-		case when p_kind = 'human' then array[v_input] else '{}'::uuid[] end);
+		case when p_kind = 'human' then array[v_input] else '{}'::uuid[] end,
+		public.qorpera_company_memory_mode_effective(v_profile));
 	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
 		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
 		sponsor_version, session_id, causal_root_id, causal_agent_ids, causal_hop_count, parent_run_id, payload)

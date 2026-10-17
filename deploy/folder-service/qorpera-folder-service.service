@@ -26,6 +26,11 @@ RestartSec=5s
 # On a node with coding machines, qorpera-folder-control.socket (enabled there alone) passes its socket too, by its
 # Service=. A stop releases and publishes the coding views first, for up to 45 s (cli.ts), so the next run may serve them.
 TimeoutStopSec=60s
+# A clean stop leaves the next run its note here (clean-stop.ts): kept across every stop and start (systemd removes it
+# at a stop otherwise, a restart included), gone at a boot. A run without one counts every machine lost until it restarts.
+RuntimeDirectory=qorpera-folder-service
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 KillMode=mixed
 UMask=0077
 # No core file: it would hold company bytes.

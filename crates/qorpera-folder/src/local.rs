@@ -6,13 +6,18 @@
 //!   worktree's `config.worktree`. The session gets its own copy, seeded from the published one the first time the
 //!   mount reaches the repository (or the worktree's git folder), and what git writes there stays here. The node's own
 //!   copy of those paths is never shown.
-//! - **Cache folders** (`cache.rs`): inside a worktree, a folder git or a build makes under a name on the worktree's
-//!   cache list, where the node has nothing at that path. Whatever the node has at a path wins.
+//! - **The machine's caches** (`cache.rs`): a new folder an install or a build makes under a cache name, where the
+//!   node has nothing at that path, and what is in it. Whatever the node has at a path wins.
 //!
-//! They live in the local folder (`--local-dir`, by default `local/` in the mount's state folder): `git/<path>` and
-//! `cache/<path>`, by their paths in the folder. A local folder that a program started for another view finds is that
-//! view's: its git files go (they are seeded again), its caches stay (they can be rebuilt at any time, and are only
-//! ever the session's own).
+//! They live in the local folder (`--local-dir`, by default `local/` in the mount's state folder). Git files are at
+//! `git/<path>`, by their paths in the folder. Caches are kept by the node's folder they are in: the top entries (a
+//! cache folder or file whose folder is the node's) of the folder `a/b` are in `caches/d/a/d/b/t/`, so a cache is told
+//! from the caches of a folder below its own, and the caches of a folder and of all below it move or go together with
+//! it. A folder of the node's whose caches are moving into the folder (`mount/on_disk.rs`) is marked (`w`, beside its
+//! `t/`) until all of them have, so the move goes on there under whatever name a rename gives it. A local folder that
+//! a program started for another view finds is that view's: its git files go (they are seeded again), its caches stay
+//! (they can be rebuilt at any time, and are only ever the machine's own). What goes is moved to `gone/` first and
+//! taken off the disk there apart from the requests.
 //!
 //! The kernel knows a local file by its inode on the disk with the top bit set (`LOCAL`); the node's inodes never have
 //! it. So does a handle open on one.
@@ -50,10 +55,16 @@ impl Area {
 	fn dir(self) -> &'static str {
 		match self {
 			Area::Git => "git",
-			Area::Cache => "cache",
+			Area::Cache => "caches",
 		}
 	}
 }
+
+/// Where what goes from the local folder waits to be taken off the disk.
+const GONE: &str = "gone";
+
+/// The mark of a folder whose caches are moving into the folder (`Local::whole`).
+const WHOLE: &str = "w";
 
 /// The folder a local file is in: a folder of the mount's (by its path), or a local one (by its inode).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,16 +124,33 @@ fn latest(names: &Names, ino: u64) -> Option<(Up, String, Area)> {
 	names.get(&ino).and_then(|all| all.last()).cloned()
 }
 
-/// `ino`'s path in the folder by its latest names (`up` gives the path of a mount folder above it).
-fn path_in(names: &Names, ino: u64) -> Option<(String, Area)> {
+/// Forgets every name `gone` picks, and then every name in a local folder left with none.
+fn forget_all(names: &mut Names, gone: impl Fn(&Up, &str, Area) -> bool) {
+	for all in names.values_mut() {
+		all.retain(|(up, name, area)| !gone(up, name, *area));
+	}
+	loop {
+		names.retain(|_, all| !all.is_empty());
+		let named: HashSet<u64> = names.keys().copied().collect();
+		let before: usize = names.values().map(Vec::len).sum();
+		for all in names.values_mut() {
+			all.retain(|(up, _, _)| !matches!(up, Up::Local(ino) if !named.contains(ino)));
+		}
+		if names.values().map(Vec::len).sum::<usize>() == before {
+			return;
+		}
+	}
+}
+
+/// `ino` by its latest names: the mount folder above it, the names from there down to it, and its area.
+fn chain(names: &Names, ino: u64) -> Option<(String, Vec<String>, Area)> {
 	let (mut up, name, area) = latest(names, ino)?;
 	let mut parts = vec![name];
 	loop {
 		match up {
 			Up::Mount(path) => {
-				parts.push(path);
 				parts.reverse();
-				return Some((parts.join("/"), area));
+				return Some((path, parts, area));
 			}
 			Up::Local(ino) => {
 				let (next, name, _) = latest(names, ino)?;
@@ -131,6 +159,40 @@ fn path_in(names: &Names, ino: u64) -> Option<(String, Area)> {
 			}
 		}
 	}
+}
+
+/// `ino`'s path in the folder by its latest names (`up` gives the path of a mount folder above it).
+fn path_in(names: &Names, ino: u64) -> Option<(String, Area)> {
+	let (dir, parts, area) = chain(names, ino)?;
+	Some((parts.iter().fold(dir, |path, name| crate::proto::join(&path, name)), area))
+}
+
+/// Whether the folder's `path` is `dir` or below it.
+fn under(path: &str, dir: &str) -> bool {
+	path == dir || dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Moves `disk` (a file or a folder) into `gone/` and takes it off the disk there, apart from the request.
+fn trash(root: &Path, disk: &Path) -> io::Result<()> {
+	static NEXT: AtomicU64 = AtomicU64::new(0);
+	let started = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+	let to = root.join(GONE).join(format!("{started}-{}", NEXT.fetch_add(1, Ordering::SeqCst)));
+	fs::rename(disk, &to)?;
+	take_off(to);
+	Ok(())
+}
+
+fn take_off(disk: PathBuf) {
+	std::thread::spawn(move || {
+		let removed = match fs::symlink_metadata(&disk) {
+			Ok(m) if m.is_dir() => fs::remove_dir_all(&disk),
+			Ok(_) => fs::remove_file(&disk),
+			Err(e) => Err(e),
+		};
+		if let Err(e) = removed {
+			eprintln!("qorpera-folder: {} could not be taken off the disk ({e})", disk.display());
+		}
+	});
 }
 
 pub struct Local {
@@ -148,6 +210,11 @@ pub struct Local {
 	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same; with the writes of a
 	/// move the node did not take, by the file's path, so the next move goes on through the same handle.
 	pub moving: Mutex<HashMap<String, Writer>>,
+	/// How many of its folders the node renamed for this view. Held from the node's rename of one until its caches have
+	/// moved with it (`mount.rs`), while the caches of a folder the node no longer has go, and through each of the
+	/// node's folders a move into the folder goes through (`mount/on_disk.rs`): so no listing takes a renamed folder's
+	/// caches for those of one that is gone, and no move goes on under a folder's old name.
+	pub folders: Mutex<u64>,
 	owner: (u32, u32),
 }
 
@@ -170,8 +237,16 @@ impl Local {
 			let mut file = OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&mark)?;
 			file.write_all(view.as_bytes())?;
 		}
-		for area in [Area::Git, Area::Cache] {
-			fs::DirBuilder::new().recursive(true).mode(0o700).create(root.join(area.dir()))?;
+		for dir in [Area::Git.dir(), Area::Cache.dir(), GONE] {
+			fs::DirBuilder::new().recursive(true).mode(0o700).create(root.join(dir))?;
+		}
+		// What an earlier program left to take off the disk, and the caches of 5d's program, kept by their paths.
+		for left in fs::read_dir(root.join(GONE))? {
+			take_off(left?.path());
+		}
+		match trash(root, &root.join("cache")) {
+			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+			_ => {}
 		}
 		let seeded = match fs::read_to_string(root.join("seeded")) {
 			Ok(text) => text.lines().map(str::to_string).collect(),
@@ -187,13 +262,186 @@ impl Local {
 			next_fh: AtomicU64::new(1),
 			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
 			moving: Mutex::new(HashMap::new()),
+			folders: Mutex::new(0),
 			owner,
 		})
 	}
 
-	/// Where the local file at the folder's `path` is on the disk.
+	/// Where the local file at the folder's `path` is on the disk: a git file, or a cache's top entry.
 	pub fn disk(&self, area: Area, path: &str) -> PathBuf {
-		self.root.join(area.dir()).join(path)
+		let (dir, name) = crate::proto::split(path);
+		self.room(dir, area).join(name)
+	}
+
+	/// Where the local entries of the node's folder `dir` are on the disk: its git files, or its top entries.
+	pub fn room(&self, dir: &str, area: Area) -> PathBuf {
+		match area {
+			Area::Git => self.root.join(Area::Git.dir()).join(dir),
+			Area::Cache => self.mirror(dir).join("t"),
+		}
+	}
+
+	/// Where the caches of the node's folder `dir` are on the disk: its top entries in `t/`, the caches of each folder
+	/// in it in `d/<name>/`.
+	fn mirror(&self, dir: &str) -> PathBuf {
+		let mut disk = self.root.join(Area::Cache.dir());
+		for name in dir.split('/').filter(|n| !n.is_empty()) {
+			disk.push("d");
+			disk.push(name);
+		}
+		disk
+	}
+
+	/// Whether the node's folder `dir` has a cache named `name`.
+	pub fn is_top(&self, dir: &str, name: &str) -> bool {
+		fs::symlink_metadata(self.disk(Area::Cache, &crate::proto::join(dir, name))).is_ok()
+	}
+
+	/// Whether the node's folder `dir` has caches in it: it is not empty.
+	pub fn tops(&self, dir: &str) -> bool {
+		fs::read_dir(self.mirror(dir).join("t")).is_ok_and(|mut d| d.next().is_some())
+	}
+
+	/// Whether the node's folder `dir` has caches in it or in a folder below it, or did since the program started.
+	pub fn has_caches(&self, dir: &str) -> bool {
+		fs::read_dir(self.mirror(dir)).is_ok_and(|mut d| d.next().is_some())
+	}
+
+	/// The names of the folders in the node's folder `dir` that have caches in them or below, or had.
+	pub fn mirrors(&self, dir: &str) -> Vec<String> {
+		let Ok(read) = fs::read_dir(self.mirror(dir).join("d")) else { return Vec::new() };
+		read.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).collect()
+	}
+
+	/// Whether all the caches of the node's folder `dir`, and of the folders below it, are moving into the folder: it
+	/// was a cache, or was in one, and a move has not taken them all yet (`mount/on_disk.rs`).
+	pub fn whole(&self, dir: &str) -> bool {
+		fs::symlink_metadata(self.mirror(dir).join(WHOLE)).is_ok()
+	}
+
+	/// Marks the node's folder `dir` as one whose caches all move (`whole`), or takes the mark off once they have.
+	pub fn mark_whole(&self, dir: &str, whole: bool) -> io::Result<()> {
+		let mark = self.mirror(dir).join(WHOLE);
+		if whole {
+			fs::DirBuilder::new().recursive(true).mode(0o755).create(self.mirror(dir))?;
+			return OpenOptions::new().create(true).write(true).mode(0o644).open(mark).map(drop);
+		}
+		match fs::remove_file(mark) {
+			Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+			_ => Ok(()),
+		}
+	}
+
+	/// Whether caches are moving into the folder from the node's folder `path`, or from one below it: it is marked as one
+	/// whose caches all move (`whole`), or has a cache folder named one of `names` (those still to move in its worktree),
+	/// which a move has not reached yet.
+	pub fn moving_below(&self, path: &str, names: &[String]) -> bool {
+		let mut todo = vec![self.mirror(path)];
+		while let Some(disk) = todo.pop() {
+			let named = |n: &String| fs::symlink_metadata(disk.join("t").join(n)).is_ok_and(|m| m.is_dir());
+			if fs::symlink_metadata(disk.join(WHOLE)).is_ok() || names.iter().any(named) {
+				return true;
+			}
+			if let Ok(read) = fs::read_dir(disk.join("d")) {
+				todo.extend(read.flatten().map(|e| e.path()));
+			}
+		}
+		false
+	}
+
+	/// The node has an entry where `dir` has the cache `name` (rule 1): the cache goes.
+	pub fn gone_top(&self, dir: &str, name: &str) {
+		let mut names = self.names.lock().unwrap();
+		match trash(&self.root, &self.disk(Area::Cache, &crate::proto::join(dir, name))) {
+			Ok(()) => {}
+			Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+			Err(e) => return eprintln!("qorpera-folder: the cache {name} in {dir:?} could not go ({e})"),
+		}
+		let up = Up::Mount(dir.to_string());
+		forget_all(&mut names, |u, n, area| area == Area::Cache && *u == up && n == name);
+	}
+
+	/// The node's folder `path` is gone from the view: its caches, and those of every folder below it, go.
+	pub fn drop_mirror(&self, path: &str) {
+		let mut names = self.names.lock().unwrap();
+		match trash(&self.root, &self.mirror(path)) {
+			Ok(()) => {}
+			Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+			Err(e) => return eprintln!("qorpera-folder: the caches in {path:?} could not go ({e})"),
+		}
+		forget_all(&mut names, |u, _, area| area == Area::Cache && matches!(u, Up::Mount(p) if under(p, path)));
+	}
+
+	/// The node took the rename of its folder `from` to `to`: the caches in it and below move with it. Those of a folder
+	/// it replaced at `to` go; in a repository's git folder, where no cache is shown, they go too.
+	pub fn renamed(&self, from: &str, to: &str) {
+		let (source, target) = (self.mirror(from), self.mirror(to));
+		let there = |p: &Path| fs::symlink_metadata(p).is_ok();
+		if from == to || !there(&source) && !there(&target) {
+			return;
+		}
+		let mut names = self.names.lock().unwrap();
+		match trash(&self.root, &target) {
+			Err(e) if e.kind() != io::ErrorKind::NotFound => eprintln!("qorpera-folder: the caches in {to:?} could not go ({e})"),
+			_ => {}
+		}
+		let into_git = matches!(git::place(to), git::Place::Git { .. });
+		let moved = if !there(&source) {
+			Ok(())
+		} else if into_git {
+			trash(&self.root, &source)
+		} else {
+			fs::DirBuilder::new()
+				.recursive(true)
+				.mode(0o755)
+				.create(target.parent().expect("a folder's caches are in its folder's"))
+				.and_then(|()| fs::rename(&source, &target))
+		};
+		if let Err(e) = moved {
+			eprintln!("qorpera-folder: the caches in {from:?} could not move to {to:?} ({e})");
+		}
+		forget_all(&mut names, |u, _, area| area == Area::Cache && matches!(u, Up::Mount(p) if under(p, to)));
+		if into_git {
+			return forget_all(&mut names, |u, _, area| area == Area::Cache && matches!(u, Up::Mount(p) if under(p, from)));
+		}
+		for all in names.values_mut() {
+			for (up, _, area) in all.iter_mut() {
+				if let (Up::Mount(p), Area::Cache) = (&*up, *area) {
+					if under(p, from) {
+						*up = Up::Mount(format!("{to}{}", &p[from.len()..]));
+					}
+				}
+			}
+		}
+	}
+
+	/// Makes the cache folder `name` in `dir` the caches of the node's folder of that name, which a move has in the
+	/// folder now (`mount/on_disk.rs`): what is in it becomes that folder's top entries, all moving (`whole`). False, and
+	/// nothing done, when that folder has top entries of its own.
+	pub fn convert(&self, dir: &str, name: &str) -> io::Result<bool> {
+		let mut names = self.names.lock().unwrap();
+		let path = crate::proto::join(dir, name);
+		let (top, into) = (self.disk(Area::Cache, &path), self.mirror(&path).join("t"));
+		let ino = fs::symlink_metadata(&top)?.ino() | LOCAL;
+		fs::DirBuilder::new().recursive(true).mode(0o755).create(self.mirror(&path))?;
+		match fs::remove_dir(&into) {
+			Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) || e.raw_os_error() == Some(libc::EEXIST) => {
+				return Ok(false);
+			}
+			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+			_ => {}
+		}
+		self.mark_whole(&path, true)?;
+		fs::rename(&top, &into)?;
+		forget(&mut names, ino, &Up::Mount(dir.to_string()), name);
+		for all in names.values_mut() {
+			for (up, _, area) in all.iter_mut() {
+				if *up == Up::Local(ino) && *area == Area::Cache {
+					*up = Up::Mount(path.clone());
+				}
+			}
+		}
+		Ok(true)
 	}
 
 	pub fn seeded(&self, seed: &str) -> bool {
@@ -253,8 +501,10 @@ impl Local {
 	/// the names held until it is done, so no unlink or rename between finding and using it (of a hard link's name, or
 	/// a folder above) has it read or change another file by the same name.
 	fn disk_at(&self, names: &Names, ino: u64) -> Result<(PathBuf, Area), i32> {
-		let (path, area) = path_in(names, ino).ok_or(libc::ENOENT)?;
-		Ok((self.disk(area, &path), area))
+		let (dir, parts, area) = chain(names, ino).ok_or(libc::ENOENT)?;
+		let mut disk = self.room(&dir, area);
+		disk.extend(&parts);
+		Ok((disk, area))
 	}
 
 	/// Where `name` in `up` is on the disk, by `names` (`disk_at`), with its area (for a mount folder, the area `area`
@@ -316,7 +566,7 @@ impl Local {
 
 	/// The local entries of a mount folder (`dir`, in `area`), each now known by its inode.
 	pub fn entries_of(&self, dir: &str, area: Area) -> Vec<(u64, FileType, String)> {
-		let Ok(read) = fs::read_dir(self.disk(area, dir)) else { return Vec::new() };
+		let Ok(read) = fs::read_dir(self.room(dir, area)) else { return Vec::new() };
 		let mut out = Vec::new();
 		let mut names = self.names.lock().unwrap();
 		for entry in read.flatten() {
@@ -349,7 +599,7 @@ impl Local {
 	/// Makes the folders a mount folder's local entries go in.
 	fn make_room(&self, up: &Up, area: Area) -> Result<(), i32> {
 		if let Up::Mount(path) = up {
-			fs::DirBuilder::new().recursive(true).mode(0o755).create(self.disk(area, path)).map_err(errno)?;
+			fs::DirBuilder::new().recursive(true).mode(0o755).create(self.room(path, area)).map_err(errno)?;
 		}
 		Ok(())
 	}
@@ -737,7 +987,7 @@ mod tests {
 		// Two names of one file swapped: both stay.
 		l.link(a, up.clone(), "d", Area::Cache).unwrap();
 		l.rename((&up, "a"), (&up, "d"), Area::Cache, false, false).unwrap();
-		assert!(dir.join("cache/code/o/n/worktrees/w/target/a").exists());
+		assert!(l.disk(Area::Cache, "code/o/n/worktrees/w/target/a").exists());
 		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/d");
 		l.unlink(&up, "d", Area::Cache).unwrap();
 		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/a");
@@ -752,7 +1002,7 @@ mod tests {
 		l.release(fh);
 		let a = attr.ino.0;
 		let sub = Up::Local(l.mkdir(up.clone(), "subdir", Area::Cache, 0o755).unwrap().ino.0);
-		let victim = dir.join("cache/code/o/n/worktrees/w/target/subdir/b");
+		let victim = l.disk(Area::Cache, "code/o/n/worktrees/w/target/subdir").join("b");
 		let stop = AtomicBool::new(false);
 		std::thread::scope(|s| {
 			// `a`'s second name comes and goes, another file taking its place each time.
@@ -777,7 +1027,7 @@ mod tests {
 			other.join().unwrap();
 			assert_eq!(opens, Ok(()));
 		});
-		assert_eq!(fs::read(dir.join("cache/code/o/n/worktrees/w/target/a")).unwrap(), b"a");
+		assert_eq!(fs::read(l.disk(Area::Cache, "code/o/n/worktrees/w/target/a")).unwrap(), b"a");
 		fs::remove_dir_all(&dir).unwrap();
 	}
 
@@ -820,10 +1070,11 @@ mod tests {
 		let (attr, fh) = l.create(target, "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
 		l.release(fh);
 		let a = attr.ino.0;
-		l.link(a, Up::Mount("code/o/n/worktrees/w/node_modules".to_string()), "b", Area::Cache).unwrap();
+		let modules = l.mkdir(Up::Mount("code/o/n/worktrees/w".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
+		l.link(a, Up::Local(modules.ino.0), "b", Area::Cache).unwrap();
 		assert_eq!(l.path(a), Some(("code/o/n/worktrees/w/node_modules/b".to_string(), Area::Cache)));
 		// Git came to track node_modules: the move has b in the folder, and takes it and its folder off the disk.
-		let modules = dir.join("cache/code/o/n/worktrees/w/node_modules");
+		let modules = l.disk(Area::Cache, "code/o/n/worktrees/w/node_modules");
 		l.moved_out(&modules.join("b")).unwrap();
 		l.moved_out(&modules).unwrap();
 		assert_eq!(l.path(a), Some(("code/o/n/worktrees/w/target/a".to_string(), Area::Cache)));
@@ -844,10 +1095,74 @@ mod tests {
 		drop(again);
 		let other = Local::open(&dir, "v2", (0, 0), None).unwrap();
 		assert!(!other.seeded("code/o/n/repo.git") && !dir.join("git/code/o/n/repo.git/config").exists());
-		assert!(dir.join("cache/code/o/n/worktrees/w/node_modules").is_dir());
-		let walked: Vec<String> =
-			other.walk(&dir.join("cache/code/o/n/worktrees")).unwrap().into_iter().map(|w| w.0).collect();
-		assert_eq!(walked, ["w", "w/node_modules"]);
+		assert!(other.disk(Area::Cache, "code/o/n/worktrees/w/node_modules").is_dir());
+		let tops: Vec<String> = other.entries_of("code/o/n/worktrees/w", Area::Cache).into_iter().map(|e| e.2).collect();
+		assert_eq!(tops, ["node_modules"]);
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn caches_live_by_the_folder_they_are_in_and_move_or_go_with_it() {
+		let (l, dir) = local("mirrors", "v1");
+		let made = |up: Up, name: &str| l.mkdir(up, name, Area::Cache, 0o755).unwrap().ino.0;
+		let file = |up: Up, name: &str| {
+			let (attr, fh) = l.create(up, name, Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+			l.release(fh);
+			attr.ino.0
+		};
+		// The folder's root, and a folder below it.
+		let store = made(Up::Mount(String::new()), ".pnpm-store");
+		assert_eq!(l.path(store), Some((".pnpm-store".to_string(), Area::Cache)));
+		assert!(dir.join("caches/t/.pnpm-store").is_dir());
+		let modules = made(Up::Mount("a/b".to_string()), "node_modules");
+		let x = file(Up::Local(modules), "x.js");
+		assert!(dir.join("caches/d/a/d/b/t/node_modules/x.js").is_file());
+		assert!(l.is_top("a/b", "node_modules") && !l.is_top("a", "b") && !l.is_top("a/b", "x.js"));
+		assert!(l.tops("a/b") && !l.tops("a") && l.has_caches("a") && !l.has_caches("c"));
+		assert_eq!(l.mirrors("a"), ["b"]);
+		// A move of a name takes the cache folders of that name in and below a folder, not a file of that name.
+		let moving = |path: &str, name: &str| l.moving_below(path, &[name.to_string()]);
+		file(Up::Mount("e".to_string()), "dist");
+		assert!(moving("a", "node_modules") && moving("a/b", "node_modules") && !moving("a", "dist") && !moving("e", "dist"));
+		// The node renamed a to c, in place of an empty c whose folder below had caches.
+		made(Up::Mount("c/old".to_string()), "dist");
+		l.renamed("a", "c");
+		assert!(!l.has_caches("a") && !l.is_top("c/old", "dist") && l.mirrors("c") == ["b"]);
+		assert_eq!(l.path(x), Some(("c/b/node_modules/x.js".to_string(), Area::Cache)));
+		assert!(l.getattr(x).is_ok());
+		// The node took a folder git came to track in place of the cache: what was in it is that folder's caches now.
+		let built = made(Up::Mount("c/b".to_string()), "dist");
+		let y = file(Up::Local(built), "y.js");
+		assert_eq!(l.convert("c/b", "dist").unwrap(), true);
+		assert!(!l.is_top("c/b", "dist") && l.is_top("c/b/dist", "y.js"));
+		assert_eq!(l.name(y), Some((Up::Mount("c/b/dist".to_string()), "y.js".to_string(), Area::Cache)));
+		assert!(l.whole("c/b/dist") && l.moving_below("c", &[]) && !l.moving_below("e", &[]));
+		// One whose folder has caches of its own stays as it is.
+		let again = made(Up::Mount("c/b".to_string()), "dist");
+		assert_eq!(l.convert("c/b", "dist").unwrap(), false);
+		assert!(l.is_top("c/b", "dist") && l.is_top("c/b/dist", "y.js"));
+		// The node's entry wins (rule 1), and a folder gone takes the caches in and below it.
+		l.gone_top("c/b", "dist");
+		assert!(!l.is_top("c/b", "dist") && l.name(again).is_none() && l.getattr(again) == Err(libc::ENOENT));
+		l.drop_mirror("c");
+		assert!(!l.has_caches("c") && l.name(x).is_none() && l.name(modules).is_none() && l.name(y).is_none());
+		// Moved into a repository's git folder, where no cache is shown, they go too.
+		let z = file(Up::Mount("d".to_string()), "out");
+		l.renamed("d", "code/o/n/repo.git/d");
+		assert!(!l.has_caches("d") && !l.has_caches("code/o/n/repo.git/d") && l.name(z).is_none());
+		assert_eq!(l.path(store), Some((".pnpm-store".to_string(), Area::Cache)));
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn the_caches_of_5ds_program_go_at_the_start() {
+		let dir = std::env::temp_dir().join(format!("qorpera-local-old-cache-{}", std::process::id()));
+		fs::create_dir_all(dir.join("cache/code/o/n/worktrees/w/node_modules")).unwrap();
+		fs::create_dir_all(dir.join("gone/1-0/x")).unwrap();
+		let l = Local::open(&dir, "v1", (0, 0), None).unwrap();
+		assert!(!dir.join("cache").exists());
+		assert!(l.entries_of("code/o/n/worktrees/w", Area::Cache).is_empty());
+		drop(l);
 		fs::remove_dir_all(&dir).unwrap();
 	}
 

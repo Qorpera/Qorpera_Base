@@ -234,17 +234,23 @@ async function fixture(
 		),
 	};
 	const authorize = vi.fn<LxdCodingFolderCommandTransportOptions["authorize"]>(async () => undefined);
+	// No boot's reads were dropped (F3 5g-5) unless a test says so.
+	const dropped = vi.fn<LxdCodingFolderCommandTransportOptions["dropped"]>(async () => false);
 	const limitBytes = setup.limitBytes ?? LIMIT;
 	const session = { uid: UID, gid: GID, cwd: CWD, environment: setup.environment ?? { GIT_CONFIG_COUNT: "0" } };
+	const startOperationId = randomUUID();
+	/** The start the machine runs under now, as the executor read it last: none while it starts again. */
+	const machineStart: { now: string | undefined } = { now: startOperationId };
 	const options: LxdCodingFolderCommandTransportOptions = {
 		machine,
 		scope,
-		startOperationId: randomUUID(),
+		currentStart: () => machineStart.now,
 		session,
 		custody,
 		limitBytes,
 		guest: guest.client,
 		control,
+		dropped,
 		authorize,
 		...(setup.secrets ? { secrets: setup.secrets } : {}),
 	};
@@ -260,10 +266,19 @@ async function fixture(
 		guest,
 		held,
 		control,
+		dropped,
 		authorize,
 		session,
+		/** The LXD operation that started the boot the transport's commands run in. */
+		startOperationId,
+		machineStart,
 		transport,
 		another,
+		/** The machine started again, and the runtime builds the next request's transport. */
+		restart: () => {
+			machineStart.now = randomUUID();
+			return another();
+		},
 		input: (command = "npm test", more: Partial<Input> = {}): Input => ({
 			commandId: randomUUID(),
 			inputSha256: randomBytes(32).toString("hex"),
@@ -318,7 +333,6 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			{ scope: { ...at.scope, vmId: randomUUID() } },
 			{ scope: { ...at.scope, turn: 0 } },
 			{ scope: { ...at.scope, extra: 1 } as CloudCodingCommandScope },
-			{ startOperationId: "not-a-start" },
 			{ session: { ...at.session, uid: CODING_GUEST.minUid - 1 } },
 			{ session: { ...at.session, uid: CODING_GUEST.maxUid + 1 } },
 			{ session: { ...at.session, gid: CODING_GUEST.minUid - 1 } },
@@ -507,7 +521,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		});
 		expect(await readFile(join(folder, "output.log"), "utf8")).toBe("hello\n");
 		expect(await at.read(input.commandId)).toStrictEqual(done);
-		const restarted = at.another({ startOperationId: randomUUID() });
+		const restarted = at.restart();
 		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(done);
 		expect(at.guest.client.output).toHaveBeenCalledTimes(1);
 		expect(at.control.boundary).toHaveBeenCalledTimes(1);
@@ -584,9 +598,159 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await at.start(input)).toStrictEqual(at.receipt(input, { state: "running", output: "out\n" }));
 		at.guest.end(input.commandId, "lost");
 		const stopped = at.receipt(input, { state: "machine_stopped", output: "out\n" });
-		const restarted = at.another({ startOperationId: randomUUID() });
+		const restarted = at.restart();
 		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(stopped);
 		expect(await at.read(input.commandId)).toStrictEqual(stopped);
+	});
+
+	it("keeps nothing more of a command whose boot may have been served a read that went unreleased (F3 5g-5)", async () => {
+		const at = await fixture();
+		const input = at.input();
+		at.guest.print(input.commandId, "kept\n");
+		const kept = at.receipt(input, { state: "running", output: "kept\n" });
+		expect(await at.start(input)).toStrictEqual(kept);
+		// Printed while the boot's boundary held its reads, and still on the machine's disk after the machine started
+		// again: the guest says the command was lost, and has its output.
+		at.guest.print(input.commandId, "unreleased\n");
+		at.held.reads = "unanswered";
+		expect(await at.read(input.commandId)).toStrictEqual(kept);
+		at.guest.end(input.commandId, "lost");
+		// The command's boot is asked about only once its boundary released what was pulled: the start's.
+		expect(at.dropped.mock.calls).toEqual([[at.startOperationId, expect.any(AbortSignal)]]);
+		// The folder service could not say every read that boot was served was released.
+		at.dropped.mockResolvedValue(true);
+		const restarted = at.restart();
+		const outputs = at.guest.client.output.mock.calls.length;
+		// While the new boot's boundary holds, the command shows running, with what was kept.
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(kept);
+		await absent(join(at.folder(input.commandId), "outcome.json"));
+		// A mark that cannot be read fails the call, and ends nothing.
+		at.held.reads = "released";
+		at.dropped.mockRejectedValueOnce(new Error("CODING_MACHINE_JOURNAL_INVALID"));
+		expect(await rejected(restarted.read(at.scope, { commandId: input.commandId }, signal))).toBe(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+		await absent(join(at.folder(input.commandId), "outcome.json"));
+		// Released, the command ended with the machine, and what it printed the host never kept is counted lost.
+		const stopped = at.receipt(input, { state: "machine_stopped", output: "kept\n", log: { gapBytes: 11 } });
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(stopped);
+		expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
+		expect(at.dropped.mock.calls).toEqual(Array(4).fill([at.startOperationId, expect.any(AbortSignal)]));
+		expect(await json(join(at.folder(input.commandId), "outcome.json"))).toStrictEqual({
+			schema: "qorpera.coding-host-command-outcome/v1",
+			state: "machine_stopped",
+			exitCode: null,
+		});
+		// It stands: later reads ask neither the guest nor the mark again.
+		expect(await at.read(input.commandId)).toStrictEqual(stopped);
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toStrictEqual(stopped);
+		expect(at.dropped).toHaveBeenCalledTimes(4);
+		expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
+	});
+
+	it.each([
+		{ name: "started again", now: () => randomUUID() },
+		{ name: "starting again", now: () => undefined },
+	])(
+		"keeps nothing more of a dropped boot's command through a transport made before the machine was $name (F3 5g-5)",
+		async ({ now }) => {
+			const at = await fixture();
+			const input = at.input();
+			at.guest.print(input.commandId, "kept\n");
+			const kept = at.receipt(input, { state: "running", output: "kept\n" });
+			expect(await at.start(input)).toStrictEqual(kept);
+			at.guest.print(input.commandId, "unreleased\n");
+			at.held.reads = "unanswered";
+			expect(await at.read(input.commandId)).toStrictEqual(kept);
+			// Another session restarted the machine and its boot was written down, while this turn kept its transport; the
+			// guest still has the output on disk, and the boundary answers released.
+			at.machineStart.now = now();
+			at.dropped.mockResolvedValue(true);
+			at.held.reads = "released";
+			const outputs = at.guest.client.output.mock.calls.length;
+			const stopped = at.receipt(input, { state: "machine_stopped", output: "kept\n", log: { gapBytes: 11 } });
+			expect(await at.read(input.commandId)).toStrictEqual(stopped);
+			expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
+			await expect(readFile(join(at.folder(input.commandId), "output.log"), "utf8")).resolves.toBe("kept\n");
+			expect(await json(join(at.folder(input.commandId), "outcome.json"))).toStrictEqual({
+				schema: "qorpera.coding-host-command-outcome/v1",
+				state: "machine_stopped",
+				exitCode: null,
+			});
+			expect(at.dropped.mock.calls).toEqual(Array(2).fill([at.startOperationId, expect.any(AbortSignal)]));
+		},
+	);
+
+	it("starts a command under the start the machine runs now, whenever the transport was made, and none while it starts again (F3 5g-5)", async () => {
+		const at = await fixture();
+		// The machine started again after this transport was made.
+		const now = randomUUID();
+		at.machineStart.now = now;
+		const input = at.input();
+		expect(await at.start(input)).toStrictEqual(at.receipt(input, { state: "running" }));
+		expect(at.guest.client.run).toHaveBeenCalledTimes(1);
+		expect(await json(join(at.folder(input.commandId), "request.json"))).toMatchObject({ startOperationId: now });
+		expect(await at.read(input.commandId)).toStrictEqual(at.receipt(input, { state: "running" }));
+		// While it starts again, or under a start that is not one, a command is refused before anything of it is kept.
+		for (const start of [undefined, "not-a-start"]) {
+			at.machineStart.now = start;
+			const refused = at.input();
+			expect(await rejected(at.start(refused))).toBe("CODING_MACHINE_START_UNCONFIRMED");
+			await absent(join(at.folder(refused.commandId), "request.json"));
+		}
+		expect(at.guest.client.run).toHaveBeenCalledTimes(1);
+		expect(at.dropped).not.toHaveBeenCalled();
+	});
+
+	it("never runs a command whose machine started again while its secrets were read, and ends it machine_stopped (F3 5g-5)", async () => {
+		const secrets = maskedSecrets();
+		const at = await fixture({ secrets });
+		// Another session restarts the machine while the command's secrets are read.
+		secrets.resolve.mockImplementationOnce(async () => {
+			at.machineStart.now = randomUUID();
+			return { environment: { TOKEN: SECRET }, mask: () => new CodingSecretMask([SECRET]).stream() };
+		});
+		const input = at.input();
+		const stopped = at.receipt(input, { state: "machine_stopped" });
+		expect(await at.start(input)).toStrictEqual(stopped);
+		expect(at.guest.client.run).not.toHaveBeenCalled();
+		expect(await json(join(at.folder(input.commandId), "request.json"))).toMatchObject({
+			startOperationId: at.startOperationId,
+		});
+		expect(await json(join(at.folder(input.commandId), "outcome.json"))).toStrictEqual({
+			schema: "qorpera.coding-host-command-outcome/v1",
+			state: "machine_stopped",
+			exitCode: null,
+		});
+		// The same command again is still the one that ended.
+		expect(await at.start(input)).toStrictEqual(stopped);
+		expect(at.guest.client.run).not.toHaveBeenCalled();
+	});
+
+	it("keeps nothing of a pull the machine's restart crossed (F3 5g-5)", async () => {
+		const at = await fixture();
+		const input = at.input();
+		at.guest.print(input.commandId, "kept\n");
+		const kept = at.receipt(input, { state: "running", output: "kept\n" });
+		expect(await at.start(input)).toStrictEqual(kept);
+		at.guest.print(input.commandId, "unreleased\n");
+		const outputs = at.guest.client.output.mock.calls.length;
+		// The pull is in hand when another session restarts the machine: the executor forgets the boot's start, the boot
+		// is written down before the folder service hears it restarted, and the new boot's boundary then answers released.
+		at.control.boundary.mockImplementationOnce(async (machineId) => {
+			at.machineStart.now = randomUUID();
+			at.dropped.mockResolvedValue(true);
+			return { machine: machineId, reads: "released", views: [] };
+		});
+		const stopped = at.receipt(input, { state: "machine_stopped", output: "kept\n", log: { gapBytes: 11 } });
+		expect(await at.read(input.commandId)).toStrictEqual(stopped);
+		expect(at.guest.client.output.mock.calls.length).toBeGreaterThan(outputs);
+		await expect(readFile(join(at.folder(input.commandId), "output.log"), "utf8")).resolves.toBe("kept\n");
+		expect(await json(join(at.folder(input.commandId), "outcome.json"))).toStrictEqual({
+			schema: "qorpera.coding-host-command-outcome/v1",
+			state: "machine_stopped",
+			exitCode: null,
+		});
 	});
 
 	it("answers the same command again without running it twice, and refuses another under its id", async () => {
@@ -744,12 +908,15 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 	it("never runs a command again on a machine that started again since, and ends it machine_stopped", async () => {
 		const at = await fixture();
 		const input = at.input();
-		at.guest.client.run.mockRejectedValueOnce(new Error("LXD_EXEC_FAILED"));
-		expect(await rejected(at.start(input))).toBe("LXD_EXEC_FAILED");
-		const restarted = at.another({ startOperationId: randomUUID() });
+		const read = at.input();
+		for (const command of [input, read]) {
+			at.guest.client.run.mockRejectedValueOnce(new Error("LXD_EXEC_FAILED"));
+			expect(await rejected(at.start(command))).toBe("LXD_EXEC_FAILED");
+		}
+		const restarted = at.restart();
 		const stopped = at.receipt(input, { state: "machine_stopped" });
 		expect(await restarted.start(at.scope, input, signal)).toStrictEqual(stopped);
-		expect(at.guest.client.run).toHaveBeenCalledTimes(1);
+		expect(at.guest.client.run).toHaveBeenCalledTimes(2);
 		expect(at.guest.client.output).toHaveBeenCalledTimes(1);
 		await expect(at.guest.client.output.mock.results[0].value).rejects.toMatchObject({
 			code: "CODING_GUEST_COMMAND_UNKNOWN",
@@ -760,9 +927,6 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			exitCode: null,
 		});
 		// A read on the restarted machine ends one the same way.
-		const read = at.input();
-		at.guest.client.run.mockRejectedValueOnce(new Error("LXD_EXEC_FAILED"));
-		expect(await rejected(at.start(read))).toBe("LXD_EXEC_FAILED");
 		expect(await restarted.read(at.scope, { commandId: read.commandId }, signal)).toStrictEqual(
 			at.receipt(read, { state: "machine_stopped" }),
 		);
@@ -809,7 +973,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		at.guest.print(moved.commandId, "x\n");
 		await at.start(moved);
 		at.guest.forget(moved.commandId);
-		const restarted = at.another({ startOperationId: randomUUID() });
+		const restarted = at.restart();
 		expect(await restarted.read(at.scope, { commandId: moved.commandId }, signal)).toStrictEqual(
 			at.receipt(moved, { state: "machine_stopped", output: "x\n" }),
 		);

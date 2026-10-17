@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -631,6 +631,93 @@ export async function codingMachineStartOperation(
 	// readEvents checked each settled event's operation id.
 	if (last?.action !== "start" || last.operationId === null) throw new Error("CODING_MACHINE_START_UNCONFIRMED");
 	return last.operationId;
+}
+
+/** The start the machine last ran under, from its journal under `journalRoot`, read while it is stopped and before it
+ * starts again: the last start that succeeded there, or null when it never started. A segment opens after the stop
+ * that closed the one before it, so the start that stop ended may be the old segment's: it is read back there, each
+ * record checked against the one after it. */
+export async function codingMachineLastStart(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+): Promise<string | null> {
+	const base = join(journalRoot, plan.journalName);
+	const current = await readEvents(base, plan.binding, plan.disposable === true, plan.selfStops === true);
+	const started = (event: Event) =>
+		event.kind === "settled" && event.state === "succeeded" && event.action === "start";
+	// readEvents checked each settled event's operation id.
+	const found = [...(current.prior ? [current.prior] : []), ...current.events].reverse().find(started);
+	if (found) return found.operationId as string;
+	if (!current.prior) return null;
+	const root = current.segment === 1 ? base : join(base, `segment-${String(current.segment - 1).padStart(6, "0")}`);
+	for (let after = current.prior; after.sequence > 0; ) {
+		const record = await readRecord(join(root, `${String(after.sequence - 1).padStart(6, "0")}.json`));
+		const event = record.value as Event | null;
+		if (!event || sha(record.bytes) !== after.previousSha256 || event.sequence !== after.sequence - 1)
+			throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+		if (started(event)) {
+			if (!UUID.test(event.operationId ?? "")) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+			return event.operationId as string;
+		}
+		after = event;
+	}
+	// A full segment always holds a start that succeeded.
+	throw new Error("CODING_MACHINE_START_UNCONFIRMED");
+}
+
+const DROPPED_START_SCHEMA = "qorpera.coding-machine-dropped-start/v1";
+const droppedStart = (startOperationId: string) => {
+	if (!UUID.test(startOperationId)) throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	return `dropped-start-${startOperationId}.json`;
+};
+
+/** Writes down next to the machine's journal that what the machine left on its disk on the boot `startOperationId`
+ * started is not to be kept (F3 5g-5): the folder service could not say that every read the machine was served
+ * before it restarted was released. True when this call wrote it, false when it was written already. */
+export async function dropCodingMachineStart(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+	startOperationId: string,
+): Promise<boolean> {
+	return publish(
+		join(journalRoot, plan.journalName),
+		droppedStart(startOperationId),
+		encode({ schema: DROPPED_START_SCHEMA, operationId: startOperationId }),
+	);
+}
+
+/** Takes back the mark dropCodingMachineStart wrote, once the folder service answered that nothing was dropped. */
+export async function undropCodingMachineStart(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+	startOperationId: string,
+): Promise<void> {
+	const root = join(journalRoot, plan.journalName);
+	await checkDirectory(root);
+	await unlink(join(root, droppedStart(startOperationId))).catch((error: unknown) => {
+		if (!code(error, "ENOENT")) throw error;
+	});
+	await syncDirectory(root);
+}
+
+/** Whether the boot `startOperationId` started is marked dropped (dropCodingMachineStart). */
+export async function codingMachineStartDropped(
+	journalRoot: string,
+	plan: CodingMachineJournalPlan,
+	startOperationId: string,
+): Promise<boolean> {
+	const root = join(journalRoot, plan.journalName);
+	await checkDirectory(root);
+	let value: unknown;
+	try {
+		({ value } = await readRecord(join(root, droppedStart(startOperationId))));
+	} catch (error) {
+		if (code(error, "ENOENT")) return false;
+		throw error;
+	}
+	if (!isDeepStrictEqual(value, { schema: DROPPED_START_SCHEMA, operationId: startOperationId }))
+		throw new Error("CODING_MACHINE_JOURNAL_INVALID");
+	return true;
 }
 
 /** One bounded physical reconciliation of one machine against its journal on

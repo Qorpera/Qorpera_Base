@@ -10,24 +10,6 @@
 
 use crate::proto::split;
 
-/// The folder names a worktree's cache list starts from (§6 "The per-session cache").
-pub const CACHE_NAMES: [&str; 14] = [
-	"node_modules",
-	".venv",
-	"venv",
-	"target",
-	"dist",
-	"build",
-	".next",
-	".nuxt",
-	"__pycache__",
-	".gradle",
-	".cache",
-	".turbo",
-	".pytest_cache",
-	"coverage",
-];
-
 /// Where a path is in a code area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place<'a> {
