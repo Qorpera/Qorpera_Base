@@ -1,9 +1,10 @@
 // Order 9's later steps on P3's test database (p3-driver.mjs runs them after turn 2): each wait the contract names cut
 // short in the database, and what each step left there to read.
-//   the machine sleeps after 10 idle minutes: its last use moved back 11 minutes, so the executor's next housekeeping
-//     (every 30 s) finds it due;
-//   the agent is asked about archiving after a quiet day: the session's last change moved back 25 hours, then the
-//     folder core's check-ins drain runs as the listener runs it (as service_role, one company per call);
+//   the machine sleeps after 10 idle minutes: once a keep has found it idle with only a waiting command running, its
+//     last use moved back 11 minutes, so the executor's next housekeeping (every 30 s) finds it due;
+//   the agent is asked about archiving after a quiet day: once a keep has found the session idle the same way, its last
+//     change moved back 25 hours, then the folder core's check-ins drain runs as the listener runs it (as service_role,
+//     one company per call);
 //   archiving: what manage_worker's archive does after its run's checks (qorpera_archive_coding_worker, by the agent);
 //     the executor's keeper then releases the session.
 import { randomBytes } from "node:crypto";
@@ -42,6 +43,25 @@ export function awaitRunning(db, workerId, commandId, timeoutMs) {
 		where s.worker_id = ${quote(workerId)}::uuid and s.attachment_until > clock_timestamp()
 			and s.running_commands @> jsonb_build_array(jsonb_build_object('commandId', ${quote(commandId)}))`),
 		timeoutMs, `the executor seeing ${commandId} run`);
+}
+
+/** Once a turn has ended and only `sleep 86400` runs, which only waits: a keep 40 s on (past the idle rule's 30 s) has
+ * not marked the session or its machine busy. Each keep (every 10 s) that does moves the idle clock to now, so no idle
+ * minute passes, and a wait cut short in the database would only win a race with the next keep (runs 7 and 10 won it,
+ * run 11 did not). Answers what that keep saw. */
+export async function awaitIdle(db, workerId, machine) {
+	const since = `${quote(await one(db, "select to_jsonb(clock_timestamp())"))}::timestamptz`;
+	const seen = await until(() => one(db, `select jsonb_build_object('since', ${since}, 'observedAt', s.observed_at,
+			'running', s.running_commands, 'sessionBusyAt', s.busy_at, 'machineBusyAt', m.busy_at,
+			'busy', coalesce(s.busy_at > ${since} + interval '30 seconds', false) or coalesce(m.busy_at > ${since} + interval '30 seconds', false))
+		from public.qorpera_coding_sessions s join public.qorpera_coding_machines m on m.id = s.attached_machine_id
+		where s.worker_id = ${quote(workerId)}::uuid and m.id = ${quote(machine.machineId)}::uuid
+			and s.observed_at > ${since} + interval '40 seconds'`), 120000, "a keep 40 s after the turn");
+	if (seen.busy)
+		throw new Error(`a command that only waits keeps the session busy, so its machine never sleeps and it is never quiet: ` +
+			`a keep 40 s after the turn marked it busy (the folder model counts a session busy while any command runs, and ` +
+			`applies no idle rule): ${JSON.stringify(seen)}`);
+	return seen;
 }
 
 /** The 10 idle minutes: the machine last used, and last busy, 11 minutes ago. */

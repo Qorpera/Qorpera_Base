@@ -262,6 +262,8 @@ try {
 		// --- Order 9: the machine sleeps after 10 idle minutes, and the next turn says what stopped ------------------------
 		const machine = await order9.machineOf(db, workerId);
 		await order9.awaitRunning(db, workerId, sleeper2.commandId, 60000);
+		const idle2 = await order9.awaitIdle(db, workerId, machine);
+		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 2 finds the session and its machine idle: ${JSON.stringify(idle2)} (${elapsed()})`);
 		await order9.idleTenMinutes(db, machine);
 		const slept = await order9.awaitDetached(db, workerId, machine, "SLEEP", 5 * 60000);
 		const state = guestState(machine);
@@ -286,6 +288,8 @@ try {
 		await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
 		const settled = await database.settleParent(db, ids, { workerId });
 		note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
+		const idle3 = await order9.awaitIdle(db, workerId, machine);
+		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
 		const quiet = await order9.quietDay(db, workerId);
 		note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
 		if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
