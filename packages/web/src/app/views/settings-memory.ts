@@ -101,18 +101,21 @@ export class MemoryView {
 			const memory = await this.#client.read();
 			if (!current()) return;
 			this.#memory = memory;
+			this.#missing = false;
 			this.#loadError = undefined;
 			this.#read = true;
 		} catch (error) {
 			if (!current()) return;
 			this.#read = false;
-			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
-			else this.#loadError = describeError(error);
+			this.#missing = error instanceof CloudRpcError && error.missing;
+			this.#loadError = this.#missing ? undefined : describeError(error);
 		} finally {
 			if (current()) {
 				this.#refreshing = false;
 				this.#loading = false;
 				this.#draw();
+				// A role that moved while the first load was on its way loads again.
+				this.update();
 			}
 		}
 	}

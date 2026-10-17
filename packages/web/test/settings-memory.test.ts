@@ -274,14 +274,37 @@ describe("Settings → Company → Memory", () => {
 		expect(radio(view.el, "tree").disabled).toBe(false);
 	});
 
-	it("stays hidden on a cloud without the choice", async () => {
-		const read = vi.fn<WebCompanyMemory["read"]>(async () => {
-			throw new CloudRpcError("qorpera_company_memory_mode", { message: "missing", code: "PGRST202" }, 404);
-		});
-		const el = (await show({ read, choose: vi.fn() })).el;
-		expect(read).toHaveBeenCalledTimes(1);
-		expect(el.hidden).toBe(true);
-		expect(el.childElementCount).toBe(0);
+	it("reads again when the member's role moved while the first read was on its way", async () => {
+		const { client } = memoryCloud();
+		let role = "admin";
+		view = new MemoryView(client, new AbortController().signal, () => role);
+		document.body.append(view.el);
+		role = "viewer";
+		view.update();
+		await settle();
+		expect(client.read).toHaveBeenCalledTimes(2);
+		// Once read in the role it has, nothing more.
+		view.update();
+		await settle();
+		expect(client.read).toHaveBeenCalledTimes(2);
+	});
+
+	it("stays hidden on a cloud without the choice, and shows once a later read finds it", async () => {
+		const { client } = memoryCloud();
+		client.read.mockRejectedValueOnce(
+			new CloudRpcError("qorpera_company_memory_mode", { message: "missing", code: "PGRST202" }, 404),
+		);
+		let role = "owner";
+		view = await show(client, () => role);
+		expect(client.read).toHaveBeenCalledTimes(1);
+		expect(view.el.hidden).toBe(true);
+		expect(view.el.childElementCount).toBe(0);
+		role = "admin";
+		view.update();
+		await settle();
+		expect(client.read).toHaveBeenCalledTimes(2);
+		expect(view.el.hidden).toBe(false);
+		expect(radio(view.el, "notebooks").checked).toBe(true);
 	});
 
 	it("says when the read failed, and tries again on Retry", async () => {
