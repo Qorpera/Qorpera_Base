@@ -9,32 +9,40 @@ allow that name and block none over it (as its resolver answers names).
 The company's chain only_<port> marks each such flow (ct mark 1) as it lets the flow's first packet on to the chain
 open. When the kernel has nft_queue and nfnetlink_queue loaded (and only then: nft and this checker would load them),
 the exit's base chain sni (forward, after the filter chain) sends every packet of a marked flow to queue 0, which this
-checker (root, in the exit's namespace) reads:
+checker (root, in the exit's namespace) reads. A packet from a machine's address (10.210.0.0/16; agent_out drops any
+other source from the bridge) is the machine's, any other the server's:
 - a packet from the machine with no data (the SYN, an ACK) goes on at once; its SYN says where the flow's data starts;
+  a SYN queued for a flow judged already is a new connection's on the same ports (a judged flow is queued no more);
 - the machine's data is held (the kernel keeps the packets, the checker their bytes) until the flow's first bytes are
-  a whole ClientHello: at most 16 KiB of it (and its record headers), for at most 5 seconds;
+  a whole ClientHello: at most 16 KiB of it (and its record headers), for at most 5 seconds, in at most 64 packets,
+  with at most 512 packets held for one machine's flows together. The node has one queue, of 8192 packets, for every
+  company: so one machine cannot fill it. A packet that brings no new byte (its bytes held already, or past what a
+  ClientHello can take) is dropped, not held, and TCP sends it again;
 - a ClientHello with one server name the rules allow lets every held packet on, as they were. The flow stays marked
   until the server acknowledges the ClientHello's bytes; until then the machine's packets that carry any of them again
   must carry the same bytes. That server packet goes back to the chain with the meta mark 0x80000001, and the chain
   marks the flow 2: its later packets are not queued;
 - anything else is refused: no TLS, no server name or more than one, a name not allowed or blocked, a ClientHello too
-  big or too slow, bytes sent again that differ, urgent data, a flow whose SYN this checker did not see (it started
-  after the SYN), a machine not verified, a company not in the rules file or with rules that cannot be used. The
-  machine's packet goes back to the chain with the meta mark 0x80000002: the chain marks the flow 3 and refuses it
-  (counter refused_name; the machine's connection is reset), and the other held packets are dropped.
+  big, too slow or in too many packets, a machine holding too many packets, bytes sent again that differ, urgent data,
+  a flow whose SYN this checker did not see (it started after the SYN), a machine not verified, a company not in the
+  rules file or with rules that cannot be used. The machine's packet goes back to the chain with the meta mark
+  0x80000002: the chain marks the flow 3 and refuses it (counter refused_name; the machine's connection is reset), and
+  the other held packets are dropped.
 A company without rules now (it was "only listed" when the flow started) has its flows let on, and one in "open"
 mode now has them let on unless the name is blocked.
 
 There is no bypass and no fail-open: with no checker bound to the queue the kernel drops the packets, and when the
 checker's socket closes it drops the ones held. TCP sends them again; the checker started again (the unit's
 Restart=always, one second later) judges the new flows, and refuses the data of the ones whose SYN came before it.
-The checker leaves when the exit's namespace is made again (`up`), so systemd starts it in the new one.
+The checker leaves when the exit's namespace is made again (`up`), so systemd starts it in the new one. Its status
+names the kernel's drops from the queue (full, or the checker behind) for a minute after the last one.
 
   qorpera-agent-exit-sni.py check     (root, in the exit's namespace; the sni unit)
 """
 
 import argparse
 import importlib.util
+import ipaddress
 import json
 import os
 import re
@@ -65,8 +73,13 @@ REFUSED = 0x80000002
 HELLO_MAX = 16 * 1024
 STREAM_MAX = HELLO_MAX + 1024
 HOLD_TIME = 5
+FLOW_HELD = 64              # a whole 16 KiB ClientHello is 12 full segments, or 31 of 536 bytes
+MACHINE_HELD = 512
 FLOW_IDLE = 120
+DROPS_SHOWN = 60
+AGENTS = ipaddress.ip_network("10.210.0.0/16")    # AGENTS in qorpera-agent-exit.sh
 QUEUE_MODULE = "/sys/module/nfnetlink_queue"
+QUEUE_ROWS = "/proc/net/netfilter/nfnetlink_queue"
 HOST = re.compile(rf"(?:{names.LABEL}\.)*{names.LABEL}")
 
 DROP, ACCEPT, REPEAT = 0, 1, 4
@@ -229,16 +242,18 @@ class Judge:
         self.decide = decide        # (machine address, server name) -> None when allowed, or why not
         self.report = report
         self.flows = {}
+        self.holding = {}           # machine address -> the packets its flows hold
         self.refused = 0
 
-    def packet(self, ident, data, outbound, at):
-        """One queued packet; `outbound`: it came from the machines' bridge."""
+    def packet(self, ident, data, at):
+        """One queued packet: the machine's when it comes from a machine's address, else the server's."""
         parsed = tcp_packet(data)
         if parsed is None:
             return [(ident, DROP, 0)]
         if parsed == "other":
             return [(ident, ACCEPT, 0)]
         source, target, seq, ack, flags, payload = parsed
+        outbound = ipaddress.IPv4Address(source[0]) in AGENTS
         key = (source, target) if outbound else (target, source)
         flow = self.flows.get(key)
         if flow:
@@ -251,9 +266,11 @@ class Judge:
             return [(ident, DROP, 0)] if flow.state == "refused" else self.refuse(key, flow, ident, "urgent data")
         if flags & RST:
             self.flows.pop(key, None)
-            return [(i, DROP, 0) for i in flow.held] + [(ident, ACCEPT, 0)] if flow else [(ident, ACCEPT, 0)]
+            return ([(i, DROP, 0) for i in self.release(key, flow)] if flow else []) + [(ident, ACCEPT, 0)]
         if flags & SYN:
-            if flow is None or (flow.state == "waiting" and not flow.held and flow.data is None):
+            # A flow judged (ct mark 2 or 3) is queued no more, so a SYN queued for it is a new connection's.
+            if (flow is None or flow.state in ("done", "refused") or
+                    (flow.state == "waiting" and not flow.held and flow.data is None)):
                 flow = self.flows[key] = Flow((seq + 1) & 0xFFFFFFFF, at)
             elif flow.start != (seq + 1) & 0xFFFFFFFF:
                 return self.refuse(key, flow, ident, "a SYN again, with another sequence number")
@@ -280,15 +297,23 @@ class Judge:
         if flow.data is None:
             flow.data, flow.known, flow.since = bytearray(STREAM_MAX), bytearray(STREAM_MAX), at
         end = min(offset + len(payload), STREAM_MAX)
-        if offset < end:
-            part = payload[:end - offset]
-            known = flow.known[offset:end]
-            if known.count(1) and any(k and a != b for k, a, b in zip(known, flow.data[offset:end], part)):
-                return self.refuse(key, flow, ident, "the ClientHello's bytes again, other ones")
-            flow.data[offset:end], flow.known[offset:end] = part, b"\x01" * (end - offset)
-            while flow.filled < STREAM_MAX and flow.known[flow.filled]:
-                flow.filled += 1
+        known = flow.known[offset:end]
+        if known.count(1) and any(k and a != b for k, a, b in zip(known, flow.data[offset:end], payload)):
+            return self.refuse(key, flow, ident, "the ClientHello's bytes again, other ones")
+        if not known.count(0):
+            # No new byte (all held already, or past what a ClientHello can take): holding it would only fill the
+            # queue every company shares. TCP sends it again after the verdict.
+            return [(ident, DROP, 0)]
+        machine = key[0][0]
+        if len(flow.held) >= FLOW_HELD:
+            return self.refuse(key, flow, ident, f"more than {FLOW_HELD} packets for one ClientHello")
+        if self.holding.get(machine, 0) >= MACHINE_HELD:
+            return self.refuse(key, flow, ident, f"its machine holds {MACHINE_HELD} packets already")
+        flow.data[offset:end], flow.known[offset:end] = payload[:end - offset], b"\x01" * (end - offset)
+        while flow.filled < STREAM_MAX and flow.known[flow.filled]:
+            flow.filled += 1
         flow.held.append(ident)
+        self.holding[machine] = self.holding.get(machine, 0) + 1
         kind, value = client_hello(bytes(flow.data[:flow.filled]))
         if kind == "more":
             return []
@@ -300,8 +325,7 @@ class Judge:
             return self.refuse(key, flow, ident, f"{name}: {why}")
         flow.state, flow.hello = "passed", bytes(flow.data[:hello_end])
         flow.data = flow.known = None
-        held, flow.held = flow.held, []
-        return [(i, ACCEPT, 0) for i in held]
+        return [(i, ACCEPT, 0) for i in self.release(key, flow)]
 
     def inbound(self, key, flow, ident, ack, flags):
         """A packet from the server: the one that acknowledges a passed ClientHello unmarks the flow."""
@@ -320,9 +344,20 @@ class Judge:
         (machine, port), (server, server_port) = key
         self.refused += 1
         self.report(f"refused {machine}:{port} -> {server}:{server_port}: {why}")
-        held, flow.held = [i for i in flow.held if i != ident], []
+        held = [i for i in self.release(key, flow) if i != ident]
         flow.state, flow.data, flow.known = "refused", None, None
         return [(i, DROP, 0) for i in held] + [(ident, REPEAT, REFUSED)]
+
+    def release(self, key, flow):
+        """The packets the flow held, which it holds no more."""
+        held, flow.held = flow.held, []
+        machine = key[0][0]
+        left = self.holding.get(machine, 0) - len(held)
+        if left > 0:
+            self.holding[machine] = left
+        else:
+            self.holding.pop(machine, None)
+        return held
 
     def expire(self, at):
         """Refuses the flows that held data too long and forgets the ones not seen for FLOW_IDLE seconds."""
@@ -344,7 +379,7 @@ NLM_F_REQUEST, NLM_F_ACK = 1, 4
 CFG_CMD, CFG_PARAMS, CFG_QUEUE_MAXLEN = 1, 2, 3
 CMD_BIND = 1
 COPY_PACKET = 2
-A_PACKET_HDR, A_VERDICT_HDR, A_MARK, A_IFINDEX_INDEV, A_PAYLOAD = 1, 2, 3, 5, 10
+A_PACKET_HDR, A_VERDICT_HDR, A_MARK, A_PAYLOAD = 1, 2, 3, 10
 SO_RCVBUFFORCE = 33
 
 
@@ -412,14 +447,12 @@ class Queue:
 
     @staticmethod
     def packet(body):
-        """(packet id, payload, input interface) of a packet message (after its nfgenmsg)."""
+        """(packet id, payload) of a packet message (after its nfgenmsg)."""
         found = attributes(body[4:])
         head = found.get(A_PACKET_HDR)
         if not head or len(head) < 4:
-            return None, b"", 0
-        index = found.get(A_IFINDEX_INDEV)
-        return (struct.unpack_from("!I", head)[0], found.get(A_PAYLOAD, b""),
-                struct.unpack_from("!I", index)[0] if index and len(index) >= 4 else 0)
+            return None, b""
+        return struct.unpack_from("!I", head)[0], found.get(A_PAYLOAD, b"")
 
     def verdict(self, ident, verdict, mark):
         payload = attribute(A_VERDICT_HDR, struct.pack("!II", verdict, ident))
@@ -438,12 +471,9 @@ class Checker:
         self.problems = []
         self.judge = Judge(self.decide)
         self.namespace = os.stat("/proc/self/ns/net").st_ino
-        # glibc lists the links over netlink; if_nametoindex would open an AF_UNIX socket, which the unit refuses.
-        indexes = {name: index for index, name in socket.if_nameindex()}
-        if args.bridge not in indexes:
-            raise OSError(f"no link {args.bridge} in this namespace")
-        self.bridge = indexes[args.bridge]
         self.status_path = os.path.join(args.run_dir, "sni.json")
+        self.queue_rows = QUEUE_ROWS
+        self.dropped, self.dropped_at = 0, None
 
     def decide(self, machine, name):
         """None when the machine's company allows `name` now, or why not (rules and machines read at most once a
@@ -484,9 +514,31 @@ class Checker:
         except OSError:
             return True
 
+    def queue_counts(self):
+        """The kernel's row for this checker's queue (none until it is bound): the packets in it now, and those the
+        kernel dropped since the checker bound it, as the queue was full or the checker's socket was."""
+        with open(self.queue_rows) as rows:
+            for row in rows:
+                fields = row.split()
+                if len(fields) >= 7 and fields[0] == str(self.args.queue):
+                    return {"queued": int(fields[2]), "queue_dropped": int(fields[5]), "user_dropped": int(fields[6])}
+        return None
+
     def write_status(self, at):
+        problems = list(self.problems)
+        try:
+            kernel = self.queue_counts()
+        except (OSError, ValueError) as error:
+            kernel = None
+            problems.append(f"cannot read {self.queue_rows}: {error}"[:300])
+        if kernel and kernel["queue_dropped"] + kernel["user_dropped"] > self.dropped:
+            self.dropped, self.dropped_at = kernel["queue_dropped"] + kernel["user_dropped"], at
+        if self.dropped_at is not None and at - self.dropped_at < DROPS_SHOWN:
+            problems.append(f"the kernel dropped packets of queue {self.args.queue} {int(at - self.dropped_at)}s ago, "
+                            f"{self.dropped} since this checker started: the queue was full, or the checker behind")
         status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(at), "queue": self.args.queue,
-                  "flows": len(self.judge.flows), "refused": self.judge.refused, "problems": self.problems}
+                  "flows": len(self.judge.flows), "held": sum(self.judge.holding.values()), "kernel": kernel,
+                  "refused": self.judge.refused, "problems": problems}
         plug.write_replace(self.status_path, json.dumps(status, sort_keys=True) + "\n")
 
     def run(self):
@@ -498,10 +550,10 @@ class Checker:
                 for kind, _seq, body in queue.receive():
                     if kind != (NFNL_SUBSYS_QUEUE << 8) | MSG_PACKET:
                         continue
-                    ident, data, index = queue.packet(body)
+                    ident, data = queue.packet(body)
                     if ident is None:
                         continue
-                    for verdict in self.judge.packet(ident, data, index == self.bridge, time.monotonic()):
+                    for verdict in self.judge.packet(ident, data, time.monotonic()):
                         queue.verdict(*verdict)
             if time.monotonic() - expired >= 0.25:
                 expired = time.monotonic()
@@ -527,7 +579,6 @@ def main():
     parser.add_argument("--run-dir", default=env("QORPERA_AGENT_EXIT_RUN_DIR", "/run/qorpera-agent-exit"))
     parser.add_argument("--rules", default=env("QORPERA_AGENT_EXIT_NETWORK_RULES"))
     parser.add_argument("--netns-path", default="/run/netns/qexit")
-    parser.add_argument("--bridge", default="br0")
     parser.add_argument("--queue", type=int, default=QUEUE)
     parser.add_argument("--queue-length", type=int, default=8192)
     args = parser.parse_args()

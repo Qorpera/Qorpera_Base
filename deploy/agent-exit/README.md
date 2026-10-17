@@ -748,14 +748,17 @@ How it works:
 - `only_<port>` marks each port 443 flow it lets on: `ct mark 1`, not judged yet.
 - The base chain `sni` (`qorpera-agent-exit-sni.nft`; forward, after the filter chain) sends every packet of a flow
   marked 1, both ways, to queue 0. There the checker (`qorpera-agent-exit-sni.py`, root in `qexit`, the unit
-  `qorpera-agent-exit-sni.service`) reads it. Packets without data from the machine go on at once.
+  `qorpera-agent-exit-sni.service`) reads it. A packet from a machine's address (10.210.0.0/16; `agent_out` drops any
+  other source from the bridge) is the machine's, any other the server's. Packets without data from the machine go on
+  at once. A SYN for a flow judged already is a new connection's on the same ports, and starts a new flow.
 - The machine's data is held until the flow's first bytes are a whole ClientHello: at most 16 KiB of it (and its record
-  headers), for at most 5 seconds. A hello sent in several packets is read whole.
+  headers), for at most 5 seconds, in at most 64 packets. A hello sent in several packets is read whole. A packet that
+  brings no new byte (its bytes held already) is dropped, not held, and TCP sends it again.
 - One server name the rules allow lets the held packets on as they were. When the server acknowledges the hello, the
   flow is marked 2 and its packets are queued no more: only a flow's first packets reach the checker.
-- Anything else is refused: no TLS, no server name or more than one, a name not listed or blocked, a hello too big or
-  too slow, bytes sent again that differ, urgent data, a flow whose SYN the checker did not see, a machine not verified,
-  a company not in the rules file. The machine's packet goes back to the chain with the mark `0x80000002`: the flow is
+- Anything else is refused: no TLS, no server name or more than one, a name not listed or blocked, a hello too big,
+  too slow or in too many packets, a flow of a machine that holds 512 packets already, bytes sent again that differ,
+  urgent data, a flow whose SYN the checker did not see, a machine not verified, a company not in the rules file. The machine's packet goes back to the chain with the mark `0x80000002`: the flow is
   marked 3 and its connection reset, and every later packet of it is dropped. The refusal is counted in `refused_name`
   and logged with the rule `name_not_listed`.
 - A company now open, or without rules, has its flows let on (in "open" mode unless the name is blocked).
@@ -767,16 +770,24 @@ checker judges new flows and refuses the data of those whose SYN came before it.
 queued, so it goes on. When `up` makes the exit's namespace again, the checker leaves and its unit starts it in the
 new one.
 
-The checker writes `/run/qorpera-agent-exit/sni.json` (`{schema, at, queue, flows, refused, problems}`) every 2
-seconds, and reads the rules file again then. `up` and the reload load the `sni` chain with the rules, and start the
+The checker writes `/run/qorpera-agent-exit/sni.json` (`{schema, at, queue, flows, held, kernel, refused, problems}`)
+every 2 seconds, and reads the rules file again then. `held` is the packets its flows hold; `kernel` is the kernel's row
+for queue 0 in `/proc/net/netfilter/nfnetlink_queue` (`queued`, and `queue_dropped` and `user_dropped`, the packets it
+dropped as the queue or the checker's socket was full, since the checker bound the queue). `up` and the reload load the `sni` chain with the rules, and start the
 unit, only while both modules are loaded; `check` ends with `server names checked`, or with `only listed by address
 alone (no queue modules)`. With the modules, `verify` names:
 - the `sni` chain not in the rules (the modules came after the rules: reload the exit);
 - no checker on queue 0;
 - the checker not running, or its status older than 30 seconds;
-- the checker's own problems (`sni: …`, a rules file it cannot use).
+- the checker's own problems (`sni: …`): a rules file it cannot use, or the kernel's drops from the queue, for a minute
+  after the last one.
 
 Limits:
+- the node has one queue, of 8192 packets, for every company's flows being judged. When it is full, the kernel drops
+  what the chain queues (it fails closed: new connections wait, hellos in progress may be refused), and `verify` says so
+  for a minute. So that one machine cannot fill it, a flow holds at most 64 packets (a whole 16 KiB hello is 12 full
+  segments), one machine's flows together at most 512, and a packet with no new byte is dropped, not held. A machine
+  past its 512 has its next flow refused; other machines are judged as before;
 - it reads the name the machine asks for, never the certificate or what follows, so domain fronting (a listed name
   carrying another site inside) is not caught. With encrypted ClientHello (ECH) the name read is the outer one; E6's
   browser policy keeps ECH off;
@@ -914,9 +925,13 @@ on the tailnet. It checks:
   (and a name an open company blocks), a machine not verified, a company not known or with unusable rules, other bytes
   sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start or of a flow whose SYN it did
   not see are refused, and the refused flow's packets dropped both ways; a hello in two records and in pieces is held
-  whole; a machine's reset and a flow idle 120 seconds are forgotten. With made-up kernel answers: the queue's config
-  waits for the answer to it, not a verdict's, dropping a packet queued meanwhile; the bridge's index comes by
-  netlink, and without the bridge the checker does not start. And, as the container has no queue modules,
+  whole; a part sent again with no new byte is dropped, not held; a hello in more than 64 packets, and a flow of a
+  machine holding 512, are refused while another machine goes on, and a pass, a refusal, a reset and the 5 seconds let
+  go of what a flow held; the server's bytes are never judged as the machine's; a SYN on the ports of a flow judged
+  (passed or refused) starts a new one; a machine's reset and a flow idle 120 seconds are forgotten. With made-up
+  kernel answers: the queue's config waits for the answer to it, not a verdict's, dropping a packet queued meanwhile;
+  the status names the packets held and the kernel's row for the queue, and its drops for a minute after the last.
+  And, as the container has no queue modules,
   that the exit loads no `sni` chain and no queue rule, `check` says "only listed by address alone", and "only
   listed" goes by address;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;

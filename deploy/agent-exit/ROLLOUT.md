@@ -507,7 +507,7 @@ What the companies see:
 - a company in "only listed" mode: each new TCP 443 connection of its machines to a listed name's address goes on only
   when the machine's first TLS message (its ClientHello) names a listed name, or a name under one that is not blocked.
   Any other is reset and logged as `name_not_listed`: another name, no name, no TLS, a ClientHello over 16 KiB, or one
-  not whole within 5 seconds. Its connections made before the reload were checked by address only: those made since
+  not whole within 5 seconds or in 64 packets, or a connection of a machine holding 512 packets already. Its connections made before the reload were checked by address only: those made since
   step 11 are marked as not yet judged, and are reset at the machine's next data (the checker never saw their start);
   older ones go on;
 - while the checker restarts (about a second; it always comes back) a new connection of an "only listed" machine

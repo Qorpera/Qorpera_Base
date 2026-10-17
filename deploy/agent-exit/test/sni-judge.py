@@ -7,10 +7,14 @@ no queue, no kernel module.
 
 import errno
 import importlib.util
+import json
+import os
 import socket
 import ssl
 import struct
 import sys
+import tempfile
+import time
 import types
 
 spec = importlib.util.spec_from_file_location("qorpera_agent_exit_sni", sys.argv[1])
@@ -102,9 +106,9 @@ class Run:
         self.judge = sni.Judge(decide, self.lines.append)
         self.ident, self.at = 0, 1000.0
 
-    def send(self, data, inbound=False):
+    def send(self, data):
         self.ident += 1
-        return self.ident, self.judge.packet(self.ident, data, not inbound, self.at)
+        return self.ident, self.judge.packet(self.ident, data, self.at)
 
     def flow(self, machine="10.210.1.1", port=40000, seq=5000, data=b""):
         """A SYN, then `data` from the machine at the flow's start: the verdicts on the data."""
@@ -114,7 +118,7 @@ class Run:
 
     def reply(self, ack, flags=ACK, machine="10.210.1.1", seq=9001):
         """A packet from the server to the machine: the verdicts on it."""
-        return self.send(packet(machine, 40000, seq, flags, ack=ack, inbound=True), inbound=True)
+        return self.send(packet(machine, 40000, seq, flags, ack=ack, inbound=True))
 
 
 def main():
@@ -208,12 +212,17 @@ def main():
     run = Run()
     run.send(packet("10.210.1.1", 40000, 5000, SYN))
     ident, _ = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, parts[0]))
-    ident2, _ = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, parts[0]))
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, parts[0]))
+    check(verdicts == [(run.ident, DROP, 0)], f"a part sent again, no byte of it new, is dropped, not held: {verdicts}")
+    ident2, verdicts = run.send(packet("10.210.1.1", 40000, 5051, ACK | PSH, data[50:150]))
+    check(verdicts == [], f"a part with some bytes new is held: {verdicts}")
+    check(run.judge.holding == {"10.210.1.1": 2}, f"the machine holds two packets: {run.judge.holding}")
     check(run.judge.expire(run.at + sni.HOLD_TIME - 1) == [], "held under 5 seconds")
     verdicts = run.judge.expire(run.at + sni.HOLD_TIME + 1)
     check(verdicts == [(ident2, DROP, 0), (ident, REPEAT, REFUSED)], f"a hello not whole in 5 seconds: {verdicts}")
+    check(run.judge.holding == {}, f"a refused flow holds nothing: {run.judge.holding}")
     print("PASS: a hello in parts out of order is held and then let on whole; parts that differ or a hello not whole "
-          "within 5 seconds are refused")
+          "within 5 seconds are refused; a part sent again is dropped")
 
     run = Run()
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, SYN, hello("x.test")))
@@ -248,6 +257,64 @@ def main():
     print("PASS: TCP fast open is judged; data of a flow not seen from its SYN, urgent data, data before the start and "
           "a second SYN are refused; a reset goes on and drops what was held")
 
+    def bytes_apart(run, port, count, machine="10.210.1.1"):
+        """A SYN, then `count` bytes one packet each, the first byte never: each one held (the hello is never whole)."""
+        run.send(packet(machine, port, 5000, SYN))
+        for at in range(count):
+            _, verdicts = run.send(packet(machine, port, 5002 + at, ACK | PSH, b"\x16"))
+            check(verdicts == [], f"byte {at + 1} of port {port} is held: {verdicts}")
+
+    run = Run()
+    bytes_apart(run, 40000, sni.FLOW_HELD)
+    first = run.ident - sni.FLOW_HELD + 1
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5002 + sni.FLOW_HELD, ACK | PSH, b"\x16"))
+    check(verdicts == [(i, DROP, 0) for i in range(first, run.ident)] + [(run.ident, REPEAT, REFUSED)],
+          f"a hello in more than {sni.FLOW_HELD} packets: {verdicts}")
+    check(run.judge.holding == {} and f"more than {sni.FLOW_HELD} packets" in run.lines[-1], f"{run.lines}")
+    run = Run()
+    flows = sni.MACHINE_HELD // (sni.FLOW_HELD // 2)
+    for port in range(40000, 40000 + flows):
+        bytes_apart(run, port, sni.FLOW_HELD // 2)
+    check(run.judge.holding == {"10.210.1.1": sni.MACHINE_HELD}, f"the machine's packets: {run.judge.holding}")
+    ident, verdicts = run.flow(port=50000, data=hello("x.test")[:10])
+    check(verdicts == [(ident, REPEAT, REFUSED)], f"a flow of a machine holding {sni.MACHINE_HELD}: {verdicts}")
+    check(f"its machine holds {sni.MACHINE_HELD}" in run.lines[-1], f"{run.lines}")
+    ident, verdicts = run.flow(machine="10.210.1.4", port=50000, data=hello("any.test"))
+    check(verdicts == [(ident, ACCEPT, 0)], f"another machine's flow is judged as before: {verdicts}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, RST))
+    check(len(verdicts) == sni.FLOW_HELD // 2 + 1, f"a reset lets go of its flow's packets: {verdicts}")
+    check(run.judge.holding == {"10.210.1.1": sni.MACHINE_HELD - sni.FLOW_HELD // 2}, f"{run.judge.holding}")
+    ident, verdicts = run.flow(port=50001, data=hello("x.test"))
+    check(verdicts == [(ident, ACCEPT, 0)], f"then the machine's next hello is judged again: {verdicts}")
+    verdicts = run.judge.expire(run.at + sni.HOLD_TIME + 1)
+    check(len([v for v in verdicts if v[1] == REPEAT]) == flows - 1 and run.judge.holding == {},
+          f"flows past 5 seconds let go of theirs: {len(verdicts)} {run.judge.holding}")
+    print(f"PASS: a hello in more than {sni.FLOW_HELD} packets, and a flow of a machine holding {sni.MACHINE_HELD} "
+          "already, are refused; another machine goes on; a pass, a refusal, a reset and the 5 seconds let go")
+
+    run = Run()
+    run.send(packet("10.210.1.1", 40000, 5000, SYN))
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 9001, ACK | PSH, hello("evil.test"), ack=5001, inbound=True))
+    check(verdicts == [(run.ident, ACCEPT, 0)] and not run.lines, f"the server's bytes are not judged: {verdicts}")
+    ident, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, hello("evil.test")))
+    check(verdicts == [(ident, REPEAT, REFUSED)], f"the machine's are, known by its address alone: {verdicts}")
+    print("PASS: a packet is the machine's when it comes from a machine's address, the server's otherwise")
+
+    run = Run()
+    data = hello("x.test")
+    run.flow(data=data)
+    _, verdicts = run.reply(5001 + len(data))
+    check(verdicts == [(run.ident, REPEAT, LISTED)], f"the flow is judged: {verdicts}")
+    ident, verdicts = run.flow(seq=70000, data=data)
+    check(verdicts == [(ident, ACCEPT, 0)], f"a new connection on the ports of one judged: {verdicts} {run.lines}")
+    run = Run()
+    run.flow(data=hello("evil.test"))
+    ident, verdicts = run.flow(seq=70000, data=data)
+    check(verdicts == [(ident, ACCEPT, 0)], f"a new connection on the ports of one refused: {verdicts} {run.lines}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 70001, ACK | PSH, data))
+    check(verdicts == [(run.ident, ACCEPT, 0)], f"its own hello again goes on: {verdicts}")
+    print("PASS: a SYN on the ports of a flow judged starts a new flow (the old one is queued no more)")
+
     run = Run()
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, SYN, protocol=17))
     check(verdicts == [(run.ident, ACCEPT, 0)], f"another protocol (an ICMP error of the flow): {verdicts}")
@@ -281,14 +348,38 @@ def main():
         check(error.errno == errno.EPERM, f"the kernel's answer is the error: {error}")
     print("PASS: a queue config takes the kernel's answer to it, not a verdict's, and drops a packet queued meanwhile")
 
-    found = sni.Checker(types.SimpleNamespace(bridge="lo", run_dir="/run")).bridge
-    check(found == socket.if_nametoindex("lo"), f"the bridge's index: {found}")
-    try:
-        sni.Checker(types.SimpleNamespace(bridge="qnone0", run_dir="/run"))
-        fail("a bridge not in the namespace is not an error")
-    except OSError as error:
-        check("no link qnone0" in str(error), f"a bridge not in the namespace: {error}")
-    print("PASS: the checker finds the bridge's index by netlink, and will not start without the bridge")
+    with tempfile.TemporaryDirectory() as run_dir:
+        checker = sni.Checker(types.SimpleNamespace(run_dir=run_dir, queue=0))
+        checker.queue_rows = os.path.join(run_dir, "nfnetlink_queue")
+        checker.judge.packet(1, packet("10.210.1.1", 40000, 5000, SYN), 0)
+        checker.judge.packet(2, packet("10.210.1.1", 40000, 5001, ACK | PSH, hello("x.test")[:10]), 0)
+
+        def status(at, rows):
+            if rows is not None:
+                with open(checker.queue_rows, "w") as file:
+                    file.write(rows)
+            elif os.path.exists(checker.queue_rows):
+                os.unlink(checker.queue_rows)
+            checker.write_status(at)
+            with open(checker.status_path) as file:
+                return json.load(file)
+
+        at, other = time.time(), "    1   3017     0 2 65531     9     9        0  1\n"
+        got = status(at, other + "    0   3018     1 2 65531     0     0        2  1\n")
+        check(got["kernel"] == {"queued": 1, "queue_dropped": 0, "user_dropped": 0} and got["problems"] == [] and
+              got["flows"] == 1 and got["held"] == 1, f"the status with the kernel's row for queue 0: {got}")
+        got = status(at + 2, other + "    0   3018     0 2 65531     5     1      900  1\n")
+        check(len(got["problems"]) == 1 and "dropped packets of queue 0 0s ago, 6 since" in got["problems"][0],
+              f"the kernel's drops are a problem: {got}")
+        got = status(at + 2 + sni.DROPS_SHOWN - 1, other + "    0   3018     0 2 65531     5     1      950  1\n")
+        check(len(got["problems"]) == 1, f"for a minute: {got}")
+        got = status(at + 2 + sni.DROPS_SHOWN + 1, other + "    0   3018     0 2 65531     5     1      990  1\n")
+        check(got["problems"] == [], f"a minute after the last drop, not any more: {got}")
+        got = status(at + 90, other)
+        check(got["kernel"] is None and got["problems"] == [], f"no row before the checker binds its queue: {got}")
+        got = status(at + 92, None)
+        check(got["kernel"] is None and "cannot read" in got["problems"][0], f"no queue file: {got}")
+    print("PASS: the status names the packets held, and the kernel's drops of the queue for a minute after the last")
 
 
 class Kernel:

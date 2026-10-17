@@ -389,12 +389,14 @@ server name check.
     modules `nfnetlink_queue` and `nft_queue` on the nodes, which Jonas decides; without them "only listed" stays as
     E8c-1 made it. As built: `only_<port>` marks each port 443 flow it lets on (ct mark 1), and a base chain after
     the filter chain sends every packet of a marked flow to queue 0. The checker (`qorpera-agent-exit-sni.service`,
-    root) holds the machine's data until it is a whole ClientHello, at most 16 KiB and 5 seconds. One server name the
-    company's rules allow (as its resolver answers names) lets the held packets on, and once the server acknowledges
-    the hello the flow is marked 2. Anything else (another name, no name or two, no TLS, too big or too slow, a flow
-    whose start it did not see) is reset, marked 3 and dropped from then on, counted and logged as
-    `name_not_listed`. With no checker on the queue the kernel drops the queued packets; systemd starts it again
-    one second after any stop, with no limit. The exit never loads the modules: it loads the chain and starts the
+    root) holds the machine's data until it is a whole ClientHello, at most 16 KiB, 5 seconds and 64 packets. One
+    server name the company's rules allow (as its resolver answers names) lets the held packets on, and once the
+    server acknowledges the hello the flow is marked 2. Anything else (another name, no name or two, no TLS, too big,
+    too slow or in too many packets, a flow whose start it did not see) is reset, marked 3 and dropped from then on,
+    counted and logged as `name_not_listed`. The node's one queue (8192 packets) serves every company, so one
+    machine's flows together hold at most 512 packets (past that its next flow is refused), and a packet with no new
+    byte is dropped, not held; the kernel's drops from a full queue show in `verify`. With no checker on the queue
+    the kernel drops the queued packets; systemd starts it again one second after any stop, with no limit. The exit never loads the modules: it loads the chain and starts the
     checker only while both are loaded, and `check` says which way "only listed" runs.
 
 ## 11. The address block (E9, choice 1)
