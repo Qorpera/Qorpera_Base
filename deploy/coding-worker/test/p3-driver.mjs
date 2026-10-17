@@ -14,15 +14,23 @@
 // The executor's control RPCs come here over its stdout and run on the database as service_role; the runtime's coding
 // command gateway (packages/runtime/src/cloud-coding-command-http.ts, bundled as p3-gateway.mjs) reaches the
 // executor's command service through the same pipe. Prints PASS lines, then SESSION PROVEN.
+// With P3_CUSTODY=1 (phase B only), turns 2 to 4 prove a member's vault secret in custody in place of the rest of
+// Order 9 (p3-custody.mjs): the company's secret broker (p3-broker.ts, whose database calls run here as its own login)
+// serves a made-up value to the session's commands, whose output masks it; turn 2's end would push a commit whose
+// history carries it, and is refused; turn 3's end would save a file that carries it in the company folder, and is
+// refused with the session still attached; turn 4 removes the file and publishes as turn 1 did. Then the tables, the
+// node's files, the stand-in GitHub and the node's journal are searched for the value's forms, and it prints CUSTODY
+// PROVEN before SESSION PROVEN. No line it prints carries a form (withhold).
 //
 //   node deploy/coding-worker/test/p3-driver.mjs <project> <node VM> <coding image fingerprint> <package directory> <node facts JSON>
 import { execFileSync, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import { brokerDatabase, custodyForms, databaseHolds, SAVE_REFUSED, value as databaseValue, withhold } from "./p3-custody.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
 import { postgrestError } from "./p3-postgrest-errors.mjs";
@@ -120,6 +128,21 @@ const CODE_HOST_LOOK = [
 // The core calls whose request and answer the log keeps (startPostgrest): the saves, git leases and read releases a
 // boundary waits on, so a held boundary shows its refusal (reason and paths) even on a 200.
 const CORE_LOGGED = /^qorpera_folder_(commit|git_publish|git_lease_take|git_lease_release|record_release)$/;
+// The custody proof (P3_CUSTODY=1): a made-up value for a member's vault secret and the forms it is searched in, a
+// control the run writes where the value may not go, the broker's ids, the executor's turn completions (outcome and
+// summary), the broker's answers by status, and the turn outcome the proof expects next (no run stop for it).
+const custody = process.env.P3_CUSTODY === "1" ? {
+	probe: `p3probe-${randomBytes(24).toString("base64url")}`, control: `p3control-${randomBytes(16).toString("hex")}`,
+	authorityId: randomUUID(), secretId: randomUUID(), keyId: "p3-kek-1", withheld: {}, completions: [], answers: {},
+	expect: null, broker: null,
+	startBroker: (await import(pathToFileURL(resolve(packageDirectory, "p3/p3-broker.mjs")).href)).startP3Broker,
+} : null;
+if (custody) {
+	if (!node.codeHost) throw new Error("the custody proof needs phase B (P3_CODE_HOST=1)");
+	custody.forms = custodyForms(custody.probe);
+	withhold(process.stdout, custody.forms, custody.withheld);
+	withhold(process.stderr, custody.forms, custody.withheld);
+}
 
 const db = await database.openDatabase();
 let executor;
@@ -147,6 +170,38 @@ try {
 				rootDiskBytes: 12 * 1024 ** 3, running: 1 },
 		} : {}),
 	};
+	if (custody) {
+		// The company's secret broker, and a member's vault secret as its capture would leave it: the owner's own, named
+		// p3_probe on the environment connector, which a session of theirs gets as P3_PROBE with no grant.
+		const { authorityId, secretId, keyId } = custody;
+		custody.broker = await custody.startBroker({ authorityId, keyId, database: brokerDatabase(db, note) });
+		const envelope = Buffer.from(custody.broker.seal({ companyId: ids.profileId, environmentId: ids.environmentId, secretId, version: 1, keyId },
+			custody.probe)).toString("hex");
+		const q = database.quote;
+		await db.psql([
+			"begin;",
+			"select set_config('request.jwt.claims', '{\"role\":\"service_role\"}', true), set_config('request.jwt.claim.role', 'service_role', true) \\g /dev/null",
+			`insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
+				values (${q(authorityId)}, ${q(ids.profileId)}, 'https://p3-broker.test', ${q(keyId)}, ${q(custody.broker.capabilitySha256)});`,
+			`insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id,
+				connector_id, secret_name, purpose, current_version, created_by_user_id)
+				values (${q(secretId)}, ${q(ids.profileId)}, ${q(ids.environmentId)}, ${q(authorityId)}, 'member', ${q(ids.ownerUserId)},
+				'environment', 'p3_probe', 'P3 custody probe', 1, ${q(ids.ownerUserId)});`,
+			`insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
+				envelope_sha256, created_by_user_id)
+				values (${q(secretId)}, 1, ${q(authorityId)}, ${q(keyId)}, decode(${q(envelope)}, 'hex'),
+				encode(extensions.digest(decode(${q(envelope)}, 'hex'), 'sha256'), 'hex'), ${q(ids.ownerUserId)});`,
+			"commit;",
+		].join("\n"));
+		// The brokers' shared origin is a name only: the executor's broker client reaches it through the driver.
+		config.broker = { origin: "https://p3-broker.test", executorTokenCredential: "qorpera-coding-broker-executor" };
+		pushFile("/etc/qorpera/coding-broker-executor.key", custody.broker.executorToken);
+		// What the node's searches look for, one per line, kept in the node as root (never in an argument).
+		pushFile("/root/p3-custody-forms", custody.forms.join("\n"));
+		pushFile("/root/p3-custody-control", custody.control);
+		pass(`the company's secret broker runs, and the owner has a vault secret p3_probe: a made-up value of ${custody.probe.length} ` +
+			`characters, searched for later in ${custody.forms.length} forms (${elapsed()})`);
+	}
 	pushFile("/etc/qorpera/coding-executor.json", JSON.stringify(config));
 	pushFile("/etc/qorpera/coding-command.key", commandToken);
 
@@ -176,6 +231,8 @@ try {
 	try {
 		// --- Turn 1: a command that keeps printing ------------------------------------------------------------------------
 		const { workerId } = await database.dispatchCodingTask(db, ids, { instructions: "P3 proof: start a command that keeps printing." });
+		if (custody && await databaseValue(db, `select to_jsonb(owner_user_id) from public.qorpera_runtime_workers where id = ${database.quote(workerId)}`) !== ids.ownerUserId)
+			fail("the session's worker is not the vault secret's owner's");
 		const turn1 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 1, timeoutMs: 20 * 60000 });
 		pass(`turn 1 runs: the executor prepared the workspace and attached the session (${elapsed()})`);
 		const mounted = () => executor.folderLines.mounts.filter((line) => {
@@ -254,71 +311,74 @@ try {
 		pass(`turn 2 reads the command turn 1 started: still running, at tick ${ticks.at(-1)} (${second.log.totalBytes} bytes, ${elapsed()})`);
 		const cancelled = await gateway2.cancel(turn2.scope, begun.commandId, AbortSignal.timeout(60000));
 		pass(`turn 2 stops it (${cancelled.state})`);
-		const sleeper2 = await startSleeper(turn2, gateway2, "p3-sleeper-2");
-		await database.finishTurn(db, turn2, { operationKey: "p3-turn-2", summary: "Read and stopped the command from turn 1.", headSha: head });
-		await executor.turnSettled();
-		console.error(JSON.stringify(await database.describe(db, ids)));
-		pass(`turn 2 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
+		if (custody) await proveCustody({ ids, workerId, turn2, gateway2, head });
+		else {
+			const sleeper2 = await startSleeper(turn2, gateway2, "p3-sleeper-2");
+			await database.finishTurn(db, turn2, { operationKey: "p3-turn-2", summary: "Read and stopped the command from turn 1.", headSha: head });
+			await executor.turnSettled();
+			console.error(JSON.stringify(await database.describe(db, ids)));
+			pass(`turn 2 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
 
-		// --- Order 9: the machine sleeps after 10 idle minutes, and the next turn says what stopped ------------------------
-		const machine = await order9.machineOf(db, workerId);
-		await order9.awaitRunning(db, workerId, sleeper2.commandId, 60000);
-		const idle2 = await order9.awaitIdle(db, workerId, machine);
-		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 2 finds the session and its machine idle: ${JSON.stringify(idle2)} (${elapsed()})`);
-		await order9.idleTenMinutes(db, machine);
-		const slept = await order9.awaitDetached(db, workerId, machine, "SLEEP", 5 * 60000);
-		const state = guestState(machine);
-		if (state !== "STOPPED" || !slept.suspendedAt) fail(`the machine sleeps but is ${state} (node demand suspended at ${slept.suspendedAt})`);
-		if (!slept.event.body.stopped.some((stopped) => stopped.commandId === sleeper2.commandId))
-			fail(`the machine's sleep does not name turn 2's command: ${JSON.stringify(slept.event)}`);
-		pass(`10 idle minutes later (the wait cut short in the database) the machine sleeps: ${machine.name} is stopped, its node ` +
-			`capacity suspended at ${slept.suspendedAt}, and the session says what stopped: ${JSON.stringify(slept.event.body)} (${elapsed()})`);
-		await database.followUp(db, ids, { workerId, text: "P3 proof: what stopped while your machine slept?" });
-		const turn3 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 3, timeoutMs: 20 * 60000 });
-		const stopped3 = (await database.turnContext(db, turn3)).commands.stopped;
-		if (!stopped3.some((stopped) => stopped.commandId === sleeper2.commandId && stopped.reason === "SLEEP"))
-			fail(`turn 3's context does not say the sleep stopped turn 2's command: ${JSON.stringify(stopped3)}`);
-		pass(`turn 3 wakes the machine (${guestState(machine)}), and its context says what stopped: ${JSON.stringify(stopped3)} (${elapsed()})`);
-		const gateway3 = gatewayFor(turn3);
-		const sleeper3 = await startSleeper(turn3, gateway3, "p3-sleeper-3");
-		await database.finishTurn(db, turn3, { operationKey: "p3-turn-3", summary: "Read what the sleep stopped; left a command running.", headSha: head });
-		await executor.turnSettled();
-		pass(`turn 3 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
+			// --- Order 9: the machine sleeps after 10 idle minutes, and the next turn says what stopped ------------------------
+			const machine = await order9.machineOf(db, workerId);
+			await order9.awaitRunning(db, workerId, sleeper2.commandId, 60000);
+			const idle2 = await order9.awaitIdle(db, workerId, machine);
+			pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 2 finds the session and its machine idle: ${JSON.stringify(idle2)} (${elapsed()})`);
+			await order9.idleTenMinutes(db, machine);
+			const slept = await order9.awaitDetached(db, workerId, machine, "SLEEP", 5 * 60000);
+			const state = guestState(machine);
+			if (state !== "STOPPED" || !slept.suspendedAt) fail(`the machine sleeps but is ${state} (node demand suspended at ${slept.suspendedAt})`);
+			if (!slept.event.body.stopped.some((stopped) => stopped.commandId === sleeper2.commandId))
+				fail(`the machine's sleep does not name turn 2's command: ${JSON.stringify(slept.event)}`);
+			pass(`10 idle minutes later (the wait cut short in the database) the machine sleeps: ${machine.name} is stopped, its node ` +
+				`capacity suspended at ${slept.suspendedAt}, and the session says what stopped: ${JSON.stringify(slept.event.body)} (${elapsed()})`);
+			await database.followUp(db, ids, { workerId, text: "P3 proof: what stopped while your machine slept?" });
+			const turn3 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 3, timeoutMs: 20 * 60000 });
+			const stopped3 = (await database.turnContext(db, turn3)).commands.stopped;
+			if (!stopped3.some((stopped) => stopped.commandId === sleeper2.commandId && stopped.reason === "SLEEP"))
+				fail(`turn 3's context does not say the sleep stopped turn 2's command: ${JSON.stringify(stopped3)}`);
+			pass(`turn 3 wakes the machine (${guestState(machine)}), and its context says what stopped: ${JSON.stringify(stopped3)} (${elapsed()})`);
+			const gateway3 = gatewayFor(turn3);
+			const sleeper3 = await startSleeper(turn3, gateway3, "p3-sleeper-3");
+			await database.finishTurn(db, turn3, { operationKey: "p3-turn-3", summary: "Read what the sleep stopped; left a command running.", headSha: head });
+			await executor.turnSettled();
+			pass(`turn 3 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
 
-		// --- Order 9: after a quiet day the agent is asked about archiving --------------------------------------------------
-		await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
-		const settled = await database.settleParent(db, ids, { workerId });
-		note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
-		const idle3 = await order9.awaitIdle(db, workerId, machine);
-		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
-		const quiet = await order9.quietDay(db, workerId);
-		note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
-		if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
-			fail(`a quiet day later the agent is not asked about archiving: ${JSON.stringify(quiet)}`);
-		pass(`a quiet day later (the wait cut short in the database) the agent is asked about archiving: ${quiet.asked.occurrenceKey} ` +
-			`(${quiet.asked.status}): ${JSON.stringify(quiet.asked.summary)} (${elapsed()})`);
+			// --- Order 9: after a quiet day the agent is asked about archiving --------------------------------------------------
+			await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
+			const settled = await database.settleParent(db, ids, { workerId });
+			note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
+			const idle3 = await order9.awaitIdle(db, workerId, machine);
+			pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
+			const quiet = await order9.quietDay(db, workerId);
+			note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
+			if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
+				fail(`a quiet day later the agent is not asked about archiving: ${JSON.stringify(quiet)}`);
+			pass(`a quiet day later (the wait cut short in the database) the agent is asked about archiving: ${quiet.asked.occurrenceKey} ` +
+				`(${quiet.asked.status}): ${JSON.stringify(quiet.asked.summary)} (${elapsed()})`);
 
-		// --- Order 9: archiving stops the session's programs, and a new message reopens it ----------------------------------
-		if ((await order9.archive(db, workerId)) !== true) fail("the agent's archive archived nothing");
-		const archived = await order9.awaitDetached(db, workerId, machine, "ARCHIVED", 2 * 60000);
-		if (!archived.event.body.stopped.some((stopped) => stopped.commandId === sleeper3.commandId))
-			fail(`the archive does not name turn 3's command: ${JSON.stringify(archived.event)}`);
-		const left = guestProcesses(machine, SLEEPER);
-		if (left) fail(`the archived session's command still runs on its machine: ${left}`);
-		pass(`archiving stops the session's programs: ${JSON.stringify(archived.event.body)}; no \`${SLEEPER}\` is left on ${machine.name} (${elapsed()})`);
-		await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the archive." });
-		const turn4 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 4, timeoutMs: 20 * 60000 });
-		const reopened = await order9.event(db, workerId, "reopened");
-		if (!reopened) fail("turn 4 runs, but the session has no Reopened event");
-		const stopped4 = (await database.turnContext(db, turn4)).commands.stopped;
-		if (!stopped4.some((stopped) => stopped.commandId === sleeper3.commandId && stopped.reason === "ARCHIVED"))
-			fail(`turn 4's context does not say the archive stopped turn 3's command: ${JSON.stringify(stopped4)}`);
-		pass(`a new message reopens it: ${JSON.stringify(reopened.body)}, turn 4 runs, and its context says what the archive stopped: ` +
-			`${JSON.stringify(stopped4)} (${elapsed()})`);
-		await database.finishTurn(db, turn4, { operationKey: "p3-turn-4", summary: "Read what the archive stopped.", headSha: head });
-		await executor.turnSettled();
-		console.error(JSON.stringify(await database.describe(db, ids)));
-		pass(`turn 4 ended (${elapsed()})`);
+			// --- Order 9: archiving stops the session's programs, and a new message reopens it ----------------------------------
+			if ((await order9.archive(db, workerId)) !== true) fail("the agent's archive archived nothing");
+			const archived = await order9.awaitDetached(db, workerId, machine, "ARCHIVED", 2 * 60000);
+			if (!archived.event.body.stopped.some((stopped) => stopped.commandId === sleeper3.commandId))
+				fail(`the archive does not name turn 3's command: ${JSON.stringify(archived.event)}`);
+			const left = guestProcesses(machine, SLEEPER);
+			if (left) fail(`the archived session's command still runs on its machine: ${left}`);
+			pass(`archiving stops the session's programs: ${JSON.stringify(archived.event.body)}; no \`${SLEEPER}\` is left on ${machine.name} (${elapsed()})`);
+			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the archive." });
+			const turn4 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 4, timeoutMs: 20 * 60000 });
+			const reopened = await order9.event(db, workerId, "reopened");
+			if (!reopened) fail("turn 4 runs, but the session has no Reopened event");
+			const stopped4 = (await database.turnContext(db, turn4)).commands.stopped;
+			if (!stopped4.some((stopped) => stopped.commandId === sleeper3.commandId && stopped.reason === "ARCHIVED"))
+				fail(`turn 4's context does not say the archive stopped turn 3's command: ${JSON.stringify(stopped4)}`);
+			pass(`a new message reopens it: ${JSON.stringify(reopened.body)}, turn 4 runs, and its context says what the archive stopped: ` +
+				`${JSON.stringify(stopped4)} (${elapsed()})`);
+			await database.finishTurn(db, turn4, { operationKey: "p3-turn-4", summary: "Read what the archive stopped.", headSha: head });
+			await executor.turnSettled();
+			console.error(JSON.stringify(await database.describe(db, ids)));
+			pass(`turn 4 ended (${elapsed()})`);
+		}
 		if (node.folder) pass(`the session's folder view mounts, worker and view: ${mounted().join(" ")}`);
 	} finally {
 		clearInterval(refreshing);
@@ -333,8 +393,164 @@ try {
 	process.exitCode = 1;
 } finally {
 	await executor?.stop().catch(() => undefined);
+	await custody?.broker?.close().catch(() => undefined);
 	postgrest?.stop();
 	await db.close();
+}
+
+/** The custody proof (P3_CUSTODY=1), turns 2 to 4 in place of the rest of Order 9: the member's vault value reaches the
+ * session's commands, and their output masks it; a push whose history carries it and a save of a file that carries it
+ * are refused, each turn ending `failed` with the session still attached; a clean turn then publishes. Last, every place
+ * the run could have kept the value is searched for its forms, and for the control, which shows each search reads that
+ * place. Nothing printed holds the value: its length, counts, paths and the executor's own reasons. */
+async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
+	const AUTHOR = "git -c user.name='P3 proof' -c user.email=p3@qorpera.invalid";
+	const { forms, control } = custody;
+	const carries = (text) => forms.some((form) => text.includes(form));
+	const lastCompletion = (from) => custody.completions.slice(from).at(-1) ?? null;
+	const attachment = () => databaseValue(db, `select to_jsonb(attached_machine_id) from public.qorpera_coding_sessions where worker_id = ${database.quote(workerId)}`);
+
+	// --- The member's vault value reaches the session's commands as P3_PROBE, and their output masks it ----------------
+	const held = await runToEnd(turn2, gateway2, "p3-custody-held", "printf 'len=%s\\n' \"${#P3_PROBE}\"; printf '%s' \"$P3_PROBE\" | sha256sum");
+	if (held.state !== "succeeded" || held.output.trim() !== `len=${custody.probe.length}\n${sha256(custody.probe)}  -`)
+		fail(`turn 2's commands do not hold the owner's vault value as P3_PROBE (${held.state}, ${held.output.length} characters of output)`);
+	pass(`a member's vault secret reaches the session's commands: P3_PROBE has the length and SHA-256 of the value the broker serves (${elapsed()})`);
+	const echoed = await runToEnd(turn2, gateway2, "p3-custody-echo", "printf 'probe=%s\\n' \"$P3_PROBE\"; printf '%s' \"$P3_PROBE\" | base64 -w0; echo; " +
+		`printf '%s\\n' '${control}' >p3-control.txt; cat p3-control.txt`);
+	const lines = echoed.output.split("\n");
+	if (echoed.state !== "succeeded" || lines[0] !== "probe=***" || !lines[1]?.startsWith("***") || lines[2] !== control || carries(echoed.output))
+		fail(`turn 2's command output does not mask the value beside a control: ${echoed.state}; printed whole ${lines[0] === "probe=***" ? "masked" : "NOT masked"}, ` +
+			`in base64 ${lines[1]?.startsWith("***") ? "masked" : "NOT masked"}, the control ${lines[2] === control ? "kept" : "NOT kept"}, ` +
+			`${carries(echoed.output) ? "a form of the value in it" : "no form of the value in it"}`);
+	pass(`the command's output masks the value: printed whole it reads \`probe=***\`, its base64 starts \`***\`, and the control beside it ` +
+		`is kept (${elapsed()})`);
+
+	// --- Turn 2's end would push a history that carries the value: refused (CODING_PUSH_CARRIES_SECRET) ----------------
+	// A file with the value is committed from the index alone and removed in the next commit: never in the worktree, so
+	// only the history carries it.
+	const history = await runToEnd(turn2, gateway2, "p3-custody-history",
+		"blob=$(printf 'P3 custody\\n%s\\n' \"$P3_PROBE\" | git hash-object -w --stdin) && " +
+		"git update-index --add --cacheinfo \"100644,$blob,p3-leak.txt\" && " +
+		`${AUTHOR} commit -q -m 'P3 custody: a value in a file' && git rm -q --cached p3-leak.txt && ` +
+		`${AUTHOR} commit -q -m 'P3 custody: the file removed' && ` +
+		`echo "in-history=$(git log -p ${head}..HEAD | grep -cF "$P3_PROBE")" && ` +
+		"echo \"in-tree=$(git grep -lF \"$P3_PROBE\" HEAD -- | wc -l)\" && git rev-parse HEAD");
+	const committed = /in-history=(\d+)\nin-tree=\s*(\d+)\n([0-9a-f]{40})$/.exec(history.output.trim());
+	if (history.state !== "succeeded" || committed?.[1] !== "2" || committed[2] !== "0")
+		fail(`turn 2 cannot commit the value and remove it: ${history.state}, ${committed ? `${committed[1]} lines of the history, ${committed[2]} files of the tree` : "no counts"}`);
+	const head2 = committed[3];
+	pass(`turn 2 commits a file with the value and removes it in the next commit, ${head2}: its history carries the value ` +
+		`(2 lines of \`git log -p\`), its tree does not (${elapsed()})`);
+	const before2 = custody.completions.length;
+	custody.expect = "failed";
+	await database.finishTurn(db, turn2, { operationKey: "p3-turn-2", summary: "Read and stopped the command from turn 1; committed a file and removed it.", headSha: head2 });
+	const settled2 = await executor.turnSettled();
+	custody.expect = null;
+	const refused2 = lastCompletion(before2);
+	const where = /^The push was refused: (.*) carries one of the session's secret values\. Remove it from the history and finish again\.$/.exec(refused2?.summary ?? "");
+	const pushed2 = published(workerId);
+	if (settled2 !== "failed" || refused2?.outcome !== "failed" || !where || pushed2.sha !== head)
+		fail(`turn 2's push of a history that carries the value is not refused: the turn settled ${settled2}, completed ${JSON.stringify(refused2)}, ` +
+			`the branch is at ${pushed2.sha}`);
+	pass(`turn 2's end is refused (CODING_PUSH_CARRIES_SECRET): the turn ends failed, "${refused2.summary}"; nothing is pushed, ` +
+		`${pushed2.branch} stays at ${head} (${elapsed()})`);
+
+	// --- Turn 3's end would save a file that carries the value: refused (CODING_FOLDER_SAVE_REFUSED) --------------------
+	await database.followUp(db, ids, { workerId, text: "P3 proof: the push was refused; carry on." });
+	const turn3 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 3, timeoutMs: 20 * 60000 });
+	const gateway3 = gatewayFor(turn3);
+	const attached = await attachment();
+	pass(`turn 3 runs in the same session, attached to ${attached} (${elapsed()})`);
+	const written = await runToEnd(turn3, gateway3, "p3-custody-file", `git reset -q --hard ${head} && printf '%s' "$P3_PROBE" >p3-probe.txt && ` +
+		"echo \"in-file=$(grep -cF \"$P3_PROBE\" p3-probe.txt)\"");
+	if (written.state !== "succeeded" || written.output.trim() !== "in-file=1") fail(`turn 3 cannot write the value in a file: ${written.state}`);
+	const before3 = custody.completions.length;
+	custody.expect = "failed";
+	await database.finishTurn(db, turn3, { operationKey: "p3-turn-3", summary: "Wrote a file.", headSha: head });
+	const settled3 = await executor.turnSettled();
+	custody.expect = null;
+	const refused3 = lastCompletion(before3);
+	const still = await attachment();
+	const pushed3 = published(workerId);
+	if (settled3 !== "failed" || refused3?.outcome !== "failed" || refused3.summary !== SAVE_REFUSED || !attached || still !== attached || pushed3.sha !== head)
+		fail(`turn 3's save of a file that carries the value is not refused: the turn settled ${settled3}, completed ${JSON.stringify(refused3)}, ` +
+			`the session attached to ${attached} then ${still}, the branch at ${pushed3.sha}`);
+	pass(`turn 3's end is refused (CODING_FOLDER_SAVE_REFUSED): the turn ends failed with a reason that names no path, "${refused3.summary}"; ` +
+		`nothing is published, and the session stays attached to ${still} (${elapsed()})`);
+
+	// --- Turn 4 removes the file and publishes through the repository's credential --------------------------------------
+	await database.followUp(db, ids, { workerId, text: "P3 proof: the save was refused; remove the file and finish." });
+	const turn4 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 4, timeoutMs: 20 * 60000 });
+	const gateway4 = gatewayFor(turn4);
+	const cleaned = await runToEnd(turn4, gateway4, "p3-custody-clean",
+		`rm -f p3-probe.txt && git add p3-control.txt && ${AUTHOR} commit -q -m 'P3 custody: a control' && git rev-parse HEAD`);
+	const head4 = cleaned.output.trim().split("\n").at(-1);
+	if (cleaned.state !== "succeeded" || !/^[0-9a-f]{40}$/.test(head4 ?? "")) fail(`turn 4 cannot remove the file and commit: ${cleaned.state}`);
+	const before4 = custody.completions.length;
+	// The control in the turn's summary too: the table search must find it.
+	await database.finishTurn(db, turn4, { operationKey: "p3-turn-4", summary: `Removed the file; committed the control ${control}.`, headSha: head4 });
+	const settled4 = await executor.turnSettled();
+	const done4 = lastCompletion(before4);
+	let pushed4 = published(workerId);
+	for (let waited = 0; (pushed4.sha !== head4 || !pushed4.pull) && waited < 60000; waited += 2000, pushed4 = published(workerId))
+		await new Promise((settle) => setTimeout(settle, 2000));
+	if (settled4 !== "completed" || done4?.outcome !== "succeeded" || pushed4.sha !== head4 || pushed4.pull?.draft !== true || pushed4.pull.head.sha !== head4)
+		fail(`turn 4's end does not publish: the turn settled ${settled4}, completed ${done4?.outcome}, ${JSON.stringify(pushed4)}`);
+	pass(`turn 4 removes the file and commits the control, ${head4}; its end pushes it through the repository's credential, and the ` +
+		`draft pull request ${pushed4.pull.html_url} has it (${elapsed()})`);
+
+	// --- Where the run could have kept the value -----------------------------------------------------------------------
+	// Every problem is gathered, then the run fails once; only counts and paths are printed.
+	const problems = [];
+	const holds = await databaseHolds(db, [...forms, control]);
+	const formTables = [...new Set(holds.slice(0, forms.length).flat())];
+	const controlTables = holds.at(-1);
+	if (formTables.length) problems.push(`the tables ${formTables.join(", ")} hold a form of the value`);
+	if (!controlTables.length) problems.push("no table holds the control");
+	const audited = await databaseValue(db, "select to_jsonb(count(*)) from public.qorpera_cloud_secret_audit_events " +
+		`where event_type = 'environment_secret_used' and coding_worker_id = ${database.quote(workerId)}`);
+	if (!(audited >= 1)) problems.push("the broker audited no use of the secret by the session");
+	// The node's files: its NAS, the object store and its state, the stand-in GitHub, the folder service's and the
+	// executor's runtime directories, logs, temporary folders, configuration and LXD's logs. Not the coding machines' disks.
+	const PLACES = "places=(); for place in /srv/nas /srv/p3-objects/state /srv/p3-objects/store /srv/p3-github /srv/qorpera " +
+		"/run/qorpera-folder-* /run/qorpera-coding-host /var/log /tmp /var/tmp /etc /var/snap/lxd/common/lxd/logs /var/lib/qorpera*; " +
+		"do [[ -e $place ]] && places+=(\"$place\"); done; grep -rlsF -D skip -f \"$1\" \"${places[@]}\" || true";
+	const search = (script, needles) => lxc("exec", vm, "--", "bash", "-c", script, "p3", needles).trim();
+	const STORED = /^\/srv\/p3-objects\/store\/.*\/([0-9a-f]{64})$/;
+	const fileHits = search(PLACES, "/root/p3-custody-forms").split("\n").filter(Boolean);
+	const elsewhere = fileHits.filter((path) => !STORED.test(path));
+	if (elsewhere.length) problems.push(`files in the node hold a form of the value: ${elsewhere.join(", ")}`);
+	// An object in the store is the folder's only once a path version names it, itself or as a chunk of its manifest; a
+	// refused save's bytes may wait there, unnamed, until the store's GC.
+	const stored = fileHits.map((path) => STORED.exec(path)?.[1]).filter(Boolean);
+	const named = stored.length ? await databaseValue(db, `select coalesce(jsonb_agg(s), '[]'::jsonb) from unnest(${database.quote(`{${stored.join(",")}}`)}::text[]) as s
+		where exists (select 1 from public.qorpera_folder_path_versions v where s in (v.file_sha256, v.manifest_sha256))
+			or exists (select 1 from public.qorpera_folder_file_chunks c join public.qorpera_folder_path_versions v on v.manifest_sha256 = c.manifest_sha256
+				where c.chunk_sha256 = s)`) : [];
+	if (named.length) problems.push(`the company folder saved a form of the value: the objects ${named.join(", ")}`);
+	const controlFiles = search(PLACES, "/root/p3-custody-control").split("\n").filter(Boolean);
+	if (!controlFiles.length) problems.push("no file in the node holds the control");
+	const GITHUB = "git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch | grep -caF -f \"$1\" || true";
+	const githubForms = Number(search(GITHUB, "/root/p3-custody-forms"));
+	const githubControl = Number(search(GITHUB, "/root/p3-custody-control"));
+	if (githubForms !== 0) problems.push(`the stand-in GitHub's objects hold a form of the value (${githubForms} lines)`);
+	if (!(githubControl >= 1)) problems.push("the stand-in GitHub's objects do not hold the control");
+	// The control goes to the journal here, after the file search, so the journal's search reads it.
+	search("logger -t p3-custody -- \"$(cat \"$1\")\"; journalctl --sync 2>/dev/null; sleep 1", "/root/p3-custody-control");
+	const JOURNAL = "journalctl --no-pager -o cat | grep -caF -f \"$1\" || true";
+	const journalForms = Number(search(JOURNAL, "/root/p3-custody-forms"));
+	const journalControl = Number(search(JOURNAL, "/root/p3-custody-control"));
+	if (journalForms !== 0) problems.push(`the node's journal holds a form of the value (${journalForms} lines)`);
+	if (!(journalControl >= 1)) problems.push("the node's journal does not hold the control");
+	const withheld = Object.entries(custody.withheld).filter(([, count]) => count > 0);
+	if (withheld.length) problems.push(`lines the driver would have printed carried a form: ${withheld.map(([source, count]) => `${source} ${count}`).join(", ")}`);
+	if (problems.length) fail(`the value was kept: ${problems.join("; ")}`);
+	pass(`the value is kept nowhere it was searched for: no table (the control is in ${controlTables.length}), no file in the node ` +
+		`(the control is in ${controlFiles.length}), no object of the stand-in GitHub (the control is in ${githubControl} lines), not the node's ` +
+		`journal (the control is in ${journalControl} lines), no line the driver printed; ` +
+		`${stored.length ? `LIMIT: ${stored.length} unsaved objects in the store hold it until the store's GC; ` : ""}` +
+		`the broker answered ${JSON.stringify(custody.answers)} and audited ${audited} uses (${elapsed()})`);
+	console.log("CUSTODY PROVEN");
 }
 
 /** Starts a command that uses nothing and never ends on its own, which the turn leaves running. */
@@ -413,6 +629,7 @@ function executorSandbox() {
 		"LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json",
 		"LoadCredential=qorpera-coding-command:/etc/qorpera/coding-command.key",
 		"LoadCredential=qorpera-coding-repository-p3:/etc/qorpera/coding-repository-p3.key",
+		...(custody ? ["LoadCredential=qorpera-coding-broker-executor:/etc/qorpera/coding-broker-executor.key"] : []),
 		"KillMode=control-group", "TimeoutStopSec=75s", "NoNewPrivileges=yes", "PrivateTmp=yes", "PrivateDevices=yes",
 		"ProtectSystem=strict", "ProtectHome=yes", "ProtectKernelTunables=no", "ProtectKernelModules=yes",
 		"ProtectControlGroups=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "CapabilityBoundingSet=",
@@ -475,7 +692,25 @@ function startExecutor() {
 			const name = message.path.split("?")[0].replace(/^\/rest\/v1\/rpc\//, "");
 			void timed("rpc", name, restAnswer(message.method, message.path, message.body)).then((answer) => {
 				if (answer.status !== 200) note(`rpc ${name} answered ${answer.status}: ${answer.body.slice(0, 300)}`);
+				else if (custody && name === "qorpera_complete_coding_turn") {
+					const completed = JSON.parse(message.body ?? "{}");
+					custody.completions.push({ outcome: completed.p_outcome, summary: completed.p_summary });
+				}
 				send({ t: "rest", id: message.id, status: answer.status, body: answer.body });
+			});
+		} else if (message.t === "broker") {
+			// The executor's broker client (../coding-environment.ts), answered by the run's broker; neither body nor headers
+			// are logged.
+			if (!custody?.broker) send({ t: "broker", id: message.id, status: 0 });
+			else void timed("broker", "coding-environment", fetch(`http://127.0.0.1:${custody.broker.port}${message.path}`, {
+				method: message.method, headers: message.headers, body: message.body ?? undefined, redirect: "error", signal: AbortSignal.timeout(30000),
+			}).then(async (response) => ({ status: response.status, body: await response.text() }))).then((answer) => {
+				custody.answers[answer.status] = (custody.answers[answer.status] ?? 0) + 1;
+				if (answer.status !== 200) note(`the broker answered ${answer.status}`);
+				send({ t: "broker", id: message.id, status: answer.status, body: answer.body });
+			}, (error) => {
+				note(`the broker is unreachable: ${error?.message}`);
+				send({ t: "broker", id: message.id, status: 0 });
 			});
 		} else if (message.t === "http") {
 			const pending = httpPending.get(message.id);
@@ -496,8 +731,10 @@ function startExecutor() {
 			readyReject(new Error(`the executor stopped: ${(message.causes ?? []).join(" <- ")}`));
 		} else if (message.t === "turn") {
 			note(`the executor's turn settled: ${JSON.stringify(message.status)}`);
-			// No later step can pass after such a turn: end the run now, not at the deadline of what the driver waits for.
-			if (["blocked", "failed", "recovery-required"].includes(message.status)) void stopRun(`the executor's turn settled ${message.status}`);
+			// No later step can pass after such a turn, unless the custody proof expects it: end the run now, not at the
+			// deadline of what the driver waits for.
+			if (custody?.expect && custody.expect === message.status) custody.expect = null;
+			else if (["blocked", "failed", "recovery-required"].includes(message.status)) void stopRun(`the executor's turn settled ${message.status}`);
 			const waiter = turnWaiters.shift();
 			if (waiter) waiter(message.status);
 			else settledTurns.push(message.status);

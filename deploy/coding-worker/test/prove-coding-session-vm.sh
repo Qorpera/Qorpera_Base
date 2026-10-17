@@ -18,9 +18,10 @@
 # one level further down, so they need the test machine's nested KVM. With P3_CODE_HOST=1 (phase B), the company's
 # code host image is built and exported first (../../code-host/test/export-code-host-image.sh, which needs the
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
-# the session's repository. test/prove-coding-session-node.sh sets the node
-# up; then test/p3-driver.mjs runs the test database here and the executor in the node, for four turns of one coding
-# session. Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a
+# the session's repository. With P3_CUSTODY=1 as well, turns 2 to 4 prove a member's vault secret in custody in place
+# of the rest of Order 9 (test/p3-custody.mjs), and the run needs CUSTODY PROVEN. test/prove-coding-session-node.sh sets
+# the node up; then test/p3-driver.mjs runs the test database here and the executor in the node, for four turns of one
+# coding session. Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a
 # proof could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
 # removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines, then ALL PASSED.
 set -euo pipefail
@@ -43,6 +44,7 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
+[[ ${P3_CUSTODY:-0} == 1 && ${P3_CODE_HOST:-0} != 1 ]] && fail "P3_CUSTODY=1 needs P3_CODE_HOST=1"
 export PATH=$PATH:/snap/bin
 for tool in lxc snap apt-get apt-cache nft jq python3 setpriv setsid docker; do
 	command -v "$tool" >/dev/null || fail "no $tool here"
@@ -281,6 +283,9 @@ else
 	(cd "$REPO" && "$NODE" deploy/coding-worker/test/p3-driver.mjs "$PROJECT" "$VM" "$CODING_IMAGE" "$WORK/push/package" \
 		"$(sed -n 's/^P3-NODE //p' "$WORK/node.out")") | tee "$WORK/driver.out" || fail "the coding session failed"
 	grep -qx "SESSION PROVEN" "$WORK/driver.out" || fail "the coding session did not finish"
+	if [[ ${P3_CUSTODY:-0} == 1 ]]; then
+		grep -qx "CUSTODY PROVEN" "$WORK/driver.out" || fail "the custody proof did not finish"
+	fi
 fi
 
 # --- The test machine is as it was -----------------------------------------------------------------------------------

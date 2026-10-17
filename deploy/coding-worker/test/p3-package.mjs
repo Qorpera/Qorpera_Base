@@ -5,6 +5,7 @@
 //     p3/p3-executor.mjs  the node's executor composition (p3-executor.ts)
 //     p3/p3-gateway.mjs   the runtime's coding command gateway, for the driver (the runtime's side of the HTTP)
 //     p3/p3-objects.mjs   the node's object gateway for the folder service's writes (p3-objects.ts)
+//     p3/p3-broker.mjs    the company's secret broker, for the driver's custody proof (p3-broker.ts)
 //
 //   node deploy/coding-worker/test/p3-package.mjs --folder <new directory> --folder-program <built qorpera-folder>
 //     qorpera-folder the folder program (scripts/build-folder-program.mjs), which the executor pushes into each machine
@@ -47,13 +48,14 @@ if (folder) {
 } else {
 	execFileSync(process.execPath, ["scripts/package-coding-guest.mjs", "--out", resolve(output, "guest")], { stdio: ["ignore", "ignore", "inherit"] });
 	await mkdir(resolve(output, "p3"), { mode: 0o755 });
-	// The object gateway's dependencies require node's modules: its own packager's banner
-	// (scripts/package-object-gateway.mjs).
+	// The object gateway's and the broker's dependencies require node's modules: their own packagers' banner
+	// (scripts/package-object-gateway.mjs, scripts/package-cloud-secret-broker.mjs).
 	const require = 'import { createRequire as __qorperaCreateRequire } from "node:module"; const require = __qorperaCreateRequire(import.meta.url);';
 	for (const [entry, file, banner] of [
 		["deploy/coding-worker/test/p3-executor.ts", "p3-executor.mjs"],
 		["packages/runtime/src/cloud-coding-command-http.ts", "p3-gateway.mjs"],
 		["deploy/coding-worker/test/p3-objects.ts", "p3-objects.mjs", require],
+		["deploy/coding-worker/test/p3-broker.ts", "p3-broker.mjs", require],
 	]) {
 		await build({ entryPoints: [entry], outfile: resolve(output, "p3", file), ...(banner ? { banner: { js: banner } } : {}),
 			bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "warning" });
