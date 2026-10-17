@@ -38,7 +38,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
-const WORKER_KEY = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 /** How often a waiting worker looks at the machine's status again. */
 const WAIT_STEP_MS = 5000;
 
@@ -64,7 +63,7 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Pick its size: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
 	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
 	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
-	"repositoryWorker attaches a coding session's repository read-only at /mnt/repository: copy it to the machine's own disk before you build. " +
+	"Its commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>. " +
 	"To wake a stopped machine, pass only machine with its name. " +
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
 	"The result says its state. When no server has room it waits in line and the result gives its place. " +
@@ -290,7 +289,6 @@ export function cloudMachineTools(options: {
 				memoryGiB: { type: "integer", minimum: 1, maximum: 1024 },
 				diskGiB: { type: "integer", minimum: 10, maximum: 2048 },
 				lifetime: { type: "string", enum: ["task", "always-on"] },
-				repositoryWorker: { type: "string", pattern: WORKER_KEY.source },
 				machine: machineName,
 				...(worker ? { waitSeconds: waitSchema } : {}),
 			},
@@ -306,7 +304,6 @@ export function cloudMachineTools(options: {
 					"memoryGiB",
 					"diskGiB",
 					"lifetime",
-					"repositoryWorker",
 					"machine",
 					...(worker ? ["waitSeconds"] : []),
 				],
@@ -331,11 +328,6 @@ export function cloudMachineTools(options: {
 				throw new Error("A new machine needs a purpose");
 			if (input.lifetime !== undefined && input.lifetime !== "task" && input.lifetime !== "always-on")
 				throw new Error("Invalid machine lifetime");
-			if (
-				input.repositoryWorker !== undefined &&
-				(typeof input.repositoryWorker !== "string" || !WORKER_KEY.test(input.repositoryWorker))
-			)
-				throw new Error("Invalid coding session");
 			return {
 				operationKey: input.operationKey,
 				name: name(input.name ?? ""),
@@ -344,7 +336,6 @@ export function cloudMachineTools(options: {
 				memoryGiB: integer("memoryGiB", 4, 1, 1024),
 				diskGiB: integer("diskGiB", 40, 10, 2048),
 				lifetime: (input.lifetime as string | undefined) ?? "task",
-				...(input.repositoryWorker === undefined ? {} : { repositoryWorker: input.repositoryWorker }),
 				...wait,
 			};
 		},

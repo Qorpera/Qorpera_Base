@@ -47,7 +47,7 @@ const policy = {
 };
 function binding(placementId = id(6)): LxdCompanyMachineBinding {
 	return {
-		schema: "qorpera.lxd-company-machine/v1",
+		schema: "qorpera.lxd-company-machine/v2",
 		machineId: id(2),
 		placementId,
 		companyId: id(3),
@@ -56,7 +56,6 @@ function binding(placementId = id(6)): LxdCompanyMachineBinding {
 		cpus: 4,
 		memoryBytes: 8 * 1024 ** 3,
 		rootDiskBytes: 40 * 1024 ** 3,
-		repositoryWorkerId: null,
 	};
 }
 

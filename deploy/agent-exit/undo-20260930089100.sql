@@ -4,6 +4,8 @@
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f deploy/agent-exit/undo-20260930089100.sql
 -- deploy/agent-exit/ROLLOUT.md, step 6. scripts/test-agent-exit-placement-undo.mjs (in the hosted-db suite) runs it after the
 -- migration and compares the four functions, with their grants and owner, with what they were before it.
+-- After 20260930506000 (company machines without a repository disk) it is refused: that migration rewrote the
+-- reservation's repository-tied wake, part of the text this undo restores.
 
 set local lock_timeout = '3s';
 

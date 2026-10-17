@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- `CLOUD_MACHINE_GUEST_PATHS.repository` (`/mnt/repository`) is gone (F3 6e-1): a company machine has no repository disk; a coding session's work is in the company folder at `/company`.
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 

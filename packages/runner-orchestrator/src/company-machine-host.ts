@@ -19,7 +19,6 @@ import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machi
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
 import {
 	type CompanyMachinePolicy,
-	type CompanyMachineRepositoryStorage,
 	type LxdCompanyMachineBinding,
 	lxdCompanyMachineJournalPlan,
 	lxdCompanyMachineName,
@@ -100,7 +99,7 @@ export interface CompanyMachineHostOptions {
 	folder?: FolderControl;
 	/** The executor's NAS control root (createCodingNasStorage(...).prepareControl()). */
 	journalRoot: string;
-	/** The coding NAS: its control path holds the journals; its placement finds a session's repository. */
+	/** The coding NAS: its control path holds the journals. */
 	storagePolicy: CloudCodingNasPolicy;
 	/** The sha-256 of the packaged machine guest helper the image carries. */
 	helperSha256: string;
@@ -253,7 +252,6 @@ export class LxdCompanyMachineHost {
 	readonly #options: CompanyMachineHostOptions;
 	readonly #policy: Readonly<CompanyMachinePolicy>;
 	readonly #storage: CodingNasStorage;
-	readonly #repositories: CompanyMachineRepositoryStorage;
 	readonly #work = new Map<string, Promise<unknown>>();
 	/** Per placement: the boot whose helper was checked and prepared, the whole machine's last sample, and whether it was
 	 * busy since SQL last took that. */
@@ -286,10 +284,8 @@ export class LxdCompanyMachineHost {
 		)
 			throw new Error("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
 		this.#policy = parseCompanyMachinePolicy(options.policy);
-		const storagePolicy = parseCloudCodingNasPolicy(options.storagePolicy);
-		this.#storage = createCodingNasStorage(storagePolicy);
+		this.#storage = createCodingNasStorage(parseCloudCodingNasPolicy(options.storagePolicy));
 		if (options.journalRoot !== this.#storage.controlPath) throw new Error("COMPANY_MACHINE_JOURNAL_NOT_ON_NAS");
-		this.#repositories = Object.freeze({ policy: storagePolicy, machineIdSha256: options.machineIdSha256 });
 		this.#options = Object.freeze({ ...options });
 	}
 
@@ -318,7 +314,7 @@ export class LxdCompanyMachineHost {
 		return path;
 	}
 	#plan(e: CompanyMachineEntry) {
-		const plan = lxdCompanyMachineJournalPlan(e.binding, this.#repositories);
+		const plan = lxdCompanyMachineJournalPlan(e.binding);
 		if (
 			plan.text !== e.bindingText ||
 			plan.instanceSha256 !== e.instanceSha256 ||

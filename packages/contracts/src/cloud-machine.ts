@@ -105,6 +105,4 @@ export const CLOUD_MACHINE_GUEST_PATHS = /* @__PURE__ */ Object.freeze({
 	runtime: "/run/qorpera-machine",
 	slice: "qorpera-machine.slice",
 	unitPrefix: "qorpera-machine-command-",
-	/** Where a coding session's repository is attached read-only. */
-	repository: "/mnt/repository",
 });

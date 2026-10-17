@@ -491,7 +491,7 @@ function allocation(
 					? "native"
 					: tag("schema") === "qorpera.lxd-coding-vm/v2" || tag("schema") === "qorpera.lxd-coding-machine/v1"
 						? "coding"
-						: tag("schema") === "qorpera.lxd-company-machine/v1"
+						: tag("schema") === "qorpera.lxd-company-machine/v2"
 							? "machine"
 							: null;
 	const id = kind === "native" ? tag("acquisition_id") : tag("allocation_id");
