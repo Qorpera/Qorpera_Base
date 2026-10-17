@@ -836,6 +836,84 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 		},
 		TIMEOUT,
 	);
+
+	it(
+		"what git leaves out in a worktree stays on the machine's disk, as git check-ignore says, until the index has it",
+		async () => {
+			const [w1, w2] = [`${AREA}/worktrees/w1`, `${AREA}/worktrees/w2`];
+			const at = await area({
+				[`${w1}/.gitignore`]: "*.log\n!keep.log\n/out/\nlogs/\n",
+				[`${w1}/sub/.gitignore`]: "*.tmp\n",
+			});
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			// The session's own info/exclude (a session-local git file).
+			await writeFile(join(first.company, R, "info", "exclude"), "secret.txt\n");
+			for (const dir of ["out", "logs", "sub/out", "sub/deep", "src/logs"]) await mkdir(join(first.worktree, dir));
+			const paths = [
+				"debug.log",
+				"keep.log",
+				"secret.txt",
+				"out/x",
+				"logs/y",
+				"logs/z",
+				"sub/a.tmp",
+				"sub/b.txt",
+				"sub/out/c",
+				"sub/deep/d.log",
+				"src/logs/e",
+				"src/f.txt",
+			];
+			for (const path of paths) await writeFile(join(first.worktree, path), `${path}\n`);
+			const published = await first.publish();
+			expect(published.code, published.out).toBe(0);
+			// A cache is just what git leaves out; the rest is published.
+			const cached: string[] = [];
+			for (const path of paths) {
+				if ((await first.gitRun("check-ignore", "-q", path)).code === 0) cached.push(path);
+				expect(await readFile(join(first.worktree, path), "utf8")).toBe(`${path}\n`);
+			}
+			expect(cached).toEqual([
+				"debug.log",
+				"secret.txt",
+				"out/x",
+				"logs/y",
+				"logs/z",
+				"sub/a.tmp",
+				"sub/deep/d.log",
+				"src/logs/e",
+			]);
+			expect(paths.filter((path) => at.core.entries.has(`${w1}/${path}`))).toEqual(
+				paths.filter((path) => !cached.includes(path)),
+			);
+			expect(held(at.core, `${w1}/out`)).toEqual([]);
+			expect(held(at.core, `${w1}/logs`)).toEqual([]);
+
+			// `git add -f` takes what it names into the index, and so into the folder: of a folder git leaves out, only that.
+			await first.git("add", "-f", "debug.log", "logs/y");
+			await first.git("add", ".gitignore", "sub/.gitignore");
+			await first.git("commit", "-q", "-m", "forced");
+			const head = (await first.git("rev-parse", "HEAD")).trim();
+			const again = await first.publish();
+			expect(again.code, again.out).toBe(0);
+			expect(held(at.core, `${w1}/logs`)).toEqual([`${w1}/logs`, `${w1}/logs/y`]);
+			expect(at.core.entries.get(`${w1}/debug.log`)?.kind).toBe("file");
+			expect(await readFile(join(first.worktree, "logs/z"), "utf8")).toBe("logs/z\n");
+			expect(await first.git("status", "--porcelain", "--ignored", "--", "debug.log", "logs")).toBe("!! logs/z\n");
+
+			// A checkout writes the files before the index: what it writes under a pattern is a cache until the index has it.
+			await at.service.poll();
+			expect(await eventually(async () => (await second.git("rev-parse", "w1")).trim() === head)).toBe(true);
+			await second.git("merge", "-q", "--ff-only", "w1");
+			expect(await second.git("status", "--porcelain")).toBe("");
+			const last = await second.publish();
+			expect(last.code, last.out).toBe(0);
+			expect(held(at.core, `${w2}/logs`)).toEqual([`${w2}/logs`, `${w2}/logs/y`]);
+			expect(at.core.entries.get(`${w2}/debug.log`)?.kind).toBe("file");
+			expect(await readFile(join(second.worktree, "debug.log"), "utf8")).toBe("debug.log\n");
+		},
+		TIMEOUT,
+	);
 });
 
 /** The environment npm runs with in a session: the session's home, a cache off the mount, and no network. */
