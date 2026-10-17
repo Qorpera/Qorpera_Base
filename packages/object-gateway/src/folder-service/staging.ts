@@ -5,6 +5,7 @@ import type { FolderActor, FolderCore } from "./core.ts";
 import type { NasObjects } from "./objects.ts";
 import type { ChunkRef, Content, FileRef } from "./pending.ts";
 import { ErrorCode, ProtocolError } from "./protocol.ts";
+import type { SecretSet } from "./secret-scan.ts";
 
 /** One object put through the object gateway's route for the folder service (F3 step 3b), streamed. */
 export interface Upload {
@@ -211,7 +212,8 @@ export class FolderStaging {
 
 	/** Stages a whole file: its hash from its chunks on the share, its manifest, any chunk the actor does not hold, and
 	 * the seal. Returns the file's reference and the sealed intent that holds its bytes until it is published (renewed
-	 * by the caller while it waits). */
+	 * by the caller while it waits). With `secrets`, its bytes are checked for them first: it throws `SecretRefusal`
+	 * before anything is sent to the core. */
 	async stageFile(
 		environmentId: string,
 		actor: FolderActor,
@@ -219,9 +221,16 @@ export class FolderStaging {
 		content: Content,
 		mediaType: string,
 		executable: boolean,
+		secrets?: SecretSet,
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const hash = createHash("sha256");
-		for (const c of content.chunks) hash.update(await this.#objects.chunk(profileId, c.sha256, c.bytes));
+		const scan = secrets?.scan(content.size);
+		for (const c of content.chunks) {
+			const bytes = await this.#objects.chunk(profileId, c.sha256, c.bytes);
+			scan?.push(bytes);
+			hash.update(bytes);
+		}
+		scan?.end();
 		const text = manifestText({
 			fileSha256: hash.digest("hex"),
 			bytes: content.size,
@@ -251,6 +260,14 @@ export class FolderStaging {
 			if (seal.state === "sealed") return { file: seal.file, intentId: open.intentId };
 		}
 		throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be saved now");
+	}
+
+	/** Checks a file's bytes, from its chunks on the share, for `secrets`: throws `SecretRefusal` if they carry one. */
+	async check(profileId: string, content: Content, secrets: SecretSet): Promise<void> {
+		if (secrets.size === 0) return;
+		const scan = secrets.scan(content.size);
+		for (const c of content.chunks) scan.push(await this.#objects.chunk(profileId, c.sha256, c.bytes));
+		scan.end();
 	}
 
 	async #put(

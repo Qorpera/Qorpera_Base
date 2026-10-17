@@ -1,6 +1,6 @@
 /** Shared by the folder service's tests: a company in memory (the folder core) and its bytes on a stand-in for the
  * storage server's share. */
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -29,6 +29,7 @@ import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
 import type { CommitUnit, NewFolderEntry } from "../src/folder-service/plan.ts";
 import type { BridgeInfo } from "../src/folder-service/protocol.ts";
+import { SecretSet, type SecretValue } from "../src/folder-service/secret-scan.ts";
 import type { FolderUploads, Upload } from "../src/folder-service/staging.ts";
 import type { CreditedUnit } from "../src/folder-service/windows.ts";
 
@@ -939,6 +940,44 @@ export const CODE_HOST: MachineRef = {
 /** As `companyGrants`, and the coding project's machines present their own coding sessions' views. */
 export function codingGrants(): MountGrants {
 	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT], [CODING_PROJECT]);
+}
+
+/** A coding machine's secret values when its member has none (5j-5): what its executor sends before the machine's views
+ * save anything. */
+export function noSecrets(): SecretSet {
+	return new SecretSet(Buffer.alloc(32), []);
+}
+
+/** The key a test's coding machine's secret values are hashed under. */
+export const SECRET_KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
+
+/** A value's keyed hashes as the coding executor makes them (secret-scan.ts), written apart from the scan's code; the
+ * vectors in secret-scan.test.ts pin them. */
+export function secretHashes(key: Buffer, value: string): SecretValue {
+	const kw = createHmac("sha256", key).update("qorpera-secret-window/v1").digest();
+	const kv = createHmac("sha256", key).update("qorpera-secret-value/v1").digest();
+	const c = Array.from({ length: 8 }, (_, i) => kw.readUInt32BE(4 * i));
+	const bytes = Buffer.from(value);
+	let h = Math.imul(bytes.readUInt32BE(0) ^ (c[0] as number), (c[1] as number) | 1);
+	h ^= h >>> 15;
+	h = Math.imul(h ^ bytes.readUInt32BE(4) ^ (c[2] as number), (c[3] as number) | 1);
+	h ^= h >>> 13;
+	h = Math.imul(h ^ (c[4] as number), (c[5] as number) | 1);
+	h ^= h >>> 16;
+	h = Math.imul(h ^ (c[6] as number), (c[7] as number) | 1);
+	return {
+		length: bytes.byteLength,
+		start: h >>> 12,
+		whole: createHmac("sha256", kv).update(bytes).digest().toString("base64url", 0, 16),
+	};
+}
+
+/** A coding machine's secret values, as its executor sends them: the hashes of `values` under `SECRET_KEY`. */
+export function secretsOf(...values: string[]): SecretSet {
+	return new SecretSet(
+		SECRET_KEY,
+		values.map((value) => secretHashes(SECRET_KEY, value)),
+	);
 }
 
 /** The node's test machine project (F3 6b), a test machine's placement, and the instance the node made for it, named

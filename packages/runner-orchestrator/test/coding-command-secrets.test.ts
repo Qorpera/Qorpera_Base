@@ -352,3 +352,88 @@ describe("a coding session's command secrets on its machine", () => {
 		expect(f.environment).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe("a coding machine's values for the folder service's save check (5j-5 (a))", () => {
+	const sorted = (values: readonly string[] | undefined) => (values ? [...values].sort() : values);
+
+	it("knows a machine's values once this process has a vault answer for it, until its last session goes", async () => {
+		const mine = randomUUID();
+		const other = randomUUID();
+		const away = randomUUID();
+		const f = fixture({ [mine]: { API_KEY }, [other]: { OTHER_KEY }, [away]: { AWAY_KEY } }, { [mine]: [OLDER_KEY] });
+		const machineId = randomUUID();
+		const scope = f.scope(mine);
+		// Nothing asked here yet: what is known of the machine is not all.
+		expect(f.secrets.values(machineId)).toBeUndefined();
+		f.secrets.session(machineId, scope);
+		expect(f.secrets.values(machineId)).toBeUndefined();
+		// The attach asks the vault under the session's claim, so they are known before a command starts.
+		await f.secrets.attached(machineId, scope, signal());
+		expect(f.environment).toHaveBeenLastCalledWith(scope, expect.any(AbortSignal));
+		expect(sorted(f.secrets.values(machineId))).toEqual([API_KEY, OLDER_KEY].sort());
+		// Another session's command on the machine; one on another machine is not the machine's.
+		const theirs = f.scope(other);
+		await f.secrets.session(machineId, theirs).resolve(f.request(machineId, theirs), signal());
+		const elsewhere = randomUUID();
+		const there = f.scope(away);
+		await f.secrets.session(elsewhere, there).resolve(f.request(elsewhere, there), signal());
+		expect(sorted(f.secrets.values(machineId))).toEqual([API_KEY, OLDER_KEY, OTHER_KEY].sort());
+		expect(f.secrets.values(elsewhere)).toEqual([AWAY_KEY]);
+		// A session released while another stays: still masked, so still the machine's.
+		f.secrets.release(machineId, other);
+		expect(sorted(f.secrets.values(machineId))).toEqual([API_KEY, OLDER_KEY, OTHER_KEY].sort());
+		f.secrets.release(machineId, mine);
+		expect(f.secrets.values(machineId)).toBeUndefined();
+		// A command's start makes them known too.
+		const again = f.scope(mine);
+		await f.secrets.session(machineId, again).resolve(f.request(machineId, again), signal());
+		expect(sorted(f.secrets.values(machineId))).toEqual([API_KEY, OLDER_KEY].sort());
+	});
+
+	it("knows a member with no secrets as none, from the attach on", async () => {
+		const workerId = randomUUID();
+		const f = fixture({ [workerId]: {} });
+		const machineId = randomUUID();
+		await f.secrets.attached(machineId, f.scope(workerId), signal());
+		expect(f.secrets.values(machineId)).toEqual([]);
+	});
+
+	it("masks the answer the attach asked for in the machine's commands, and never puts it in an environment", async () => {
+		const workerId = randomUUID();
+		const answers: Record<string, Readonly<Record<string, string>>> = { [workerId]: { API_KEY } };
+		const f = fixture(answers);
+		const machineId = randomUUID();
+		const scope = f.scope(workerId);
+		await f.secrets.attached(machineId, scope, signal());
+		// Rotated before the first command starts: it gets the new value, and its output's mask covers both.
+		answers[workerId] = { API_KEY: ROTATED };
+		const resolved = await f.secrets.session(machineId, scope).resolve(f.request(machineId, scope), signal());
+		expect(resolved.environment).toStrictEqual({ API_KEY: ROTATED });
+		expect(masked(resolved.mask(), `${API_KEY} ${ROTATED}`)).toBe("*** ***");
+		expect(sorted(f.secrets.values(machineId))).toEqual([API_KEY, ROTATED].sort());
+	});
+
+	it("keeps nothing of an attach whose ask fails, is refused by the mask, or outlives the session", async () => {
+		const workerId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } });
+		const machineId = randomUUID();
+		const scope = f.scope(workerId);
+		f.environment.mockRejectedValueOnce(new Error("CODING_ENVIRONMENT_UNAVAILABLE"));
+		await expect(f.secrets.attached(machineId, scope, signal())).rejects.toThrow("CODING_ENVIRONMENT_UNAVAILABLE");
+		expect(f.secrets.values(machineId)).toBeUndefined();
+		f.environment.mockResolvedValueOnce(answer({ SHORT: "short" }));
+		await expect(f.secrets.attached(machineId, scope, signal())).rejects.toThrow(RangeError);
+		expect(f.secrets.values(machineId)).toBeUndefined();
+		f.environment.mockImplementationOnce(async () => {
+			f.secrets.release(machineId, workerId);
+			return answer({ API_KEY });
+		});
+		await expect(f.secrets.attached(machineId, scope, signal())).rejects.toThrow("CODING_COMMAND_SECRETS_RELEASED");
+		expect(f.secrets.values(machineId)).toBeUndefined();
+		const controller = new AbortController();
+		controller.abort(new Error("turn ended"));
+		await expect(f.secrets.attached(machineId, scope, controller.signal)).rejects.toThrow("turn ended");
+		expect(f.environment).toHaveBeenCalledTimes(3);
+		expect(f.secrets.values(machineId)).toBeUndefined();
+	});
+});

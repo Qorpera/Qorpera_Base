@@ -62,9 +62,15 @@ struct State {
 	busy_links: usize,
 	/// How many of the next renames to answer only a while after they changed the tree and the feeds heard of it.
 	slow_renames: usize,
+	/// How many of the next renames to make (and answer) only a while after they came.
+	late_renames: usize,
 	/// The next lists of a folder, each with the seconds it is answered after it was made and the feeds heard of a
 	/// change there.
 	slow_lists: Vec<(String, u64)>,
+	/// Files whose reads are answered UNAVAILABLE.
+	failing_reads: Vec<String>,
+	/// The reads not answered so, by file.
+	reads_of: std::collections::HashMap<String, usize>,
 	logs: std::collections::HashMap<String, u64>,
 	/// Every read the machine handed over, as (path, version).
 	logged: Vec<(String, Option<String>)>,
@@ -179,6 +185,11 @@ impl FakeNode {
 		self.state.lock().unwrap().reads
 	}
 
+	/// The reads of `path` not answered UNAVAILABLE (`fail_reads`).
+	pub fn reads_of(&self, path: &str) -> usize {
+		self.state.lock().unwrap().reads_of.get(path).copied().unwrap_or(0)
+	}
+
 	/// A node whose view takes writes.
 	pub fn writable() -> FakeNode {
 		let node = FakeNode::start();
@@ -265,10 +276,29 @@ impl FakeNode {
 		self.state.lock().unwrap().slow_renames = renames;
 	}
 
+	/// The next `renames` renames change the tree (and are answered) three seconds after they came.
+	pub fn late_renames(&self, renames: usize) {
+		self.state.lock().unwrap().late_renames = renames;
+	}
+
+	/// How many of the renames `late_renames` asked for have not come yet.
+	pub fn late_renames_left(&self) -> usize {
+		self.state.lock().unwrap().late_renames
+	}
+
 	/// The next lists of the folder `path` are answered one after the other `secs` seconds after they were made (with
 	/// the entries of then), and the feeds hear of a change there meanwhile, so the machine keeps none of them.
 	pub fn slow_lists(&self, path: &str, secs: &[u64]) {
 		self.state.lock().unwrap().slow_lists.extend(secs.iter().map(|s| (path.to_string(), *s)));
+	}
+
+	/// The reads of the file `path` are answered UNAVAILABLE (`fail`), or again as they come (not `fail`).
+	pub fn fail_reads(&self, path: &str, fail: bool) {
+		let mut s = self.state.lock().unwrap();
+		s.failing_reads.retain(|p| p != path);
+		if fail {
+			s.failing_reads.push(path.to_string());
+		}
 	}
 
 	/// How many of the lists `slow_lists` asked for were not made yet.
@@ -346,6 +376,13 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 	loop {
 		let Ok((k, body)) = read_frame(&mut s) else { return };
 		let mut st = state.lock().unwrap();
+		if k == kind::RENAME && st.writable && st.late_renames > 0 {
+			// The tree changes later, while the node goes on with other requests.
+			st.late_renames -= 1;
+			drop(st);
+			std::thread::sleep(std::time::Duration::from_secs(3));
+			st = state.lock().unwrap();
+		}
 		if k == kind::RENAME && st.writable && st.slow_renames > 0 {
 			// The tree changes now and the answer comes later, while the node goes on with other requests.
 			st.slow_renames -= 1;
@@ -394,7 +431,11 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			kind::READ => {
 				let req: ReadRequest = serde_json::from_slice(&body).unwrap();
 				st.reads += 1;
+				if !st.failing_reads.contains(&req.path) {
+					*st.reads_of.entry(req.path.clone()).or_default() += 1;
+				}
 				match st.entries.get(&req.path) {
+					_ if st.failing_reads.contains(&req.path) => error(&mut s, code::UNAVAILABLE),
 					Some(n) if !n.folder && format!("v{}", n.version) == req.version => {
 						let start = (req.offset as usize).min(n.content.len());
 						let end = (start + req.length as usize).min(n.content.len());

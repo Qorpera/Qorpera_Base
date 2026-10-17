@@ -934,15 +934,17 @@ export class PendingView {
 			if (target.kind === "live" && target.entry.kind === "folder" && this.#pendingBelow(to, target.source))
 				throw new PublishFirst("replacing a folder with changes inside it");
 		} else {
+			// A moved folder goes back where it came from at once: only it left that path.
+			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
 			// A name never published renamed only in case to a published one is a new name there too.
 			if (
 				folderKey(from) !== folderKey(to) ||
 				(unpublished(from, this.#codeHost) && !unpublished(to, this.#codeHost))
 			)
-				this.#newName(to, from);
-			if (this.#freedFolder(to)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
+				this.#newName(to, from, origin === to);
+			if (origin !== to && this.#freedFolder(to))
+				throw new PublishFirst("reusing a path a folder this view moved or removed left");
 			// Moves that take each other's places (a swap, a ring) publish one at a time.
-			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
 			if (origin !== undefined && this.#cycle(origin, to))
 				throw new PublishFirst("moves that take each other's places");
 		}
@@ -1005,7 +1007,9 @@ export class PendingView {
 		this.#dropUnder(to);
 		if (fresh && lets) fresh.replaces = target ? replaces : this.#takeRemoved(to);
 		this.#hideHeld(from, node);
-		this.#set(to, node);
+		// Back where it came from, a moved folder is the live one again.
+		if (node.kind === "folder" && node.origin?.path === to) this.#unset(to);
+		else this.#set(to, node);
 		for (const [path, n] of moved) this.#set(to + path.slice(from.length), n);
 		node.mtimeMs = this.#now();
 	}
@@ -1042,8 +1046,9 @@ export class PendingView {
 
 	/** A new name in an existing folder: allowed, and not a sibling's spelled otherwise (`EEXIST`); a path a moved or
 	 * removed live folder left, or one a pending file, link or folder spells otherwise, or a folder above it (beside a
-	 * live one another machine made or renamed), publishes what is pending first. `except`: what a rename moves from. */
-	#newName(path: string, except?: string): void {
+	 * live one another machine made or renamed), publishes what is pending first. `except`: what a rename moves from;
+	 * `back`, it moves there from `path`, which only it left. */
+	#newName(path: string, except?: string, back = false): void {
 		const parent = this.resolve(parentOf(path));
 		if (!parent) fail(ErrorCode.notFound, "No such folder");
 		if ((parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
@@ -1060,7 +1065,8 @@ export class PendingView {
 				this.resolve(join(parentOf(path), name))
 			)
 				fail(ErrorCode.exists, "A path differing only in case exists");
-		if (this.#freedFolder(path)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
+		if (!back && this.#freedFolder(path))
+			throw new PublishFirst("reusing a path a folder this view moved or removed left");
 		// Under a parent spelled otherwise (another machine made or renamed one only in case), a pending file, link or
 		// folder at its path is no sibling, and does not show: in the core it is the same path, whose unit this one's
 		// would need the version of, or a new folder this name would go into, so it publishes first. A name never
@@ -1313,6 +1319,11 @@ export class PendingView {
 		return this.#nodes;
 	}
 
+	/** The live paths below the live folder `path`: what a move of it takes along. */
+	*liveBelow(path: string): Generator<string> {
+		for (const entry of this.#live().walk(path)) if (entry.path !== path) yield entry.path;
+	}
+
 	/** What a file open for writing goes back to if its last handle is abandoned (its last close or truncating open):
 	 * bytes the service must keep holding while the file is open. */
 	fixedState(node: PendingFile): Pick<PendingFile, "content" | "staged"> | undefined {
@@ -1334,16 +1345,23 @@ export class PendingView {
 	}
 
 	/** After a boundary: the view shows the live folder again, except the nodes the boundary keeps (`keep`: files
-	 * still open, names never published, and new bytes the core did not save). Every removal and move was published
-	 * (saved, or failed losing nothing), so the gone nodes and the removals go too. A kept new file or link that
-	 * replaces a live one (an editor's save or `ln -sf` the core did not take) keeps its base, and replaces the same
-	 * version again at the next boundary; the live one stays hidden where it is spelled otherwise. */
+	 * still open, names never published, new bytes the core did not save, and what the save check refused or held back
+	 * with it, 5j-5). Every other removal and move was published (saved, or failed losing nothing), so the gone nodes and
+	 * the removals go too. A kept move still takes the live entry it moves away: it shows only where the move put it, and
+	 * moving it back changes nothing. A kept new file or link that replaces a live one (an editor's save or `ln -sf` the
+	 * core did not take) keeps its base, and replaces the same version again at the next boundary; the live one stays
+	 * hidden where it is spelled otherwise. */
 	settle(keep: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
 		this.#removed.clear();
-		for (const [path, node] of [...this.#nodes])
-			if ((node.kind === "file" || node.kind === "symlink") && node.replaces && node.replaces.path !== path)
-				this.#hide(node.replaces.path);
+		for (const [path, node] of [...this.#nodes]) {
+			if (node.kind === "gone") continue;
+			if (node.origin && node.origin.path !== path) {
+				const r = this.resolve(node.origin.path);
+				if (r?.kind === "live" && r.source === node.origin.path) this.#set(node.origin.path, { kind: "gone" });
+			}
+			if (node.kind !== "folder" && node.replaces && node.replaces.path !== path) this.#hide(node.replaces.path);
+		}
 		// Where a removal or move of the view's failed, the path shows the file it would have taken away: a draft open
 		// there lands against that file, as one opened over it does (a change another machine makes after is a conflict).
 		// A move the boundary kept (one waiting on another), or a kept new file or link that replaces it, still takes it

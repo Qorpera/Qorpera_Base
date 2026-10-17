@@ -10,6 +10,7 @@ import {
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
+	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingSubmission,
 	type CodingTurnState,
@@ -297,6 +298,32 @@ describe("the coding executor over a session turn", () => {
 			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 			expect(w.host.detachSession).not.toHaveBeenCalled();
 		}
+	});
+
+	it("a publication held by a refused save fails the turn with what to change, and leaves the session attached", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingSaveRefused());
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toBe(
+			"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again.",
+		);
+		expect(completion.p_pull_request).toBeNull();
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
 	it("a question blocks the session with its choices and leaves it standing by", async () => {

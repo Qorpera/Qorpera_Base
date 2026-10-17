@@ -12,10 +12,15 @@ import {
 	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodingCommandSecrets, CodingEnvironmentSource } from "../src/coding-command-secrets.ts";
+import {
+	type CodingCommandSecrets,
+	type CodingEnvironmentSource,
+	CodingMachineCommandSecrets,
+} from "../src/coding-command-secrets.ts";
 import {
 	CodingMachineUnavailable,
 	CodingPushRefused,
+	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingTurnState,
 } from "../src/coding-executor.ts";
@@ -2694,6 +2699,8 @@ async function folderFixture(repositories = true) {
 	}));
 	// Every read the machine was served before was released, unless a test says otherwise (F3 5g-5).
 	const restarted = vi.fn<CodingFolderControl["restarted"]>(async () => false);
+	// No secret values known here, unless a test says otherwise (5j-5 (a)).
+	const secrets = vi.fn<CodingFolderControl["secrets"]>(async () => null);
 	const sessionRepositories = {
 		prepare: vi.fn<CodingFolderRepositories["prepare"]>(async () => ({ cwd })),
 		export: vi.fn<CodingFolderRepositories["export"]>(async () => Buffer.from("bundle")),
@@ -2701,7 +2708,7 @@ async function folderFixture(repositories = true) {
 	const onMount = vi.fn();
 	const folder = {
 		views,
-		control: { boundary, restarted },
+		control: { boundary, restarted, secrets },
 		client: {} as LxdInstanceExecStreamClient,
 		...(repositories ? { repositories: sessionRepositories } : {}),
 		onMount,
@@ -2711,7 +2718,7 @@ async function folderFixture(repositories = true) {
 	const executor = (real: Awaited<ReturnType<typeof realViews>>) =>
 		new LxdCodingExecutorHost({
 			...f.options,
-			folder: { ...folder, views: real.views(), control: { boundary: real.boundary, restarted } },
+			folder: { ...folder, views: real.views(), control: { boundary: real.boundary, restarted, secrets } },
 		});
 	return {
 		...f,
@@ -2721,6 +2728,7 @@ async function folderFixture(repositories = true) {
 		views,
 		boundary,
 		restarted,
+		secrets,
 		repositories: sessionRepositories,
 		onMount,
 		startOperationId,
@@ -4386,9 +4394,10 @@ describe("a coding session on the folder model", () => {
 			stream.end();
 			expect(stream.matched).toBe(true);
 		}
-		// Asked at the command's start, then once for each publication, under the claim; nothing asked is kept.
+		// Asked at the session's attach (5j-5 (a)) and the command's start, then once for each publication, under the claim;
+		// nothing a publication asked is kept.
 		const scope = { companyId: f.claim.profileId, workerId: f.claim.workerId, leaseToken: f.claim.leaseToken };
-		expect(environment.mock.calls.map((call) => call[0])).toEqual([scope, scope, scope, scope]);
+		expect(environment.mock.calls.map((call) => call[0])).toEqual([scope, scope, scope, scope, scope]);
 		const output = await secrets.output(request, f.signal);
 		const stream = output!();
 		expect(Buffer.from([...stream.push(Buffer.from(fresh)), ...stream.end()]).toString()).toBe(fresh);
@@ -4425,6 +4434,31 @@ describe("a coding session on the folder model", () => {
 			"UNREPORTED",
 			{ reads: "released" as const, views: [{ viewId: randomUUID() }] },
 		],
+		// Refusals that found no secret value (5j-5 a): the core's own, or a file the check could not finish.
+		[
+			"refused a view's paths, none for a secret value",
+			"UNSAVED_REFUSED",
+			{ reads: "released" as const, views: [{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "refused" }] },
+		],
+		[
+			"refused a view's paths, only some for a secret value",
+			"UNSAVED_REFUSED",
+			{
+				reads: "released" as const,
+				views: [{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", secretRefused: 1 }],
+			},
+		],
+		[
+			"refused one view's paths for a secret value and left another's waiting",
+			"UNSAVED_REFUSED",
+			{
+				reads: "released" as const,
+				views: [
+					{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "refused", secretRefused: 1 },
+					{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "waiting" },
+				],
+			},
+		],
 	])("publishes nothing when the boundary %s, and says why", async (_case, held, answer) => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
@@ -4432,6 +4466,23 @@ describe("a coding session on the folder model", () => {
 		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow(
 			new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`),
 		);
+		expect(f.repositories.export).not.toHaveBeenCalled();
+		expect(mocked.push).not.toHaveBeenCalled();
+	});
+	it("throws a save the folder refused for secret values (5j-5 a) as one the turn fails with, naming no path, and publishes nothing", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.boundary.mockResolvedValueOnce({
+			machine: f.machine.machineId,
+			reads: "released" as const,
+			views: [
+				{ viewId: randomUUID(), unsaved: 0 },
+				{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", secretRefused: 2 },
+			],
+		});
+		const error = await f.host.publish(f.claim, f.submission, f.signal).catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(CodingSaveRefused);
+		expect((error as CodingSaveRefused).message).toBe("CODING_FOLDER_SAVE_REFUSED");
 		expect(f.repositories.export).not.toHaveBeenCalled();
 		expect(mocked.push).not.toHaveBeenCalled();
 	});
@@ -4838,5 +4889,128 @@ describe("a coding session on the folder model", () => {
 		expect(real.boundary.mock.invocationCallOrder[0]).toBeLessThan(mocked.reconcile.mock.invocationCallOrder[0]!);
 		expect(reconciled()).toEqual(["stopped"]);
 		expect(await readdir(real.root)).toEqual([]);
+	});
+});
+
+describe("a coding machine's secret values for the folder service's save check (5j-5 (a))", () => {
+	const API_KEY = "env-value-api-key-CANARY";
+	const ROTATED = "env-value-api-key-ROTATED";
+
+	/** The folder fixture with a vault answering `answer`, and a folder service that is handed what the machine's values
+	 * are each time it is given them. */
+	async function secretsFixture(answer: { environment: Record<string, string>; mask?: string[] }) {
+		const f = await folderFixture();
+		const environment = vi.fn<CodingEnvironmentSource["environment"]>(async () => ({
+			environment: { ...answer.environment },
+			mask: [...(answer.mask ?? [])],
+		}));
+		const commandSecrets = new CodingMachineCommandSecrets({ environment });
+		const given: (readonly string[] | undefined)[] = [];
+		f.secrets.mockImplementation(async (machine) => {
+			const values = commandSecrets.values(machine);
+			given.push(values && [...values].sort());
+			return values ? values.length : null;
+		});
+		const host = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, commandSecrets });
+		return { ...f, host, environment, given };
+	}
+
+	it.each([
+		["none for a member with none", {}, [], []],
+		["its values and the older ones", { API_KEY }, [ROTATED], [API_KEY, ROTATED].sort()],
+	])(
+		"gives the service the machine's values before the session's view attaches: %s",
+		async (_case, environment, mask, given) => {
+			const f = await secretsFixture({ environment, mask });
+			await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+			// Asked under the session's claim at its attach, so they are known before a command starts.
+			expect(f.environment.mock.calls).toEqual([
+				[
+					{ companyId: f.claim.profileId, workerId: f.claim.workerId, leaseToken: f.claim.leaseToken },
+					expect.any(AbortSignal),
+				],
+			]);
+			expect(f.given).toEqual([given]);
+			expect(f.secrets.mock.calls).toEqual([[f.machine.machineId, expect.any(AbortSignal)]]);
+			expect(f.environment.mock.invocationCallOrder[0]).toBeLessThan(f.secrets.mock.invocationCallOrder[0]!);
+			expect(f.secrets.mock.invocationCallOrder[0]).toBeLessThan(f.views.attach.mock.invocationCallOrder[0]!);
+		},
+	);
+
+	it("attaches no view when the values do not reach the service", async () => {
+		const f = await secretsFixture({ environment: { API_KEY } });
+		f.secrets.mockRejectedValueOnce(new Error("CODING_FOLDER_CONTROL_UNAVAILABLE"));
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_FOLDER_CONTROL_UNAVAILABLE",
+		);
+		expect(f.views.attach).not.toHaveBeenCalled();
+	});
+
+	it("attaches no view when the vault does not answer at the attach, and sends nothing", async () => {
+		const f = await secretsFixture({ environment: { API_KEY } });
+		f.environment.mockRejectedValueOnce(new Error("CODING_ENVIRONMENT_UNAVAILABLE"));
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_ENVIRONMENT_UNAVAILABLE",
+		);
+		expect(f.secrets).not.toHaveBeenCalled();
+		expect(f.views.attach).not.toHaveBeenCalled();
+	});
+
+	it("gives them again at each command's start, after the vault's answer and before the guest runs it", async () => {
+		const answer = { environment: { API_KEY } };
+		const f = await secretsFixture(answer);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
+		const secrets = (mocked.folderTransports.at(-1) as { secrets: CodingCommandSecrets }).secrets;
+		const request = {
+			companyId: f.claim.profileId,
+			workerId: f.claim.workerId,
+			machineId: f.machine.machineId,
+			commandId: randomUUID(),
+			kind: "command" as const,
+		};
+		// Rotated since the attach: the start's answer is in the set the service has before the command runs.
+		answer.environment = { API_KEY: ROTATED };
+		const resolved = await secrets.resolve(request, f.signal);
+		expect(resolved.environment).toEqual({ API_KEY: ROTATED });
+		expect(f.given).toEqual([[API_KEY], [API_KEY, ROTATED].sort()]);
+		expect(f.environment.mock.invocationCallOrder[1]).toBeLessThan(f.secrets.mock.invocationCallOrder[1]!);
+		// One that does not reach the service fails the start.
+		f.secrets.mockRejectedValueOnce(new Error("CODING_FOLDER_CONTROL_UNAVAILABLE"));
+		await expect(secrets.resolve({ ...request, commandId: randomUUID() }, f.signal)).rejects.toThrow(
+			"CODING_FOLDER_CONTROL_UNAVAILABLE",
+		);
+	});
+
+	it("gives them again on each keeper pass, and reports a failure or a service from before the check", async () => {
+		const f = await secretsFixture({ environment: { API_KEY } });
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const kept = { machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" };
+		expect(await f.host.keep(f.signal)).toEqual([kept]);
+		expect(f.given).toEqual([[API_KEY], [API_KEY]]);
+		f.secrets.mockRejectedValueOnce(new Error("CODING_FOLDER_CONTROL_UNAVAILABLE"));
+		expect(await f.host.keep(f.signal)).toEqual([
+			kept,
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "secrets",
+				state: "failed",
+				code: "CODING_FOLDER_CONTROL_UNAVAILABLE",
+			},
+		]);
+		f.secrets.mockResolvedValueOnce("unsupported");
+		expect(await f.host.keep(f.signal)).toEqual([
+			kept,
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "secrets",
+				state: "not-now",
+				code: "CODING_FOLDER_SECRETS_UNSUPPORTED",
+			},
+		]);
 	});
 });

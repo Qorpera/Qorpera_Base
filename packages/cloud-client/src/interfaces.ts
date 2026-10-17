@@ -2045,7 +2045,9 @@ export function tableRowKey(table: TableFile, row: TableRow): string {
  * - accept: the member an open offer names puts their own id in that cell, while the cell still holds what it held
  *   when the offer was made, and the offer came from that holder (or the cell was empty);
  * - an agent acts for its supervisor, taking for them and releasing what they hold, and never touches the
- *   member-only columns (by default those of `tables/areas/`), needs_yes or not.
+ *   member-only columns (by default those of `tables/areas/`), needs_yes or not;
+ * - given the company's `members`, a cell that names someone who left counts as empty for a member's take and accept
+ *   (C6d). Nothing clears it, and an agent's check never counts it as empty.
  * A removed row counts as clearing its cells. Anything else that changes a needs_yes column is a problem; an offer
  * itself is a request card, never a save. */
 export function tableClaimProblems(
@@ -2058,6 +2060,8 @@ export function tableClaimProblems(
 		readonly folder: string;
 		readonly offers?: readonly InterfaceOffer[];
 		readonly memberOnly?: readonly string[];
+		/** The company's current members' ids. Without it, every named cell counts as held. */
+		readonly members?: ReadonlySet<string>;
 	},
 ): InterfaceProblem[] {
 	const memberOnly =
@@ -2070,6 +2074,12 @@ export function tableClaimProblems(
 	const note = (column: string, message: string) => problems.push(problem(null, column, "claim", message));
 	const cell = (row: TableRow | undefined, column: string): TableValue =>
 		row && Object.hasOwn(row, column) ? (row[column] ?? null) : null;
+	// A cell naming someone who is no longer a member, for a member's check given the members.
+	const left = (value: TableValue): boolean =>
+		actor.kind === "member" &&
+		options.members !== undefined &&
+		typeof value === "string" &&
+		!options.members.has(value);
 	const check = (key: string, column: string, was: TableValue, now: TableValue) => {
 		if (JSON.stringify(was) === JSON.stringify(now)) return;
 		if (actor.kind === "agent" && memberOnly.includes(column)) {
@@ -2080,7 +2090,7 @@ export function tableClaimProblems(
 			note(column, `${column} is only changed for yourself; this agent has no supervisor to act for.`);
 			return;
 		}
-		const take = was === null && now === self;
+		const take = (was === null || left(was)) && now === self;
 		const release = now === null && was !== null && was === self;
 		const accept =
 			now === self &&
@@ -2091,7 +2101,7 @@ export function tableClaimProblems(
 					offer.column === column &&
 					offer.to === self &&
 					offer.was === was &&
-					(offer.was === null || offer.from === offer.was),
+					(offer.was === null || offer.from === offer.was || left(offer.was)),
 			);
 		if (!take && !release && !accept) {
 			note(

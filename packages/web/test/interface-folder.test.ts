@@ -197,10 +197,9 @@ const card = (main: HTMLElement, title: string) =>
 	);
 /** The open area's owner, supervisor and agents. */
 const fields = (main: HTMLElement) => texts(main, ".interface-detail.is-open .interface-fields dd");
+/** The areas' note on the board: its one part since C6d hides the cards, so the note carries no part title. */
 const areasNote = (main: HTMLElement) =>
-	[...main.querySelectorAll<HTMLElement>(".interface-note")].find(
-		(note) => note.querySelector("strong")?.textContent === "Areas",
-	);
+	main.querySelector<HTMLElement>(".interface-board-block .interface-note") ?? undefined;
 
 describe("the pages and the folder (I7, C6a)", () => {
 	it("never reads or draws the folder's interfaces/: Pulse, a page an agent wrote, or one named like the two", async () => {
@@ -263,16 +262,11 @@ describe("the pages and the folder (I7, C6a)", () => {
 		reader.read(pagesOn(ON));
 		await vi.advanceTimersByTimeAsync(1000);
 		await vi.waitFor(() =>
-			expect([...(controller.store.get().interfaceFolder?.tables.keys() ?? [])]).toEqual(["areas", "cards"]),
+			expect([...(controller.store.get().interfaceFolder?.tables.keys() ?? [])]).toEqual(["areas"]),
 		);
-		// Members' tables and its rules text; Mailbox reads the company's mail, not the folder.
-		expect(read(fake).sort()).toEqual([
-			"rules/shared-areas.md",
-			"tables/areas/rows.csv",
-			"tables/areas/table.toml",
-			"tables/cards/rows.csv",
-			"tables/cards/table.toml",
-		]);
+		// Members' table and its rules text, not the cards it hides (C6d); Mailbox reads the company's mail, not the
+		// folder.
+		expect(read(fake).sort()).toEqual(["rules/shared-areas.md", "tables/areas/rows.csv", "tables/areas/table.toml"]);
 		expect(names(controller)).toEqual(["members"]);
 		controller.store.set({ interfacePages: OFF });
 		reader.read(pagesOn(OFF));
@@ -401,11 +395,11 @@ describe("live", () => {
 		fake.resync();
 		await hint();
 		await vi.waitFor(() => expect(card(main, "Ops")).toBeDefined());
-		expect(read(fake)).toEqual(expect.arrayContaining(["tables/areas/table.toml", "tables/cards/table.toml"]));
+		expect(read(fake)).toEqual(expect.arrayContaining(["tables/areas/table.toml", "tables/areas/rows.csv"]));
 		fake.folder.read.mockClear();
 		fake.authority();
 		await hint();
-		await vi.waitFor(() => expect(read(fake)).toContain("tables/cards/rows.csv"));
+		await vi.waitFor(() => expect(read(fake)).toContain("tables/areas/rows.csv"));
 		expect(read(fake).filter((path) => path.startsWith("interfaces"))).toEqual([]);
 	});
 });

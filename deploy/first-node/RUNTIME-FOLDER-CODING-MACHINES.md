@@ -458,6 +458,11 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
      until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it
      through a stopped command's entry: a session that was not attached gets no event.
+     Since 5g-5 part 3 PR C (migration `20260930515000`) that is not the only way: every session on the machine (its
+     `vm_allocation_id`, which the detach leaves) is also told in its next turn's context, `machine: {newDisk: true}`:
+     true when the machine has a `replaced` record at or after the previous turn's begin (its wake occurrence, or when it
+     opened if it never began), false on a first turn. A rebuild while the previous turn ran is told twice rather than
+     never.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.
 
@@ -582,8 +587,12 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
 
 - output, `output.log`, receipts and terminals: each value's exact, base64 and URL-encoded forms, across chunk
   boundaries, replaced before anything is written or reaches a model;
-- saves: the folder service refuses a plain save or an inflated loose object that carries a value (a keyed rolling
-  hash over values of at least a minimum length, so the service never holds the values in the clear);
+- saves: the folder service refuses a coding machine's save that carries a value in its exact form (5j-5): a file's
+  bytes, a new name or a new link's target, and in a git change its ref, its log and its loose objects as stored. A
+  loose object is not inflated, so a value in a commit is the push check's to stop. The executor sends each machine's
+  values of 8 bytes to 32 KiB as keyed hashes under a key of its own (`secrets` on the control socket), so the service
+  never holds a value. Until a machine's first values come, nothing of it is saved. A refused change stays on the
+  machine, and the report says why without naming the value;
 - pushes: the broker's push check reads every object the push adds (file contents, file and folder names, each
   commit with its message) and refuses a push that carries a value.
 
