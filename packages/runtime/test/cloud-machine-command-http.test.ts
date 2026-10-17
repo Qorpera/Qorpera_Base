@@ -134,6 +134,44 @@ describe("machine command gateway", () => {
 		);
 	});
 
+	it("carries why the machine lost a command that already ended, and drops a cause it does not know (6e-2a)", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		let refusal: Error = new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED", "moved_unreadable");
+		const { token, url, holderOf } = await service(
+			async () => {
+				throw refusal;
+			},
+			async () => ({}),
+		);
+		const gateway = createHttpCloudMachineCommandGateway({
+			url,
+			token,
+			binding,
+			holder: () => holderOf(binding),
+			allowLoopback: true,
+		});
+		const refused = () =>
+			gateway
+				.read({ machineId }, { commandId: randomUUID(), offset: 0, limit: 4096 }, new AbortController().signal)
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
+		const ended = await refused();
+		expect(ended).toBeInstanceOf(CloudMachineCommandRefusal);
+		expect(ended).toMatchObject({ code: "MACHINE_COMMAND_ENDED", folderLost: "moved_unreadable" });
+		refusal = new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED");
+		const plain = await refused();
+		expect(plain).toMatchObject({ code: "MACHINE_COMMAND_ENDED" });
+		expect(plain).not.toHaveProperty("folderLost");
+		// A peer's cause outside the six is not the folder's: the refusal stands without it.
+		refusal = new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED", "moved_elsewhere");
+		const unknown = await refused();
+		expect(unknown).toMatchObject({ code: "MACHINE_COMMAND_ENDED" });
+		expect(unknown).not.toHaveProperty("folderLost");
+	});
+
 	it("refuses a receipt for another machine or command", async () => {
 		const { binding } = nativeToolAuthorityFixture();
 		const machineId = randomUUID(),
@@ -259,10 +297,16 @@ describe("machine command authority", () => {
 			runId: f.answer.identity.runId,
 			staffAgentId: f.answer.identity.staffAgentId,
 			requestedByUserId: f.answer.identity.requesterUserId,
+			folderLost: null,
 		});
 		// Before the machine's first boot, there is none.
 		f.call.mockResolvedValueOnce({ ...f.answer, bootId: null });
 		expect(await authorizeMachineCommand(f, f.request, f.signal)).toMatchObject({ bootId: null });
+		// A command its machine lost for its folder: why, in SQL's word (F3 6e-2a).
+		for (const folderLost of [null, "restart_unproven", "moved_unreadable"]) {
+			f.call.mockResolvedValueOnce({ ...f.answer, folderLost });
+			expect(await authorizeMachineCommand(f, f.request, f.signal)).toMatchObject({ folderLost });
+		}
 		expect(f.call.mock.calls[0]?.[1]).toMatchObject({
 			p_action: "start",
 			p_detail: { commandHead: "npm ci && npm run test:hosted-db € 😀", notify: true },
@@ -299,14 +343,40 @@ describe("machine command authority", () => {
 		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toMatchObject({
 			code: "MACHINE_COMMAND_ENDED",
 		});
+		// A command its machine lost when it moved to a new disk says why (6e-2a); a cause SQL never sends is no answer.
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.machine-command-authority/v1",
+			state: "refused",
+			reason: "MACHINE_COMMAND_ENDED",
+			folderLost: "moved_starter",
+		});
+		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toMatchObject({
+			code: "MACHINE_COMMAND_ENDED",
+			folderLost: "moved_starter",
+		});
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.machine-command-authority/v1",
+			state: "refused",
+			reason: "MACHINE_COMMAND_ENDED",
+			folderLost: "moved",
+		});
+		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
+			"MACHINE_COMMAND_AUTHORITY_INVALID",
+		);
 		// An answer without the placement it runs on is no authority.
 		f.call.mockResolvedValueOnce({ ...f.answer, placementId: undefined });
 		await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
 			"MACHINE_COMMAND_AUTHORITY_INVALID",
 		);
-		// Nor is one whose boot is not a boot id.
+		// Nor is one whose boot is not a boot id, or that loses a command for a cause the executor does not know.
 		for (const bootId of [undefined, "boot-1", 7]) {
 			f.call.mockResolvedValueOnce({ ...f.answer, bootId });
+			await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
+				"MACHINE_COMMAND_AUTHORITY_INVALID",
+			);
+		}
+		for (const folderLost of ["restart", "x", 7, ""]) {
+			f.call.mockResolvedValueOnce({ ...f.answer, folderLost });
 			await expect(authorizeMachineCommand(f, f.request, f.signal)).rejects.toThrow(
 				"MACHINE_COMMAND_AUTHORITY_INVALID",
 			);
@@ -315,6 +385,7 @@ describe("machine command authority", () => {
 	it("passes a peer's refusal on as the same refusal", async () => {
 		const f = fixture();
 		const forwarded: Headers[] = [];
+		let answer: Record<string, string> = { code: "MACHINE_NOT_RUNNING" };
 		const router = new MachineCommandRouter({
 			owner: "mx-c",
 			providerId: "machine-node",
@@ -330,12 +401,18 @@ describe("machine command authority", () => {
 			credential: async () => randomBytes(32).toString("base64url"),
 			fetch: (async (_input: string | URL | Request, init?: RequestInit) => {
 				forwarded.push(new Headers(init?.headers));
-				return new Response(JSON.stringify({ code: "MACHINE_NOT_RUNNING" }), { status: 409 });
+				return new Response(JSON.stringify(answer), { status: 409 });
 			}) as typeof fetch,
 		});
 		await expect(router.execute(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
 		// The peer listener takes no holder: this executor proved the guest's at its own ingress (G2-6b).
 		expect(forwarded.map((headers) => headers.has("x-qorpera-identity"))).toEqual([false]);
+		// Why the peer's machine lost the command reaches the agent too (6e-2a).
+		answer = { code: "MACHINE_COMMAND_ENDED", folderLost: "moved_unchecked" };
+		await expect(router.execute(f.request, f.signal)).rejects.toMatchObject({
+			code: "MACHINE_COMMAND_ENDED",
+			folderLost: "moved_unchecked",
+		});
 	});
 	it("routes to this node, or only to a peer in the allowlist, and a peer never forwards", async () => {
 		const f = fixture();

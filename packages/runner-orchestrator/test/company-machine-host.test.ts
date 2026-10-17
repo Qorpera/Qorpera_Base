@@ -2,7 +2,11 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCloudMachineCommandReceipt } from "@qorpera/contracts";
+import {
+	type CloudMachineCommandReceipt,
+	cloudMachineFolderBytes,
+	parseCloudMachineCommandReceipt,
+} from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
@@ -71,8 +75,12 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 	/** SQL's calls (`sql:`), the folder service's requests (`folder:`), the helper's actions (`exec:`), the hand-overs
 	 * (`mount`), the inbox pushes (`push`) and LXD's operations (`lxd:`), in the order they were made. */
 	const order: string[] = [];
-	/** The views SQL opened, and the refusal its next open gives (a detail). */
-	const views = { opened: [] as { viewId: string; pass: string }[], refusal: undefined as string | null | undefined };
+	/** The views SQL opened, and the refusal its next open gives (a detail), with the core's words the control kept. */
+	const views = {
+		opened: [] as { viewId: string; pass: string }[],
+		refusal: undefined as string | null | undefined,
+		reason: null as string | null,
+	};
 	/** What SQL's take-ins of the machine's reads answer, in turn (then nothing to take in): an answer, or an error. */
 	const inherits: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
@@ -133,7 +141,7 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 			order.push(`sql:${method}`);
 			if (busy.has(method)) throw new CodingControlBusy();
 			if (method === "qorpera_folder_view_open") {
-				if (views.refusal !== undefined) throw new CodingControlRefused(views.refusal);
+				if (views.refusal !== undefined) throw new CodingControlRefused(views.refusal, views.reason);
 				const view = { viewId: randomUUID(), pass: randomBytes(32).toString("base64url") };
 				views.opened.push(view);
 				const leaseUntil = new Date(Date.now() + 120000).toISOString();
@@ -993,7 +1001,13 @@ describe("company machine host", () => {
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 /** Who a command's window credits: its run, the run's agent and the member who asked. */
 const credit = () => ({ runId: randomUUID(), staffAgentId: randomUUID(), requestedByUserId: randomUUID() });
-type Credit = { runId?: string; staffAgentId?: string; requestedByUserId?: string; bootId?: string | null };
+type Credit = {
+	runId?: string;
+	staffAgentId?: string;
+	requestedByUserId?: string;
+	bootId?: string | null;
+	folderLost?: string | null;
+};
 /** A start of `commandId`, as the gateway authorizes it for the boot SQL knows. */
 function start(f: Fixture, commandId = randomUUID(), who: Credit = credit()) {
 	return f.host.command(
@@ -2281,6 +2295,346 @@ describe("company machine host when a test machine's folder can never be proven 
 		f.running();
 		expect(await start(f)).toMatchObject({ state: "running" });
 		expect(f.order.at(-1)).toBe("exec:start");
+	});
+});
+
+describe("company machine host's report of the company folder on each receipt (F3 6e-2a)", () => {
+	const quiet = { placementId: id(6), step: "commands", state: "done" };
+	const kept = { state: "running", exitCode: null, output: "", truncated: false };
+	/** Why output is held back. */
+	const held = {
+		ended: "this boot's output stays on the machine: the boot no longer has /company, as `why` says",
+		start: "a start shows no output: machine_read shows it once the company folder has released what the machine read",
+		unanswered: "the company folder has not said yet whether what the machine read may be shown; read again",
+		unproven:
+			"the executor cannot prove what the machine read in /company: it restarts the machine, and this boot's output stays on it",
+		unreadable:
+			"something the machine read in /company is no longer readable: this boot's output stays on it, and the machine moves to a new disk",
+		paused: "the company folder is paused; read again later",
+		unreleased: "the company folder did not release what the machine read; read again",
+		refused:
+			"this run could not take in what the machine read in /company: a read is no longer readable to it, or it does not read the whole company folder",
+		untaken: "the company folder did not answer this run's take-in of what the machine read; read again",
+	};
+	const refused = "the company folder refused this machine's view";
+	/** The receipt's report, after checking the runtime takes the receipt whole. */
+	const told = (receipt: CloudMachineCommandReceipt) => {
+		expect(parseCloudMachineCommandReceipt(receipt)).toEqual(receipt);
+		return receipt.companyFolder;
+	};
+
+	it("says whether the boot has /company, and why each receipt holds its output back", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const commandId = randomUUID();
+		f.result(finished);
+		expect(told(await start(f, commandId))).toEqual({ company: "mounted", heldBack: held.start });
+		const answers: [service: Partial<Fixture["service"]>, heldBack: string][] = [
+			[{ reads: "unanswered" }, held.unanswered],
+			[{ down: true }, held.unanswered],
+			[{ reads: "unproven" }, held.unproven],
+			[{ reads: "unreadable" }, held.unreadable],
+			[{ reads: "stopped" }, held.paused],
+			[{ reads: "denied" }, held.unreleased],
+			[{ reads: "run_ended" }, held.unreleased],
+		];
+		for (const [service, heldBack] of answers) {
+			Object.assign(f.service, { reads: "released", down: false }, service);
+			const receipt = await read(f, commandId);
+			expect(receipt).toMatchObject(kept);
+			expect(told(receipt)).toEqual({ company: "mounted", heldBack });
+		}
+		Object.assign(f.service, { reads: "released", down: false });
+		// A take-in that fails, is refused, or answers another take-in, and a run it cannot name.
+		const other = { schema: "qorpera.folder-inherit/v1", inheritId: randomUUID(), viewId: null, reads: 0 };
+		f.inherits.push(new Error("CODING_CONTROL_UNCONFIRMED"), new CodingControlRefused(null), other);
+		for (const heldBack of [held.untaken, held.refused, held.untaken])
+			expect(told(await read(f, commandId))).toEqual({ company: "mounted", heldBack });
+		expect(told(await read(f, commandId, undefined, { ...credit(), runId: "run" }))).toEqual({
+			company: "mounted",
+			heldBack: held.untaken,
+		});
+		// Output that leaves holds nothing back; a command running with nothing printed has nothing to hold.
+		const out = await read(f, commandId);
+		expect(out).toMatchObject(finished);
+		expect(told(out)).toEqual({ company: "mounted" });
+		f.result({});
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
+		// Without a folder, a receipt has no report; and a guest's receipt never carries one of its own, with a folder or
+		// without.
+		const plain = await fixture();
+		await plain.host.pass(plain.signal);
+		plain.running();
+		plain.result(finished);
+		expect(await read(plain, commandId)).not.toHaveProperty("companyFolder");
+		for (const g of [f, plain]) {
+			g.result({ ...finished, companyFolder: { company: "mounted" } });
+			await expect(read(g, commandId)).rejects.toThrow("COMPANY_MACHINE_COMMAND_INVALID");
+		}
+	});
+
+	it("says why a boot has no /company, in the core's words when the control keeps them", async () => {
+		const views: [reason: string | null, why: string][] = [
+			[null, refused],
+			["Folder view machine is not current", `${refused} because the machine is stopping, moving or starting again`],
+			["Company folder is unavailable", `${refused}: Company folder is unavailable`],
+		];
+		for (const [reason, why] of views) {
+			const f = await fixture({ folder: true });
+			Object.assign(f.views, { refusal: null, reason });
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:REFUSED" },
+			]);
+			f.running();
+			f.result(finished);
+			const receipt = await start(f);
+			expect(receipt).toMatchObject(finished);
+			expect(told(receipt)).toEqual({ company: "none", why });
+		}
+		// A guest of an earlier image.
+		const old = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		expect(await old.host.pass(old.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
+		]);
+		old.running();
+		expect(told(await start(old))).toEqual({
+			company: "none",
+			why: "this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+		});
+		// Views the node closed each time: fenced, and without /company.
+		const closed = await fixture({ folder: true });
+		closed.mounts.push("closed", "closed", "closed");
+		await closed.host.pass(closed.signal);
+		closed.running();
+		await closed.host.pass(closed.signal);
+		expect(await closed.host.pass(closed.signal)).toEqual([{ ...quiet, folder: "FOLDER_FENCED:CLOSED" }]);
+		expect(told(await start(closed))).toEqual({
+			company: "none",
+			why: "the machine could not mount /company: the company folder closed each view it was handed",
+			heldBack: held.start,
+		});
+		// A view handed over without an answer yet.
+		const pending = await fixture({ folder: true });
+		pending.mounts.push("unanswered");
+		expect(await pending.host.pass(pending.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_UNANSWERED" },
+		]);
+		pending.running();
+		expect(told(await start(pending))).toEqual({ company: "pending", heldBack: held.start });
+	});
+
+	it("says why a boot whose folder ended holds its output, and has SQL keep why its restart loses commands", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		const commandId = randomUUID();
+		f.running();
+		await start(f, commandId);
+		f.result(finished);
+		f.service.reads = "unproven";
+		expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:UNPROVEN" }]);
+		const marks = () => f.calls.filter((call) => call.method === "qorpera_mark_company_machine_folder_restart");
+		expect(marks().map((call) => call.args)).toEqual([
+			{
+				p_placement_id: id(6),
+				p_owner: "mx-a",
+				p_binding_text: f.entry.bindingText,
+				p_machine_id_sha256: "d".repeat(64),
+				p_boot_id: f.boot,
+				p_reason: "unproven",
+			},
+		]);
+		expect(f.order.indexOf("sql:qorpera_mark_company_machine_folder_restart")).toBeLessThan(
+			f.order.indexOf("reboot"),
+		);
+		const unproven =
+			"the executor is restarting the machine because it could not prove what the machine read in /company";
+		const receipt = await read(f, commandId);
+		expect(receipt).toMatchObject(kept);
+		expect(told(receipt)).toEqual({ company: "none", why: unproven, heldBack: held.ended });
+		// Each pass that asks the reboot again asks the mark first; a mark that fails changes nothing.
+		f.busy.add("qorpera_mark_company_machine_folder_restart");
+		expect(await f.host.pass(f.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:UNPROVEN" }]);
+		expect(marks()).toHaveLength(2);
+		expect(f.order.filter((step) => step === "reboot")).toHaveLength(2);
+		f.busy.delete("qorpera_mark_company_machine_folder_restart");
+		// The next boot: a read of the command the restart lost says why, with SQL's cause.
+		f.reboot();
+		f.service.reads = "released";
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		f.running();
+		f.result({ state: "lost", exitCode: null, output: "" });
+		const lost = await read(f, commandId, undefined, { ...credit(), folderLost: "restart_unproven" });
+		expect(lost).toMatchObject({ state: "lost" });
+		expect(told(lost)).toEqual({
+			company: "mounted",
+			lost: "the executor restarted the machine because it could not prove what the machine read in /company",
+		});
+		// Only a lost receipt says it, and only for a cause the executor knows; a held one says it once it leaves.
+		expect(told(await read(f, commandId, undefined, { ...credit(), folderLost: "elsewhere" }))).toEqual({
+			company: "mounted",
+		});
+		f.service.reads = "unanswered";
+		expect(told(await read(f, commandId, undefined, { ...credit(), folderLost: "restart_unproven" }))).toEqual({
+			company: "mounted",
+			heldBack: held.unanswered,
+		});
+		f.service.reads = "released";
+		f.result(finished);
+		expect(told(await read(f, commandId, undefined, { ...credit(), folderLost: "restart_unproven" }))).toEqual({
+			company: "mounted",
+		});
+		// A view the core closed: the mark gives its own cause.
+		const g = await fixture({ folder: true });
+		await g.host.pass(g.signal);
+		g.running();
+		const [view] = g.views.opened;
+		g.service.held = [];
+		g.service.closed = [view.viewId];
+		expect(await g.host.pass(g.signal)).toEqual([{ ...quiet, folder: "FOLDER_RESTART:VIEW_CLOSED" }]);
+		expect(
+			g.calls
+				.filter((call) => call.method === "qorpera_mark_company_machine_folder_restart")
+				.map((call) => call.args),
+		).toEqual([expect.objectContaining({ p_boot_id: g.boot, p_reason: "view_closed" })]);
+		g.result(finished);
+		expect(told(await read(g, randomUUID()))).toEqual({
+			company: "none",
+			why: "the executor is restarting the machine because its /company view was closed",
+			heldBack: held.ended,
+		});
+	});
+
+	it("says why a boot whose disk is retired holds its output, and asks no restart's mark", async () => {
+		const f = await fixture({ folder: true });
+		f.views.refusal = "qorpera.test-machine/new-disk";
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_RETIRED:UNCHECKED" },
+		]);
+		f.running();
+		f.result(finished);
+		expect(told(await read(f, randomUUID()))).toEqual({
+			company: "none",
+			why: "the machine is moving to a new disk because a command ran on this one before /company was checked",
+			heldBack: held.ended,
+		});
+		// A boot SQL no longer runs.
+		const g = await fixture({ folder: true });
+		g.views.refusal = "qorpera.test-machine/new-disk";
+		g.retirements.push({ state: "stale" });
+		expect(await g.host.pass(g.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_RETIRE_STALE" },
+		]);
+		g.running();
+		g.result(finished);
+		expect(told(await read(g, randomUUID()))).toEqual({
+			company: "none",
+			why: "this boot of the machine is no longer the current one",
+			heldBack: held.ended,
+		});
+		// A take-in the core refuses as unreadable: that receipt says the take-in was refused, the boot's later ones that
+		// the read is unreadable, and once the pass retired the disk, why the boot has no /company.
+		const h = await fixture({ folder: true });
+		await h.host.pass(h.signal);
+		h.running();
+		h.result(finished);
+		const commandId = randomUUID();
+		await start(h, commandId);
+		h.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		expect(told(await read(h, commandId))).toEqual({ company: "mounted", heldBack: held.refused });
+		expect(told(await cancel(h, commandId))).toEqual({ company: "mounted", heldBack: held.unreadable });
+		expect(await h.host.pass(h.signal)).toEqual([{ ...quiet, folder: "FOLDER_RETIRED:UNREADABLE" }]);
+		expect(told(await read(h, commandId))).toEqual({
+			company: "none",
+			why: "the machine is moving to a new disk because something it read in /company is no longer readable",
+			heldBack: held.ended,
+		});
+		for (const k of [f, g, h]) expect(k.methods()).not.toContain("qorpera_mark_company_machine_folder_restart");
+	});
+
+	it("lists the paths the folder did not take once, on the boot's next receipt whose output leaves", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const commandId = randomUUID();
+		f.result(finished);
+		// A pass's plain boundary publishes the view's changes: saved, still pending, and not taken.
+		f.service.report = {
+			commitId: randomUUID(),
+			seq: 4,
+			paths: [
+				{ path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile", receipt: randomUUID() },
+				{ path: "notes/done.md", outcome: "saved" },
+				{ path: "notes/later.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+				{ path: "people/pay.md", outcome: "denied" },
+			],
+		};
+		expect(await f.host.pass(f.signal)).toEqual([quiet]);
+		f.service.report = {};
+		// A held receipt keeps them for the one that leaves; after it, they are said.
+		expect(told(await start(f, commandId))).toEqual({ company: "mounted", heldBack: held.start });
+		f.service.reads = "unproven";
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted", heldBack: held.unproven });
+		f.service.reads = "released";
+		expect(told(await read(f, commandId))).toEqual({
+			company: "mounted",
+			notSaved: [
+				{ path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile" },
+				{ path: "people/pay.md", outcome: "denied" },
+			],
+		});
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
+		// A read's own boundary, and a window's close, say theirs too. Past 8, or past the report's size as the agent's tool
+		// measures it, the rest are counted; a path the report cannot show is counted too.
+		f.service.report = {
+			commitId: null,
+			seq: null,
+			paths: [
+				...Array.from({ length: 10 }, (_, n) => ({
+					path: `reports/q${n}.md`,
+					outcome: "refused",
+					reason: `${"too long ".repeat(40)}${n}`,
+				})),
+				{ path: "x".repeat(400), outcome: "refused" },
+			],
+		};
+		const many = told(await read(f, commandId));
+		expect(many?.company).toBe("mounted");
+		const listed = many?.notSaved ?? [];
+		expect(listed.length).toBeGreaterThan(0);
+		expect(listed.length).toBeLessThan(8);
+		expect(listed.length + (many?.moreNotSaved ?? 0)).toBe(11);
+		expect(listed.map((item) => item.path)).toEqual(listed.map((_, n) => `reports/q${n}.md`));
+		for (const item of listed) expect(item.reason).toHaveLength(200);
+		expect(cloudMachineFolderBytes(many!)).toBeLessThanOrEqual(1536);
+		f.service.report = {
+			commitId: null,
+			seq: null,
+			paths: [{ path: "notes/end.md", outcome: "waiting_for_review" }],
+		};
+		f.running([commandId]);
+		f.observe({ ...idle, ended: [{ commandId, state: "succeeded", exitCode: 0, outputTail: "ok" }] });
+		await f.host.pass(f.signal);
+		expect(f.service.requests.at(-1)).toEqual({ op: "close", machine: id(6), commandId });
+		f.service.report = {};
+		expect(told(await read(f, commandId))).toEqual({
+			company: "mounted",
+			notSaved: [{ path: "notes/end.md", outcome: "waiting_for_review" }],
+		});
+		// A boot's paths are said on that boot's receipts only: its final boundary's are not the next boot's.
+		f.running();
+		f.observe({ ...idle, ended: [] });
+		f.service.report = { commitId: null, seq: null, paths: [{ path: "notes/old.md", outcome: "denied" }] };
+		f.reboot();
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(f.service.requests.at(-2)).toMatchObject({ op: "boundary", final: [expect.any(String)] });
+		f.service.report = {};
+		f.running();
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
 	});
 });
 

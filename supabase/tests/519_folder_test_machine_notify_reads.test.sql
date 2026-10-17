@@ -6,7 +6,9 @@
 -- as held. The describe takes the locked path while a command waits to be taken in, and reads plain again after. The
 -- continuations are built by hand as the machine events drain leaves them (qorpera_folder_insert_continuation and its
 -- pin trigger), on 632's run builder; the machine, placement and view helpers are 510's and 639's, the release is 514's,
--- the native rows are 647's and the call counts are 672's.
+-- the native rows are 647's and the call counts are 672's. The test machine's report (20260930511000; slice 6e-2a) says
+-- why in the continuation: a held command carries companyFolder.heldBack, and a command lost with a cause carries
+-- companyFolder.lost, the cause's words; the wake read's own events carry neither (section 5).
 
 -- 514's: the view reads the path and releases it.
 create function pg_temp.release(p_view jsonb, p_path text) returns jsonb language plpgsql as $$
@@ -384,4 +386,67 @@ begin
 	w := pg_temp.wake(b);
 	if not pg_temp.shows(w #> '{payload,events,0}', t) or pg_temp.pending(b) then
 		raise exception 'The command shows once its reads are readable again'; end if;
+end $$;
+
+-- How the command of an event ended (the event's own stored command, before its continuation is built): its state, its
+-- cause (folder_lost_reason) or none, exit code 0 when it succeeded and none when it was lost.
+create function pg_temp.ends_as(p_event uuid, p_state text, p_reason text) returns void language sql as $$
+	select pg_temp.fx(format('update public.qorpera_company_machine_commands c set state = %1$L, folder_lost_reason = %2$L,
+		exit_code = case %1$L when ''lost'' then null when ''succeeded'' then 0 else c.exit_code end,
+		output_tail = case %1$L when ''lost'' then null else c.output_tail end
+		from public.qorpera_company_machine_events e where e.id = %3$L and c.id = e.command_id', p_state, p_reason, p_event))
+$$;
+
+-- 5. The continuation says why (20260930511000), on 3's private run, whose take-in is refused. A held command carries
+--    companyFolder.heldBack, the migration's sentence; a command that ended lost with a cause carries companyFolder.lost,
+--    the cause's words. A command lost without a cause, and one that failed or succeeded (even with a cause), carry none.
+--    A command lost with a cause on a machine whose reads the run did not take in is held: it says heldBack, not lost.
+--    The wake read's own events carry no companyFolder: the runtime reads them closed.
+do $$
+declare c_m2 constant uuid := '63200000-0000-4000-8000-000000000002'; c_m4 constant uuid := '63200000-0000-4000-8000-000000000004';
+	c_held constant jsonb := jsonb_build_object('heldBack', 'this run could not take in what the machine read in /company: a read'
+		|| ' is no longer readable to it, or it does not read the whole company folder');
+	t constant text := 'nr-519 report: 3 tests failed';
+	v jsonb := pg_temp.run('human', c_m2); p jsonb := pg_temp.run('human', c_m4, 'member_private');
+	m uuid := pg_temp.machine(v, 'notify-report'); a jsonb := pg_temp.place(m);
+	m2 uuid := pg_temp.machine(p, 'notify-report-no-view'); a2 jsonb := pg_temp.place(m2);
+	s jsonb; e uuid[] := '{}'; b jsonb; c jsonb; w jsonb;
+begin
+	s := pg_temp.open_machine(a);
+	perform pg_temp.release(s, 'nr/a.txt');
+	-- Held: one failed, one lost with a cause.
+	e := e || pg_temp.ended(a, p, t);
+	e := e || pg_temp.ended(a, p, t);
+	perform pg_temp.ends_as(e[2], 'lost', 'moved_unreadable');
+	-- Shown (no view): failed with a cause, lost with one, lost without one, succeeded with one.
+	e := e || pg_temp.ended(a2, p, t);
+	perform pg_temp.ends_as(e[3], 'failed', 'moved_unchecked');
+	e := e || pg_temp.ended(a2, p, t);
+	perform pg_temp.ends_as(e[4], 'lost', 'restart_view_gone');
+	e := e || pg_temp.ended(a2, p, t);
+	perform pg_temp.ends_as(e[5], 'lost', null);
+	e := e || pg_temp.ended(a2, p, t);
+	perform pg_temp.ends_as(e[6], 'succeeded', 'restart_unproven');
+	b := pg_temp.continuation(p, e);
+	c := pg_temp.cont_events(b);
+	if jsonb_array_length(c) <> 6 or not pg_temp.held(c -> 0) or c #> '{0,companyFolder}' is distinct from c_held
+		or not pg_temp.held(c -> 1) or c #> '{1,companyFolder}' is distinct from c_held then
+		raise exception 'A held command says why it is held back, a lost one too: %', c; end if;
+	if not pg_temp.shows(c -> 2, t) or c -> 2 ? 'companyFolder' then
+		raise exception 'A failed command says nothing of its cause: %', c -> 2; end if;
+	if c #>> '{3,commandState}' is distinct from 'lost' or public.qorpera_company_machine_folder_lost_text('restart_view_gone') is null
+		or c #> '{3,companyFolder}' is distinct from jsonb_build_object('lost',
+			public.qorpera_company_machine_folder_lost_text('restart_view_gone')) then
+		raise exception 'A command lost with a cause says it: %', c -> 3; end if;
+	if c #>> '{4,commandState}' is distinct from 'lost' or c -> 4 ? 'companyFolder' then
+		raise exception 'A command lost without a cause says none: %', c -> 4; end if;
+	if c #>> '{5,commandState}' is distinct from 'succeeded' or c #>> '{5,exitCode}' is distinct from '0'
+		or c -> 5 ? 'companyFolder' then
+		raise exception 'A command that succeeded says nothing of its cause: %', c -> 5; end if;
+	w := pg_temp.wake(b);
+	if jsonb_array_length(w #> '{payload,events}') <> 6
+		or exists (select 1 from jsonb_array_elements(w #> '{payload,events}') x where x ? 'companyFolder')
+		or not pg_temp.held(w #> '{payload,events,0}') or not pg_temp.held(w #> '{payload,events,1}')
+		or not pg_temp.shows(w #> '{payload,events,2}', t) or w #>> '{payload,events,3,commandState}' is distinct from 'lost' then
+		raise exception 'The wake''s own events carry no companyFolder: %', w #> '{payload,events}'; end if;
 end $$;

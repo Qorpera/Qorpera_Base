@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseCloudCodingCommandReceipt } from "../src/cloud-coding-command.ts";
-import { parseCloudMachineCommandReceipt } from "../src/cloud-machine.ts";
+import {
+	CLOUD_MACHINE_FOLDER_LIMITS,
+	type CloudMachineCommandFolder,
+	cloudMachineFolderBytes,
+	parseCloudMachineCommandReceipt,
+} from "../src/cloud-machine.ts";
 
 const receipt = {
 	schema: "qorpera.coding-command-result/v2",
@@ -83,5 +88,78 @@ describe("machine command receipt", () => {
 		expect(() =>
 			parseCloudMachineCommandReceipt(machineReceipt({ log: { ...receipt.log, gapBytes: 4096 } })),
 		).toThrow("Invalid machine command result");
+	});
+
+	it("keeps the company folder's report, closed and frozen", () => {
+		const companyFolder = {
+			company: "none",
+			why: "this machine's guest is from an earlier image without the company folder",
+			heldBack: "the output waits for the company folder",
+			lost: "the executor restarted the machine because its /company view was closed",
+			notSaved: [
+				{ path: "notes/a.md", outcome: "conflict", reason: "changed elsewhere first" },
+				{ path: "notes/b.md", outcome: "waiting_for_review" },
+			],
+			moreNotSaved: 3,
+		};
+		const parsed = parseCloudMachineCommandReceipt(machineReceipt({ state: "lost", companyFolder }));
+		expect(parsed.companyFolder).toEqual(companyFolder);
+		expect(Object.isFrozen(parsed.companyFolder)).toBe(true);
+		expect(Object.isFrozen(parsed.companyFolder?.notSaved?.[0])).toBe(true);
+		expect(
+			parseCloudMachineCommandReceipt(machineReceipt({ companyFolder: { company: "mounted" } })).companyFolder,
+		).toEqual({
+			company: "mounted",
+		});
+		expect(parseCloudMachineCommandReceipt(machineReceipt({}))).not.toHaveProperty("companyFolder");
+	});
+
+	it.each([
+		undefined,
+		null,
+		[],
+		{},
+		{ company: "open" },
+		{ company: "none" },
+		{ company: "mounted", why: "it is mounted" },
+		{ company: "pending", note: "x" },
+		{ company: "pending", heldBack: "" },
+		{ company: "pending", heldBack: " " },
+		{ company: "pending", heldBack: "a\nb" },
+		{ company: "pending", heldBack: "\ud800" },
+		{ company: "pending", heldBack: "x".repeat(301) },
+		{ company: "pending", lost: 1 },
+		{ company: "pending", moreNotSaved: 0 },
+		{ company: "pending", moreNotSaved: 1.5 },
+		{ company: "pending", notSaved: [] },
+		{ company: "pending", notSaved: [{ path: "a", outcome: "saved" }] },
+		{ company: "pending", notSaved: [{ path: "a", outcome: "Conflict" }] },
+		{ company: "pending", notSaved: [{ path: "a", outcome: "conflict", reason: "" }] },
+		{ company: "pending", notSaved: [{ path: "a", outcome: "conflict", kept: true }] },
+		{ company: "pending", notSaved: [{ path: "x".repeat(301), outcome: "conflict" }] },
+		{ company: "pending", notSaved: Array.from({ length: 9 }, (_, i) => ({ path: `p${i}`, outcome: "denied" })) },
+	])("refuses the folder report %j", (companyFolder) => {
+		expect(() => parseCloudMachineCommandReceipt(machineReceipt({ companyFolder }))).toThrow(
+			"Invalid machine command folder report",
+		);
+	});
+
+	it("bounds the report as the agent's tool measures it", () => {
+		const entry = (path: string) => ({ path, outcome: "conflict", reason: "r".repeat(40) });
+		const plain: CloudMachineCommandFolder = {
+			company: "pending",
+			notSaved: Array.from({ length: 8 }, (_, i) => entry(`${i}${"p".repeat(60)}`)),
+		};
+		expect(cloudMachineFolderBytes(plain)).toBeLessThanOrEqual(CLOUD_MACHINE_FOLDER_LIMITS.bytes);
+		expect(parseCloudMachineCommandReceipt(machineReceipt({ companyFolder: plain })).companyFolder).toEqual(plain);
+		// `<` costs six bytes in the tool's text: the same report with those paths no longer fits.
+		const angled: CloudMachineCommandFolder = {
+			company: "pending",
+			notSaved: Array.from({ length: 8 }, (_, i) => entry(`${i}${"<".repeat(60)}`)),
+		};
+		expect(cloudMachineFolderBytes(angled)).toBeGreaterThan(CLOUD_MACHINE_FOLDER_LIMITS.bytes);
+		expect(() => parseCloudMachineCommandReceipt(machineReceipt({ companyFolder: angled }))).toThrow(
+			"Invalid machine command folder report",
+		);
 	});
 });

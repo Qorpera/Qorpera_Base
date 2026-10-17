@@ -363,12 +363,29 @@ A boundary's answer carries step 4's reasons per view (4c), so the report says w
 
 ## The report
 
-Each `machine_run`, `machine_read` and `machine_cancel` receipt, and the notify continuation, gives what step 4's
-report gives (the view's reasons, what was held back and why), plus: whether this boot has `/company` and, when it has
-not, why (the starter's authority, a refused open); the saves credited to the command, with each refused unit's reason;
-the other commands that overlapped it (design); and a machine restarted or moved to a new disk by rule 5, by the
-starter's authority narrowing, or because its disk was used without the root-read check ("Access"). A member's machine card says only whether the machine works in the company folder, and
-why not when it does not (cards show changes, not files).
+Each `machine_run`, `machine_read` and `machine_cancel` receipt carries `companyFolder` (6e-2a, migration
+`20260930511000`). The executor makes it; a guest receipt that carries one is refused. It says:
+
+- `company`: `mounted`, `pending` while the boot's folder has not settled, or `none` with `why`: an earlier image's
+  helper, a view the node closed each time it was handed, a boot whose folder ended (a restart by rule 5, or its disk's
+  retirement, with the cause), or a refused open (the starter's authority, or the core's words);
+- `heldBack`: why the output and the end are not shown yet (the reasons in "Boundaries" above);
+- `notSaved`: the files the folder did not take from the machine, with the outcome and reason, each said once, on the
+  boot's next receipt whose output leaves; at most 8, the rest counted in `moreNotSaved`;
+- `lost`: for a lost command, why its machine lost it: restarted by rule 5 (its reads unproven, its view closed, or its
+  view lost by the service), or moved to a new disk (used without the root-read check, the starter's authority
+  narrowing, or a read no longer readable; "Access"). SQL keeps the cause on the command
+  (`folder_lost_reason`): the retirement sets it, and the executor marks a boot before it restarts it, at best.
+  A command its machine moved away from, or a start of a lost command sent again, is refused as ended
+  (`MACHINE_COMMAND_ENDED`, before the machine is asked): that refusal carries the same `lost` (SQL's `folderLost`).
+  While the machine moves, the refusal is `MACHINE_NOT_RUNNING` and says no cause.
+
+The whole report is at most 1536 bytes. The notify continuation's command events carry `heldBack` for a held command and
+`lost` for one lost with a cause; the wake's own events do not.
+
+**Parked (6e-2b, on the deferred list).** The saves credited to each command, with each refused unit's reason; the
+other commands that overlapped it; and a member's machine card that says only whether the machine works in the company
+folder, and why not when it does not (cards show changes, not files). An agent uses `/company` correctly without them.
 
 ## What replaces `/mnt/repository`
 
@@ -453,7 +470,7 @@ Reserved in the registry: migration slots 20260930420000–429000 and SQL tests 
 | 6b | Folder service: test machine views. The `test_machine` kind in `coreAccess`, served only to its own instance in `testMachineProjects`; command windows on 5c's control socket; per-change tags; per-unit `credits`; the quiet publish; a command's end boundary and the machine's final boundary; reasons as 4c | The service's tests with a stand-in core: a `test_machine` view refused from another test machine, an office, a coding machine or an unlisted project; a change made in one window credited to it, one made in two windows to both, one with none to the starter; a quiet publish about 2 s after the last change; an end boundary that publishes the command's changes before it answers; the final boundary with `final`; a window message from a peer that is not the executor's uid refused |
 | 6c | Image, guest helper and mount. `build-machine-image.sh`: the toolbox (item 7) as 4e's list, `fuse3` and the folder program, in a new image generation. The guest helper starts the folder program at `/company` with the pass from exec stdin and restarts it while the view is open. `security.devlxd=false` on test machines | The image contract tests: every toolbox command answers `--version`, the folder program and `fuse3` are present. The helper's tests: the pass is in no file, unit environment or log, and the program restarts after it exits. The plan's tests: `security.devlxd=false` and no pass in any config key. Step 4's mount propagation proof for a Docker container started before the mount, in a throwaway nested VM on the test machine |
 | 6d | Executor cutover, review and output paths. The executor opens the boot's view after `qorpera_mark_company_machine_running` and hands over the pass; a start waits for the boot's open; windows; a boundary before every answer that carries output; the end order; the final boundary before every power-off, not held past a minute; a guest reboot's final boundary before the new boot is recorded; a restart on a narrowing or a crashed service; the placement retired on `unreadable`, and when a later boot's open on a placement that had a view is refused for the starter's authority; the placement retired and the machine started again on a new disk when the open is refused because the disk was used without the root-read check. `machine_run` becomes "external". Every output path takes in the view's reads first | `company-machine-host` tests with a stand-in folder service: the order of window, boundary and recorded end; the final boundary before the power-off, and a stop not held past a minute; a reboot's final boundary before the new boot; the placement retired on `unreadable`; after a narrowing, the restart's refused open retires the placement, and the machine starts on a new disk with today's access, while a refused open on a placement that never had a view does not retire it; an open refused because the disk was used without the check retires the placement and starts the machine again on a new disk, whose boot opens the view, before any command of the refused boot starts. `cloudActionEffect`: `machine_run` "external", the other machine tools unchanged. The receipts, the notify continuation and a worker's read take in the view's reads before they return output. A worker's `machine_run` reaches the review with its agent's rules |
-| 6e | The report and the retirements ("What replaces `/mnt/repository`", "The report"). 6e-1 (migration `20260930506000`, test 684): the binding becomes v2, and v1 placements are retired by the migration. 6e-2: the report | `company-machine.test.ts` with the v2 binding and no repository device; a v1 placement retired by the migration (SQL); `machine_start` without `repositoryWorker`; 628 and 897 without the repository; the report's fields (`/company` or why not, credits, refused units, overlaps) |
+| 6e | The report and the retirements ("What replaces `/mnt/repository`", "The report"). 6e-1 (migration `20260930506000`, test 684): the binding becomes v2, and v1 placements are retired by the migration. 6e-2a (migration `20260930511000`, tests 535 and 519): the report's `/company` or why not, held-back reason, files not saved and lost cause. 6e-2b (parked): credits, refused units, overlaps and the machine card | `company-machine.test.ts` with the v2 binding and no repository device; a v1 placement retired by the migration (SQL); `machine_start` without `repositoryWorker`; 628 and 897 without the repository; 6e-2a: `company-machine-host.test.ts` with each field on a start's, a read's and a cancel's receipt, a guest's report refused, the restart's mark; the tools' results and a smaller read keeping its files not saved; the lost cause kept on retirement and on the mark, the authority's `folderLost`, also on its `MACHINE_COMMAND_ENDED` refusal (SQL), carried through the 409 to the tools' `lost`, and the continuation's events (SQL) |
 | 6f | Live proof, below | Below |
 
 **Order.** 6a, 6b and 6c can be built side by side (6b against a stand-in core; it merges after 4c and 5c, which it
@@ -467,8 +484,8 @@ last.
   the web app's folder shows it;
 - a program that keeps running (a loop writing a file every 10 s) publishes about 2 s after each change, at each
   `machine_read`, and when it is cancelled;
-- two overlapping commands of two agents: each receipt lists the other, and a change made while both ran is credited
-  to both;
+- two overlapping commands of two agents: a change made while both ran is credited to both (each receipt listing the
+  other waits on 6e-2b);
 - a change made by a Docker container while no command runs is credited to the starter at the next publish;
 - a machine whose starter lacks the root read has no `/company`, and the report says why;
 - a starter that loses the root read while its machine runs: the machine restarts, its refused open retires the
@@ -491,7 +508,7 @@ designed in their slice's PR and reviewed there against those rules, each pinned
 - the windows' messages on the control socket and how the service keeps tags: 6b;
 - how the guest helper hands the pass over and restarts the program: 6c;
 - the executor's journal entries for windows and boundaries: 6d;
-- how receipts show credits and overlaps: 6e.
+- how receipts show credits and overlaps: 6e-2b (parked).
 
 A case a slice's review finds that these rules already decide is fixed in that slice, with a test; this plan changes
 only if a rule is wrong.

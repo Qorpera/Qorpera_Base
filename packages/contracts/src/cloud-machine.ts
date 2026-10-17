@@ -23,6 +23,122 @@ export interface CloudMachineCommandReceipt {
 		readonly limitBytes: number;
 		readonly limitReached: boolean;
 	};
+	/** What the company folder did around the command (F3 6e-2a). The executor
+	 * adds it on a test machine; the machine itself never sends it. */
+	readonly companyFolder?: CloudMachineCommandFolder;
+}
+
+/** How a test machine's boot stands with the company folder, in plain
+ * sentences for the agent. `company`: `mounted` (this boot has /company),
+ * `pending` (not yet), `none` (not on this boot; `why` says why). `heldBack`:
+ * why output is held back. `lost`: why the machine lost the command. The
+ * paths the machine changed in /company that were not saved come once, on the
+ * first receipt that shows the output after them; `moreNotSaved` counts those
+ * not listed. */
+export interface CloudMachineCommandFolder {
+	readonly company: "mounted" | "pending" | "none";
+	readonly why?: string;
+	readonly heldBack?: string;
+	readonly lost?: string;
+	readonly notSaved?: readonly CloudMachineFolderNotSaved[];
+	readonly moreNotSaved?: number;
+}
+export interface CloudMachineFolderNotSaved {
+	readonly path: string;
+	/** The folder's outcome for the path, never `saved`: conflict, refused, denied, waiting_for_review, … */
+	readonly outcome: string;
+	readonly reason?: string;
+}
+export const CLOUD_MACHINE_FOLDER_LIMITS = /* @__PURE__ */ Object.freeze({
+	sentence: 300,
+	path: 300,
+	outcome: 64,
+	reason: 200,
+	notSaved: 8,
+	/** As the agent's tool measures it: JSON in a JSON string, `<>&` and line separators as `\uXXXX`. */
+	bytes: 1536,
+});
+
+/** Why a machine lost a command for its folder (F3 6e-2a), by SQL's cause
+ * (`folder_lost_reason`): the executor restarted it, or moved it to a new disk.
+ * The same words as SQL's (qorpera_company_machine_folder_lost_text). */
+export const CLOUD_MACHINE_FOLDER_LOST: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze({
+	restart_unproven: "the executor restarted the machine because it could not prove what the machine read in /company",
+	restart_view_closed: "the executor restarted the machine because its /company view was closed",
+	restart_view_gone: "the executor restarted the machine because the company folder service lost its /company view",
+	moved_unchecked: "the machine moved to a new disk because a command ran on the old one before /company was checked",
+	moved_starter:
+		"the machine moved to a new disk because the agent or member who started it no longer reads the whole company folder",
+	moved_unreadable: "the machine moved to a new disk because something it read in /company is no longer readable",
+});
+/** Whether `value` is one of those causes. */
+export function isCloudMachineFolderLost(value: unknown): value is string {
+	return typeof value === "string" && Object.hasOwn(CLOUD_MACHINE_FOLDER_LOST, value);
+}
+
+/** The size of `companyFolder` as it reaches the agent inside a tool result. */
+export function cloudMachineFolderBytes(folder: CloudMachineCommandFolder): number {
+	return Buffer.byteLength(JSON.stringify(JSON.stringify(folder)).replace(/[<>&\u2028\u2029]/g, "\\u0000"));
+}
+
+const folderText = (value: unknown, limit: number): value is string =>
+	typeof value === "string" &&
+	value.trim() !== "" &&
+	value.length <= limit &&
+	!/[\0-\x1f\x7f]/u.test(value) &&
+	!/[\ud800-\udfff]/u.test(value);
+
+const FOLDER_KEYS = ["company", "why", "heldBack", "lost", "notSaved", "moreNotSaved"];
+
+export function parseCloudMachineCommandFolder(value: unknown): CloudMachineCommandFolder {
+	const fail = () => new Error("Invalid machine command folder report");
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw fail();
+	const input = value as Record<string, unknown>;
+	const L = CLOUD_MACHINE_FOLDER_LIMITS;
+	if (
+		Object.keys(input).some((key) => !FOLDER_KEYS.includes(key)) ||
+		!["mounted", "pending", "none"].includes(input.company as string) ||
+		(input.company === "none") !== (input.why !== undefined) ||
+		(input.why !== undefined && !folderText(input.why, L.sentence)) ||
+		(input.heldBack !== undefined && !folderText(input.heldBack, L.sentence)) ||
+		(input.lost !== undefined && !folderText(input.lost, L.sentence)) ||
+		(input.moreNotSaved !== undefined &&
+			(!Number.isSafeInteger(input.moreNotSaved) || Number(input.moreNotSaved) < 1))
+	)
+		throw fail();
+	let notSaved: CloudMachineFolderNotSaved[] | undefined;
+	if (input.notSaved !== undefined) {
+		if (!Array.isArray(input.notSaved) || input.notSaved.length < 1 || input.notSaved.length > L.notSaved)
+			throw fail();
+		notSaved = input.notSaved.map((item: unknown) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) throw fail();
+			const entry = item as Record<string, unknown>;
+			if (
+				Object.keys(entry).some((key) => !["path", "outcome", "reason"].includes(key)) ||
+				!folderText(entry.path, L.path) ||
+				typeof entry.outcome !== "string" ||
+				!/^[a-z][a-z_]{0,63}$/.test(entry.outcome) ||
+				entry.outcome === "saved" ||
+				(entry.reason !== undefined && !folderText(entry.reason, L.reason))
+			)
+				throw fail();
+			return Object.freeze({
+				path: entry.path,
+				outcome: entry.outcome,
+				...(entry.reason !== undefined ? { reason: entry.reason as string } : {}),
+			});
+		});
+	}
+	const folder: CloudMachineCommandFolder = Object.freeze({
+		company: input.company as CloudMachineCommandFolder["company"],
+		...(input.why !== undefined ? { why: input.why as string } : {}),
+		...(input.heldBack !== undefined ? { heldBack: input.heldBack as string } : {}),
+		...(input.lost !== undefined ? { lost: input.lost as string } : {}),
+		...(notSaved ? { notSaved: Object.freeze(notSaved) } : {}),
+		...(input.moreNotSaved !== undefined ? { moreNotSaved: input.moreNotSaved as number } : {}),
+	});
+	if (cloudMachineFolderBytes(folder) > L.bytes) throw fail();
+	return folder;
 }
 
 /** Closed, bounded and consistent: the log cursor and state rules are the
@@ -30,15 +146,19 @@ export interface CloudMachineCommandReceipt {
 export function parseCloudMachineCommandReceipt(value: unknown): CloudMachineCommandReceipt {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid machine command result");
 	const input = value as Record<string, unknown>;
+	const keys = Object.keys(input)
+		.filter((key) => key !== "companyFolder")
+		.sort()
+		.join();
 	if (
-		Object.keys(input).sort().join() !==
-			"commandId,exitCode,inputSha256,log,machineId,output,schema,state,truncated" ||
+		keys !== "commandId,exitCode,inputSha256,log,machineId,output,schema,state,truncated" ||
 		input.schema !== "qorpera.machine-command-result/v1" ||
 		typeof input.machineId !== "string" ||
 		!UUID.test(input.machineId)
 	)
 		throw new Error("Invalid machine command result");
-	const { machineId, schema: _schema, ...rest } = input;
+	const { machineId, schema: _schema, companyFolder, ...rest } = input;
+	const folder = "companyFolder" in input ? parseCloudMachineCommandFolder(companyFolder) : undefined;
 	const checked = parseCloudCodingCommandReceipt({
 		...rest,
 		schema: "qorpera.coding-command-result/v2",
@@ -58,6 +178,7 @@ export function parseCloudMachineCommandReceipt(value: unknown): CloudMachineCom
 		output: checked.output,
 		truncated: checked.truncated,
 		log: checked.log,
+		...(folder ? { companyFolder: folder } : {}),
 	}) as CloudMachineCommandReceipt;
 }
 
