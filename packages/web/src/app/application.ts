@@ -8,6 +8,7 @@ import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
+import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
@@ -960,9 +961,10 @@ export function mountApplication(
 				},
 			);
 			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
-			// since the save that changes a cell settles its offers (step I9c).
+			// since the save that changes a cell settles its offers (step I9c) and makes or ends a supervision (I9b).
 			const offers = new CompanyInterfaceOffers(
 				interfaceOfferCalls(cloud, controller.profile.environmentId),
+				interfaceSupervisionCalls(cloud, controller.profile.environmentId),
 				(next) => {
 					if (interfaceOffers === offers) controller.store.set({ interfaceOffers: next });
 				},
@@ -1401,11 +1403,12 @@ export function mountApplication(
 				return;
 			case "interface":
 				// A board's take and release write the member's own rows with the same rechecks (step I9a); its offers go
-				// through the company's offers reader (step I9c).
+				// through the company's offers reader (step I9c). A change that could not be made reads the folder again.
 				renderInterface(main, controller, route.id ?? "", {
 					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 					current: companyCurrent,
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
+					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
 				});
 				return;
 			case "team":

@@ -714,6 +714,57 @@ describe("the claim rule", () => {
 		).toEqual([]);
 	});
 
+	it("counts a cell that names someone who left as empty for a member, given the members (C6d)", () => {
+		// Amir left: Sofie and Ida stay.
+		const members = new Set([SOFIE, IDA]);
+		const held = [row("Finance", AMIR, null)];
+		expect(
+			tableClaimProblems(areas, held, [row("Finance", SOFIE, null)], member(SOFIE), { folder: "areas", members }),
+		).toEqual([]);
+		expect(
+			codes(tableClaimProblems(areas, held, [row("Finance", SOFIE, null)], member(SOFIE), { folder: "areas" })),
+		).toEqual(["claim"]);
+		// Nothing clears it, and nobody puts someone else in it.
+		for (const after of [[row("Finance", null, null)], [row("Finance", IDA, null)], []]) {
+			expect(codes(tableClaimProblems(areas, held, after, member(SOFIE), { folder: "areas", members }))).toEqual([
+				"claim",
+			]);
+		}
+		// A current member's cell stays theirs.
+		expect(
+			codes(
+				tableClaimProblems(areas, held, [row("Finance", SOFIE, null)], member(SOFIE), {
+					folder: "areas",
+					members: new Set([SOFIE, IDA, AMIR]),
+				}),
+			),
+		).toEqual(["claim"]);
+		// Ida offered Amir's cell to Sofie: her yes moves it.
+		const key = tableRowKey(areas, held[0] as TableRow);
+		const offers = [{ row: key, column: "owner", to: SOFIE, from: IDA, was: AMIR }];
+		expect(
+			tableClaimProblems(areas, held, [row("Finance", SOFIE, null)], member(SOFIE), {
+				folder: "areas",
+				offers,
+				members,
+			}),
+		).toEqual([]);
+		// An agent never takes a leaver's cell for its supervisor.
+		const cards = table(CARDS_TABLE);
+		const card = (holder: string | null): TableRow => ({
+			id: SOFIE,
+			card: "Call Brightside",
+			area: null,
+			holder,
+			state: "open",
+			added_by: null,
+			todo: null,
+		});
+		expect(
+			codes(tableClaimProblems(cards, [card(AMIR)], [card(SOFIE)], agentFor(SOFIE), { folder: "cards", members })),
+		).toEqual(["claim"]);
+	});
+
 	it("never lets a definition edit drop the protection from a held cell", () => {
 		const loosened = table(
 			AREAS_TABLE.replace(
