@@ -2572,7 +2572,7 @@ async function folderFixture(repositories = true) {
 		usage: Partial<CodingGuestUsage> = {},
 	) => ({
 		commands,
-		usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 0, ioBytes: 0, ...usage },
+		usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 0, ioBytes: 0, ioComplete: true, ...usage },
 	});
 	mocked.guestStatus.mockResolvedValue(status());
 	mocked.guestCancel.mockResolvedValue({});
@@ -3602,6 +3602,9 @@ describe("a coding session on the folder model", () => {
 		expect(f.calls("qorpera_keep_coding_attachments").at(-1)).toMatchObject({
 			p_observation: { sessions: [{ workerId: f.claim.workerId, busy: false, running: [] }] },
 		});
+		// The guest read only some of the machine's processes: busy, though what it saw moved nothing.
+		const partial = { uptimeMs: 660_000, cpuUsageUsec: 1000 + 5_300_000, ioBytes: 302_000, ioComplete: false };
+		expect(await look([], partial)).toBe(true);
 		// A usage read on another boot's clock compares with nothing: the observation is refused.
 		mocked.guestStatus.mockResolvedValue(f.status([], { bootId: randomUUID(), uptimeMs: 1000 }));
 		expect(await f.host.keep(f.signal)).toEqual([
@@ -3616,6 +3619,27 @@ describe("a coding session on the folder model", () => {
 		// The guest agent answers it all: no helper runs, and no guest lease is renewed.
 		expect(f.execs()).toEqual([]);
 		expect(mocked.refresh).not.toHaveBeenCalled();
+	});
+	it("counts a session busy when the guest read only some of the machine's processes, on the first look too", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const busy = async (usage: Partial<CodingGuestUsage>) => {
+			mocked.guestStatus.mockResolvedValue(f.status([], usage));
+			expect(await f.host.keep(f.signal)).toEqual([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			]);
+			const keep = f.calls("qorpera_keep_coding_attachments").at(-1) as {
+				p_observation: { busy: boolean; sessions: { busy: boolean }[] };
+			};
+			expect(keep.p_observation.sessions.map((session) => session.busy)).toEqual([keep.p_observation.busy]);
+			return keep.p_observation.busy;
+		};
+		// Bytes it could not see may be the session's: the machine must not sleep on them.
+		expect(await busy({ ioComplete: false })).toBe(true);
+		// Read whole on the next look, it compares with the last by the idle rule.
+		expect(await busy({ uptimeMs: 610_000 })).toBe(false);
 	});
 	it("takes a released session off: its commands cancelled through the guest agent, the session quiet, its view ended, the session stopped", async () => {
 		const f = await folderFixture();

@@ -78,8 +78,6 @@ const INPUT_GRACE_MS = 60000;
 const OUTCOME_KEEP_MS = 3600000;
 const RING_ENTRIES = 64;
 const RELAY_REFUSED = 125;
-/** At most this many cgroups and processes are read for a session's usage. A bound on the reads, not on the work. */
-const USAGE_READS = 8192;
 const TOOLS = Object.freeze({
 	systemctl: "/usr/bin/systemctl",
 	systemdRun: "/usr/bin/systemd-run",
@@ -1127,42 +1125,40 @@ async function readSessionUsage(at: Agent, session: Places): Promise<CodingGuest
 	const user = await readSessionUser(session);
 	const kernel = (path: string) => readFile(path, "utf8").catch(() => "");
 	const groups = [
-		join(at.cgroupRoot, "qorpera.slice", "qorpera-coding.slice", session.slice),
-		...(user ? [join(at.cgroupRoot, "user.slice", `user-${user.uid}.slice`)] : []),
+		`/qorpera.slice/qorpera-coding.slice/${session.slice}`,
+		...(user ? [`/user.slice/user-${user.uid}.slice`] : []),
 	];
 	let cpuUsageUsec = 0;
-	for (const top of groups) {
-		const usage = /^usage_usec ([0-9]+)$/m.exec(await kernel(join(top, "cpu.stat")));
+	for (const group of groups) {
+		const usage = /^usage_usec ([0-9]+)$/m.exec(await kernel(join(at.cgroupRoot, group, "cpu.stat")));
 		if (usage) cpuUsageUsec += Number(usage[1]);
 	}
+	// One pass over the machine's processes, as the NAS model's observation makes, so the cgroups the user manager may
+	// make (they are delegated to the session's user) cost nothing. A machine with more processes than one pass reads,
+	// or whose processes cannot be listed, may hide the session's bytes: its usage says so.
+	const listed = await readdir(at.procRoot).catch(() => undefined);
+	const pids = (listed ?? []).filter((pid) => /^[1-9][0-9]*$/.test(pid));
 	let ioBytes = 0;
-	let reads = 0;
-	// Every cgroup under them, breadth first. The user manager's are delegated, so the session user may make more of
-	// them: the walk is bounded.
-	for (let index = 0; index < groups.length && reads < USAGE_READS; index++) {
-		reads++;
-		const group = groups[index];
-		for (const entry of await readdir(group, { withFileTypes: true }).catch(() => []))
-			if (entry.isDirectory() && groups.length < USAGE_READS) groups.push(join(group, entry.name));
-		for (const pid of (await kernel(join(group, "cgroup.procs"))).split("\n")) {
-			if (!/^[1-9][0-9]*$/.test(pid) || reads >= USAGE_READS) continue;
-			reads++;
-			const argv = (await kernel(join(at.procRoot, pid, "cmdline"))).replace(/\0$/, "").split("\0");
-			if (
-				argv.at(-4) === at.agent &&
-				argv.at(-3) === "relay" &&
-				argv.at(-2) === session.worker &&
-				COMPACT.test(argv.at(-1) ?? "")
-			)
-				continue;
-			ioBytes += idleRuleProcessIoBytes(await kernel(join(at.procRoot, pid, "io")));
-		}
+	for (const pid of pids.slice(0, CODING_GUEST.usageProcesses)) {
+		// The unified hierarchy's line: the cgroup it runs in.
+		const group = /^0::(.*)$/m.exec(await kernel(join(at.procRoot, pid, "cgroup")))?.[1] ?? "";
+		if (!groups.some((top) => group === top || group.startsWith(`${top}/`))) continue;
+		const argv = (await kernel(join(at.procRoot, pid, "cmdline"))).replace(/\0$/, "").split("\0");
+		if (
+			argv.at(-4) === at.agent &&
+			argv.at(-3) === "relay" &&
+			argv.at(-2) === session.worker &&
+			COMPACT.test(argv.at(-1) ?? "")
+		)
+			continue;
+		ioBytes += idleRuleProcessIoBytes(await kernel(join(at.procRoot, pid, "io")));
 	}
 	return Object.freeze({
 		bootId,
 		uptimeMs,
 		cpuUsageUsec: Math.min(cpuUsageUsec, Number.MAX_SAFE_INTEGER),
 		ioBytes: Math.min(ioBytes, Number.MAX_SAFE_INTEGER),
+		ioComplete: listed !== undefined && pids.length <= CODING_GUEST.usageProcesses,
 	});
 }
 

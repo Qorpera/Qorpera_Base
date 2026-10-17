@@ -38,6 +38,8 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
 	maxUid: 524287,
 	/** One `status` answer's commands. */
 	maxStatusCommands: 256,
+	/** The most of the machine's processes one `status` reads for the session's bytes. */
+	usageProcesses: 8192,
 });
 
 export type CodingGuestVerb = "mount" | "run" | "output" | "cancel" | "quiesce" | "stop-session" | "status";
@@ -165,6 +167,10 @@ export interface CodingGuestUsage {
 	/** The bytes their running processes passed to read and write calls so far (/proc/<pid>/io rchar + wchar), the
 	 * command relays' aside. */
 	readonly ioBytes: number;
+	/** False when the machine ran more processes than one `status` reads (CODING_GUEST.usageProcesses), so `ioBytes` may
+	 * leave some of the session's out. The executor counts such a look busy: what it cannot see never lets the machine
+	 * sleep. */
+	readonly ioComplete: boolean;
 }
 export interface CodingGuestStatusAnswer {
 	readonly schema: "qorpera.coding-guest-status/v2";
@@ -410,7 +416,8 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 		Object.freeze(command(object(entry, "commandId,end,exit,state", error), error)),
 	);
 	if (new Set(commands.map((entry) => entry.commandId)).size !== commands.length) throw new Error(error);
-	const usage = object(input.usage, "bootId,cpuUsageUsec,ioBytes,uptimeMs", error);
+	const usage = object(input.usage, "bootId,cpuUsageUsec,ioBytes,ioComplete,uptimeMs", error);
+	if (typeof usage.ioComplete !== "boolean") throw new Error(error);
 	return Object.freeze({
 		schema: "qorpera.coding-guest-status/v2",
 		workerId,
@@ -420,6 +427,7 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 			uptimeMs: count(usage.uptimeMs, Number.MAX_SAFE_INTEGER, error),
 			cpuUsageUsec: count(usage.cpuUsageUsec, Number.MAX_SAFE_INTEGER, error),
 			ioBytes: count(usage.ioBytes, Number.MAX_SAFE_INTEGER, error),
+			ioComplete: usage.ioComplete,
 		}),
 	}) as never;
 }

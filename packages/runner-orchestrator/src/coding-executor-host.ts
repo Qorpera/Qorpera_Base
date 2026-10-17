@@ -243,6 +243,8 @@ interface Observed {
 			uptimeMs: number;
 			cpuUsageUsec: number;
 			ioBytes: number;
+			/** False when the guest read only some of the machine's processes, so `ioBytes` may leave some out. */
+			ioComplete: boolean;
 			running: ObservedCommand[];
 			/** The watchdog's lease: its generation (the attachment token's digest) and how long it stays live. */
 			lease: { tokenSha256: string; expiresInMs: number } | null;
@@ -2137,8 +2139,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				at: seen.uptimeMs,
 			};
 			// Busy by the one idle rule since the last look of this boot (`@qorpera/contracts` idle-rule): at least 5% of
-			// one core, or 512 KiB read or written in 30 seconds. A server that only waits does neither.
-			const busy = sample !== undefined && sample.bootId === observed.bootId && idleRuleBusy(sample, now);
+			// one core, or 512 KiB read or written in 30 seconds. A server that only waits does neither. A look that read
+			// only some of the machine's processes is busy: bytes it could not see never let the machine sleep.
+			const busy =
+				!seen.ioComplete ||
+				(sample !== undefined && sample.bootId === observed.bootId && idleRuleBusy(sample, now));
 			this.#samples.set(workerId, now);
 			sessions.push({ workerId, busy, running: seen.running });
 		}
@@ -2441,6 +2446,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				uptimeMs: Number(value.uptimeMs),
 				cpuUsageUsec: Number(session.cpuUsageUsec),
 				ioBytes: Number(session.ioBytes),
+				ioComplete: true,
 				running,
 				lease: lease && { tokenSha256: String(lease.tokenSha256), expiresInMs: Number(lease.expiresInMs) },
 			});
@@ -2485,8 +2491,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						command: clipped(kept.command, CODING_OBSERVED_COMMAND_BYTES),
 					});
 			}
-			const { uptimeMs, cpuUsageUsec, ioBytes } = status.usage;
-			sessions.set(workerId, { uptimeMs, cpuUsageUsec, ioBytes, running, lease: null });
+			const { uptimeMs, cpuUsageUsec, ioBytes, ioComplete } = status.usage;
+			sessions.set(workerId, { uptimeMs, cpuUsageUsec, ioBytes, ioComplete, running, lease: null });
 		}
 		return { bootId, sessions };
 	}
