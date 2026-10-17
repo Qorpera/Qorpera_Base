@@ -5047,7 +5047,7 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - It never records content or full web addresses, and nothing is decrypted.
    - The log, and the exit's record of name lookups, are kept 90 days on our storage, then deleted.
    - A company's owners and admins can see their company's log, and a member can see the lines of their own coding
-     machine. The view comes later, in an amendment of its own.
+     machine. The view: the [2026-10-17 amendment](#2026-10-17-amendment-each-company-sees-its-own-agent-exit-log).
    - Qorpera uses the log to answer abuse reports. A refused connection tells the agent only that it was refused;
      which rule refused it is in the log.
 8. **Company network rules (choice 4).**
@@ -5514,6 +5514,67 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
   masked environment variables; a second machine for a member whose machine is full. Root makes one member's
   sessions on one machine no walls between each other: a save is credited to its session as well as root allows, as
   on test machines.
+
+### 2026-10-17 amendment: each company sees its own agent exit log
+
+This amendment carries out the
+[agent exit amendment](#2026-10-03-amendment-agent-traffic-leaves-through-the-agent-exit), item 7: "A company's
+owners and admins can see their company's log, and a member can see the lines of their own coding machine. The view
+comes later, in an amendment of its own."
+- The founder set who sees what on 2 October 2026.
+- The design session for the agent exit proposed the rest. The runtime coordinator set it on 17 October 2026, on
+  Jonas's standing request that it settle his open questions. Jonas may still change any of it.
+
+It amends item 3 of the
+[interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), "Sources are a
+closed list": runtime state gains the exit log. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md` §7 and
+`deploy/first-node/RUNTIME-INTERFACES.md` §4.
+
+1. **A source of its own.** Interfaces get a new runtime-state source, `exit_log`.
+   - It holds one company's lines from the exit log, one day (UTC) at a time, newest first.
+   - A block shows the newest day the log has. The viewer can step back one day at a time, through the 90 days the
+     log is kept.
+   - Each row is one of four kinds:
+     - a connection: when it started and ended, the machine, where it went (address, port, protocol), the name the
+       machine looked up for that address when the log knows it, and the bytes each way;
+     - a refused flow, with the rule that refused it;
+     - the brake (the line guard, item 9 of the agent exit amendment) holding the company, from when to when;
+     - a stretch the log cannot speak for (item 2).
+   - Never content and never full web addresses, as in the log itself.
+   - The looked-up name is outside content (11.1).
+2. **Unknown shows as unknown, never as "no connections".**
+   - A day appears once it is closed and every node's part of it is on our storage. That is about two hours after
+     the day ends (UTC).
+   - Until then, the view says the lines are not there yet. It says the same for a node that has not sent its part.
+   - Each of these shows as a time the view cannot speak for:
+     - a gap in the log;
+     - a stretch in which the logger did not show it was alive;
+     - a file that was deleted before it reached our storage.
+   - A line belongs to the company whose machine had the address at that moment. A line from an address that no
+     company had then is in no company's view.
+3. **Who reads it.**
+   - The company's owners and admins read every line of the company's machines, and the brake.
+   - Any other member reads only the lines of their own coding machines.
+   - Agents read none of it:
+     - a block that reads `exit_log` is not drawn for an agent;
+     - `interface_read` says the source is not shown.
+   - The database checks the viewer's role before the log is read, and again before the answer leaves the node. A
+     member who leaves, or loses a role, in the meantime gets only what their new role allows.
+4. **Not a file in the folder.**
+   - Every member and every agent can read the company folder, so the lines never go there.
+   - The browser reads them through the member company gateway and the object gateway.
+   - The object gateway reads our storage through the agent exit's own reader on the node. That reader keeps each
+     company's lines apart: nothing of another company leaves the node, and for a member, nothing of another machine.
+
+**For the build** (not founder decisions; the designs carry them):
+- E10a: this amendment and the designs. A function for `authenticated` tells the object gateway what a viewer may read
+  of a company's exit log: owners and admins read the company's lines; any other member reads their own coding
+  machines' lines; anyone else is refused, and so is a company being deleted (migration 20260930507000, SQL test 685).
+- E10b: the tool's new `view` command. It runs as root behind a socket that only the object gateway may open. The
+  tool reads the share the way the lookup does, and keeps one company's lines and the unknown stretches. Also in
+  E10b: the object gateway's member route, and the member company gateway's allowlist.
+- E10c: the source in cloud-client, the web client (the day steps) and the runtime's interface tools ("not shown" for
+  agents).
 
 ## 20. Enforcement matrix
 
