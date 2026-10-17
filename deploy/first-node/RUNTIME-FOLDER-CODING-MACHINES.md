@@ -434,6 +434,11 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      machine's read set, clears both marks and answers `replaced`. It refuses a machine not marked for a new disk, so a
      record with no rebuild behind it never drops reads the old disk still holds. Then the machine starts. A model hears of it only
      through a stopped command's entry: a session that was not attached gets no event.
+     Since 5g-5 part 3 PR C (migration `20260930515000`) that is not the only way: every session on the machine (its
+     `vm_allocation_id`, which the detach leaves) is also told in its next turn's context, `machine: {newDisk: true}`:
+     true when the machine has a `replaced` record at or after the previous turn's begin (its wake occurrence, or when it
+     opened if it never began), false on a first turn. A rebuild while the previous turn ran is told twice rather than
+     never.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.
 
