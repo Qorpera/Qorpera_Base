@@ -667,7 +667,7 @@ impl Filesystem for FolderFs {
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
 		entries.push((parent, FileType::Directory, "..".to_string()));
 		entries.extend(children.into_iter().map(|c| (c.ino, file_type(c.attr.kind), c.name)));
-		if let Err(e) = self.merge_local(&path, &mut entries) {
+		if let Err(e) = self.merge_local(ino.0, &path, &mut entries) {
 			return reply.error(Errno::from_i32(e));
 		}
 		// No kernel listing cache (FOPEN_CACHE_DIR): the kernel keeps it while the folder's time is unchanged, and a
@@ -1033,6 +1033,7 @@ impl Filesystem for FolderFs {
 		if let Err(f) = self.s.link.mkdir(&path) {
 			return reply.error(errno(f));
 		}
+		self.caches_gone(&path);
 		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new(), authority: None };
 		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
 		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
@@ -1074,6 +1075,11 @@ impl Filesystem for FolderFs {
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
 		let folder = source.attr.kind == EntryKind::Folder;
+		let held = match folder.then(|| self.folder_renaming((parent.0, &from_name), (newparent.0, &to_name))) {
+			Some(Err(e)) => return reply.error(Errno::from_i32(e)),
+			Some(Ok(held)) => held,
+			None => None,
+		};
 		let from_base = (!folder).then(|| source.attr.version.clone());
 		let to_base = self.s.versions.lock().unwrap().base(&to);
 		let request = RenameRequest {
@@ -1089,6 +1095,9 @@ impl Filesystem for FolderFs {
 		}
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
 		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
+		if folder {
+			self.caches_renamed(held, &from, &to);
+		}
 		self.index_after(&to, index);
 		reply.ok();
 	}
@@ -1226,6 +1235,9 @@ impl FolderFs {
 		}
 		self.s.versions.lock().unwrap().removed(&path);
 		self.s.tree.lock().unwrap().removed_local(&path);
+		if folder {
+			self.caches_gone(&path);
+		}
 		reply.ok();
 	}
 }
