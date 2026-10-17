@@ -366,7 +366,9 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      (`qorpera_mark_coding_machine_folder_restart`), ends its views, stops it (custody grants the stop of a marked
      machine under a leased turn), says `restarted`, and records the restart before the start
      (`qorpera_record_coding_machine_folder_restart`). The record detaches every session attached to the machine with
-     a `FOLDER_RESTART` event, which is not an outside stop, and clears the mark. The session then attaches again,
+     a `FOLDER_RESTART` event, which is not an outside stop, and clears the mark. Each record is named by the start
+     it comes before (the LXD operation of the effect that start follows) and kept with its answer, so a second record
+     of the same start replays that answer and changes nothing. The session then attaches again,
      once; a second refusal fails its turn. A guest that rebooted itself costs one more restart.
    - **`unreadable`** (a released read the core can no longer place) moves the machine's sessions to a new machine id
      with a new disk, or archives them; the old disk is removed.

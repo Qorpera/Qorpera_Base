@@ -16,12 +16,15 @@
 --    (a view it held closed, a boundary or a publication it can't prove).
 -- 7. qorpera_record_coding_machine_folder_restart: the executor, after the machine stopped and before it starts, detaches
 --    every session attached to it (leased turns too), each with one FOLDER_RESTART event, and clears the mark. Not an
---    outside stop: nothing goes into qorpera_coding_machine_outside_stops.
+--    outside stop: nothing goes into qorpera_coding_machine_outside_stops. Each record is named by the start it comes
+--    before (the LXD operation of the effect that start follows) and kept in qorpera_coding_machine_folder_restarts: a
+--    second record of the same start, however late, answers what the first did and changes nothing, so a delayed one
+--    never clears a later mark or detaches a later boot's sessions.
 -- Exact-text patches: each fails unless its function has the text given exactly once. Each new, patched or replaced
 -- function names this migration (20260930501000); the earlier markers stay.
 -- Locks: renew holds its view, then the machine (NO KEY UPDATE), then takes the machine's other open views SKIP LOCKED,
 -- so it never waits for a view. view_open takes its views, then its session, then the machine (FOR SHARE). The record
--- takes the sessions in worker order and the machine last, as the outside stop's record does.
+-- takes its own row, then the sessions in worker order, and the machine last, as the outside stop's record does.
 
 set local lock_timeout = '3s';
 
@@ -51,6 +54,20 @@ end $$;
 alter table public.qorpera_coding_machines add column folder_restart_at timestamptz;
 create index qorpera_folder_views_open_coding_machine on public.qorpera_folder_views (machine_id)
 	where state = 'open' and kind = 'coding_session';
+
+-- Internal: what each start's record answered (7), named by the LXD operation of the effect the start follows. The
+-- key check on the machine is deferred, as the outside stops' is, so the record takes the machine only after its
+-- sessions.
+create table public.qorpera_coding_machine_folder_restarts (
+	machine_id uuid not null references public.qorpera_coding_machines(id) on delete cascade deferrable initially deferred,
+	operation_id uuid not null,
+	state text not null default 'unmarked' check (state in ('unmarked', 'restarted')),
+	detached jsonb not null default '[]'::jsonb check (jsonb_typeof(detached) = 'array'),
+	recorded_at timestamptz not null default clock_timestamp(),
+	primary key (machine_id, operation_id)
+);
+alter table public.qorpera_coding_machine_folder_restarts enable row level security;
+revoke all on public.qorpera_coding_machine_folder_restarts from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- 2. The renewal.
 select pg_temp.coding_machine_folder_restart_patch('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', array[
@@ -146,18 +163,30 @@ $$;
 -- 7. The machine stopped and has not started again: every session attached to it is detached, each with the commands
 -- last seen running there, and each gets one FOLDER_RESTART event, commands or not; then the mark is cleared. Only the
 -- executor stops and starts the machine, and it records this after the stop and before the start, every start: an
--- unmarked machine answers 'unmarked' and nothing changes, so a record lost to a crash is made at the next start. Locks:
--- the sessions, in worker order as the keeper takes them, then the machine (NO KEY UPDATE) last. The machine is read
--- first without a lock, so the record never holds the machine while it waits for a session. Answers the sessions it
--- detached, with the attachment each had.
-create function public.qorpera_record_coding_machine_folder_restart(p_machine_id uuid, p_owner text, p_binding_text text,
-	p_machine_id_sha256 text)
+-- unmarked machine answers 'unmarked' and nothing changes, so a record lost to a crash is made at the next start.
+-- p_operation_id names the start: the LXD operation of the effect it follows, the same for each try of that start and
+-- no other start's. The start's own row is taken first: a second record of the same start (at once, waiting for the
+-- first, or after the machine started and was marked again) answers what the first did, 'unmarked' too, and touches no
+-- session and no mark. Locks: that row, which no other call takes; then the sessions, in worker order as the keeper
+-- takes them; then the machine (NO KEY UPDATE) last. The machine is read first without a lock, so the record never
+-- holds the machine while it waits for a session. Answers the sessions it detached, with the attachment each had.
+create function public.qorpera_record_coding_machine_folder_restart(p_machine_id uuid, p_operation_id uuid, p_owner text,
+	p_binding_text text, p_machine_id_sha256 text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 -- 20260930501000
 declare v_machine public.qorpera_coding_machines%rowtype; v_session public.qorpera_coding_sessions%rowtype;
-	v_worker public.qorpera_runtime_workers%rowtype; v_detached jsonb := '[]'::jsonb;
+	v_worker public.qorpera_runtime_workers%rowtype; v_detached jsonb := '[]'::jsonb; v_first boolean; v_state text;
 begin
 	v_machine := public.qorpera_coding_machine_owned(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);
+	if p_operation_id is null then raise exception 'Coding machine input invalid' using errcode = '22023'; end if;
+	insert into public.qorpera_coding_machine_folder_restarts(machine_id, operation_id)
+	values (v_machine.id, p_operation_id) on conflict do nothing returning true into v_first;
+	if v_first is null then
+		select r.state, r.detached into strict v_state, v_detached from public.qorpera_coding_machine_folder_restarts r
+		where r.machine_id = v_machine.id and r.operation_id = p_operation_id;
+		return jsonb_build_object('schema','qorpera.coding-machine-folder-restart/v1','machineId',v_machine.id,'state',v_state,
+			'detached',v_detached);
+	end if;
 	if v_machine.folder_restart_at is null then
 		return jsonb_build_object('schema','qorpera.coding-machine-folder-restart/v1','machineId',v_machine.id,'state','unmarked',
 			'detached',v_detached); end if;
@@ -172,6 +201,8 @@ begin
 			'attachmentToken', v_session.attachment_token));
 	end loop;
 	update public.qorpera_coding_machines set folder_restart_at = null where id = v_machine.id;
+	update public.qorpera_coding_machine_folder_restarts set state = 'restarted', detached = v_detached
+	where machine_id = v_machine.id and operation_id = p_operation_id;
 	return jsonb_build_object('schema','qorpera.coding-machine-folder-restart/v1','machineId',v_machine.id,'state','restarted',
 		'detached',v_detached);
 end
@@ -180,7 +211,7 @@ $$;
 -- Grants: the executor (service_role) marks and records; the words stay internal.
 revoke all on function public.qorpera_coding_stopped_event(text, jsonb),
 	public.qorpera_mark_coding_machine_folder_restart(uuid, text, text, text),
-	public.qorpera_record_coding_machine_folder_restart(uuid, text, text, text)
+	public.qorpera_record_coding_machine_folder_restart(uuid, uuid, text, text, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_mark_coding_machine_folder_restart(uuid, text, text, text),
-	public.qorpera_record_coding_machine_folder_restart(uuid, text, text, text) to service_role;
+	public.qorpera_record_coding_machine_folder_restart(uuid, uuid, text, text, text) to service_role;

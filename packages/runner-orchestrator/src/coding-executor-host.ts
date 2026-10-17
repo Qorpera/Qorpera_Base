@@ -675,7 +675,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		authorize: (intent: CodingMachineIntent, signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
-		starting?: (signal: AbortSignal) => Promise<void>,
+		starting?: (afterOperationId: string, signal: AbortSignal) => Promise<void>,
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -1260,11 +1260,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			// Stopped, right before each start: the folder service hears the machine restarted (the plan's rule 4), so a
 			// read it was served on its last boot and never released no longer leaves the views it opens unproven, and
-			// then SQL records a restart for the folder, if the machine was marked for one. Either not confirmed, the
-			// machine does not start.
-			async (checked) => {
+			// then SQL records a restart for the folder, if the machine was marked for one, named by the effect the start
+			// follows. Either not confirmed, the machine does not start.
+			async (afterOperationId, checked) => {
 				await folder.control.restarted(machine.machineId, checked);
-				await this.#recordFolderRestart(machine, checked);
+				await this.#recordFolderRestart(machine, afterOperationId, checked);
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
 		);
@@ -1936,14 +1936,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** A stopped machine is about to start: if SQL marked it to restart for the company folder (the folder model's rule
 	 * 4), the restart is recorded, each attachment on it ending as FOLDER_RESTART (not an outside stop: its sessions
-	 * attach again on the new boot) and the mark cleared, so views open on it again. An unmarked machine records
-	 * nothing. */
-	async #recordFolderRestart(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<void> {
+	 * attach again on the new boot) and the mark cleared, so views open on it again. An unmarked machine changes
+	 * nothing. `afterOperationId` names the start (the LXD operation of the effect it follows): SQL answers a second
+	 * record of the same start, however late, what it answered the first and changes nothing. */
+	async #recordFolderRestart(
+		machine: Readonly<LxdCodingMachineBinding>,
+		afterOperationId: string,
+		signal: AbortSignal,
+	): Promise<void> {
 		const value = record(
 			await this.#call(
 				"qorpera_record_coding_machine_folder_restart",
 				{
 					p_machine_id: machine.machineId,
+					p_operation_id: afterOperationId,
 					p_owner: this.#options.owner,
 					p_binding_text: lxdCodingMachinePlan(machine).text,
 					p_machine_id_sha256: this.#options.machineIdSha256,

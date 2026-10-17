@@ -4,11 +4,12 @@
 -- service_crashed marks its machine and closes the machine's other open coding views ('ended'); the executor marks one
 -- too. No coding view opens on a marked machine, a renewal of one closes it, and its stop custody is granted under a
 -- leased turn. After the stop the executor's record detaches every session attached to it, each with one FOLDER_RESTART
--- event, and clears the mark; it is not an outside stop. The office, the folders and the helpers are 639's; 487 covers
--- the service that serves a view, 521 the machine stopped from outside.
+-- event, and clears the mark; it is not an outside stop. Each record is named by the start it comes before, and a
+-- second record of that start, however late, answers what the first did and changes nothing. The office, the folders
+-- and the helpers are 639's; 487 covers the service that serves a view, 521 the machine stopped from outside.
 
 -- 0. Markers and privileges: each patched, replaced or new function names this migration and keeps the earlier
--- markers; the executor (service_role) marks and records, and the words stay internal.
+-- markers; the executor (service_role) marks and records, and the words and the records' table stay internal.
 do $$
 declare v_lost text;
 begin
@@ -20,18 +21,23 @@ begin
 		('qorpera_authorize_coding_machine_custody(uuid,text,text,text,text,uuid,uuid)', array[]::text[]),
 		('qorpera_coding_stopped_event(text,jsonb)', array['20260930431000']),
 		('qorpera_mark_coding_machine_folder_restart(uuid,text,text,text)', array[]::text[]),
-		('qorpera_record_coding_machine_folder_restart(uuid,text,text,text)', array[]::text[])) f(sig, earlier)
+		('qorpera_record_coding_machine_folder_restart(uuid,uuid,text,text,text)', array[]::text[])) f(sig, earlier)
 	cross join lateral unnest(f.earlier || '20260930501000'::text) m(marker)
 	where strpos(pg_get_functiondef(('public.' || f.sig)::regprocedure), m.marker) = 0;
 	if v_lost is not null then raise exception 'Lost a marker: %', v_lost; end if;
 	if exists (select 1 from unnest(array['public.qorpera_mark_coding_machine_folder_restart(uuid,text,text,text)',
-			'public.qorpera_record_coding_machine_folder_restart(uuid,text,text,text)']) f(name)
+			'public.qorpera_record_coding_machine_folder_restart(uuid,uuid,text,text,text)']) f(name)
 		where not has_function_privilege('service_role', f.name, 'execute')
 			or exists (select 1 from unnest(array['anon', 'authenticated', 'qorpera_secret_broker']) r(role)
 				where has_function_privilege(r.role, f.name, 'execute')))
 		or exists (select 1 from unnest(array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r(role)
 			where has_function_privilege(r.role, 'public.qorpera_coding_stopped_event(text,jsonb)', 'execute')) then
 		raise exception 'Only the executor marks and records; the words stay internal'; end if;
+	if not (select relrowsecurity from pg_class where oid = 'public.qorpera_coding_machine_folder_restarts'::regclass)
+		or exists (select 1 from unnest(array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r(role)
+			cross join unnest(array['select', 'insert', 'update', 'delete']) p(privilege)
+			where has_table_privilege(r.role, 'public.qorpera_coding_machine_folder_restarts', p.privilege)) then
+		raise exception 'The records'' table stays internal'; end if;
 end $$;
 
 -- The node, the executor exec-1 and agent A's repository grant.
@@ -109,14 +115,16 @@ create function pg_temp.fr_mark_at(p_machine uuid) returns timestamptz language 
 	select folder_restart_at from public.qorpera_coding_machines where id = p_machine
 $$;
 -- The executor's mark or record (p_rpc) of p_machine under p_role's claims, with this custody (the machine's own unless
--- given).
+-- given); a record names the start p_operation.
 create function pg_temp.fr_call(p_rpc text, p_machine uuid, p_role text default 'service_role', p_owner text default 'exec-1',
-	p_binding text default null, p_sha256 text default null) returns jsonb language plpgsql as $$
+	p_binding text default null, p_sha256 text default null, p_operation uuid default '52300000-0000-4000-8000-0000000000f1')
+	returns jsonb language plpgsql as $$
 declare v_result jsonb;
 begin
 	perform set_config('request.jwt.claims', jsonb_build_object('role', p_role)::text, true);
-	execute format('select public.%I($1, $2, $3, $4)', p_rpc) into v_result
-	using p_machine, p_owner, coalesce(p_binding, pg_temp.fr_binding(p_machine)), coalesce(p_sha256, pg_temp.fr_node());
+	execute format(case when p_rpc = 'qorpera_record_coding_machine_folder_restart' then 'select public.%I($1, $5, $2, $3, $4)'
+		else 'select public.%I($1, $2, $3, $4)' end, p_rpc) into v_result
+	using p_machine, p_owner, coalesce(p_binding, pg_temp.fr_binding(p_machine)), coalesce(p_sha256, pg_temp.fr_node()), p_operation;
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	return v_result;
 end $$;
@@ -283,10 +291,11 @@ begin
 	perform pg_temp.fr_put('l', l::text);
 end $$;
 
--- 5. The record: only the service role, with the machine's exact custody. Every session attached to cm (a, b, e and
--- the leased l) is detached, each with one FOLDER_RESTART event naming its commands; the mark is cleared and no outside
--- stop is kept. cm2's session is not touched. Again, or on an unmarked machine, it answers 'unmarked' and changes
--- nothing.
+-- 5. The record of start f1: only the service role, with the machine's exact custody, and a start named. Every session
+-- attached to cm (a, b, e and the leased l) is detached, each with one FOLDER_RESTART event naming its commands; the
+-- mark is cleared and no outside stop is kept. cm2's session is not touched. Again for f1, it answers what it did and
+-- changes nothing; for the next start (f2), or on an unmarked machine (cm2, whose f1 is its own), it answers
+-- 'unmarked' and changes nothing.
 do $$
 declare cm uuid := pg_temp.fr_get('cm')::uuid; cm2 uuid := pg_temp.fr_get('cm2')::uuid; c jsonb := pg_temp.fr_get('c')::jsonb;
 	l jsonb := pg_temp.fr_get('l')::jsonb;
@@ -301,6 +310,10 @@ begin
 		(cm, 'exec-2', null, null),
 		(cm, 'exec-1', null, repeat('8', 64)),
 		(cm, 'exec-1', jsonb_pretty(pg_temp.fr_binding(cm)::jsonb), null)) x(machine, owner, binding, sha256);
+	perform pg_temp.fr_refused(format('select pg_temp.fr_call(%L, %L, p_operation => null)',
+		'qorpera_record_coding_machine_folder_restart', cm), '22023', 'Coding machine input invalid');
+	if exists (select 1 from public.qorpera_coding_machine_folder_restarts where machine_id = cm) then
+		raise exception 'A refused record keeps nothing'; end if;
 	select jsonb_agg(jsonb_build_object('workerId', worker_id, 'attachmentToken', attachment_token) order by worker_id) into v_expected
 	from public.qorpera_coding_sessions where attached_machine_id = cm;
 	if jsonb_array_length(v_expected) <> 4 or pg_temp.fr_mark_at(cm) is null then
@@ -332,13 +345,24 @@ begin
 	if not exists (select 1 from public.qorpera_coding_sessions where worker_id = (c ->> 'workerId')::uuid and attached_machine_id = cm2
 			and attachment_token = (c ->> 'attachmentToken')::uuid) or pg_temp.fr_events((c ->> 'workerId')::uuid) <> '[]'::jsonb then
 		raise exception 'Another machine''s session is not touched'; end if;
-	-- Again, and on an unmarked machine.
+	-- Again for f1, then the next start, and on an unmarked machine.
 	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm);
+	if r is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1', 'machineId', cm, 'state', 'restarted',
+			'detached', v_expected)
+		or exists (select 1 from jsonb_array_elements(v_expected) x
+			where jsonb_array_length(pg_temp.fr_events((x.value ->> 'workerId')::uuid)) <> 1) then
+		raise exception 'A second record of the start answers the first and changes nothing: %', r; end if;
+	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm, p_operation => '52300000-0000-4000-8000-0000000000f2');
 	if r is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1', 'machineId', cm, 'state', 'unmarked',
 			'detached', '[]'::jsonb)
 		or exists (select 1 from jsonb_array_elements(v_expected) x
 			where jsonb_array_length(pg_temp.fr_events((x.value ->> 'workerId')::uuid)) <> 1) then
-		raise exception 'A second record changes nothing: %', r; end if;
+		raise exception 'The next start''s record on an unmarked machine changes nothing: %', r; end if;
+	if (select jsonb_agg(jsonb_build_object('operationId', operation_id, 'state', state, 'detached', detached) order by operation_id)
+			from public.qorpera_coding_machine_folder_restarts where machine_id = cm) is distinct from jsonb_build_array(
+			jsonb_build_object('operationId', '52300000-0000-4000-8000-0000000000f1', 'state', 'restarted', 'detached', v_expected),
+			jsonb_build_object('operationId', '52300000-0000-4000-8000-0000000000f2', 'state', 'unmarked', 'detached', '[]'::jsonb)) then
+		raise exception 'Each start''s record is kept'; end if;
 	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm2);
 	if r ->> 'state' is distinct from 'unmarked'
 		or not exists (select 1 from public.qorpera_coding_sessions where worker_id = (c ->> 'workerId')::uuid and attached_machine_id = cm2)
@@ -346,7 +370,69 @@ begin
 		raise exception 'An unmarked machine''s record changes nothing: %', r; end if;
 end $$;
 
--- 6. The reason's words; the others keep theirs.
+-- 6. Restarts of cm6, each record named by its start (g1 to g4). g1's record restarts it; once it started, its session
+-- g attached anew, h attached and it was marked again, a late record of g1 answers what the first did and changes
+-- nothing: the mark stays, and g and h stay attached and are told nothing more. g2's record then restarts it. So with
+-- a record that answered 'unmarked' (g3): late, after a new mark, it keeps that mark, and g4's record restarts it.
+do $$
+declare cm6 uuid := pg_temp.fr_machine(); g jsonb := pg_temp.fr_session(cm6); h jsonb; tok uuid := extensions.gen_random_uuid();
+	tok2 uuid := extensions.gen_random_uuid(); g1 uuid := extensions.gen_random_uuid(); g2 uuid := extensions.gen_random_uuid();
+	g3 uuid := extensions.gen_random_uuid(); g4 uuid := extensions.gen_random_uuid(); v_first jsonb; v_expected jsonb;
+	v_at timestamptz; r jsonb;
+begin
+	perform pg_temp.fr_call('qorpera_mark_coding_machine_folder_restart', cm6);
+	v_first := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm6, p_operation => g1);
+	if v_first is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1', 'machineId', cm6,
+			'state', 'restarted', 'detached', jsonb_build_array(pg_temp.fr_anchor(g))) or pg_temp.fr_mark_at(cm6) is not null then
+		raise exception 'g1''s record restarts it: %', v_first; end if;
+	-- The new boot: g attaches anew, h attaches, and cm6 is marked again.
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set attached_machine_id = %L, attachment_token = %L,
+		attachment_until = clock_timestamp() + interval %L, attachment_turn = 2, attached_at = clock_timestamp() where worker_id = %L',
+		cm6, tok, '10 minutes', g ->> 'workerId'));
+	h := pg_temp.fr_session(cm6);
+	perform pg_temp.fr_call('qorpera_mark_coding_machine_folder_restart', cm6);
+	v_at := pg_temp.fr_mark_at(cm6);
+	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm6, p_operation => g1);
+	if r is distinct from v_first or v_at is null or pg_temp.fr_mark_at(cm6) is distinct from v_at
+		or not exists (select 1 from public.qorpera_coding_sessions where worker_id = (g ->> 'workerId')::uuid
+			and attached_machine_id = cm6 and attachment_token = tok)
+		or not exists (select 1 from public.qorpera_coding_sessions where worker_id = (h ->> 'workerId')::uuid
+			and attached_machine_id = cm6 and attachment_token = (h ->> 'attachmentToken')::uuid)
+		or jsonb_array_length(pg_temp.fr_events((g ->> 'workerId')::uuid)) <> 1
+		or pg_temp.fr_events((h ->> 'workerId')::uuid) <> '[]'::jsonb then
+		raise exception 'A late record of g1 changes nothing: %', r; end if;
+	select jsonb_agg(jsonb_build_object('workerId', worker_id, 'attachmentToken', attachment_token) order by worker_id) into v_expected
+	from public.qorpera_coding_sessions where attached_machine_id = cm6;
+	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm6, p_operation => g2);
+	if jsonb_array_length(v_expected) <> 2 or r is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1',
+			'machineId', cm6, 'state', 'restarted', 'detached', v_expected) or pg_temp.fr_mark_at(cm6) is not null
+		or not pg_temp.fr_detached((g ->> 'workerId')::uuid) or not pg_temp.fr_detached((h ->> 'workerId')::uuid)
+		or jsonb_array_length(pg_temp.fr_events((g ->> 'workerId')::uuid)) <> 2
+		or jsonb_array_length(pg_temp.fr_events((h ->> 'workerId')::uuid)) <> 1 then
+		raise exception 'g2''s record restarts it: % (expected %)', r, v_expected; end if;
+	-- An 'unmarked' record, late.
+	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm6, p_operation => g3);
+	if r ->> 'state' is distinct from 'unmarked' then raise exception 'g3 on an unmarked machine: %', r; end if;
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set attached_machine_id = %L, attachment_token = %L,
+		attachment_until = clock_timestamp() + interval %L, attachment_turn = 3, attached_at = clock_timestamp() where worker_id = %L',
+		cm6, tok2, '10 minutes', g ->> 'workerId'));
+	perform pg_temp.fr_call('qorpera_mark_coding_machine_folder_restart', cm6);
+	v_at := pg_temp.fr_mark_at(cm6);
+	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm6, p_operation => g3);
+	if r is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1', 'machineId', cm6, 'state', 'unmarked',
+			'detached', '[]'::jsonb) or v_at is null or pg_temp.fr_mark_at(cm6) is distinct from v_at
+		or not exists (select 1 from public.qorpera_coding_sessions where worker_id = (g ->> 'workerId')::uuid
+			and attached_machine_id = cm6 and attachment_token = tok2)
+		or jsonb_array_length(pg_temp.fr_events((g ->> 'workerId')::uuid)) <> 2 then
+		raise exception 'A late unmarked record keeps the new mark: %', r; end if;
+	r := pg_temp.fr_call('qorpera_record_coding_machine_folder_restart', cm6, p_operation => g4);
+	if r is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1', 'machineId', cm6, 'state', 'restarted',
+			'detached', jsonb_build_array(jsonb_build_object('workerId', g ->> 'workerId', 'attachmentToken', tok2)))
+		or pg_temp.fr_mark_at(cm6) is not null or not pg_temp.fr_detached((g ->> 'workerId')::uuid) then
+		raise exception 'g4''s record restarts it: %', r; end if;
+end $$;
+
+-- 7. The reason's words; the others keep theirs.
 do $$
 begin
 	if exists (select 1 from (values
@@ -360,7 +446,7 @@ begin
 		raise exception 'The words'; end if;
 end $$;
 
--- 7. Once restarted, a session attached anew opens a view on the machine, and the next service serves it.
+-- 8. Once restarted, a session attached anew opens a view on the machine, and the next service serves it.
 do $$
 declare cm uuid := pg_temp.fr_get('cm')::uuid; e jsonb := pg_temp.fr_get('e')::jsonb; tok uuid := extensions.gen_random_uuid();
 	v jsonb; r jsonb;
