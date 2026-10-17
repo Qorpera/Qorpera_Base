@@ -125,6 +125,9 @@ struct Worktree {
 	sparse: BTreeSet<String>,
 	/// How often `track` was asked, in memory: a move of what the index tracks is done only for what it tracked since.
 	generation: u64,
+	/// How often what its index tracks was taken in or found stale (`indexed`, `stale`), in memory: a read of the index
+	/// from the node that started before is not taken (`indexed_as_of`).
+	reads: u64,
 }
 
 pub struct CacheList {
@@ -181,9 +184,15 @@ impl CacheList {
 
 	/// `worktree`'s index changed without being read: it is read again before the next new cache.
 	pub fn stale(&mut self, worktree: &str) {
-		if let Some(w) = self.worktrees.get_mut(worktree) {
-			w.read = false;
-		}
+		let w = self.worktrees.entry(worktree.to_string()).or_default();
+		w.read = false;
+		w.reads += 1;
+	}
+
+	/// How often `worktree`'s index was taken in or found stale since the program started: a read of it from the node
+	/// that starts now is taken only while this stays the same (`indexed_as_of`).
+	pub fn reads(&self, worktree: &str) -> u64 {
+		self.worktrees.get(worktree).map_or(0, |w| w.reads)
 	}
 
 	/// Whether `worktree`'s index tracks `path` (in the worktree), a folder when `folder`, as it did when it was last
@@ -231,10 +240,17 @@ impl CacheList {
 		self.mark();
 	}
 
+	/// `indexed`, for a read of `worktree`'s index from the node that started when `reads` was `as_of`. None, with
+	/// nothing taken, when the index was taken in or found stale since: what the read gives may be older.
+	pub fn indexed_as_of(&mut self, worktree: &str, paths: &[String], as_of: u64) -> Option<Vec<String>> {
+		(self.reads(worktree) == as_of).then(|| self.indexed(worktree, paths))
+	}
+
 	/// `worktree`'s index lists `paths` now: the names that leave its list by it.
 	pub fn indexed(&mut self, worktree: &str, paths: &[String]) -> Vec<String> {
 		let w = self.worktrees.entry(worktree.to_string()).or_default();
 		w.read = true;
+		w.reads += 1;
 		w.tracked = paths.iter().map(|p| p.strip_suffix('/').unwrap_or(p).to_string()).collect();
 		w.sparse = paths.iter().filter_map(|p| p.strip_suffix('/')).map(str::to_string).collect();
 		let mut leaving = BTreeSet::new();
@@ -430,5 +446,30 @@ mod tests {
 		assert!(again.moves(None).is_empty() && !marker.exists());
 		assert!(CacheList::open(&file, Some(marker.clone())).unwrap().moves(None).is_empty());
 		std::fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_read_of_the_index_that_a_newer_one_or_a_stale_one_overtook_is_not_taken() {
+		let w = "code/o/n/worktrees/w";
+		let mut list = CacheList::memory();
+		let older = list.reads(w);
+		// The index git writes meanwhile is taken in: the older read finishing after it is not.
+		list.indexed(w, &["b.log".to_string()]);
+		assert!(list.indexed_as_of(w, &["a.log".to_string()], older).is_none());
+		assert!(list.read(w) && list.tracks(w, "b.log", false) && !list.tracks(w, "a.log", false));
+		// Nor one that started before the index was found stale: the index stays unread.
+		let before = list.reads(w);
+		list.stale(w);
+		assert!(list.indexed_as_of(w, &["build/a".to_string()], before).is_none());
+		assert!(!list.read(w) && list.listed(w, "build") && list.tracks(w, "b.log", false));
+		// One with nothing between is taken.
+		let now = list.reads(w);
+		assert_eq!(list.indexed_as_of(w, &["build/a".to_string()], now), Some(vec!["build".to_string()]));
+		assert!(list.read(w) && !list.listed(w, "build") && !list.tracks(w, "b.log", false));
+		// A worktree found stale before it was ever read counts too.
+		let v = "code/o/n/worktrees/v";
+		let first = list.reads(v);
+		list.stale(v);
+		assert!(list.indexed_as_of(v, &[], first).is_none() && !list.read(v));
 	}
 }

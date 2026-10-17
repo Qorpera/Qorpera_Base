@@ -62,6 +62,8 @@ struct State {
 	busy_links: usize,
 	/// How many of the next renames to answer only a while after they changed the tree and the feeds heard of it.
 	slow_renames: usize,
+	/// How many of the next renames to make (and answer) only a while after they came.
+	late_renames: usize,
 	/// The next lists of a folder, each with the seconds it is answered after it was made and the feeds heard of a
 	/// change there.
 	slow_lists: Vec<(String, u64)>,
@@ -265,6 +267,16 @@ impl FakeNode {
 		self.state.lock().unwrap().slow_renames = renames;
 	}
 
+	/// The next `renames` renames change the tree (and are answered) three seconds after they came.
+	pub fn late_renames(&self, renames: usize) {
+		self.state.lock().unwrap().late_renames = renames;
+	}
+
+	/// How many of the renames `late_renames` asked for have not come yet.
+	pub fn late_renames_left(&self) -> usize {
+		self.state.lock().unwrap().late_renames
+	}
+
 	/// The next lists of the folder `path` are answered one after the other `secs` seconds after they were made (with
 	/// the entries of then), and the feeds hear of a change there meanwhile, so the machine keeps none of them.
 	pub fn slow_lists(&self, path: &str, secs: &[u64]) {
@@ -346,6 +358,13 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 	loop {
 		let Ok((k, body)) = read_frame(&mut s) else { return };
 		let mut st = state.lock().unwrap();
+		if k == kind::RENAME && st.writable && st.late_renames > 0 {
+			// The tree changes later, while the node goes on with other requests.
+			st.late_renames -= 1;
+			drop(st);
+			std::thread::sleep(std::time::Duration::from_secs(3));
+			st = state.lock().unwrap();
+		}
 		if k == kind::RENAME && st.writable && st.slow_renames > 0 {
 			// The tree changes now and the answer comes later, while the node goes on with other requests.
 			st.slow_renames -= 1;

@@ -311,40 +311,71 @@ impl Shared {
 	}
 
 	/// Reads `worktree`'s index (at `index`) from the node, for its cache list. A worktree without one has tracked
-	/// nothing yet; one the node could not give is read again at the next new cache.
+	/// nothing yet; one the node could not give is read again at the next new cache. Git can put another index in place
+	/// while the read is on, so what it gives is taken only if no index was taken in or found stale for the worktree
+	/// since it started (`index_after`): a newer one taken in stands, and one found stale is read again, a few times at
+	/// most.
 	fn read_index(&self, local: &Local, worktree: &str, index: &str) {
+		for _ in 0..3 {
+			let as_of = local.cache.lock().unwrap().reads(worktree);
+			let Some(paths) = self.index_paths(index) else { return };
+			if self.indexed(local, worktree, &paths, Some(as_of)) || local.cache.lock().unwrap().read(worktree) {
+				return;
+			}
+		}
+	}
+
+	/// The paths the node's index at `index` tracks (none where it has none), or None where it could not be read.
+	fn index_paths(&self, index: &str) -> Option<Vec<String>> {
 		let (dir, name) = split(index);
 		let entry = match self.link.list(dir) {
 			Ok(entries) => entries.into_iter().find(|e| e.name == name && e.kind == EntryKind::File),
 			Err(f) if f.errno() == libc::ENOENT => None,
-			Err(f) => return eprintln!("qorpera-folder: {index} could not be listed (errno {})", f.errno()),
+			Err(f) => {
+				eprintln!("qorpera-folder: {index} could not be listed (errno {})", f.errno());
+				return None;
+			}
 		};
-		let data = match entry {
-			None => return self.indexed(local, worktree, &[]),
-			Some(e) => match self.read_all(index, &e.version, e.size) {
-				Ok(data) => data,
-				Err(e) => return eprintln!("qorpera-folder: {index} could not be read (errno {e})"),
-			},
-		};
-		self.indexed_data(local, worktree, index, &data);
+		let Some(e) = entry else { return Some(Vec::new()) };
+		match self.read_all(index, &e.version, e.size) {
+			Ok(data) => parsed_index(index, &data),
+			Err(e) => {
+				eprintln!("qorpera-folder: {index} could not be read (errno {e})");
+				None
+			}
+		}
 	}
 
-	/// The index `data` git wrote for `worktree` (at `index`).
+	/// The index `data` git wrote for `worktree` (at `index`) just now.
 	fn indexed_data(&self, local: &Local, worktree: &str, index: &str, data: &[u8]) {
-		match index::paths(data) {
-			Ok(paths) => self.indexed(local, worktree, &paths),
-			Err(e) => eprintln!("qorpera-folder: {index} could not be read ({e:?}); its worktree's cache list stays"),
+		if let Some(paths) = parsed_index(index, data) {
+			self.indexed(local, worktree, &paths, None);
 		}
 	}
 
 	/// `worktree`'s index tracks `paths` now: the names under which it tracks files leave its cache list, and their
 	/// cache folders move into the folder (`move_caches`), as do the caches it tracks, or tracks paths in (`TRACKED`).
-	fn indexed(&self, local: &Local, worktree: &str, paths: &[String]) {
-		local.cache.lock().unwrap().indexed(worktree, paths);
+	/// Read from the node when the list's `reads` was `as_of`, they are taken only if it still is (None: git wrote them
+	/// just now); whether they were.
+	fn indexed(&self, local: &Local, worktree: &str, paths: &[String], as_of: Option<u64>) -> bool {
+		let taken = {
+			let mut list = local.cache.lock().unwrap();
+			match as_of {
+				Some(as_of) => list.indexed_as_of(worktree, paths, as_of).is_some(),
+				None => {
+					list.indexed(worktree, paths);
+					true
+				}
+			}
+		};
+		if !taken {
+			return false;
+		}
 		if self.tracks_a_cache(local, worktree) {
 			local.cache.lock().unwrap().track(worktree);
 		}
 		self.move_caches(local, Some(worktree));
+		true
 	}
 
 	/// Whether `worktree`'s index, as it was read last, tracks one of its caches, or a path in one.
@@ -624,6 +655,17 @@ impl Shared {
 enum Sent {
 	Disk(i32),
 	Node(Fail),
+}
+
+/// The paths git's index `data` (at `index`) tracks, or None where it could not be read.
+fn parsed_index(index: &str, data: &[u8]) -> Option<Vec<String>> {
+	match index::paths(data) {
+		Ok(paths) => Some(paths),
+		Err(e) => {
+			eprintln!("qorpera-folder: {index} could not be read ({e:?}); its worktree's cache list stays");
+			None
+		}
+	}
 }
 
 /// The folder's path of `rel` in `worktree` ("" for its top).
@@ -1059,32 +1101,34 @@ impl FolderFs {
 	}
 
 	/// The index git is about to put in place for a worktree by renaming its lock `from` (`source`) onto `to`, read
-	/// before the rename for the worktree's cache list (`index_after`). A worktree with no caches only reads it before
-	/// its next one.
-	pub(super) fn index_before(&self, from: &str, to: &str, source: &Child) -> Option<(String, Vec<u8>)> {
+	/// before the rename for the worktree's cache list (`index_after`): the worktree, with what git wrote, or None for
+	/// one with no caches, which only reads it before its next one (and where it could not be read).
+	pub(super) fn index_before(&self, from: &str, to: &str, source: &Child) -> Option<(String, Option<Vec<u8>>)> {
 		let local = self.s.local.as_ref()?;
 		let worktree = git::index_of(to)?;
 		if source.attr.kind != EntryKind::File {
 			return None;
 		}
 		if !local.has_caches(&worktree) {
-			local.cache.lock().unwrap().stale(&worktree);
-			return None;
+			return Some((worktree, None));
 		}
 		match self.s.read_all(from, &source.attr.version, source.attr.size) {
-			Ok(data) => Some((worktree, data)),
+			Ok(data) => Some((worktree, Some(data))),
 			Err(e) => {
-				local.cache.lock().unwrap().stale(&worktree);
 				eprintln!("qorpera-folder: {from} could not be read (errno {e})");
-				None
+				Some((worktree, None))
 			}
 		}
 	}
 
-	/// The rename `index_before` read for landed at `to`.
-	pub(super) fn index_after(&self, to: &str, read: Option<(String, Vec<u8>)>) {
-		if let (Some(local), Some((worktree, data))) = (&self.s.local, read) {
-			self.s.indexed_data(local, &worktree, to, &data);
+	/// The rename `index_before` read for landed at `to`: what git wrote is taken in, or the index is found stale. Not
+	/// before the node has it, so that a read of the index from the node (`read_index`) that gave the one before is
+	/// not taken.
+	pub(super) fn index_after(&self, to: &str, read: Option<(String, Option<Vec<u8>>)>) {
+		let (Some(local), Some((worktree, data))) = (&self.s.local, read) else { return };
+		match data {
+			Some(data) => self.s.indexed_data(local, &worktree, to, &data),
+			None => local.cache.lock().unwrap().stale(&worktree),
 		}
 	}
 

@@ -1081,6 +1081,120 @@ fn a_tracked_cache_folder_made_in_the_node_again_takes_none_of_the_caches_of_the
 }
 
 #[test]
+fn a_read_of_the_index_overtaken_by_one_found_stale_is_made_again() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	assert!(git.join("HEAD").is_file());
+	// A new c.log reads the index first, which the node has none of yet, and the list waits for the node. Meanwhile git
+	// puts an index that tracks c.log in place while the worktree has no caches: found stale, not read.
+	node.slow_lists("code/o/n/repo.git/worktrees/w", &[3]);
+	let made = w.join("c.log");
+	let making = std::thread::spawn(move || std::fs::write(made, "c.log").unwrap());
+	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log"])).unwrap();
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(!making.is_finished(), "the read of the index was not overtaken");
+	making.join().unwrap();
+	// What the older read gave is not taken: the index is read again, and c.log, which it tracks, is published.
+	assert_eq!(node.content(&format!("{at}/c.log")).as_deref(), Some(b"c.log".as_slice()));
+	std::fs::write(w.join("d.log"), "d.log").unwrap();
+	assert!(!node.exists(&format!("{at}/d.log")));
+	assert_eq!(std::fs::read_to_string(w.join("d.log")).unwrap(), "d.log");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_read_of_the_index_overtaken_by_a_newer_one_leaves_the_move_of_what_that_one_tracks() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	for path in ["a.log", "b.log"] {
+		std::fs::write(w.join(path), path).unwrap();
+	}
+	assert!(!node.exists(&format!("{at}/a.log")) && !node.exists(&format!("{at}/b.log")));
+	// The program starts again, with the same state: the index is read again before the next new cache.
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+	unmounted(&company);
+	node.reopen_view();
+	let (_, runner) = start(&node);
+	assert!(git.join("HEAD").is_file());
+	// A new c.log reads the index, which the node has none of, and the list waits for the node. Meanwhile `git add -f
+	// b.log` while a boundary settles: that index is taken in, and the move of b.log waits for the node.
+	node.slow_lists("code/o/n/repo.git/worktrees/w", &[3]);
+	let made = w.join("c.log");
+	let making = std::thread::spawn(move || std::fs::write(made, "c.log").unwrap());
+	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	std::fs::write(git.join("index.lock"), git_index(&["README", "b.log"])).unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
+	assert!(!making.is_finished(), "the read of the index was not overtaken");
+	making.join().unwrap();
+	// The older read, done after it, is not taken: the move of b.log is still on, and it lands.
+	let marker = node.dir.join("state/caches.moving");
+	assert!(marker.exists());
+	node.busy(0, 0);
+	let moved = || node.content(&format!("{at}/b.log")).as_deref() == Some(b"b.log".as_slice());
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0 && !marker.exists());
+	assert!(done, "moved: {}, handles open at the node: {}, marker: {}", moved(), node.open_handles(), marker.exists());
+	for path in ["a.log", "c.log"] {
+		assert!(!node.exists(&format!("{at}/{path}")), "{path} is in the folder");
+		assert_eq!(std::fs::read_to_string(w.join(path)).unwrap(), path);
+	}
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn an_index_is_found_stale_only_once_the_node_has_it() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	assert!(git.join("HEAD").is_file());
+	// Git puts an index that tracks d.log in place while the worktree has no caches, and the node makes the rename only
+	// a while later. Meanwhile a new c.log reads the index the node still has, none: a cache.
+	std::fs::write(git.join("index.lock"), git_index(&["README", "d.log"])).unwrap();
+	node.late_renames(1);
+	let (from, to) = (git.join("index.lock"), git.join("index"));
+	let renaming = std::thread::spawn(move || std::fs::rename(from, to).unwrap());
+	assert!(eventually(Duration::from_secs(10), || node.late_renames_left() == 0));
+	std::fs::write(w.join("c.log"), "c.log").unwrap();
+	assert!(!renaming.is_finished(), "the rename landed before c.log was made");
+	assert!(!node.exists(&format!("{at}/c.log")));
+	renaming.join().unwrap();
+	// The index is found stale once the node has the new one, not before: d.log, which that one tracks, is published.
+	std::fs::write(w.join("d.log"), "d.log").unwrap();
+	assert_eq!(node.content(&format!("{at}/d.log")).as_deref(), Some(b"d.log".as_slice()));
+	assert_eq!(std::fs::read_to_string(w.join("c.log")).unwrap(), "c.log");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() {
 	if !wanted() {
 		return;
