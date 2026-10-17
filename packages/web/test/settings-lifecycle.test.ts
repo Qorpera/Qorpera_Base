@@ -50,8 +50,8 @@ async function setup(f = fixture()) {
 	return { ...f, root };
 }
 /** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens) and the
- * company's mail, offers and pages reads, which run while it is open (Interfaces steps I5c, I9c and C6a), Settings
- * reading the pages too. */
+ * company's mail, offers, consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and
+ * C6d), Settings reading the pages too. */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
@@ -61,6 +61,7 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 				name !== "qorpera_list_review_rules" &&
 				!name.startsWith("qorpera_member_mail_") &&
 				name !== "qorpera_member_interface_offers" &&
+				name !== "qorpera_member_interface_supervisions" &&
 				name !== "qorpera_member_interface_pages",
 		);
 }
