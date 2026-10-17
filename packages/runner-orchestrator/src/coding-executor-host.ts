@@ -32,7 +32,7 @@ import type {
 	CodingTurnState,
 	CodingWorkspace,
 } from "./coding-executor.ts";
-import { CodingMachineUnavailable } from "./coding-executor.ts";
+import { CodingMachineUnavailable, CodingPushRefused } from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
 import { type CodingFolderControl, codingFolderBoundaryHeld } from "./coding-folder-control.ts";
 import {
@@ -1721,6 +1721,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const authorize = async (): Promise<void> => {
 			await this.#run(claim, ready.machine, ready.storage, signal);
 		};
+		// The session's secret values, those its commands were given and its environment now (5j-5 b): a push or a pull
+		// request that carries one goes nowhere. No broker, no values to check.
+		const secrets = await this.#commandSecrets?.publication(
+			ready.machine.machineId,
+			{ companyId: claim.profileId, workerId: claim.workerId, leaseToken: claim.leaseToken },
+			signal,
+		);
+		const title = claim.title.slice(0, 200);
+		if (
+			secrets &&
+			[title, submission.summary].some((text) => {
+				const stream = secrets.stream();
+				stream.push(Buffer.from(text));
+				stream.end();
+				return stream.matched;
+			})
+		)
+			throw new CodingPushRefused({ kind: "pull-request" });
 		await pushCloudCodingBundle(
 			{
 				repository: claim.repository,
@@ -1736,6 +1754,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				assertAuthorized: authorize,
 				withRepositoryToken: token,
 				runGit: this.#options.runGit,
+				...(secrets ? { secrets } : {}),
 			},
 		);
 		const pullRequest = await publishCloudCodingDraftPullRequest(
@@ -1743,7 +1762,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				repository: claim.repository,
 				workerId: claim.workerId,
 				headSha: submission.headSha,
-				title: claim.title.slice(0, 200),
+				title,
 				body: submission.summary,
 			},
 			{

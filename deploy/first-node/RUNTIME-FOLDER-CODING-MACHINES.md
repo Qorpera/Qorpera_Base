@@ -560,7 +560,8 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
   boundaries, replaced before anything is written or reaches a model;
 - saves: the folder service refuses a plain save or an inflated loose object that carries a value (a keyed rolling
   hash over values of at least a minimum length, so the service never holds the values in the clear);
-- pushes: the broker's push check scans the diff and the commit messages and refuses a push that carries a value.
+- pushes: the broker's push check reads every object the push adds (file contents, file and folder names, each
+  commit with its message) and refuses a push that carries a value.
 
 A program that encodes a value another way gets past the mask; that is why it is best effort.
 
@@ -583,7 +584,10 @@ after it restarts. The limits:
 - a removed secret is not masked any more (a member's own secrets are removed when the member leaves).
 
 Changing a secret in the vault does not take its old value off the machine: revoke the old value where it was issued.
-The save and push checks are 5j-5.
+Since 5j-5 (b), a publication is checked against the values the masks cover, the older values included, and the
+session's environment asked again at publish: a push, or a pull request title or summary, that carries one is
+refused, and so is a push that can't be checked whole (too big, or Git failed while reading it). The save check is
+5j-5 (a).
 
 **The vault relay** (5j) is host-side, on a second vsock port that checks the caller's CID, on the platform road
 (agent exit §2: "the platform's own services keep the platform road, even when they act for an agent"). It does two

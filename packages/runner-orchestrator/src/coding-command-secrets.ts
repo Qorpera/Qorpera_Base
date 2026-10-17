@@ -109,17 +109,7 @@ export class CodingMachineCommandSecrets {
 
 	/** One session's secrets on its machine, asked for under `scope`, the claim of the call that uses them. */
 	session(machineId: string, scope: CodingEnvironmentScope): CodingCommandSecrets {
-		const machine: Machine = this.#machines.get(machineId) ?? {
-			sessions: new Map<string, Session>(),
-			released: new Set<string>(),
-			history: new Set<string>(),
-		};
-		this.#machines.set(machineId, machine);
-		const session: Session = machine.sessions.get(scope.workerId) ?? {
-			commands: new Map<string, Environment>(),
-			accepted: new Set<string>(),
-		};
-		machine.sessions.set(scope.workerId, session);
+		const session = this.#session(machineId, scope.workerId);
 		const asked = Object.freeze({
 			companyId: scope.companyId,
 			workerId: scope.workerId,
@@ -133,6 +123,25 @@ export class CodingMachineCommandSecrets {
 				if (session.commands.has(request.commandId)) session.accepted.add(request.commandId);
 			},
 		};
+	}
+
+	/** What the session's publication is checked against (5j-5 b): its environment asked again now, which no command
+	 * keeps, the older values that answer names, and every value kept for the machine, as a command's mask has. So a
+	 * value added since its commands started is in, and one removed since. A failed ask fails the publication. */
+	async publication(machineId: string, scope: CodingEnvironmentScope, signal: AbortSignal): Promise<CodingSecretMask> {
+		const session = this.#session(machineId, scope.workerId);
+		const asked = Object.freeze({
+			companyId: scope.companyId,
+			workerId: scope.workerId,
+			leaseToken: scope.leaseToken,
+		});
+		signal.throwIfAborted();
+		const answer = await this.#source.environment(asked, signal);
+		signal.throwIfAborted();
+		const mask = this.#mask(machineId, asked, session, Object.freeze({ ...answer.environment }), answer.mask);
+		// The older values stay in the machine's masks, as a start's do.
+		for (const value of answer.mask) this.#machines.get(machineId)?.history.add(value);
+		return mask;
 	}
 
 	/** The session's attachment ended: its answers go. Until no session is left on the machine, its masks still cover
@@ -193,6 +202,21 @@ export class CodingMachineCommandSecrets {
 		if (!environment || !session.accepted.has(request.commandId)) return null;
 		const mask = this.#mask(machineId, scope, session, environment);
 		return () => mask.stream();
+	}
+
+	#session(machineId: string, workerId: string): Session {
+		const machine: Machine = this.#machines.get(machineId) ?? {
+			sessions: new Map<string, Session>(),
+			released: new Set<string>(),
+			history: new Set<string>(),
+		};
+		this.#machines.set(machineId, machine);
+		const session: Session = machine.sessions.get(workerId) ?? {
+			commands: new Map<string, Environment>(),
+			accepted: new Set<string>(),
+		};
+		machine.sessions.set(workerId, session);
+		return session;
 	}
 
 	#check(machineId: string, scope: CodingEnvironmentScope, request: CodingCommandSecretRequest): void {

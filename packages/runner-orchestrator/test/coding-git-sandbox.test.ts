@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,5 +67,47 @@ describe("mandatory coding Git parser containment", () => {
 			"ENV_INVALID",
 		);
 		await expect(run({ ...command, cwd: host })).rejects.toThrow("PATH_INVALID");
+	});
+	it.runIf(linux)("streams stdin and stdout if asked, up to the caller's limit, and keeps the default's", async () => {
+		const command = await fixture();
+		const run = createCodingBrokerGitRunner(sandbox);
+		const sink = (limit: number) => {
+			const chunks: Buffer[] = [];
+			return { chunks, output: { limit, write: (chunk: Buffer) => void chunks.push(chunk) } };
+		};
+		// The input reaches Git's stdin, past the pipe's own buffer, and the output reaches the sink, not the result.
+		const input = Buffer.alloc(1024 ** 2, "stream mode\n");
+		const blob = createHash("sha1")
+			.update(Buffer.concat([Buffer.from(`blob ${input.length}\0`), input]))
+			.digest("hex");
+		const hashed = sink(1024);
+		expect(await run({ ...command, args: ["hash-object", "--stdin"], input, output: hashed.output })).toBe("");
+		expect(Buffer.concat(hashed.chunks).toString()).toBe(`${blob}\n`);
+		// A streamed stdout has the caller's limit instead of 64 KiB, and Git is killed past it.
+		const print = ["-c", "alias.print=!yes stream | head -c 300000", "print"];
+		const whole = sink(300_000);
+		expect(await run({ ...command, args: print, output: whole.output })).toBe("");
+		expect(Buffer.concat(whole.chunks).length).toBe(300_000);
+		const over = sink(299_999);
+		await expect(run({ ...command, args: print, output: over.output })).rejects.toThrow(
+			"CODING_GIT_PROCESS_UNCONFIRMED",
+		);
+		expect(Buffer.concat(over.chunks).length).toBeLessThan(300_000);
+		// A sink that throws stops Git, and nothing more reaches it.
+		let writes = 0;
+		const refusing = {
+			limit: 300_000,
+			write: () => {
+				writes++;
+				throw new Error("enough");
+			},
+		};
+		await expect(run({ ...command, args: print, output: refusing })).rejects.toThrow(
+			"CODING_GIT_PROCESS_UNCONFIRMED",
+		);
+		expect(writes).toBe(1);
+		// Without a sink, stdout and stderr together still stop at 64 KiB, and stdin stays closed.
+		await expect(run({ ...command, args: print })).rejects.toThrow("CODING_GIT_PROCESS_UNCONFIRMED");
+		expect(await run({ ...command, args: ["-c", "alias.read=!wc -c", "read"] })).toMatch(/^\s*0\n$/);
 	});
 });

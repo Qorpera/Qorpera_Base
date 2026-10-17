@@ -9,7 +9,13 @@ import {
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodingMachineUnavailable, type CodingSessionClaim, type CodingTurnState } from "../src/coding-executor.ts";
+import type { CodingCommandSecrets, CodingEnvironmentSource } from "../src/coding-command-secrets.ts";
+import {
+	CodingMachineUnavailable,
+	CodingPushRefused,
+	type CodingSessionClaim,
+	type CodingTurnState,
+} from "../src/coding-executor.ts";
 import {
 	CODING_FOLDER_GIT_ENVIRONMENT,
 	codingHostId,
@@ -33,6 +39,7 @@ import {
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
 } from "../src/coding-machine.ts";
+import type { CodingSecretMask } from "../src/coding-secret-mask.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient, LxdInstanceRecord } from "../src/lxd-client.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
@@ -3612,6 +3619,76 @@ describe("a coding session on the folder model", () => {
 		expect(mocked.exportTransfer).not.toHaveBeenCalled();
 		expect(mocked.push.mock.calls[0]?.[1]).toEqual(Buffer.from("bundle"));
 		expect(mocked.push.mock.invocationCallOrder[0]).toBeLessThan(mocked.publish.mock.invocationCallOrder[0]!);
+		// No broker: nothing to check the push against.
+		expect(mocked.push.mock.calls[0]?.[2]).not.toHaveProperty("secrets");
+	});
+	it("checks a publication against the session's values and its environment asked again, the pull request first", async () => {
+		const f = await folderFixture();
+		// Made-up values.
+		const kept = "made-up-canary-5j5b-kept-value",
+			fresh = "made-up-canary-5j5b-fresh-value";
+		let values: Record<string, string> = { TOKEN: kept };
+		const environment = vi.fn<CodingEnvironmentSource["environment"]>(async () => ({
+			environment: values,
+			mask: [],
+		}));
+		const host = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, commandEnvironment: { environment } });
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await host.commandTransport(f.scope(), async () => undefined, f.signal);
+		// A command started with one value, and the session's environment holds another now.
+		const { secrets } = mocked.folderTransports[0] as { secrets: CodingCommandSecrets };
+		const request = {
+			companyId: f.claim.profileId,
+			workerId: f.claim.workerId,
+			machineId: f.machine.machineId,
+			commandId: randomUUID(),
+			kind: "command" as const,
+		};
+		await secrets.resolve(request, f.signal);
+		secrets.accepted(request);
+		values = { TOKEN: fresh };
+		const title = f.claim.title;
+		for (const [claimTitle, summary] of [
+			[title, `Tests passed with ${kept}`],
+			[`${title} ${fresh}`, "Tests passed"],
+		] as const) {
+			f.claim.title = claimTitle;
+			const error = await host.publish(f.claim, { ...f.submission, summary }, f.signal).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			expect(error).toBeInstanceOf(CodingPushRefused);
+			expect((error as CodingPushRefused).message).toBe("CODING_PUSH_CARRIES_SECRET");
+			expect((error as CodingPushRefused).carrier).toEqual({ kind: "pull-request" });
+			for (const value of [kept, fresh]) expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(value);
+		}
+		expect(mocked.push).not.toHaveBeenCalled();
+		expect(mocked.publish).not.toHaveBeenCalled();
+		// What the pull request does not get is not checked.
+		f.claim.title = `${title.padEnd(200)}${fresh}`;
+		expect(await host.publish(f.claim, f.submission, f.signal)).toEqual({
+			pullRequest: f.pullRequest,
+			noChange: false,
+		});
+		expect(mocked.publish.mock.calls[0]?.[0]).toMatchObject({ title: title.padEnd(200), body: "Tests passed" });
+		// The push is checked against both values.
+		const pushed = (mocked.push.mock.calls[0]?.[2] as { secrets: CodingSecretMask }).secrets;
+		for (const value of [kept, fresh]) {
+			const stream = pushed.stream();
+			stream.push(Buffer.from(value));
+			stream.end();
+			expect(stream.matched).toBe(true);
+		}
+		// Asked at the command's start, then once for each publication, under the claim; nothing asked is kept.
+		const scope = { companyId: f.claim.profileId, workerId: f.claim.workerId, leaseToken: f.claim.leaseToken };
+		expect(environment.mock.calls.map((call) => call[0])).toEqual([scope, scope, scope, scope]);
+		const output = await secrets.output(request, f.signal);
+		const stream = output!();
+		expect(Buffer.from([...stream.push(Buffer.from(fresh)), ...stream.end()]).toString()).toBe(fresh);
+		// A failed ask fails the publication.
+		environment.mockRejectedValueOnce(new Error("CODING_SECRET_BROKER_UNAVAILABLE"));
+		await expect(host.publish(f.claim, f.submission, f.signal)).rejects.toThrow("CODING_SECRET_BROKER_UNAVAILABLE");
+		expect(mocked.push).toHaveBeenCalledTimes(1);
 	});
 	it.each([
 		["holds the machine's reads", "READS_UNANSWERED", { reads: "unanswered" as const, views: [] }],

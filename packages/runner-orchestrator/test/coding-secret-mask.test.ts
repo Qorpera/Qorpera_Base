@@ -235,6 +235,29 @@ describe("coding secret mask", () => {
 		expect(out).toBe("c *** d");
 	});
 
+	it("says whether a value matched, returned yet or not", () => {
+		const mask = new CodingSecretMask([SECRET]);
+		const stream = mask.stream();
+		stream.push(bytes("plain "));
+		expect(stream.matched).toBe(false);
+		// Known once the match's last byte is in, while the stream still holds it back.
+		stream.push(bytes(SECRET));
+		expect(stream.matched).toBe(true);
+		stream.end();
+		expect(stream.matched).toBe(true);
+		for (const form of [Buffer.from(` ${SECRET}`).toString("base64url"), percentEveryByte(SECRET, false)]) {
+			const encoded = mask.stream();
+			encoded.push(bytes(form));
+			encoded.end();
+			expect(encoded.matched).toBe(true);
+		}
+		const clean = mask.stream();
+		clean.push(bytes(SECRET.slice(0, -1)));
+		clean.end();
+		expect(clean.matched).toBe(false);
+		expect(new CodingSecretMask().stream().matched).toBe(false);
+	});
+
 	it("refuses a value too short to mask and passes everything without values", () => {
 		expect(CODING_SECRET_MASK_MINIMUM_BYTES).toBe(8);
 		expect(() => new CodingSecretMask(["1234567"])).toThrow(RangeError);
