@@ -31,8 +31,8 @@ begin
 			lease_token = extensions.gen_random_uuid(), lease_until = clock_timestamp() + interval %L, started_at = clock_timestamp(),
 			vm_allocation_id = attached_machine_id where worker_id = %L', v_phase, 'exec-1', '5 minutes', s ->> 'workerId'));
 		e := pg_temp.aw_entry(cm);
-		if e is null or not (e ->> 'live')::boolean or not (e ->> 'reserved')::boolean or (e ->> 'superseded')::boolean
-			or (e ->> 'sleepDue')::boolean then
+		if e is null or (e ->> 'live')::boolean is not true or (e ->> 'reserved')::boolean is not true
+			or (e ->> 'superseded')::boolean is not false or (e ->> 'sleepDue')::boolean is not false then
 			raise exception 'A leased turn (%) keeps its quiet machine awake: %', v_phase, e; end if;
 		r := pg_temp.fr_custody(cm, 'stop');
 		if r is distinct from '{"state":"refused","reason":"MACHINE_IN_USE"}'::jsonb then
@@ -44,7 +44,7 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval %L
 		where worker_id = %L', '1 second', s ->> 'workerId'));
 	e := pg_temp.aw_entry(cm);
-	if (e ->> 'live')::boolean or not (e ->> 'sleepDue')::boolean then
+	if e is null or (e ->> 'live')::boolean is not false or (e ->> 'sleepDue')::boolean is not true then
 		raise exception 'With no turn holding it, the quiet machine is due to sleep: %', e; end if;
 	r := pg_temp.fr_custody(cm, 'stop');
 	if r ->> 'intent' is distinct from 'stop' or (select stop_authorized_at from public.qorpera_coding_machines where id = cm) is null then
