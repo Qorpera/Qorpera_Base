@@ -352,6 +352,23 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
+### Company memory (2) — C5, `20260930508000_memory_mode.sql`
+
+- `qorpera_company_memory_mode(p_profile_id)` → `qorpera.company-memory-mode/v1`:
+  `mode` (the company's choice: `notebooks`, Agent notebooks, the default, or
+  `tree`, Shared context — Beta), `setAt` (null until first chosen),
+  `effective` (what new runs get: `tree` only while the choice is `tree` and
+  the beta is offered), `betaOffered` (false: show the beta as unavailable),
+  `canManage` (owner or admin), and `runsInOtherMode` (runs made before the
+  last change that are still queued or running in the other mode; each
+  finishes in its own mode). Any member, viewers included.
+- `qorpera_set_company_memory_mode(p_profile_id, p_mode)`: owners and admins
+  (42501 otherwise); `p_mode` `notebooks|tree` (22023 otherwise). `tree` is
+  refused with 55000 while `betaOffered` is false; `notebooks` always works.
+  The same choice again changes nothing. Returns the same object as the read.
+  A change applies to runs made after it: a run keeps the mode it was made
+  with, also when it resumes. Switching deletes and rewrites nothing.
+
 ### Conversations, turns, wakes (13)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
@@ -734,8 +751,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `mail-attachments` Edge Function.
 - Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
-  (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
-  `qorpera_member_mail_thread(p_environment_id, p_thread)` (`{thread, address, messages, more?, waiting}`),
+  (`{address?, state?, direction?: "received" | "sent", before?: {lastAt, thread}, limit ≤ 50}` →
+  `{threads, nextBefore?}`; `direction`, 20260930512000, keeps the threads whose newest message went that way),
+  `qorpera_member_mail_thread(p_environment_id, p_thread, p_before?)` (`{thread, address, messages, more?, nextBefore?,
+  waiting}`: the newest 50 messages, oldest first; while `more`, `nextBefore` is `{at, kind, id}`, and given back as
+  `p_before` (20260930512000) the answer is the 50 before it),
   `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
   Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
   thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
@@ -859,6 +879,22 @@ a write under `human-tasks/` waits for P31.
   proposalId, status}`, `status` being `discarded`, or how a decided proposal was decided (`applied`, `not_applied`,
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
+
+### Pages (20260930509000_interface_pages)
+
+Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
+two pages in its Interfaces tab, Mailbox and Members, each off until an owner or admin switches it on. A client draws
+them from the definitions it ships, never from a definition in the folder's `interfaces/`: Pulse, a page an agent wrote
+and any other page name are pages that aren't there, in the tab, a direct link or a fallback. Switching changes no
+data: the pages' tables, the areas' consents and offers, and who pays stay as they are. Each call answers 42501 for a
+caller who is not a member of a folder-v2 company with that environment.
+
+- `qorpera_member_interface_pages(environment)`: `{schema: "qorpera.member-interface-pages/v1", pages, mayChange}`,
+  `pages` being `[{page, on}]` for `mailbox` then `members`, and `mayChange` whether the caller is an owner or admin.
+  Read it when the company opens, on focus, and after switching.
+- `qorpera_set_interface_page(environment, page, on)`: owners and admins only (42501 "Only the company's owners and
+  admins can switch its pages"); another page name or a null is 22023, and a company being deleted 55000. Answers
+  the pages as they are then, in the same shape. Switching a page to what it is changes nothing.
 
 ### Offers of a claimed cell (20260928509110_interface_offers)
 

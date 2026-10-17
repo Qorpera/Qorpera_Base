@@ -43,6 +43,8 @@ const SECOND = "c0d1e5e5-0002-4a00-8b00-000000000002";
 const HOST_VIEW = "c0d1e5e5-0003-4a00-8b00-000000000003";
 /** A session's view the executor opens on the machine after it restarted it (open in the core only once a test does). */
 const THIRD = "c0d1e5e5-0004-4a00-8b00-000000000004";
+/** Another coding machine, which a run before vouched for. */
+const OTHER_MACHINE = "c0d1e5e5-00ff-4a00-8b00-0000000000ff";
 const PASSES: Record<string, string> = {
 	[SESSION]: "codepass_0123456789-abcdefghijklmnopqrstuvw",
 	[SECOND]: "codepass_0123456789-bcdefghijklmnopqrstuvwx",
@@ -56,8 +58,9 @@ const PLAN = { path: "docs/plan.md", version: v(1), offset: 0, length: 16 };
 const NOTES = { path: "docs/notes.md", version: v(2), offset: 0, length: 16 };
 
 /** A company folder with two files, two sessions' views on one coding machine and a code host's view, and the node's
- * service with its coding project configured. `serve` starts another run of the service on the same core. */
-async function company() {
+ * service with its coding project configured. `serve` starts another run of the service on the same core. `vouched`:
+ * the machines the run before vouched for (`FolderServiceOptions.vouched`), for the first service and `serve`'s. */
+async function company(vouched?: readonly string[]) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-coding-"));
 	const core = new FakeCore();
 	core.seed([
@@ -71,12 +74,13 @@ async function company() {
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 	const services: FolderService[] = [];
 	const handles: ViewHandle[] = [];
-	const serve = (): FolderService => {
+	const serve = (next = vouched): FolderService => {
 		const service = new FolderService({
 			core,
 			objects,
 			grants: codingGrants(),
 			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			...(next === undefined ? {} : { vouched: next }),
 			log: () => undefined,
 		});
 		services.push(service);
@@ -299,10 +303,11 @@ describe("coding views", () => {
 			reads: "unproven",
 			views: [{ viewId: SECOND, report: { commitId: null, refused: "unproven" } }],
 		});
-		// The executor closes the machine's views, restarts it and says so: a view opened after is served as any.
+		// The executor closes the machine's views, restarts it and says so: a view opened after is served as any. The
+		// answer says a read went unreleased: what the machine kept from before cannot be kept.
 		core.views.get(SECOND)!.state = "closed";
 		await service.renewLeases();
-		service.restarted(CODING_MACHINE_ID);
+		expect(service.restarted(CODING_MACHINE_ID)).toBe(true);
 		core.openView(THIRD, PASSES[THIRD] as string, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
 		const third = await open(THIRD);
 		await third.read(PLAN);
@@ -315,7 +320,7 @@ describe("coding views", () => {
 		// A restart while a view of the machine is still open with a read unreleased: the read is forgotten with the
 		// machine it was served to, the view is unproven, and its closing later makes nothing lost.
 		await third.read(NOTES);
-		service.restarted(CODING_MACHINE_ID);
+		expect(service.restarted(CODING_MACHINE_ID)).toBe(true);
 		await write(third, "docs/d.txt", "d");
 		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
 			reads: "released",
@@ -330,6 +335,8 @@ describe("coding views", () => {
 		});
 		expect(releasesOf(core)).toHaveLength(1);
 		expect(core.commits).toHaveLength(1);
+		// A restart with nothing lost and no read unreleased drops nothing.
+		expect(service.restarted(CODING_MACHINE_ID)).toBe(false);
 	});
 
 	it("answers a boundary the machine's restart crossed unproven, though the read lost before it was cleared", async () => {
@@ -508,6 +515,73 @@ describe("coding views", () => {
 		expect(await service.stopCleanly()).toBe(false);
 		expect(core.stopped).toEqual([]);
 	});
+
+	it("counts a machine the run before did not vouch for lost until the executor says it restarted, a view of it open or not", async () => {
+		// The run before vouched for another machine alone: this one may hold a read it served and never released.
+		const { core, service, open } = await company([OTHER_MACHINE]);
+		expect(await service.boundary(CODING_MACHINE_ID)).toEqual({
+			machine: CODING_MACHINE_ID,
+			reads: "unproven",
+			views: [],
+		});
+		const first = await open();
+		await write(first, "docs/a.txt", "a");
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "unproven",
+			views: [{ viewId: SESSION, report: { commitId: null, refused: "unproven" } }],
+		});
+		expect(service.vouched()).toEqual([OTHER_MACHINE]);
+		// Restarted, it is vouched for, and the answer says what it kept from before cannot be kept.
+		core.views.get(SESSION)!.state = "closed";
+		await service.renewLeases();
+		expect(service.restarted(CODING_MACHINE_ID)).toBe(true);
+		expect(service.vouched()).toEqual([OTHER_MACHINE, CODING_MACHINE_ID]);
+		const second = await open(SECOND);
+		await second.read(PLAN);
+		await write(second, "docs/b.txt", "b");
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "released",
+			views: [{ viewId: SECOND, report: { paths: [{ path: "docs/b.txt", outcome: "saved" }] } }],
+		});
+		expect(core.entries.has("docs/a.txt")).toBe(false);
+		// A read it loses takes it out again, until its next restart.
+		await second.read(NOTES);
+		core.views.get(SECOND)!.state = "closed";
+		await service.renewLeases();
+		expect(service.vouched()).toEqual([OTHER_MACHINE]);
+		expect(service.restarted(CODING_MACHINE_ID)).toBe(true);
+		expect(service.vouched()).toEqual([OTHER_MACHINE, CODING_MACHINE_ID]);
+	});
+
+	it("leaves the next run the machines it vouches for at a clean stop; a view unproven only for not being vouched for holds up none", async () => {
+		// The run before left no note: every machine is lost until it restarts.
+		const { core, service, serve, open } = await company([]);
+		expect(service.restarted(CODING_MACHINE_ID)).toBe(true);
+		const view = await open();
+		await view.read(PLAN);
+		expect(await service.stopCleanly()).toBe(true);
+		expect(service.vouched()).toEqual([CODING_MACHINE_ID]);
+		// The next run, from that note, serves the machine's views proven.
+		const next = serve(service.vouched());
+		await write(await open(SESSION, AT_CODING, next), "docs/next.txt", "n");
+		expect(await next.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "released",
+			views: [{ viewId: SESSION, report: { paths: [{ path: "docs/next.txt", outcome: "saved" }] } }],
+		});
+		expect(await next.stopCleanly()).toBe(true);
+		// A run from no note serves them unproven. What such a view holds it could never save: it stops cleanly all the
+		// same, and vouches for the machine no more than the run before it did.
+		const last = serve([]);
+		await write(await open(SESSION, AT_CODING, last), "docs/last.txt", "l");
+		expect(await last.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "unproven",
+			views: [{ viewId: SESSION, report: { commitId: null, refused: "unproven" } }],
+		});
+		expect(await last.stopCleanly()).toBe(true);
+		expect(last.vouched()).toEqual([]);
+		expect(core.entries.has("docs/last.txt")).toBe(false);
+		expect(core.stopped).toHaveLength(3);
+	});
 });
 
 describe("the control socket", () => {
@@ -546,8 +620,10 @@ describe("the control socket", () => {
 				asked.push([machine, final]);
 				return { machine, reads: "released", views: [] };
 			},
+			// The first restart dropped a read, the second none.
 			restarted: (machine: string) => {
 				restarts.push(machine);
+				return restarts.length === 1;
 			},
 			openWindow: () => undefined,
 			closeWindow: async (machine: string): Promise<MachineBoundary> => ({ machine, reads: "released", views: [] }),
@@ -601,6 +677,8 @@ describe("the control socket", () => {
 				{ op: "restarted", machine: CODING_MACHINE_ID, final: [] },
 				{ op: "restarted", machine: "machine-1" },
 				{ op: "restarted", machine: CODING_MACHINE_ID },
+				{ op: "restarted", machine: CODING_MACHINE_ID, dropped: false },
+				{ op: "restarted", machine: CODING_MACHINE_ID },
 			]
 				.map((line) => `${JSON.stringify(line)}\n`)
 				.join(""),
@@ -612,12 +690,14 @@ describe("the control socket", () => {
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
 			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },
 			{ error: { code: "BAD_REQUEST", message: MACHINE } },
-			{ restarted: { machine: CODING_MACHINE_ID } },
+			{ restarted: { machine: CODING_MACHINE_ID, dropped: true } },
+			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },
+			{ restarted: { machine: CODING_MACHINE_ID, dropped: false } },
 		]);
 		expect(asked).toEqual([
 			[CODING_MACHINE_ID, []],
 			[CODING_MACHINE_ID, [SESSION]],
 		]);
-		expect(restarts).toEqual([CODING_MACHINE_ID]);
+		expect(restarts).toEqual([CODING_MACHINE_ID, CODING_MACHINE_ID]);
 	});
 });

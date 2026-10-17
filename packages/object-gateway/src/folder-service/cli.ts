@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { leaveCleanStop, takeCleanStop } from "./clean-stop.ts";
 import { CONTROL_SOCKET, createControlServer } from "./control.ts";
 import { SupabaseFolderCore } from "./core.ts";
 import { parseMachineProject, parseMachineRef } from "./machines.ts";
@@ -13,7 +14,8 @@ import { FolderStaging, GatewayUploads } from "./staging.ts";
 /** The node's folder service. Under systemd it takes its configuration and the service credential from
  * `LoadCredential=` (qorpera-folder-config, qorpera-supabase-service-key, and for writes qorpera-folder-gateway-token),
  * its socket from `qorpera-folder-service.socket`, and on a node with coding or test machines its control socket from
- * `qorpera-folder-control.socket` (named `control`); see deploy/folder-service/. */
+ * `qorpera-folder-control.socket` (named `control`), and its own folder from `RuntimeDirectory=`, where a clean stop
+ * leaves its note (clean-stop.ts); see deploy/folder-service/. */
 
 function credential(name: string): string {
 	const directory = process.env.CREDENTIALS_DIRECTORY;
@@ -84,6 +86,11 @@ const log = (line: string): void => {
 	process.stderr.write(`${line}\n`);
 };
 const settings = config();
+const runtime = process.env.RUNTIME_DIRECTORY;
+if (!runtime || runtime.includes(":"))
+	throw new Error("RUNTIME_DIRECTORY is not one folder: run under systemd with RuntimeDirectory=");
+// Taken, and removed, before anything is served: a crash of this run leaves no note.
+const vouched = takeCleanStop(runtime, log);
 const core = new SupabaseFolderCore({
 	projectUrl: settings.supabaseUrl,
 	secretKey: credential("qorpera-supabase-service-key"),
@@ -109,6 +116,7 @@ const service = new FolderService({
 		// A project listed here and as an office or coding project too stops the service at its start.
 		Array.isArray(settings.testMachineProjects) ? settings.testMachineProjects.map(parseMachineProject) : [],
 	),
+	vouched,
 	log,
 });
 
@@ -159,8 +167,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
 				return false;
 			})
 			.then((clean) => {
-				// Its machines' views stay marked served: the next run refuses them, and their machines restart.
+				// Its machines' views stay marked served: the next run refuses them, and their machines restart. It leaves
+				// no note either, so the next run vouches for no machine.
 				if (!clean) log("folder-service: stopped without a clean stop");
+				else
+					try {
+						leaveCleanStop(runtime, service.vouched());
+					} catch (error) {
+						log(`folder-service: the clean-stop note was not left: ${(error as Error).message}`);
+					}
 				process.exit(0);
 			});
 	});

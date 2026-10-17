@@ -590,6 +590,40 @@ fn a_cache_move_the_node_does_not_take_at_once_goes_on_through_the_same_handle()
 }
 
 #[test]
+fn a_cache_move_goes_on_under_the_name_a_rename_gives_its_folder() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join("code/o/n/worktrees/w");
+	std::fs::create_dir(w.join("node_modules")).unwrap();
+	std::fs::write(w.join("node_modules/x.js"), "cached").unwrap();
+	// Git comes to track it while a boundary settles: the node's folder is made, and the write of x.js is kept.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js"])).unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	let folder = "code/o/n/worktrees/w/node_modules";
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1 && node.exists(folder)));
+	assert!(!node.exists(&format!("{folder}/x.js")));
+	// The folder is renamed before the move is done: the move goes on under its new name, and the write kept under
+	// the old one is given up.
+	std::fs::rename(w.join("node_modules"), w.join("modules")).unwrap();
+	node.busy(0, 0);
+	let marker = node.dir.join("state/caches.moving");
+	let moved = || node.content("code/o/n/worktrees/w/modules/x.js").is_some_and(|c| c == b"cached");
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0 && !marker.exists());
+	assert!(done, "moved: {}, handles open at the node: {}, marker: {}", moved(), node.open_handles(), marker.exists());
+	assert!(!node.exists(folder));
+	assert_eq!(std::fs::read(w.join("modules/x.js")).unwrap(), b"cached");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn a_cache_move_whose_link_the_node_does_not_take_at_once_is_made_again() {
 	if !wanted() {
 		return;
@@ -641,10 +675,221 @@ fn a_cache_move_given_up_leaves_nothing_in_the_folder() {
 	// x.js leaves the machine's disk before the node takes a chunk: the move gives its write up, and the node answers
 	// the first two discards BUSY. The handle is given up all the same, and nothing is left in the folder.
 	node.busy_discards(2);
-	std::fs::remove_file(node.dir.join("state/local/cache/code/o/n/worktrees/w/node_modules/x.js")).unwrap();
+	std::fs::remove_file(node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w/d/node_modules/t/x.js")).unwrap();
 	let out = eventually(Duration::from_secs(30), || node.open_handles() == 0 && !marker.exists());
 	assert!(out, "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
 	assert!(!node.exists(x) && node.busy_discards_left() == 0);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn caches_outside_the_code_areas_follow_the_rules_and_stay_on_the_machine() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	node.put("apps/web/package.json", "{}", false);
+	let (company, runner) = start(&node);
+	// A dependency folder is a cache anywhere, the top included (rule 2); a build folder beside a project file (rule 3).
+	let cached = [".venv", "notes/node_modules", "apps/web/node_modules", "apps/web/build"];
+	for dir in cached {
+		std::fs::create_dir(company.join(dir)).unwrap();
+		std::fs::write(company.join(dir).join("x"), dir).unwrap();
+	}
+	// Published: a build folder in a plain folder, a file of a cache's name and a name that differs in case (rule 5).
+	std::fs::create_dir(company.join("notes/build")).unwrap();
+	std::fs::write(company.join("apps/web/dist"), "a file").unwrap();
+	std::fs::create_dir(company.join("apps/web/Build")).unwrap();
+	for path in ["notes/build", "apps/web/dist", "apps/web/Build"] {
+		assert!(node.exists(path), "{path} is not in the folder");
+	}
+	for dir in cached {
+		assert!(!node.exists(dir) && !node.exists(&format!("{dir}/x")), "{dir} is in the folder");
+		assert_eq!(std::fs::read_to_string(company.join(dir).join("x")).unwrap(), dir);
+	}
+	assert_eq!(names(&company.join("notes")), ["build", "node_modules", "readme"]);
+	assert_eq!(names(&company.join("apps/web")), ["Build", "build", "dist", "node_modules", "package.json"]);
+	// On the machine's disk, in the mirror of the node's folders (`local.rs`).
+	let caches = node.dir.join("state/local/caches");
+	assert_eq!(std::fs::read_to_string(caches.join("t/.venv/x")).unwrap(), ".venv");
+	assert_eq!(std::fs::read_to_string(caches.join("d/apps/d/web/t/build/x")).unwrap(), "apps/web/build");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn nothing_crosses_the_edge_between_the_caches_and_the_folder() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	std::fs::create_dir_all(notes.join("sub/node_modules/pkg")).unwrap();
+	std::fs::write(notes.join("sub/node_modules/pkg/x.js"), "cached").unwrap();
+	assert!(node.exists("notes/sub") && !node.exists("notes/sub/node_modules"));
+	// A folder of the node's with caches in it is not empty, and its caches go with it when it is renamed.
+	assert_eq!(std::fs::remove_dir(notes.join("sub")).unwrap_err().raw_os_error(), Some(libc::ENOTEMPTY));
+	std::fs::rename(notes.join("sub"), notes.join("moved")).unwrap();
+	let m = notes.join("moved");
+	assert_eq!(std::fs::read_to_string(m.join("node_modules/pkg/x.js")).unwrap(), "cached");
+	assert!(caches.join("d/moved/t/node_modules/pkg/x.js").exists() && !caches.join("d/sub").exists());
+	// A rename or a hard link across the edge is EXDEV (`mv` copies): a cache's file or folder out of it, a cache to a
+	// name that is none, a file of the folder's into a cache, and a folder of the node's onto a new cache's place.
+	let exdev = |r: std::io::Result<()>| r.unwrap_err().raw_os_error() == Some(libc::EXDEV);
+	assert!(exdev(std::fs::rename(m.join("node_modules/pkg/x.js"), m.join("x.js"))));
+	assert!(exdev(std::fs::rename(m.join("node_modules/pkg"), m.join("pkg"))));
+	assert!(exdev(std::fs::rename(m.join("node_modules"), m.join("modules"))));
+	assert!(exdev(std::fs::rename(notes.join("readme"), m.join("node_modules/readme"))));
+	std::fs::create_dir(m.join("lib")).unwrap();
+	assert!(exdev(std::fs::rename(m.join("lib"), m.join(".venv"))));
+	assert!(exdev(std::fs::hard_link(notes.join("readme"), m.join("node_modules/readme"))));
+	assert!(exdev(std::fs::hard_link(m.join("node_modules/pkg/x.js"), m.join("x.js"))));
+	assert!(node.links().is_empty() && node.exists("notes/readme") && node.exists("notes/moved/lib"));
+	// Within the caches, links and renames are the disk's: a cache renamed to another cache's name stays one.
+	std::fs::hard_link(m.join("node_modules/pkg/x.js"), m.join("node_modules/pkg/y.js")).unwrap();
+	std::os::unix::fs::symlink("pkg/y.js", m.join("node_modules/z.js")).unwrap();
+	std::fs::rename(m.join("node_modules"), m.join(".venv")).unwrap();
+	assert_eq!(std::fs::read_to_string(m.join(".venv/z.js")).unwrap(), "cached");
+	assert!(!node.exists("notes/moved/.venv") && caches.join("d/moved/t/.venv/pkg/y.js").exists());
+	// rm -r empties the folder first, and its caches' mirror goes with it: made again, it is empty.
+	std::fs::remove_dir_all(&m).unwrap();
+	assert!(!node.exists("notes/moved") && !caches.join("d/moved").exists());
+	std::fs::create_dir(&m).unwrap();
+	assert!(names(&m).is_empty());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn the_nodes_entry_wins_and_a_folder_gone_from_the_node_takes_its_caches_along() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	for dir in ["node_modules", "a/.venv", "b/.venv"] {
+		std::fs::create_dir_all(notes.join(dir)).unwrap();
+		std::fs::write(notes.join(dir).join("x"), "cached").unwrap();
+	}
+	// Another view publishes a node_modules here: the node's is shown, and the cache goes at the next listing (rule 1).
+	node.put("notes/node_modules/y", "published", false);
+	assert!(eventually(Duration::from_secs(10), || names(&notes.join("node_modules")) == ["y"]));
+	assert_eq!(names(&notes), ["a", "b", "node_modules", "readme"]);
+	assert!(!caches.join("t/node_modules").exists());
+	// Another view removes a and b: b made again here has none of its caches, and the next listing drops a's.
+	node.remove("notes/a");
+	node.remove("notes/b");
+	assert!(eventually(Duration::from_secs(10), || !notes.join("b").exists()));
+	std::fs::create_dir(notes.join("b")).unwrap();
+	assert!(names(&notes.join("b")).is_empty() && !caches.join("d/b").exists());
+	assert!(caches.join("d/a/t/.venv/x").exists());
+	assert_eq!(names(&notes), ["b", "node_modules", "readme"]);
+	assert!(!caches.join("d/a").exists());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_listing_while_the_node_renames_a_folder_keeps_its_caches() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	std::fs::create_dir_all(notes.join("a/node_modules")).unwrap();
+	std::fs::write(notes.join("a/node_modules/x"), "cached").unwrap();
+	assert!(node.exists("notes/a") && !node.exists("notes/a/node_modules"));
+	// The node renames a to b and tells every view before it answers: a listing meanwhile finds b at the node and the
+	// caches still under a, which are not those of a folder that is gone.
+	node.slow_renames(1);
+	let (from, to) = (notes.join("a"), notes.join("b"));
+	let renaming = std::thread::spawn(move || std::fs::rename(from, to));
+	assert!(eventually(Duration::from_secs(10), || node.exists("notes/b")));
+	std::thread::sleep(Duration::from_millis(500));
+	assert_eq!(names(&notes), ["b", "readme"]);
+	renaming.join().unwrap().unwrap();
+	assert_eq!(std::fs::read_to_string(notes.join("b/node_modules/x")).unwrap(), "cached");
+	assert!(caches.join("d/b/t/node_modules/x").exists() && !caches.join("d/a").exists());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_listing_a_rename_overtakes_drops_the_caches_of_its_own_folder_only() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	for dir in ["a/j", "c/k"] {
+		std::fs::create_dir_all(notes.join(dir).join("node_modules")).unwrap();
+		std::fs::write(notes.join(dir).join("node_modules/x"), "cached").unwrap();
+	}
+	// Another view removes a/j, whose caches go when a is listed here. The listing waits for the node at its second
+	// list of a (the check of what is gone in it), and meanwhile a is renamed to b and c to a: what goes is b's j, not
+	// the caches of the folder a names now.
+	node.remove("notes/a/j");
+	node.slow_lists("notes/a", &[1, 3]);
+	let listed = notes.join("a");
+	let listing = std::thread::spawn(move || names(&listed));
+	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	std::fs::rename(notes.join("a"), notes.join("b")).unwrap();
+	std::fs::rename(notes.join("c"), notes.join("a")).unwrap();
+	assert!(listing.join().unwrap().is_empty());
+	assert!(caches.join("d/a/d/k/t/node_modules/x").exists() && !caches.join("d/b/d/j").exists());
+	assert_eq!(std::fs::read_to_string(notes.join("a/k/node_modules/x")).unwrap(), "cached");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_folder_with_caches_still_to_move_stays_in_its_worktree() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/worktrees/v/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, v) = (company.join("code/o/n/worktrees/w"), company.join("code/o/n/worktrees/v"));
+	let dirs = ["a", "b", "c"];
+	for dir in dirs {
+		std::fs::create_dir_all(w.join(dir).join("node_modules")).unwrap();
+		std::fs::write(w.join(dir).join("node_modules/x.js"), "cached").unwrap();
+	}
+	// Git comes to track all three while a boundary settles: the move stops at the first it is at, before it reaches
+	// the other two, which it has not marked.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["a/node_modules/x.js", "b/node_modules/x.js", "c/node_modules/x.js"]))
+		.unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	let made = |dir: &str| node.exists(&format!("code/o/n/worktrees/w/{dir}/node_modules"));
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1 && dirs.into_iter().any(made)));
+	let left: Vec<&str> = dirs.into_iter().filter(|d| !made(*d)).collect();
+	assert_eq!(left.len(), 2, "made at the node: {:?}", dirs.map(made));
+	// One of them leaves the worktree: EXDEV (`mv` copies), as the move would not find its caches there. In the
+	// worktree, the move finds them under its new name.
+	let exdev = std::fs::rename(w.join(left[0]), v.join(left[0])).unwrap_err();
+	assert_eq!(exdev.raw_os_error(), Some(libc::EXDEV));
+	std::fs::rename(w.join(left[0]), w.join("d")).unwrap();
+	node.busy(0, 0);
+	let marker = node.dir.join("state/caches.moving");
+	let moved = |dir: &str| node.content(&format!("code/o/n/worktrees/w/{dir}/node_modules/x.js")).is_some_and(|c| c == b"cached");
+	let done = || ["a", "b", "c", "d"].into_iter().all(|d| d == left[0] || moved(d)) && node.open_handles() == 0 && !marker.exists();
+	assert!(eventually(Duration::from_secs(20), done), "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
+	assert!(!node.exists(&format!("code/o/n/worktrees/v/{}", left[0])) && !node.exists(&format!("code/o/n/worktrees/w/{}", left[0])));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

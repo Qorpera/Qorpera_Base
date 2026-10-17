@@ -4,6 +4,7 @@ import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
@@ -11,7 +12,7 @@ import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -49,13 +50,28 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+/** Which of the shipped pages are switched on. */
+const pages = (mailbox: boolean, members: boolean): InterfacePagesState => ({
+	pages: [
+		{ page: "mailbox", on: mailbox },
+		{ page: "members", on: members },
+	],
+	mayChange: true,
+});
+
 function company(
 	activity: HostedStaffExecutionActivity[] = [],
-	extra: { mentions?: Record<string, number>; members?: number } = {},
+	extra: { mentions?: Record<string, number>; members?: number; pages?: InterfacePagesState } = {},
 ) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
-	const members = Array.from({ length: extra.members ?? 1 }, (_, n) => ({ ...team.members[0]!, userId: id(200 + n) }));
+	const members = Array.from({ length: extra.members ?? 1 }, (_, n) => ({
+		userId: id(200 + n),
+		email: `member${n}@example.invalid`,
+		displayName: ["Ann", "Ben", "Cat"][n] ?? `Member ${n}`,
+		role: n === 0 ? ("owner" as const) : ("contributor" as const),
+		joinedAt: timestamp,
+	}));
 	controller.store.set({
 		loading: false,
 		staff: [cofounder, ada, bo, cy],
@@ -63,6 +79,7 @@ function company(
 		team: { ...team, members },
 		activity,
 		...(extra.mentions ? { mentions: extra.mentions } : {}),
+		...(extra.pages ? { interfacePages: extra.pages } : {}),
 	});
 	cleanup.push(() => controller.stop());
 	return { f, controller };
@@ -70,23 +87,25 @@ function company(
 
 describe("interface routes", () => {
 	it("reads and writes #/c/{id}/i/{name}", () => {
-		const route = parseRoute(`#/c/${profileA.profileId}/i/pulse`);
-		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" });
-		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/i/pulse`);
-		for (const bad of ["i", "i/Pulse", "i/../x", `i/${"a".repeat(65)}`]) {
+		const route = parseRoute(`#/c/${profileA.profileId}/i/members`);
+		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "interface", id: "members" });
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/i/members`);
+		for (const bad of ["i", "i/Members", "i/../x", `i/${"a".repeat(65)}`]) {
 			expect(parseRoute(`#/c/${profileA.profileId}/${bad}`)).toMatchObject({ section: "home" });
 		}
 	});
 });
 
 describe("which interfaces a company lists", () => {
-	it("lists Pulse, and Members once there is a team: Mailbox needs a mailbox", () => {
-		expect(companyInterfaces(company().controller).map((entry) => entry.name)).toEqual(["pulse"]);
+	it("lists only the pages that are on: Members once there is a team, Mailbox once there is a mailbox (C6a)", () => {
+		const names = (extra: Parameters<typeof company>[1]) =>
+			companyInterfaces(company([], extra).controller).map((entry) => entry.name);
+		// Until the company's pages are read, there are none.
+		expect(names({ members: 3 })).toEqual([]);
 		// Without its folder tables, Members still draws its People view from the members themselves.
-		expect(companyInterfaces(company([], { members: 3 }).controller).map((entry) => entry.name)).toEqual([
-			"pulse",
-			"members",
-		]);
+		expect(names({ members: 3, pages: pages(true, true) })).toEqual(["members"]);
+		expect(names({ members: 1, pages: pages(true, true) })).toEqual([]);
+		expect(names({ members: 3, pages: pages(true, false) })).toEqual([]);
 	});
 
 	it("says a working run has made no progress, since its last progress (gap 4)", () => {
@@ -144,47 +163,61 @@ describe("which interfaces a company lists", () => {
 	});
 });
 
-describe("the Pulse page", () => {
-	it("draws only the blocks it can read, and leaves an unchanged page alone", () => {
-		const { controller } = company([run(ada.id, 1, {})]);
-		const main = h("main");
-		document.body.append(main);
-		renderInterface(main, controller, "pulse");
-		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Pulse");
-		// Without the folder, Pulse has its live sources: the vision, the numbers, the work and the calendar wait for it,
-		// and what happened for a read of past runs.
-		expect([...main.querySelectorAll(".interface-block h2")].map((el) => el.textContent)).toEqual([
-			"Needs you",
-			"Working now",
-		]);
-		const working = main.querySelectorAll<HTMLAnchorElement>(".interface-block:nth-child(2) a.interface-item");
-		expect(working).toHaveLength(1);
-		expect(working[0]?.textContent).toContain("Ada");
-		expect(working[0]?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
-		expect(main.querySelector(".interface-block:nth-child(1) .interface-empty")?.textContent).toBe(
-			"Nothing here right now.",
-		);
-		const page = main.firstElementChild;
-		renderInterface(main, controller, "pulse");
-		expect(main.firstElementChild).toBe(page);
-		controller.store.set({ activity: [] });
-		renderInterface(main, controller, "pulse");
-		expect(main.firstElementChild).not.toBe(page);
-		expect(main.querySelectorAll("a.interface-item")).toHaveLength(0);
-	});
-
-	it("never shows an interface this client can't draw", () => {
-		const { controller } = company();
-		const main = h("main");
-		renderInterface(main, controller, "members");
+describe("the shipped pages (C6a)", () => {
+	const people = (main: HTMLElement) =>
+		[...main.querySelectorAll(".interface-table tbody tr")].map((row) => row.querySelector("td")?.textContent);
+	const missing = (main: HTMLElement) => {
 		expect(main.textContent).toContain("This page isn't available here yet.");
 		expect(main.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(main.querySelector(".interface-block")).toBeNull();
+	};
+
+	it("draws Members while it is on, and leaves an unchanged page alone", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
+		const main = h("main");
+		document.body.append(main);
+		renderInterface(main, controller, "members");
+		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
+		// Without the folder, only the People view's members can be read: the board and the rules file wait for it, so
+		// there is one view and no tabs.
+		expect(main.querySelector("[role=tablist]")).toBeNull();
+		expect(main.querySelectorAll(".interface-block")).toHaveLength(1);
+		expect(people(main)).toEqual(["Ann", "Ben", "Cat"]);
+		const page = main.firstElementChild;
+		renderInterface(main, controller, "members");
+		expect(main.firstElementChild).toBe(page);
+		const current = controller.store.get().team!;
+		const members = current.members.map((member) =>
+			member.displayName === "Ben" ? { ...member, displayName: "Bea" } : member,
+		);
+		controller.store.set({ team: { ...current, members } });
+		renderInterface(main, controller, "members");
+		expect(main.firstElementChild).not.toBe(page);
+		expect(people(main)).toEqual(["Ann", "Bea", "Cat"]);
+		// Switched off, the page is gone at its own address too.
+		controller.store.set({ interfacePages: pages(false, false) });
+		renderInterface(main, controller, "members");
+		missing(main);
+	});
+
+	it("never shows Pulse, a page that is off, or one whose needs aren't met", () => {
+		const main = h("main");
+		renderInterface(main, company([], { members: 3, pages: pages(true, true) }).controller, "pulse");
+		missing(main);
+		renderInterface(main, company([], { members: 3 }).controller, "members");
+		missing(main);
+		// Members needs a team, Mailbox a mailbox.
+		renderInterface(main, company([], { members: 1, pages: pages(true, true) }).controller, "members");
+		missing(main);
+		renderInterface(main, company([], { members: 3, pages: pages(true, true) }).controller, "mailbox");
+		missing(main);
 	});
 });
 
 describe("the rail's Agents | Interfaces switch", () => {
-	function rail(route: Route) {
-		const { f, controller } = company();
+	/** A company that shows Members, so the rail has both tabs; unless `read` is false and its pages aren't read yet. */
+	function rail(route: Route, read = true) {
+		const { f, controller } = company([], { members: 3, ...(read ? { pages: pages(false, true) } : {}) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
 		const auth = new AuthController(f.cloud);
@@ -209,6 +242,15 @@ describe("the rail's Agents | Interfaces switch", () => {
 			tab.getAttribute("aria-selected"),
 		]);
 	const home: Route = { name: "company", profileId: profileA.profileId, section: "home" };
+	/** Lets the lists play their slide, as in a browser that has motion. */
+	const motion = () => {
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const getAnimations = vi.fn(() => []);
+		Object.defineProperty(HTMLElement.prototype, "getAnimations", { configurable: true, value: getAnimations });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { getAnimations?: unknown }).getAnimations;
+		});
+	};
 
 	it("starts on Agents and switches lists without leaving the page", () => {
 		const { element } = rail(home);
@@ -222,9 +264,9 @@ describe("the rail's Agents | Interfaces switch", () => {
 		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[1]!.click();
 		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
 		expect(location.hash).toBe(before);
-		const pulse = element.querySelector<HTMLAnchorElement>(".rail-interfaces a.interface-home");
-		expect(pulse?.textContent).toBe("Pulse");
-		expect(pulse?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/i/pulse`);
+		const rows = element.querySelectorAll<HTMLAnchorElement>(".rail-interfaces a.rail-row-interface");
+		expect([...rows].map((row) => row.querySelector("strong")?.textContent)).toEqual(["Members"]);
+		expect(rows[0]?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/i/members`);
 		// The add button keeps its place at the end of the row on both tabs.
 		expect(element.querySelector(".rail-add")?.hasAttribute("hidden")).toBe(false);
 		expect(sessionStorage.getItem(`qorpera.web.rail-tab:${profileA.profileId}`)).toBe("interfaces");
@@ -253,18 +295,34 @@ describe("the rail's Agents | Interfaces switch", () => {
 	});
 
 	it("slides the list that takes over in from its tab's side, and nothing on the first draw", () => {
-		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-		const getAnimations = vi.fn(() => []);
-		Object.defineProperty(HTMLElement.prototype, "getAnimations", { configurable: true, value: getAnimations });
-		cleanup.push(() => {
-			delete (HTMLElement.prototype as { getAnimations?: unknown }).getAnimations;
-		});
+		motion();
 		const { element } = rail(home);
 		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
 		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[1]!.click();
 		expect(element.querySelector(".rail-interfaces")?.classList.contains("is-entering-right")).toBe(true);
 		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[0]!.click();
 		expect(element.querySelector("#rail-list-agents")?.classList.contains("is-entering-left")).toBe(true);
+	});
+
+	it("shows Interfaces for a page's route once its page is read, though the route didn't change (C6a)", () => {
+		motion();
+		// A reload of the Members page: the route opens before the pages are read.
+		const members: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
+		const { element, draw, controller } = rail(members, false);
+		expect(element.querySelector<HTMLElement>("[role=tablist]")?.hidden).toBe(true);
+		expect(element.querySelector("#rail-list-agents")).not.toBeNull();
+		expect(element.querySelector(".rail-interfaces")).toBeNull();
+		controller.store.set({ interfacePages: pages(false, true) });
+		draw();
+		expect(element.querySelector<HTMLElement>("[role=tablist]")?.hidden).toBe(false);
+		expect(tabs(element)).toEqual([
+			["Agents", "false"],
+			["Interfaces", "true"],
+		]);
+		const rows = element.querySelectorAll(".rail-interfaces a.rail-row-interface");
+		expect([...rows].map((row) => row.querySelector("strong")?.textContent)).toEqual(["Members"]);
+		// The tabs appear on the list the route chose: nothing slides.
+		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
 	});
 
 	it("folds the search out over the tabs and back on Esc or its close button, clearing it", () => {
@@ -346,10 +404,10 @@ describe("the rail's Agents | Interfaces switch", () => {
 			name: "company",
 			profileId: profileA.profileId,
 			section: "interface",
-			id: "pulse",
+			id: "members",
 		});
 		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
-		expect(element.querySelector(".interface-home")?.getAttribute("aria-current")).toBe("page");
+		expect(element.querySelector(".rail-row-interface")?.getAttribute("aria-current")).toBe("page");
 		draw({ name: "company", profileId: profileA.profileId, section: "staff", id: ada.id });
 		expect(tabs(element)[0]).toEqual(["Agents", "true"]);
 		draw({ name: "company", profileId: profileA.profileId, section: "file" });
@@ -361,26 +419,36 @@ describe("the rail's Agents | Interfaces switch", () => {
 			name: "company",
 			profileId: profileA.profileId,
 			section: "interface",
-			id: "pulse",
+			id: "members",
 		});
 		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
 		input.value = "mail";
-		draw({ name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" });
+		draw({ name: "company", profileId: profileA.profileId, section: "interface", id: "members" });
 		expect(element.querySelector(".rail-interfaces")?.textContent).toBe("No matching interfaces.");
+	});
+
+	it("has no Interfaces tab while no page is on (C6a)", () => {
+		const { element, draw, controller } = rail(home);
+		expect(tabs(element)).toHaveLength(2);
+		controller.store.set({ interfacePages: pages(false, false) });
+		draw({ name: "company", profileId: profileA.profileId, section: "interface", id: "members" });
+		expect(element.querySelector<HTMLElement>(".rail-switch")?.hidden).toBe(true);
+		expect(element.querySelector(".rail-interfaces")).toBeNull();
+		expect(element.querySelector(".rail-row-interface")).toBeNull();
 	});
 });
 
 describe("review round 1 (web)", () => {
-	it("draws Pulse again after another page took the area, and follows the company", () => {
-		const { controller } = company([run(ada.id, 1, {})]);
+	it("draws Members again after another page took the area, and follows the company", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		const main = h("main");
 		document.body.append(main);
-		renderInterface(main, controller, "pulse");
-		const pulse = main.firstElementChild;
+		renderInterface(main, controller, "members");
+		const members = main.firstElementChild;
 		main.replaceChildren(h("section", null, "a thread"));
-		renderInterface(main, controller, "pulse");
-		expect(main.firstElementChild).not.toBe(pulse);
-		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Pulse");
+		renderInterface(main, controller, "members");
+		expect(main.firstElementChild).not.toBe(members);
+		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
 	});
 
 	it("shows rows in the block's order", () => {
@@ -390,27 +458,41 @@ describe("review round 1 (web)", () => {
 		]);
 		const rows = interfaceRows(controller, "working") ?? [];
 		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
-		// Library Pulse lists "Working now" in source order; an ordered block keeps the query's order.
+		// A list without an order keeps its source's order.
+		const parsed = parseInterfaceFile(`format = "qorpera.interface/v0"
+
+[interface]
+id = "11111111-2222-4333-8444-555555555555"
+name = "Work"
+
+[[view]]
+name = "Now"
+
+[[view.block]]
+kind = "list"
+title = "Working now"
+from = "working"
+line = "{what}"
+figure = "agent"
+`);
+		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
 		const main = h("main");
-		renderInterface(main, controller, "pulse");
-		expect([...main.querySelectorAll(".interface-block:nth-child(2) strong")].map((el) => el.textContent)).toEqual([
-			"Ada",
-			"Bo",
-		]);
+		renderInterfaceFile(main, controller, `order-${Math.random()}`, parsed.file);
+		expect([...main.querySelectorAll(".interface-block strong")].map((el) => el.textContent)).toEqual(["Ada", "Bo"]);
 	});
 
 	it("waits while the company loads and says when live updates are not connected", () => {
-		const { controller } = company();
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		controller.store.set({ loading: true, staff: [] });
 		const main = h("main");
-		renderInterface(main, controller, "pulse");
+		renderInterface(main, controller, "members");
 		expect(main.querySelector(".interface-waiting")).not.toBeNull();
-		expect(main.textContent).not.toContain("Nothing here right now.");
+		expect(main.textContent).not.toContain("This page isn't available here yet.");
 		controller.store.set({ loading: false, staff: [cofounder, ada, bo, cy], realtime: "connecting" });
-		renderInterface(main, controller, "pulse");
+		renderInterface(main, controller, "members");
 		expect(main.querySelector(".interface-live")?.textContent).toBe("connecting");
 		controller.store.set({ realtime: "connected" });
-		renderInterface(main, controller, "pulse");
+		renderInterface(main, controller, "members");
 		expect(main.querySelector(".interface-live")?.textContent).toBe("Live");
 	});
 
@@ -425,12 +507,12 @@ describe("review round 1 (web)", () => {
 	});
 
 	it("labels the search for the list it searches", () => {
-		const { f, controller } = company();
+		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
 		const auth = new AuthController(f.cloud);
 		cleanup.push(() => auth.dispose());
-		const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" };
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
 		renderRail(element, controller, {
 			profiles: [profileA],
 			user: userA,
@@ -446,7 +528,9 @@ describe("review round 1 (web)", () => {
 		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search interfaces");
 		expect(element.querySelector(".rail-switch")?.getAttribute("role")).toBe("tablist");
 		expect(element.querySelectorAll("[role=tab]")).toHaveLength(2);
-		expect(element.querySelector(".interface-home")?.getAttribute("aria-label")).toBe("Pulse");
+		expect(element.querySelector(".rail-row-interface")?.getAttribute("title")).toBe(
+			"Who owns, supervises and does what.",
+		);
 	});
 });
 
@@ -513,6 +597,12 @@ target = "agent:{from}"
 id = "board"
 verb = "open"
 label = "Board"
+target = "interface:members"
+
+[[button]]
+id = "pulse"
+verb = "open"
+label = "Pulse"
 target = "interface:pulse"
 
 [[button]]
@@ -523,13 +613,16 @@ who = "agents"
 to = "co-founder"
 text = "Hi"
 `;
-	function desk() {
+	function desk(extra: Parameters<typeof company>[1] = {}) {
 		const parsed = parseInterfaceFile(DESK);
 		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
-		const { controller } = company([
-			run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
-			run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
-		]);
+		const { controller } = company(
+			[
+				run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
+				run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
+			],
+			extra,
+		);
 		const main = h("main");
 		document.body.append(main);
 		// Each test draws its own page, so no view, row or filter carries over between tests.
@@ -607,8 +700,9 @@ text = "Hi"
 		expect(main.textContent).toContain("No rows match.");
 	});
 
-	it("draws answer, message and open buttons; never one for agents only", () => {
-		const { main } = desk();
+	it("draws answer, message and open buttons; never one for agents only, or to a page that isn't there", () => {
+		// Members is on, so Board opens it; Pulse is never a page (C6a), so no button leads to it.
+		const { main } = desk({ members: 2, pages: pages(false, true) });
 		const first = main.querySelector(".interface-item-row")!;
 		expect(titles(first as HTMLElement, ".interface-actions > *")).toEqual(["Answer", "Ask Bo", "See", "Board"]);
 		expect(first.querySelector("a.interface-button")?.getAttribute("href")).toBe(
@@ -620,7 +714,7 @@ text = "Hi"
 		expect(links).toEqual([
 			`#/c/${profileA.profileId}/staff/${bo.id}`,
 			`#/c/${profileA.profileId}/staff/${bo.id}`,
-			`#/c/${profileA.profileId}/i/pulse`,
+			`#/c/${profileA.profileId}/i/members`,
 		]);
 	});
 
@@ -910,12 +1004,29 @@ buttons = ["answer"]
 	it("keeps focus on an Answer link through a live redraw", () => {
 		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
 		const main = mount();
-		renderInterface(main, controller, "pulse");
+		const name = `focus-${Math.random()}`;
+		const file = parse(`
+[[view]]
+name = "Now"
+
+[[view.block]]
+kind = "list"
+from = "waiting"
+line = "{title}"
+buttons = ["answer"]
+
+[[view.block]]
+kind = "list"
+from = "working"
+line = "{what}"
+figure = "agent"
+`);
+		renderInterfaceFile(main, controller, name, file);
 		main.querySelector<HTMLAnchorElement>(".interface-actions a")!.focus();
 		controller.store.set({
 			activity: [run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }), run(ada.id, 1, {})],
 		});
-		renderInterface(main, controller, "pulse");
+		renderInterfaceFile(main, controller, name, file);
 		expect(document.activeElement).toBe(main.querySelector(".interface-actions a"));
 		expect(document.activeElement?.textContent).toBe("Answer");
 	});

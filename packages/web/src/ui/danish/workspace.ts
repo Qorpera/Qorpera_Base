@@ -94,15 +94,10 @@ export const WORKSPACE: Record<string, string> = {
 	"Back to the company": "Tilbage til virksomheden",
 	Live: "Live",
 	"Nothing here right now.": "Intet her lige nu.",
-	// Interfaces read from the company folder (app/interfaces.ts, app/views/interface.ts, app/views/shell.ts)
-	"This page has a problem.": "Siden har et problem.",
+	// Tables read from the company folder (app/interfaces.ts, app/views/interface.ts)
 	"Line {line}: {problem}": "Linje {line}: {problem}",
 	"Some rows can't be shown.": "Nogle rækker kan ikke vises.",
 	"This table can't be read.": "Tabellen kan ikke læses.",
-	"No interface is marked as the main one, so none is shown on top. Mark one as main in its file.":
-		"Intet interface er markeret som hovedinterface, så intet vises øverst. Markér ét som hovedinterface i dets fil.",
-	"{names} are all marked as the main interface, so none is shown on top. Keep the mark on just one of them.":
-		"{names} er alle markeret som hovedinterface, så intet vises øverst. Behold markeringen på kun ét af dem.",
 	// The folder sources and the text, numbers and calendar blocks (app/interface-sources.ts,
 	// app/views/interface-blocks.ts, app/views/interface.ts)
 	"This can't be read right now.": "Det kan ikke læses lige nu.",
@@ -173,7 +168,9 @@ export const WORKSPACE: Record<string, string> = {
 	"Handled by {name}": "Håndteres af {name}",
 	"Reading the email": "Læser e-mailen",
 	"This email thread is no longer here.": "Denne e-mailtråd er her ikke længere.",
-	"Only the newest {count} messages of this thread are shown here.": "Kun trådens {count} nyeste beskeder vises her.",
+	"Show older messages": "Vis ældre beskeder",
+	"Reading older messages": "Læser ældre beskeder",
+	"Older messages can't be read.": "Ældre beskeder kan ikke læses.",
 	"last used by {agent} {time}": "sidst brugt af {agent} {time}",
 	"last used by {agent}": "sidst brugt af {agent}",
 	"last used {time}": "sidst brugt {time}",

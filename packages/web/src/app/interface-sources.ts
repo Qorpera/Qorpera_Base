@@ -12,18 +12,19 @@ import {
 import { INTERFACE_SOURCE_COLUMNS, type TableRow } from "@qorpera/cloud-client/interfaces";
 import { presentationLocale, t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
-import type { FolderPage, FolderProblem, InterfaceFolderState } from "./interface-folder.ts";
+import type { FolderProblem, InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceRow } from "./interfaces.ts";
 import { routineNextRun } from "./routine-next-run.ts";
 
 /* The interfaces' sources from the company folder's own files (RUNTIME-INTERFACES.md §4, "From the company folder"):
- * `vision`, `agents`, `groups`, `todos`, `routines`, `connections`, `contacts`, `human_tasks` and `interfaces`.
- * app/interface-folder.ts lists and reads the files the active pages' drawn blocks name, with the member's own
- * authority, through the same reader and change feed as the pages and tables; this module says which folders and files
+ * `vision`, `agents`, `groups`, `todos`, `routines`, `connections`, `contacts` and `human_tasks`.
+ * app/interface-folder.ts lists and reads the files the shown pages' drawn blocks name, with the member's own
+ * authority, through the same reader and change feed as the tables; this module says which folders and files
  * those are, parses them with the cloud client's `parseCompanyStateFile`, and turns them into rows. The `agents` and
  * `groups` sources read the folder too, not the store: their rows are what the files say, as every other folder
  * source's are. A file that doesn't parse is left out and listed as its source's problem; one that is too large or
- * isn't text is left out, as I7 leaves out such a file. */
+ * isn't text is left out, as I7 leaves out such a file. The `interfaces` source, the folder's pages, is not read: the
+ * folder's interfaces/ is never shown (Interfaces C6a). */
 
 /** The sources read from the company folder's own files. */
 const FOLDER_SOURCES: ReadonlySet<string> = new Set([
@@ -35,7 +36,6 @@ const FOLDER_SOURCES: ReadonlySet<string> = new Set([
 	"connections",
 	"contacts",
 	"human_tasks",
-	"interfaces",
 ]);
 
 export function isFolderSource(source: string): boolean {
@@ -216,12 +216,8 @@ export interface FolderSource {
 /** Each read's parse, kept while the read is. */
 const parses = new WeakMap<FolderSourceRead, CompanyStateFileResult | null>();
 
-/** The folder sources `names`, as what has been listed and read says. `interfaces` is the pages themselves. */
-export function folderSourceState(
-	names: ReadonlySet<string>,
-	view: FolderView,
-	pages: readonly FolderPage[],
-): Map<string, FolderSource> {
+/** The folder sources `names`, as what has been listed and read says. */
+export function folderSourceState(names: ReadonlySet<string>, view: FolderView): Map<string, FolderSource> {
 	const { takes, unlisted } = walk(names, view);
 	const unread = new Set(unlisted);
 	const files: { kind: Kind; source: FolderSourceFile }[] = [];
@@ -255,15 +251,6 @@ export function folderSourceState(
 	// A human task's rows name its contact, so `human_tasks` reads `contacts` too.
 	for (const name of new Set([...names, ...(names.has("human_tasks") ? ["contacts"] : [])])) {
 		if (!FOLDER_SOURCES.has(name)) continue;
-		if (name === "interfaces") {
-			const broken = pages.flatMap((page) =>
-				page.file === null
-					? page.problems.map((problem) => fileProblem(`interfaces/${page.name}/interface.toml`, problem))
-					: [],
-			);
-			state.set(name, { files: [], problems: broken, readable: true });
-			continue;
-		}
 		const kinds = new Set(OWN_KINDS[name] ?? []);
 		const readable = !unread.has(name);
 		state.set(name, {
@@ -321,13 +308,11 @@ function row(source: string, path: string, values: TableRow, href?: string): Int
 	return { row: values, key: `${source}:${companyPathKey(path)}`, ...(href ? { href } : {}) };
 }
 
-/** The rows of a folder source, or undefined while the folder hasn't been read or no page names it. `listed` names the
- * interfaces this member's Interfaces tab lists, which an `interfaces` row leads to. */
+/** The rows of a folder source, or undefined while the folder hasn't been read or no page names it. */
 export function folderSourceRows(
 	company: CompanyController,
 	folder: InterfaceFolderState | undefined,
 	source: string,
-	listed: () => readonly string[],
 ): InterfaceRow[] | undefined {
 	const read = folder?.sources.get(source);
 	if (!folder || !read) return undefined;
@@ -449,28 +434,6 @@ export function folderSourceRows(
 						due: rowInstant(file.due),
 					}),
 				);
-		}
-		case "interfaces": {
-			const shown = new Set(listed());
-			const profileId = company.profile.profileId;
-			return folder.pages.flatMap((page) =>
-				page.file === null
-					? []
-					: [
-							row(
-								source,
-								`interfaces/${page.name}`,
-								{
-									id: page.file.id,
-									name: page.file.name,
-									about: page.file.about,
-									emblem: page.file.emblem,
-									status: page.file.status,
-								},
-								shown.has(page.name) ? `#/c/${profileId}/i/${page.name}` : undefined,
-							),
-						],
-			);
 		}
 		default:
 			return undefined;

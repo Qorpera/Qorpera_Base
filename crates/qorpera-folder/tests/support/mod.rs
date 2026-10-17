@@ -60,6 +60,11 @@ struct State {
 	busy_closes: usize,
 	busy_discards: usize,
 	busy_links: usize,
+	/// How many of the next renames to answer only a while after they changed the tree and the feeds heard of it.
+	slow_renames: usize,
+	/// The next lists of a folder, each with the seconds it is answered after it was made and the feeds heard of a
+	/// change there.
+	slow_lists: Vec<(String, u64)>,
 	logs: std::collections::HashMap<String, u64>,
 	/// Every read the machine handed over, as (path, version).
 	logged: Vec<(String, Option<String>)>,
@@ -255,6 +260,22 @@ impl FakeNode {
 		self.state.lock().unwrap().busy_links = links;
 	}
 
+	/// The next `renames` renames are answered three seconds after they changed the tree and the feeds heard of it.
+	pub fn slow_renames(&self, renames: usize) {
+		self.state.lock().unwrap().slow_renames = renames;
+	}
+
+	/// The next lists of the folder `path` are answered one after the other `secs` seconds after they were made (with
+	/// the entries of then), and the feeds hear of a change there meanwhile, so the machine keeps none of them.
+	pub fn slow_lists(&self, path: &str, secs: &[u64]) {
+		self.state.lock().unwrap().slow_lists.extend(secs.iter().map(|s| (path.to_string(), *s)));
+	}
+
+	/// How many of the lists `slow_lists` asked for were not made yet.
+	pub fn slow_lists_left(&self) -> usize {
+		self.state.lock().unwrap().slow_lists.len()
+	}
+
 	/// How many of the discards `busy_discards` asked for were not answered BUSY yet.
 	pub fn busy_discards_left(&self) -> usize {
 		self.state.lock().unwrap().busy_discards
@@ -271,6 +292,34 @@ fn notify(s: &mut State, paths: Vec<String>, resync: bool) {
 	s.seq += 1;
 	let change = Change { seq: s.seq, resync, paths };
 	s.feeds.retain_mut(|f| send_json(f, kind::CHANGE, &change).is_ok());
+}
+
+/// The entries of the folder `path`, if the node has that folder.
+fn listing(st: &State, path: &str) -> Option<Vec<Entry>> {
+	if !path.is_empty() && !st.entries.get(path).is_some_and(|n| n.folder) {
+		return None;
+	}
+	let entries = st
+		.entries
+		.iter()
+		.filter(|(p, _)| parent(p) == path && p.as_str() != path)
+		.map(|(p, n)| Entry {
+			name: p.rsplit('/').next().unwrap().to_string(),
+			kind: if n.folder {
+				EntryKind::Folder
+			} else if n.link {
+				EntryKind::Symlink
+			} else {
+				EntryKind::File
+			},
+			size: n.content.len() as u64,
+			mtime_ms: 1_700_000_000_000,
+			executable: n.executable,
+			version: format!("v{}", n.version),
+			authority: None,
+		})
+		.collect();
+	Some(entries)
 }
 
 fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
@@ -297,33 +346,49 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 	loop {
 		let Ok((k, body)) = read_frame(&mut s) else { return };
 		let mut st = state.lock().unwrap();
+		if k == kind::RENAME && st.writable && st.slow_renames > 0 {
+			// The tree changes now and the answer comes later, while the node goes on with other requests.
+			st.slow_renames -= 1;
+			let req: RenameRequest = serde_json::from_slice(&body).unwrap();
+			st.renames.push(req.clone());
+			let done = rename(&mut st, &req);
+			if done.is_ok() {
+				notify(&mut st, vec![req.from, req.to], false);
+			}
+			drop(st);
+			std::thread::sleep(std::time::Duration::from_secs(3));
+			let result = match done {
+				Ok(()) => write_frame(&mut s, kind::DONE, b"{}"),
+				Err(c) => error(&mut s, c),
+			};
+			if result.is_err() {
+				return;
+			}
+			continue;
+		}
+		let slow = (k == kind::LIST).then(|| serde_json::from_slice::<ListRequest>(&body).unwrap().path);
+		if let Some(i) = slow.and_then(|path| st.slow_lists.iter().position(|(p, _)| *p == path)) {
+			// The entries are those of now, and the answer comes later, after the feeds heard of a change there.
+			let (path, secs) = st.slow_lists.remove(i);
+			let entries = listing(&st, &path);
+			notify(&mut st, vec![path], false);
+			drop(st);
+			std::thread::sleep(std::time::Duration::from_secs(secs));
+			let result = match entries {
+				Some(entries) => send_json(&mut s, kind::LISTING, &Listing { entries, next: None }),
+				None => error(&mut s, code::NOT_FOUND),
+			};
+			if result.is_err() {
+				return;
+			}
+			continue;
+		}
 		let result = match k {
 			kind::LIST => {
 				let req: ListRequest = serde_json::from_slice(&body).unwrap();
-				if !req.path.is_empty() && !st.entries.get(&req.path).is_some_and(|n| n.folder) {
-					error(&mut s, code::NOT_FOUND)
-				} else {
-					let entries: Vec<Entry> = st
-						.entries
-						.iter()
-						.filter(|(p, _)| parent(p) == req.path && p.as_str() != req.path)
-						.map(|(p, n)| Entry {
-							name: p.rsplit('/').next().unwrap().to_string(),
-							kind: if n.folder {
-								EntryKind::Folder
-							} else if n.link {
-								EntryKind::Symlink
-							} else {
-								EntryKind::File
-							},
-							size: n.content.len() as u64,
-							mtime_ms: 1_700_000_000_000,
-							executable: n.executable,
-							version: format!("v{}", n.version),
-							authority: None,
-						})
-						.collect();
-					send_json(&mut s, kind::LISTING, &Listing { entries, next: None })
+				match listing(&st, &req.path) {
+					Some(entries) => send_json(&mut s, kind::LISTING, &Listing { entries, next: None }),
+					None => error(&mut s, code::NOT_FOUND),
 				}
 			}
 			kind::READ => {
@@ -363,6 +428,32 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 
 fn version_of(n: &Node) -> String {
 	format!("v{}", n.version)
+}
+
+/// A rename applied to the tree, or the error code the node answers.
+fn rename(st: &mut State, req: &RenameRequest) -> Result<(), &'static str> {
+	let Some(n) = st.entries.get(&req.from).cloned() else { return Err(code::NOT_FOUND) };
+	if let Some(t) = st.entries.get(&req.to) {
+		if req.no_replace {
+			return Err(code::EXISTS);
+		}
+		if t.folder != n.folder {
+			return Err(if t.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });
+		}
+	}
+	let from = format!("{}/", req.from);
+	let moved: Vec<(String, Node)> = st
+		.entries
+		.iter()
+		.filter(|(p, _)| **p == req.from || p.starts_with(&from))
+		.map(|(p, n)| (p.clone(), n.clone()))
+		.collect();
+	st.entries.remove(&req.to);
+	for (p, n) in moved {
+		st.entries.remove(&p);
+		st.entries.insert(format!("{}{}", req.to, &p[req.from.len()..]), n);
+	}
+	Ok(())
 }
 
 /// A write request, applied to the tree at once.
@@ -518,28 +609,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		kind::RENAME => {
 			let req: RenameRequest = serde_json::from_slice(body).unwrap();
 			st.renames.push(req.clone());
-			let Some(n) = st.entries.get(&req.from).cloned() else { return error(s, code::NOT_FOUND) };
-			if let Some(t) = st.entries.get(&req.to) {
-				if req.no_replace {
-					return error(s, code::EXISTS);
-				}
-				if t.folder != n.folder {
-					return error(s, if t.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });
-				}
+			match rename(st, &req) {
+				Ok(()) => write_frame(s, kind::DONE, b"{}"),
+				Err(c) => error(s, c),
 			}
-			let from = format!("{}/", req.from);
-			let moved: Vec<(String, Node)> = st
-				.entries
-				.iter()
-				.filter(|(p, _)| **p == req.from || p.starts_with(&from))
-				.map(|(p, n)| (p.clone(), n.clone()))
-				.collect();
-			st.entries.remove(&req.to);
-			for (p, n) in moved {
-				st.entries.remove(&p);
-				st.entries.insert(format!("{}{}", req.to, &p[req.from.len()..]), n);
-			}
-			write_frame(s, kind::DONE, b"{}")
 		}
 		kind::SYMLINK => {
 			let req: SymlinkRequest = serde_json::from_slice(body).unwrap();

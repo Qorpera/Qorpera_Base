@@ -14,8 +14,9 @@ import type { CommandWindow } from "./windows.ts";
  *   {"op":"boundary","machine":"<machine id>","final":["<view id>", …]}
  *   → {"boundary":{"machine":…,"reads":…,"views":[…]}} (`MachineBoundary`), or {"error":{"code":…,"message":…}}
  *   {"op":"restarted","machine":"<machine id>"}
- *   → {"restarted":{"machine":…}}: sent once the machine is stopped and before it starts again (the plan's rule 4), so
- *     a read it lost no longer makes its views unproven (`FolderService.restarted`)
+ *   → {"restarted":{"machine":…,"dropped":…}}: sent once the machine is stopped and before it starts again (the plan's
+ *     rule 4), so a read it lost no longer makes its views unproven (`FolderService.restarted`). `dropped`: a read it was
+ *     served may have gone unreleased, so what it kept from before (a command's output on its disk) cannot be kept
  *   {"op":"open","machine":"<placement id>","commandId":…,"runId":…,"staffAgentId":…,"requestedByUserId":…}
  *   → {"opened":{"machine":…,"commandId":…}}: sent when the command starts; what the machine changes from then until
  *     the window closes is credited to the command (`FolderService.openWindow`). Sent again, it changes nothing.
@@ -37,7 +38,8 @@ const REFUSED = "This socket admits only the executor of the coding and test mac
 
 export interface ControlTarget {
 	boundary(machine: string, final: readonly string[]): Promise<MachineBoundary>;
-	restarted(machine: string): void;
+	/** Whether a read the machine was served may have gone unreleased. */
+	restarted(machine: string): boolean;
 	openWindow(machine: string, window: CommandWindow): void;
 	closeWindow(machine: string, commandId: string): Promise<MachineBoundary>;
 }
@@ -177,10 +179,8 @@ async function answer(text: string, options: ControlOptions): Promise<unknown> {
 	const request = parseRequest(text);
 	if (typeof request === "string") return { error: { code: ErrorCode.badRequest, message: request } };
 	try {
-		if (request.op === "restarted") {
-			options.target.restarted(request.machine);
-			return { restarted: { machine: request.machine } };
-		}
+		if (request.op === "restarted")
+			return { restarted: { machine: request.machine, dropped: options.target.restarted(request.machine) } };
 		if (request.op === "open") {
 			options.target.openWindow(request.machine, request.window);
 			return { opened: { machine: request.machine, commandId: request.window.commandId } };

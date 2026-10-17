@@ -17,12 +17,12 @@ import {
 	writeVisionFile,
 } from "@qorpera/cloud-client/company-state-files";
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
-import { writeInterfaceOrderFile } from "@qorpera/cloud-client/interfaces";
+import { type InterfaceFile, parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
 import { interfaceRows } from "../src/app/interfaces.ts";
-import { renderInterface } from "../src/app/views/interface.ts";
+import { renderInterfaceFile } from "../src/app/views/interface.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { fmtTime, h } from "../src/ui/dom.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
@@ -30,7 +30,9 @@ import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestam
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 /* The interfaces' folder pages (RUNTIME-INTERFACES.md §10, "Built: folder pages"): the sources from the company
- * folder's own files, and the text, numbers and calendar blocks, drawn from a member's folder (folder-fake.ts). */
+ * folder's own files, and the text, numbers and calendar blocks, drawn from a member's folder (folder-fake.ts). The
+ * folder's interfaces/ is never read or shown (Interfaces C6a), so each test hands its page to the reader and draws it
+ * directly: these test the reader and the blocks, not a page a company can show. */
 
 /** Tuesday 6 October 2026, 10:00 UTC. */
 const NOW = Date.parse("2026-10-06T10:00:00Z");
@@ -244,29 +246,34 @@ from = "${from}"
 line = "${line}"
 `;
 
-/** A folder with the company's own files and one interface, `text`, and no library interfaces: what is read is
- * what that one page names. */
+/** The page each folder's test draws, and the page each company draws once it follows a folder. */
+const pageOf = new WeakMap<FolderFake, InterfaceFile>();
+const drawnBy = new WeakMap<CompanyController, InterfaceFile>();
+
+function parsed(text: string): InterfaceFile {
+	const result = parseInterfaceFile(text);
+	if (!result.ok) throw new Error(JSON.stringify(result.problems));
+	return result.file;
+}
+
+/** A folder with the company's own files, and `text` as the page under test: what is read is what that one page
+ * names. */
 function bare(text: string): FolderFake {
 	const fake = folderFake({ seed: [] });
 	companyFiles(fake);
-	fake.put("interfaces/order.md", writeInterfaceOrderFile([ids.page]));
-	fake.put("interfaces/everything/interface.toml", text);
+	pageOf.set(fake, parsed(text));
 	return fake;
 }
 
-/** A folder seeded as at founding, with the company's own files, `rows` in the numbers table, and `text` as one more
- * interface when given. */
-function seeded(rows: string, text?: string): FolderFake {
+/** A folder seeded as at founding, with the company's own files and `rows` in the numbers table, and `text` as the
+ * page under test. */
+function seeded(rows: string, text: string): FolderFake {
 	const fake = folderFake({ seed: [] });
 	let next = 500;
 	for (const [path, file] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, file);
 	companyFiles(fake);
 	fake.put("tables/numbers/rows.csv", rows);
-	if (text !== undefined) {
-		const pulse = /^id = "([0-9a-f-]{36})"$/m.exec(fake.text("interfaces/pulse/interface.toml") ?? "")?.[1] ?? "";
-		fake.put("interfaces/order.md", writeInterfaceOrderFile([pulse, ids.page]));
-		fake.put("interfaces/everything/interface.toml", text);
-	}
+	pageOf.set(fake, parsed(text));
 	return fake;
 }
 
@@ -287,6 +294,9 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 		(state) => controller.store.set({ interfaceFolder: state }),
 	);
 	cleanup.push(() => stop.abort());
+	const file = pageOf.get(fake)!;
+	drawnBy.set(controller, file);
+	reader.read([file]);
 	await reader.open();
 	return {
 		/** The folder's hint, and the sync it asks for a second later. */
@@ -297,11 +307,12 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 	};
 }
 
-/** `name` drawn on the page, redrawn whenever the company's state changes. */
-function shown(controller: CompanyController, name = "everything"): HTMLElement {
+/** The page under test drawn, and drawn again whenever the company's state changes. */
+function shown(controller: CompanyController): HTMLElement {
 	const main = h("main");
 	document.body.append(main);
-	const draw = () => renderInterface(main, controller, name);
+	const file = drawnBy.get(controller)!;
+	const draw = () => renderInterfaceFile(main, controller, "everything", file);
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
 	return main;
@@ -331,7 +342,6 @@ describe("the folder's own sources", () => {
 			list("connections", "{account}"),
 			list("contacts", "{name}"),
 			list("human_tasks", "{title}"),
-			list("interfaces", "{name}"),
 			'\n[[view.block]]\nkind = "table"\ntitle = "Work"\nfrom = "todos"\ncolumns = ["agent", "title", "status"]\n',
 			'order = "title"\n',
 		].join(""),
@@ -432,10 +442,6 @@ describe("the folder's own sources", () => {
 				due: "2026-10-08T09:00:00Z",
 			},
 		]);
-		expect(rowsOf(controller, "interfaces")).toEqual([expect.objectContaining({ id: ids.page, name: "Everything" })]);
-		expect(interfaceRows(controller, "interfaces")?.map((item) => item.href)).toEqual([
-			`#/c/${profileA.profileId}/i/everything`,
-		]);
 		// A table of the todos shows names and statuses in the member's words.
 		const main = shown(controller);
 		expect(texts(titled(main, "Work"), "thead th")).toEqual(["Agent", "Title", "Status"]);
@@ -465,7 +471,6 @@ describe("the folder's own sources", () => {
 		fake.put("connections/github-acme.md", connection("broken"));
 		fake.put("contacts/ida-holm.md", contact("Ida Berg"));
 		fake.put("human-tasks/fit-disk.md", task(ids.disk, "Fit the second disk", { status: "done" }));
-		fake.put("interfaces/everything/interface.toml", EVERYTHING.replace('name = "Everything"', 'name = "All of it"'));
 		await hint();
 		await vi.waitFor(() =>
 			expect(texts(titled(main, "Work"), "tbody td")).toEqual([
@@ -491,7 +496,6 @@ describe("the folder's own sources", () => {
 			[userA.id, "done"],
 			[userA.id, "done"],
 		]);
-		expect(rowsOf(controller, "interfaces")?.map((row) => row.name)).toEqual(["All of it"]);
 	});
 
 	it("leaves out a file that doesn't parse and lists it as its source's problem", async () => {
@@ -844,46 +848,5 @@ type = "date"
 			`${clock("2026-10-12T06:30:00Z")} · Routine`,
 		]);
 		expect(plans?.querySelector(".interface-note")).toBeNull();
-	});
-});
-
-describe("Pulse from the folder", () => {
-	const ROWS = `number,at,value,unit,target,kept_by\nRevenue,2026-10-01T09:00Z,1200,€,1500,${ada.id}\n`;
-
-	it("draws every block whose source the folder has", async () => {
-		const fake = seeded(ROWS);
-		const { controller } = company();
-		await follow(fake, controller);
-		const main = shown(controller, "pulse");
-		// "What happened" waits for a read of past runs (§10).
-		expect(texts(main, ".interface-block > h2")).toEqual([
-			"Needs you",
-			"The numbers",
-			"Working now",
-			"The work",
-			"Coming up",
-		]);
-		expect(main.querySelector(".interface-text .message-prose")?.textContent).toBe(
-			"We make bookkeeping calm. A ledger <b>Always</b>.",
-		);
-		expect(texts(titled(main, "The numbers"), ".interface-number-value")).toEqual(["€1,200"]);
-		const work = titled(main, "The work");
-		expect(texts(work, ".interface-item strong")).toEqual(["Ada"]);
-		expect(texts(work, ".interface-item small")).toEqual(["Close the books"]);
-		expect(texts(work, ".interface-item-status")).toEqual(["To do"]);
-		expect(texts(titled(main, "Coming up"), ".interface-day h3")).toEqual([
-			"Tomorrow",
-			"Friday, October 9",
-			"Monday, October 12",
-		]);
-	});
-
-	it("leaves out a block whose source is missing", async () => {
-		const fake = seeded(ROWS);
-		fake.remove("tables/numbers");
-		const { controller } = company();
-		await follow(fake, controller);
-		const main = shown(controller, "pulse");
-		expect(texts(main, ".interface-block > h2")).toEqual(["Needs you", "Working now", "The work", "Coming up"]);
 	});
 });

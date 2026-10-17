@@ -248,6 +248,27 @@ export const SETTINGS: Record<string, string> = {
 		"Forlad {company}? Du mister adgangen, indtil nogen inviterer dig igen.",
 	Leave: "Forlad",
 
+	// Company: memory (app/views/settings-memory.ts)
+	Memory: "Hukommelse",
+	"Agent notebooks": "Agenternes notesbøger",
+	"Shared context — Beta": "Delt kontekst — beta",
+	"Each agent keeps its own notebook of what it learns.": "Hver agent fører sin egen notesbog over det, den lærer.",
+	"Agents share one summary of the company's conversations and work.":
+		"Agenterne deler ét sammendrag af virksomhedens samtaler og arbejde.",
+	"Not available for this company yet.": "Endnu ikke tilgængelig for denne virksomhed.",
+	"Shared context — Beta is not available for this company yet.":
+		"Delt kontekst — beta er endnu ikke tilgængelig for denne virksomhed.",
+	"Shared context — Beta is not available now, so new runs use Agent notebooks.":
+		"Delt kontekst — beta er ikke tilgængelig nu, så nye kørsler bruger Agenternes notesbøger.",
+	"One run that started before the change still uses {mode} until it finishes.":
+		"Én kørsel, der startede før ændringen, bruger stadig {mode}, til den er færdig.",
+	"{count} runs that started before the change still use {mode} until they finish.":
+		"{count} kørsler, der startede før ændringen, bruger stadig {mode}, til de er færdige.",
+	"Saved. New runs use {mode}.": "Gemt. Nye kørsler bruger {mode}.",
+	"Owners and admins choose the company's memory.": "Ejere og administratorer vælger virksomhedens hukommelse.",
+	"A change applies to new runs. A run already started keeps its memory until it ends. Nothing is deleted or rewritten.":
+		"En ændring gælder nye kørsler. En kørsel, der allerede er startet, beholder sin hukommelse, til den slutter. Intet slettes eller skrives om.",
+
 	// Company execution (app/views/company-execution.ts)
 
 	// My connections and Company connections (app/views/settings.ts)
@@ -507,4 +528,17 @@ export const SETTINGS: Record<string, string> = {
 	"Rules are not available on this cloud yet.": "Regler er ikke tilgængelige i denne sky endnu.",
 	"Built-in safety checks always apply.": "Indbyggede sikkerhedstjek gælder altid.",
 	"Open a company to see its rules.": "Åbn en virksomhed for at se dens regler.",
+	// Settings → Company → Pages (views/settings-pages.ts)
+	Pages: "Sider",
+	Mailbox: "Postkasse",
+	Members: "Medlemmer",
+	"The company's mail, for every member. It shows once the company has a mail address (Company connections → Mailboxes).":
+		"Virksomhedens post, for alle medlemmer. Den vises, når virksomheden har en mailadresse (Virksomhedens forbindelser → Postkasser).",
+	"Who owns and supervises each agent. It shows once the company has a second member.":
+		"Hvem der ejer og har tilsyn med hver agent. Den vises, når virksomheden har mindst to medlemmer.",
+	"{page} could not be changed. Try again.": "{page} kunne ikke ændres. Prøv igen.",
+	"Pages are not available on this cloud yet.": "Sider er ikke tilgængelige i denne sky endnu.",
+	"Switching a page off only hides it. Nothing it showed is removed.":
+		"At slå en side fra skjuler den kun. Intet af det, den viste, bliver fjernet.",
+	"Only owners and admins can switch pages on or off.": "Kun ejere og administratorer kan slå sider til og fra.",
 };

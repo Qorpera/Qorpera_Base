@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODING_GUEST, cloudCodingSessionLayout, parseCloudCodingNasPolicy } from "@qorpera/contracts";
+import {
+	CODING_GUEST,
+	type CodingGuestUsage,
+	cloudCodingSessionLayout,
+	parseCloudCodingNasPolicy,
+} from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodingMachineUnavailable, type CodingSessionClaim, type CodingTurnState } from "../src/coding-executor.ts";
 import {
@@ -44,6 +49,10 @@ const mocked = vi.hoisted(() => ({
 	storageAssert: vi.fn(),
 	storagePrepare: vi.fn(),
 	startOperation: vi.fn(),
+	lastStart: vi.fn(),
+	dropStart: vi.fn(),
+	undropStart: vi.fn(),
+	startDropped: vi.fn(),
 	keptCommand: vi.fn(),
 	guestCancel: vi.fn(),
 	guestQuiesce: vi.fn(),
@@ -101,6 +110,10 @@ vi.mock("../src/coding-machine.ts", async (original) => ({
 	...(await original<typeof import("../src/coding-machine.ts")>()),
 	reconcileCodingMachine: mocked.reconcile,
 	codingMachineStartOperation: mocked.startOperation,
+	codingMachineLastStart: mocked.lastStart,
+	dropCodingMachineStart: mocked.dropStart,
+	undropCodingMachineStart: mocked.undropStart,
+	codingMachineStartDropped: mocked.startDropped,
 }));
 vi.mock("../src/coding-git-seed.ts", () => ({
 	resolveCloudCodingBase: mocked.resolveBase,
@@ -608,6 +621,12 @@ async function fixture() {
 		} else lxd.exists = false;
 		return { state: input.desiredState };
 	});
+	// The machine's journal, as coding-machine.ts reads it: the start it last ran under (none before its first), and
+	// the marks of the boots whose reads were dropped (F3 5g-5), none until a test writes one.
+	mocked.lastStart.mockImplementation(async () => state.startOperationId || null);
+	mocked.dropStart.mockResolvedValue(true);
+	mocked.undropStart.mockResolvedValue(undefined);
+	mocked.startDropped.mockResolvedValue(false);
 	mocked.resolveBase.mockResolvedValue(baseSha);
 	mocked.seedFetch.mockResolvedValue({ headSha: baseSha, bundle: Buffer.from("seed"), bundleSha256: hash("seed") });
 	mocked.seedTransfer.mockResolvedValue({});
@@ -2561,7 +2580,15 @@ async function folderFixture(repositories = true) {
 		viewId = randomUUID(),
 		cwd = `/company/code/app/worktrees/${f.claim.workerId}`;
 	mocked.startOperation.mockResolvedValue(startOperationId);
-	mocked.guestStatus.mockResolvedValue({ commands: [] });
+	/** The guest agent's status of a session: `commands`, and its usage so far on this boot, `usage` aside. */
+	const status = (
+		commands: readonly { commandId: string; state: string }[] = [],
+		usage: Partial<CodingGuestUsage> = {},
+	) => ({
+		commands,
+		usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 0, ioBytes: 0, ioComplete: true, ...usage },
+	});
+	mocked.guestStatus.mockResolvedValue(status());
 	mocked.guestCancel.mockResolvedValue({});
 	mocked.guestQuiesce.mockResolvedValue({});
 	mocked.guestStop.mockResolvedValue({});
@@ -2588,7 +2615,8 @@ async function folderFixture(repositories = true) {
 		reads: "released",
 		views: [{ viewId, unsaved: 0 }],
 	}));
-	const restarted = vi.fn<CodingFolderControl["restarted"]>(async () => {});
+	// Every read the machine was served before was released, unless a test says otherwise (F3 5g-5).
+	const restarted = vi.fn<CodingFolderControl["restarted"]>(async () => false);
 	const sessionRepositories = {
 		prepare: vi.fn<CodingFolderRepositories["prepare"]>(async () => ({ cwd })),
 		export: vi.fn<CodingFolderRepositories["export"]>(async () => Buffer.from("bundle")),
@@ -2621,6 +2649,7 @@ async function folderFixture(repositories = true) {
 		startOperationId,
 		viewId,
 		cwd,
+		status,
 	};
 }
 
@@ -2748,7 +2777,7 @@ describe("a coding session on the folder model", () => {
 			expect.objectContaining({
 				machine: f.machine,
 				scope: f.scope(),
-				startOperationId: f.startOperationId,
+				currentStart: expect.any(Function),
 				session: { uid: 200000, gid: 200000, cwd: f.cwd, environment: CODING_FOLDER_GIT_ENVIRONMENT },
 				custody: lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId).custodySource,
 				limitBytes: 67108864,
@@ -2761,8 +2790,12 @@ describe("a coding session on the folder model", () => {
 			GIT_CONFIG_KEY_12: "protocol.ext.allow",
 			GIT_CONFIG_VALUE_12: "never",
 		});
+		const transport = mocked.folderTransports[0] as {
+			currentStart: () => string | undefined;
+			authorize: (...args: unknown[]) => Promise<void>;
+		};
+		expect(transport.currentStart()).toBe(f.startOperationId);
 		// Each of its steps asks the turn's own authority first.
-		const transport = mocked.folderTransports[0] as { authorize: (...args: unknown[]) => Promise<void> };
 		const runs = f.calls("qorpera_authorize_coding_machine_run").length;
 		await transport.authorize("start", f.scope(), randomUUID(), "a".repeat(64), f.signal);
 		expect(f.calls("qorpera_authorize_coding_machine_run")).toHaveLength(runs + 1);
@@ -3197,6 +3230,7 @@ describe("a coding session on the folder model", () => {
 		const running: boolean[] = [];
 		f.restarted.mockImplementation(async () => {
 			running.push(f.lxd.running);
+			return false;
 		});
 		const nextTurn = (sequence: number) => {
 			f.renew(f.claim);
@@ -3231,6 +3265,70 @@ describe("a coding session on the folder model", () => {
 		expect(recorded()[1]).toBeLessThan(f.restarted.mock.invocationCallOrder[2]!);
 		expect(running).toEqual([false, false]);
 	});
+	it("writes down the boot before each start as dropped first, and takes that back only on the answer no (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		const nextTurn = (sequence: number) => {
+			f.renew(f.claim);
+			f.claim.sequence = sequence;
+			f.sequences.set(f.claim.workerId, sequence);
+			return f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		};
+		// Its first start follows no boot: nothing is written down.
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		const { plan, journalRoot } = mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions;
+		expect(mocked.lastStart.mock.calls).toEqual([[journalRoot, plan]]);
+		expect(f.restarted).toHaveBeenCalledTimes(1);
+		expect(mocked.dropStart).not.toHaveBeenCalled();
+		// Each turn plans the machine's journal again: the same, but for its instance check's closure.
+		const journal = { ...plan, assertInstance: expect.any(Function) };
+		/** The boot each outside stop ended, by the start it ran under. */
+		const boots: string[] = [];
+		const stopFromOutside = () => {
+			boots.push(f.state.startOperationId);
+			f.lxd.running = false;
+			f.state.stoppedFromOutside = true;
+		};
+		// The service answers no: the boot is written down before the call, and taken back after it.
+		stopFromOutside();
+		await nextTurn(2);
+		f.host.endTurn(f.claim);
+		expect(mocked.dropStart.mock.calls).toEqual([[journalRoot, journal, boots[0]]]);
+		expect(mocked.dropStart.mock.invocationCallOrder[0]).toBeLessThan(f.restarted.mock.invocationCallOrder[1]!);
+		expect(mocked.undropStart.mock.calls).toEqual([[journalRoot, journal, boots[0]]]);
+		expect(f.restarted.mock.invocationCallOrder[1]).toBeLessThan(mocked.undropStart.mock.invocationCallOrder[0]!);
+		// It answers yes: the boot stays written down.
+		stopFromOutside();
+		f.restarted.mockResolvedValueOnce(true);
+		await nextTurn(3);
+		f.host.endTurn(f.claim);
+		expect(mocked.dropStart.mock.calls.at(-1)).toEqual([journalRoot, journal, boots[1]]);
+		expect(mocked.undropStart).toHaveBeenCalledTimes(1);
+		// Written down already (a call before was not answered, and its answer may have been yes): a no keeps it too.
+		stopFromOutside();
+		mocked.dropStart.mockResolvedValueOnce(false);
+		await nextTurn(4);
+		expect(mocked.dropStart.mock.calls.at(-1)).toEqual([journalRoot, journal, boots[2]]);
+		expect(f.restarted).toHaveBeenCalledTimes(4);
+		expect(mocked.undropStart).toHaveBeenCalledTimes(1);
+		expect(new Set(boots).size).toBe(3);
+		// The boot's commands read its mark from the same journal.
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const transport = mocked.folderTransports.at(-1) as {
+			dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
+		};
+		mocked.startDropped.mockResolvedValueOnce(true);
+		expect(await transport.dropped(boots[1]!, f.signal)).toBe(true);
+		expect(await transport.dropped(boots[2]!, f.signal)).toBe(false);
+		expect(mocked.startDropped.mock.calls).toEqual([
+			[journalRoot, journal, boots[1]],
+			[journalRoot, journal, boots[2]],
+		]);
+	});
 	/** The order of each control call of `method` (with `intent` for custody), as the fixture's calls were made. */
 	const callOrder = (f: Fixture, method: string, intent?: string) =>
 		f.call.mock.calls.flatMap((call, index) =>
@@ -3247,6 +3345,7 @@ describe("a coding session on the folder model", () => {
 				mode: 0o444,
 				content: Buffer.from(`${randomUUID()}\n`),
 			});
+			return false;
 		});
 	it.each([
 		["the node closed the session's view under its mount", "VIEW_CLOSED"],
@@ -3456,6 +3555,48 @@ describe("a coding session on the folder model", () => {
 		expect([...f.attachments.keys()]).toEqual([second.workerId]);
 		expect(f.views.attach.mock.calls.at(-1)?.[0].attachmentToken).toBe(f.attachments.get(second.workerId));
 	});
+	it("runs a session's commands under the start the machine runs now, after another session restarted it (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		// The machine's journal names the start it last ran under.
+		mocked.startOperation.mockImplementation(async () => f.state.startOperationId);
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const first = f.state.startOperationId;
+		type Transport = { currentStart: () => string | undefined };
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const transport = mocked.folderTransports.at(-1) as Transport;
+		expect(transport.currentStart()).toBe(first);
+		// The second session's view is refused, so the machine restarts while the first session's turn goes on: from
+		// right before it starts again, no command starts or is read under the boot before's start.
+		let during: string | undefined | null = null;
+		f.restarted.mockImplementationOnce(async () => {
+			f.files.set("/proc/sys/kernel/random/boot_id", {
+				uid: 0,
+				gid: 0,
+				mode: 0o444,
+				content: Buffer.from(`${randomUUID()}\n`),
+			});
+			during = transport.currentStart();
+			return false;
+		});
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("VIEW_CLOSED"));
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		expect(during).toBeUndefined();
+		expect(f.state.startOperationId).not.toBe(first);
+		// The first session's transport was made under the start before: its commands now run under the new one, as every
+		// session's do, so a command of the boot before is judged by its own start's mark.
+		expect(transport.currentStart()).toBe(f.state.startOperationId);
+		await f.host.commandTransport(
+			f.scope(second),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		expect((mocked.folderTransports.at(-1) as Transport).currentStart()).toBe(f.state.startOperationId);
+	});
 	it("publishes what the machine's boundary saved: the boundary first, then the session's bundle, pushed and opened as a draft", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
@@ -3523,7 +3664,7 @@ describe("a coding session on the folder model", () => {
 		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow("CODING_FOLDER_EXPORT_EMPTY");
 		expect(mocked.push).not.toHaveBeenCalled();
 	});
-	it("reports a session busy while a command it started runs, as the host kept it, and renews no guest lease", async () => {
+	it("reports a session busy by the one idle rule, a waiting command quiet, its commands as the host kept them, and renews no guest lease", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
@@ -3532,20 +3673,18 @@ describe("a coding session on the folder model", () => {
 		const running = randomUUID(),
 			exited = randomUUID(),
 			unkept = randomUUID();
-		mocked.guestStatus.mockResolvedValue({
-			commands: [
-				{ commandId: running, state: "running" },
-				{ commandId: exited, state: "exited" },
-				{ commandId: unkept, state: "running" },
-			],
-		});
+		const commands = [
+			{ commandId: running, state: "running" },
+			{ commandId: exited, state: "exited" },
+			{ commandId: unkept, state: "running" },
+		];
+		mocked.guestStatus.mockResolvedValue(f.status(commands, { cpuUsageUsec: 1000 }));
 		// The host kept no start of the third: it is not reported.
 		mocked.keptCommand.mockImplementation(async (_custody: string, _workerId: string, commandId: string) =>
 			commandId === running ? { turn: 1, command: `npm run dev ${"é".repeat(200)}` } : undefined,
 		);
-		expect(await f.host.keep(f.signal)).toEqual([
-			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
-		]);
+		const kept = [{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" }];
+		expect(await f.host.keep(f.signal)).toEqual(kept);
 		expect(mocked.guestStatus.mock.calls).toEqual([
 			[{ schema: "qorpera.coding-guest-session/v1", workerId: f.claim.workerId }, expect.any(AbortSignal)],
 		]);
@@ -3558,11 +3697,12 @@ describe("a coding session on the folder model", () => {
 			expect.objectContaining({
 				p_observation: {
 					schema: "qorpera.coding-machine-observation/v1",
-					busy: true,
+					// The first look has nothing to compare the processor time with.
+					busy: false,
 					sessions: [
 						{
 							workerId: f.claim.workerId,
-							busy: true,
+							busy: false,
 							// Clipped to 300 bytes, whole characters.
 							running: [{ commandId: running, turn: 1, command: `npm run dev ${"é".repeat(144)}` }],
 						},
@@ -3570,24 +3710,70 @@ describe("a coding session on the folder model", () => {
 				},
 			}),
 		]);
+		// The one idle rule's two signals, as on the NAS model: a command that waits stays quiet though it runs; a build
+		// that works is busy, and so is a download that moves data with little processor.
+		const look = async (now: readonly { commandId: string; state: string }[], usage: Partial<CodingGuestUsage>) => {
+			mocked.guestStatus.mockResolvedValue(f.status(now, usage));
+			expect(await f.host.keep(f.signal)).toEqual(kept);
+			const keep = f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { busy: boolean } };
+			return keep.p_observation.busy;
+		};
+		expect(await look(commands, { uptimeMs: 610_000, cpuUsageUsec: 1000 + 100_000, ioBytes: 1000 })).toBe(false);
+		expect(await look(commands, { uptimeMs: 620_000, cpuUsageUsec: 1000 + 5_100_000, ioBytes: 2000 })).toBe(true);
+		// 0.1 s of processor in 10 s (1%), but 200 KB moved (more than 512 KiB in 30 s): busy by its data.
+		expect(await look(commands, { uptimeMs: 630_000, cpuUsageUsec: 1000 + 5_200_000, ioBytes: 202_000 })).toBe(true);
+		// 100 KB in 10 s and as little processor: below both thresholds.
+		expect(await look(commands, { uptimeMs: 640_000, cpuUsageUsec: 1000 + 5_300_000, ioBytes: 302_000 })).toBe(false);
 		// Nothing runs: quiet, and still named in the observation, so SQL keeps it.
-		mocked.guestStatus.mockResolvedValue({ commands: [] });
-		expect(await f.host.keep(f.signal)).toEqual([
-			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
-		]);
+		expect(await look([], { uptimeMs: 650_000, cpuUsageUsec: 1000 + 5_300_000, ioBytes: 302_000 })).toBe(false);
 		expect(f.calls("qorpera_keep_coding_attachments").at(-1)).toMatchObject({
-			p_observation: { busy: false, sessions: [{ workerId: f.claim.workerId, busy: false, running: [] }] },
+			p_observation: { sessions: [{ workerId: f.claim.workerId, busy: false, running: [] }] },
 		});
+		// The guest read only some of the machine's processes: busy, though what it saw moved nothing.
+		const partial = { uptimeMs: 660_000, cpuUsageUsec: 1000 + 5_300_000, ioBytes: 302_000, ioComplete: false };
+		expect(await look([], partial)).toBe(true);
+		// A usage read on another boot's clock compares with nothing: the observation is refused.
+		mocked.guestStatus.mockResolvedValue(f.status([], { bootId: randomUUID(), uptimeMs: 1000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_OBSERVATION_UNCONFIRMED",
+			},
+		]);
 		// The guest agent answers it all: no helper runs, and no guest lease is renewed.
 		expect(f.execs()).toEqual([]);
 		expect(mocked.refresh).not.toHaveBeenCalled();
+	});
+	it("counts a session busy when the guest read only some of the machine's processes, on the first look too", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const busy = async (usage: Partial<CodingGuestUsage>) => {
+			mocked.guestStatus.mockResolvedValue(f.status([], usage));
+			expect(await f.host.keep(f.signal)).toEqual([
+				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+			]);
+			const keep = f.calls("qorpera_keep_coding_attachments").at(-1) as {
+				p_observation: { busy: boolean; sessions: { busy: boolean }[] };
+			};
+			expect(keep.p_observation.sessions.map((session) => session.busy)).toEqual([keep.p_observation.busy]);
+			return keep.p_observation.busy;
+		};
+		// Bytes it could not see may be the session's: the machine must not sleep on them.
+		expect(await busy({ ioComplete: false })).toBe(true);
+		// Read whole on the next look, it compares with the last by the idle rule.
+		expect(await busy({ uptimeMs: 610_000 })).toBe(false);
 	});
 	it("takes a released session off: its commands cancelled through the guest agent, the session quiet, its view ended, the session stopped", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
 		const command = randomUUID();
-		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: command, state: "running" }] });
+		mocked.guestStatus.mockResolvedValue(f.status([{ commandId: command, state: "running" }]));
 		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
 		f.state.release.set(f.claim.workerId, "ARCHIVED");
 		f.state.listed = [f.entry()];
@@ -3653,7 +3839,7 @@ describe("a coding session on the folder model", () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
-		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: randomUUID(), state: "running" }] });
+		mocked.guestStatus.mockResolvedValue(f.status([{ commandId: randomUUID(), state: "running" }]));
 		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
 		mocked.guestCancel.mockRejectedValue(new Error("LXD exec stream failed"));
 		mocked.guestQuiesce.mockRejectedValue(new Error("CODING_GUEST_SESSION_STILL_RUNNING"));
@@ -3736,7 +3922,7 @@ describe("a coding session on the folder model", () => {
 		mocked.guestStatus.mockImplementation(async () => {
 			// Stopped elsewhere between the keeper's look and the take-off.
 			f.lxd.running = false;
-			return { commands: [] };
+			return f.status();
 		});
 		expect(await pass(f)).toEqual([
 			{
@@ -3758,7 +3944,7 @@ describe("a coding session on the folder model", () => {
 		vi.mocked(f.client.execInstance).mockClear();
 		f.call.mockClear();
 		const command = randomUUID();
-		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: command, state: "running" }] });
+		mocked.guestStatus.mockResolvedValue(f.status([{ commandId: command, state: "running" }]));
 		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
 		f.views.endMachine.mockResolvedValue([
 			{ workerId: f.claim.workerId, viewId: f.viewId, saved: true, closed: true },

@@ -667,8 +667,10 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   answers `unanswered`. `reads` is `released`, the release's refusal (4c's reasons), `unanswered`, or `unproven`;
   each view's report is 4c's, with its reasons. A view named final that this service does not hold open is a
   `VIEW_CLOSED` entry in `views`. `{"op":"restarted","machine":"<coding machine id>"}` answers
-  `{"restarted":{"machine"}}`: the executor sends it once it has stopped the machine and before the machine starts
-  again (below).
+  `{"restarted":{"machine","dropped"}}`: the executor sends it once it has stopped the machine and before the machine
+  starts again (below). `dropped` is true when a read the machine was served may have gone unreleased (the machine was
+  lost, or not vouched for, or a view of it still held one): what it kept on its disk from before, a command's output,
+  is then not kept (5g-5).
 - **Held.** A coding view's refused boundary holds what it had pending, its bytes and folders alike, and the view stays
   kept until the core closes it: `stopped` and `run_ended` may lift, `denied` holds, `unreadable` (a release's, or a
   commit's "A read is no longer readable", which 4c calls `denied`) moves the machine. At a boundary that names the
@@ -682,7 +684,8 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   still out at the restart answers `unproven`: a view may have gone meanwhile with a read the restart cleared. The lost state is kept in
   memory only (the plan's durable read ledger, P3, is not built): a run that ends with a machine lost does not stop
   cleanly, so the next run's renewals close the machine's views (`service_crashed`), and the host stops a machine
-  whose last attachment ended.
+  whose last attachment ended. A run starts with every machine lost but those its last clean stop vouched for (below):
+  a run before may have served any other one a read it never released, with no view of it left to say so (5g-5).
 - **Who may connect.** Node cannot read a Unix connection's peer credentials (`SO_PEERCRED`), so the kernel checks the
   uid: connecting needs write permission on the socket's file. The unit makes the file the executor's
   (`qorpera-coding-executor`), mode 0600, in a root-owned folder (0755). The service serves a connection only while the
@@ -694,14 +697,25 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   has every read released and nothing pending, and no machine is lost, it calls `qorpera_folder_service_stopped` and
   the core clears `served_by`: the next run serves those views. Otherwise `served_by` stays and the next run's
   renewals close them (`service_crashed`). A lost machine counts even with none of its views open: a view this run let
-  go may still be open in the core, marked as served by it.
+  go may still be open in the core, marked as served by it. A machine not vouched for (below) does not: its views are
+  unproven for that alone, and hold what they could never save.
+- **The clean-stop note (5g-5).** A clean stop leaves the next run a note in the unit's `RuntimeDirectory=`
+  (`/run/qorpera-folder-service/clean-stop.json`, 0600, kept across a stop and a start by
+  `RuntimeDirectoryPreserve=yes`, gone at a reboot): the machines this run vouches for. A machine is vouched for once
+  the executor said it restarted, or the note before named it, and until it loses a read; a clean stop leaves none with
+  a read unreleased. The next run takes the note, and removes it, before it serves anything, so a run that crashes or
+  stops otherwise leaves none, and the run after vouches for no machine. Every machine not vouched for is lost until the
+  executor restarts it (`restarted` answers `dropped: true`), so the first run of this service on a node restarts
+  every running coding and test machine once.
 - **Tests.** `packages/object-gateway/test/folder-coding-views.test.ts`, against the stand-in core: a coding view is
   refused from another coding machine, an office, the execution host, an unlisted project and the code host, and a
   code host's from another company's code host and a coding machine; a read is recorded before its answer; a boundary
   is answered only after every read of the machine is released, one served during the last release included; a
   refused release holds, as do `unreadable` and `denied` until the final; a machine that lost a read stays `unproven`
   after its last view closes and until `restarted`, and keeps the service from stopping cleanly; a boundary a restart
-  crossed answers `unproven`; a clean stop clears
+  crossed answers `unproven`; a run without a note holds every machine unproven, views or not, until `restarted` (which
+  answers `dropped`), and its note names only the machines vouched for (`folder-clean-stop.test.ts`: the note is taken
+  and removed, whole or ignored); a clean stop clears
   `served_by` and an unclean one keeps it; the control socket refuses a file another uid could connect through and
   answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
   tests.

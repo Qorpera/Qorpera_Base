@@ -463,7 +463,8 @@ begin
 	perform pg_temp.refused(r, 6, 'structured_rule', 'owners');
 	r := pg_temp.commit(g -> 'actor', 'p16-owners-0003', jsonb_build_array(
 		pg_temp.p16_write(g -> 'actor', 'interfaces/board/README.md', '"An agent''s note."')));
-	perform pg_temp.refused(r, 1, 'structured_rule', 'owners');
+	-- 20260930510000: an agent changes nothing under interfaces/, owners-only or not (689).
+	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	r := pg_temp.commit(o, 'p16-owners-0004', jsonb_build_array(
 		pg_temp.p16_write(o, 'interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false, 'owners'))));
 	perform pg_temp.expect(r, 1, 'saved');
@@ -532,16 +533,17 @@ begin
 			raise exception 'Review class of % (%): %', v_case.path, v_case.class,
 				public.qorpera_folder_structured_review_class(c_env, v_agent, v_unit, v_case.path, null); end if;
 	end loop;
-	-- A new interface by a run needs its review; save_interface's approval records it; a change set reaching outside
-	-- interfaces/ and tables/ is not one save_interface stands for.
+	-- A new interface by a run: since 20260930510000 the save check refuses it before any review, and save_interface's
+	-- recorded approval saves it no more (689); a change set reaching outside interfaces/ and tables/ is not one
+	-- save_interface stands for.
 	v_units := jsonb_build_array(pg_temp.p16_folder(g -> 'actor', 'interfaces/agent-page', jsonb_build_object('interface.toml',
 		pg_temp.iface('86400000-0000-4000-8000-000000000007', 'Agent page', false))));
 	r := pg_temp.commit(g -> 'actor', 'p16-review-0001', v_units);
-	perform pg_temp.expect(r, 1, 'denied', 'review_required');
+	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	v_review := (pg_temp.record(g -> 'binding', pg_temp.action(g -> 'binding', 'p16-call-1', 'allow', 'delegation', 'save_interface'),
 		v_units) ->> 'reviewId')::uuid;
 	r := pg_temp.commit(g -> 'actor', 'p16-review-0002', v_units, v_review);
-	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-2', 'allow', 'delegation', 'save_interface'),
 		jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/x'), jsonb_build_object('op','mkdir','path','agents/x'))),

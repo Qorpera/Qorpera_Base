@@ -14,6 +14,11 @@ select '64800000-0000-4000-8000-0000000000f7', n, ('94400000-0000-4000-8000-e' |
 		'role', case when n % 2 = 1 then 'user' else 'assistant' end, 'content', (array['one','two','three','four'])[n]))),
 	lpad(to_hex(n), 64, '0'), timestamptz '2026-10-04 09:00:00+00' + n * interval '1 minute'
 from generate_series(1, 4) n;
+-- The company chose Shared context, the beta its place on the test list offers (20260930508000), and 648's run, made by
+-- hand before the choice, is recorded in the beta as a run made after it is. The fixture's removal takes the rows.
+insert into public.qorpera_memory_tree_companies(profile_id) values ('64800000-0000-4000-8000-000000000010');
+insert into public.qorpera_company_memory_modes(profile_id, mode) values ('64800000-0000-4000-8000-000000000010', 'tree');
+update public.qorpera_execution_runs set memory_mode = 'tree' where id = '64800000-0000-4000-8000-0000000000f1';
 set session_replication_role = origin;
 
 create function pg_temp.sql_zoom(p_request jsonb) returns text language sql as $$

@@ -1,6 +1,11 @@
 -- @fixture 993_memory_worker_view_reference.test.sql until "-- 1. The check's answers:"
 -- W4b: exercise the native entry point, including its own-job binding checks, against a dispatched worker.
 
+-- The company chose Shared context, the beta its place on the test list offers, so the worker's run is recorded in the
+-- beta (C5, 20260930508000).
+insert into public.qorpera_memory_tree_companies(profile_id) values ('63400000-0000-4000-8000-000000000010');
+insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400000-0000-4000-8000-000000000010', 'tree');
+
 do $$
 declare ada jsonb := current_setting('qorpera_test.ada')::jsonb;
 	f text := 'agents/ada/todos/plan-the-trip/binding-worker';

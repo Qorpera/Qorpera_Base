@@ -48,17 +48,7 @@
 @keyframes rail-list-from-left { from { opacity: 0; transform: translateX(-16px); } }
 @keyframes rail-list-from-right { from { opacity: 0; transform: translateX(16px); } }
 
-/* The Interfaces tab: the main interface stands on top like the Co-Founder, the rest are rows. */
-.rail-interfaces .interface-home { margin: calc(var(--lift) + 16px) 9px 18.5px; width: auto; }
-.rail-compact .rail-interfaces .interface-home { margin: 6px 0 3px; }
-/* The owners' quiet line when no interface is the main one, or several are; a page that has a problem. */
-.rail-interfaces .rail-note { margin: 12px 10px 4px; color: var(--rail-small); font-size: 12px; line-height: 1.4; }
-.rail-compact .rail-interfaces .rail-note { display: none; }
-.rail-row-interface.is-broken .interface-emblem { opacity: 0.55; }
-.interface-stand { display: grid; place-items: center; }
-/* An emblem floats; it keeps its own soft shadow and no ground shadow. */
-.interface-stand::before { display: none; }
-.interface-stand .interface-emblem { position: relative; z-index: 1; width: calc(var(--figure) * 0.8); height: calc(var(--figure) * 0.8); filter: drop-shadow(0 2px 3px rgba(39, 16, 41, 0.17)); }
+/* The Interfaces tab: a row for each page that is on. */
 .rail-row-interface .interface-emblem { width: 36px; height: 36px; }
 .interface-emblem .emblem-beat { stroke-dasharray: 60; animation: emblem-beat 2.4s linear infinite; }
 @keyframes emblem-beat { 0% { stroke-dashoffset: 60; } 60%, 100% { stroke-dashoffset: 0; } }
@@ -109,8 +99,8 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-cards .interface-item { padding: 10px 12px; border-radius: 12px; background: var(--warning-soft); }
 .interface-empty { margin: 4px 0 2px; color: var(--text-soft); font-size: 12.5px; }
 .interface-missing { display: grid; gap: 8px; padding: 32px; color: var(--text-muted); }
-/* A page or a table that has a problem: a plain sentence, then the parser's own words, line by line. */
-.interface-problem p, .interface-note p { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+/* A table that has a problem: a plain sentence, then the parser's own words, line by line. */
+.interface-note p { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .interface-note { margin: 2px 0 8px; color: var(--text-muted); }
 .interface-note p { font-size: 12.5px; }
 .interface-problems { margin: 0; padding-left: 18px; color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }

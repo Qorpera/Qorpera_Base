@@ -26,16 +26,15 @@ create function pg_temp.event_id(p_seq bigint) returns uuid language sql immutab
 	select ('97000000-0000-4000-8000-e' || lpad(p_seq::text, 11, '0'))::uuid
 $$;
 
--- The setup: the company listed; the launch chat's tree, a line for each of its messages; Nora's and Otto's runs made
--- the runs a member's post at 3 in the chat wakes (as 20260928289620's room post does): the post an input of the chat's
--- whose event is the one at 3, its poster one of the chat's people, each run the room delivery of a room wake that names
--- the post, with the transcript start at the post.
+-- The setup (the company chose the beta in 970's): the launch chat's tree, a line for each of its messages; Nora's and
+-- Otto's runs made the runs a member's post at 3 in the chat wakes (as 20260928289620's room post does): the post an
+-- input of the chat's whose event is the one at 3, its poster one of the chat's people, each run the room delivery of a
+-- room wake that names the post, with the transcript start at the post.
 do $$
 declare
 	r jsonb; i integer; launch uuid := pg_temp.chat('launch'); root constant text := 'agents/groups/launch/memory';
 	post constant uuid := pg_temp.event_id(3); poster constant uuid := '63400000-0000-4000-8000-000000000002'; who text;
 begin
-	perform pg_temp.fx('insert into public.qorpera_memory_tree_companies(profile_id) values (''63400000-0000-4000-8000-000000000010'')');
 	r := pg_temp.memory('group-chat-tree', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
 		pg_temp.tree_file(root || '/tree.toml', pg_temp.toml(launch)), jsonb_build_object('op','mkdir','path',root || '/t0'),
 		pg_temp.tree_file(root || '/t0/00000000.jsonl',

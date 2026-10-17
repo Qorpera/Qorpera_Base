@@ -1,25 +1,26 @@
 // @vitest-environment jsdom
 
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
+import { MAILBOX_INTERFACE } from "@qorpera/cloud-client/interface-library";
+import { type InterfaceFile, parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { interfaceBadge } from "../src/app/interface-badge.ts";
-import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
+import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces } from "../src/app/interfaces.ts";
 import type { Route } from "../src/app/router.ts";
-import { renderInterface } from "../src/app/views/interface.ts";
+import { renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedProfileRole, HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
-import { folderFake } from "./folder-fake.ts";
 
-/* Interfaces step I5c (RUNTIME-INTERFACES.md §3.2 `mail`, §4, §10): the Mailbox page from the folder's library copy,
- * drawn from the member mail read (cloud/mail.ts). The read here is a fake of its five calls on the fixture's cloud. */
+/* Interfaces step I5c (RUNTIME-INTERFACES.md §3.2 `mail`, §4, §10): the Mailbox page the web ships, switched on (C6a),
+ * drawn from the member mail read (cloud/mail.ts). The read here is a fake of its five calls on the fixture's cloud. A
+ * test of an edited Mailbox draws the edited definition directly: no company can show it, but its blocks draw mail. */
 
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Co-Founder", templateId: "co-founder" };
 const ada: HostedStaffAgent = { ...staff, id: id(41), displayName: "Ada", role: "Bookkeeper" };
@@ -95,7 +96,8 @@ interface MailFake {
 	waiting: Record<string, unknown>[];
 	/** Newest first. */
 	threads: Record<string, unknown>[];
-	/** What the thread call answers, by thread id; a thread not here has one message. */
+	/** What the thread call answers, by thread id (an older page by `<thread> before <id>`); a thread not here has one
+	 * message. */
 	reads: Record<string, Record<string, unknown>>;
 	/** Threads the call refuses with 22023. */
 	gone: Set<string>;
@@ -116,6 +118,7 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 			const request = args.p_request as {
 				state?: string;
 				address?: string;
+				direction?: string;
 				before?: { lastAt: string; thread: string };
 				limit: number;
 			};
@@ -124,6 +127,7 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 				(item) =>
 					(request.state === undefined || item.state === request.state) &&
 					(request.address === undefined || item.address === request.address) &&
+					(request.direction === undefined || item.direction === request.direction) &&
 					(before === undefined || older(item, before)),
 			);
 			const page = rows.slice(0, request.limit);
@@ -138,8 +142,9 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 			throw new CloudRpcError(fn, { message: "That is not a mail thread of this company.", code: "22023" }, 400);
 		if (fn === "qorpera_member_mail_thread") {
 			const n = Number(threadId.slice("thread-".length));
+			const before = args.p_before as { id: string } | undefined;
 			return (
-				fake.reads[threadId] ?? {
+				fake.reads[before ? `${threadId} before ${before.id}` : threadId] ?? {
 					thread: threadId,
 					address: ADDRESS.address,
 					messages: [received(n)],
@@ -221,6 +226,15 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+/** The company's pages with the Mailbox on or off. */
+const mailboxOn = (on: boolean): InterfacePagesState => ({
+	pages: [
+		{ page: "mailbox", on },
+		{ page: "members", on: false },
+	],
+	mayChange: true,
+});
+
 function company(role: HostedProfileRole = "owner", activity: HostedStaffExecutionActivity[] = []) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
@@ -231,29 +245,17 @@ function company(role: HostedProfileRole = "owner", activity: HostedStaffExecuti
 		sessions: [session],
 		team: { ...team, role, capabilities: { ...team.capabilities, write: role !== "viewer" }, members: [me] },
 		activity,
+		interfacePages: mailboxOn(true),
 	});
 	cleanup.push(() => controller.stop());
 	return { f, controller };
 }
 
-/** The company's folder as at founding, followed as the app does; `edit` changes its Mailbox. */
-async function follow(controller: CompanyController, edit: (text: string) => string = (text) => text) {
-	const fake = folderFake({ seed: [] });
-	let next = 500;
-	for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next))))
-		fake.put(path, path === "interfaces/mailbox/interface.toml" ? edit(text) : text);
-	const stop = new AbortController();
-	const reader = new CompanyInterfaceFolder(
-		{
-			signal: stop.signal,
-			current: () => {},
-			folder: () => fake.folder,
-			folderHints: () => ({ close: async () => {} }),
-		},
-		(state) => controller.store.set({ interfaceFolder: state }),
-	);
-	cleanup.push(() => stop.abort());
-	await reader.open();
+/** The shipped Mailbox with `edit` applied. */
+function edited(edit: (text: string) => string): InterfaceFile {
+	const result = parseInterfaceFile(edit(MAILBOX_INTERFACE));
+	if (!result.ok) throw new Error(JSON.stringify(result.problems));
+	return result.file;
 }
 
 /** The company's mail, read as the app reads it. */
@@ -269,7 +271,7 @@ async function readMail(
 }
 
 /** The Mailbox on screen, drawn again on every change. `setup` fills the mail before it is read; `edit` changes the
- * page's file. */
+ * page's definition. */
 async function mailbox(
 	setup: (fake: MailFake) => void,
 	role: HostedProfileRole = "owner",
@@ -279,12 +281,13 @@ async function mailbox(
 	const fake = mailFake(f);
 	fake.addresses = [ADDRESS];
 	setup(fake);
-	await follow(controller, edit);
 	const accounts = accountsFake();
 	await readMail(controller, f, accounts);
 	const main = h("main");
 	document.body.append(main);
-	const draw = () => renderInterface(main, controller, "mailbox");
+	const file = edit && edited(edit);
+	const draw = () =>
+		file ? renderInterfaceFile(main, controller, "mailbox", file) : renderInterface(main, controller, "mailbox");
 	cleanup.push(controller.store.subscribe(draw));
 	// The page keeps its view and what is open for the company while the app runs: the next test starts on the Inbox,
 	// with nothing open.
@@ -301,7 +304,7 @@ function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
 	document.body.append(h("div", { class: "frame" }, element));
 	const auth = new AuthController(f.cloud);
 	cleanup.push(() => auth.dispose());
-	const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" };
+	const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "mailbox" };
 	renderRail(element, controller, {
 		profiles: [profileA],
 		user: userA,
@@ -333,12 +336,15 @@ describe("the mail need (§3 needs)", () => {
 	it("lists the Mailbox only while the company has an address, and reads its addresses again on coming back", async () => {
 		const { f, controller } = company();
 		const fake = mailFake(f);
-		await follow(controller);
 		await readMail(controller, f);
 		expect(names(controller)).not.toContain("mailbox");
 		fake.addresses = [ADDRESS];
 		window.dispatchEvent(new Event("focus"));
 		await vi.waitFor(() => expect(names(controller)).toContain("mailbox"));
+		// Switched off, it leaves the tab with its address still there (C6a).
+		controller.store.set({ interfacePages: mailboxOn(false) });
+		expect(names(controller)).toEqual([]);
+		controller.store.set({ interfacePages: mailboxOn(true) });
 		// A cloud without the member mail read has no mail: the need is off again.
 		(f.cloud.rpc as unknown as Mock).mockRejectedValue(
 			new CloudRpcError("qorpera_member_mail_addresses", { message: "missing", code: "PGRST202" }, 404),
@@ -394,7 +400,7 @@ describe("the Inbox list", () => {
 		await vi.waitFor(() => expect(lines(main)).toEqual(["Sender 1", "Sender 2"]));
 	});
 
-	it("reads the first page again every 20 seconds while the page is on screen, keeping the older pages", async () => {
+	it("reads the list again every 20 seconds while the page is on screen, with the older pages it shows", async () => {
 		vi.useFakeTimers();
 		const { main, fake } = await mailbox((mail) => {
 			mail.threads = Array.from({ length: 51 }, (_, index) => summary(index + 2));
@@ -470,7 +476,7 @@ describe("the Inbox list", () => {
 });
 
 describe("the views", () => {
-	it("asks the threads call for waiting threads, and narrows the Inbox to sent ones here", async () => {
+	it("asks the threads call for waiting threads and for sent ones", async () => {
 		const { main, fake } = await mailbox((mail) => {
 			mail.threads = [
 				summary(1, { state: "waiting" }),
@@ -491,15 +497,63 @@ describe("the views", () => {
 		const asked = calls(fake, "qorpera_member_mail_threads").length;
 		view(main, "Sent");
 		await vi.waitFor(() => expect(lines(main)).toEqual(["Ada"]));
-		// The Sent view reads the Inbox's list, afresh as it comes back on screen: the call has no direction to ask for.
+		// The Sent view asks the call for sent threads itself, so it pages through all of them.
 		expect(calls(fake, "qorpera_member_mail_threads").slice(asked)).toEqual([
-			{ p_environment_id: profileA.environmentId, p_request: { limit: 50 } },
+			{ p_environment_id: profileA.environmentId, p_request: { direction: "sent", limit: 50 } },
 		]);
 		view(main, "Inbox");
 		await vi.waitFor(() => expect(main.querySelector(".interface-item-status")?.textContent).toBe("Handled"));
 		expect(rows(main)).toHaveLength(3);
-		// The Inbox shares that list: it is not read again.
-		expect(calls(fake, "qorpera_member_mail_threads")).toHaveLength(asked + 1);
+		// The Inbox is read afresh as it comes back on screen.
+		expect(calls(fake, "qorpera_member_mail_threads").slice(asked + 1)).toEqual([
+			{ p_environment_id: profileA.environmentId, p_request: { limit: 50 } },
+		]);
+	});
+
+	it("shows sent threads older than the Inbox's first page in Sent, and pages through them", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = Array.from({ length: 110 }, (_, n) =>
+				summary(n + 1, n < 55 ? {} : { direction: "sent", fromName: `Sent ${n + 1}` }),
+			);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(50));
+		view(main, "Sent");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(50));
+		expect(lines(main)[0]).toBe("Sent 56");
+		button(main, "Show older")?.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(55));
+		expect(lines(main).at(-1)).toBe("Sent 110");
+		expect(calls(fake, "qorpera_member_mail_threads").at(-1)).toEqual({
+			p_environment_id: profileA.environmentId,
+			p_request: { direction: "sent", before: { lastAt: at(105), thread: thread(105) }, limit: 50 },
+		});
+		expect(button(main, "Show older")).toBeUndefined();
+	});
+
+	it("takes a thread out of Sent at the next read once mail comes into it, on a page Show older read too", async () => {
+		vi.useFakeTimers();
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = Array.from({ length: 110 }, (_, n) =>
+				summary(n + 1, n < 55 ? {} : { direction: "sent", fromName: `Sent ${n + 1}` }),
+			);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(50));
+		view(main, "Sent");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(50));
+		button(main, "Show older")!.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(55));
+		// A reply comes into the oldest sent thread: its newest message is received now, and it is the newest thread.
+		const replied = fake.threads.pop()!;
+		fake.threads.unshift({ ...replied, direction: "received", lastAt: at(0), fromName: "Reply" });
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(54));
+		expect(lines(main)).not.toContain("Sent 110");
+		expect(lines(main).at(-1)).toBe("Sent 109");
+		expect(calls(fake, "qorpera_member_mail_threads").at(-1)).toEqual({
+			p_environment_id: profileA.environmentId,
+			p_request: { direction: "sent", before: { lastAt: at(105), thread: thread(105) }, limit: 50 },
+		});
+		expect(button(main, "Show older")).toBeUndefined();
 	});
 });
 
@@ -532,6 +586,7 @@ describe("an open thread", () => {
 					},
 				],
 				more: true,
+				nextBefore: { at: at(2), kind: "received", id: id(902) },
 				waiting: [],
 			};
 		});
@@ -566,9 +621,8 @@ describe("an open thread", () => {
 		expect(second!.querySelector(".interface-outside")).toBeNull();
 		expect(second!.querySelector(".review-email-body")?.textContent).toBe("Thanks, paid.");
 		expect(texts(second!, ".email-draft-status")).toEqual(["Ada", "Sent", expect.any(String)]);
-		expect(open.querySelector(".interface-mail-more")?.textContent).toBe(
-			"Only the newest 2 messages of this thread are shown here.",
-		);
+		// The thread has older messages: they are a button away.
+		expect(open.querySelector(".interface-mail-more button")?.textContent).toBe("Show older messages");
 		await vi.waitFor(() => expect(calls(fake, "qorpera_mark_mail_thread_read")).toHaveLength(1));
 		expect(calls(fake, "qorpera_mark_mail_thread_read")[0]).toEqual({
 			p_environment_id: profileA.environmentId,
@@ -582,6 +636,118 @@ describe("an open thread", () => {
 		rows(main)[0]!.click();
 		await vi.waitFor(() => expect(calls(fake, "qorpera_mark_mail_thread_read")).toHaveLength(2));
 		expect(calls(fake, "qorpera_member_mail_thread")).toHaveLength(2);
+	});
+
+	it("reads older messages a page at a time on Show older messages, and keeps them through the 20-second reads", async () => {
+		vi.useFakeTimers();
+		const page = (messages: number[], next?: number) => ({
+			thread: thread(1),
+			address: ADDRESS.address,
+			messages: messages.map((n) => received(n)),
+			more: next !== undefined,
+			...(next === undefined ? {} : { nextBefore: { at: at(next), kind: "received", id: id(900 + next) } }),
+			waiting: [],
+		});
+		const { main, f, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { messages: 6 })];
+			// Pages of two, each oldest first: 2 and 1 are the newest, 4 and 3 come before them, 6 and 5 are the oldest.
+			mail.reads[thread(1)] = page([2, 1], 2);
+			mail.reads[`${thread(1)} before ${id(902)}`] = page([4, 3], 4);
+			mail.reads[`${thread(1)} before ${id(904)}`] = page([6, 5]);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		rows(main)[0]!.click();
+		const senders = () => texts(opened()!, ".interface-mail-message h3").map((line) => line?.split(" <")[0]);
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 2", "Sender 1"]));
+		button(opened()!, "Show older messages")!.click();
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 4", "Sender 3", "Sender 2", "Sender 1"]));
+		expect(calls(fake, "qorpera_member_mail_thread").at(-1)).toEqual({
+			p_environment_id: profileA.environmentId,
+			p_thread: thread(1),
+			p_before: { at: at(2), kind: "received", id: id(902) },
+		});
+		// New mail pushes message 2 out of the newest page: the 20-second read keeps it, and the older page with it.
+		fake.reads[thread(1)] = page([1, 0], 1);
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 4", "Sender 3", "Sender 2", "Sender 1", "Sender 0"]));
+		// A read that fails says so, and Try again reads the page; the oldest page offers nothing older.
+		const rpc = f.cloud.rpc as unknown as Mock;
+		const answer = rpc.getMockImplementation()!;
+		let down = true;
+		rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_thread" && args.p_before && down) {
+				down = false;
+				throw new Error("The network is down.");
+			}
+			return answer(fn, args);
+		});
+		button(opened()!, "Show older messages")!.click();
+		await vi.waitFor(() =>
+			expect(opened()!.querySelector(".interface-mail-more [role=alert]")?.textContent).toBe(
+				"Older messages can't be read.",
+			),
+		);
+		expect(senders()).toHaveLength(5);
+		button(opened()!, "Try again")!.click();
+		await vi.waitFor(() => expect(senders()).toHaveLength(7));
+		expect(senders()).toEqual(["Sender 6", "Sender 5", "Sender 4", "Sender 3", "Sender 2", "Sender 1", "Sender 0"]);
+		expect(calls(fake, "qorpera_member_mail_thread").at(-1)?.p_before).toEqual({
+			at: at(4),
+			kind: "received",
+			id: id(904),
+		});
+		expect(opened()!.querySelector(".interface-mail-more")).toBeNull();
+	});
+
+	it("reads back to the messages shown when more than a page came between two reads, so none is skipped", async () => {
+		vi.useFakeTimers();
+		const page = (messages: number[], next?: number) => ({
+			thread: thread(1),
+			address: ADDRESS.address,
+			messages: messages.map((n) => received(n)),
+			more: next !== undefined,
+			...(next === undefined ? {} : { nextBefore: { at: at(next), kind: "received", id: id(900 + next) } }),
+			waiting: [],
+		});
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { messages: 4 })];
+			// Pages of two, each oldest first: 4 and 3 are the newest, 6 and 5 the oldest.
+			mail.reads[thread(1)] = page([4, 3], 4);
+			mail.reads[`${thread(1)} before ${id(904)}`] = page([6, 5]);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		rows(main)[0]!.click();
+		const senders = () => texts(opened()!, ".interface-mail-message h3").map((line) => line?.split(" <")[0]);
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 4", "Sender 3"]));
+		button(opened()!, "Show older messages")!.click();
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 6", "Sender 5", "Sender 4", "Sender 3"]));
+		// Three messages come before the next read, more than its newest page holds: the page before it is read too,
+		// up to message 3, the newest one shown, and no further.
+		fake.reads[thread(1)] = page([1, 0], 1);
+		fake.reads[`${thread(1)} before ${id(901)}`] = page([3, 2], 3);
+		fake.reads[`${thread(1)} before ${id(903)}`] = page([5, 4], 5);
+		const asked = calls(fake, "qorpera_member_mail_thread").length;
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() =>
+			expect(senders()).toEqual([
+				"Sender 6",
+				"Sender 5",
+				"Sender 4",
+				"Sender 3",
+				"Sender 2",
+				"Sender 1",
+				"Sender 0",
+			]),
+		);
+		expect(calls(fake, "qorpera_member_mail_thread").slice(asked)).toEqual([
+			{ p_environment_id: profileA.environmentId, p_thread: thread(1) },
+			{
+				p_environment_id: profileA.environmentId,
+				p_thread: thread(1),
+				p_before: { at: at(1), kind: "received", id: id(901) },
+			},
+		]);
+		expect(opened()!.querySelector(".interface-mail-more")).toBeNull();
 	});
 
 	it("shows account mail as account mail only: which account and who last used it, never its words", async () => {
@@ -1017,8 +1183,8 @@ describe("outside words in the page's other blocks (§4)", () => {
 });
 
 describe("the Mailbox's badge (§3 badge)", () => {
-	it("counts the mail sends that wait, once each, beside what Pulse lists as waiting", async () => {
-		// Ada waits for the member's answer: Pulse lists her as a review; her send is counted under mail only.
+	it("counts the mail sends that wait, once each, beside the agent's own wait", async () => {
+		// Ada waits for the member's answer, a review; her send is counted under mail only.
 		const needsYou: HostedStaffExecutionActivity = {
 			staffAgentId: ada.id,
 			runId: id(81),
@@ -1050,7 +1216,6 @@ describe("the Mailbox's badge (§3 badge)", () => {
 				createdAt: at(2),
 			},
 		];
-		await follow(controller);
 		await readMail(controller, f);
 		const file = companyInterfaces(controller).find((entry) => entry.name === "mailbox")?.file;
 		expect(file).toBeTruthy();
@@ -1062,8 +1227,6 @@ describe("the Mailbox's badge (§3 badge)", () => {
 		expect(row.querySelector(".rail-count")?.textContent).toBe("2");
 		expect(row.querySelector(".rail-count")?.getAttribute("aria-hidden")).toBe("true");
 		expect(row.getAttribute("aria-label")).toBe("Mailbox, 2 waiting");
-		// Pulse has no badge.
-		expect(element.querySelector(".interface-home .rail-count")).toBeNull();
 		// Answered sends leave the count.
 		fake.waiting = [];
 		window.dispatchEvent(new Event("focus"));
@@ -1090,15 +1253,14 @@ describe("the Mailbox's badge (§3 badge)", () => {
 				createdAt: cloudTime(10),
 			},
 		];
-		await follow(controller, (text) =>
+		await readMail(controller, f);
+		const file = edited((text) =>
 			text.replace(
 				'badge = { from = "waiting", where = { kind = "mail" } }',
 				'badge = { from = "waiting", where = { kind = "mail" }, since = "-7d" }',
 			),
 		);
-		await readMail(controller, f);
-		const file = companyInterfaces(controller).find((entry) => entry.name === "mailbox")?.file;
-		expect(file?.badge?.query.since).toBe("-7d");
-		expect(interfaceBadge(controller, file!)).toBe(1);
+		expect(file.badge?.query.since).toBe("-7d");
+		expect(interfaceBadge(controller, file)).toBe(1);
 	});
 });

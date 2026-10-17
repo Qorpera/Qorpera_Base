@@ -52,6 +52,7 @@ import { t } from "../ui/preferences.ts";
 import type { MailState } from "./company-mail.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
+import type { InterfacePagesState } from "./interface-pages.ts";
 import {
 	appendQuoted,
 	brokenQuotes,
@@ -186,9 +187,11 @@ export interface CompanyState {
 	waitingForHours?: boolean;
 	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
 	hoursWaitUnavailable?: boolean;
-	/** The company's interfaces and tables as its folder holds them (Interfaces step I7; app/interface-folder.ts).
-	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
-	 * draws the library's definitions (app/interfaces.ts). */
+	/** Which of the two pages, Mailbox and Members, the company shows (Interfaces C6a; app/interface-pages.ts). Unset
+	 * until the first read lands, and on a cloud without the calls: no page shows then. */
+	interfacePages?: InterfacePagesState;
+	/** The tables and files the shown pages read, as the company's folder holds them (Interfaces step I7;
+	 * app/interface-folder.ts). Unset until the first read lands. */
 	interfaceFolder?: InterfaceFolderState;
 	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts). Unset until the first
 	 * read lands, and on a cloud without them: no page draws an offer then. */

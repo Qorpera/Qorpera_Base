@@ -165,11 +165,21 @@ export class CodingFolderControl {
 	}
 
 	/** Says the machine is stopped and starts again, so a read it lost no longer leaves the views it opens from now on
-	 * unproven. Sent once the machine is stopped and before it starts. */
-	async restarted(machine: string, signal: AbortSignal): Promise<void> {
+	 * unproven. Sent once the machine is stopped and before it starts. Answers whether a read the machine was served
+	 * before may have gone unreleased (F3 5g-5, the service's `dropped`): what it left on its disk then is not to be
+	 * kept. A service from before 5g-5 does not say, which is the same as yes. */
+	async restarted(machine: string, signal: AbortSignal): Promise<boolean> {
 		if (!isUuid(machine)) throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
 		const answer = objectOf(await this.#ask({ op: "restarted", machine }, "restarted", signal));
-		if (!answer || Object.keys(answer).join() !== "machine" || answer.machine !== machine) throw new Error(INVALID);
+		const keys = answer ? Object.keys(answer).sort().join() : "";
+		if (
+			!answer ||
+			(keys !== "machine" && keys !== "dropped,machine") ||
+			answer.machine !== machine ||
+			(keys !== "machine" && typeof answer.dropped !== "boolean")
+		)
+			throw new Error(INVALID);
+		return answer.dropped !== false;
 	}
 
 	/** One request on a connection of its own, and what the answer holds under `key`. */

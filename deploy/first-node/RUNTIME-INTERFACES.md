@@ -268,8 +268,9 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   beside the list; on a phone it opens as the next screen.
 - **Mail lists and threads (proposed, built in I5c):**
   - A block from `mail` reads the threads 50 at a time, newest first, with "Show older" for the next page. When the
-    view's and the block's `where` all give `state` or `address` one text, the threads call is asked for just those.
-    Any other column, such as `direction`, is filtered on the threads already read.
+    view's and the block's `where` all give `state`, `address` or `direction` one text, the threads call is asked for
+    just those (C6e: so the Sent view pages through every sent thread). Any other column, such as `unread`, is filtered
+    on the threads already read.
   - A `text`, `numbers` or `calendar` block that names `mail` is not drawn, even beside other sources. The threads
     are read a page at a time, so a tile or a day would count only those read so far, and neither block marks an
     email's words.
@@ -278,12 +279,15 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - An unread thread is marked in the list. Opening it in a `mail` block reads it and marks it read; the mark goes
     when that lands, and each new opening marks it again. A thread the cloud no longer has says it is gone.
   - The `mail` block draws each message's From, To, Cc, Subject, attachment names and plain text. A received
-    message's values all keep the outside-content mark (§4). A thread longer than its read says so; older messages
-    are not read yet.
+    message's values all keep the outside-content mark (§4). A thread longer than its read offers "Show older
+    messages" (C6e): the 50 before the oldest shown, drawn the same way, kept through the 20-second reads until the
+    thread is closed. When more than a page came between two reads, the read goes back page by page to the newest
+    message shown, so none is skipped.
   - There is no change signal for mail, so the client polls. The addresses and the sends that wait are read when the
-    company opens, every minute while the app is in front, and when it comes back to the front. A page's first pages
-    and open threads are read every 20 seconds while it is on screen. A read that fails keeps what was drawn; a list
-    never read says so, with Try again.
+    company opens, every minute while the app is in front, and when it comes back to the front. A page's lists, each
+    with as many pages as it shows, and its open threads are read every 20 seconds while it is on screen, so a thread
+    whose newest message went the other way leaves Sent or Inbox on an older page too. A read that fails keeps what
+    was drawn; a list never read says so, with Try again.
 
 ### 3.3 Buttons
 
@@ -918,9 +922,9 @@ a time, so a tile or a day would count only those read so far, and neither marks
 chooses the conversation's model account as its thread does (never another one while a message is on its way); one refused
 for want of an account points to the agent's thread. Shown text is clipped to the cloud's bounds in characters, never
 refused. Its message buttons put outside values in as quotes (I5d), and draw none for account mail, which the cloud
-takes no quote of. The rail row shows the page's badge. Not built: `chips`, a thread's older
-messages (the thread call has no next page), and a `direction` filter in the threads call, so Sent shows the sent
-threads of the pages read.
+takes no quote of. The rail row shows the page's badge. C6e (20260930512000) adds a thread's older messages ("Show
+older messages", the thread call's `nextBefore`) and the threads call's `direction` filter, so Sent pages through every
+sent thread. Not built: `chips`.
 
 **Built: folder pages** (web; `packages/web/src/app/interface-sources.ts`, `app/routine-next-run.ts`,
 `app/interface-folder.ts`, `app/views/interface-blocks.ts`, `ui/markdown.ts`). The folder's own sources of §4 are live:
@@ -1018,3 +1022,13 @@ says what a file holds is released with the entries it read, the commit's answer
 after the commit is unconfirmed, never a refusal (which says nothing happened), so the model repeats the same call. A
 replay of a saved call finds its change made and answers that nothing changed (a made id is made again, so it finds its
 own row); a call that waited for a member or failed at its commit replays from its receipt.
+
+**Built: C6b, no page tools** (`packages/runtime/src/cloud-folder-interface-tools.ts`,
+`cloud-folder-interface-writes.ts`, `cloud-worker-tools.ts`, `cloud-action-review.ts`). Since the scope reset no run
+or worker has `interface_read` or `save_interface`: the Company File tools keep `table_read` and `table_write` as I8a
+and I8b describe them, with the claim rule. A call to either name that still arrives, from an older thread or a
+replay, finds no tool and is refused as `TOOL_UNAVAILABLE` before any review, receipt or effect; it is observed as an
+unknown tool. The automatic review no longer classifies the two names, so it treats them as any name it doesn't know.
+An agent still reads a page's files with `company_read`, and the save check (C6c, migration `20260930510000`)
+refuses an agent's page or layout write on every other path. The run's observations keep both names, because the SQL
+list must equal the runtime's. The tool boundary keeps its `prepare` step, though no tool uses it now.

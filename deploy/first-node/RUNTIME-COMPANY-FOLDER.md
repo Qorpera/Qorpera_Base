@@ -985,9 +985,9 @@ In a worktree, what git ignores is a cache too, unless git tracks it.)
 Dependencies and build output are caches, not company files. Each worktree
 has a cache list:
 
-- It starts from a fixed set of folder names: `node_modules`, `.venv`,
-  `venv`, `target`, `dist`, `build`, `.next`, `.nuxt`, `__pycache__`,
-  `.gradle`, `.cache`, `.turbo`, `.pytest_cache`, `coverage`.
+- It starts from a fixed set of folder names: the plan's dependency names
+  (rule 2) and its build names but `out` (rule 3), one table in the folder
+  program (`cache.rs`).
 - It drops any name under which the worktree's own index has entries. When
   that index changes, the folder program reads its paths (git's documented
   index format). A name that now has tracked files leaves the list, and the

@@ -5,6 +5,7 @@ import {
 	COMMAND_ENDED,
 	type CommitActor,
 	type CommitAnswer,
+	type CommitOutcome,
 	type ConflictCopy,
 	CoreRefusal,
 	type FeedCursor,
@@ -95,6 +96,11 @@ export interface FolderServiceOptions {
 	readonly idleMs?: number;
 	readonly now?: () => number;
 	readonly log?: (line: string) => void;
+	/** The machines the run before this one vouched for when it stopped cleanly (its note, `clean-stop.ts`): none of
+	 * them holds a read an earlier run served and never released. Every other machine may (a run that crashed, or
+	 * stopped without a clean stop, leaves no note, and then this is empty), so it is lost until the executor says it
+	 * restarted (`restarted`). Without it (tests), no machine is lost at the start. */
+	readonly vouched?: readonly string[];
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -174,8 +180,9 @@ export interface MachineBoundary {
 	readonly machine: string;
 	/** What came of releasing every read the machine was served before the answer: `released`, so its output may reach
 	 * a model; `unanswered`, none yet; the core's refusal (the plan's rule 4: `unreadable` moves the machine); or
-	 * `unproven`, a read it was served went unreleased, so the executor restarts it (and says so, `restarted`), or it
-	 * restarted while the boundary was out. Only `released` lets output go. */
+	 * `unproven`, a read it was served went unreleased (by a run before this one too, unless it vouched for the machine),
+	 * so the executor restarts it (and says so, `restarted`), or it restarted while the boundary was out. Only `released`
+	 * lets output go. */
 	readonly reads: Released | "unproven";
 	/** Each open view of the machine's boundary, or why it had none. */
 	readonly views: readonly MachineViewReport[];
@@ -295,6 +302,13 @@ function held(
 			return u.paths.map((path): ReportEntry => ({ path, outcome: o, ...(reason ? { reason } : {}), kept: true }));
 		}),
 	];
+}
+
+/** A unit's reason as the report says it: the core's, and for a rule's refusal the code and message of the first
+ * problem it names, so a machine's report and an agent's command show why ("structured_rule: layout_authoring (page
+ * and table layout authoring is not available)", C6). */
+function reasonOf(reason: string, problem: CommitOutcome["problem"]): string {
+	return problem ? `${reason}: ${problem.code} (${problem.message})` : reason;
 }
 
 /** One read log of a view (F3 4c): its entries up to `taken` are held here, up to `released` the core has them. Those
@@ -605,6 +619,12 @@ export class FolderService {
 	/** Coding machines served a read that went unreleased (#forgetReads), until the executor says the machine restarted
 	 * (`restarted`): kept apart from their views, as the machine keeps the read once the view that served it has gone. */
 	readonly #lostMachines = new Set<string>();
+	/** Whether a machine not vouched for is lost (the `vouched` option given): it may hold a read a run before this one
+	 * served and never released. */
+	readonly #vouching: boolean;
+	/** The machines that hold no read unreleased by a run before this one: those the last clean stop vouched for, and
+	 * those the executor said restarted since, until one of them loses a read (#forgetReads). The next run's note. */
+	readonly #vouched: Set<string>;
 	/** How many times the executor said each coding machine restarted (`restarted`), for every machine said so since the
 	 * start (never dropped, so a count is never seen again): a machine boundary a restart crossed may have missed a read
 	 * lost before it, which the restart cleared. */
@@ -622,6 +642,8 @@ export class FolderService {
 		this.#idleMs = options.idleMs ?? 60_000;
 		this.#now = options.now ?? Date.now;
 		this.#log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+		this.#vouching = options.vouched !== undefined;
+		this.#vouched = new Set(options.vouched);
 	}
 
 	start(): void {
@@ -656,15 +678,20 @@ export class FolderService {
 
 	/** The executor stopped the coding machine and starts it again (F3 5c, the plan's rule 4), which it says over the
 	 * control socket before the machine runs again: no program holds what it was served before. A read it lost no longer
-	 * makes a view opened from now on unproven. A view of the machine still open is of the machine before: if any of
-	 * them holds a read unreleased, that read is forgotten, as when its view goes (#forgetReads), and every one of them is
-	 * unproven. A boundary of the machine still out answers `unproven` (#machineBoundary). */
-	restarted(machine: string): void {
+	 * makes a view opened from now on unproven, and it is vouched for (#vouched). A view of the machine still open is of
+	 * the machine before: if any of them holds a read unreleased, that read is forgotten, as when its view goes
+	 * (#forgetReads), and every one of them is unproven. A boundary of the machine still out answers `unproven`
+	 * (#machineBoundary). Whether a read the machine was served before may have gone unreleased (F3 5g-5): it was lost,
+	 * or not vouched for, or a view of it held one. What the machine kept from before on its disk (a command's output)
+	 * then cannot be kept. */
+	restarted(machine: string): boolean {
+		const views = this.#machineViews(machine);
+		const lost = this.#machineLost(machine);
+		const unreleased = views.some((view) => view.unreleased);
 		this.#restarts.set(machine, (this.#restarts.get(machine) ?? 0) + 1);
 		// A test machine's commands ended with it (F3 6b).
 		this.#windows.clear(machine);
-		const views = this.#machineViews(machine);
-		if (views.some((view) => view.unreleased)) {
+		if (unreleased) {
 			this.#log(`folder-service: machine ${machine} restarted with reads unreleased; its views are unproven`);
 			for (const view of views) {
 				view.unproven = true;
@@ -672,8 +699,17 @@ export class FolderService {
 				view.releasing = undefined;
 			}
 		}
-		if (this.#lostMachines.delete(machine))
+		this.#lostMachines.delete(machine);
+		this.#vouched.add(machine);
+		if (lost)
 			this.#log(`folder-service: machine ${machine} restarted; its views opened from now on are proven again`);
+		return lost || unreleased;
+	}
+
+	/** The machines this run vouches for (#vouched), for the note its clean stop leaves the next run (`clean-stop.ts`).
+	 * A clean stop leaves none lost. */
+	vouched(): string[] {
+		return [...this.#vouched];
 	}
 
 	/** A command started on a test machine (F3 6b, the plan's "Command windows"), which the executor says over the
@@ -748,8 +784,9 @@ export class FolderService {
 		for (let round = 1; reads === "released" && this.#machineViews(machine).some((view) => view.unreleased); round++)
 			reads = round < MACHINE_RELEASE_ROUNDS ? await this.#releaseMachine(machine) : "unanswered";
 		// A machine that lost a read, or that restarted since the boundary began: a view of it may have gone meanwhile with
-		// a read unreleased, which the restart cleared, and what the boundary answers for was made before the restart.
-		const unproven = this.#lostMachines.has(machine) || this.#restarts.get(machine) !== restarts;
+		// a read unreleased, which the restart cleared, and what the boundary answers for was made before the restart. One
+		// not vouched for is lost whether this run holds a view of it or not: a run before may have served it a read.
+		const unproven = this.#machineLost(machine) || this.#restarts.get(machine) !== restarts;
 		return { machine, reads: unproven ? "unproven" : reads, views: reports };
 	}
 
@@ -758,7 +795,7 @@ export class FolderService {
 	 * released and nothing left to publish, the core hears this run stopped cleanly and clears `served_by` (5a), so the
 	 * next run may serve those views. Otherwise `served_by` stays: the core refuses them to the next run, and the
 	 * executor restarts their machines (rule 4). Other views are dropped with what they hold, as before. Whether the core
-	 * cleared it. */
+	 * cleared it: only then may the next run start from the machines this one vouches for (`vouched`). */
 	async stopCleanly(): Promise<boolean> {
 		this.stop();
 		this.#stopping = true;
@@ -779,16 +816,20 @@ export class FolderService {
 			views.filter((view) => codeHost(view) && !view.closed).map((view) => this.#publish(view)),
 		);
 		await Promise.allSettled(views.map((view) => view.renewing));
-		const left = [...this.#views.values()].filter(
-			(view) =>
+		// A machine not vouched for stays out of the note, so the next run counts it lost too: its views, unproven for that
+		// alone, hold what they could never save, and hold up no clean stop for it once their reads are released.
+		const left = [...this.#views.values()].filter((view) => {
+			const unvouched = this.#unvouched(view.access?.machine);
+			return (
 				(view.access?.machine !== undefined || codeHost(view)) &&
 				!view.closed &&
-				(view.unproven ||
+				((view.unproven && !unvouched) ||
 					view.unreleased ||
 					view.unanswered !== undefined ||
 					view.unsettled !== undefined ||
-					view.pending?.unsaved === true),
-		);
+					(view.pending?.unsaved === true && !unvouched))
+			);
+		});
 		// A machine that lost a read and has not restarted since: a view of it this run let go may still be open in the
 		// core, marked served by this run, and it stays marked, so the next run (which knows nothing of the loss) refuses
 		// it too.
@@ -880,10 +921,11 @@ export class FolderService {
 			view.access = this.#grants.coreAccess(identity);
 			view.write = view.access?.write ?? false;
 			view.quietMs = view.access?.quietMs;
-			// A coding machine served a read this service lost (#forgetReads) holds it, its views open or not: a view
-			// opened on it cannot show its reads released either, until the executor has restarted it (`restarted`).
+			// A coding machine served a read this service lost (#forgetReads), or one a run before may have (not vouched
+			// for), holds it, its views open or not: a view opened on it cannot show its reads released either, until the
+			// executor has restarted it (`restarted`).
 			const machine = view.access?.machine;
-			if (machine !== undefined && this.#lostMachines.has(machine)) view.unproven = true;
+			if (machine !== undefined && this.#machineLost(machine)) view.unproven = true;
 		} else if (
 			view.identity.kind !== identity.kind ||
 			view.identity.machineId !== identity.machineId ||
@@ -1570,10 +1612,22 @@ export class FolderService {
 		if (machine !== undefined && view.unreleased) {
 			this.#log(`folder-service: ${view.key}: reads served to machine ${machine} went unreleased`);
 			this.#lostMachines.add(machine);
+			this.#vouched.delete(machine);
 			for (const other of this.#machineViews(machine)) other.unproven = true;
 		}
 		view.logs.clear();
 		view.releasing = undefined;
+	}
+
+	/** The machine lost a read (#forgetReads), or is not vouched for (#unvouched): it may hold a read served and never
+	 * released, until the executor says it restarted (`restarted`). */
+	#machineLost(machine: string): boolean {
+		return this.#lostMachines.has(machine) || this.#unvouched(machine);
+	}
+
+	/** A run before this one may have served the machine a read it never released (the `vouched` option). */
+	#unvouched(machine: string | undefined): boolean {
+		return machine !== undefined && this.#vouching && !this.#vouched.has(machine);
 	}
 
 	async #firstLoad(view: View): Promise<void> {
@@ -3221,7 +3275,7 @@ export class FolderService {
 				entries.push({
 					path,
 					outcome: outcome?.outcome ?? "not_applied",
-					...(outcome?.reason ? { reason: outcome.reason } : {}),
+					...(outcome?.reason ? { reason: reasonOf(outcome.reason, outcome.problem) } : {}),
 					...(copied.has(i) ? { receipt: answer.commitId } : {}),
 					...(target !== undefined ? { target } : {}),
 					...(kept ? { kept: true } : {}),
