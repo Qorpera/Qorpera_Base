@@ -280,6 +280,49 @@ describe("a coding session's command secrets on its machine", () => {
 		expect(f.environment).toHaveBeenCalledTimes(2);
 	});
 
+	it("checks a publication against every value kept for the machine and the session's environment asked again, with its older values", async () => {
+		const mine = randomUUID();
+		const other = randomUUID();
+		const f = fixture({ [mine]: { API_KEY }, [other]: { OTHER_KEY } });
+		const machineId = randomUUID();
+		const theirs = f.scope(other);
+		await f.secrets.session(machineId, theirs).resolve(f.request(machineId, theirs), signal());
+		const scope = f.scope(mine);
+		const request = f.request(machineId, scope);
+		await f.secrets.session(machineId, scope).resolve(request, signal());
+		f.secrets.session(machineId, scope).accepted(request);
+		// The value changed since the command started: the publication is checked for both, under its own claim, and no
+		// command keeps the new answer. The older value that answer names is checked too, and the machine's masks keep it.
+		f.environment.mockResolvedValueOnce(answer({ API_KEY: ROTATED }, [OLDER_KEY]));
+		const publishing = f.scope(mine);
+		const mask = await f.secrets.publication(machineId, publishing, signal());
+		expect(f.environment).toHaveBeenLastCalledWith(publishing, expect.any(AbortSignal));
+		expect(f.environment).toHaveBeenCalledTimes(3);
+		expect(masked(mask.stream(), `${API_KEY} ${ROTATED} ${OTHER_KEY} ${OLDER_KEY}`)).toBe("*** *** *** ***");
+		expect(masked(await readMask(f.secrets.session(machineId, scope), request), `${ROTATED} ${OLDER_KEY}`)).toBe(
+			`${ROTATED} ***`,
+		);
+		// A session that ran no command in this process (the executor restarted since) is checked against its
+		// environment now.
+		const restarted = fixture({ [mine]: { API_KEY } });
+		const fresh = await restarted.secrets.publication(machineId, restarted.scope(mine), signal());
+		expect(masked(fresh.stream(), `${API_KEY} ${OTHER_KEY}`)).toBe(`*** ${OTHER_KEY}`);
+		// A failed ask fails it, and so does an abort or a release while it asks.
+		f.environment.mockRejectedValueOnce(new Error("CODING_ENVIRONMENT_UNAVAILABLE"));
+		await expect(f.secrets.publication(machineId, scope, signal())).rejects.toThrow("CODING_ENVIRONMENT_UNAVAILABLE");
+		const aborted = new AbortController();
+		aborted.abort(new Error("stopped"));
+		await expect(f.secrets.publication(machineId, scope, aborted.signal)).rejects.toThrow("stopped");
+		expect(f.environment).toHaveBeenCalledTimes(4);
+		f.environment.mockImplementationOnce(async () => {
+			f.secrets.release(machineId, mine);
+			return answer({ API_KEY });
+		});
+		await expect(f.secrets.publication(machineId, scope, signal())).rejects.toThrow(
+			"CODING_COMMAND_SECRETS_RELEASED",
+		);
+	});
+
 	it("keeps nothing for a session released while it asked, and refuses another session's request", async () => {
 		const workerId = randomUUID();
 		const f = fixture({ [workerId]: { API_KEY } });

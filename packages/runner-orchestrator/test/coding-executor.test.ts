@@ -8,6 +8,8 @@ import {
 	type CodingExecutorControl,
 	type CodingExecutorHost,
 	CodingMachineUnavailable,
+	type CodingPushCarrier,
+	CodingPushRefused,
 	type CodingSessionClaim,
 	type CodingSubmission,
 	type CodingTurnState,
@@ -259,6 +261,42 @@ describe("the coding executor over a session turn", () => {
 		expect(w.world.calls.filter((c) => c.method === "qorpera_record_coding_progress").at(-1)?.args.p_phase).toBe(
 			"publishing",
 		);
+	});
+
+	it("a publication refused for a secret value fails the turn with what to change, and leaves the session attached", async () => {
+		const sha = "abcdef012345";
+		for (const [carrier, reason] of [
+			[{ kind: "file", path: "config/settings.json" }, 'the file "config/settings.json" carries one'],
+			[{ kind: "file", path: null }, "a file carries one"],
+			[{ kind: "folder", path: "" }, "a file or folder name at the top of the repository carries one"],
+			[{ kind: "folder", path: "src/***" }, 'a file or folder name in "src/***" carries one'],
+			[{ kind: "commit", sha }, `the commit ${sha} carries one`],
+			[{ kind: "pull-request" }, "the pull request's title or summary carries one"],
+			[null, "could not be checked whole"],
+		] as [CodingPushCarrier | null, string][]) {
+			const w = world();
+			vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingPushRefused(carrier));
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			expect(completion.p_outcome).toBe("failed");
+			expect(String(completion.p_summary)).toMatch(/^The push was refused: .+ finish again\.$/);
+			expect(String(completion.p_summary)).toContain(reason);
+			expect(completion.p_pull_request).toBeNull();
+			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+			expect(w.host.detachSession).not.toHaveBeenCalled();
+		}
 	});
 
 	it("a question blocks the session with its choices and leaves it standing by", async () => {
