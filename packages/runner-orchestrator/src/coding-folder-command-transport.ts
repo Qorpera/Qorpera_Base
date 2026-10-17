@@ -566,7 +566,9 @@ export interface LxdCodingFolderCommandTransportOptions {
 	/** The rebuild that gave the machine the disk it has now (F3 5g-5, from next to its journal), or null for the disk
 	 * it was made with. A command starts on it, and nothing it printed on a disk the machine no longer has is shown or
 	 * kept, whatever the folder service and SQL say now: the reads that disk may have held went with it, not with the
-	 * command's custody. Asked before each answer; no answer shows nothing. Never replaced by default. */
+	 * command's custody. Asked last before each answer, once its last authorization and a cancel's `withheld` are in,
+	 * since a new disk is written down before SQL clears the marks those answer by; no answer shows nothing. Never
+	 * replaced by default. */
 	readonly disk?: (signal: AbortSignal) => Promise<string | null>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
@@ -714,7 +716,7 @@ export class LxdCodingFolderCommandTransport {
 		)
 			throw new Error("CODING_COMMAND_INPUT_INVALID");
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		const receipt = await this.#within(input.commandId, signal, true, async (folder, budget) => {
+		const { request, receipt } = await this.#within(input.commandId, signal, true, async (folder, budget) => {
 			// A command starts under the start the machine runs now, whenever this transport was made; none while it starts
 			// again.
 			const start = this.#currentStart();
@@ -752,7 +754,10 @@ export class LxdCodingFolderCommandTransport {
 				// Nor once it started again while the secrets were read: the command then ended with the boot it was started
 				// under, before it ran.
 				if (request.startOperationId !== this.#currentStart())
-					return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+					return {
+						request,
+						receipt: await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false),
+					};
 				try {
 					await this.#guest.run(
 						{
@@ -778,10 +783,13 @@ export class LxdCodingFolderCommandTransport {
 				}
 				progress = await this.#save(folder, { ...progress, acknowledged: true });
 			}
-			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+			return {
+				request,
+				receipt: await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false),
+			};
 		});
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		return receipt;
+		return this.#answer(request, receipt, signal);
 	}
 
 	async read(
@@ -791,12 +799,15 @@ export class LxdCodingFolderCommandTransport {
 	): Promise<CloudCodingCommandReceipt> {
 		const read = parseCloudCodingCommandRead(input);
 		await this.#gate("read", scope, read.commandId, null, signal);
-		const receipt = await this.#within(read.commandId, signal, false, async (folder, budget) => {
+		const { request, receipt } = await this.#within(read.commandId, signal, false, async (folder, budget) => {
 			const { request, progress, outcome } = await this.#records(folder, read.commandId);
-			return this.#settle(folder, request, progress, outcome, budget, signal, read, false);
+			return {
+				request,
+				receipt: await this.#settle(folder, request, progress, outcome, budget, signal, read, false),
+			};
 		});
 		await this.#gate("read", scope, read.commandId, null, signal);
-		return receipt;
+		return this.#answer(request, receipt, signal);
 	}
 
 	async cancel(
@@ -805,7 +816,7 @@ export class LxdCodingFolderCommandTransport {
 		signal: AbortSignal,
 	): Promise<CloudCodingCommandReceipt> {
 		await this.#gate("cancel", scope, commandId, null, signal);
-		const receipt = await this.#within(commandId, signal, false, async (folder, budget) => {
+		const { request, receipt } = await this.#within(commandId, signal, false, async (folder, budget) => {
 			const records = await this.#records(folder, commandId);
 			const { request, outcome } = records;
 			let { progress } = records;
@@ -816,10 +827,19 @@ export class LxdCodingFolderCommandTransport {
 			}
 			const settled = await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
 			// A machine that shows nothing of its commands answers none of what was kept before either.
-			return (await this.#withholds(budget, signal)) ? withoutOutput(settled) : settled;
+			return { request, receipt: (await this.#withholds(budget, signal)) ? withoutOutput(settled) : settled };
 		});
 		await this.#gate("cancel", scope, commandId, null, signal);
-		return receipt;
+		return this.#answer(request, receipt, signal);
+	}
+
+	/** The call's answer, once its last authorization and a cancel's `withheld` are in: none of what was kept of a
+	 * command started on a disk the machine no longer has, though it ended and nothing asks the machine about it any
+	 * more, as the reads it may hold were cleared with that disk. Asked last: a rebuild writes its new disk down before
+	 * SQL clears the marks those answer by, so a call that found the machine no longer marked finds its new disk here. */
+	async #answer(request: Request, receipt: CloudCodingCommandReceipt, signal: AbortSignal) {
+		const budget = AbortSignal.any([signal, AbortSignal.timeout(BUDGET_MS)]);
+		return (await this.#replaced(request, budget, signal)) ? withoutOutput(receipt) : receipt;
 	}
 
 	/** Brings the kept output up to date unless the command ended, and answers a page of it. */
@@ -837,7 +857,7 @@ export class LxdCodingFolderCommandTransport {
 		if (!outcome)
 			({ progress, outcome, shown } = await this.#advance(folder, request, progress, budget, signal, cancelSent));
 		const page = await readPage(folder, progress, request.limitBytes, outcome !== undefined, read);
-		const receipt = parseCloudCodingCommandReceipt({
+		return parseCloudCodingCommandReceipt({
 			schema: "qorpera.coding-command-result/v2",
 			workerId: request.workerId,
 			commandId: request.commandId,
@@ -848,9 +868,6 @@ export class LxdCodingFolderCommandTransport {
 			truncated: page.truncated,
 			log: { ...page.log, ...(progress.gapBytes > 0 ? { gapBytes: progress.gapBytes } : {}) },
 		});
-		// A command of a disk the machine no longer has shows none of what was kept of it, though it ended and nothing
-		// asks the machine about it any more: the reads it may hold were cleared with that disk.
-		return (await this.#replaced(request, budget, signal)) ? withoutOutput(receipt) : receipt;
 	}
 
 	/** Pulls what the command printed since the host last kept its output, and keeps it once the machine's boundary

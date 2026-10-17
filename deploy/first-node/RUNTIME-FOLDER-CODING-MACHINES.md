@@ -450,7 +450,10 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      the machine's first disk): once the marks are cleared, a command from a disk the machine no longer has still
      shows none of its output, read or cancelled in any later turn, ended or not, and one that had not ended is
      `machine_stopped`. The command logs on the host outlive the disk, but nothing of them is shown, since the reads
-     that output came from left with the disk. A `disk.json` that can't be read withholds. Then the machine starts. Before the rebuild goes out, the executor checks that the image
+     that output came from left with the disk. The disk is read last before each answer, after the call's last
+     authorization and a cancel's withholding probe: those see the marks, which are cleared only after `disk.json` is
+     written, so a rebuild that ends during a call is seen. A `disk.json` that can't be read withholds. Then the machine
+     starts. Before the rebuild goes out, the executor checks that the image
      is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
      until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it

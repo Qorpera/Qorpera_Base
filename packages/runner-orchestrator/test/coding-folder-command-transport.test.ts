@@ -959,6 +959,49 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(at.guest.client.run).toHaveBeenCalledTimes(3);
 	});
 
+	it("shows nothing of a command whose disk a rebuild replaced while its answer was authorized, or its cancel asked whether the machine withholds (F3 5g-5)", async () => {
+		const at = await fixture();
+		const withheld = vi.fn<NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>>(async () => false);
+		const transport = at.another({ withheld });
+		const ended = (command: string, printed: string) => {
+			const input = at.input(command);
+			at.guest.print(input.commandId, printed);
+			at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+			return input;
+		};
+		const hidden = (input: Input, totalBytes: number) =>
+			at.receipt(input, { state: "succeeded", exitCode: 0, truncated: true, log: { totalBytes } });
+		// Another turn ends the machine's rebuild while this cancel waits for whether the machine withholds its commands:
+		// the new disk is written down, and SQL has cleared the marks by the time it answers, so nothing withholds.
+		const cancelled = ended("cat notes", "secret\n");
+		expect(await transport.start(at.scope, cancelled, signal)).toMatchObject({ output: "secret\n" });
+		withheld.mockImplementationOnce(async () => {
+			at.rebuild();
+			return false;
+		});
+		expect(await transport.cancel(at.scope, cancelled.commandId, signal)).toStrictEqual(hidden(cancelled, 7));
+		// ...or while a read's or a start's answer is authorized the last time, which SQL allows once the marks are
+		// cleared.
+		const read = ended("cat more", "more\n");
+		expect(await transport.start(at.scope, read, signal)).toMatchObject({ output: "more\n" });
+		at.authorize.mockImplementationOnce(async () => undefined).mockImplementationOnce(async () => void at.rebuild());
+		expect(await transport.read(at.scope, { commandId: read.commandId }, signal)).toStrictEqual(hidden(read, 5));
+		const started = ended("cat last", "last\n");
+		at.authorize.mockImplementationOnce(async () => undefined).mockImplementationOnce(async () => void at.rebuild());
+		expect(await transport.start(at.scope, started, signal)).toStrictEqual(hidden(started, 5));
+		// Each was started on the disk the rebuild during its own call replaced.
+		const disks = await Promise.all(
+			[cancelled, read, started].map(
+				async (input) =>
+					((await json(join(at.folder(input.commandId), "request.json"))) as { diskOperationId: unknown })
+						.diskOperationId,
+			),
+		);
+		expect(new Set(disks).size).toBe(3);
+		expect(disks[0]).toBeNull();
+		expect(disks).not.toContain(at.machineDisk.now);
+	});
+
 	it("keeps nothing of a pull the machine's rebuild crossed (F3 5g-5)", async () => {
 		const at = await fixture();
 		const input = at.input();
