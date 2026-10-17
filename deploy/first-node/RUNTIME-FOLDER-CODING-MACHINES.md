@@ -552,6 +552,10 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
 
 A program that encodes a value another way gets past the mask; that is why it is best effort.
 
+Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
+starts, and masks that command's output, `output.log` and receipts with the values of every session on the machine.
+The save and push checks are 5j-5.
+
 **The vault relay** (5j) is host-side, on a second vsock port that checks the caller's CID, on the platform road
 (agent exit §2: "the platform's own services keep the platform road, even when they act for an agent"). It does two
 things:
