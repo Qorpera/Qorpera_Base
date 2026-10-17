@@ -1018,3 +1018,13 @@ says what a file holds is released with the entries it read, the commit's answer
 after the commit is unconfirmed, never a refusal (which says nothing happened), so the model repeats the same call. A
 replay of a saved call finds its change made and answers that nothing changed (a made id is made again, so it finds its
 own row); a call that waited for a member or failed at its commit replays from its receipt.
+
+**Built: C6b, no page tools** (`packages/runtime/src/cloud-folder-interface-tools.ts`,
+`cloud-folder-interface-writes.ts`, `cloud-worker-tools.ts`, `cloud-action-review.ts`). Since the scope reset no run
+or worker has `interface_read` or `save_interface`: the Company File tools keep `table_read` and `table_write` as I8a
+and I8b describe them, with the claim rule. A call to either name that still arrives, from an older thread or a
+replay, finds no tool and is refused as `TOOL_UNAVAILABLE` before any review, receipt or effect; it is observed as an
+unknown tool. The automatic review no longer classifies the two names, so it treats them as any name it doesn't know.
+An agent still reads a page's files with `company_read`, and the save check (C6c, migration `20260930510000`)
+refuses an agent's page or layout write on every other path. The run's observations keep both names, because the SQL
+list must equal the runtime's. The tool boundary keeps its `prepare` step, though no tool uses it now.

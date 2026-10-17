@@ -54,6 +54,13 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "vault-login", text: "Signing in.", surface: "credential", title: "Company account", payload: { name: "example-login", domain: "app.example.com" } } },
 			{ tool: "send_message", arguments: { idempotencyKey: "fallback", text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.", phase: "final" } },
 		]
+	: mode === "company-removed-tools"
+	? [
+			// The page tools the scope reset (C6b) took out of the catalog: a call that still arrives is refused.
+			{ tool: "interface_read", arguments: { interface: "pulse", view: null, after: null } },
+			{ tool: "save_interface", arguments: { operationKey: "pulse", files: [], effect: "internal" } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The pages are not mine to change.", phase: "final" } },
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"
