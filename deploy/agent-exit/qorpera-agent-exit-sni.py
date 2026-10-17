@@ -10,32 +10,40 @@ The company's chain only_<port> marks each such flow (ct mark 1) as it lets the 
 open. When the kernel has nft_queue and nfnetlink_queue loaded (and only then: nft and this checker would load them),
 the exit's base chain sni (forward, after the filter chain) sends every packet of a marked flow to queue 0, which this
 checker (root, in the exit's namespace) reads. A packet from a machine's address (10.210.0.0/16; agent_out drops any
-other source from the bridge) is the machine's, any other the server's:
+other source from the bridge) is the machine's, one to a machine's address the server's; any other is dropped:
 - a packet from the machine with no data (the SYN, an ACK) goes on at once; its SYN says where the flow's data starts;
-  a SYN queued for a flow judged already is a new connection's on the same ports (a judged flow is queued no more);
+  a SYN queued for a flow judged or reset already is a new connection's on the same ports (such a flow is queued no
+  more);
 - the machine's data is held (the kernel keeps the packets, the checker their bytes) until the flow's first bytes are
   a whole ClientHello: at most 16 KiB of it (and its record headers), for at most 5 seconds, in at most 64 packets,
-  with at most 512 packets held for one machine's flows together. The node has one queue, of 8192 packets, for every
-  company: so one machine cannot fill it. A packet that brings no new byte (its bytes held already, or past what a
-  ClientHello can take) is dropped, not held, and TCP sends it again;
+  with at most 512 packets held for one machine's flows together. A packet that brings no new byte (its bytes held
+  already, or past what a ClientHello can take) is dropped, not held, and TCP sends it again;
 - a ClientHello with one server name the rules allow lets every held packet on, as they were. The flow stays marked
   until the server acknowledges the ClientHello's bytes; until then the machine's packets that carry any of them again
   must carry the same bytes. That server packet goes back to the chain with the meta mark 0x80000001, and the chain
   marks the flow 2: its later packets are not queued;
 - anything else is refused: no TLS, no server name or more than one, a name not allowed or blocked, a ClientHello too
   big, too slow or in too many packets, a machine holding too many packets, bytes sent again that differ, urgent data,
-  a flow whose SYN this checker did not see (it started after the SYN), a machine not verified, a company not in the
-  rules file or with rules that cannot be used. The machine's packet goes back to the chain with the meta mark
-  0x80000002: the chain marks the flow 3 and refuses it (counter refused_name; the machine's connection is reset), and
-  the other held packets are dropped.
+  a flow with more than 128 packets queued (both ways) before it was judged, one with no whole ClientHello 10 seconds
+  after its SYN, one whose server has not acknowledged its ClientHello 5 seconds after it went on, a flow whose SYN
+  this checker did not see (it started after the SYN), a machine not verified, a company not in the rules file or
+  with rules that cannot be used. The packet goes back to the chain with the meta mark 0x80000002: the chain marks the
+  flow 3 and refuses it (counter refused_name; the machine's connection is reset, at its next packet when the packet
+  refused was the server's), and the other held packets are dropped.
 A company without rules now (it was "only listed" when the flow started) has its flows let on, and one in "open"
 mode now has them let on unless the name is blocked.
 
+The node has one queue, of 8192 packets, for every company. The chain lets a machine's packets of flows being judged
+(both ways together) into it at 1000 a second at most, and drops the others before the queue; and a flow is refused
+past 128 packets or the times above. So one machine cannot fill the queue. Many machines that send as fast as they
+can, all at once, still can: the kernel then drops what the chain queues (no bypass), and the status names those drops
+for a minute after the last one.
+
 There is no bypass and no fail-open: with no checker bound to the queue the kernel drops the packets, and when the
 checker's socket closes it drops the ones held. TCP sends them again; the checker started again (the unit's
-Restart=always, one second later) judges the new flows, and refuses the data of the ones whose SYN came before it.
-The checker leaves when the exit's namespace is made again (`up`), so systemd starts it in the new one. Its status
-names the kernel's drops from the queue (full, or the checker behind) for a minute after the last one.
+Restart=always, one second later) judges the new flows, and refuses the ones whose SYN came before it, at their next
+packet either way. The checker leaves when the exit's namespace is made again (`up`), so systemd starts it in the new
+one.
 
   qorpera-agent-exit-sni.py check     (root, in the exit's namespace; the sni unit)
 """
@@ -75,9 +83,12 @@ STREAM_MAX = HELLO_MAX + 1024
 HOLD_TIME = 5
 FLOW_HELD = 64              # a whole 16 KiB ClientHello is 12 full segments, or 31 of 536 bytes
 MACHINE_HELD = 512
+FLOW_QUEUED = 128           # a flow's packets both ways until it is judged: a 16 KiB ClientHello takes about 30
+HELLO_TIME = 10
 FLOW_IDLE = 120
 DROPS_SHOWN = 60
-AGENTS = ipaddress.ip_network("10.210.0.0/16")    # AGENTS in qorpera-agent-exit.sh
+AGENTS = ipaddress.ip_network("10.210.0.0/16")    # AGENTS in qorpera-agent-exit.sh, and in qorpera-agent-exit-sni.nft
+AGENT_BITS, AGENT_MASK = int(AGENTS.network_address), int(AGENTS.netmask)
 QUEUE_MODULE = "/sys/module/nfnetlink_queue"
 QUEUE_ROWS = "/proc/net/netfilter/nfnetlink_queue"
 HOST = re.compile(rf"(?:{names.LABEL}\.)*{names.LABEL}")
@@ -220,13 +231,21 @@ def tcp_packet(data):
             bytes(tcp[offset:]))
 
 
+def agent(address):
+    """Whether a packed IPv4 address is a machine's (in AGENTS)."""
+    return int.from_bytes(address, "big") & AGENT_MASK == AGENT_BITS
+
+
 class Flow:
-    def __init__(self, start, at):
+    def __init__(self, start, at, queued=1):
         self.start = start          # the sequence number of the flow's first data byte (the SYN's + 1)
-        self.state = "waiting"      # waiting -> passed (server not past the hello yet) -> done; or refused
+        self.state = "waiting"      # waiting -> passed (server not past the hello yet) -> done; or refused, or reset
         self.held = []
         self.since = None
         self.seen = at
+        self.opened = at            # its SYN (the last one, when it was sent again before any data)
+        self.passed = None          # when its ClientHello went on
+        self.queued = queued        # its packets queued, both ways
         self.data = None
         self.known = None
         self.filled = 0
@@ -246,44 +265,58 @@ class Judge:
         self.refused = 0
 
     def packet(self, ident, data, at):
-        """One queued packet: the machine's when it comes from a machine's address, else the server's."""
+        """One queued packet: the machine's when it comes from a machine's address, the server's when it goes to one."""
         parsed = tcp_packet(data)
         if parsed is None:
+            return [(ident, DROP, 0)]
+        outbound = agent(data[12:16])
+        if not outbound and not agent(data[16:20]):
+            # No machine on either side: AGENTS is not the exit's pool. Never let a packet on unread.
             return [(ident, DROP, 0)]
         if parsed == "other":
             return [(ident, ACCEPT, 0)]
         source, target, seq, ack, flags, payload = parsed
-        outbound = ipaddress.IPv4Address(source[0]) in AGENTS
         key = (source, target) if outbound else (target, source)
         flow = self.flows.get(key)
         if flow:
             flow.seen = at
+            flow.queued += 1
         if not outbound:
-            return self.inbound(key, flow, ident, ack, flags)
+            return self.inbound(key, flow, ident, ack, flags, at)
+        if flags & SYN:
+            start = (seq + 1) & 0xFFFFFFFF
+            # A flow judged (ct mark 2 or 3) or reset is queued no more, so a SYN queued for it is a new connection's.
+            if flow is None or flow.state in ("done", "refused", "reset"):
+                flow = self.flows[key] = Flow(start, at)
+            elif flow.state == "waiting" and not flow.held and flow.data is None:
+                # Its SYN again (or another) before any data: the flow starts there, and its packets still count.
+                flow = self.flows[key] = Flow(start, at, flow.queued)
+        elif flow is None:
+            flow = self.flows[key] = Flow(None, at)
+            if flags & RST:
+                flow.state = "reset"
+                return [(ident, ACCEPT, 0)]
+            return self.refuse(key, flow, ident, "a flow whose SYN this checker did not see")
+        if flow.state == "refused":
+            return [(ident, DROP, 0)]
+        why = self.overdue(flow, at)
+        if why:
+            return self.refuse(key, flow, ident, why)
         if flags & URG:
             # The server takes an urgent byte out of the bytes it reads, so it would not read the ClientHello judged.
-            flow = flow or self.flows.setdefault(key, Flow(None, at))
-            return [(ident, DROP, 0)] if flow.state == "refused" else self.refuse(key, flow, ident, "urgent data")
+            return self.refuse(key, flow, ident, "urgent data")
         if flags & RST:
-            self.flows.pop(key, None)
-            return ([(i, DROP, 0) for i in self.release(key, flow)] if flow else []) + [(ident, ACCEPT, 0)]
+            # The machine ends the flow: what it held is dropped. The flow stays, so that its later packets still count.
+            flow.state, flow.data, flow.known = "reset", None, None
+            return [(i, DROP, 0) for i in self.release(key, flow)] + [(ident, ACCEPT, 0)]
+        if flow.state == "reset":
+            return [(ident, DROP, 0)]
         if flags & SYN:
-            # A flow judged (ct mark 2 or 3) is queued no more, so a SYN queued for it is a new connection's.
-            if (flow is None or flow.state in ("done", "refused") or
-                    (flow.state == "waiting" and not flow.held and flow.data is None)):
-                flow = self.flows[key] = Flow((seq + 1) & 0xFFFFFFFF, at)
-            elif flow.start != (seq + 1) & 0xFFFFFFFF:
+            if flow.start != (seq + 1) & 0xFFFFFFFF:
                 return self.refuse(key, flow, ident, "a SYN again, with another sequence number")
             if not payload:
                 return [(ident, ACCEPT, 0)]
             seq = flow.start
-        elif flow is None:
-            if not payload:
-                return [(ident, ACCEPT, 0)]
-            flow = self.flows[key] = Flow(None, at)
-            return self.refuse(key, flow, ident, "data of a flow whose SYN came before the checker started")
-        if flow.state == "refused":
-            return [(ident, DROP, 0)]
         if not payload:
             return [(ident, ACCEPT, 0)]
         offset = (seq - flow.start) & 0xFFFFFFFF
@@ -323,15 +356,21 @@ class Judge:
         why = self.decide(key[0][0], name)
         if why:
             return self.refuse(key, flow, ident, f"{name}: {why}")
-        flow.state, flow.hello = "passed", bytes(flow.data[:hello_end])
+        flow.state, flow.hello, flow.passed = "passed", bytes(flow.data[:hello_end]), at
         flow.data = flow.known = None
         return [(i, ACCEPT, 0) for i in self.release(key, flow)]
 
-    def inbound(self, key, flow, ident, ack, flags):
+    def inbound(self, key, flow, ident, ack, flags, at):
         """A packet from the server: the one that acknowledges a passed ClientHello unmarks the flow."""
-        if flow is None or flow.state == "waiting":
-            return [(ident, ACCEPT, 0)]
+        if flow is None:
+            flow = self.flows[key] = Flow(None, at)
+            return self.refuse(key, flow, ident, "a server's packet of a flow whose SYN this checker did not see")
         if flow.state == "refused":
+            return [(ident, DROP, 0)]
+        why = self.overdue(flow, at)
+        if why:
+            return self.refuse(key, flow, ident, why)
+        if flow.state == "reset":
             return [(ident, DROP, 0)]
         if flow.state == "passed" and flags & ACK:
             past = (ack - flow.start) & 0xFFFFFFFF
@@ -339,6 +378,19 @@ class Judge:
                 flow.state = "done"
                 return [(ident, REPEAT, LISTED)]
         return [(ident, ACCEPT, 0)]
+
+    def overdue(self, flow, at):
+        """Why a flow not judged yet is refused at its packet now, if it is (a flow that never sends a whole ClientHello,
+        or whose server never acknowledges it, would stay queued for its whole life)."""
+        if flow.state == "done":
+            return None
+        if flow.queued > FLOW_QUEUED:
+            return f"more than {FLOW_QUEUED} packets before it was judged"
+        if flow.state == "waiting" and at - flow.opened > HELLO_TIME:
+            return f"no whole ClientHello within {HELLO_TIME} seconds of its SYN"
+        if flow.state == "passed" and at - flow.passed > HOLD_TIME:
+            return f"the server did not acknowledge its ClientHello within {HOLD_TIME} seconds"
+        return None
 
     def refuse(self, key, flow, ident, why):
         (machine, port), (server, server_port) = key
@@ -360,7 +412,8 @@ class Judge:
         return held
 
     def expire(self, at):
-        """Refuses the flows that held data too long and forgets the ones not seen for FLOW_IDLE seconds."""
+        """Refuses the flows that held data too long and forgets the ones not seen for FLOW_IDLE seconds. (The other
+        limits, overdue(), wait for a flow's next packet: a refusal needs a packet to mark the flow with.)"""
         verdicts = []
         for key, flow in list(self.flows.items()):
             if flow.state == "waiting" and flow.held and at - flow.since > HOLD_TIME:

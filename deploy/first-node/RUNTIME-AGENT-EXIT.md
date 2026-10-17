@@ -392,10 +392,13 @@ server name check.
     root) holds the machine's data until it is a whole ClientHello, at most 16 KiB, 5 seconds and 64 packets. One
     server name the company's rules allow (as its resolver answers names) lets the held packets on, and once the
     server acknowledges the hello the flow is marked 2. Anything else (another name, no name or two, no TLS, too big,
-    too slow or in too many packets, a flow whose start it did not see) is reset, marked 3 and dropped from then on,
-    counted and logged as `name_not_listed`. The node's one queue (8192 packets) serves every company, so one
-    machine's flows together hold at most 512 packets (past that its next flow is refused), and a packet with no new
-    byte is dropped, not held; the kernel's drops from a full queue show in `verify`. With no checker on the queue
+    too slow or in too many packets, more than 128 packets or 10 seconds before it is judged, a hello the server does
+    not acknowledge in 5 seconds, a flow whose start it did not see) is marked 3 and queued no more, its machine reset,
+    counted and logged as `name_not_listed`. The node's one queue (8192 packets) serves every company, so a machine's
+    packets of flows being judged go to it at 1000 a second at most (the rest are dropped before it, counted in
+    `dropped_sni_rate`), one machine's flows together hold at most 512 packets (past that its next flow is refused),
+    and a packet with no new byte is dropped, not held. Many machines flooding at once can still fill it: the kernel
+    then drops (fails closed), and `verify` shows the drops for a minute. With no checker on the queue
     the kernel drops the queued packets; systemd starts it again one second after any stop, with no limit. The exit never loads the modules: it loads the chain and starts the
     checker only while both are loaded, and `check` says which way "only listed" runs.
 

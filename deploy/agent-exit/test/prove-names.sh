@@ -502,6 +502,46 @@ except (ConnectionResetError, BrokenPipeError):
 except Exception as error:
     print(f"failed: {error!r}")
 EOF
+# A machine that floods the server name check's queue (E8c-2), run in a machine as root: `flood.py ADDRESS COUNT
+# SECONDS` opens COUNT connections to ADDRESS:443 and sends no ClientHello on them. It prints "flooding", then for
+# SECONDS sends ACKs on them, round and round, as fast as it can: no data, the numbers its own TCP sends (read from the
+# server's SYN-ACK), so conntrack takes them as the connection's. Then it prints "sent N".
+cat >"$work/flood.py" <<'EOF'
+import socket, struct, sys, time
+address, count, seconds = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+def checksum(data):
+    total = sum(struct.unpack(f"!{len(data) // 2}H", data))
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+sniff = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+sniff.settimeout(5)
+connections, packets = [], []
+for _ in range(count):
+    s = socket.create_connection((address, 443), timeout=5)
+    connections.append(s)
+    here, port = s.getsockname()
+    while True:
+        data = sniff.recv(65536)
+        at = (data[0] & 15) * 4
+        sport, dport, seq, ack, flags = struct.unpack("!HHIIxB", data[at:at + 14])
+        if data[12:16] == socket.inet_aton(address) and (sport, dport) == (443, port) and flags & 0x12 == 0x12:
+            break
+    ends = socket.inet_aton(here) + socket.inet_aton(address)
+    tcp = struct.pack("!HHIIBBHHH", port, 443, ack, (seq + 1) & 0xFFFFFFFF, 5 << 4, 0x10, 64240, 0, 0)
+    tcp = tcp[:16] + struct.pack("!H", checksum(ends + struct.pack("!BBH", 0, 6, len(tcp)) + tcp)) + tcp[18:]
+    # The kernel fills in the IP header's checksum.
+    packets.append(struct.pack("!BBHHHBBH", 0x45, 0, 40, 0, 0x4000, 64, 6, 0) + ends + tcp)
+sniff.close()
+raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+print("flooding", flush=True)
+sent, end = 0, time.monotonic() + seconds
+while time.monotonic() < end:
+    for packet in packets:
+        raw.sendto(packet, (address, 0))
+    sent += len(packets)
+print(f"sent {sent}", flush=True)
+EOF
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=stand-in \
 	-keyout "$work/serve.key" -out "$work/serve.crt" >"$work/openssl.out" 2>&1 ||
 	fail "cannot make the stand-in's certificate: $(cat "$work/openssl.out")"
@@ -795,11 +835,12 @@ expect_hello() {
 	got=$(hello "${@:2}") || true
 	[[ $got == "$1" ]] || fail "${hello_on:-m2}'s hello ${*:2}: \"$got\", not \"$1\""
 }
-name_refusals() {
+counted() {
 	local text
-	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit refused_name)
+	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit "$1")
 	grep -o 'packets [0-9]*' <<<"$text" | cut -d' ' -f2
 }
+name_refusals() { counted refused_name; }
 # conntrack's line of a flow of m2's to 198.51.100.1:443 in this state with this mark.
 flow_is() { shows "$1 src=$a2 dst=198.51.100.1 sport=[0-9]* dport=443 .* mark=$2 " ip netns exec qexit conntrack -L -s "$a2" 2>/dev/null; }
 for module in nft_queue nfnetlink_queue; do [[ ! -d /sys/module/$module ]] || fail "$module was loaded before the proof loaded it"; done
@@ -841,6 +882,40 @@ expect_tcp m1 198.51.100.1 443 open
 within 30 'shows "\"dst\":\"198.51.100.1\",\"event\":\"refused\".*\"rule\":\"name_not_listed\"" cat "$LOGS"/flows-*.jsonl'
 healthy || fail "not healthy with the server name check: $(verify_problems)"
 pass "with the queue modules (loaded in this VM only) and the exit reloaded, m2's flows to a listed name's address go on only with a ClientHello for a listed name or one under it (also one in pieces and segments), judged once (mark 2); a blocked name under a listed one, a name not listed, no name, no TLS, a ClientHello over 16 KiB or slower than 5 s are reset (mark 3), counted in refused_name and logged as name_not_listed; m1 (open) is not checked"
+
+# One machine floods the node's one queue: m1, only listed too now, opens 100 connections to a listed name's address,
+# sends no ClientHello on them, and for 8 s sends ACKs on them as fast as it can (under 10 s: a flow with no ClientHello
+# 10 s after its SYN is refused). Past 1000 a second its packets are dropped before the queue, so the kernel drops none
+# from the queue, and m2's ClientHellos are judged meanwhile.
+queue_drops() { ip netns exec qexit awk '$1 == 0 {print $6 + $7}' /proc/net/netfilter/nfnetlink_queue; }
+both_only() {
+	names_is "s['reach'] == {'$a1': 'only_10001', '$a2': 'only_10002'} and s['problems'] == []" &&
+		[[ $(reach_map) == "$(pairs "$a1:only_10001" "$a2:only_10002")" && ! -e $RUN/names/10001.owed ]]
+}
+lx file push "$work/flood.py" m1/root/flood.py >/dev/null
+rules "$C1=only:blocked.example.com+listed.example.com"
+within 30 both_only
+within 30 'says m1 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10001) == 198.51.100.1 ]]'
+dropped=$(queue_drops) limited=$(counted dropped_sni_rate)
+[[ -n $dropped ]] || fail "no row for queue 0 in nfnetlink_queue: $(ip netns exec qexit cat /proc/net/netfilter/nfnetlink_queue)"
+in_m m1 python3 /root/flood.py 198.51.100.1 100 8 >"$work/flood.out" 2>&1 &
+flood=$!
+pids+=($flood)
+within 30 'grep -q flooding "$work/flood.out" || ! kill -0 "$flood" 2>/dev/null'
+grep -q flooding "$work/flood.out" || fail "m1's flood: $(cat "$work/flood.out")"
+expect_hello ok 198.51.100.1 listed.example.com
+expect_hello refused 198.51.100.1 unlisted.example.com
+kill -0 "$flood" 2>/dev/null || fail "m1's flood ended before m2's ClientHellos were judged: $(cat "$work/flood.out")"
+wait "$flood" || fail "m1's flood: $(cat "$work/flood.out")"
+sent=$(sed -n 's/^sent //p' "$work/flood.out")
+limited=$(($(counted dropped_sni_rate) - limited))
+(($(queue_drops) == dropped)) ||
+	fail "the kernel dropped $(($(queue_drops) - dropped)) packets from the queue while m1 flooded (it sent $sent)"
+((limited >= 1000)) || fail "m1's flood (it sent $sent) was not limited before the queue: dropped_sni_rate +$limited"
+healthy || fail "not healthy after m1's flood: $(verify_problems)"
+rules "$C1=blocked.example.com,*.wild.example.com,fresh.example.com"
+within 30 only
+pass "one machine flooding the node's one queue is held to its share before it: m1 (only listed) sent $sent ACKs on 100 connections to a listed name's address in 8 s with no ClientHello; dropped_sni_rate counted the $limited over its 1000 a second, the kernel dropped none from the queue, m2's ClientHellos were judged meanwhile (a listed name let on, a name not listed refused), and verify stayed healthy"
 
 # No bypass: a judged flow goes on while the checker is down, a new one gets nowhere, and verify says why.
 in_m m2 python3 /root/hello.py 198.51.100.1 listed.example.com --wait 10 >"$work/held-hello.out" 2>&1 &

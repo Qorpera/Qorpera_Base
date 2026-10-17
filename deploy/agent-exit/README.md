@@ -749,24 +749,33 @@ How it works:
 - The base chain `sni` (`qorpera-agent-exit-sni.nft`; forward, after the filter chain) sends every packet of a flow
   marked 1, both ways, to queue 0. There the checker (`qorpera-agent-exit-sni.py`, root in `qexit`, the unit
   `qorpera-agent-exit-sni.service`) reads it. A packet from a machine's address (10.210.0.0/16; `agent_out` drops any
-  other source from the bridge) is the machine's, any other the server's. Packets without data from the machine go on
-  at once. A SYN for a flow judged already is a new connection's on the same ports, and starts a new flow.
+  other source from the bridge) is the machine's, one to a machine's address the server's, and any other is dropped.
+  Packets without data from the machine go on at once. A SYN for a flow judged or reset already is a new connection's
+  on the same ports, and starts a new flow.
 - The machine's data is held until the flow's first bytes are a whole ClientHello: at most 16 KiB of it (and its record
   headers), for at most 5 seconds, in at most 64 packets. A hello sent in several packets is read whole. A packet that
   brings no new byte (its bytes held already) is dropped, not held, and TCP sends it again.
+- Until it is judged, a flow may send at most 128 packets to the queue, both ways together (a whole 16 KiB hello takes
+  about 30), its whole hello must come within 10 seconds of its SYN, and the server must acknowledge a hello let on
+  within 5 seconds.
 - One server name the rules allow lets the held packets on as they were. When the server acknowledges the hello, the
   flow is marked 2 and its packets are queued no more: only a flow's first packets reach the checker.
 - Anything else is refused: no TLS, no server name or more than one, a name not listed or blocked, a hello too big,
   too slow or in too many packets, a flow of a machine that holds 512 packets already, bytes sent again that differ,
-  urgent data, a flow whose SYN the checker did not see, a machine not verified, a company not in the rules file. The machine's packet goes back to the chain with the mark `0x80000002`: the flow is
-  marked 3 and its connection reset, and every later packet of it is dropped. The refusal is counted in `refused_name`
-  and logged with the rule `name_not_listed`.
+  urgent data, a flow past its 128 packets or its 10 seconds, a hello the server does not acknowledge in 5 seconds, a
+  flow whose SYN the checker did not see (at the first packet of it the checker sees, either way; a reset from the
+  machine goes on), a machine
+  not verified, a company not in the rules file. The packet goes back to the chain with the mark `0x80000002`: the
+  flow is marked 3 and queued no more, the machine's packets of it are reset (when the packet refused was the
+  server's, at the machine's next one) and the server's dropped. The refusal is counted in `refused_name` and logged
+  with the rule `name_not_listed`, as the machine's.
+- A reset from the machine ends what its flow held, and the flow's later packets are dropped both ways.
 - A company now open, or without rules, has its flows let on (in "open" mode unless the name is blocked).
 
 No bypass, and it fails closed. With no checker on queue 0 the kernel drops what the chain queues: a new connection
 waits (the machine sends its SYN again), a connection being judged is refused, and nothing passes unread. The unit
 starts the checker again one second after any stop, with no limit (`Restart=always`, `StartLimitIntervalSec=0`). The new
-checker judges new flows and refuses the data of those whose SYN came before it. A flow already marked 2 is never
+checker judges new flows and refuses those whose SYN came before it, at their next packet either way. A flow already marked 2 is never
 queued, so it goes on. When `up` makes the exit's namespace again, the checker leaves and its unit starts it in the
 new one.
 
@@ -785,9 +794,14 @@ alone (no queue modules)`. With the modules, `verify` names:
 Limits:
 - the node has one queue, of 8192 packets, for every company's flows being judged. When it is full, the kernel drops
   what the chain queues (it fails closed: new connections wait, hellos in progress may be refused), and `verify` says so
-  for a minute. So that one machine cannot fill it, a flow holds at most 64 packets (a whole 16 KiB hello is 12 full
-  segments), one machine's flows together at most 512, and a packet with no new byte is dropped, not held. A machine
-  past its 512 has its next flow refused; other machines are judged as before;
+  for a minute. So that one machine cannot fill it, a machine's packets of flows being judged, both ways together, go
+  to the queue at 1000 a second at most (2000 at once): the ones over that are dropped before the queue, counted in
+  `dropped_sni_rate`, and TCP sends them again. A flow is refused past 128 packets or 10 seconds without a whole hello,
+  or 5 seconds after its pass without the server's acknowledgement; it holds at most 64 packets (a whole 16 KiB hello
+  is 12 full segments), one machine's flows together at most 512, and a packet with no new byte is dropped, not held. A
+  machine past its 512 has its next flow refused; other machines are judged as before. Many machines that send as fast
+  as they can, all at once, can still fill the queue: then the kernel drops, and `verify` reports the exit unhealthy
+  for a minute after the last drop;
 - it reads the name the machine asks for, never the certificate or what follows, so domain fronting (a listed name
   carrying another site inside) is not caught. With encrypted ClientHello (ECH) the name read is the outer one; E6's
   browser policy keeps ECH off;
@@ -796,8 +810,8 @@ Limits:
   14 KB (Linux's 10 segments) when it sends the hello at once, as TLS clients do. A machine that pauses between parts
   longer than its retransmission time (0.2 s at least) falls back to one segment in flight, and a hello longer than
   that segment is not whole in time;
-- the connections made between step 11 and step 12 (marked 1, never judged) are reset at the machine's next data after
-  step 12. Older ones, made before step 11, go on.
+- the connections made between step 11 and step 12 (marked 1, never judged) are refused at their next packet after
+  step 12, and the machine reset. Older ones, made before step 11, go on.
 
 ### Adding E8c-2 to a node that runs the exit
 
@@ -923,12 +937,17 @@ on the tailnet. It checks:
 - the server name checker's judge (`test/sni-judge.py`, made-up packets, no queue): a listed name, one under a `*.`
   name and one in capitals go on, the flow unmarked once the server acknowledges the hello; a blocked or unlisted name
   (and a name an open company blocks), a machine not verified, a company not known or with unusable rules, other bytes
-  sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start or of a flow whose SYN it did
-  not see are refused, and the refused flow's packets dropped both ways; a hello in two records and in pieces is held
-  whole; a part sent again with no new byte is dropped, not held; a hello in more than 64 packets, and a flow of a
-  machine holding 512, are refused while another machine goes on, and a pass, a refusal, a reset and the 5 seconds let
-  go of what a flow held; the server's bytes are never judged as the machine's; a SYN on the ports of a flow judged
-  (passed or refused) starts a new one; a machine's reset and a flow idle 120 seconds are forgotten. With made-up
+  sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start, and any packet of a flow
+  whose SYN it did not see (the machine's or the server's; the machine's reset goes on) are refused, and the refused
+  flow's packets dropped both ways; a hello in two records and in pieces is held whole; a part sent again with no new
+  byte is dropped, not held; a hello in more than 64 packets, and a flow of a machine holding 512, are refused while
+  another machine goes on, and a pass, a refusal, a reset and the 5 seconds let go of what a flow held; a flow past 128
+  packets (the machine's ACKs, or the server's packets after a pass), a pass the server does not acknowledge in 5
+  seconds (either side's next packet), a flow with no whole hello 10 seconds after its SYN, and the 129th SYN of a flow
+  are refused, and a SYN sent again starts the 10 seconds again; a packet with no machine on either side is dropped,
+  and the checker's machine addresses are the exit's (`AGENTS`) and the `sni` chain's; the server's bytes are never
+  judged as the machine's; a SYN on the ports of a flow judged (passed or refused) starts a new one; a machine's reset
+  keeps its flow, whose later packets are dropped both ways until a new SYN; a flow idle 120 seconds is forgotten. With made-up
   kernel answers: the queue's config waits for the answer to it, not a verdict's, dropping a packet queued meanwhile;
   the status names the packets held and the kernel's row for the queue, and its drops for a minute after the last.
   And, as the container has no queue modules,
@@ -1080,7 +1099,9 @@ writes the rules file from a list), and:
   as ROLLOUT.md's step 12 says: a hello passes only with a listed name or one under it (also a 3 KB one in pieces), and
   the flow is marked 2; a blocked name under a listed one, an unlisted name, no name, plain HTTP, a hello over 16 KiB
   and one slower than 5 seconds are reset, marked 3, counted and logged as `name_not_listed`; the open company's
-  machine is not checked. With the checker stopped, a judged flow goes on, a new one gets nowhere and `verify` says
+  machine is not checked. While one machine floods the queue (ACKs on 100 connections with no hello, as fast as it
+  can, for 8 seconds), its packets past 1000 a second are dropped before the queue (`dropped_sni_rate`), the kernel
+  drops none from the queue, the other machine's hellos are judged, and `verify` stays healthy. With the checker stopped, a judged flow goes on, a new one gets nowhere and `verify` says
   why; a killed checker comes back each time, and a flow it was judging is refused; back to open, nothing is queued;
 - kills a resolver: systemd starts it again and the names hold;
 - fails closed: unusable rules for a company and a missing rules file leave its machines (or all of them) with no
@@ -1094,7 +1115,7 @@ writes the rules file from a list), and:
   before ends; after the undo the previous release's resolver answers every name but the blocked ones again. A release
   with E8c-1 takes steps 11 and 12: step 11 keeps the resolver and loads no `sni` chain, the machine's connection from
   before goes on, and a hello for a name not listed still reaches a listed name's address; step 12 loads the modules
-  and the check starts: a connection made after step 11 is reset at its next data, the one from before step 11 goes
+  and the check starts: a connection made after step 11 is reset at its next packet, the one from before step 11 goes
   on; the undo unloads the modules and the machine goes by address again.
 
 Afterwards the test machine is compared with before, as for E2b. `test/prove-lxd.sh` (E2b) runs the names

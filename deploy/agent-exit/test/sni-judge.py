@@ -9,6 +9,7 @@ import errno
 import importlib.util
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -232,9 +233,20 @@ def main():
     check(verdicts == [(run.ident, REPEAT, REFUSED)], f"a SYN with another hello: {verdicts}")
     run = Run()
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK))
-    check(verdicts == [(run.ident, ACCEPT, 0)], f"an ack of a flow not seen: {verdicts}")
+    check(verdicts == [(run.ident, REPEAT, REFUSED)], f"an ack of a flow whose SYN was not seen: {verdicts}")
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, hello("x.test")))
-    check(verdicts == [(run.ident, REPEAT, REFUSED)], f"data of a flow whose SYN was not seen: {verdicts}")
+    check(verdicts == [(run.ident, DROP, 0)], f"then its data: {verdicts}")
+    run = Run()
+    _, verdicts = run.reply(5001)
+    check(verdicts == [(run.ident, REPEAT, REFUSED)] and "a server's packet" in run.lines[-1],
+          f"a server's packet of a flow whose SYN was not seen: {verdicts} {run.lines}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK))
+    check(verdicts == [(run.ident, DROP, 0)], f"then the machine's packet: {verdicts}")
+    run = Run()
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, RST))
+    check(verdicts == [(run.ident, ACCEPT, 0)], f"the machine's reset of a flow not seen goes on: {verdicts}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, hello("x.test")))
+    check(verdicts == [(run.ident, DROP, 0)], f"then its data is dropped: {verdicts}")
     run = Run()
     run.send(packet("10.210.1.1", 40000, 5000, SYN))
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | URG))
@@ -253,9 +265,16 @@ def main():
     ident, _ = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, parts[0]))
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5101, RST))
     check(verdicts == [(ident, DROP, 0), (run.ident, ACCEPT, 0)], f"the machine's reset: {verdicts}")
-    check(run.judge.flows == {}, "a reset flow is forgotten")
-    print("PASS: TCP fast open is judged; data of a flow not seen from its SYN, urgent data, data before the start and "
-          "a second SYN are refused; a reset goes on and drops what was held")
+    check([(f.state, f.held) for f in run.judge.flows.values()] == [("reset", [])] and run.judge.holding == {},
+          f"a reset flow holds nothing: {run.judge.holding}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5101, ACK | PSH, parts[1]))
+    check(verdicts == [(run.ident, DROP, 0)], f"a reset flow's later data is dropped: {verdicts}")
+    _, verdicts = run.reply(5001)
+    check(verdicts == [(run.ident, DROP, 0)], f"and the server's packets: {verdicts}")
+    ident, verdicts = run.flow(seq=80000, data=hello("x.test"))
+    check(verdicts == [(ident, ACCEPT, 0)], f"a SYN on its ports starts a new flow: {verdicts}")
+    print("PASS: TCP fast open is judged; a flow not seen from its SYN (the machine's packet or the server's), urgent "
+          "data, data before the start and a second SYN are refused; a reset goes on and drops what was held")
 
     def bytes_apart(run, port, count, machine="10.210.1.1"):
         """A SYN, then `count` bytes one packet each, the first byte never: each one held (the hello is never whole)."""
@@ -314,6 +333,78 @@ def main():
     _, verdicts = run.send(packet("10.210.1.1", 40000, 70001, ACK | PSH, data))
     check(verdicts == [(run.ident, ACCEPT, 0)], f"its own hello again goes on: {verdicts}")
     print("PASS: a SYN on the ports of a flow judged starts a new flow (the old one is queued no more)")
+
+    run = Run()
+    run.flow(data=b"")
+    for _ in range(sni.FLOW_QUEUED - 2):
+        _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK))
+        check(verdicts == [(run.ident, ACCEPT, 0)], f"an ACK with no data goes on: {verdicts}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK))
+    check(verdicts == [(run.ident, REPEAT, REFUSED)] and f"more than {sni.FLOW_QUEUED} packets" in run.lines[-1],
+          f"ACKs with no data, more than {sni.FLOW_QUEUED}: {verdicts} {run.lines}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK))
+    check(verdicts == [(run.ident, DROP, 0)], f"then the flow's packets are dropped: {verdicts}")
+    run = Run()
+    data = hello("x.test")
+    run.flow(data=data)
+    for _ in range(sni.FLOW_QUEUED - 2):
+        _, verdicts = run.reply(5001)
+        check(verdicts == [(run.ident, ACCEPT, 0)], f"a server's packet that does not acknowledge the hello: {verdicts}")
+    _, verdicts = run.reply(5001)
+    check(verdicts == [(run.ident, REPEAT, REFUSED)] and f"more than {sni.FLOW_QUEUED} packets" in run.lines[-1],
+          f"the server's packets of a passed flow, more than {sni.FLOW_QUEUED}: {verdicts} {run.lines}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001 + len(data), ACK))
+    check(verdicts == [(run.ident, DROP, 0)], f"then the machine's packets are dropped: {verdicts}")
+    for side in ("server", "machine"):
+        run = Run()
+        run.flow(data=data)
+        run.at += sni.HOLD_TIME - 1
+        _, verdicts = run.reply(5001)
+        check(verdicts == [(run.ident, ACCEPT, 0)], f"a passed flow within {sni.HOLD_TIME} seconds: {verdicts}")
+        run.at += 2
+        _, verdicts = (run.reply(5001 + len(data)) if side == "server" else
+                       run.send(packet("10.210.1.1", 40000, 5001 + len(data), ACK)))
+        check(verdicts == [(run.ident, REPEAT, REFUSED)] and "did not acknowledge" in run.lines[-1],
+              f"the {side}'s packet of a passed flow its server did not confirm: {verdicts} {run.lines}")
+    run = Run()
+    run.flow(data=b"")
+    run.at += sni.HELLO_TIME - 1
+    _, verdicts = run.reply(5001)
+    check(verdicts == [(run.ident, ACCEPT, 0)], f"a flow within {sni.HELLO_TIME} seconds of its SYN: {verdicts}")
+    run.at += 2
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, data))
+    check(verdicts == [(run.ident, REPEAT, REFUSED)] and "no whole ClientHello within" in run.lines[-1],
+          f"a hello {sni.HELLO_TIME} seconds after the SYN: {verdicts} {run.lines}")
+    run = Run()
+    run.send(packet("10.210.1.1", 40000, 5000, SYN))
+    run.at += sni.HELLO_TIME - 1
+    run.send(packet("10.210.1.1", 40000, 5000, SYN))
+    run.at += sni.HELLO_TIME - 1
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, data))
+    check(verdicts == [(run.ident, ACCEPT, 0)], f"a SYN sent again starts the time again: {verdicts} {run.lines}")
+    run = Run()
+    for _ in range(sni.FLOW_QUEUED):
+        _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, SYN))
+        check(verdicts == [(run.ident, ACCEPT, 0)], f"a SYN sent again: {verdicts}")
+    _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, SYN))
+    check(verdicts == [(run.ident, REPEAT, REFUSED)], f"a SYN sent again still counts: {verdicts}")
+    run = Run()
+    for protocol in (6, 17):
+        stray = packet("10.210.1.1", 40000, 5000, SYN, protocol=protocol)
+        _, verdicts = run.send(stray[:12] + socket.inet_aton("10.211.1.1") + stray[16:])
+        check(verdicts == [(run.ident, DROP, 0)] and run.judge.flows == {},
+              f"a packet with no machine on either side (protocol {protocol}): {verdicts}")
+    here = os.path.dirname(os.path.abspath(sys.argv[1]))
+    with open(os.path.join(here, "qorpera-agent-exit.sh")) as file:
+        pool = re.search(r"^AGENTS=(\S+)$", file.read(), re.M)
+    with open(os.path.join(here, "qorpera-agent-exit-sni.nft")) as file:
+        chain = set(re.findall(r"\d+\.\d+\.\d+\.\d+/\d+", file.read()))
+    check(pool and str(sni.AGENTS) == pool.group(1) and chain == {pool.group(1)},
+          f"the checker's machines are the exit's pool and the sni chain's: {sni.AGENTS} {pool} {chain}")
+    print(f"PASS: a flow is refused past {sni.FLOW_QUEUED} packets both ways (ACKs with no data, the server's, SYNs "
+          f"again), with no whole hello {sni.HELLO_TIME} seconds after its last SYN, or with its hello not acknowledged "
+          f"{sni.HOLD_TIME} seconds after it went on; a packet with no machine on either side is dropped; the checker's "
+          "machines are the exit's pool")
 
     run = Run()
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5000, SYN, protocol=17))
