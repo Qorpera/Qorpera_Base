@@ -1,10 +1,16 @@
-//! The mount's side of git on the mount (`git.rs`) and of the session's own files on the machine's disk (`local.rs`):
-//! which of the kernel's requests the local files answer, what the mount refuses git, and what it does around git's
-//! locks and its index.
+//! The mount's side of git on the mount (`git.rs`), of the session's own files on the machine's disk (`local.rs`) and of
+//! the machine's caches (`cache.rs`): which of the kernel's requests the local files answer, what the mount refuses git,
+//! and what it does around git's locks and its index.
+//!
+//! A cache is answered where the node has nothing at its path (rule 1), in any of the node's folders but a repository's
+//! git folder, on a machine's mount: the code host publishes all it writes. Nothing crosses the edge between the
+//! caches and the folder: a rename or a hard link across it is EXDEV (`mv` copies), a folder of the node's with caches
+//! in it is not empty, and one the node removes or renames here drops or moves its caches (`local.rs`).
 //!
 //! Each `local_*` hook takes the request's reply and hands it back when the node answers the request after all.
 
 use super::*;
+use crate::cache;
 use crate::git::{self, Place};
 use crate::index;
 use crate::local::{self, is_local, Area, Up};
@@ -80,49 +86,71 @@ impl Shared {
 		tree.path(dir).filter(|p| p.starts_with("code/")).map(str::to_string)
 	}
 
-	/// Where `name` in the folder `parent` is answered by the local files, if it is: as `here`, or one of the session's
-	/// cache folders (or a file in a cache's place) in a folder of the node's, where the node has nothing.
+	/// The path of the node's folder `dir`, if caches can be in it: any but a repository's git folder, on a machine's
+	/// mount (the code host publishes all it writes).
+	fn cache_dir(&self, dir: u64) -> Option<String> {
+		if self.code_host {
+			return None;
+		}
+		let tree = self.tree.lock().unwrap();
+		tree.path(dir).filter(|p| !matches!(git::place(p), Place::Git { .. })).map(str::to_string)
+	}
+
+	/// Where `name` in the folder `parent` is answered by the local files, if it is: as `here`, or one of the folder's
+	/// caches (a cache folder, or a file a move left in a cache's place) where the node has nothing.
 	fn found(&self, local: &Local, parent: u64, name: &str) -> Result<Option<(Up, Area)>, i32> {
 		if let Some(found) = self.here(local, parent, name)? {
 			return Ok(Some(found));
 		}
-		let Some(dir) = self.code_dir(parent).filter(|d| matches!(git::place(d), Place::Worktree { .. })) else {
-			return Ok(None);
-		};
-		let on_disk = fs::symlink_metadata(local.disk(Area::Cache, &join(&dir, name))).is_ok();
-		if !on_disk || self.child(parent, name).is_ok() {
+		let Some(dir) = self.cache_dir(parent) else { return Ok(None) };
+		if !local.is_top(&dir, name) || self.child(parent, name).is_ok() {
 			return Ok(None);
 		}
 		Ok(Some((Up::Mount(dir), Area::Cache)))
 	}
 
-	/// Where a new `name` in the folder `parent` goes for a file now in `area`: as `here`, or, for a cache's file,
-	/// beside it in the node's folder where the node has nothing (a cache renamed in its worktree stays a cache).
-	fn target(&self, local: &Local, parent: u64, name: &str, area: Area) -> Result<Option<(Up, Area)>, i32> {
+	/// Where a new `name` in the folder `parent` goes for a file (or, `folder`, a folder) now in `area`: as `found`, or,
+	/// for a cache's folder, a new cache where the node has nothing and the rules make one (`cache`).
+	fn target(&self, local: &Local, parent: u64, name: &str, area: Area, folder: bool) -> Result<Option<(Up, Area)>, i32> {
 		if let Some(found) = self.here(local, parent, name)? {
 			return Ok(Some(found));
 		}
 		if area != Area::Cache {
 			return Ok(None);
 		}
-		let Some(dir) = self.code_dir(parent).filter(|d| matches!(git::place(d), Place::Worktree { .. })) else {
+		let Some(dir) = self.cache_dir(parent) else { return Ok(None) };
+		if self.child(parent, name).is_ok() {
 			return Ok(None);
-		};
-		Ok(self.child(parent, name).is_err().then_some((Up::Mount(dir), Area::Cache)))
+		}
+		let cache = local.is_top(&dir, name) || folder && self.cache(local, parent, &dir, name);
+		Ok(cache.then_some((Up::Mount(dir), Area::Cache)))
 	}
 
-	/// Whether a new folder `name` in the node's folder `dir` is one of the session's caches: `dir` is in a worktree
-	/// and `name` is on its list (`cache.rs`), whose index is read first if it was not yet.
-	fn cache(&self, local: &Local, dir: &str, name: &str) -> bool {
-		let Place::Worktree { area, worker, .. } = git::place(dir) else { return false };
-		if !git::CACHE_NAMES.contains(&name) {
-			return false;
+	/// Whether a new folder `name` in the node's folder `parent` (at `dir`) is a cache (`cache.rs`): in a worktree, by
+	/// its list, whose index is read first if it was not yet (rule 4); elsewhere in a code area, never; anywhere else, by
+	/// rules 2 and 3.
+	fn cache(&self, local: &Local, parent: u64, dir: &str, name: &str) -> bool {
+		match git::place(dir) {
+			Place::Git { .. } => false,
+			Place::Worktree { area, worker, .. } => {
+				if !cache::on_worktree_list(name) {
+					return false;
+				}
+				let (worktree, index) = git::worktree(area, worker);
+				if !local.cache.lock().unwrap().read(&worktree) {
+					self.read_index(local, &worktree, &index);
+				}
+				local.cache.lock().unwrap().listed(&worktree, name)
+			}
+			Place::Other if dir == "code" || dir.starts_with("code/") => false,
+			Place::Other => cache::outside(name, || self.project(parent)),
 		}
-		let (worktree, index) = git::worktree(area, worker);
-		if !local.cache.lock().unwrap().read(&worktree) {
-			self.read_index(local, &worktree, &index);
-		}
-		local.cache.lock().unwrap().listed(&worktree, name)
+	}
+
+	/// Whether the node's folder `dir` holds a project file (rule 3).
+	fn project(&self, dir: u64) -> bool {
+		let project = |c: &Child| c.attr.kind != EntryKind::Folder && cache::PROJECT_FILES.contains(&c.name.as_str());
+		self.children(dir, None).is_ok_and(|(children, _)| children.iter().any(project))
 	}
 
 	/// The session-local git files `seed` holds, copied from the node's once per view (`local.rs`).
@@ -243,26 +271,60 @@ impl Shared {
 	}
 
 	/// Moves `worktree`'s cache folders named `name` into the folder as files the session wrote, published at the
-	/// session's boundary: git tracks files under that name now, so they are the worktree's. One a move did not finish
-	/// is in the node's folder already, with what is left of it on the disk.
+	/// session's boundary: git tracks files under that name now, so they are the worktree's. Each is made in the node's
+	/// folder first and what is in it becomes that folder's caches (`Local::convert`), each moved in the same way, so
+	/// the view shows every file all along, at the node's or on the disk. One a move did not finish is in the node's
+	/// folder already, with what is left of it among its caches.
 	fn move_in(&self, local: &Local, held: &mut HashMap<String, Writer>, worktree: &str, name: &str) -> Result<(), i32> {
-		let mut todo = vec![worktree.to_string()];
-		while let Some(dir) = todo.pop() {
-			let Ok(read) = fs::read_dir(local.disk(Area::Cache, &dir)) else { continue };
-			let node: Vec<String> = match self.link.list(&dir) {
-				Ok(entries) => entries.into_iter().map(|e| e.name).collect(),
+		// The node's folders to look in, and whether all of their caches move (what was in a cache that moves).
+		let mut todo = vec![(worktree.to_string(), false)];
+		while let Some((dir, whole)) = todo.pop() {
+			let tops: Vec<fs::DirEntry> = match fs::read_dir(local.room(&dir, Area::Cache)) {
+				Ok(read) => read.flatten().collect(),
+				Err(_) => Vec::new(),
+			};
+			if tops.is_empty() && local.mirrors(&dir).is_empty() {
+				continue;
+			}
+			let folders: Vec<String> = match self.link.list(&dir) {
+				Ok(entries) => entries.into_iter().filter(|e| e.kind == EntryKind::Folder).map(|e| e.name).collect(),
 				Err(f) => return Err(f.errno()),
 			};
-			for entry in read.flatten() {
+			let mut made = Vec::new();
+			for entry in tops {
 				let Some(child) = entry.file_name().to_str().map(str::to_string) else { continue };
-				if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+				let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
+				if !whole && (child != name || !meta.is_dir()) {
 					continue;
 				}
-				if child == name {
-					self.move_folder(local, held, &join(&dir, &child), &entry.path())?;
-				} else if node.contains(&child) {
-					// A folder of the node's with caches in it.
-					todo.push(join(&dir, &child));
+				let path = join(&dir, &child);
+				if meta.is_dir() {
+					match self.link.mkdir(&path) {
+						Err(f) if f.errno() != libc::EEXIST => return Err(f.errno()),
+						_ => {}
+					}
+					if local.convert(&dir, &child).map_err(local::errno)? {
+						made.push(child);
+					} else {
+						// The node's folder has caches of its own (of an earlier folder of that name): this one moves whole.
+						self.move_folder(local, held, &path, &entry.path())?;
+					}
+				} else if meta.is_file() {
+					self.write_in(held, &path, &entry.path(), meta.permissions().mode() & 0o100 != 0)?;
+					local.moved_out(&entry.path())?;
+				} else if meta.file_type().is_symlink() {
+					if self.link_in(&path, &entry.path())? {
+						local.moved_out(&entry.path())?;
+					}
+				} else {
+					eprintln!("qorpera-folder: {path} is not a file, a folder or a link, and stays out of the folder");
+				}
+			}
+			for child in local.mirrors(&dir) {
+				// A folder of the node's with caches in it or below; one made now, or by a move not finished, moves whole.
+				if folders.contains(&child) || made.contains(&child) {
+					let whole = whole || child == name;
+					todo.push((join(&dir, &child), whole));
 				}
 			}
 			self.tree.lock().unwrap().invalidate([dir.as_str()]);
@@ -416,14 +478,12 @@ impl FolderFs {
 		None
 	}
 
-	/// lookup of a name the node does not have in a folder of a worktree: one of the session's caches, if there is one.
+	/// lookup of a name the node does not have: one of the folder's caches, if there is one.
 	pub(super) fn cache_lookup(&self, parent: u64, name: &str, reply: ReplyEntry) -> Option<ReplyEntry> {
 		let Some(local) = &self.s.local else { return Some(reply) };
-		let Some(dir) = self.s.code_dir(parent).filter(|d| matches!(git::place(d), Place::Worktree { .. })) else {
-			return Some(reply);
-		};
+		let Some(dir) = self.s.cache_dir(parent) else { return Some(reply) };
 		match local.entry(Up::Mount(dir), name, Area::Cache) {
-			// The node's folder wins once it has one (`move_in`), so the kernel asks again each time.
+			// The node's entry wins once it has one (rule 1, `move_in`), so the kernel asks again each time.
 			Ok(attr) => reply.entry(&Duration::ZERO, &attr, Generation(0)),
 			Err(_) => return Some(reply),
 		}
@@ -459,21 +519,42 @@ impl FolderFs {
 		None
 	}
 
-	/// The local entries of the node's folder `dir` added to its `entries`: the session-local git files in place of the
-	/// node's, and a worktree's caches where the node has nothing.
-	pub(super) fn merge_local(&self, dir: &str, entries: &mut Vec<(u64, FileType, String)>) -> Result<(), i32> {
+	/// The local entries of the node's folder `ino` (at `dir`) added to its `entries`: the session-local git files in
+	/// place of the node's, or the folder's caches where the node has nothing. A cache where the node has an entry now
+	/// goes (rule 1), as do the caches of a folder in it the node no longer has (removed or renamed by another view);
+	/// both wait while a worktree's caches move into the folder, whose moves make the node's folders first.
+	pub(super) fn merge_local(&self, ino: u64, dir: &str, entries: &mut Vec<(u64, FileType, String)>) -> Result<(), i32> {
 		let Some(local) = &self.s.local else { return Ok(()) };
-		if !dir.starts_with("code/") {
-			return Ok(());
-		}
 		if let Some(seed) = local::seed_of(dir).filter(|_| !self.s.code_host) {
 			self.s.seed(local, &seed)?;
 			entries.retain(|e| !local::git_file(&join(dir, &e.2)));
 			entries.extend(local.entries_of(dir, Area::Git));
-		} else if matches!(git::place(dir), Place::Worktree { .. }) {
-			let caches = local.entries_of(dir, Area::Cache);
-			let caches: Vec<_> = caches.into_iter().filter(|c| !entries.iter().any(|e| e.2 == c.2)).collect();
-			entries.extend(caches);
+			return Ok(());
+		}
+		if self.s.cache_dir(ino).is_none() {
+			return Ok(());
+		}
+		let settled = match git::place(dir) {
+			Place::Worktree { area, worker, .. } => {
+				local.cache.lock().unwrap().moves(Some(&git::worktree(area, worker).0)).is_empty()
+			}
+			_ => true,
+		};
+		if settled {
+			for child in local.mirrors(dir) {
+				match self.s.child(ino, &child) {
+					Ok(c) if c.attr.kind == EntryKind::Folder => {}
+					Ok(_) | Err(libc::ENOENT) => local.drop_mirror(&join(dir, &child)),
+					Err(_) => {}
+				}
+			}
+		}
+		for cache in local.entries_of(dir, Area::Cache) {
+			if !entries.iter().any(|e| e.2 == cache.2) {
+				entries.push(cache);
+			} else if settled {
+				local.gone_top(dir, &cache.2);
+			}
 		}
 		Ok(())
 	}
@@ -588,13 +669,17 @@ impl FolderFs {
 		Some(reply)
 	}
 
-	/// mkdir of a local folder: in a local folder, a session-local git folder, or one of the session's caches.
+	/// mkdir of a local folder: in a local folder, a session-local git folder, or a new cache (or, where the folder has a
+	/// cache of that name already, EEXIST: a rule that changed since does not move it, rule 6).
 	pub(super) fn local_mkdir(&self, parent: u64, name: &str, mode: u32, reply: ReplyEntry) -> Option<ReplyEntry> {
 		let Some(local) = &self.s.local else { return Some(reply) };
 		let (up, area) = match self.s.here(local, parent, name) {
 			Ok(Some(found)) => found,
-			Ok(None) => match self.s.code_dir(parent) {
-				Some(dir) if self.s.cache(local, &dir, name) && self.s.child(parent, name).is_err() => {
+			Ok(None) => match self.s.cache_dir(parent) {
+				Some(dir)
+					if (local.is_top(&dir, name) || self.s.cache(local, parent, &dir, name))
+						&& self.s.child(parent, name).is_err() =>
+				{
 					(Up::Mount(dir), Area::Cache)
 				}
 				_ => return Some(reply),
@@ -612,9 +697,16 @@ impl FolderFs {
 		None
 	}
 
+	/// unlink and rmdir of a local file; and rmdir of a folder of the node's with caches in it, which is not empty.
 	pub(super) fn local_remove(&self, parent: u64, name: &str, folder: bool, reply: ReplyEmpty) -> Option<ReplyEmpty> {
 		let Some(local) = &self.s.local else { return Some(reply) };
 		let done = match self.s.found(local, parent, name) {
+			Ok(None) if folder && self.s.cache_dir(parent).is_some_and(|d| local.tops(&join(&d, name))) => {
+				match self.s.child(parent, name) {
+					Ok(c) if c.attr.kind == EntryKind::Folder => Err(libc::ENOTEMPTY),
+					_ => return Some(reply),
+				}
+			}
 			Ok(None) => return Some(reply),
 			Ok(Some((up, area))) if folder => local.rmdir(&up, name, area),
 			Ok(Some((up, area))) => local.unlink(&up, name, area),
@@ -627,7 +719,9 @@ impl FolderFs {
 		None
 	}
 
-	/// rename of a local file (within its area: across, EXDEV), and git's refused rename onto its alternates.
+	/// rename of a local file (within its area: across, EXDEV); of the node's onto a local file's place or, for a folder,
+	/// a new cache's (EXDEV: `mv` copies it, so its files become the cache's), or onto a folder with caches in it
+	/// (ENOTEMPTY); and git's refused rename onto its alternates.
 	pub(super) fn local_rename(
 		&self,
 		from: (u64, &str),
@@ -636,31 +730,30 @@ impl FolderFs {
 		reply: ReplyEmpty,
 	) -> Option<ReplyEmpty> {
 		let Some(local) = &self.s.local else { return Some(reply) };
-		let found = self.s.found(local, from.0, from.1).and_then(|source| {
-			let target = match &source {
-				Some((_, area)) => self.s.target(local, to.0, to.1, *area)?,
-				None => self.s.here(local, to.0, to.1)?,
-			};
-			Ok((source, target))
-		});
-		let done = match found {
-			Ok((None, None)) => {
-				if self.s.code_dir(to.0).is_some_and(|d| alternates(&join(&d, to.1))) {
-					reply.error(Errno::EPERM);
-					return None;
+		let done = match self.s.found(local, from.0, from.1) {
+			Ok(None) => match self.node_rename(local, from, to) {
+				Ok(()) => {
+					if self.s.code_dir(to.0).is_some_and(|d| alternates(&join(&d, to.1))) {
+						reply.error(Errno::EPERM);
+						return None;
+					}
+					return Some(reply);
 				}
-				return Some(reply);
-			}
-			Ok((Some((source, area)), Some((target, to_area)))) if area == to_area => {
-				if flags.contains(RenameFlags::RENAME_WHITEOUT) {
-					Err(libc::EINVAL)
-				} else {
-					let no_replace = flags.contains(RenameFlags::RENAME_NOREPLACE);
-					let exchange = flags.contains(RenameFlags::RENAME_EXCHANGE);
-					local.rename((&source, from.1), (&target, to.1), area, no_replace, exchange)
+				Err(e) => Err(e),
+			},
+			Ok(Some((source, area))) => {
+				let folder = local.entry(source.clone(), from.1, area).is_ok_and(|a| a.kind == FileType::Directory);
+				match self.s.target(local, to.0, to.1, area, folder) {
+					Ok(Some(_)) if flags.contains(RenameFlags::RENAME_WHITEOUT) => Err(libc::EINVAL),
+					Ok(Some((target, to_area))) if to_area == area => {
+						let no_replace = flags.contains(RenameFlags::RENAME_NOREPLACE);
+						let exchange = flags.contains(RenameFlags::RENAME_EXCHANGE);
+						local.rename((&source, from.1), (&target, to.1), area, no_replace, exchange)
+					}
+					Ok(_) => Err(libc::EXDEV),
+					Err(e) => Err(e),
 				}
 			}
-			Ok(_) => Err(libc::EXDEV),
 			Err(e) => Err(e),
 		};
 		match done {
@@ -668,6 +761,26 @@ impl FolderFs {
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
+	}
+
+	/// Whether the node may take the rename of its `from` to `to`, by the local files: not onto one's place, nor of a
+	/// folder onto a new cache's (EXDEV), nor onto a folder with caches in it (ENOTEMPTY).
+	fn node_rename(&self, local: &Local, from: (u64, &str), to: (u64, &str)) -> Result<(), i32> {
+		if self.s.found(local, to.0, to.1)?.is_some() {
+			return Err(libc::EXDEV);
+		}
+		let Some(dir) = self.s.cache_dir(to.0) else { return Ok(()) };
+		match self.s.child(to.0, to.1) {
+			Ok(c) if c.attr.kind == EntryKind::Folder && local.tops(&join(&dir, to.1)) => Err(libc::ENOTEMPTY),
+			Ok(_) => Ok(()),
+			Err(_) => {
+				let folder = self.s.child(from.0, from.1).is_ok_and(|c| c.attr.kind == EntryKind::Folder);
+				if folder && self.s.cache(local, to.0, &dir, to.1) {
+					return Err(libc::EXDEV);
+				}
+				Ok(())
+			}
+		}
 	}
 
 	pub(super) fn local_symlink(
@@ -701,7 +814,7 @@ impl FolderFs {
 		}
 		let done = self.local().and_then(|local| {
 			let (_, _, area) = local.name(ino).ok_or(libc::ENOENT)?;
-			match self.s.target(local, to.0, to.1, area)? {
+			match self.s.target(local, to.0, to.1, area, false)? {
 				Some((up, to_area)) if to_area == area => local.link(ino, up, to.1, area),
 				_ => Err(libc::EXDEV),
 			}
@@ -734,8 +847,7 @@ impl FolderFs {
 		if source.attr.kind != EntryKind::File {
 			return None;
 		}
-		let cached = fs::read_dir(local.disk(Area::Cache, &worktree)).is_ok_and(|mut d| d.next().is_some());
-		if !cached {
+		if !local.has_caches(&worktree) {
 			local.cache.lock().unwrap().stale(&worktree);
 			return None;
 		}
@@ -753,6 +865,21 @@ impl FolderFs {
 	pub(super) fn index_after(&self, to: &str, read: Option<(String, Vec<u8>)>) {
 		if let (Some(local), Some((worktree, data))) = (&self.s.local, read) {
 			self.s.indexed_data(local, &worktree, to, &data);
+		}
+	}
+
+	/// The node made or removed its folder `path` for this view: caches kept for a folder there before (one another
+	/// view removed) go.
+	pub(super) fn caches_gone(&self, path: &str) {
+		if let Some(local) = &self.s.local {
+			local.drop_mirror(path);
+		}
+	}
+
+	/// The node renamed its folder `from` to `to` for this view: its caches move with it.
+	pub(super) fn caches_renamed(&self, from: &str, to: &str) {
+		if let Some(local) = &self.s.local {
+			local.renamed(from, to);
 		}
 	}
 }

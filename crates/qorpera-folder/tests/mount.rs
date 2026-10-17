@@ -641,10 +641,122 @@ fn a_cache_move_given_up_leaves_nothing_in_the_folder() {
 	// x.js leaves the machine's disk before the node takes a chunk: the move gives its write up, and the node answers
 	// the first two discards BUSY. The handle is given up all the same, and nothing is left in the folder.
 	node.busy_discards(2);
-	std::fs::remove_file(node.dir.join("state/local/cache/code/o/n/worktrees/w/node_modules/x.js")).unwrap();
+	std::fs::remove_file(node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w/d/node_modules/t/x.js")).unwrap();
 	let out = eventually(Duration::from_secs(30), || node.open_handles() == 0 && !marker.exists());
 	assert!(out, "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
 	assert!(!node.exists(x) && node.busy_discards_left() == 0);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn caches_outside_the_code_areas_follow_the_rules_and_stay_on_the_machine() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	node.put("apps/web/package.json", "{}", false);
+	let (company, runner) = start(&node);
+	// A dependency folder is a cache anywhere, the top included (rule 2); a build folder beside a project file (rule 3).
+	let cached = [".venv", "notes/node_modules", "apps/web/node_modules", "apps/web/build"];
+	for dir in cached {
+		std::fs::create_dir(company.join(dir)).unwrap();
+		std::fs::write(company.join(dir).join("x"), dir).unwrap();
+	}
+	// Published: a build folder in a plain folder, a file of a cache's name and a name that differs in case (rule 5).
+	std::fs::create_dir(company.join("notes/build")).unwrap();
+	std::fs::write(company.join("apps/web/dist"), "a file").unwrap();
+	std::fs::create_dir(company.join("apps/web/Build")).unwrap();
+	for path in ["notes/build", "apps/web/dist", "apps/web/Build"] {
+		assert!(node.exists(path), "{path} is not in the folder");
+	}
+	for dir in cached {
+		assert!(!node.exists(dir) && !node.exists(&format!("{dir}/x")), "{dir} is in the folder");
+		assert_eq!(std::fs::read_to_string(company.join(dir).join("x")).unwrap(), dir);
+	}
+	assert_eq!(names(&company.join("notes")), ["build", "node_modules", "readme"]);
+	assert_eq!(names(&company.join("apps/web")), ["Build", "build", "dist", "node_modules", "package.json"]);
+	// On the machine's disk, in the mirror of the node's folders (`local.rs`).
+	let caches = node.dir.join("state/local/caches");
+	assert_eq!(std::fs::read_to_string(caches.join("t/.venv/x")).unwrap(), ".venv");
+	assert_eq!(std::fs::read_to_string(caches.join("d/apps/d/web/t/build/x")).unwrap(), "apps/web/build");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn nothing_crosses_the_edge_between_the_caches_and_the_folder() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	std::fs::create_dir_all(notes.join("sub/node_modules/pkg")).unwrap();
+	std::fs::write(notes.join("sub/node_modules/pkg/x.js"), "cached").unwrap();
+	assert!(node.exists("notes/sub") && !node.exists("notes/sub/node_modules"));
+	// A folder of the node's with caches in it is not empty, and its caches go with it when it is renamed.
+	assert_eq!(std::fs::remove_dir(notes.join("sub")).unwrap_err().raw_os_error(), Some(libc::ENOTEMPTY));
+	std::fs::rename(notes.join("sub"), notes.join("moved")).unwrap();
+	let m = notes.join("moved");
+	assert_eq!(std::fs::read_to_string(m.join("node_modules/pkg/x.js")).unwrap(), "cached");
+	assert!(caches.join("d/moved/t/node_modules/pkg/x.js").exists() && !caches.join("d/sub").exists());
+	// A rename or a hard link across the edge is EXDEV (`mv` copies): a cache's file or folder out of it, a cache to a
+	// name that is none, a file of the folder's into a cache, and a folder of the node's onto a new cache's place.
+	let exdev = |r: std::io::Result<()>| r.unwrap_err().raw_os_error() == Some(libc::EXDEV);
+	assert!(exdev(std::fs::rename(m.join("node_modules/pkg/x.js"), m.join("x.js"))));
+	assert!(exdev(std::fs::rename(m.join("node_modules/pkg"), m.join("pkg"))));
+	assert!(exdev(std::fs::rename(m.join("node_modules"), m.join("modules"))));
+	assert!(exdev(std::fs::rename(notes.join("readme"), m.join("node_modules/readme"))));
+	std::fs::create_dir(m.join("lib")).unwrap();
+	assert!(exdev(std::fs::rename(m.join("lib"), m.join(".venv"))));
+	assert!(exdev(std::fs::hard_link(notes.join("readme"), m.join("node_modules/readme"))));
+	assert!(exdev(std::fs::hard_link(m.join("node_modules/pkg/x.js"), m.join("x.js"))));
+	assert!(node.links().is_empty() && node.exists("notes/readme") && node.exists("notes/moved/lib"));
+	// Within the caches, links and renames are the disk's: a cache renamed to another cache's name stays one.
+	std::fs::hard_link(m.join("node_modules/pkg/x.js"), m.join("node_modules/pkg/y.js")).unwrap();
+	std::os::unix::fs::symlink("pkg/y.js", m.join("node_modules/z.js")).unwrap();
+	std::fs::rename(m.join("node_modules"), m.join(".venv")).unwrap();
+	assert_eq!(std::fs::read_to_string(m.join(".venv/z.js")).unwrap(), "cached");
+	assert!(!node.exists("notes/moved/.venv") && caches.join("d/moved/t/.venv/pkg/y.js").exists());
+	// rm -r empties the folder first, and its caches' mirror goes with it: made again, it is empty.
+	std::fs::remove_dir_all(&m).unwrap();
+	assert!(!node.exists("notes/moved") && !caches.join("d/moved").exists());
+	std::fs::create_dir(&m).unwrap();
+	assert!(names(&m).is_empty());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn the_nodes_entry_wins_and_a_folder_gone_from_the_node_takes_its_caches_along() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	for dir in ["node_modules", "a/.venv", "b/.venv"] {
+		std::fs::create_dir_all(notes.join(dir)).unwrap();
+		std::fs::write(notes.join(dir).join("x"), "cached").unwrap();
+	}
+	// Another view publishes a node_modules here: the node's is shown, and the cache goes at the next listing (rule 1).
+	node.put("notes/node_modules/y", "published", false);
+	assert!(eventually(Duration::from_secs(10), || names(&notes.join("node_modules")) == ["y"]));
+	assert_eq!(names(&notes), ["a", "b", "node_modules", "readme"]);
+	assert!(!caches.join("t/node_modules").exists());
+	// Another view removes a and b: b made again here has none of its caches, and the next listing drops a's.
+	node.remove("notes/a");
+	node.remove("notes/b");
+	assert!(eventually(Duration::from_secs(10), || !notes.join("b").exists()));
+	std::fs::create_dir(notes.join("b")).unwrap();
+	assert!(names(&notes.join("b")).is_empty() && !caches.join("d/b").exists());
+	assert!(caches.join("d/a/t/.venv/x").exists());
+	assert_eq!(names(&notes), ["b", "node_modules", "readme"]);
+	assert!(!caches.join("d/a").exists());
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

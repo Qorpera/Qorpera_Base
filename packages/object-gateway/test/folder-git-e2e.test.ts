@@ -3,10 +3,13 @@ import {
 	link,
 	mkdir,
 	mkdtemp,
+	open,
 	readdir,
 	readFile,
 	readlink,
+	rename,
 	rm,
+	rmdir,
 	stat,
 	symlink,
 	utimes,
@@ -14,7 +17,7 @@ import {
 } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
@@ -35,7 +38,8 @@ import {
 
 /** Git on the mount (F3 step 5d; deploy/first-node/RUNTIME-COMPANY-FOLDER.md §6 "Git on the mount"): the pinned git,
  * run by two sessions, each in its own mount of one company folder and in its own worker's worktree of one code area,
- * against the folder service and a stand-in core. */
+ * against the folder service and a stand-in core. And the machine's caches the same sessions make, in and out of the
+ * code area (deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md). */
 const program = process.env.QORPERA_FOLDER_MOUNT_BIN;
 const gitBin = process.env.QORPERA_GIT_BIN;
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -232,13 +236,18 @@ interface Session {
 	kill(): Promise<void>;
 }
 
-/** The folder service and the bridge, over a stand-in core holding the seeded code area. */
-async function area() {
+/** The folder service and the bridge, over a stand-in core holding the seeded code area and `files` (path, content). */
+async function area(files: Readonly<Record<string, string>> = {}) {
 	const base = await mkdtemp(join(tmpdir(), "qorpera-git-e2e-"));
 	cleanup.push(() => rm(base, { recursive: true, force: true }));
 	const root = join(base, "share");
 	const core = new FakeCore();
-	await importTree(core, root, await seedArea(base));
+	const tree = await seedArea(base);
+	for (const [path, content] of Object.entries(files)) {
+		await mkdir(join(tree, dirname(path)), { recursive: true });
+		await writeFile(join(tree, path), content);
+	}
+	await importTree(core, root, tree);
 	let logged = "";
 	said.push(() => `service:\n${logged}`);
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
@@ -824,6 +833,194 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 				"module.exports = 1;\n",
 			);
 			expect((await first.git("status", "--porcelain")).trim()).toBe("?? node_modules/.bin/");
+		},
+		TIMEOUT,
+	);
+});
+
+/** The environment npm runs with in a session: the session's home, a cache off the mount, and no network. */
+function npmEnv(session: Session, at: Area): NodeJS.ProcessEnv {
+	return {
+		PATH: process.env.PATH,
+		HOME: session.home,
+		npm_config_cache: join(at.base, "npm-cache"),
+		npm_config_offline: "true",
+		npm_config_audit: "false",
+		npm_config_fund: "false",
+		npm_config_update_notifier: "false",
+	};
+}
+
+/** Runs a program that lies on a mount, through a shell off it: a spawn waits for its exec, and an exec that looks the
+ * program up on a mount would wait for the service in this same process. */
+function runThere(path: string, args: readonly string[]): Promise<Ran> {
+	return run("sh", ["-c", 'exec "$@"', "sh", path, ...args]);
+}
+
+describe.skipIf(!program || !gitBin)("the machine's caches, out of the code areas", () => {
+	it(
+		"npm install, a venv and a build stay on the machine, and what no rule makes a cache is published",
+		async () => {
+			const at = await area({ "apps/web/dist/old.js": "old\n" });
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			// A package with a program, packed off the mount: npm installs it as it would one from a registry.
+			const dep = join(at.base, "dep");
+			await mkdir(dep);
+			const manifest = { name: "dep", version: "1.0.0", bin: { dep: "cli.js" } };
+			await writeFile(join(dep, "package.json"), JSON.stringify(manifest));
+			await writeFile(join(dep, "cli.js"), "#!/usr/bin/env node\nconsole.log(42);\n", { mode: 0o755 });
+			const env = npmEnv(first, at);
+			const packed = await run("npm", ["pack", dep, "--pack-destination", at.base], { env });
+			expect(packed.code, packed.out).toBe(0);
+			const web = join(first.company, "apps/web");
+			const dependencies = { dep: `file:${join(at.base, "dep-1.0.0.tgz")}` };
+			await writeFile(join(web, "package.json"), JSON.stringify({ name: "web", private: true, dependencies }));
+			const installed = await run("npm", ["install", "--prefix", web], { env });
+			expect(installed.code, installed.out).toBe(0);
+			expect(await runThere(join(web, "node_modules/.bin/dep"), [])).toEqual({ code: 0, out: "42\n" });
+
+			// A venv, without pip (the machine image has none), with a package put into its site-packages by hand.
+			const py = join(first.company, "apps/py");
+			await mkdir(py, { recursive: true });
+			const venv = await run("python3", ["-m", "venv", "--without-pip", join(py, ".venv")]);
+			expect(venv.code, venv.out).toBe(0);
+			const [lib] = await readdir(join(py, ".venv/lib"));
+			await writeFile(join(py, ".venv/lib", lib!, "site-packages/dep.py"), "X = 7\n");
+			const imported = await runThere(join(py, ".venv/bin/python"), ["-c", "import dep; print(dep.X)"]);
+			expect(imported).toEqual({ code: 0, out: "7\n" });
+
+			await mkdir(join(first.company, ".pnpm-store/v3"), { recursive: true });
+			await writeFile(join(first.company, ".pnpm-store/v3/index"), "store\n");
+			// A build name is a cache beside a project file only; a file so named, `Build` and the node's `dist` are not.
+			await mkdir(join(web, "build"));
+			await mkdir(join(first.company, "notes/build"), { recursive: true });
+			await writeFile(join(first.company, "notes/build/notes.html"), "<p>notes</p>\n");
+			await writeFile(join(web, "target"), "a file\n");
+			await mkdir(join(web, "Build"));
+			await writeFile(join(web, "Build/x"), "x\n");
+			await writeFile(join(web, "dist/new.js"), "new\n");
+			// A boundary while a build still writes into its cache.
+			const writing = await open(join(web, "build/app.js"), "w");
+			await writing.write("let app;\n");
+			const published = await first.publish();
+			expect(published.code, published.out).toBe(0);
+			await writing.write("app = 1;\n");
+			await writing.close();
+			expect(await readFile(join(web, "build/app.js"), "utf8")).toBe("let app;\napp = 1;\n");
+			const ours = ["Build", "build", "dist", "node_modules", "package-lock.json", "package.json", "target"];
+			expect((await readdir(web)).sort()).toEqual(ours);
+
+			for (const cached of ["apps/web/node_modules", "apps/web/build", "apps/py/.venv", ".pnpm-store"])
+				expect(held(at.core, cached), cached).toEqual([]);
+			const files = ["package.json", "package-lock.json", "target", "Build/x", "dist/new.js"];
+			for (const path of [...files.map((f) => `apps/web/${f}`), "notes/build/notes.html"])
+				expect(at.core.entries.get(path)?.kind, path).toBe("file");
+			expect(held(at.core, "apps/py")).toEqual(["apps/py"]);
+			await at.service.poll();
+			const there = join(second.company, "apps/web");
+			const theirs = ["Build", "dist", "package-lock.json", "package.json", "target"];
+			const listed = async () => (await readdir(there)).sort().join("/") === theirs.join("/");
+			expect(await eventually(listed), second.output()).toBe(true);
+			expect((await readdir(join(there, "dist"))).sort()).toEqual(["new.js", "old.js"]);
+			expect(await readdir(join(second.company, "apps/py"))).toEqual([]);
+			expect(await readdir(second.company)).not.toContain(".pnpm-store");
+			expect(await readFile(join(second.company, "notes/build/notes.html"), "utf8")).toBe("<p>notes</p>\n");
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"the node's entry wins over a cache, and a folder's move or removal takes its caches along",
+		async () => {
+			const at = await area({ "apps/web/package.json": "{}\n", "notes/readme.md": "read me\n" });
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			const web = join(first.company, "apps/web");
+			await mkdir(join(web, "coverage"));
+			await writeFile(join(web, "coverage/index.html"), "<p>covered</p>\n");
+			// Another view publishes a file of the same name: the node's entry wins, and the cache goes.
+			await writeFile(join(second.company, "apps/web/coverage"), "from the other view\n");
+			const other = await second.publish();
+			expect(other.code, other.out).toBe(0);
+			await at.service.poll();
+			const won = async () => (await readFile(join(web, "coverage"), "utf8")) === "from the other view\n";
+			expect(await eventually(won), first.output()).toBe(true);
+			expect((await readdir(web)).sort()).toEqual(["coverage", "package.json"]);
+
+			// A folder holding a cache is not empty; moved, its cache goes along; removed, its cache goes too.
+			const notes = join(first.company, "notes");
+			await mkdir(join(notes, "sub/node_modules"), { recursive: true });
+			await writeFile(join(notes, "sub/node_modules/x.js"), "x\n");
+			await expect(rmdir(join(notes, "sub"))).rejects.toMatchObject({ code: "ENOTEMPTY" });
+			const moved = await run("mv", [join(notes, "sub"), join(notes, "moved")]);
+			expect(moved.code, moved.out).toBe(0);
+			expect(await readFile(join(notes, "moved/node_modules/x.js"), "utf8")).toBe("x\n");
+			expect((await readdir(notes)).sort()).toEqual(["moved", "readme.md"]);
+			const removed = await run("rm", ["-r", join(notes, "moved")]);
+			expect(removed.code, removed.out).toBe(0);
+			const ours = await first.publish();
+			expect(ours.code, ours.out).toBe(0);
+			expect(held(at.core, "notes")).toEqual(["notes", "notes/readme.md"]);
+			await mkdir(join(notes, "moved"));
+			expect(await readdir(join(notes, "moved"))).toEqual([]);
+
+			// Another view removes the folder a cache was in: the machine drops the cache when it lists the parent.
+			await mkdir(join(notes, "gone/.venv"), { recursive: true });
+			await writeFile(join(notes, "gone/.venv/pyvenv.cfg"), "home = /usr/bin\n");
+			const made = await first.publish();
+			expect(made.code, made.out).toBe(0);
+			expect(held(at.core, "notes/gone")).toEqual(["notes/gone"]);
+			await at.service.poll();
+			const gone = join(second.company, "notes/gone");
+			expect(await eventually(async () => (await readdir(gone)).length === 0), second.output()).toBe(true);
+			await rmdir(gone);
+			const dropped = await second.publish();
+			expect(dropped.code, dropped.out).toBe(0);
+			expect(held(at.core, "notes/gone")).toEqual([]);
+			await at.service.poll();
+			expect(await eventually(async () => !(await readdir(notes)).includes("gone")), first.output()).toBe(true);
+			await mkdir(join(notes, "gone"));
+			expect(await readdir(join(notes, "gone"))).toEqual([]);
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"nothing crosses between a cache and the folder but as a copy, and links inside a cache work",
+		async () => {
+			const at = await area({ "notes/readme.md": "read me\n", "notes/lib/a.py": "A = 1\n" });
+			const first = await mountSession(at, "first");
+			const notes = join(first.company, "notes");
+			const pkg = join(notes, "node_modules/pkg");
+			await mkdir(pkg, { recursive: true });
+			await writeFile(join(pkg, "index.js"), "cached\n");
+			const exdev = { code: "EXDEV" };
+			await expect(rename(join(pkg, "index.js"), join(notes, "index.js"))).rejects.toMatchObject(exdev);
+			await expect(rename(join(notes, "readme.md"), join(pkg, "readme.md"))).rejects.toMatchObject(exdev);
+			await expect(rename(join(notes, "lib"), join(notes, ".venv"))).rejects.toMatchObject(exdev);
+			await expect(link(join(pkg, "index.js"), join(notes, "index.js"))).rejects.toMatchObject(exdev);
+			await expect(link(join(notes, "readme.md"), join(pkg, "readme.md"))).rejects.toMatchObject(exdev);
+			await link(join(pkg, "index.js"), join(pkg, "same.js"));
+			await symlink("pkg/index.js", join(notes, "node_modules/main.js"));
+			for (const path of [join(pkg, "same.js"), join(notes, "node_modules/main.js")])
+				expect(await readFile(path, "utf8")).toBe("cached\n");
+
+			// mv copies what it cannot rename.
+			const moves = [
+				[join(notes, "lib"), join(notes, ".venv")],
+				[join(pkg, "index.js"), join(notes, "index.js")],
+			];
+			for (const [from, to] of moves) {
+				const moved = await run("mv", [from!, to!]);
+				expect(moved.code, moved.out).toBe(0);
+			}
+			const published = await first.publish();
+			expect(published.code, published.out).toBe(0);
+			expect(held(at.core, "notes")).toEqual(["notes", "notes/index.js", "notes/readme.md"]);
+			expect(await readFile(join(notes, ".venv/a.py"), "utf8")).toBe("A = 1\n");
+			expect(await readFile(join(notes, "index.js"), "utf8")).toBe("cached\n");
+			expect(await readFile(join(pkg, "same.js"), "utf8")).toBe("cached\n");
 		},
 		TIMEOUT,
 	);
