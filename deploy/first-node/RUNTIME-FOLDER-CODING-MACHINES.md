@@ -498,6 +498,9 @@ things:
   repositories the grant covers; the broker fetches with its token, which never leaves the host. Pushes stay the
   broker's (5e).
 
+The broker half is 5j-6b: the secret broker's `/v1/coding-mcp` and `/v1/coding-repository-fetch/{refs,upload-pack}`,
+which only the coding executor's token opens (RUNTIME-STEP-7-CLOUD-CONNECTORS.md).
+
 **MCP servers** run as programs in the VM, as item 11 says. A stdio server reaches the harness on the execution host
 through a host-initiated stream; an HTTP server is reached the same way as a preview port.
 

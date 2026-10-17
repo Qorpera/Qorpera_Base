@@ -105,7 +105,8 @@ export function nativeClientHelloServerName(wire: Buffer): string | undefined {
 	return undefined;
 }
 
-async function resolveNativeHost(host: string, signal: AbortSignal): Promise<string[]> {
+/** One IPv4 lookup, cancelled with `signal`; the secret broker's relay (5j-6b) resolves the same way. */
+export async function resolveNativeHost(host: string, signal: AbortSignal): Promise<string[]> {
 	const resolver = new Resolver({ timeout: 1000, tries: 1 });
 	const cancel = (): void => resolver.cancel();
 	signal.addEventListener("abort", cancel, { once: true });
