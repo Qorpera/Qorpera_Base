@@ -645,7 +645,8 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
 - **Which service.** Every renewal names this run of the service (`p_service`, a random uuid new at each start). The
   core marks a coding or code host view with the first one (`served_by`) and closes it for any other
   (`service_crashed`): a run that did not stop cleanly may have served reads it never released, so its views end, and
-  the executor restarts their machines and opens them again (the plan's rule 4).
+  the executor restarts their machines and opens them again (the plan's rule 4). The core marks such a view's coding
+  machine, closes its other coding views and refuses a new one until the executor has restarted it (5g-5).
 - **The read record.** With root, one session can read through another session's mount, so the service, not the
   machine, records a coding session's reads, in memory, before the answer leaves (rule 1): a folder's listing (but the
   root's), a file's bytes, a search's reads, and an existing file opened for writing, each with the version and
