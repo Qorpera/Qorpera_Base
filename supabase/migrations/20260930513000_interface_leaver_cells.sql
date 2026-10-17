@@ -6,8 +6,8 @@
 --   (20260930371000), and an agent never changes an area's owner, supervisor or agents, so a leaver's cells are the
 --   members' to take. Release stays the holder's own, so a member who wants it empty takes it and releases it.
 -- * qorpera_offer_interface_cell: any member offers such a cell, as they would an empty one.
--- A cell naming a current member is theirs as before. The membership is read once, under the commit's own locks: a
--- member who rejoins holds their cells again. The offers table drops its check that an offer's `was` is the member who
+-- A cell naming a current member is theirs as before. Whether a cell's member left is read for each changed cell,
+-- under the commit's own locks: a member who rejoins holds their cells again. The offers table drops its check that an offer's `was` is the member who
 -- makes it (a leaver's cell is offered by another member); consents and the leave trigger are unchanged. The same rule
 -- holds in the web's local check (tableClaimProblems with `members`); an agent's table_write keeps today's rule.
 -- Every patched body names this migration (20260930513000), and every earlier marker in it stays.
