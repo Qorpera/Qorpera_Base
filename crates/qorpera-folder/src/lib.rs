@@ -7,6 +7,7 @@ pub mod cache;
 pub mod command;
 pub mod frame;
 pub mod git;
+pub mod ignore;
 pub mod index;
 pub mod link;
 pub mod local;
