@@ -476,8 +476,15 @@ background tail "$work/tail.out" python3 "$work/serve.py" "$work/tail-peers" 100
 groupadd --system qorpera-agent-plug
 useradd --system --no-create-home --groups qorpera-agent-plug creator
 as_creator() { setpriv --reuid=creator --regid=creator --init-groups -- sh -c 'umask 077; exec "$@"' sh "$@"; }
+# The server name checker (E8c-2) needs the kernel's queue modules, which the exit never loads and the test machines do
+# not have: this proof covers "only listed" by address alone, and that nothing in it loads them (a queue rule, even
+# under nft -c, or the checker's queue socket would). Its judge is proven here without a kernel, the rest in a VM.
+queue_modules() { for module in nft_queue nfnetlink_queue; do if [[ -d /sys/module/$module ]]; then echo "$module"; fi; done; }
+[[ -z $(queue_modules) ]] || fail "$(queue_modules) loaded on this test machine; this proof covers the exit without them"
+python3 "$here/test/sni-judge.py" "$here/qorpera-agent-exit-sni.py" || fail "the server name checker's judge"
 bash "$tool" check >"$work/check.out" || fail "check: $(cat "$work/check.out")"
-pass "check: rules parse and the tools are present"
+grep -q 'only listed by address alone (no queue modules)' "$work/check.out" || fail "check: $(cat "$work/check.out")"
+pass "check: rules parse and the tools are present; without the queue modules, only listed goes by address alone"
 # The exit's database login (E8b): from stdin into a root-only file, as the rollout script sends it; it prints the
 # file's sha256, never the login, and refuses anything else with the old file kept.
 export QORPERA_AGENT_EXIT_LOGIN_DIR=$work/login
@@ -982,6 +989,13 @@ kept=$(ip netns exec qexit nft -j list set inet qorpera_agent_exit refused_flows
 [[ $kept == *'[["10.210.1.2", "1.0.0.1", "tcp", 443, 2147483652], '* ]] || fail "the refusal of 1.0.0.1 as kept: $kept"
 wait_for "grep -q '\"dst\":\"1.0.0.1\",\"event\":\"refused\".*\"rule\":\"not_listed\"' $log_file"
 pass "only listed: unlisted names are no such name; the machine reaches TCP 443 on a listed name's addresses only, refused and logged as not_listed otherwise (also once the address is listed); the switch restarts the resolver and ends the connections made before"
+# Without the queue modules the exit has no sni chain and no queue rule: the flow is marked as not yet judged (ct mark
+# 1, which only the sni chain reads) and goes on by address alone.
+ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain without the queue modules"
+shows '\<queue\>' ip netns exec qexit nft list ruleset && fail "a queue rule without the queue modules"
+shows 'dst=1.0.0.1 sport=[0-9]* dport=443 .* mark=1 ' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null ||
+	fail "a listed address's flow is not marked as not yet judged: $(ip netns exec qexit conntrack -L -s 10.210.1.2 2>&1)"
+pass "only listed without the queue modules: no sni chain and no queue rule; flows go by address alone"
 
 # A wider list reloads the resolver; a narrower one restarts it with its set emptied and ends the connections again.
 python3 "$work/db.py" "$db" 'c1=only:only.test+listed.test,more.test'
@@ -1503,4 +1517,6 @@ for part in qagent0 qx-br qx-up; do ip link show "$part" >/dev/null 2>&1 && fail
 nft list table inet qorpera_agent_exit_host >/dev/null 2>&1 && fail "down left the node's rules"
 nft list table bridge qorpera_agent_exit_bridge >/dev/null 2>&1 && fail "down left the bridge rules"
 pass "with nothing plugged in, down removes everything, with its name and log services running"
+[[ -z $(queue_modules) ]] || fail "the proof loaded $(queue_modules)"
+pass "nothing in the proof loaded the queue modules"
 echo "ALL PASSED"

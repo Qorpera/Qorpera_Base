@@ -179,12 +179,13 @@ def narrower(before, after):
 def object_lines(port):
     """An only-listed company's allow_P set and only_P chain (E8c), made again if they are there: TCP 443 to an address
     its resolver gave out for an allowed name goes on to the open chain, everything else is refused (with the mark the
-    logger reads as not_listed)."""
+    logger reads as not_listed). The flow gets ct mark 1, so the server name check (E8c-2, qorpera-agent-exit-sni.nft)
+    reads its ClientHello while it is loaded."""
     family, table = plug.EXIT_TABLE
     return [f"add set {family} {table} allow_{port} {{ type ipv4_addr; size 65536; }}",
             f"add chain {family} {table} only_{port}",
             f"flush chain {family} {table} only_{port}",
-            f"add rule {family} {table} only_{port} tcp dport 443 ip daddr @allow_{port} goto open",
+            f"add rule {family} {table} only_{port} tcp dport 443 ip daddr @allow_{port} ct mark set 1 goto open",
             f'add rule {family} {table} only_{port} meta mark set 0x80000004 counter name "refused_not_listed" goto refuse']
 
 

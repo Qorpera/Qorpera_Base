@@ -34,18 +34,21 @@ own and removes the node's masquerade.
 | File | What |
 | --- | --- |
 | `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`, with the mark of the rule that refused them, E8c), each machine's share rate-limited; the brake's map, sets and chains (E7, below); each machine's plain DNS, to any address, sent to its company's resolver on 10.210.0.1 (`dns_port`, E8b, below), and dropped and counted (`refused_dns`) for a machine without an element there; masquerade out of `up0`; the exit answers DHCP, DNS (a machine only on its own resolver's port, `dns_allowed`) and ping from the agent range, only |
+| `qorpera-agent-exit-sni.nft` | the server name check of "only listed" (E8c-2, below): the base chain `sni` sends every packet of a flow marked to be judged to queue 0, and marks the flow by the checker's answer; loaded with the rules above only while the kernel has the queue modules |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
-| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `names`, `resolver`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
+| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `names`, `resolver`, `sni`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below). Its line guard is the brake (E7, below) |
 | `qorpera-agent-exit-logs.py` | the logs' tool: the tender (`tend`) seals and compresses the logs, cuts `dns.log`, counts each closed day per company, keeps 90 days and the cap; the shipper (`ship`, E3) copies the sealed logs, the counts and the deletion records to the NAS, each read back and compared, and keeps 90 days there; `lookup` (E3) answers who used an address, on every node; `count` (a day's numbers, writing nothing) and `report` (the founder's table) |
 | `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
 | `qorpera-agent-exit-names.py` | the names reconciler (E8b, below): `reconcile` for the names unit, `elements` for `up` |
-| `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log, plug and names units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
+| `qorpera-agent-exit-sni.py` | the server name checker (E8c-2, below): `check` for the sni unit |
+| `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log, plug and names units (and the sni unit while the queue modules are loaded); reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
 | `qorpera-agent-exit-dns.service` | dnsmasq, run inside `qexit` (`NetworkNamespacePath=`) and sandboxed: static DHCP leases (10 minutes) from `/var/lib/qorpera-agent-exit/dhcp-hosts` (E2 writes one `mac,address` file per machine, readable by dnsmasq's unprivileged user, and reloads the unit after removing one), machines' own names ignored and never published, DNS forwarded to 9.9.9.9 and 1.1.1.1, every query logged to `/var/log/qorpera-agent-exit/dns.log` |
 | `qorpera-agent-exit-log.service` | the connection log |
 | `qorpera-agent-plug.service` | the agent plug's reconciler, as root, after LXD |
 | `qorpera-agent-exit-names.service` | the names reconciler, as root (E8b, below) |
+| `qorpera-agent-exit-sni.service` | the server name checker, as root in `qexit`, only while the queue modules are loaded; started by `up`, never enabled; back one second after any stop, with no limit (E8c-2, below) |
 | `qorpera-agent-exit-resolver@.service` | one company's resolver: dnsmasq in `qexit` on 10.210.0.1, port `%i`, sandboxed as the dns unit; the names reconciler starts, reloads and stops these, and none is ever enabled |
 | `qorpera-agent-exit-health.service`, `.timer` | `health` every 10 seconds: `verify`'s answer as `/run/qorpera-agent-exit/health.json` (`{schema, healthy, checkedAt, problems}`, mode 0644) for the node observer, which has no capabilities and cannot run `verify` |
 | `qorpera-agent-exit-logs.service`, `.timer` | `logs` every 5 minutes (nice, idle I/O) |
@@ -699,8 +702,8 @@ Limits:
   resolver restarts;
 - UDP 443 (QUIC) is refused; browsers fall back to TCP.
 
-E8c-2 adds a check of the name a TLS hello asks for. It needs the kernel modules `nfnetlink_queue` and `nft_queue` on
-the nodes; without them "only listed" is this address check alone.
+E8c-2 (below) adds a check of the name a TLS hello asks for, while the kernel has its queue modules; without them
+"only listed" is this address check alone.
 
 ### Adding E8c-1 to a node that runs the exit
 
@@ -732,6 +735,113 @@ Undo: from a checkout of the previous release, `install-agent-exit.sh` with its 
 `rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (so that adding E8c-1 again
 restarts the "only listed" resolvers), `systemctl stop 'qorpera-agent-exit-resolver@*.service'` (the old reconciler
 starts them again with its own options) and `systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`.
+
+## The server name check (E8c-2)
+
+An address can serve many names (a CDN). So the exit also reads the name a machine of an "only listed" company asks
+the server for: the server name (SNI) in the TLS ClientHello it sends first. The connection goes on only when the
+company's rules allow that name and block none over it, as its resolver answers names. This needs the kernel modules
+`nft_queue` and `nfnetlink_queue`. The exit never loads them: the nodes have them only once Jonas says yes (ROLLOUT.md,
+step 12). Without them "only listed" is E8c-1's check by address alone, and `verify` is healthy.
+
+How it works:
+- `only_<port>` marks each port 443 flow it lets on: `ct mark 1`, not judged yet.
+- The base chain `sni` (`qorpera-agent-exit-sni.nft`; forward, after the filter chain) sends every packet of a flow
+  marked 1, both ways, to queue 0. There the checker (`qorpera-agent-exit-sni.py`, root in `qexit`, the unit
+  `qorpera-agent-exit-sni.service`) reads it. A packet from a machine's address (10.210.0.0/16; `agent_out` drops any
+  other source from the bridge) is the machine's, one to a machine's address the server's, and any other is dropped.
+  Packets without data from the machine go on at once. A SYN for a flow judged or reset already is a new connection's
+  on the same ports, and starts a new flow.
+- The machine's data is held until the flow's first bytes are a whole ClientHello: at most 16 KiB of it (and its record
+  headers), for at most 5 seconds, in at most 64 packets. A hello sent in several packets is read whole. A packet that
+  brings no new byte (its bytes held already) is dropped, not held, and TCP sends it again.
+- Until it is judged, a flow may send at most 128 packets to the queue, both ways together (a whole 16 KiB hello takes
+  about 30), its whole hello must come within 10 seconds of its SYN, and the server must acknowledge a hello let on
+  within 5 seconds.
+- One server name the rules allow lets the held packets on as they were. When the server acknowledges the hello, the
+  flow is marked 2 and its packets are queued no more: only a flow's first packets reach the checker.
+- Anything else is refused: no TLS, no server name or more than one, a name not listed or blocked, a hello too big,
+  too slow or in too many packets, a flow of a machine that holds 512 packets already, bytes sent again that differ,
+  urgent data, a flow past its 128 packets or its 10 seconds, a hello the server does not acknowledge in 5 seconds, a
+  flow whose SYN the checker did not see (at the first packet of it the checker sees, either way; a reset from the
+  machine goes on), a machine
+  not verified, a company not in the rules file. The packet goes back to the chain with the mark `0x80000002`: the
+  flow is marked 3 and queued no more, the machine's packets of it are reset (when the packet refused was the
+  server's, at the machine's next one) and the server's dropped. The refusal is counted in `refused_name` and logged
+  with the rule `name_not_listed`, as the machine's.
+- A reset from the machine ends what its flow held, and the flow's later packets are dropped both ways.
+- A company now open, or without rules, has its flows let on (in "open" mode unless the name is blocked).
+
+No bypass, and it fails closed. With no checker on queue 0 the kernel drops what the chain queues: a new connection
+waits (the machine sends its SYN again), a connection being judged is refused, and nothing passes unread. The unit
+starts the checker again one second after any stop, with no limit (`Restart=always`, `StartLimitIntervalSec=0`). The new
+checker judges new flows and refuses those whose SYN came before it, at their next packet either way. A flow already marked 2 is never
+queued, so it goes on. When `up` makes the exit's namespace again, the checker leaves and its unit starts it in the
+new one.
+
+The checker writes `/run/qorpera-agent-exit/sni.json` (`{schema, at, queue, flows, held, kernel, refused, problems}`)
+every 2 seconds, and reads the rules file again then. `held` is the packets its flows hold; `kernel` is the kernel's row
+for queue 0 in `/proc/net/netfilter/nfnetlink_queue` (`queued`, and `queue_dropped` and `user_dropped`, the packets it
+dropped as the queue or the checker's socket was full, since the checker bound the queue). `up` and the reload load the `sni` chain with the rules, and start the
+unit, only while both modules are loaded; `check` ends with `server names checked`, or with `only listed by address
+alone (no queue modules)`. With the modules, `verify` names:
+- the `sni` chain not in the rules (the modules came after the rules: reload the exit);
+- no checker on queue 0;
+- the checker not running, or its status older than 30 seconds;
+- the checker's own problems (`sni: …`): a rules file it cannot use, or the kernel's drops from the queue in 3 status
+  writes in a row (2 seconds apart: the queue full again and again), for a minute after the last such write. Drops in
+  one or two writes in a row (a burst) are counted in its status (`kernel`, `dropping`) and named in its journal only.
+
+Limits:
+- the node has one queue, of 8192 packets, for every company's flows being judged. When it is full, the kernel drops
+  what the chain queues (it fails closed: new connections wait, hellos in progress may be refused). So that one machine
+  cannot fill it, a machine's packets of flows being judged, both ways together, go to the queue at 1000 a second at
+  most (250 at once): the ones over that are dropped before the queue, counted in `dropped_sni_rate`, and TCP sends
+  them again. A flow is refused past 128 packets or 10 seconds without a whole hello,
+  or 5 seconds after its pass without the server's acknowledgement; it holds at most 64 packets (a whole 16 KiB hello
+  is 12 full segments), one machine's flows together at most 512, and a packet with no new byte is dropped, not held. A
+  machine past its 512 has its next flow refused; other machines are judged as before. Some 30 machines that send
+  their 250 at the same moment can still fill the queue: then the kernel drops, and TCP sends again. Only when they do
+  it again and again (drops in 3 status writes in a row, as when they do it every 2 seconds) does `verify` report the
+  exit unhealthy, for a minute after the last such write. A flow has its buffers (34 KiB) only while it holds a
+  packet, so the queue's length bounds them; the checker forgets a flow not seen for 30 seconds, and its unit has
+  `MemoryMax=2G` (past it the kernel ends the checker, which starts again: it fails closed);
+- it reads the name the machine asks for, never the certificate or what follows, so domain fronting (a listed name
+  carrying another site inside) is not caught. With encrypted ClientHello (ECH) the name read is the outer one; E6's
+  browser policy keeps ECH off;
+- a hello over 16 KiB, or not whole within 5 seconds, is refused (browsers send one of a few KiB at once);
+- the held bytes are not acknowledged, so the machine's TCP sends a hello only as far as its first window goes: about
+  14 KB (Linux's 10 segments) when it sends the hello at once, as TLS clients do. A machine that pauses between parts
+  longer than its retransmission time (0.2 s at least) falls back to one segment in flight, and a hello longer than
+  that segment is not whole in time;
+- the connections made between step 11 and step 12 (marked 1, never judged) are refused at their next packet after
+  step 12, and the machine reset. Older ones, made before step 11, go on.
+
+### Adding E8c-2 to a node that runs the exit
+
+Only on a node with E8c-1 (ROLLOUT.md, step 10). As root, from a checkout of the release head with the reader's
+package built, in one go:
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+This loads no kernel module. Without the queue modules the checker does not start, the reload loads no `sni` chain,
+and "only listed" goes by address as before. The new `only_<port>` chains mark each port 443 flow 1 (the names
+reconciler writes them). The logger reads `name_not_listed` from the mark. The plug gets the new code.
+
+Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `X check` ends with `only listed by address
+alone (no queue modules)`; `systemctl is-active qorpera-agent-exit-sni.service` says `inactive`.
+
+The check by name starts only with the modules, after Jonas's yes: ROLLOUT.md step 12.
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` and
+`systemctl restart qorpera-agent-exit-names.service qorpera-agent-plug.service qorpera-agent-exit-log.service`. The
+checker's unit and files stay, unused.
 
 ## Test
 
@@ -828,6 +938,27 @@ on the tailnet. It checks:
   started again on its port; rules that block nothing; and an unplug taking the machine's elements out while the
   names reconciler is stopped, its company's resolver then stopped and its port given back. Every query is in
   `dns.log` under its dnsmasq's pid;
+- the server name checker's judge (`test/sni-judge.py`, made-up packets, no queue): a listed name, one under a `*.`
+  name and one in capitals go on, the flow unmarked once the server acknowledges the hello; a blocked or unlisted name
+  (and a name an open company blocks), a machine not verified, a company not known or with unusable rules, other bytes
+  sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start, and any packet of a flow whose
+  SYN it did not see (the machine's or the server's; the machine's reset goes on) are refused, and the refused flow's
+  packets dropped both ways; a hello in two records and in pieces is held whole; a part sent again with no new byte is
+  dropped, not held, and one past what a hello can take also gets the flow no buffers; a hello in more than 64 packets,
+  and a flow of a machine holding 512, are refused while another machine goes on, and a pass, a refusal, a reset and the
+  5 seconds let go of what a flow held; a flow past 128 packets (the machine's ACKs, or the server's packets after a
+  pass), a pass the server does not acknowledge in 5 seconds (either side's next packet), a flow with no whole hello 10
+  seconds after its SYN, and the 129th SYN of a flow are refused, and a SYN sent again starts the 10 seconds again; a
+  packet with no machine on either side is dropped, and the checker's machine addresses are the exit's (`AGENTS`) and
+  the `sni` chain's; the server's bytes are never judged as the machine's; a SYN on the ports of a flow judged (passed
+  or refused) starts a new one; a machine's reset keeps its flow, whose later packets are dropped both ways until a new
+  SYN; a flow idle 30 seconds is forgotten. With made-up kernel answers: the queue's config waits for the answer to it,
+  not a verdict's, dropping a packet queued meanwhile; the status names the packets held and the kernel's row for the
+  queue, and counts its drops: drops in 3 status writes in a row are a problem for a minute after the last, a burst (one
+  or two) is not.
+  And, as the container has no queue modules,
+  that the exit loads no `sni` chain and no queue rule, `check` says "only listed by address alone", and "only
+  listed" goes by address;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes
@@ -839,8 +970,9 @@ filters and port isolation, LXD's API as the reconciler reads it, systemd's hand
 a real NFS mount (the proofs' NAS is a tmpfs; the shipper reads each copy back), and running
 beside the guest guard, LXD and Tailscale on a real node. E2b's proof, in a throwaway VM with its own LXD inside a
 test machine, covers the first three; E8b's, in another, systemd's handling of the rules reader; E8b-2's, in another,
-systemd's handling of the names reconciler and the resolver units, with real LXD machines of two companies. The
-rollout script's last step reads Supabase through its pooler on each node.
+systemd's handling of the names reconciler and the resolver units, with real LXD machines of two companies, and the
+server name check through the queue (the only place the proofs load the queue modules). The rollout script's last
+step reads Supabase through its pooler on each node.
 
 `run-on-node.mjs changed` runs it on the node 2 test machine.
 
@@ -968,6 +1100,20 @@ writes the rules file from a list), and:
   company 1's machine reaches any; the exit's reload empties the set and the resolver is reloaded, and a listed name
   asked again reaches its address again; a narrower list restarts the resolver; back to open, `only_10002` and
   `allow_10002` go; rules that cannot be used leave the machine without a way out;
+- the server name check (E8c-2): first without the queue modules (no checker, no `sni` chain, a ClientHello for a name
+  not listed reaches a listed name's address, `verify` healthy); then it loads them, here only, and reloads the exit
+  as ROLLOUT.md's step 12 says: a hello passes only with a listed name or one under it (also a 3 KB one in pieces), and
+  the flow is marked 2; a blocked name under a listed one, an unlisted name, no name, plain HTTP, a hello over 16 KiB
+  and one slower than 5 seconds are reset, marked 3, counted and logged as `name_not_listed`; the open company's
+  machine is not checked. While one machine floods the queue (ACKs on 100 connections with no hello, as fast as it
+  can, for 8 seconds), its packets past 1000 a second are dropped before the queue (`dropped_sni_rate`), the kernel
+  drops none from the queue, the other machine's hellos are judged, and `verify` stays healthy. The queue full once:
+  with the checker stopped (SIGSTOP), the machine floods 100 new connections for 10 seconds with 1400 bytes of data a
+  packet, past what a hello can take; the kernel drops what does not fit in the queue, and the checker, continued, is
+  the same process (a full socket does not end it), works the queue off, names the drops in its journal, judges the
+  other machine's hellos as before, and `verify` stays healthy (drops in one status write). With the checker stopped,
+  a judged flow goes on, a new one gets nowhere and `verify` says why; a killed checker comes back each time, and a
+  flow it was judging is refused; back to open, nothing is queued;
 - kills a resolver: systemd starts it again and the names hold;
 - fails closed: unusable rules for a company and a missing rules file leave its machines (or all of them) with no
   answer, and `verify` says why;
@@ -977,7 +1123,11 @@ writes the rules file from a list), and:
   the exit and its undo, with a machine plugged in throughout. A release before E8b-2 takes ROLLOUT.md's step 9: the
   machine's flow opened before keeps its blocked names, `reach` sends it to `open`. A release with E8b-2 takes step
   10 with the machine's company "only listed": its resolver restarts into the list and the machine's connection made
-  before ends; after the undo the previous release's resolver answers every name but the blocked ones again.
+  before ends; after the undo the previous release's resolver answers every name but the blocked ones again. A release
+  with E8c-1 takes steps 11 and 12: step 11 keeps the resolver and loads no `sni` chain, the machine's connection from
+  before goes on, and a hello for a name not listed still reaches a listed name's address; step 12 loads the modules
+  and the check starts: a connection made after step 11 is reset at its next packet, the one from before step 11 goes
+  on; the undo unloads the modules and the machine goes by address again.
 
 Afterwards the test machine is compared with before, as for E2b. `test/prove-lxd.sh` (E2b) runs the names
 reconciler too, with no rules.

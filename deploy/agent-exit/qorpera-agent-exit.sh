@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qorpera agent exit (E1, E2, E3, E8b): builds, checks or removes the exit on one node. Run as root.
+# Qorpera agent exit (E1, E2, E3, E8b, E8c): builds, checks or removes the exit on one node. Run as root.
 #
 #   qorpera-agent-exit.sh check     parse the three rule files against the kernel; change nothing
 #   qorpera-agent-exit.sh up        create or repair, in place: rules first, then namespace links, addresses, routes
@@ -9,6 +9,7 @@
 #   qorpera-agent-exit.sh plug      run the agent plug's reconciler in the foreground (the plug unit)
 #   qorpera-agent-exit.sh names     run the names reconciler in the foreground (the names unit, E8b)
 #   qorpera-agent-exit.sh resolver PORT   run one company's resolver in the exit, in the foreground (its unit, E8b)
+#   qorpera-agent-exit.sh sni       run the server name checker in the exit, in the foreground (the sni unit, E8c-2)
 #   qorpera-agent-exit.sh logs      tend the logs on the node once: seal, compress, count, keep under the cap (timer)
 #   qorpera-agent-exit.sh ship      copy the sealed logs to the NAS once, each read back and compared (timer)
 #   qorpera-agent-exit.sh verify    exit 0 only when every part is up, the logger is alive and the client map is true
@@ -38,6 +39,8 @@ logger=${QORPERA_AGENT_EXIT_LOGGER:-$here/qorpera-agent-exit-log.py}
 plug_tool=${QORPERA_AGENT_EXIT_PLUG:-$here/qorpera-agent-plug.py}
 logs_tool=${QORPERA_AGENT_EXIT_LOGS:-$here/qorpera-agent-exit-logs.py}
 names_tool=${QORPERA_AGENT_EXIT_NAMES:-$here/qorpera-agent-exit-names.py}
+sni_tool=${QORPERA_AGENT_EXIT_SNI:-$here/qorpera-agent-exit-sni.py}
+sni_rules=${QORPERA_AGENT_EXIT_SNI_RULES:-$here/qorpera-agent-exit-sni.nft}
 upstreams=${QORPERA_AGENT_EXIT_UPSTREAMS:-9.9.9.9 1.1.1.1}
 run_dir=${QORPERA_AGENT_EXIT_RUN_DIR:-/run/qorpera-agent-exit}
 state_dir=${QORPERA_AGENT_EXIT_STATE_DIR:-/var/lib/qorpera-agent-exit}
@@ -92,7 +95,7 @@ LEASE=10m
 PLUG_GROUP=qorpera-agent-plug
 
 usage() {
-	sed -n '4,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+	sed -n '4,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit 64
 }
 
@@ -106,6 +109,9 @@ has_ns() { [[ -e /run/netns/$NS ]]; }
 has_link() { ip link show dev "$1" >/dev/null 2>&1; }
 # True when this process already runs in the exit's namespace (a unit with NetworkNamespacePath=).
 inside_exit() { has_ns && [[ $(stat -L -c %i /proc/self/ns/net) == $(stat -L -c %i "/run/netns/$NS") ]]; }
+# The server name check (E8c-2) runs only while the kernel has both queue modules loaded. The exit never loads them, and
+# never makes the kernel load them: a queue rule would load nft_queue, the checker's queue socket nfnetlink_queue.
+queue_loaded() { [[ -d /sys/module/nft_queue && -d /sys/module/nfnetlink_queue ]]; }
 
 # One nft batch per table: create it if missing, delete it, define it again. The kernel applies all or none.
 table_batch() {
@@ -133,6 +139,9 @@ exit_batch() {
 		die "cannot read the names map"
 	table_batch "$EXIT_TABLE" "$exit_rules"
 	[[ -z $elements ]] || printf '%s\n' "$elements"
+	# The sni chain (E8c-2) in the same transaction, while the queue modules are loaded; without them "only listed" goes
+	# by address alone.
+	if queue_loaded; then cat -- "$sni_rules" || die "cannot read $sni_rules"; fi
 }
 
 load_tables() {
@@ -241,6 +250,9 @@ up() {
 			fi
 		done
 		((rebuilt)) && { systemctl try-restart --no-block qorpera-agent-exit-log.service || true; }
+		# The server name checker (E8c-2) leaves an old namespace by itself, and its unit starts it again. While the queue
+		# modules are loaded the sni chain is in the rules, so it starts here too (modules loaded after the exit came up).
+		if queue_loaded; then systemctl start --no-block qorpera-agent-exit-sni.service || true; fi
 	fi
 	echo "qorpera-agent-exit: up"
 }
@@ -264,7 +276,8 @@ down() {
 	fi
 	if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
 		systemctl stop --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service \
-			qorpera-agent-exit-names.service 'qorpera-agent-exit-resolver@*.service' 2>/dev/null || true
+			qorpera-agent-exit-names.service 'qorpera-agent-exit-resolver@*.service' qorpera-agent-exit-sni.service \
+			2>/dev/null || true
 	fi
 	if has_ns; then
 		for pid in $(ip netns pids "$NS"); do kill "$pid" 2>/dev/null || true; done
@@ -303,6 +316,16 @@ dns() {
 	# dnsmasq stamps its log lines with the local time and no zone: UTC, whatever the node's zone, as the lookup reads
 	# them.
 	export TZ=UTC
+	if inside_exit; then exec "${command[@]}"; else exec ip netns exec "$NS" "${command[@]}"; fi
+}
+
+# The server name checker (E8c-2): reads queue 0 in the exit, where the sni chain sends the packets of each only-listed
+# port 443 flow until its ClientHello is judged. Without the queue modules it says so and ends (its unit does not even
+# start then); it never loads them.
+sni() {
+	has_ns || die "the exit is not up"
+	local command=(python3 "$sni_tool" check --state-dir "$state_dir" --run-dir "$run_dir" --rules "$network_rules"
+		--netns-path "/run/netns/$NS")
 	if inside_exit; then exec "${command[@]}"; else exec ip netns exec "$NS" "${command[@]}"; fi
 }
 
@@ -480,6 +503,26 @@ verify() {
 	else
 		problems+=("the names reconciler not running")
 	fi
+	# The server name checker (E8c-2), while the queue modules are loaded: the sni chain in the rules, queue 0 bound in
+	# the exit (its row in nfnetlink_queue) and the checker alive. Without the modules "only listed" goes by address
+	# alone, which is no problem here.
+	if queue_loaded; then
+		in_exit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 ||
+			problems+=("the sni chain is not in the rules (the queue modules came after the rules: reload the exit)")
+		in_exit awk '$1 == 0 { found = 1 } END { exit !found }' /proc/net/netfilter/nfnetlink_queue 2>/dev/null ||
+			problems+=("no server name checker on queue 0: only-listed port 443 flows are refused")
+		local sni_status="$run_dir/sni.json"
+		if [[ -e $sni_status ]]; then
+			age=$(($(date +%s) - $(stat -c %Y "$sni_status")))
+			((age < 30)) || problems+=("the server name checker silent for ${age}s")
+			while IFS= read -r problem; do
+				[[ -z $problem ]] || problems+=("sni: $problem")
+			done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
+				"$sni_status" 2>/dev/null || echo "cannot read $sni_status")
+		else
+			problems+=("the server name checker not running")
+		fi
+	fi
 	if ((${#problems[@]} > 0)); then
 		printf 'qorpera-agent-exit: not healthy: %s\n' "${problems[@]}" >&2
 		return 1
@@ -593,13 +636,21 @@ print(("read" if isinstance(status.get("readAt"), str) else "waiting") + code)
 
 case "${1:-}" in
 check)
-	table_batch "$EXIT_TABLE" "$exit_rules" | nft -c -f /dev/stdin
+	# The sni chain only with the queue modules loaded: its queue rule would make the kernel load nft_queue (E8c-2).
+	[[ -r $sni_rules ]] || die "cannot read $sni_rules"
+	if queue_loaded; then
+		{ table_batch "$EXIT_TABLE" "$exit_rules"; cat -- "$sni_rules"; } | nft -c -f /dev/stdin
+	else
+		table_batch "$EXIT_TABLE" "$exit_rules" | nft -c -f /dev/stdin
+	fi
 	table_batch "$HOST_TABLE" "$host_rules" | nft -c -f /dev/stdin
 	table_batch "$BRIDGE_TABLE" "$bridge_rules" | nft -c -f /dev/stdin
 	python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$logger" "$plug_tool" \
-		"$logs_tool" "$names_tool" || die "the logger, the plug tool, the logs' tender or the names tool does not parse"
+		"$logs_tool" "$names_tool" "$sni_tool" ||
+		die "the logger, the plug tool, the logs' tender, the names tool or the server name checker does not parse"
 	for tool in dnsmasq conntrack python3; do command -v "$tool" >/dev/null || die "missing $tool (packages: dnsmasq-base, conntrack, python3)"; done
-	echo "qorpera-agent-exit: rules parse; tools present; $(has_ns && echo up || echo down)"
+	echo "qorpera-agent-exit: rules parse; tools present; $(has_ns && echo up || echo down);" \
+		"$(queue_loaded && echo "server names checked" || echo "only listed by address alone (no queue modules)")"
 	;;
 up) up ;;
 down) down ;;
@@ -607,6 +658,7 @@ dns) dns ;;
 log) log ;;
 plug) plug ;;
 names) names ;;
+sni) sni ;;
 resolver) resolver "${2:-}" ;;
 logs) logs ;;
 ship) ship ;;

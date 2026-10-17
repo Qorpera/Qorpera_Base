@@ -1,0 +1,57 @@
+# Qorpera agent exit (E8c-2): the server name check of "only listed". qorpera-agent-exit.sh loads it with
+# qorpera-agent-exit.nft in one transaction, and only while the kernel has nft_queue and nfnetlink_queue loaded
+# already: the queue rule would make the kernel load nft_queue. Without both modules (on the nodes until Jonas says yes
+# to them) "only listed" goes by address alone.
+#
+# An only_P chain sets ct mark 1 on the first packet of a port 443 flow to a listed address. Every packet of a flow
+# marked 1, both ways, goes to queue 0, where qorpera-agent-exit-sni.py reads the machine's ClientHello. It lets packets
+# on unchanged, or answers with a meta mark and runs this chain again (NF_REPEAT):
+# - 0x80000001: the server acknowledged a ClientHello that names a listed server; the flow becomes 2 and is never
+#   queued again;
+# - 0x80000002: refused; the packet is refused with that mark (the logger reads it as name_not_listed), the flow
+#   becomes 3 and is queued no more: the machine's later packets of it are reset, the server's dropped.
+# The node has one queue (8192 packets) for every company. So that no machine fills it, a machine's packets of flows
+# being judged, both ways together, go to it at 1000 a second at most (250 at once: some 30 machines at the same moment
+# to fill it); the ones over that are dropped here, before the queue, and counted in dropped_sni_rate (TCP sends them
+# again).
+# With no checker on queue 0 (it stopped, or restarts) the kernel drops the packets (no bypass): a flow being judged
+# then is refused, never let through unread. The brake's marks are 1..0x7FFFFFFF, so bit 31 never meets them.
+table inet qorpera_agent_exit {
+	# Per machine: its packets to the queue, as a rate.
+	set sni_rate {
+		type ipv4_addr
+		flags dynamic, timeout
+		timeout 1m
+		size 65536
+	}
+
+	counter dropped_sni_rate {
+	}
+
+	# After forward (priority filter), so it sees every packet forward accepted, established ones too.
+	chain sni {
+		type filter hook forward priority filter + 1; policy accept;
+		ct mark 1 jump sni_judge
+		ct mark 3 ip saddr 10.210.0.0/16 meta l4proto tcp reject with tcp reset
+		ct mark 3 drop
+	}
+
+	chain sni_judge {
+		meta mark 0x80000001 meta mark set 0 ct mark set 2 accept
+		# Refused on the server's packet: the flow is the machine's, so it is counted and logged as the machine's.
+		meta mark 0x80000002 ip daddr 10.210.0.0/16 ct mark set 3 counter name "refused_name" goto refuse_reply
+		meta mark 0x80000002 ct mark set 3 counter name "refused_name" goto refuse
+		ip saddr 10.210.0.0/16 update @sni_rate { ip saddr limit rate over 1000/second burst 250 packets } counter name "dropped_sni_rate" drop
+		ip daddr 10.210.0.0/16 update @sni_rate { ip daddr limit rate over 1000/second burst 250 packets } counter name "dropped_sni_rate" drop
+		queue num 0
+	}
+
+	# The refuse chain's twin for a server's packet: the same sets, keyed by the machine (the packet's destination);
+	# the packet is dropped, and the machine is reset at its next packet (ct mark 3, above).
+	chain refuse_reply {
+		update @refused_by_client { ip daddr counter }
+		meta l4proto tcp ip daddr . ip saddr . meta l4proto . th sport . meta mark != @refused_flows update @refusal_rate { ip daddr limit rate 600/hour burst 100 packets } add @refused_flows { ip daddr . ip saddr . meta l4proto . th sport . meta mark }
+		meta l4proto tcp ip daddr . ip saddr . meta l4proto . th sport . meta mark != @refused_flows counter name "refused_unlogged"
+		drop
+	}
+}

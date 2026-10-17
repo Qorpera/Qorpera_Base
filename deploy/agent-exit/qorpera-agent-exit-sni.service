@@ -1,0 +1,37 @@
+[Unit]
+Description=Qorpera agent exit: the server name checker of "only listed" (E8c-2, queue 0 in the exit's namespace)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+After=qorpera-agent-exit.service
+Before=snap.lxd.daemon.service
+ConditionPathExists=/run/netns/qexit
+# Only while the kernel has the queue modules loaded: the exit never loads them. Without them "only listed" goes by
+# address alone, and the sni chain is not in the rules either.
+ConditionPathIsDirectory=/sys/module/nfnetlink_queue
+ConditionPathIsDirectory=/sys/module/nft_queue
+# No bypass: while the checker is down the kernel drops what the sni chain queues, so it must always come back.
+StartLimitIntervalSec=0
+
+[Service]
+NetworkNamespacePath=/run/netns/qexit
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh sni
+Restart=always
+RestartSec=1
+# Its buffers are bounded by the queue's 8192 packets (34 KiB a flow at most, while a flow holds one) and its flows by
+# 1000 packets a second a machine for 30 seconds; past this, the kernel ends it, and it starts again (fails closed).
+MemoryMax=2G
+# The checker parses what agent road machines send: keep it to what it needs (root, to read the plug's and the rules
+# reader's files; the queue socket takes CAP_NET_ADMIN).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/qorpera-agent-exit
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=qorpera-agent-exit.service

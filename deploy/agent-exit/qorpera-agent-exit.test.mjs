@@ -59,6 +59,9 @@ test("the installer pins the files in this folder", () => {
 		["RULES_UNIT", "qorpera-agent-exit-rules.service"],
 		["NAMES", "qorpera-agent-exit-names.py"],
 		["NAMES_UNIT", "qorpera-agent-exit-names.service"],
+		["SNI", "qorpera-agent-exit-sni.py"],
+		["SNI_RULES", "qorpera-agent-exit-sni.nft"],
+		["SNI_UNIT", "qorpera-agent-exit-sni.service"],
 		["RESOLVER_UNIT", "qorpera-agent-exit-resolver@.service"],
 		["RULES_CA", "../cloud-secret-broker/supabase-prod-ca-2021.crt"],
 	]) {
@@ -435,10 +438,13 @@ describe("the connection logger", () => {
 
 	// The logger reads no rules: a refusal is logged with the rule its mark says, also when the rules changed between the
 	// refusal and the logger's read (the machine's company known since, or the address listed since).
-	test("with E8c, a refusal says the rule it was refused by from its mark: rules not known, not listed", () => {
+	test("with E8c, a refusal's mark says which rule refused it: rules not known, not listed, name not listed", () => {
+		const nameNotListed = 0x80000002;
 		const unknown = 0x80000003;
 		const notListed = 0x80000004;
 		const keys = [
+			// E8c-2: the server name checker refused the flow, to an address that was listed.
+			["10.210.1.2", "203.0.113.5", "tcp", 443, nameNotListed],
 			["10.210.1.1", "8.8.4.4", "tcp", 443, 0],
 			["10.210.1.9", "8.8.4.4", "tcp", 443, unknown],
 			["10.210.1.9", "8.8.4.4", "1", null, unknown],
@@ -455,6 +461,7 @@ describe("the connection logger", () => {
 			keys.map((key) => rules.get(JSON.stringify(key))),
 			// The same flow refused by two rules is two refusals.
 			[
+				"name_not_listed",
 				"open_limit",
 				"rules_unknown",
 				"rules_unknown",
@@ -1781,7 +1788,7 @@ rules(c1=ruled(block=["b.test"]), c2=None, c3=ruled(), c4=ruled(mode="only-liste
 			"add set inet qorpera_agent_exit allow_10004 { type ipv4_addr; size 65536; }",
 			"add chain inet qorpera_agent_exit only_10004",
 			"flush chain inet qorpera_agent_exit only_10004",
-			"add rule inet qorpera_agent_exit only_10004 tcp dport 443 ip daddr @allow_10004 goto open",
+			"add rule inet qorpera_agent_exit only_10004 tcp dport 443 ip daddr @allow_10004 ct mark set 1 goto open",
 			'add rule inet qorpera_agent_exit only_10004 meta mark set 0x80000004 counter name "refused_not_listed" goto refuse',
 			"add element inet qorpera_agent_exit dns_port { 10.210.1.2 : 53, 10.210.1.6 : 10004, 10.210.1.10 : 10001 }",
 			"add element inet qorpera_agent_exit dns_allowed { 10.210.1.2 . 53, 10.210.1.6 . 10004, 10.210.1.10 . 10001 }",

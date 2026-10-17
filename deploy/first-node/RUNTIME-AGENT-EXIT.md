@@ -381,13 +381,29 @@ server name check.
     narrower list or a switch back restarts the company's resolver (about a second without names) and, unless the
     company is now open, ends its machines' connections; a wider list is a reload. The exit's reload empties the
     sets: names are asked again. The addresses stay until then (no timeouts), at most 65,536 per company; an
-    unlisted site on a listed site's address is reached until E8c-2.
+    unlisted site on a listed site's address is reached without E8c-2's check.
   - **E8c-2, the server name check.** The first data packets of each new TCP 443 flow of an "only listed" machine
     go through NFQUEUE to a checker in the exit's namespace that reads the TLS ClientHello's server name (held over
     several segments, bounded in size and time) and refuses an unlisted one; a flow judged once is marked and passes
     the queue no more. No bypass: with the checker down the queue refuses (fails closed). It needs the kernel
     modules `nfnetlink_queue` and `nft_queue` on the nodes, which Jonas decides; without them "only listed" stays as
-    E8c-1 made it.
+    E8c-1 made it. As built: `only_<port>` marks each port 443 flow it lets on (ct mark 1), and a base chain after
+    the filter chain sends every packet of a marked flow to queue 0. The checker (`qorpera-agent-exit-sni.service`,
+    root) holds the machine's data until it is a whole ClientHello, at most 16 KiB, 5 seconds and 64 packets. One
+    server name the company's rules allow (as its resolver answers names) lets the held packets on, and once the
+    server acknowledges the hello the flow is marked 2. Anything else (another name, no name or two, no TLS, too big,
+    too slow or in too many packets, more than 128 packets or 10 seconds before it is judged, a hello the server does
+    not acknowledge in 5 seconds, a flow whose start it did not see) is marked 3 and queued no more, its machine reset,
+    counted and logged as `name_not_listed`. The node's one queue (8192 packets) serves every company, so a machine's
+    packets of flows being judged go to it at 1000 a second at most and 250 at once (the rest are dropped before it,
+    counted in `dropped_sni_rate`), one machine's flows together hold at most 512 packets (past that its next flow is
+    refused), and a packet with no new byte is dropped, not held. Some 30 machines sending at the same moment can still
+    fill it: the kernel then drops (fails closed) and TCP sends again; the checker's status counts the drops and its
+    journal names them, and `verify` turns unhealthy only when they come in 3 status writes in a row (the queue stays
+    full), for a minute after. A flow's buffers (34 KiB) exist only while it holds a packet, a flow is forgotten after
+    30 seconds idle, and the unit has `MemoryMax=2G`. With no checker on the queue the kernel drops the queued packets;
+    systemd starts it again one second after any stop, with no limit. The exit never loads the modules: it loads the
+    chain and starts the checker only while both are loaded, and `check` says which way "only listed" runs.
 
 ## 11. The address block (E9, choice 1)
 
@@ -434,6 +450,10 @@ server name check.
   company's resolver or the exit's own. systemd starts it again within seconds, the names reconciler restarts one
   that runs but does not answer, and `verify` fails meanwhile. The names reconciler down leaves the map as it was:
   rule changes wait, and `verify` fails after 30 seconds.
+- **The server name checker down** (E8c-2, with the queue modules). The kernel drops what the queue gets: new TCP 443
+  connections of "only listed" machines wait (the machine resends its first packet), those being judged are reset,
+  and none passes unread; judged ones go on. systemd starts it again one second later, every time, and `verify`
+  fails meanwhile.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
 ## 13. Build plan

@@ -458,3 +458,73 @@ Undo: from a checkout of the previous release, `install-agent-exit.sh` with its 
 each again on its port, as the previous release runs it) and
 `systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`. An "only listed" company then has its
 block list enforced and every other name answered again.
+
+## Step 11 (E8c-2): the server name check's code, on a node that runs E8c-1
+
+For a node that took step 10 from a release before E8c-2; one that takes step 10 from a release with E8c-2 has it
+already. Per node, node 1 then node 2. It loads no kernel module and changes nothing the companies see: without the
+queue modules (`nft_queue` and `nfnetlink_queue`) the server name checker does not start, the exit loads no `sni` chain,
+and "only listed" goes by address alone, as with E8c-1. As root, from the checkout of the release head with the
+reader's package built, in one go (`README.md`, "Adding E8c-2 to a node that runs the exit"):
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service
+```
+
+Check, within 30 seconds:
+- `X verify` prints `qorpera-agent-exit: healthy`, and `X check` ends with `only listed by address alone (no queue
+  modules)`;
+- `systemctl is-active qorpera-agent-exit-sni.service` says `inactive`, and `ip netns exec qexit nft list chain inet
+  qorpera_agent_exit sni` finds no such chain;
+- step 10's checks.
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` and
+`systemctl restart qorpera-agent-exit-names.service qorpera-agent-plug.service qorpera-agent-exit-log.service`. The
+checker's unit and files stay, unused.
+
+## Step 12 (E8c-2): the queue modules, only with Jonas's yes
+
+Only once Jonas has said yes to loading `nft_queue` and `nfnetlink_queue` on the nodes. Until then E8c stops at step
+11: "only listed" is the allowlist by address alone. Per node, after step 11, node 1 then node 2, as root:
+
+```bash
+printf '%s\n' nft_queue nfnetlink_queue >/etc/modules-load.d/qorpera-agent-exit-sni.conf
+modprobe nft_queue
+modprobe nfnetlink_queue
+X check
+systemctl reload qorpera-agent-exit.service
+```
+
+`X check` must end with `server names checked` before the reload. The file loads both modules at every boot, before
+the exit starts; without it a node that boots again goes back to the allowlist by address alone, and `X verify` does
+not say so.
+
+What the companies see:
+- a company in "only listed" mode: each new TCP 443 connection of its machines to a listed name's address goes on only
+  when the machine's first TLS message (its ClientHello) names a listed name, or a name under one that is not blocked.
+  Any other is reset and logged as `name_not_listed`: another name, no name, no TLS, a ClientHello over 16 KiB, or one
+  not whole within 5 seconds or in 64 packets, a connection with no whole ClientHello 10 seconds after it opened or
+  after 128 packets, one whose server does not acknowledge the ClientHello in 5 seconds, or a connection of a machine
+  holding 512 packets already. A machine's packets of connections being checked go to the checker at 1000 a second at
+  most, 250 at once; the rest are dropped, and TCP sends them again. Its connections made before the reload were
+  checked by address only: those made since step 11 are marked as not yet judged, and are reset at their next packet
+  (the checker never saw their start); older ones go on;
+- while the checker restarts (about a second; it always comes back) a new connection of an "only listed" machine
+  waits (the kernel drops its packets and the machine sends them again), and one being checked then is reset; none is
+  let through unchecked. A connection already checked goes on;
+- companies in "open" mode and without rules see nothing new.
+
+Check, within 30 seconds:
+- `X verify` prints `qorpera-agent-exit: healthy` (with the modules it also checks the `sni` chain, the checker on queue
+  0 and its status file);
+- `systemctl is-active qorpera-agent-exit-sni.service` says `active`, and `ip netns exec qexit nft list chain inet
+  qorpera_agent_exit sni` shows the chain.
+
+Undo: step 11's undo (the previous release has no `sni` chain), then
+`systemctl stop qorpera-agent-exit-sni.service`,
+`rm /etc/modules-load.d/qorpera-agent-exit-sni.conf` and `modprobe -r nft_queue nfnetlink_queue`. An "only listed"
+company then goes by address alone again; step 11 again leaves it so.

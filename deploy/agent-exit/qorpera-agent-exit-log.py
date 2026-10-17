@@ -65,7 +65,7 @@ GATEWAY = ipaddress.ip_address("10.210.0.1")
 SETS = ("refused_flows", "refused_other")
 # The mark the exit gives a packet as it refuses it, kept in the refused-flow sets with the flow (E8c): which rule
 # refused it, when the flow itself does not tell. None (0): the open bounds.
-REFUSED_BY = {0x80000003: "rules_unknown", 0x80000004: "not_listed"}
+REFUSED_BY = {0x80000002: "name_not_listed", 0x80000003: "rules_unknown", 0x80000004: "not_listed"}
 INTERNAL = [
     ipaddress.ip_network(n)
     for n in (

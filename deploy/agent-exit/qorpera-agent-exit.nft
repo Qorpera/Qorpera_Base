@@ -7,7 +7,8 @@
 # A machine's plain DNS, to any address, goes to its company's resolver (E8b: the dns_port map, which the names
 # reconciler keeps); a machine without an element there gets no DNS at all. The brake (E7) slows the new connections of
 # a company the line guard put in the braked map; it is off until the founder sets its levels, and never touches open
-# connections.
+# connections. The server name check of "only listed" (E8c-2) is qorpera-agent-exit-sni.nft, loaded with this file
+# only while the kernel has the queue modules loaded.
 #
 # Load it with qorpera-agent-exit.sh, never with `nft -f` alone. The same file runs on every node. See README.md and
 # deploy/first-node/RUNTIME-AGENT-EXIT.md.
@@ -54,8 +55,9 @@ table inet qorpera_agent_exit {
 
 	# A refused flow, added once and kept an hour, so the logger writes it once an hour (refusals never reach
 	# conntrack's events). TCP and UDP per port, other protocols per protocol; each with the mark the packet was refused
-	# with, so the logger reads which rule refused it as it was then (0x80000003 the machine's rules not known,
-	# 0x80000004 not listed, none for our networks, mail and the open bounds).
+	# with, so the logger reads which rule refused it as it was then (0x80000002 the server name not listed, E8c-2's
+	# qorpera-agent-exit-sni.nft; 0x80000003 the machine's rules not known; 0x80000004 not listed; none for our
+	# networks, mail and the open bounds).
 	set refused_flows {
 		type ipv4_addr . ipv4_addr . inet_proto . inet_service . mark
 		flags dynamic, timeout
@@ -149,6 +151,10 @@ table inet qorpera_agent_exit {
 	}
 
 	counter refused_not_listed {
+	}
+
+	# A port 443 flow to a listed address whose ClientHello named no listed server (E8c-2's checker).
+	counter refused_name {
 	}
 
 	counter refused_unlogged {

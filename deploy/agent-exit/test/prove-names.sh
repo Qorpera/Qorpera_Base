@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Each company's names (E8b-2) and where its machines may go (E8c-1) on real systemd and a real LXD, inside the
-# throwaway VM test/prove-names-vm.sh makes (never on a node, never on a shared test machine: it loads br_netfilter,
-# installs the exit's units, a group and a user, and changes this kernel's tables). Run it only through that script:
+# Each company's names (E8b-2) and where its machines may go (E8c-1, and E8c-2's server name check) on real systemd and a
+# real LXD, inside the throwaway VM test/prove-names-vm.sh makes (never on a node, never on a shared test machine: it
+# loads br_netfilter, nft_queue and nfnetlink_queue, installs the exit's units, a group and a user, and changes this
+# kernel's tables). Run it only through that script:
 #
 #   node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
 #     bash deploy/agent-exit/test/prove-names-vm.sh </dev/null
@@ -24,13 +25,21 @@
 #   dnsmasq (in its sandbox, as nobody) puts each address it gives out in the company's set, and its machines reach TCP
 #   443 on those only; the exit's reload empties the set and the reconciler reloads the resolver; a narrower list
 #   restarts it again; back to open, the company's chain and set go;
+# - the server name check (E8c-2): without the queue modules, "only listed" goes by address alone and the checker does
+#   not start; with them loaded (here only) and the exit reloaded, a TLS hello to a listed address passes only with a
+#   listed name (also a hello in pieces, and one past a packet), and is refused (a reset, the logger's
+#   `name_not_listed`) with an unlisted or blocked name, no name, no TLS, too big or too slow; with the checker stopped,
+#   new flows wait and verify says why, while a judged flow goes on; a killed checker comes back each time, and a flow it
+#   was judging is refused; back to open, nothing is queued;
 # - the exit fails closed: rules that cannot be used, or no rules file, leave the machines no DNS and no way out, and
 #   verify says why;
 # - a company whose last machine goes gives its resolver and its port back; the exit's stop (step 1's undo) stops every
 #   resolver and leaves nothing behind;
-# - with QORPERA_AGENT_EXIT_PROOF_PREVIOUS (a previous release's deploy/agent-exit folder): on an exit that release
-#   switched on, step 9 and its undo (a release before E8b-2), or step 10 and its undo (a release with E8b-2: an "only
-#   listed" company's resolver restarts and its machine's connection ends).
+# - with QORPERA_AGENT_EXIT_PROOF_PREVIOUS (a previous release's deploy/agent-exit folder), with the queue modules
+#   unloaded again first: on an exit that release switched on, step 9 and its undo (a release before E8b-2), step 10
+#   and its undo (a release with E8b-2: an "only listed" company's resolver restarts and its machine's connection ends),
+#   or steps 11 and 12 and their undo (a release with E8c-1: the server name check's code changes nothing, then the
+#   modules and the reload start the check; the undo unloads them).
 # The plug and the names reconciler run at their own intervals (5 and 2 seconds). Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
@@ -201,6 +210,10 @@ diagnose() {
 	journal=$(journalctl -u 'qorpera-agent-exit-resolver@*.service' --no-pager -n 30 2>&1 || true)
 	echo "--- the resolvers"
 	echo "$journal"
+	echo "--- the server name checker (E8c-2)"
+	cat "$RUN/sni.json" 2>&1 || true
+	journalctl -u qorpera-agent-exit-sni.service --no-pager -o cat -n 30 2>&1 || true
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni 2>&1 || true
 	echo "--- dns.log"
 	tail -n 30 "$LOGS/dns.log" 2>&1 || true
 	echo "--- upstream.log"
@@ -245,11 +258,16 @@ ip -n inet addr add 9.9.9.9/32 dev lo
 ip -n inet addr add 1.1.1.1/32 dev lo
 for upstream in 9.9.9.9 1.1.1.1; do ip route add "$upstream/32" via 198.51.100.1; done
 cat >"$work/serve.py" <<'EOF'
-import socket, threading
-# A web server on 198.51.100.1:80 and :443 (plain HTTP on both) and 198.51.100.2:443: reads the request, answers "ok",
-# closes. Each connection has a thread of its own, so one that sends nothing is held open.
-def serve(c):
+import socket, ssl, sys, threading
+# A web server on 198.51.100.1:80 (plain HTTP) and :443 and 198.51.100.2:443 (HTTPS, one self-signed certificate for
+# every name): reads the request, answers "ok", closes. Each connection has a thread of its own, so one that sends
+# nothing is held open.
+tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+tls.load_cert_chain(sys.argv[1], sys.argv[2])
+def serve(c, port):
     try:
+        if port == 443:
+            c = tls.wrap_socket(c, server_side=True)
         c.recv(65536)
         c.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
     except OSError:
@@ -257,7 +275,7 @@ def serve(c):
     c.close()
 def listen(s):
     while True:
-        threading.Thread(target=serve, args=(s.accept()[0],), daemon=True).start()
+        threading.Thread(target=serve, args=(s.accept()[0], s.getsockname()[1]), daemon=True).start()
 bound = []
 for where in [("198.51.100.1", 80), ("198.51.100.1", 443), ("198.51.100.2", 443)]:
     s = socket.socket()
@@ -415,7 +433,126 @@ with open(path + ".tmp", "w") as f:
 os.replace(path + ".tmp", path)
 EOF
 rules() { python3 "$work/db.py" "$db" "$@"; }
-ip netns exec inet python3 "$work/serve.py" >"$work/serve.out" 2>&1 &
+# A TLS client for the server name check (E8c-2), run in a machine: `hello.py ADDRESS NAME [--pieces N,N..] [--gap S]
+# [--pad BYTES] [--wait S] [--go FILE] [--timeout S] [--plain]` sends its ClientHello for NAME ("-": no server name) to
+# port 443 in pieces of these sizes (the rest last), GAP seconds apart, ends the handshake, waits WAIT seconds (and until
+# FILE is there) and asks for "/". It prints the answer ("ok"), "refused" (the connection reset), "timeout" or "failed:
+# why". --pad makes the ClientHello that much bigger (ALPN names); --plain sends a plain HTTP request instead.
+cat >"$work/hello.py" <<'EOF'
+import argparse, os, socket, ssl, time
+p = argparse.ArgumentParser()
+p.add_argument("address")
+p.add_argument("name")
+p.add_argument("--pieces", default="")
+p.add_argument("--gap", type=float, default=0.3)
+p.add_argument("--pad", type=int, default=0)
+p.add_argument("--wait", type=float, default=0)
+p.add_argument("--go", default="")
+p.add_argument("--timeout", type=float, default=10)
+p.add_argument("--plain", action="store_true")
+a = p.parse_args()
+def answer():
+    s = socket.create_connection((a.address, 443), timeout=a.timeout)
+    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    if a.plain:
+        s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        return s.recv(65536)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    if a.pad:
+        context.set_alpn_protocols(["x" * 250] * (a.pad // 251 + 1) + ["http/1.1"])
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, outgoing, server_hostname=None if a.name == "-" else a.name)
+    def run(call):
+        while True:
+            try:
+                result = call()
+            except ssl.SSLWantReadError:
+                s.sendall(outgoing.read())
+                data = s.recv(65536)
+                if not data:
+                    raise ConnectionResetError("closed")
+                incoming.write(data)
+                continue
+            s.sendall(outgoing.read())
+            return result
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    hello, at = outgoing.read(), 0
+    for size in [int(n) for n in a.pieces.split(",") if n]:
+        s.sendall(hello[at:at + size])
+        at += size
+        time.sleep(a.gap)
+    s.sendall(hello[at:])
+    run(tls.do_handshake)
+    time.sleep(a.wait)
+    while a.go and not os.path.exists(a.go):
+        time.sleep(0.2)
+    run(lambda: tls.write(b"GET / HTTP/1.0\r\n\r\n"))
+    return run(lambda: tls.read(65536))
+try:
+    print(answer().partition(b"\r\n\r\n")[2].decode() or "empty")
+except socket.timeout:
+    print("timeout")
+except (ConnectionResetError, BrokenPipeError):
+    print("refused")
+except Exception as error:
+    print(f"failed: {error!r}")
+EOF
+# A machine that floods the server name check's queue (E8c-2), run in a machine as root: `flood.py ADDRESS COUNT
+# SECONDS [SIZE DELAY]` opens COUNT connections to ADDRESS:443 and sends no ClientHello on them. It prints "connected",
+# waits DELAY seconds (none by default) and prints "flooding", then for SECONDS sends ACKs on them, round and round, as
+# fast as it can: the numbers its own TCP sends (read from the server's SYN-ACK), so conntrack takes them as the
+# connection's, and no data, or SIZE bytes 20,000 bytes past the connection's start (inside the server's window, past
+# what a ClientHello can take). Then it prints "sent N".
+cat >"$work/flood.py" <<'EOF'
+import socket, struct, sys, time
+address, count, seconds = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+size, delay = (int(sys.argv[4]), float(sys.argv[5])) if len(sys.argv) > 5 else (0, 0)
+def checksum(data):
+    data += b"\0" * (len(data) % 2)
+    total = sum(struct.unpack(f"!{len(data) // 2}H", data))
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+sniff = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+sniff.settimeout(5)
+connections, packets = [], []
+for _ in range(count):
+    s = socket.create_connection((address, 443), timeout=5)
+    connections.append(s)
+    here, port = s.getsockname()
+    while True:
+        data = sniff.recv(65536)
+        at = (data[0] & 15) * 4
+        sport, dport, seq, ack, flags = struct.unpack("!HHIIxB", data[at:at + 14])
+        if data[12:16] == socket.inet_aton(address) and (sport, dport) == (443, port) and flags & 0x12 == 0x12:
+            break
+    ends = socket.inet_aton(here) + socket.inet_aton(address)
+    start = (ack + 20000) & 0xFFFFFFFF if size else ack
+    tcp = struct.pack("!HHIIBBHHH", port, 443, start, (seq + 1) & 0xFFFFFFFF, 5 << 4, 0x10, 64240, 0, 0) + b"x" * size
+    tcp = tcp[:16] + struct.pack("!H", checksum(ends + struct.pack("!BBH", 0, 6, len(tcp)) + tcp)) + tcp[18:]
+    # The kernel fills in the IP header's checksum.
+    packets.append(struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(tcp), 0, 0x4000, 64, 6, 0) + ends + tcp)
+sniff.close()
+raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+print("connected", flush=True)
+time.sleep(delay)
+print("flooding", flush=True)
+sent, end = 0, time.monotonic() + seconds
+while time.monotonic() < end:
+    for packet in packets:
+        raw.sendto(packet, (address, 0))
+    sent += len(packets)
+print(f"sent {sent}", flush=True)
+EOF
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=stand-in \
+	-keyout "$work/serve.key" -out "$work/serve.crt" >"$work/openssl.out" 2>&1 ||
+	fail "cannot make the stand-in's certificate: $(cat "$work/openssl.out")"
+ip netns exec inet python3 "$work/serve.py" "$work/serve.crt" "$work/serve.key" >"$work/serve.out" 2>&1 &
 pids+=($!)
 ip netns exec inet python3 "$work/upstream.py" 9.9.9.9,1.1.1.1 "$work/upstream.log" >"$work/upstream.out" 2>&1 &
 pids+=($!)
@@ -640,9 +777,9 @@ for server in 10.210.0.1 9.9.9.9; do
 	expect m2 "$server" open.example.com NXDOMAIN
 	expect m2 "$server" other.example.com NXDOMAIN
 done
-page=$(in_m m2 python3 -c 'import urllib.request; print(urllib.request.urlopen("http://listed.example.com:443/", timeout=5).read().decode())' 2>&1) ||
-	fail "m2 could not fetch http://listed.example.com:443/: $page"
-[[ $page == ok ]] || fail "m2 fetched http://listed.example.com:443/: $page"
+page=$(in_m m2 python3 -c 'import ssl, urllib.request; print(urllib.request.urlopen("https://listed.example.com/", context=ssl._create_unverified_context(), timeout=5).read().decode())' 2>&1) ||
+	fail "m2 could not fetch https://listed.example.com/: $page"
+[[ $page == ok ]] || fail "m2 fetched https://listed.example.com/: $page"
 [[ $(set_addresses allow_10002) == 198.51.100.1 ]] || fail "allow_10002 holds: $(set_addresses allow_10002)"
 expect_tcp m2 198.51.100.1 80 refused
 expect_tcp m2 198.51.100.2 443 refused
@@ -691,6 +828,172 @@ expect_tcp m2 198.51.100.2 443 open
 expect_tcp m2 198.51.100.1 80 open
 within 30 healthy
 pass "$C2 back to open: its resolver asks for every name again, only_10002 and allow_10002 go, m2 reaches any address"
+
+# --- The server name check (E8c-2): the queue modules loaded in this VM ---------------------------------------------
+# Until here the queue modules were not loaded (prove-names-vm.sh checks the test machine never gets them): "only
+# listed" went by address alone, so a ClientHello for any name reached a listed name's address.
+SNI=qorpera-agent-exit-sni.service
+sni_state() { systemctl is-active "$SNI" 2>/dev/null || true; }
+sni_pid() { systemctl show -p MainPID --value "$SNI"; }
+# m2's, or the machine in $hello_on.
+hello() { in_m "${hello_on:-m2}" python3 /root/hello.py "$@" 2>&1; }
+expect_hello() {
+	local got
+	got=$(hello "${@:2}") || true
+	[[ $got == "$1" ]] || fail "${hello_on:-m2}'s hello ${*:2}: \"$got\", not \"$1\""
+}
+counted() {
+	local text
+	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit "$1")
+	grep -o 'packets [0-9]*' <<<"$text" | cut -d' ' -f2
+}
+name_refusals() { counted refused_name; }
+# conntrack's line of a flow of m2's to 198.51.100.1:443 in this state with this mark.
+flow_is() { shows "$1 src=$a2 dst=198.51.100.1 sport=[0-9]* dport=443 .* mark=$2 " ip netns exec qexit conntrack -L -s "$a2" 2>/dev/null; }
+for module in nft_queue nfnetlink_queue; do [[ ! -d /sys/module/$module ]] || fail "$module was loaded before the proof loaded it"; done
+lx file push "$work/hello.py" m2/root/hello.py >/dev/null
+rules "$C2=only:no.listed.example.com+listed.example.com"
+within 30 'only && says m2 10.210.0.1 listed.example.com "NOERROR 198.51.100.1"'
+[[ $(sni_state) != active ]] || fail "the server name checker runs without the queue modules"
+ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain without the queue modules"
+shows 'only listed by address alone (no queue modules)' "$X" check || fail "check: $("$X" check 2>&1)"
+expect_hello ok 198.51.100.1 listed.example.com
+expect_hello ok 198.51.100.1 unlisted.example.com
+healthy || fail "not healthy without the queue modules: $(verify_problems)"
+pass "without the queue modules only listed goes by address alone: no checker, no sni chain, and a ClientHello for a name not listed reaches a listed name's address; verify and check say nothing is wrong"
+
+modprobe nft_queue
+modprobe nfnetlink_queue
+shows 'server names checked' "$X" check || fail "check with the queue modules: $("$X" check 2>&1)"
+# ROLLOUT.md's step: the exit's reload puts the sni chain in and starts the checker.
+systemctl reload qorpera-agent-exit.service
+within 30 '[[ $(sni_state) == active ]] && only && healthy'
+ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null || fail "no sni chain after the reload"
+within 30 'says m2 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10002) == 198.51.100.1 ]]'
+refused=$(name_refusals)
+expect_hello ok 198.51.100.1 listed.example.com
+flow_is '[A-Z_]*' 2 || fail "a listed name's flow is not marked judged (2)"
+expect_hello ok 198.51.100.1 two.listed.example.com
+# Under 0.2 s apart (Linux's least retransmission time): the held bytes are not acknowledged, and past that the
+# machine's TCP sends only its first segment again until an answer comes (README.md, the server name check's limits).
+expect_hello ok 198.51.100.1 listed.example.com --pad 3000 --pieces 1,5,100 --gap 0.03
+expect_hello refused 198.51.100.1 no.listed.example.com
+expect_hello refused 198.51.100.1 unlisted.example.com
+flow_is '[A-Z_]*' 3 || fail "a refused flow is not marked refused (3)"
+expect_hello refused 198.51.100.1 -
+expect_hello refused 198.51.100.1 listed.example.com --plain
+expect_hello refused 198.51.100.1 listed.example.com --pad 20000
+expect_hello refused 198.51.100.1 listed.example.com --pieces 10 --gap 7
+expect_tcp m1 198.51.100.1 443 open
+(($(name_refusals) >= refused + 6)) || fail "refused_name went from $refused to $(name_refusals)"
+within 30 'shows "\"dst\":\"198.51.100.1\",\"event\":\"refused\".*\"rule\":\"name_not_listed\"" cat "$LOGS"/flows-*.jsonl'
+healthy || fail "not healthy with the server name check: $(verify_problems)"
+pass "with the queue modules (loaded in this VM only) and the exit reloaded, m2's flows to a listed name's address go on only with a ClientHello for a listed name or one under it (also one in pieces and segments), judged once (mark 2); a blocked name under a listed one, a name not listed, no name, no TLS, a ClientHello over 16 KiB or slower than 5 s are reset (mark 3), counted in refused_name and logged as name_not_listed; m1 (open) is not checked"
+
+# One machine floods the node's one queue: m1, only listed too now, opens 100 connections to a listed name's address,
+# sends no ClientHello on them, and for 8 s sends ACKs on them as fast as it can (under 10 s: a flow with no ClientHello
+# 10 s after its SYN is refused). Past 1000 a second its packets are dropped before the queue, so the kernel drops none
+# from the queue, and m2's ClientHellos are judged meanwhile.
+queue_drops() { ip netns exec qexit awk '$1 == 0 {print $6 + $7}' /proc/net/netfilter/nfnetlink_queue; }
+both_only() {
+	names_is "s['reach'] == {'$a1': 'only_10001', '$a2': 'only_10002'} and s['problems'] == []" &&
+		[[ $(reach_map) == "$(pairs "$a1:only_10001" "$a2:only_10002")" && ! -e $RUN/names/10001.owed ]]
+}
+lx file push "$work/flood.py" m1/root/flood.py >/dev/null
+rules "$C1=only:blocked.example.com+listed.example.com"
+within 30 both_only
+within 30 'says m1 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10001) == 198.51.100.1 ]]'
+dropped=$(queue_drops) limited=$(counted dropped_sni_rate)
+[[ -n $dropped ]] || fail "no row for queue 0 in nfnetlink_queue: $(ip netns exec qexit cat /proc/net/netfilter/nfnetlink_queue)"
+in_m m1 python3 /root/flood.py 198.51.100.1 100 8 >"$work/flood.out" 2>&1 &
+flood=$!
+pids+=($flood)
+within 30 'grep -q flooding "$work/flood.out" || ! kill -0 "$flood" 2>/dev/null'
+grep -q flooding "$work/flood.out" || fail "m1's flood: $(cat "$work/flood.out")"
+expect_hello ok 198.51.100.1 listed.example.com
+expect_hello refused 198.51.100.1 unlisted.example.com
+kill -0 "$flood" 2>/dev/null || fail "m1's flood ended before m2's ClientHellos were judged: $(cat "$work/flood.out")"
+wait "$flood" || fail "m1's flood: $(cat "$work/flood.out")"
+sent=$(sed -n 's/^sent //p' "$work/flood.out")
+limited=$(($(counted dropped_sni_rate) - limited))
+(($(queue_drops) == dropped)) ||
+	fail "the kernel dropped $(($(queue_drops) - dropped)) packets from the queue while m1 flooded (it sent $sent)"
+((limited >= 1000)) || fail "m1's flood (it sent $sent) was not limited before the queue: dropped_sni_rate +$limited"
+healthy || fail "not healthy after m1's flood: $(verify_problems)"
+pass "one machine flooding the node's one queue is held to its share before it: m1 (only listed) sent $sent ACKs on 100 connections to a listed name's address in 8 s with no ClientHello; dropped_sni_rate counted the $limited over its 1000 a second, the kernel dropped none from the queue, m2's ClientHellos were judged meanwhile (a listed name let on, a name not listed refused), and verify stayed healthy"
+
+# The queue full once, as some 30 machines' bursts at the same moment would fill it: with the checker stopped, m1 floods
+# 100 new connections for 10 s with 1400 bytes of data a packet, 20,000 bytes past their start (past what a ClientHello
+# can take): about 10,000 packets get past its 1000 a second, more than the queue's 8192. The kernel drops the rest (no
+# bypass) and counts them; the checker, continued, is the same process (a full socket does not end it), works the queue
+# off, and names the drops in the journal. Drops in one status write are no problem: verify stays healthy, and m2's
+# ClientHellos are judged as before.
+queue_waiting() { ip netns exec qexit awk '$1 == 0 {print $3}' /proc/net/netfilter/nfnetlink_queue; }
+checker=$(sni_pid) dropped=$(queue_drops)
+in_m m1 python3 /root/flood.py 198.51.100.1 100 10 1400 3 >"$work/flood.out" 2>&1 &
+flood=$!
+pids+=($flood)
+within 30 'grep -q connected "$work/flood.out" || ! kill -0 "$flood" 2>/dev/null'
+grep -q connected "$work/flood.out" || fail "m1's flood: $(cat "$work/flood.out")"
+kill -STOP "$checker"
+flooded=0
+wait "$flood" || flooded=$?
+kill -CONT "$checker"
+((flooded == 0)) || fail "m1's flood with the checker stopped: $(cat "$work/flood.out")"
+sent=$(sed -n 's/^sent //p' "$work/flood.out")
+drops=$(($(queue_drops) - dropped))
+((drops > 0)) || fail "the kernel dropped none of m1's $sent packets with the checker stopped"
+within 30 '[[ $(queue_waiting) == 0 ]]'
+[[ $(sni_pid) == "$checker" ]] || fail "the checker did not stay up through the full queue: $checker, now $(sni_pid)"
+within 10 'journalctl --sync; journalctl -u "$SNI" -o cat --no-pager | grep -q "^the kernel dropped [0-9]* packets of queue 0"'
+expect_hello ok 198.51.100.1 listed.example.com
+expect_hello refused 198.51.100.1 unlisted.example.com
+healthy || fail "not healthy after the queue was full once: $(verify_problems)"
+[[ $(sni_pid) == "$checker" ]] || fail "the checker did not stay up: $checker, now $(sni_pid)"
+rules "$C1=blocked.example.com,*.wild.example.com,fresh.example.com"
+within 30 only
+pass "the queue full once: with the checker stopped, m1 sent $sent packets of 1400 bytes on 100 connections in 10 s, and the kernel dropped the $drops that did not fit (no bypass); continued, the checker (the same process) worked the queue off and named the drops in the journal, m2's ClientHellos were judged as before, and verify stayed healthy (drops in one status write are a burst)"
+
+# No bypass: a judged flow goes on while the checker is down, a new one gets nowhere, and verify says why.
+in_m m2 python3 /root/hello.py 198.51.100.1 listed.example.com --wait 10 >"$work/held-hello.out" 2>&1 &
+pids+=($!)
+within 30 'flow_is ESTABLISHED 2'
+systemctl stop "$SNI"
+verify_says "$NOT_HEALTHY no server name checker on queue 0: only-listed port 443 flows are refused" ||
+	fail "verify with the checker stopped: $(verify_problems)"
+expect_hello timeout 198.51.100.1 listed.example.com --timeout 3
+within 30 '[[ -s $work/held-hello.out ]]'
+[[ $(cat "$work/held-hello.out") == ok ]] || fail "a judged flow while the checker was down: $(cat "$work/held-hello.out")"
+systemctl start "$SNI"
+within 30 healthy
+expect_hello ok 198.51.100.1 listed.example.com
+pass "with the checker stopped a judged flow goes on, a new flow gets nowhere (no bypass) and verify says why; started again, flows are judged again"
+
+# A killed checker comes back a second later, every time (no start limit); a flow it was judging is refused.
+restarts=$(systemctl show -p NRestarts --value "$SNI")
+for kill in 1 2 3 4 5 6; do
+	pid=$(sni_pid)
+	systemctl kill -s KILL "$SNI"
+	within 30 '[[ $(sni_state) == active && $(sni_pid) != 0 && $(sni_pid) != "$pid" ]]'
+done
+(($(systemctl show -p NRestarts --value "$SNI") >= restarts + 6)) || fail "the checker restarted $restarts, then $(systemctl show -p NRestarts --value "$SNI") times"
+within 30 healthy
+in_m m2 python3 /root/hello.py 198.51.100.1 listed.example.com --pieces 10 --gap 6 >"$work/cut-hello.out" 2>&1 &
+pids+=($!)
+within 30 'flow_is ESTABLISHED 1'
+systemctl kill -s KILL "$SNI"
+within 30 '[[ -s $work/cut-hello.out ]]'
+[[ $(cat "$work/cut-hello.out") == refused ]] || fail "a flow judged when the checker was killed: $(cat "$work/cut-hello.out")"
+within 30 healthy
+expect_hello ok 198.51.100.1 listed.example.com
+pass "a killed checker is back within a second or two, six times in a row; the flow it was judging is refused, new flows are judged again"
+
+# Back to open: no flow of m2's is checked; the modules stay loaded (this VM goes after the proof).
+rules "$C2=other.example.com"
+within 30 "names_is \"s['reach'] == {'$a1': 'open', '$a2': 'open'} and s['problems'] == []\""
+expect_hello ok 198.51.100.1 unlisted.example.com
+within 30 healthy
+pass "$C2 back to open: m2's flows to 443 are not checked"
 
 # --- The exit fails closed -----------------------------------------------------------------------------------------
 rules "$C2=bad"
@@ -766,14 +1069,20 @@ all_off() {
 within 30 all_off
 pass "step 1's undo with C1's resolver running and the names reconciler stopped: within 30 s every qorpera-agent-* unit is inactive and none enabled, no resolver runs, and no namespace, bridge or nft table of the exit is left"
 
-# --- Step 9 or 10 from the previous release, and its undo ---------------------------------------------------------
-# Step 9 (E8b-2) from a release before E8b-2; step 10 (E8c-1) from one with E8b-2 (it has the names tool).
+# --- Step 9, 10 or 11 and 12 from the previous release, and the undo ----------------------------------------------
+# Step 9 (E8b-2) from a release before E8b-2; step 10 (E8c-1) from one with E8b-2 (it has the names tool); steps 11 and
+# 12 (E8c-2) from one with E8c-1 (its rules have the reach map). The nodes have no queue modules until step 12: the
+# exit's stop left no queue rule and no checker, so they unload.
 if [[ -z $previous ]]; then
-	echo "SKIP: step 9 or 10 from a previous release and its undo (no QORPERA_AGENT_EXIT_PROOF_PREVIOUS)"
+	echo "SKIP: step 9, 10 or 11 and 12 from a previous release and the undo (no QORPERA_AGENT_EXIT_PROOF_PREVIOUS)"
 else
+	modprobe -r nft_queue nfnetlink_queue || fail "cannot unload the queue modules after the exit's stop"
+	queue_gone() { [[ ! -d /sys/module/nft_queue && ! -d /sys/module/nfnetlink_queue ]]; }
+	queue_gone || fail "the queue modules are still loaded"
 	step=9 names_unit=()
 	if [[ -e $previous/qorpera-agent-exit-names.py ]]; then
 		step=10 names_unit=(qorpera-agent-exit-names.service)
+		if grep -q '^[[:space:]]*map reach {' "$previous/qorpera-agent-exit.nft"; then step=11; fi
 	fi
 	rm -rf /usr/local/libexec/qorpera-agent-exit "$STATE" "$RUN" "$LOGS" /etc/systemd/system/qorpera-agent-exit* \
 		/etc/systemd/system/qorpera-agent-plug.service
@@ -785,8 +1094,8 @@ else
 		fail "the previous release's install: $(cat "$work/install-previous.out")"
 	install -d -m 0700 "$STATE/rules"
 	install -d -m 0755 /run/qorpera-agent-exit-rules
-	if ((step == 10)); then
-		# E8b-2 runs "only listed" as its block list alone, every other name answered.
+	if ((step >= 10)); then
+		# E8b-2 runs "only listed" as its block list alone, every other name answered; E8c-1 by address.
 		rules "$C1=only:blocked.example.com+listed.example.com"
 	fi
 	# The previous release's step 1 (with E8b-2: its names reconciler too).
@@ -853,7 +1162,7 @@ if [[ -n $previous ]] && ((step == 9)); then
 	within 30 undone
 	expect_tcp m3 198.51.100.1 80 open
 	pass "step 9's undo: within 30 s m3 resolves blocked.example.com again, no resolver runs, the names unit is off and disabled, and the previous release's exit is healthy; m3 reaches 198.51.100.1:80"
-elif [[ -n $previous ]]; then
+elif [[ -n $previous ]] && ((step == 10)); then
 	# E8b-2 runs C1's resolver with its block list alone: every other name is answered and m3 goes anywhere. m3 holds a
 	# connection through step 10 (its output not on this script's, which the VM's exec waits to close).
 	within 30 'says m3 10.210.0.1 blocked.example.com NXDOMAIN && says m3 10.210.0.1 open.example.com "NOERROR 198.51.100.1"'
@@ -901,6 +1210,78 @@ elif [[ -n $previous ]]; then
 	within 30 undone
 	expect_tcp m3 198.51.100.1 80 open
 	pass "step 10's undo: within 30 s the previous release's exit is healthy and runs $C1's resolver on port 10001 again; m3 has blocked.example.com blocked, open.example.com answered and reaches 198.51.100.1:80"
+elif [[ -n $previous ]]; then
+	# E8c-1 has C1 "only listed" by address: once m3 asked for listed.example.com it reaches 198.51.100.1 on 443,
+	# whatever name its ClientHello gives. m3 holds such a connection (its flow unmarked) through steps 11 and 12, and
+	# one made after step 11 (marked 1) through step 12: each asks for "/" once /root/go is there.
+	hello_on=m3
+	lx file push "$work/hello.py" m3/root/hello.py >/dev/null
+	m3_flow() { shows "$1 src=$a3 dst=198.51.100.1 sport=[0-9]* dport=443 .* mark=$2 " ip netns exec qexit conntrack -L -s "$a3" 2>/dev/null; }
+	m3_listed() { says m3 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10001) == 198.51.100.1 ]]; }
+	within 30 m3_listed
+	expect_hello ok 198.51.100.1 unlisted.example.com
+	hello 198.51.100.1 unlisted.example.com --go /root/go >"$work/held-e8c1.out" 2>&1 &
+	pids+=($!)
+	within 30 'm3_flow ESTABLISHED 0'
+	r1=$(main_pid 10001)
+	pass "the previous release (E8c-1), installed and switched on with its own step 1, is healthy; m3 ($C1, \"only listed\") at $a3 reaches 198.51.100.1:443 by address with a ClientHello for a name not listed, and holds such a connection"
+
+	{
+		bash "$here/install-agent-exit.sh" "$package" &&
+			systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service &&
+			systemctl reload qorpera-agent-exit.service &&
+			systemctl restart qorpera-agent-plug.service
+	} >"$work/step11.out" 2>&1 || fail "step 11: $(cat "$work/step11.out")"
+	stepped11() { healthy && names_is "s['reach'] == {'$a3': 'only_10001'} and s['problems'] == []" && [[ $(reach_map) == "$a3:only_10001" ]]; }
+	within 30 stepped11
+	[[ $(main_pid 10001) == "$r1" ]] || fail "step 11 restarted $C1's resolver ($r1 -> $(main_pid 10001))"
+	[[ $(sni_state) != active ]] || fail "the server name checker runs after step 11, without the queue modules"
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain after step 11"
+	queue_gone || fail "a queue module loaded after step 11"
+	shows 'only listed by address alone (no queue modules)' "$X" check || fail "check after step 11: $("$X" check 2>&1)"
+	within 30 m3_listed
+	expect_hello ok 198.51.100.1 unlisted.example.com
+	m3_flow ESTABLISHED 0 || fail "m3's connection from before step 11 ended"
+	hello 198.51.100.1 unlisted.example.com --go /root/go >"$work/held-step11.out" 2>&1 &
+	pids+=($!)
+	within 30 'm3_flow ESTABLISHED 1'
+	pass "ROLLOUT.md step 11 on the previous release's exit: healthy within 30 s, $C1's resolver kept; no checker, no sni chain and no queue module, and check says so; m3 reaches 198.51.100.1:443 by address alone, its new flow marked as not yet judged (1), and its connection from before goes on"
+
+	# Step 12 as ROLLOUT.md writes it (the modules and their file, in this VM only).
+	{
+		printf '%s\n' nft_queue nfnetlink_queue >/etc/modules-load.d/qorpera-agent-exit-sni.conf &&
+			modprobe nft_queue &&
+			modprobe nfnetlink_queue &&
+			"$X" check &&
+			systemctl reload qorpera-agent-exit.service
+	} >"$work/step12.out" 2>&1 || fail "step 12: $(cat "$work/step12.out")"
+	grep -q 'server names checked' "$work/step12.out" || fail "step 12's check: $(cat "$work/step12.out")"
+	within 30 '[[ $(sni_state) == active ]] && healthy'
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null || fail "no sni chain after step 12"
+	within 30 m3_listed
+	expect_hello ok 198.51.100.1 listed.example.com
+	expect_hello refused 198.51.100.1 unlisted.example.com
+	in_m m3 touch /root/go
+	within 30 '[[ -s $work/held-step11.out && -s $work/held-e8c1.out ]]'
+	[[ $(cat "$work/held-step11.out") == refused ]] ||
+		fail "m3's connection from step 11, after step 12: $(cat "$work/held-step11.out")"
+	[[ $(cat "$work/held-e8c1.out") == ok ]] || fail "m3's connection from before step 11, after step 12: $(cat "$work/held-e8c1.out")"
+	pass "ROLLOUT.md step 12 (the queue modules, here only): within 30 s the checker runs and verify is healthy; m3 reaches 198.51.100.1:443 with a ClientHello for listed.example.com only; its connection from step 11 is reset at its next data, the one from before step 11 goes on"
+
+	{
+		bash "$previous/install-agent-exit.sh" "$package" &&
+			systemctl reload qorpera-agent-exit.service &&
+			systemctl restart qorpera-agent-exit-names.service qorpera-agent-plug.service qorpera-agent-exit-log.service &&
+			systemctl stop qorpera-agent-exit-sni.service &&
+			rm /etc/modules-load.d/qorpera-agent-exit-sni.conf &&
+			modprobe -r nft_queue nfnetlink_queue
+	} >"$work/step12-undo.out" 2>&1 || fail "the undo of steps 12 and 11: $(cat "$work/step12-undo.out")"
+	queue_gone || fail "the queue modules after the undo"
+	ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain after the undo"
+	within 30 'healthy && m3_listed'
+	expect_hello ok 198.51.100.1 unlisted.example.com
+	expect_tcp m3 198.51.100.1 80 refused
+	pass "the undo of steps 12 and 11: the previous release's exit has no sni chain and the queue modules unload; within 30 s it is healthy, and m3 reaches 198.51.100.1:443 by address alone again (with a ClientHello for a name not listed), not port 80"
 fi
 
 echo "ALL PASSED"
