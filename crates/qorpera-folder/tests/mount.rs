@@ -1175,9 +1175,9 @@ fn an_index_is_found_stale_only_once_the_node_has_it() {
 	let (company, runner) = start(&node);
 	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
 	assert!(git.join("HEAD").is_file());
-	// Git puts an index that tracks d.log in place while the worktree has no caches, and the node makes the rename only
-	// a while later. Meanwhile a new c.log reads the index the node still has, none: a cache.
-	std::fs::write(git.join("index.lock"), git_index(&["README", "d.log"])).unwrap();
+	// Git puts an index that tracks c.log and d.log in place while the worktree has no caches, and the node makes the
+	// rename only a while later. Meanwhile a new c.log reads the index the node still has, none: a cache.
+	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log", "d.log"])).unwrap();
 	node.late_renames(1);
 	let (from, to) = (git.join("index.lock"), git.join("index"));
 	let renaming = std::thread::spawn(move || std::fs::rename(from, to).unwrap());
@@ -1186,9 +1186,50 @@ fn an_index_is_found_stale_only_once_the_node_has_it() {
 	assert!(!renaming.is_finished(), "the rename landed before c.log was made");
 	assert!(!node.exists(&format!("{at}/c.log")));
 	renaming.join().unwrap();
-	// The index is found stale once the node has the new one, not before: d.log, which that one tracks, is published.
+	// Found stale beside a cache once the node has it, the index is read again and c.log, which it tracks, moves into
+	// the folder, with no other name made.
+	let marker = node.dir.join("state/caches.moving");
+	let moved = || node.content(&format!("{at}/c.log")).as_deref() == Some(b"c.log".as_slice());
+	assert!(eventually(Duration::from_secs(20), || moved() && !marker.exists()), "moved: {}, marker: {}", moved(), marker.exists());
+	// Not before: d.log, which the new index tracks, is published.
 	std::fs::write(w.join("d.log"), "d.log").unwrap();
 	assert_eq!(node.content(&format!("{at}/d.log")).as_deref(), Some(b"d.log".as_slice()));
+	assert_eq!(std::fs::read_to_string(w.join("c.log")).unwrap(), "c.log");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_cache_made_while_the_index_cannot_be_read_moves_in_once_it_is_read_and_tracks_it() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	assert!(git.join("HEAD").is_file());
+	// Git puts an index that tracks c.log in place while the worktree has no caches: found stale. A new c.log reads it,
+	// and the node cannot give it: a cache, whose making asks for the move of what the index tracks.
+	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log"])).unwrap();
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	node.fail_reads("code/o/n/repo.git/worktrees/w/index", true);
+	std::fs::write(w.join("c.log"), "c.log").unwrap();
+	assert!(!node.exists(&format!("{at}/c.log")));
+	let (marker, list) = (node.dir.join("state/caches.moving"), node.dir.join("state/local/cache-left.jsonl"));
+	assert!(eventually(Duration::from_secs(10), || marker.exists()));
+	assert!(std::fs::read_to_string(&list).unwrap().contains(r#"{"w":"code/o/n/worktrees/w","n":"/"}"#));
+	// Once the node gives it, the mover reads it and moves c.log in, with no other name made.
+	node.fail_reads("code/o/n/repo.git/worktrees/w/index", false);
+	let moved = || node.content(&format!("{at}/c.log")).as_deref() == Some(b"c.log".as_slice());
+	assert!(eventually(Duration::from_secs(20), || moved() && !marker.exists()), "moved: {}, marker: {}", moved(), marker.exists());
+	// What it does not track stays a cache.
+	std::fs::write(w.join("d.log"), "d.log").unwrap();
+	assert!(!node.exists(&format!("{at}/d.log")));
+	assert_eq!(std::fs::read_to_string(w.join("d.log")).unwrap(), "d.log");
 	assert_eq!(std::fs::read_to_string(w.join("c.log")).unwrap(), "c.log");
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));

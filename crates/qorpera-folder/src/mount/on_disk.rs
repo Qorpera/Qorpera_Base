@@ -311,10 +311,10 @@ impl Shared {
 	}
 
 	/// Reads `worktree`'s index (at `index`) from the node, for its cache list. A worktree without one has tracked
-	/// nothing yet; one the node could not give is read again at the next new cache. Git can put another index in place
-	/// while the read is on, so what it gives is taken only if no index was taken in or found stale for the worktree
-	/// since it started (`index_after`): a newer one taken in stands, and one found stale is read again, a few times at
-	/// most.
+	/// nothing yet; one the node could not give is read again by the move the cache made then asks for (`made`), or at
+	/// the next new cache. Git can put another index in place while the read is on, so what it gives is taken only if
+	/// no index was taken in or found stale for the worktree since it started (`index_after`): a newer one taken in
+	/// stands, and one found stale is read again, a few times at most.
 	fn read_index(&self, local: &Local, worktree: &str, index: &str) {
 		for _ in 0..3 {
 			let as_of = local.cache.lock().unwrap().reads(worktree);
@@ -395,6 +395,21 @@ impl Shared {
 			todo.extend(local.mirrors(&dir).iter().map(|m| join(&rel, m)).filter(|r| list.tracks(worktree, r, true)));
 		}
 		false
+	}
+
+	/// The local `name` (a folder when `folder`) made just now in the node's folder `parent`: a cache by what was known
+	/// of its worktree's index when `cache` decided. Where that index is not known now (git put another in place since,
+	/// found stale, or it could not be read) or tracks `name` (taken in since), the move of what the index tracks is
+	/// asked for (`TRACKED`), which reads it first, as `indexed` asks for it. The mover makes it (`mount.rs`), not this:
+	/// what made the cache may still be writing it. Until it is done, `qorpera-folder publish` refuses the boundaries.
+	fn made(&self, local: &Local, parent: u64, name: &str, folder: bool) {
+		let Some(dir) = self.cache_dir(parent) else { return };
+		let Place::Worktree { area, worker, rest } = git::place(&dir) else { return };
+		let worktree = git::worktree(area, worker).0;
+		let mut list = local.cache.lock().unwrap();
+		if !list.read(&worktree) || list.tracks(&worktree, &join(rest, name), folder) {
+			list.track(&worktree);
+		}
 	}
 
 	/// Moves the cache folders of the names that left a worktree's list into the folder (`move_in`): `worktree`'s, or
@@ -857,7 +872,10 @@ impl FolderFs {
 			Ok(Some((up, area))) => {
 				let ttl = self.ttl(&up, area);
 				match local.create(up, name, area, mode, flags) {
-					Ok((attr, fh)) => reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty()),
+					Ok((attr, fh)) => {
+						self.s.made(local, parent, name, false);
+						reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
+					}
 					Err(e) => reply.error(Errno::from_i32(e)),
 				}
 			}
@@ -949,7 +967,10 @@ impl FolderFs {
 		};
 		let ttl = self.ttl(&up, area);
 		match local.mkdir(up, name, area, mode) {
-			Ok(attr) => reply.entry(&ttl, &attr, Generation(0)),
+			Ok(attr) => {
+				self.s.made(local, parent, name, true);
+				reply.entry(&ttl, &attr, Generation(0))
+			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -1006,7 +1027,11 @@ impl FolderFs {
 					Ok(Some((target, to_area))) if to_area == area => {
 						let no_replace = flags.contains(RenameFlags::RENAME_NOREPLACE);
 						let exchange = flags.contains(RenameFlags::RENAME_EXCHANGE);
-						local.rename((&source, from.1), (&target, to.1), area, no_replace, exchange)
+						let done = local.rename((&source, from.1), (&target, to.1), area, no_replace, exchange);
+						if done.is_ok() {
+							self.s.made(local, to.0, to.1, folder);
+						}
+						done
 					}
 					Ok(_) => Err(libc::EXDEV),
 					Err(e) => Err(e),
@@ -1054,7 +1079,10 @@ impl FolderFs {
 			Ok(Some((up, area))) => {
 				let ttl = self.ttl(&up, area);
 				match local.symlink(up, name, area, target) {
-					Ok(attr) => reply.entry(&ttl, &attr, Generation(0)),
+					Ok(attr) => {
+						self.s.made(local, parent, name, false);
+						reply.entry(&ttl, &attr, Generation(0))
+					}
 					Err(e) => reply.error(Errno::from_i32(e)),
 				}
 			}
@@ -1077,7 +1105,11 @@ impl FolderFs {
 		let done = self.local().and_then(|local| {
 			let (_, _, area) = local.name(ino).ok_or(libc::ENOENT)?;
 			match self.s.target(local, to.0, to.1, area, false)? {
-				Some((up, to_area)) if to_area == area => Ok((self.ttl(&up, area), local.link(ino, up, to.1, area)?)),
+				Some((up, to_area)) if to_area == area => {
+					let (ttl, attr) = (self.ttl(&up, area), local.link(ino, up, to.1, area)?);
+					self.s.made(local, to.0, to.1, false);
+					Ok((ttl, attr))
+				}
 				_ => Err(libc::EXDEV),
 			}
 		});
@@ -1123,13 +1155,19 @@ impl FolderFs {
 
 	/// The rename `index_before` read for landed at `to`: what git wrote is taken in, or the index is found stale. Not
 	/// before the node has it, so that a read of the index from the node (`read_index`) that gave the one before is
-	/// not taken.
+	/// not taken. A stale one beside caches, which it may track (made while git put it in place, or where what git
+	/// wrote could not be read), asks for the move of what it tracks, as `made` does.
 	pub(super) fn index_after(&self, to: &str, read: Option<(String, Option<Vec<u8>>)>) {
 		let (Some(local), Some((worktree, data))) = (&self.s.local, read) else { return };
-		match data {
-			Some(data) => self.s.indexed_data(local, &worktree, to, &data),
-			None => local.cache.lock().unwrap().stale(&worktree),
-		}
+		let Some(data) = data else {
+			let mut list = local.cache.lock().unwrap();
+			list.stale(&worktree);
+			if local.has_caches(&worktree) {
+				list.track(&worktree);
+			}
+			return;
+		};
+		self.s.indexed_data(local, &worktree, to, &data);
 	}
 
 	/// The node made or removed its folder `path` for this view: caches kept for a folder there before (one another
