@@ -73,6 +73,7 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-object-gateway-connection-files.mjs",
 	"scripts/test-object-gateway-company-creation.mjs",
 	"scripts/test-agent-exit-placement-undo.mjs",
+	"scripts/test-company-machine-v2-retire.mjs",
 	"scripts/test-folder-core-acceptance.mjs",
 	"scripts/test-folder-key.mjs",
 ];

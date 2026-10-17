@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import {
-	CLOUD_MACHINE_GUEST_PATHS,
-	type CloudCodingNasPolicy,
-	createCloudCodingStorageBinding,
-} from "@qorpera/contracts";
 import { AGENT_BRIDGE, agentPlugCard, isAgentPlugCard } from "./agent-plug.ts";
 import type { CodingMachineJournalPlan } from "./coding-machine.ts";
 import type { LxdCreateInstanceRequest, LxdInstanceRecord } from "./lxd-client.ts";
@@ -20,11 +15,13 @@ const GiB = 1024 ** 3;
  * (Stateless Compute: a machine that wakes where there is no room starts
  * fresh as a new placement elsewhere). SQL placed it
  * (qorpera_place_company_machine) on this executor's node and fixed this
- * binding; nothing in it is chosen by the model except the size and, when a
- * coding session's repository is attached, which session. No credential,
- * identity volume or company folder is attached. */
+ * binding; nothing in it is chosen by the model except the size. No
+ * credential, identity volume or disk of the node is attached: a test machine
+ * sees the company folder through its folder service (6d), and a coding
+ * session's work is in that folder. v2 (6e-1) dropped v1's read-only
+ * repository disk. */
 export interface LxdCompanyMachineBinding {
-	schema: "qorpera.lxd-company-machine/v1";
+	schema: "qorpera.lxd-company-machine/v2";
 	machineId: string;
 	/** The placement's id: its node allocation, LXD name and journal. */
 	placementId: string;
@@ -40,7 +37,6 @@ export interface LxdCompanyMachineBinding {
 	cpus: number;
 	memoryBytes: number;
 	rootDiskBytes: number;
-	repositoryWorkerId: string | null;
 }
 /** The canonical key order SQL hashes (qorpera_company_machine_binding_text). */
 export const COMPANY_MACHINE_KEYS = [
@@ -59,7 +55,6 @@ export const COMPANY_MACHINE_KEYS = [
 	"cpus",
 	"memoryBytes",
 	"rootDiskBytes",
-	"repositoryWorkerId",
 ] as const;
 /** The node policy an executor makes machines with; SQL copies it into every binding. */
 export type CompanyMachinePolicy = Pick<
@@ -108,35 +103,9 @@ export function lxdCompanyMachineName(placementId: string): string {
 	return `qorpera-machine-${placementId.replaceAll("-", "")}`;
 }
 
-/** Where the coding NAS of this node keeps sessions' folders: needed only to
- * attach a coding session's repository read-only. */
-export interface CompanyMachineRepositoryStorage {
-	readonly policy: CloudCodingNasPolicy;
-	readonly machineIdSha256: string;
-}
-/** A coding session's repository folder on this node's NAS mount. */
-export function companyMachineRepositorySource(
-	binding: Pick<LxdCompanyMachineBinding, "companyId" | "environmentId">,
-	storage: CompanyMachineRepositoryStorage,
-	workerId: string,
-): string {
-	return `${
-		createCloudCodingStorageBinding(storage.policy, {
-			workerId,
-			companyId: binding.companyId,
-			environmentId: binding.environmentId,
-			machineIdSha256: storage.machineIdSha256,
-			writerGeneration: 1,
-		}).dataSource
-	}/repository`;
-}
-
 /** The binding in its canonical order, its exact text and digest (what SQL
  * pinned) and the LXD request that creates it. */
-export function lxdCompanyMachinePlan(
-	value: LxdCompanyMachineBinding,
-	storage?: CompanyMachineRepositoryStorage,
-): {
+export function lxdCompanyMachinePlan(value: LxdCompanyMachineBinding): {
 	binding: Readonly<LxdCompanyMachineBinding>;
 	text: string;
 	instanceSha256: string;
@@ -147,12 +116,10 @@ export function lxdCompanyMachinePlan(
 		typeof value !== "object" ||
 		Array.isArray(value) ||
 		Object.keys(value).sort().join() !== [...COMPANY_MACHINE_KEYS].sort().join() ||
-		value.schema !== "qorpera.lxd-company-machine/v1" ||
+		value.schema !== "qorpera.lxd-company-machine/v2" ||
 		![value.machineId, value.placementId, value.companyId, value.environmentId].every(
 			(id) => typeof id === "string" && UUID.test(id),
 		) ||
-		(value.repositoryWorkerId !== null &&
-			(typeof value.repositoryWorkerId !== "string" || !UUID.test(value.repositoryWorkerId))) ||
 		![value.cpus, value.memoryBytes, value.rootDiskBytes].every((n) => Number.isSafeInteger(n) && n > 0) ||
 		value.cpus > 64 ||
 		value.memoryBytes < GiB ||
@@ -164,7 +131,6 @@ export function lxdCompanyMachinePlan(
 	)
 		throw new Error("INVALID_COMPANY_MACHINE_BINDING");
 	parseCompanyMachinePolicy(Object.fromEntries(COMPANY_MACHINE_POLICY_KEYS.map((key) => [key, value[key]])));
-	if (value.repositoryWorkerId !== null && !storage) throw new Error("COMPANY_MACHINE_REPOSITORY_UNAVAILABLE");
 	const binding = Object.freeze(
 		Object.fromEntries(COMPANY_MACHINE_KEYS.map((key) => [key, value[key]])) as unknown as LxdCompanyMachineBinding,
 	);
@@ -204,17 +170,6 @@ export function lxdCompanyMachinePlan(
 				// filter and port isolation, and the exit's bridge rules). Its MAC comes from the agent plug right before
 				// the create (withAgentPlug).
 				network: agentPlugCard("eth0"),
-				...(binding.repositoryWorkerId === null || !storage
-					? {}
-					: {
-							repository: {
-								type: "disk",
-								source: companyMachineRepositorySource(binding, storage, binding.repositoryWorkerId),
-								path: CLOUD_MACHINE_GUEST_PATHS.repository,
-								readonly: "true",
-								required: "true",
-							},
-						}),
 			},
 		},
 	};
@@ -254,9 +209,8 @@ export function assertLxdCompanyMachineInstance(
  * check. SQL's custody receipts name the placement. */
 export function lxdCompanyMachineJournalPlan(
 	value: LxdCompanyMachineBinding,
-	storage?: CompanyMachineRepositoryStorage,
 ): CodingMachineJournalPlan & { readonly text: string } {
-	const plan = lxdCompanyMachinePlan(value, storage);
+	const plan = lxdCompanyMachinePlan(value);
 	return Object.freeze({
 		machineId: plan.binding.placementId,
 		instanceSha256: plan.instanceSha256,

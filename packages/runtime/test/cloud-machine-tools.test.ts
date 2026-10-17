@@ -194,6 +194,9 @@ describe("machine tools", () => {
 					"the agent that started it is asked once a week whether the work still needs it",
 				);
 				expect(run.description).toContain("keep a server up on an always-on machine");
+				// F3 6e-1: a session's work is in the company folder; no repository is attached.
+				expect(start.description).toContain("/company/code/<owner>/<name>/worktrees/<workerId>");
+				expect(start.description).not.toContain("/mnt/repository");
 				for (const tool of tools) expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 			}
 		} finally {
@@ -525,6 +528,8 @@ describe("machine tools", () => {
 				{ operationKey: "x", name: "no-purpose" },
 				{ operationKey: "x", name: "Bad Name", purpose: "x" },
 				{ operationKey: "x", name: "big", purpose: "x", cpus: 65 },
+				// No coding session's repository is attached any more (F3 6e-1): its work is in the company folder.
+				{ operationKey: "x", name: "repo", purpose: "x", repositoryWorker: "worker-1" },
 			].entries())
 				expect((await f.boundary.invoke(`bad-${index}`, "qorpera", "machine_start", bad)).success).toBe(false);
 		} finally {

@@ -49,7 +49,7 @@ async function main(path: string): Promise<void> {
 		placementId = randomUUID(),
 		companyId = "00000000-0000-4000-8000-00000000c0de";
 	const binding = {
-		schema: "qorpera.lxd-company-machine/v1" as const,
+		schema: "qorpera.lxd-company-machine/v2" as const,
 		machineId,
 		placementId,
 		companyId,
@@ -58,7 +58,6 @@ async function main(path: string): Promise<void> {
 		cpus: proof.cpus,
 		memoryBytes: proof.memoryGiB * 1024 ** 3,
 		rootDiskBytes: proof.diskGiB * 1024 ** 3,
-		repositoryWorkerId: null,
 	};
 	const plan = lxdCompanyMachinePlan(binding);
 	const entry: CompanyMachineEntry = {

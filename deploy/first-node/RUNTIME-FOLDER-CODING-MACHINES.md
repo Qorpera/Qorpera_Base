@@ -708,7 +708,8 @@ only if a rule is wrong.
 - **Q3 (coordinator).** Step 5 and step 6 meet at `/mnt/repository`: a test machine started with `repositoryWorker`
   attaches the session's private repository folder there, read-only (`deploy/machine/README.md`), and step 6 replaces
   it with `/company`. From 5g, sessions work in the shared `repo.git`, so that folder is no longer updated until step 6
-  lands. Recommended: accept the gap (there are no users); 5l retires the folder after step 6.
+  lands. Recommended: accept the gap (there are no users); 5l retires the folder after step 6. Step 6's 6e-1
+  (migration `20260930506000`) retired `/mnt/repository` and `repositoryWorker`.
 - **Q4 (coordinator, Jonas).** Item 11's environment variables against contract 11.4 and 11.5, and how strong masking
   must be. The plan builds item 11 with best-effort masking.
 - **Q5 (coordinator).** The grant unit for company secrets: per repository (recommended), per agent or per session.

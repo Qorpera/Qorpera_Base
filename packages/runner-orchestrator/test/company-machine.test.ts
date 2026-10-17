@@ -10,19 +10,9 @@ import {
 import type { LxdInstanceRecord } from "../src/lxd-client.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const storage = {
-	policy: {
-		schema: "qorpera.coding-nas-policy/v1" as const,
-		mountPoint: "/nas",
-		rootPath: "/nas/coding",
-		source: "10.0.0.2:/coding",
-		serverAddress: "10.0.0.2",
-	},
-	machineIdSha256: "d".repeat(64),
-};
 function companyMachineBinding(overrides: Partial<LxdCompanyMachineBinding> = {}): LxdCompanyMachineBinding {
 	return {
-		schema: "qorpera.lxd-company-machine/v1",
+		schema: "qorpera.lxd-company-machine/v2",
 		machineId: id(2),
 		placementId: id(5),
 		companyId: id(3),
@@ -37,7 +27,6 @@ function companyMachineBinding(overrides: Partial<LxdCompanyMachineBinding> = {}
 		cpus: 8,
 		memoryBytes: 32 * 1024 ** 3,
 		rootDiskBytes: 100 * 1024 ** 3,
-		repositoryWorkerId: null,
 		...overrides,
 	};
 }
@@ -62,10 +51,10 @@ describe("company machine plan", () => {
 		const plan = lxdCompanyMachinePlan(companyMachineBinding());
 		// The same text supabase/tests/628 asserts for this binding.
 		expect(plan.text).toBe(
-			`{"schema":"qorpera.lxd-company-machine/v1","machineId":"${id(2)}","placementId":"${id(5)}","companyId":"${id(3)}","environmentId":"${id(4)}",` +
+			`{"schema":"qorpera.lxd-company-machine/v2","machineId":"${id(2)}","placementId":"${id(5)}","companyId":"${id(3)}","environmentId":"${id(4)}",` +
 				`"providerId":"machine-node","providerPolicySha256":"${"a".repeat(64)}","project":"machines","imageFingerprint":"${"b".repeat(64)}",` +
 				`"bootstrapSha256":"${"c".repeat(64)}","storagePool":"machines","network":"qagent0","cpus":8,"memoryBytes":34359738368,` +
-				`"rootDiskBytes":107374182400,"repositoryWorkerId":null}`,
+				`"rootDiskBytes":107374182400}`,
 		);
 		// Key order in the input never changes the text.
 		const shuffled = Object.fromEntries(
@@ -87,7 +76,7 @@ describe("company machine plan", () => {
 				"limits.cpu": "8",
 				"limits.memory": "34359738368",
 				"security.devlxd": "false",
-				"user.qorpera.schema": "qorpera.lxd-company-machine/v1",
+				"user.qorpera.schema": "qorpera.lxd-company-machine/v2",
 				"user.qorpera.machine_id": id(2),
 				"user.qorpera.placement_id": id(5),
 				"user.qorpera.allocation_id": id(5),
@@ -106,16 +95,16 @@ describe("company machine plan", () => {
 		});
 	});
 
-	it("attaches a coding session's repository read-only from this node's NAS", () => {
-		const binding = companyMachineBinding({ repositoryWorkerId: id(9) });
-		expect(() => lxdCompanyMachinePlan(binding)).toThrow("COMPANY_MACHINE_REPOSITORY_UNAVAILABLE");
-		expect(lxdCompanyMachinePlan(binding, storage).request.devices.repository).toEqual({
-			type: "disk",
-			source: `/nas/coding/workers/${id(3)}/${id(4)}/${id(9)}/data/repository`,
-			path: "/mnt/repository",
-			readonly: "true",
-			required: "true",
-		});
+	it("refuses a v1 binding and v1's repository key: no disk of the node is attached (6e-1)", () => {
+		const v1 = { ...companyMachineBinding(), schema: "qorpera.lxd-company-machine/v1" };
+		for (const binding of [
+			v1,
+			{ ...v1, repositoryWorkerId: null },
+			{ ...companyMachineBinding(), repositoryWorkerId: null },
+		])
+			expect(() => lxdCompanyMachinePlan(binding as unknown as LxdCompanyMachineBinding)).toThrow(
+				"INVALID_COMPANY_MACHINE_BINDING",
+			);
 	});
 
 	it.each([
@@ -127,28 +116,27 @@ describe("company machine plan", () => {
 		{ network: "Bad Net" },
 		{ network: "machine-net" },
 		{ imageFingerprint: "x" },
-		{ repositoryWorkerId: "worker" },
 		{ placementId: "placement" },
 	])("refuses a binding outside its bounds: %o", (overrides) => {
 		expect(() =>
-			lxdCompanyMachinePlan(companyMachineBinding(overrides as Partial<LxdCompanyMachineBinding>), storage),
+			lxdCompanyMachinePlan(companyMachineBinding(overrides as Partial<LxdCompanyMachineBinding>)),
 		).toThrow("INVALID_COMPANY_MACHINE");
 	});
 
 	it("journals and receipts the placement, not the machine: a new placement is a new instance", () => {
-		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding());
 		expect([journal.machineId, journal.journalName, journal.name]).toEqual([
 			id(5),
 			id(5),
 			"qorpera-machine-00000000000040008000000000000005",
 		]);
-		const moved = lxdCompanyMachineJournalPlan(companyMachineBinding({ placementId: id(6) }), storage);
+		const moved = lxdCompanyMachineJournalPlan(companyMachineBinding({ placementId: id(6) }));
 		expect(moved.instanceSha256).not.toBe(journal.instanceSha256);
 		expect(moved.name).not.toBe(journal.name);
 	});
 
 	it("refuses an instance anything was added to", () => {
-		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding());
 		const request = journal.request!;
 		expect(() => journal.assertInstance(instance(request))).not.toThrow();
 		const extraDevice = instance(request);
@@ -185,7 +173,7 @@ describe("company machine plan", () => {
 
 	it("gives the guest no /dev/lxd, and no pass ever reaches the machine's LXD config", () => {
 		const pass = `qfp_${"z".repeat(40)}`;
-		const { request } = lxdCompanyMachinePlan(companyMachineBinding({ repositoryWorkerId: id(9) }), storage);
+		const { request } = lxdCompanyMachinePlan(companyMachineBinding());
 		expect(request.config["security.devlxd"]).toBe("false");
 		// Its config is its limits, its boot and the binding's markers: no key names a pass, secret or cloud-init.
 		for (const key of Object.keys(request.config))
@@ -200,7 +188,7 @@ describe("company machine plan", () => {
 			lxdCompanyMachinePlan({ ...companyMachineBinding(), pass } as unknown as LxdCompanyMachineBinding),
 		).toThrow("INVALID_COMPANY_MACHINE_BINDING");
 		// An instance that has /dev/lxd back, or that a pass was put into, has drifted.
-		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding());
 		for (const [key, value] of [
 			["security.devlxd", "true"],
 			["user.qorpera.pass", pass],
@@ -219,7 +207,7 @@ describe("company machine plan", () => {
 	});
 
 	it("names its plug claim: the machine, its company and this placement's instance", () => {
-		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding());
 		expect(journal.agentPlug).toEqual({
 			claim: {
 				kind: "machine",
