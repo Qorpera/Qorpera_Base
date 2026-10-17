@@ -205,6 +205,28 @@ begin
 	if r -> 'seq' <> 'null'::jsonb then raise exception 'A refused commit took a seq: %', r; end if;
 end $$;
 
+-- A worktree's first commit (5d): git makes the worker's logs/ and logs/HEAD under repo.git/worktrees/. Made whole, the
+-- folder is refused, as anything made whole under repo.git is the platform's; as a folder and a file (how a session's
+-- folder service publishes them) each is held to its own key's rule and saved. A ref without a lease is still refused.
+do $$
+declare cv jsonb := pg_temp.cv(1); w1 text := pg_temp.wk(1); g text := 'code/acme/app/repo.git/';
+	a jsonb := pg_temp.stage('git-alpha'); r jsonb;
+begin
+	r := pg_temp.vcommit(cv, 'git-w1-first-whole', jsonb_build_array(
+		jsonb_build_object('op','new_folder','path',g || 'worktrees/' || w1 || '/logs','contents',
+			jsonb_build_array(jsonb_build_object('path','HEAD','kind','file','file',a))),
+		jsonb_build_object('op','write','path',g || 'refs/heads/qorpera/first','file',a)));
+	perform pg_temp.refused(r, array['git_platform_only', 'git_lease_required']);
+	r := pg_temp.vcommit(cv, 'git-w1-first', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path',g || 'worktrees/' || w1 || '/logs'),
+		jsonb_build_object('op','write','path',g || 'worktrees/' || w1 || '/logs/HEAD','file',a),
+		jsonb_build_object('op','write','path',g || 'worktrees/' || w1 || '/index','file',a),
+		jsonb_build_object('op','write','path',g || 'worktrees/' || w1 || '/COMMIT_EDITMSG','file',a),
+		jsonb_build_object('op','write','path',g || 'refs/heads/qorpera/first','file',a)));
+	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	perform pg_temp.expect(r, 5, 'refused', 'git_lease_required');
+end $$;
+
 -- Written again under repo.git: an object onto its own bytes and a folder that is there are saved as they stand, at
 -- their versions, and a commit of nothing else takes no seq. Outside repo.git a folder that is there is still a conflict.
 do $$

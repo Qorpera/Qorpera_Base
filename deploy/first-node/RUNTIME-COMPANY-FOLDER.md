@@ -881,6 +881,11 @@ cannot see the process (amended 2026-09-28; it was virtiofs).
   `repo.git/worktrees/<workerId>/`. Everyone else reads them.
   - They publish together at the ordinary command end (section 2), and they
     never conflict.
+  - A new folder among them, such as the `logs/` git makes at the
+    worktree's first commit, publishes as the folder and then each file in
+    it, not as one new folder unit ("Units" above): the core refuses a
+    session's new folder unit anywhere in `repo.git` and holds each key to its
+    own rule.
   - Their lock files are ordinary local files: exclusive on that machine,
     never published, no lease.
   - A `checkout` or `reset --hard` that fails halfway leaves them exactly as

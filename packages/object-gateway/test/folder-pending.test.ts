@@ -957,6 +957,53 @@ describe("a view's pending changes", () => {
 			{ op: "new_folder", path: `${repo}/hooks`, contents: [{ path: "sample", kind: "folder" }] },
 		]);
 	});
+
+	it("makes a session's new folder in a git directory a mkdir with its files one by one, for 5b's rule per key (5d)", () => {
+		const repo = "code/acme/app/repo.git";
+		const own = `${repo}/worktrees/w1`;
+		const tree = "code/acme/app/worktrees/w1";
+		const paths = {
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			[repo]: null,
+			[`${repo}/worktrees`]: null,
+			[own]: null,
+			"code/acme/app/worktrees": null,
+			[tree]: null,
+		};
+		// A worktree's first commit makes its git files' `logs` and `logs/HEAD`; 5b refuses a session's `new_folder` in a
+		// git directory, and saves the `mkdir` and the write. A new folder in the worktree itself is still one unit.
+		const session = setup(paths);
+		session.view.mkdir(`${own}/logs`);
+		write(session.view, `${own}/logs/HEAD`, "0000 1111 commit (initial): first");
+		session.view.mkdir(`${tree}/src`);
+		write(session.view, `${tree}/src/a.txt`, "one");
+		const units = session.publish();
+		expect(units).toHaveLength(3);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "mkdir", path: `${own}/logs` },
+				{ op: "write", path: `${own}/logs/HEAD`, file: expect.any(Object) },
+				{
+					op: "new_folder",
+					path: `${tree}/src`,
+					contents: [{ path: "a.txt", kind: "file", file: expect.any(Object) }],
+				},
+			]),
+		);
+		// The code host's view is the platform's, which 5b gives no git rule: there it stays one unit.
+		const host = setup(paths, true);
+		host.view.mkdir(`${own}/logs`);
+		write(host.view, `${own}/logs/HEAD`, "0000 1111 commit (initial): first");
+		expect(host.publish()).toEqual([
+			{
+				op: "new_folder",
+				path: `${own}/logs`,
+				contents: [{ path: "HEAD", kind: "file", file: expect.any(Object) }],
+			},
+		]);
+	});
 });
 
 describe("a view's links (protocol 4)", () => {
