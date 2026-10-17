@@ -259,7 +259,8 @@ export class CodingFolderControl {
 	#nextSecretSend(machine: string): Promise<SecretsSent> {
 		const sends = this.#secretSends.get(machine);
 		if (sends?.next !== undefined) return sends.next;
-		const send: Promise<SecretsSent> = (async () => {
+		// `send` is read only after an await, once it is set.
+		const run = async (): Promise<SecretsSent> => {
 			if (sends !== undefined) {
 				await sends.running.catch(() => undefined);
 				this.#secretSends.set(machine, { running: send });
@@ -270,7 +271,8 @@ export class CodingFolderControl {
 				const now = this.#secretSends.get(machine);
 				if (now?.running === send && now.next === undefined) this.#secretSends.delete(machine);
 			}
-		})();
+		};
+		const send = run();
 		if (sends === undefined) this.#secretSends.set(machine, { running: send });
 		else sends.next = send;
 		return send;
