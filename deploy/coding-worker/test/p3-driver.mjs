@@ -25,6 +25,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
+import { postgrestError } from "./p3-postgrest-errors.mjs";
 
 const [project, vm, imageFingerprint, packageDirectory, facts] = process.argv.slice(2);
 if (!facts) throw new Error("usage: p3-driver.mjs <project> <node VM> <image fingerprint> <package directory> <node facts JSON>");
@@ -468,16 +469,15 @@ function startExecutor() {
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.startsWith("P3 ")) return void console.error(`executor stdout: ${line}`);
 		const message = JSON.parse(line.slice(3));
-		if (message.t === "rpc")
-			void timed("rpc", message.method, database.rpc(db, message.method, message.args)).then(
-				(result) => send({ t: "rpc", id: message.id, ok: true, result }),
-				(error) => {
-					note(`rpc ${message.method} failed: ${error.sqlState ?? "-"} ${String(error.message).slice(0, 300)}`);
-					// The executor keeps the message only for a folder view's refusals (as the control does).
-					send({ t: "rpc", id: message.id, ok: false, sqlState: error.sqlState ?? null, message: error.sqlState ? String(error.message) : null });
-				},
-			);
-		else if (message.t === "http") {
+		// The executor's control (production's, ../control.ts) asks as it would ask PostgREST, and is answered as the
+		// folder service is: the status and body tell it a busy row and a refusal apart.
+		if (message.t === "rest") {
+			const name = message.path.split("?")[0].replace(/^\/rest\/v1\/rpc\//, "");
+			void timed("rpc", name, restAnswer(message.method, message.path, message.body)).then((answer) => {
+				if (answer.status !== 200) note(`rpc ${name} answered ${answer.status}: ${answer.body.slice(0, 300)}`);
+				send({ t: "rest", id: message.id, status: answer.status, body: answer.body });
+			});
+		} else if (message.t === "http") {
 			const pending = httpPending.get(message.id);
 			httpPending.delete(message.id);
 			if (message.status === 0) pending?.reject(new Error(`the command service is unreachable: ${message.error?.join(" <- ")}`));
@@ -599,8 +599,9 @@ function startPostgrest() {
 	};
 }
 
-/** One PostgREST request: an RPC, or the clocks the folder service polls (core.ts `clocks`). Errors as PostgREST
- * answers them: the SQLSTATE as `code`, the message as raised. */
+/** One PostgREST request, of the node's folder service or the executor's control: an RPC, or the clocks the folder
+ * service polls (core.ts `clocks`). Errors as PostgREST answers them (p3-postgrest-errors.mjs): its status, the
+ * SQLSTATE as `code`, the message as raised. */
 async function restAnswer(method, path, body) {
 	const url = new URL(path, "https://p3-supabase.test");
 	const rpc = /^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]{1,120})$/.exec(url.pathname);
@@ -618,12 +619,7 @@ async function restAnswer(method, path, body) {
 		}
 		return { status: 404, body: JSON.stringify({ code: "PGRST125", message: "Invalid path specified in request URL", details: null, hint: null }) };
 	} catch (error) {
-		const code = error.sqlState ?? null;
-		return {
-			name: rpc?.[1],
-			status: code === "42501" ? 403 : code === "P0002" || code === "PGRST202" ? 404 : code ? 400 : 500,
-			body: JSON.stringify({ code, message: String(error.message), details: error.detail ?? null, hint: null }),
-		};
+		return { name: rpc?.[1], ...postgrestError(error) };
 	}
 }
 

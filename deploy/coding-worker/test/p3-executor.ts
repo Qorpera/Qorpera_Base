@@ -2,8 +2,9 @@
 // runCodingExecutorMain (../executor.ts) with the same configuration, credentials, host (on the folder model when the
 // configuration has `folder`, with its start and mount lines, and the company's code host for its repositories when it
 // has `codeHost` as well), router, command service and loops, and two stand-ins, because the node has no network card:
-//   - control: the executor's RPCs go to the proof's driver over stdio, which runs each one as service_role on the
-//     test database (a PostgREST call: one transaction, 55P03 is busy);
+//   - the control's network: the control is production's (../control.ts), but its PostgREST requests go to the proof's
+//     driver over stdio ("rest" lines), which answers them as its stand-in PostgREST answers the folder service: each
+//     RPC as service_role on the test database, a failure with PostgREST's status and error body;
 //   - the agent plug: no agent exit here (it would have no network to give); the machine's card goes on a bare
 //     qagent0 bridge with the MAC the plug tool gives the first machine address;
 //   - longer waits for a machine's guest to come up and for a session's mount (see the host's options below).
@@ -22,9 +23,9 @@ import { setTimeout } from "node:timers/promises";
 import { LxdCodeHosts } from "../../../packages/runner-orchestrator/src/code-host.ts";
 import { inspectCodeArea } from "../../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../../packages/runner-orchestrator/src/code-host-repositories.ts";
-import { CODE_HOST_RPCS, CodeHostJobs } from "../../../packages/runner-orchestrator/src/code-host-views.ts";
-import { CODING_EXECUTOR_RPCS, CloudCodingExecutor, CodingControlBusy, CodingControlRefused } from "../../../packages/runner-orchestrator/src/coding-executor.ts";
-import { CODING_HOST_RPCS, LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { CodeHostJobs } from "../../../packages/runner-orchestrator/src/code-host-views.ts";
+import { CloudCodingExecutor } from "../../../packages/runner-orchestrator/src/coding-executor.ts";
+import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CODING_FOLDER_CONTROL_SOCKET, CodingFolderControl } from "../../../packages/runner-orchestrator/src/coding-folder-control.ts";
 import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../../packages/runner-orchestrator/src/coding-storage.ts";
@@ -32,19 +33,11 @@ import { LxdUnixClient } from "../../../packages/runner-orchestrator/src/lxd-cli
 import { HttpCloudCodingCommandService } from "../../../packages/runtime/src/cloud-coding-command-http.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "../command-authority.ts";
 import { CodingCommandRouter } from "../command-routing.ts";
+import { CodingExecutorHttpControl } from "../control.ts";
 import { readCodingServiceCredential } from "../credentials.ts";
 import { errorCode, logCodeHost, parseCodingExecutorConfiguration } from "../executor.ts";
 import { REPOSITORY_TOKEN } from "../repository-credentials.ts";
 
-const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODE_HOST_RPCS, "qorpera_authorize_coding_command",
-	"qorpera_route_coding_command", "qorpera_native_binding_proven"]);
-/** The core's refusals of a coding session's folder view that the control keeps (deploy/coding-worker/control.ts). */
-const VIEW_REFUSALS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-	["qorpera_folder_view_open", new Set(["Folder core authority is required", "Company folder is unavailable",
-		"Folder view is invalid", "Folder view opener is invalid", "Folder view anchor is invalid",
-		"Folder view attachment is not current", "Folder view principals are unavailable"])],
-	["qorpera_folder_view_close", new Set(["Folder core authority is required", "Folder view is unavailable"])],
-]);
 const log = (value: Record<string, unknown>) => process.stderr.write(`${JSON.stringify(value)}\n`);
 console.log = console.error;
 const send = (value: Record<string, unknown>) => process.stdout.write(`P3 ${JSON.stringify(value)}\n`);
@@ -92,40 +85,36 @@ async function boundaryWitness(target: string): Promise<string> {
 	return path;
 }
 
-type Pending = { method: string; resolve(value: unknown): void; reject(error: Error): void };
-class DriverControl {
+/** The control's network: each PostgREST request goes to the driver ("rest" lines), which answers it with a status
+ * and body as its stand-in PostgREST answers the folder service (p3-driver.mjs `restAnswer`). So the control is
+ * production's own, and tells a busy row and a refusal apart as it does there. */
+class DriverRest {
 	#next = 0;
-	readonly #pending = new Map<number, Pending>();
-	call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		if (!METHODS.has(method)) return Promise.reject(new Error("CODING_CONTROL_METHOD_INVALID"));
-		if (Buffer.byteLength(JSON.stringify(args)) > 128 * 1024) return Promise.reject(new Error("CODING_CONTROL_REQUEST_TOO_LARGE"));
+	readonly #pending = new Map<number, (message: Record<string, unknown>) => void>();
+	readonly fetch: typeof fetch = (input, init) => {
+		const url = new URL(input instanceof Request ? input.url : input);
 		const id = ++this.#next;
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
+		const signal = init?.signal;
 		return new Promise((resolve, reject) => {
 			const abort = () => {
 				this.#pending.delete(id);
-				reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+				reject(signal?.reason ?? new Error("aborted"));
 			};
-			if (checked.aborted) return abort();
-			checked.addEventListener("abort", abort, { once: true });
-			const settle = <T>(use: (value: T) => void) => (value: T) => {
-				checked.removeEventListener("abort", abort);
-				this.#pending.delete(id);
-				use(value);
-			};
-			this.#pending.set(id, { method, resolve: settle(resolve), reject: settle(reject) });
-			send({ t: "rpc", id, method, args });
+			if (signal?.aborted) return abort();
+			signal?.addEventListener("abort", abort, { once: true });
+			this.#pending.set(id, (message) => {
+				signal?.removeEventListener("abort", abort);
+				const headers = { "content-type": "application/json" };
+				resolve(new Response(String(message.body), { status: Number(message.status), headers }));
+			});
+			send({ t: "rest", id, method: init?.method ?? "GET", path: `${url.pathname}${url.search}`,
+				body: typeof init?.body === "string" ? init.body : null });
 		});
-	}
+	};
 	answer(message: Record<string, unknown>): void {
-		const pending = this.#pending.get(Number(message.id));
-		if (!pending) return;
-		if (message.ok === true) return pending.resolve(message.result ?? null);
-		// As deploy/coding-worker/control.ts: a busy row, or a folder view's refusal in the core's own words.
-		const refused = VIEW_REFUSALS.get(pending.method);
-		pending.reject(message.sqlState === "55P03" ? new CodingControlBusy() :
-			refused && ["42501", "22023"].includes(String(message.sqlState)) && refused.has(String(message.message))
-				? new CodingControlRefused(String(message.message)) : new Error("CODING_CONTROL_UNCONFIRMED"));
+		const settle = this.#pending.get(Number(message.id));
+		this.#pending.delete(Number(message.id));
+		settle?.(message);
 	}
 }
 
@@ -137,7 +126,11 @@ async function main(): Promise<void> {
 	const config = parseCodingExecutorConfiguration(JSON.parse(await credential("qorpera-coding-executor-config")));
 	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
-	const control = new DriverControl();
+	const rest = new DriverRest();
+	// The driver runs each request as service_role and reads no key: this one is a placeholder, not a secret.
+	const control = new CodingExecutorHttpControl({
+		supabaseUrl: "https://p3-supabase.test", serviceRoleKey: "p3", fetch: rest.fetch,
+	});
 	const stop = new AbortController();
 	const lines = createInterface({ input: process.stdin });
 	const storage = createCodingNasStorage(config.storagePolicy);
@@ -224,7 +217,7 @@ async function main(): Promise<void> {
 		} catch {
 			return log({ event: "p3-bad-line" });
 		}
-		if (message.t === "rpc") control.answer(message);
+		if (message.t === "rest") rest.answer(message);
 		else if (message.t === "stop") stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 		else if (message.t === "inspect")
 			void (async () => {
