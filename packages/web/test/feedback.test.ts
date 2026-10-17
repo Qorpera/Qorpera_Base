@@ -46,13 +46,18 @@ async function open() {
 		submit: dialog.querySelector<HTMLButtonElement>('[type="submit"]')!,
 	};
 }
-/** The RPCs made, besides the company's mail and offers reads, which run while it is open (Interfaces steps I5c and
- * I9c). */
+/** The RPCs made, besides the company's mail, offers and pages reads, which run while it is open (Interfaces steps I5c,
+ * I9c and C6a). */
 function rpcs(f: ReturnType<typeof fixture>): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		.filter((name) => !name.startsWith("qorpera_member_mail_") && name !== "qorpera_member_interface_offers");
+		.filter(
+			(name) =>
+				!name.startsWith("qorpera_member_mail_") &&
+				name !== "qorpera_member_interface_offers" &&
+				name !== "qorpera_member_interface_pages",
+		);
 }
 function fill(details: HTMLTextAreaElement, value = "The sidebar is clearer."): void {
 	details.value = value;

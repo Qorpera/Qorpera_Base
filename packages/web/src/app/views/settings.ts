@@ -4,6 +4,7 @@ import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebEventHooks } from "../../cloud/event-hooks.ts";
+import { interfacePageCalls } from "../../cloud/interface-pages.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -23,6 +24,7 @@ import { renderPlan } from "./plan.ts";
 import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { HooksView } from "./settings-hooks.ts";
+import { PagesView } from "./settings-pages.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -48,7 +50,7 @@ const TABS = [
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff file delete leave virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller slet forlad",
+			"people team members invitations staff file delete leave pages mailbox interfaces virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller slet forlad sider postkasse grænseflader",
 	},
 	{
 		id: "friends",
@@ -103,6 +105,8 @@ export class SettingsView {
 	readonly #invitationCount = h("span", { class: "settings-tab-count", hidden: true });
 	readonly #close: () => void;
 	readonly #companyRemoved: (profileId: string) => void;
+	/** Told after a page was switched on or off, with the company's environment. */
+	readonly #pagesChanged: (environmentId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
 	readonly #search = h("input", {
@@ -130,6 +134,8 @@ export class SettingsView {
 	#companyEnvironment: CodingEnvironmentView | undefined;
 	#hooks: HooksView | undefined;
 	#rules: RulesView | undefined;
+	/** The company's pages, on the Company tab. */
+	#pages: PagesView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
 	readonly #accountPanel = h("div");
 	readonly #rulesSlot = h("div");
@@ -162,6 +168,7 @@ export class SettingsView {
 		close: () => void,
 		companyRemoved: (profileId: string) => void,
 		tab: SettingsTab = "general",
+		pagesChanged: (environmentId: string) => void = () => {},
 	) {
 		this.#api = api;
 		this.#auth = auth;
@@ -169,6 +176,7 @@ export class SettingsView {
 		this.#friends = new FriendsController(api);
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
+		this.#pagesChanged = pagesChanged;
 		this.#borrowedCompany = company;
 		this.#payments = new PlanPayments(api, () => {
 			if (!this.#lifetime.signal.aborted && this.#panels.has("plan")) this.#plan();
@@ -330,6 +338,7 @@ export class SettingsView {
 		this.#companyEnvironment?.dispose();
 		this.#hooks?.dispose();
 		this.#rules?.dispose();
+		this.#pages?.dispose();
 		this.#friends.dispose();
 		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
@@ -603,6 +612,8 @@ export class SettingsView {
 		this.#hooks = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
+		this.#pages?.dispose();
+		this.#pages = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -626,6 +637,7 @@ export class SettingsView {
 				this.#companyEnvironment?.update();
 				this.#hooks?.update();
 				this.#rules?.update();
+				this.#pages?.update();
 				this.#drawCompany();
 				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
 				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
@@ -656,10 +668,23 @@ export class SettingsView {
 					h("h2", null, uiText("Staff at work")),
 					h("div", { class: "settings-staff" }),
 				),
+				h("div", { class: "settings-pages-slot" }),
 				h("div", { class: "settings-file" }),
 				h("div", { class: "settings-company-exit" }),
 			);
 		}
+		// The pages are read once the Company tab shows, and kept until the company changes.
+		if (!this.#pages && this.#tab === "company") {
+			const environmentId = company.profile.environmentId;
+			this.#pages = new PagesView(
+				interfacePageCalls(this.#api.cloud, environmentId),
+				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				() => company.store.get().team?.role,
+				() => this.#pagesChanged(environmentId),
+			);
+		}
+		const pagesSlot = panel.querySelector<HTMLElement>(".settings-pages-slot")!;
+		if (this.#pages && pagesSlot.firstChild !== this.#pages.el) replace(pagesSlot, this.#pages.el);
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("href")

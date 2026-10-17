@@ -28,7 +28,7 @@ import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import { interfaceBadge } from "../interface-badge.ts";
-import { type CompanyInterface, companyInterfaces, interfaceMainProblem } from "../interfaces.ts";
+import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
 import type { Route } from "../router.ts";
 import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../update-group.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -269,11 +269,9 @@ interface RailParts {
 	readonly switcher: HTMLElement;
 	readonly tabAgents: HTMLButtonElement;
 	readonly tabInterfaces: HTMLButtonElement;
-	/** The Interfaces tab's list, kept like the agents' list, its line when a search matches none, and the quiet line
-	 * the owners see when the company has no main interface or several (RUNTIME-INTERFACES.md §6.1 rule 3). */
+	/** The Interfaces tab's list, kept like the agents' list, and its line when a search matches none. */
 	readonly interfaces: HTMLElement;
 	readonly interfacesEmpty: HTMLElement;
-	readonly interfacesNote: HTMLElement;
 	/** The tab shown, and the route it was last decided for: a new route picks its tab, a click picks between. */
 	tab: RailTab;
 	tabRoute: string;
@@ -497,7 +495,6 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				"aria-labelledby": "rail-tab-interfaces",
 			}),
 			interfacesEmpty: h("p", { class: "rail-empty" }),
-			interfacesNote: h("p", { class: "rail-note" }),
 			tab: storedTab(company.profile.profileId),
 			tabRoute: "",
 			shownTab: undefined,
@@ -1286,10 +1283,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 
 /* ---- The Interfaces tab ------------------------------------------------------------- */
 
-/** The Interfaces tab: the main interface as the big card on top, the way the Co-Founder tops the agents, then
- * the others as rows. A page whose text doesn't parse is a row that says it has a problem. When the company has no
- * main interface or several, its owners see a quiet line about it above the list (§6.1 rule 3). Search filters them
- * by name. A row is rebuilt only when what it shows changes. */
+/** The Interfaces tab: the pages that are on, Mailbox and Members, as rows. Search filters them by name. A row is
+ * rebuilt only when what it shows changes. */
 function drawInterfaces(
 	parts: RailParts,
 	company: CompanyController,
@@ -1301,13 +1296,11 @@ function drawInterfaces(
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
 	const elements = shown
-		.filter((entry) => !query || (entry.file?.name ?? entry.name).toLowerCase().includes(query))
+		.filter((entry) => !query || entry.file.name.toLowerCase().includes(query))
 		.map((entry) => {
 			const { name, file } = entry;
-			const count = file ? interfaceBadge(company, file) : 0;
-			const model = JSON.stringify(
-				file ? [name, file.name, file.about, file.emblem, file.colour, entry.main, count] : [name, "broken"],
-			);
+			const count = interfaceBadge(company, file);
+			const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, count]);
 			const kept = parts.interfaceRows.get(name);
 			const element =
 				kept?.shown === model ? kept.element : interfaceRailRow(entry, `#/c/${profileId}/i/${name}`, count);
@@ -1320,12 +1313,7 @@ function drawInterfaces(
 	parts.interfaceRows = rows;
 	if (parts.interfacesEmpty.textContent !== t("No matching interfaces."))
 		parts.interfacesEmpty.textContent = t("No matching interfaces.");
-	const note = interfaceMainProblem(company);
-	if (note !== null && parts.interfacesNote.textContent !== note) parts.interfacesNote.textContent = note;
-	reconcile(parts.interfaces, [
-		...(note !== null ? [parts.interfacesNote] : []),
-		...(elements.length ? elements : [parts.interfacesEmpty]),
-	]);
+	reconcile(parts.interfaces, elements.length ? elements : [parts.interfacesEmpty]);
 }
 
 /** An interface's badge on its emblem (§3 `badge`): how many of its rows wait, said in its label too. */
@@ -1335,41 +1323,11 @@ function countBadge(count: number): HTMLElement | null {
 		: null;
 }
 
-/** An interface in the tab: the main one's card, another's row, or the row of a page whose text doesn't parse. */
+/** A page's row in the tab. */
 function interfaceRailRow(entry: CompanyInterface, href: string, count: number): HTMLElement {
 	const file = entry.file;
-	if (!file)
-		return h(
-			"a",
-			{ class: "rail-row rail-row-interface is-broken", href, draggable: "false", title: entry.name },
-			h("span", { class: "rail-row-stand" }, interfaceEmblem(null, null, 40)),
-			h(
-				"span",
-				{ class: "rail-row-copy" },
-				h("strong", null, entry.name),
-				h("small", null, t("This page has a problem.")),
-			),
-		);
 	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
 	const label = waiting ? `${file.name}, ${waiting}` : file.name;
-	if (entry.main)
-		return h(
-			"a",
-			{
-				class: "cofounder-home interface-home",
-				href,
-				draggable: "false",
-				title: file.about ?? file.name,
-				"aria-label": label,
-			},
-			h(
-				"span",
-				{ class: "cofounder-stand interface-stand" },
-				interfaceEmblem(file.emblem, file.colour, 64),
-				countBadge(count),
-			),
-			h("strong", null, file.name),
-		);
 	return h(
 		"a",
 		{

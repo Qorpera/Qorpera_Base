@@ -276,9 +276,6 @@ export function renderActionReviewCard(
 		answerFailed?: boolean;
 		draft?: ActionReviewDraft;
 		onDraft?: (draft: ActionReviewDraft) => void;
-		/** How the change would look, drawn under it while the card waits: a page an agent asks to save (step I10,
-		 * app/views/interface-preview.ts). The thread keeps it across re-renders. */
-		preview?: HTMLElement;
 	},
 ): HTMLElement {
 	const resolved = resolution === undefined ? undefined : authorizationData(resolution);
@@ -471,7 +468,6 @@ export function renderActionReviewCard(
 		},
 		h("h3", { class: "review-headline" }, what),
 		reviewChange(card),
-		options.preview,
 		reasons,
 		failed,
 		options.answer

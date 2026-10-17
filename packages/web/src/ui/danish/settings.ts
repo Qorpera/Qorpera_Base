@@ -507,4 +507,17 @@ export const SETTINGS: Record<string, string> = {
 	"Rules are not available on this cloud yet.": "Regler er ikke tilgængelige i denne sky endnu.",
 	"Built-in safety checks always apply.": "Indbyggede sikkerhedstjek gælder altid.",
 	"Open a company to see its rules.": "Åbn en virksomhed for at se dens regler.",
+	// Settings → Company → Pages (views/settings-pages.ts)
+	Pages: "Sider",
+	Mailbox: "Postkasse",
+	Members: "Medlemmer",
+	"The company's mail, for every member. It shows once the company has a mail address (Company connections → Mailboxes).":
+		"Virksomhedens post, for alle medlemmer. Den vises, når virksomheden har en mailadresse (Virksomhedens forbindelser → Postkasser).",
+	"Who owns and supervises each agent. It shows once the company has a second member.":
+		"Hvem der ejer og har tilsyn med hver agent. Den vises, når virksomheden har mindst to medlemmer.",
+	"{page} could not be changed. Try again.": "{page} kunne ikke ændres. Prøv igen.",
+	"Pages are not available on this cloud yet.": "Sider er ikke tilgængelige i denne sky endnu.",
+	"Switching a page off only hides it. Nothing it showed is removed.":
+		"At slå en side fra skjuler den kun. Intet af det, den viste, bliver fjernet.",
+	"Only owners and admins can switch pages on or off.": "Kun ejere og administratorer kan slå sider til og fra.",
 };
