@@ -242,13 +242,13 @@ interface BootFolder {
 	 * (6e-2a, #noted), and how many more there were. */
 	notSaved: CloudMachineFolderNotSaved[];
 	moreNotSaved: number;
-	/** The writes the core refused that each open view of the boot keeps pending, as the view's newest boundary reported
-	 * them (#noted): every receipt whose output leaves says them while they last. */
-	refusing: Map<string, Refusing>;
+	/** The paths the folder did not save that each open view of the boot keeps pending, as the view's newest boundary
+	 * reported them (#noted): every receipt whose output leaves says them while they last. */
+	stillNotSaved: Map<string, StillNotSaved>;
 }
-/** One view's writes the core refused that it keeps pending: at most 8, and a count of the rest (6e-2a). */
-interface Refusing {
-	notSaved: CloudMachineFolderNotSaved[];
+/** One view's paths not saved that it keeps pending: at most 8, and a count of the rest (6e-2a). */
+interface StillNotSaved {
+	paths: CloudMachineFolderNotSaved[];
 	more: number;
 }
 export type CompanyMachineCommand =
@@ -298,37 +298,37 @@ function unreleased(boundary: MachineBoundary | undefined): string {
 }
 /** What a boundary's reports say the company folder did not take (6e-2a), for the boot's receipts whose output leaves,
  * each path as the receipt's report checks it: at most 8, and a count of the rest. A path the folder let go unsaved is
- * said once, on the next such receipt. A write the core refused that its view keeps pending (the service tries it again
- * at each boundary, and is refused again) is said on every such receipt while the view's newest boundary still reports
- * it so: one saved meanwhile (by a quiet publish, whose outcome only the service's notices keep) is no longer said, and
- * one refused again is. A path still on its way (kept `waiting`, an open file, or `not_applied`, not sent or not
- * answered yet), or kept by a change set refused whole in a way that may lift (the pause, the run check), is said once
- * it settles. */
+ * said once, on the next such receipt (`notSaved`). A path its view keeps pending for the service to try again at each
+ * boundary (a write the core refused, or a conflict whose bytes the receipt did not keep) is said on every such receipt
+ * while the view's newest boundary still reports it so (`stillNotSaved`): one saved meanwhile (by a quiet publish, whose
+ * outcome only the service's notices keep) is no longer said, and one refused again is. A path still on its way (kept
+ * `waiting`, an open file, or `not_applied`, not sent or not answered yet), or kept by a change set refused whole in a
+ * way that may lift (the pause, the run check), is said once it settles. */
 function noted(boot: BootFolder | undefined, boundary: MachineBoundary | undefined): void {
 	if (!boot || !boundary) return;
 	// A view the boundary no longer lists, or says is closed, keeps nothing pending.
-	for (const viewId of boot.refusing.keys())
+	for (const viewId of boot.stillNotSaved.keys())
 		if (!boundary.views.some((view) => view.viewId === viewId && view.error?.code !== "VIEW_CLOSED"))
-			boot.refusing.delete(viewId);
+			boot.stillNotSaved.delete(viewId);
 	for (const view of boundary.views) {
 		const paths = view.report?.paths;
 		// A view without a report this time keeps what its last one said.
 		if (!Array.isArray(paths)) continue;
 		const lifts = view.report?.refused === "stopped" || view.report?.refused === "run_ended";
-		const refusing: Refusing = { notSaved: [], more: 0 };
+		const still: StillNotSaved = { paths: [], more: 0 };
 		for (const item of paths as unknown[]) {
 			const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
 			if (entry.outcome === "saved") continue;
 			const kept = entry.kept === true;
 			if (kept && (lifts || entry.outcome === "waiting" || entry.outcome === "not_applied")) continue;
-			const list = kept ? refusing.notSaved : boot.notSaved;
+			const list = kept ? still.paths : boot.notSaved;
 			const shown = list.length < CLOUD_MACHINE_FOLDER_LIMITS.notSaved ? notSavedOf(entry) : undefined;
 			if (shown) list.push(shown);
-			else if (kept) refusing.more++;
+			else if (kept) still.more++;
 			else boot.moreNotSaved++;
 		}
-		if (refusing.notSaved.length || refusing.more) boot.refusing.set(view.viewId, refusing);
-		else boot.refusing.delete(view.viewId);
+		if (still.paths.length || still.more) boot.stillNotSaved.set(view.viewId, still);
+		else boot.stillNotSaved.delete(view.viewId);
 	}
 }
 /** One path not saved as a receipt shows it, or none when it cannot be (its reason dropped first). */
@@ -668,7 +668,7 @@ export class LxdCompanyMachineHost {
 				windows: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
-				refusing: new Map(),
+				stillNotSaved: new Map(),
 			};
 			this.#folders.set(e.placementId, f);
 			return {
@@ -697,7 +697,7 @@ export class LxdCompanyMachineHost {
 					windows: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
-					refusing: new Map(),
+					stillNotSaved: new Map(),
 				};
 				this.#folders.set(e.placementId, f);
 			}
@@ -1544,9 +1544,9 @@ export class LxdCompanyMachineHost {
 	}
 	/** A receipt with the company folder's report (6e-2a): whether the command's boot has /company, and why not; why
 	 * its output is held back (`heldBack`); why the machine lost the command (`lost`, SQL's cause); and, on a receipt
-	 * whose output leaves (`released`), the paths the folder let go unsaved since the boot's last such receipt, once,
-	 * and the writes the core refused that the boot's views still keep pending (#noted). The report fits the agent's
-	 * tool result as it measures it: paths that do not are counted instead. */
+	 * whose output leaves (`released`), the paths the folder let go unsaved since the boot's last such receipt, once
+	 * (`notSaved`), and those it did not save that the boot's views still keep pending (`stillNotSaved`, #noted). The
+	 * report fits the agent's tool result as it measures it: paths that do not are counted instead. */
 	#told(
 		authority: CompanyMachineCommandAuthority,
 		boot: BootFolder | undefined,
@@ -1574,22 +1574,33 @@ export class LxdCompanyMachineHost {
 			...(heldBack !== undefined ? { heldBack } : {}),
 			...(lost !== undefined ? { lost } : {}),
 		};
-		// What was let go unsaved since the last such receipt, once, then what the boot's views still keep refused.
-		const notSaved: CloudMachineFolderNotSaved[] = [];
+		// What was let go unsaved since the last such receipt, once; and what the boot's views still keep pending.
+		const notSaved = released && boot ? boot.notSaved.splice(0) : [];
 		let more = 0;
+		const still: CloudMachineFolderNotSaved[] = [];
+		let moreStill = 0;
 		if (released && boot) {
-			const refusing = [...boot.refusing.values()];
-			more = boot.moreNotSaved + refusing.reduce((n, view) => n + view.more, 0);
+			more = boot.moreNotSaved;
 			boot.moreNotSaved = 0;
-			for (const item of [...boot.notSaved.splice(0), ...refusing.flatMap((view) => view.notSaved)])
-				if (notSaved.length < CLOUD_MACHINE_FOLDER_LIMITS.notSaved) notSaved.push(item);
-				else more++;
+			for (const view of boot.stillNotSaved.values()) {
+				moreStill += view.more;
+				for (const item of view.paths)
+					if (still.length < CLOUD_MACHINE_FOLDER_LIMITS.notSaved) still.push(item);
+					else moreStill++;
+			}
 		}
 		const shown = () => ({
 			...report,
 			...(notSaved.length ? { notSaved } : {}),
 			...(more ? { moreNotSaved: more } : {}),
+			...(still.length ? { stillNotSaved: still } : {}),
+			...(moreStill ? { moreStillNotSaved: moreStill } : {}),
 		});
+		// Over the bytes, what the next receipt says again goes first.
+		while (still.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes) {
+			still.pop();
+			moreStill++;
+		}
 		while (notSaved.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes) {
 			notSaved.pop();
 			more++;

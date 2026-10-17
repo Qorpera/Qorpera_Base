@@ -64,26 +64,42 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-/** The company folder's report on a read asked again with a smaller page: the executor says each path not saved once
- * (F3 6e-2a), so the report shown keeps the paths of the tries before, within the report's limits, and counts the rest.
- * The rest of the report is the last try's. */
+/** The company folder's report on a read asked again with a smaller page: the executor says each path it let go unsaved
+ * once (F3 6e-2a, `notSaved`), so the report shown keeps those of the tries before, within the report's limits, and
+ * counts the rest. The paths still not saved (`stillNotSaved`) come on every try, so the last try's are shown, as is
+ * the rest of its report; over the bytes they go first, as the next receipt says them again. */
 function carried(
 	before: CloudMachineCommandFolder | undefined,
 	folder: CloudMachineCommandFolder | undefined,
 ): CloudMachineCommandFolder | undefined {
 	if (!before || !folder) return folder;
-	const { notSaved: _notSaved, moreNotSaved: _more, ...rest } = folder;
+	const {
+		notSaved: _notSaved,
+		moreNotSaved: _more,
+		stillNotSaved: lastStill,
+		moreStillNotSaved: lastMoreStill,
+		...rest
+	} = folder;
 	const listed = [...(before.notSaved ?? []), ...(folder.notSaved ?? [])];
 	let more = (before.moreNotSaved ?? 0) + (folder.moreNotSaved ?? 0);
+	const still = [...(lastStill ?? [])];
+	let moreStill = lastMoreStill ?? 0;
 	const shown = (): CloudMachineCommandFolder => ({
 		...rest,
 		...(listed.length ? { notSaved: listed } : {}),
 		...(more ? { moreNotSaved: more } : {}),
+		...(still.length ? { stillNotSaved: still } : {}),
+		...(moreStill ? { moreStillNotSaved: moreStill } : {}),
 	});
-	while (
-		listed.length > CLOUD_MACHINE_FOLDER_LIMITS.notSaved ||
-		(listed.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes)
-	) {
+	while (listed.length > CLOUD_MACHINE_FOLDER_LIMITS.notSaved) {
+		listed.pop();
+		more++;
+	}
+	while (still.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes) {
+		still.pop();
+		moreStill++;
+	}
+	while (listed.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes) {
 		listed.pop();
 		more++;
 	}
@@ -115,7 +131,9 @@ export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRI
 /** What a command's result says of the company folder (F3 6e-2a). */
 const FOLDER_REPORT =
 	"On a machine with the company folder, the result has companyFolder: company says whether this boot of the machine has /company (mounted, pending, or none with why); heldBack says why the output and the end are not shown yet; " +
-	"notSaved lists files the company folder did not save from the machine, with why, each said once (moreNotSaved counts the rest); lost says why the machine lost a lost command, also on a MACHINE_COMMAND_ENDED refusal.";
+	"notSaved lists files the company folder did not save from the machine and let go, with why, each said once (moreNotSaved counts the rest); " +
+	"stillNotSaved lists files it did not save but holds to try again, with why, said on every result while that lasts (moreStillNotSaved counts the rest); " +
+	"lost says why the machine lost a lost command, also on a MACHINE_COMMAND_ENDED refusal.";
 export const CLOUD_MACHINE_RUN_DESCRIPTION =
 	"Run a shell command as root on a running machine (a bash login shell in /root). It returns a durable command handle; running is not success. " +
 	"The command has no time limit unless you set timeoutMs. It keeps running after your turn ends, until it exits, you cancel it or the machine stops. " +

@@ -370,11 +370,13 @@ Each `machine_run`, `machine_read` and `machine_cancel` receipt carries `company
   helper, a view the node closed each time it was handed, a boot whose folder ended (a restart by rule 5, or its disk's
   retirement, with the cause), or a refused open (the starter's authority, or the core's words);
 - `heldBack`: why the output and the end are not shown yet (the reasons in "Boundaries" above);
-- `notSaved`: the files the folder did not take from the machine, with the outcome and reason, on the boot's receipts
-  whose output leaves; at most 8, the rest counted in `moreNotSaved`. A file the folder let go unsaved is said once, on
-  the next such receipt. A write the core refused that the machine's view keeps pending for the next boundary to try
-  again is said on every such receipt while the view's newest boundary still reports it refused; a file still on its
-  way (open, or its save not answered yet), or held by a pause or the run check, is said once it settles;
+- `notSaved`: the files the folder let go unsaved from the machine, with the outcome and reason, once, on the boot's
+  next receipt whose output leaves; at most 8, the rest counted in `moreNotSaved`;
+- `stillNotSaved`: the files the folder did not save that the machine's view keeps pending for the next boundary to try
+  again (a write the core refused, or a conflict whose bytes the receipt did not keep), on every such receipt while the
+  view's newest boundary still reports them so; at most 8, the rest counted in `moreStillNotSaved`. A file still on its
+  way (open, or its save not answered yet), or held by a pause or the run check, is said once it settles. A read the
+  runtime asks again for a smaller page shows the last try's `stillNotSaved`, and the `notSaved` of every try;
 - `lost`: for a lost command, why its machine lost it: restarted by rule 5 (its reads unproven, its view closed, or its
   view lost by the service), or moved to a new disk (used without the root-read check, the starter's authority
   narrowing, or a read no longer readable; "Access"). SQL keeps the cause on the command

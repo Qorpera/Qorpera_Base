@@ -792,9 +792,11 @@ describe("machine tools", () => {
 			// Each page is as long as the read asks: the first is too large for the result, so the read asks again. The
 			// executor said its paths not saved on the first page only.
 			const folders: Record<string, unknown>[] = [];
+			// What a try after those reports: the paths still not saved, which every try says again.
+			let after: Record<string, unknown> = { company: "mounted" };
 			f.gateway.read.mockImplementation(
 				async (_scope, input) =>
-					page("succeeded", "x".repeat(input.limit ?? 4096), folders.shift() ?? { company: "mounted" }) as never,
+					page("succeeded", "x".repeat(input.limit ?? 4096), folders.shift() ?? after) as never,
 			);
 			const plan = { path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile" };
 			const pay = { path: "people/pay.md", outcome: "denied" };
@@ -830,6 +832,36 @@ describe("machine tools", () => {
 			);
 			expect(cloudMachineFolderBytes(merged)).toBeLessThanOrEqual(CLOUD_MACHINE_FOLDER_LIMITS.bytes);
 			expect(merged.company).toBe("mounted");
+			// The paths still not saved come on every try: the last try's are shown, not added to the first's.
+			f.gateway.read.mockClear();
+			const still = Array.from({ length: 8 }, (_, i) => ({ path: `people/p${i}.md`, outcome: "denied" }));
+			after = { company: "mounted", stillNotSaved: still, moreStillNotSaved: 3 };
+			folders.push({ ...after, notSaved: [plan] }, { ...after, notSaved: [pay] });
+			const again = (await read("e")).companyFolder;
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(again).toEqual({
+				company: "mounted",
+				notSaved: [plan, pay],
+				stillNotSaved: still,
+				moreStillNotSaved: 3,
+			});
+			// Past the report's bytes, they go before the paths said once.
+			f.gateway.read.mockClear();
+			const long = (from: string, n: number) =>
+				Array.from({ length: n }, (_, i) => ({
+					path: `reports/${from}${i}.md`,
+					outcome: "refused",
+					reason: "r".repeat(150),
+				}));
+			after = { company: "mounted", stillNotSaved: long("s", 2) };
+			folders.push({ ...after, notSaved: long("a", 3) }, { ...after, notSaved: long("b", 3) });
+			const full = (await read("f")).companyFolder;
+			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([4096, 2048]);
+			expect(full.notSaved).toEqual([...long("a", 3), ...long("b", 3)]);
+			expect(full).not.toHaveProperty("moreNotSaved");
+			expect(full).not.toHaveProperty("stillNotSaved");
+			expect(full.moreStillNotSaved).toBe(2);
+			expect(cloudMachineFolderBytes(full)).toBeLessThanOrEqual(CLOUD_MACHINE_FOLDER_LIMITS.bytes);
 		} finally {
 			f.boundary.close();
 		}

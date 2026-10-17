@@ -101,11 +101,15 @@ describe("machine command receipt", () => {
 				{ path: "notes/b.md", outcome: "waiting_for_review" },
 			],
 			moreNotSaved: 3,
+			stillNotSaved: [{ path: "pay.md", outcome: "denied", reason: "denied" }],
+			moreStillNotSaved: 2,
 		};
 		const parsed = parseCloudMachineCommandReceipt(machineReceipt({ state: "lost", companyFolder }));
 		expect(parsed.companyFolder).toEqual(companyFolder);
 		expect(Object.isFrozen(parsed.companyFolder)).toBe(true);
 		expect(Object.isFrozen(parsed.companyFolder?.notSaved?.[0])).toBe(true);
+		expect(Object.isFrozen(parsed.companyFolder?.stillNotSaved)).toBe(true);
+		expect(Object.isFrozen(parsed.companyFolder?.stillNotSaved?.[0])).toBe(true);
 		expect(
 			parseCloudMachineCommandReceipt(machineReceipt({ companyFolder: { company: "mounted" } })).companyFolder,
 		).toEqual({
@@ -138,6 +142,15 @@ describe("machine command receipt", () => {
 		{ company: "pending", notSaved: [{ path: "a", outcome: "conflict", kept: true }] },
 		{ company: "pending", notSaved: [{ path: "x".repeat(301), outcome: "conflict" }] },
 		{ company: "pending", notSaved: Array.from({ length: 9 }, (_, i) => ({ path: `p${i}`, outcome: "denied" })) },
+		{ company: "pending", moreStillNotSaved: 0 },
+		{ company: "pending", moreStillNotSaved: "1" },
+		{ company: "pending", stillNotSaved: [] },
+		{ company: "pending", stillNotSaved: [{ path: "a", outcome: "saved" }] },
+		{ company: "pending", stillNotSaved: [{ path: "a", outcome: "denied", kept: true }] },
+		{
+			company: "pending",
+			stillNotSaved: Array.from({ length: 9 }, (_, i) => ({ path: `p${i}`, outcome: "denied" })),
+		},
 	])("refuses the folder report %j", (companyFolder) => {
 		expect(() => parseCloudMachineCommandReceipt(machineReceipt({ companyFolder }))).toThrow(
 			"Invalid machine command folder report",

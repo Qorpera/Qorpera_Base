@@ -32,9 +32,12 @@ export interface CloudMachineCommandReceipt {
  * sentences for the agent. `company`: `mounted` (this boot has /company),
  * `pending` (not yet), `none` (not on this boot; `why` says why). `heldBack`:
  * why output is held back. `lost`: why the machine lost the command. The
- * paths the machine changed in /company that were not saved come once, on the
- * first receipt that shows the output after them; `moreNotSaved` counts those
- * not listed. */
+ * paths the machine changed in /company that the folder let go unsaved come
+ * once, in `notSaved`, on the first receipt that shows the output after them;
+ * `moreNotSaved` counts those not listed. The paths the folder did not save
+ * but holds, to try again at its next boundary (a write it refused, say), come
+ * in `stillNotSaved` on every receipt that shows output while they stay so;
+ * `moreStillNotSaved` counts those not listed. */
 export interface CloudMachineCommandFolder {
 	readonly company: "mounted" | "pending" | "none";
 	readonly why?: string;
@@ -42,6 +45,8 @@ export interface CloudMachineCommandFolder {
 	readonly lost?: string;
 	readonly notSaved?: readonly CloudMachineFolderNotSaved[];
 	readonly moreNotSaved?: number;
+	readonly stillNotSaved?: readonly CloudMachineFolderNotSaved[];
+	readonly moreStillNotSaved?: number;
 }
 export interface CloudMachineFolderNotSaved {
 	readonly path: string;
@@ -54,6 +59,7 @@ export const CLOUD_MACHINE_FOLDER_LIMITS = /* @__PURE__ */ Object.freeze({
 	path: 300,
 	outcome: 64,
 	reason: 200,
+	/** In `notSaved`, and again in `stillNotSaved`. */
 	notSaved: 8,
 	/** As the agent's tool measures it: JSON in a JSON string, `<>&` and line separators as `\uXXXX`. */
 	bytes: 1536,
@@ -88,13 +94,23 @@ const folderText = (value: unknown, limit: number): value is string =>
 	!/[\0-\x1f\x7f]/u.test(value) &&
 	!/[\ud800-\udfff]/u.test(value);
 
-const FOLDER_KEYS = ["company", "why", "heldBack", "lost", "notSaved", "moreNotSaved"];
+const FOLDER_KEYS = [
+	"company",
+	"why",
+	"heldBack",
+	"lost",
+	"notSaved",
+	"moreNotSaved",
+	"stillNotSaved",
+	"moreStillNotSaved",
+];
 
 export function parseCloudMachineCommandFolder(value: unknown): CloudMachineCommandFolder {
 	const fail = () => new Error("Invalid machine command folder report");
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw fail();
 	const input = value as Record<string, unknown>;
 	const L = CLOUD_MACHINE_FOLDER_LIMITS;
+	const badCount = (n: unknown) => n !== undefined && (!Number.isSafeInteger(n) || Number(n) < 1);
 	if (
 		Object.keys(input).some((key) => !FOLDER_KEYS.includes(key)) ||
 		!["mounted", "pending", "none"].includes(input.company as string) ||
@@ -102,40 +118,45 @@ export function parseCloudMachineCommandFolder(value: unknown): CloudMachineComm
 		(input.why !== undefined && !folderText(input.why, L.sentence)) ||
 		(input.heldBack !== undefined && !folderText(input.heldBack, L.sentence)) ||
 		(input.lost !== undefined && !folderText(input.lost, L.sentence)) ||
-		(input.moreNotSaved !== undefined &&
-			(!Number.isSafeInteger(input.moreNotSaved) || Number(input.moreNotSaved) < 1))
+		badCount(input.moreNotSaved) ||
+		badCount(input.moreStillNotSaved)
 	)
 		throw fail();
-	let notSaved: CloudMachineFolderNotSaved[] | undefined;
-	if (input.notSaved !== undefined) {
-		if (!Array.isArray(input.notSaved) || input.notSaved.length < 1 || input.notSaved.length > L.notSaved)
-			throw fail();
-		notSaved = input.notSaved.map((item: unknown) => {
-			if (!item || typeof item !== "object" || Array.isArray(item)) throw fail();
-			const entry = item as Record<string, unknown>;
-			if (
-				Object.keys(entry).some((key) => !["path", "outcome", "reason"].includes(key)) ||
-				!folderText(entry.path, L.path) ||
-				typeof entry.outcome !== "string" ||
-				!/^[a-z][a-z_]{0,63}$/.test(entry.outcome) ||
-				entry.outcome === "saved" ||
-				(entry.reason !== undefined && !folderText(entry.reason, L.reason))
-			)
-				throw fail();
-			return Object.freeze({
-				path: entry.path,
-				outcome: entry.outcome,
-				...(entry.reason !== undefined ? { reason: entry.reason as string } : {}),
-			});
-		});
-	}
+	const paths = (list: unknown): readonly CloudMachineFolderNotSaved[] | undefined => {
+		if (list === undefined) return undefined;
+		if (!Array.isArray(list) || list.length < 1 || list.length > L.notSaved) throw fail();
+		return Object.freeze(
+			list.map((item: unknown) => {
+				if (!item || typeof item !== "object" || Array.isArray(item)) throw fail();
+				const entry = item as Record<string, unknown>;
+				if (
+					Object.keys(entry).some((key) => !["path", "outcome", "reason"].includes(key)) ||
+					!folderText(entry.path, L.path) ||
+					typeof entry.outcome !== "string" ||
+					!/^[a-z][a-z_]{0,63}$/.test(entry.outcome) ||
+					entry.outcome === "saved" ||
+					(entry.reason !== undefined && !folderText(entry.reason, L.reason))
+				)
+					throw fail();
+				return Object.freeze({
+					path: entry.path,
+					outcome: entry.outcome,
+					...(entry.reason !== undefined ? { reason: entry.reason as string } : {}),
+				});
+			}),
+		);
+	};
+	const notSaved = paths(input.notSaved);
+	const stillNotSaved = paths(input.stillNotSaved);
 	const folder: CloudMachineCommandFolder = Object.freeze({
 		company: input.company as CloudMachineCommandFolder["company"],
 		...(input.why !== undefined ? { why: input.why as string } : {}),
 		...(input.heldBack !== undefined ? { heldBack: input.heldBack as string } : {}),
 		...(input.lost !== undefined ? { lost: input.lost as string } : {}),
-		...(notSaved ? { notSaved: Object.freeze(notSaved) } : {}),
+		...(notSaved ? { notSaved } : {}),
 		...(input.moreNotSaved !== undefined ? { moreNotSaved: input.moreNotSaved as number } : {}),
+		...(stillNotSaved ? { stillNotSaved } : {}),
+		...(input.moreStillNotSaved !== undefined ? { moreStillNotSaved: input.moreStillNotSaved as number } : {}),
 	});
 	if (cloudMachineFolderBytes(folder) > L.bytes) throw fail();
 	return folder;
