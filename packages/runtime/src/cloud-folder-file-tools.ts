@@ -204,6 +204,17 @@ function shownTarget(whole: string, shown: string): { target: string } | { targe
 	return shown.length < whole.length ? { target: shown, targetCut: true } : { target: whole };
 }
 
+/** The save check refused the change only because an agent authors no page or table layout (20260930510000): the
+ * same change can never save, so the model is told not to try it again. */
+function layoutAuthoring(unit: CloudCompanyFolderUnitResult): boolean {
+	return (
+		unit.outcome === "refused" &&
+		unit.reason === "structured_rule" &&
+		unit.problems.length > 0 &&
+		unit.problems.every((problem) => problem.code === "layout_authoring")
+	);
+}
+
 /** What the folder core's answer to a change means, for the model. */
 function mutationText(
 	tool: MutationTool,
@@ -226,10 +237,12 @@ function mutationText(
 							: reason === "review_required"
 								? tool === "company_delete"
 									? "Nothing was deleted: the deletion needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
-									: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine, save_interface), not with a file write."
+									: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine), not with a file write."
 								: unit.outcome === "denied"
 									? "COMPANY_FILE_ACCESS_DENIED: you may not change this path; nothing was written."
-									: `Nothing was written (${reason || "refused"})${unit.problems.length ? ": fix the problems listed and call again with a new operationKey" : ""}.`;
+									: layoutAuthoring(unit)
+										? "COMPANY_FILE_LAYOUT_AUTHORING: nothing was written; page and table layout authoring is not available. Do not make this change again, with this or any other tool; if a member asked for it, tell them."
+										: `Nothing was written (${reason || "refused"})${unit.problems.length ? ": fix the problems listed and call again with a new operationKey" : ""}.`;
 	return cloudToolJsonText({
 		schema: "qorpera.company-folder-result/v1",
 		state: unit.outcome === "saved" ? "applied" : unit.outcome === "waiting_for_review" ? "proposed" : "not_applied",

@@ -5,6 +5,7 @@ import {
 	COMMAND_ENDED,
 	type CommitActor,
 	type CommitAnswer,
+	type CommitOutcome,
 	type ConflictCopy,
 	CoreRefusal,
 	type FeedCursor,
@@ -295,6 +296,13 @@ function held(
 			return u.paths.map((path): ReportEntry => ({ path, outcome: o, ...(reason ? { reason } : {}), kept: true }));
 		}),
 	];
+}
+
+/** A unit's reason as the report says it: the core's, and for a rule's refusal the code and message of the first
+ * problem it names, so a machine's report and an agent's command show why ("structured_rule: layout_authoring (page
+ * and table layout authoring is not available)", C6). */
+function reasonOf(reason: string, problem: CommitOutcome["problem"]): string {
+	return problem ? `${reason}: ${problem.code} (${problem.message})` : reason;
 }
 
 /** One read log of a view (F3 4c): its entries up to `taken` are held here, up to `released` the core has them. Those
@@ -3221,7 +3229,7 @@ export class FolderService {
 				entries.push({
 					path,
 					outcome: outcome?.outcome ?? "not_applied",
-					...(outcome?.reason ? { reason: outcome.reason } : {}),
+					...(outcome?.reason ? { reason: reasonOf(outcome.reason, outcome.problem) } : {}),
 					...(copied.has(i) ? { receipt: answer.commitId } : {}),
 					...(target !== undefined ? { target } : {}),
 					...(kept ? { kept: true } : {}),

@@ -8,6 +8,7 @@ import {
 	type CommitActor,
 	type CommitAnswer,
 	type CommitOutcome,
+	type CommitProblem,
 	type ConflictCopy,
 	type CoreEntry,
 	type CoreReceipt,
@@ -311,6 +312,8 @@ export class FakeCore implements FolderCore {
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
+	/** A path's units a structured rule refuses, with the problem it names (C6: an agent's page or table layout). */
+	rule: (path: string) => CommitProblem | undefined = () => undefined;
 	/** Commands that have ended (F3 6a-2): a test machine's unit credited to one of them is refused. */
 	readonly endedCommands = new Set<string>();
 	/** A path's units the core parks for review, applying nothing (P40: an agent's change that needs a member's). */
@@ -469,6 +472,8 @@ export class FakeCore implements FolderCore {
 			const credits = (u as CreditedUnit).credits ?? [];
 			if (credits.some((id) => this.endedCommands.has(id))) return no("refused", "command_ended");
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
+			const problem = this.rule(path);
+			if (problem) return { ...no("refused", "structured_rule"), problem };
 			if (this.park(path)) return no("waiting_for_review", "parked");
 			// The receipt keeps a conflicting unit's files and links (20260930380000), each with its place in the unit.
 			const conflict = (reason: string): CommitOutcome => {
