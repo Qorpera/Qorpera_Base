@@ -13,9 +13,11 @@
 //! `git/<path>`, by their paths in the folder. Caches are kept by the node's folder they are in: the top entries (a
 //! cache folder or file whose folder is the node's) of the folder `a/b` are in `caches/d/a/d/b/t/`, so a cache is told
 //! from the caches of a folder below its own, and the caches of a folder and of all below it move or go together with
-//! it. A local folder that a program started for another view finds is that view's: its git files go (they are seeded
-//! again), its caches stay (they can be rebuilt at any time, and are only ever the machine's own). What goes is moved
-//! to `gone/` first and taken off the disk there apart from the requests.
+//! it. A folder of the node's whose caches are moving into the folder (`mount/on_disk.rs`) is marked (`w`, beside its
+//! `t/`) until all of them have, so the move goes on there under whatever name a rename gives it. A local folder that
+//! a program started for another view finds is that view's: its git files go (they are seeded again), its caches stay
+//! (they can be rebuilt at any time, and are only ever the machine's own). What goes is moved to `gone/` first and
+//! taken off the disk there apart from the requests.
 //!
 //! The kernel knows a local file by its inode on the disk with the top bit set (`LOCAL`); the node's inodes never have
 //! it. So does a handle open on one.
@@ -60,6 +62,9 @@ impl Area {
 
 /// Where what goes from the local folder waits to be taken off the disk.
 const GONE: &str = "gone";
+
+/// The mark of a folder whose caches are moving into the folder (`Local::whole`).
+const WHOLE: &str = "w";
 
 /// The folder a local file is in: a folder of the mount's (by its path), or a local one (by its inode).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +210,11 @@ pub struct Local {
 	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same; with the writes of a
 	/// move the node did not take, by the file's path, so the next move goes on through the same handle.
 	pub moving: Mutex<HashMap<String, Writer>>,
+	/// How many of its folders the node renamed for this view. Held from the node's rename of one until its caches have
+	/// moved with it (`mount.rs`), while the caches of a folder the node no longer has go, and through each of the
+	/// node's folders a move into the folder goes through (`mount/on_disk.rs`): so no listing takes a renamed folder's
+	/// caches for those of one that is gone, and no move goes on under a folder's old name.
+	pub folders: Mutex<u64>,
 	owner: (u32, u32),
 }
 
@@ -252,6 +262,7 @@ impl Local {
 			next_fh: AtomicU64::new(1),
 			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
 			moving: Mutex::new(HashMap::new()),
+			folders: Mutex::new(0),
 			owner,
 		})
 	}
@@ -300,6 +311,39 @@ impl Local {
 	pub fn mirrors(&self, dir: &str) -> Vec<String> {
 		let Ok(read) = fs::read_dir(self.mirror(dir).join("d")) else { return Vec::new() };
 		read.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).collect()
+	}
+
+	/// Whether all the caches of the node's folder `dir`, and of the folders below it, are moving into the folder: it
+	/// was a cache, or was in one, and a move has not taken them all yet (`mount/on_disk.rs`).
+	pub fn whole(&self, dir: &str) -> bool {
+		fs::symlink_metadata(self.mirror(dir).join(WHOLE)).is_ok()
+	}
+
+	/// Marks the node's folder `dir` as one whose caches all move (`whole`), or takes the mark off once they have.
+	pub fn mark_whole(&self, dir: &str, whole: bool) -> io::Result<()> {
+		let mark = self.mirror(dir).join(WHOLE);
+		if whole {
+			fs::DirBuilder::new().recursive(true).mode(0o755).create(self.mirror(dir))?;
+			return OpenOptions::new().create(true).write(true).mode(0o644).open(mark).map(drop);
+		}
+		match fs::remove_file(mark) {
+			Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+			_ => Ok(()),
+		}
+	}
+
+	/// Whether the node's folder `path`, or one below it, is marked as one whose caches all move (`whole`).
+	pub fn whole_below(&self, path: &str) -> bool {
+		let mut todo = vec![self.mirror(path)];
+		while let Some(disk) = todo.pop() {
+			if fs::symlink_metadata(disk.join(WHOLE)).is_ok() {
+				return true;
+			}
+			if let Ok(read) = fs::read_dir(disk.join("d")) {
+				todo.extend(read.flatten().map(|e| e.path()));
+			}
+		}
+		false
 	}
 
 	/// The node has an entry where `dir` has the cache `name` (rule 1): the cache goes.
@@ -369,8 +413,8 @@ impl Local {
 	}
 
 	/// Makes the cache folder `name` in `dir` the caches of the node's folder of that name, which a move has in the
-	/// folder now (`mount/on_disk.rs`): what is in it becomes that folder's top entries. False, and nothing done, when
-	/// that folder has top entries of its own.
+	/// folder now (`mount/on_disk.rs`): what is in it becomes that folder's top entries, all moving (`whole`). False, and
+	/// nothing done, when that folder has top entries of its own.
 	pub fn convert(&self, dir: &str, name: &str) -> io::Result<bool> {
 		let mut names = self.names.lock().unwrap();
 		let path = crate::proto::join(dir, name);
@@ -384,6 +428,7 @@ impl Local {
 			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
 			_ => {}
 		}
+		self.mark_whole(&path, true)?;
 		fs::rename(&top, &into)?;
 		forget(&mut names, ino, &Up::Mount(dir.to_string()), name);
 		for all in names.values_mut() {

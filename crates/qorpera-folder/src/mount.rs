@@ -1075,6 +1075,11 @@ impl Filesystem for FolderFs {
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
 		let folder = source.attr.kind == EntryKind::Folder;
+		let held = match folder.then(|| self.folder_renaming((parent.0, &from_name), (newparent.0, &to_name))) {
+			Some(Err(e)) => return reply.error(Errno::from_i32(e)),
+			Some(Ok(held)) => held,
+			None => None,
+		};
 		let from_base = (!folder).then(|| source.attr.version.clone());
 		let to_base = self.s.versions.lock().unwrap().base(&to);
 		let request = RenameRequest {
@@ -1091,7 +1096,7 @@ impl Filesystem for FolderFs {
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
 		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
 		if folder {
-			self.caches_renamed(&from, &to);
+			self.caches_renamed(held, &from, &to);
 		}
 		self.index_after(&to, index);
 		reply.ok();

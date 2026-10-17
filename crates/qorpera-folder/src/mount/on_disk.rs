@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::MutexGuard;
 
 /// Whether the kernel must ask the node again for `path` each time: git's shared files, which other sessions change.
 pub(super) fn fresh(path: &str) -> bool {
@@ -254,11 +255,12 @@ impl Shared {
 				Err(e) => eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder yet (errno {e})"),
 			}
 		}
-		// A write kept for a move that is done or no longer to be made (its file left the disk, or is a cache again) is
-		// given up at the node. It is a draft (`write_in`), so it leaves nothing in the folder.
+		// A write kept for a move that is done or no longer to be made (its file left the disk, or is a cache again, or
+		// moved on with its folder's rename and was written again under its new name) is given up at the node once no
+		// move is left in its worktree. It is a draft (`write_in`), so it leaves nothing in the folder.
 		let moves = local.cache.lock().unwrap().moves(None);
 		let left: Vec<String> =
-			held.keys().filter(|path| !moves.iter().any(|(w, n)| in_cache(path, w, n))).cloned().collect();
+			held.keys().filter(|path| !moves.iter().any(|(w, _)| in_worktree(path, w))).cloned().collect();
 		for path in left {
 			let writer = held.remove(&path).expect("held");
 			// Given up otherwise, or the node has no such handle open any more.
@@ -274,16 +276,25 @@ impl Shared {
 	/// session's boundary: git tracks files under that name now, so they are the worktree's. Each is made in the node's
 	/// folder first and what is in it becomes that folder's caches (`Local::convert`), each moved in the same way, so
 	/// the view shows every file all along, at the node's or on the disk. One a move did not finish is in the node's
-	/// folder already, with what is left of it among its caches.
+	/// folder already, with what is left of it among its caches, marked as all moving (`Local::whole`) under whatever
+	/// name a rename in the worktree gave it since.
 	fn move_in(&self, local: &Local, held: &mut HashMap<String, Writer>, worktree: &str, name: &str) -> Result<(), i32> {
 		// The node's folders to look in, and whether all of their caches move (what was in a cache that moves).
+		let start = *local.folders.lock().unwrap();
 		let mut todo = vec![(worktree.to_string(), false)];
 		while let Some((dir, whole)) = todo.pop() {
+			// A folder at a time, which no rename moves meanwhile; after one, the move is tried again from the top.
+			let renames = local.folders.lock().unwrap();
+			if *renames != start {
+				return Err(libc::EAGAIN);
+			}
+			let whole = whole || local.whole(&dir);
 			let tops: Vec<fs::DirEntry> = match fs::read_dir(local.room(&dir, Area::Cache)) {
 				Ok(read) => read.flatten().collect(),
 				Err(_) => Vec::new(),
 			};
 			if tops.is_empty() && local.mirrors(&dir).is_empty() {
+				local.mark_whole(&dir, false).map_err(local::errno)?;
 				continue;
 			}
 			let folders: Vec<String> = match self.link.list(&dir) {
@@ -323,11 +334,16 @@ impl Shared {
 			for child in local.mirrors(&dir) {
 				// A folder of the node's with caches in it or below; one made now, or by a move not finished, moves whole.
 				if folders.contains(&child) || made.contains(&child) {
-					let whole = whole || child == name;
-					todo.push((join(&dir, &child), whole));
+					let (whole, path) = (whole || child == name, join(&dir, &child));
+					if whole {
+						local.mark_whole(&path, true).map_err(local::errno)?;
+					}
+					todo.push((path, whole));
 				}
 			}
+			local.mark_whole(&dir, false).map_err(local::errno)?;
 			self.tree.lock().unwrap().invalidate([dir.as_str()]);
+			drop(renames);
 		}
 		Ok(())
 	}
@@ -452,11 +468,23 @@ enum Sent {
 	Node(Fail),
 }
 
-/// Whether the folder's `path` is in `worktree`'s cache folders named `name`.
-fn in_cache(path: &str, worktree: &str, name: &str) -> bool {
-	let Some(rest) = path.strip_prefix(worktree).and_then(|r| r.strip_prefix('/')) else { return false };
-	let folders = rest.rsplit_once('/').map_or("", |(folders, _)| folders);
-	folders.split('/').any(|folder| folder == name)
+/// Whether the folder's `path` is in `worktree`.
+fn in_worktree(path: &str, worktree: &str) -> bool {
+	path.strip_prefix(worktree).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The worktree the folder's `path` is in, if it is in one.
+fn worktree_of(path: &str) -> Option<String> {
+	match git::place(path) {
+		Place::Worktree { area, worker, .. } => Some(git::worktree(area, worker).0),
+		_ => None,
+	}
+}
+
+/// Whether no caches are moving into the folder in the worktree the node's folder `dir` is in (`cache.rs`); outside
+/// one, none ever are.
+fn settled(local: &Local, dir: &str) -> bool {
+	worktree_of(dir).is_none_or(|worktree| local.cache.lock().unwrap().moves(Some(&worktree)).is_empty())
 }
 
 impl FolderFs {
@@ -534,19 +562,19 @@ impl FolderFs {
 		if self.s.cache_dir(ino).is_none() {
 			return Ok(());
 		}
-		let settled = match git::place(dir) {
-			Place::Worktree { area, worker, .. } => {
-				local.cache.lock().unwrap().moves(Some(&git::worktree(area, worker).0)).is_empty()
-			}
-			_ => true,
+		let settled = settled(local, dir);
+		let gone = || {
+			let no_folder = |child: &String| match self.s.child(ino, child) {
+				Ok(c) => c.attr.kind != EntryKind::Folder,
+				Err(e) => e == libc::ENOENT,
+			};
+			local.mirrors(dir).into_iter().filter(no_folder).collect::<Vec<_>>()
 		};
-		if settled {
-			for child in local.mirrors(dir) {
-				match self.s.child(ino, &child) {
-					Ok(c) if c.attr.kind == EntryKind::Folder => {}
-					Ok(_) | Err(libc::ENOENT) => local.drop_mirror(&join(dir, &child)),
-					Err(_) => {}
-				}
+		if settled && !gone().is_empty() {
+			// Asked again once no rename here is between the node's and its caches' (`Local::folders`).
+			let _held = local.folders.lock().unwrap();
+			for child in gone() {
+				local.drop_mirror(&join(dir, &child));
 			}
 		}
 		for cache in local.entries_of(dir, Area::Cache) {
@@ -876,10 +904,34 @@ impl FolderFs {
 		}
 	}
 
-	/// The node renamed its folder `from` to `to` for this view: its caches move with it.
-	pub(super) fn caches_renamed(&self, from: &str, to: &str) {
+	/// Before the node renames its folder `from` to `to` for this view: held until its caches have moved with it
+	/// (`caches_renamed`, `Local::folders`). Refused while caches are moving into the folder in its worktree and one of
+	/// its name is still on the disk (EBUSY: the move makes the node's folder first and empties the cache into it), and
+	/// out of their worktree while some in it or below it are (EXDEV: `mv` copies), where the move would not find them.
+	pub(super) fn folder_renaming(&self, from: (u64, &str), to: (u64, &str)) -> Result<Option<MutexGuard<'_, u64>>, i32> {
+		let Some(local) = &self.s.local else { return Ok(None) };
+		let held = local.folders.lock().unwrap();
+		let Some(dir) = self.s.cache_dir(from.0) else { return Ok(Some(held)) };
+		let path = join(&dir, from.1);
+		if local.is_top(&dir, from.1) && !settled(local, &dir) {
+			return Err(libc::EBUSY);
+		}
+		if local.whole_below(&path) {
+			let worktree = worktree_of(&path);
+			if worktree.is_none() || worktree_of(&join(&self.s.path_of(to.0)?, to.1)) != worktree {
+				return Err(libc::EXDEV);
+			}
+		}
+		Ok(Some(held))
+	}
+
+	/// The node renamed its folder `from` to `to` for this view (`folder_renaming`): its caches move with it.
+	pub(super) fn caches_renamed(&self, held: Option<MutexGuard<'_, u64>>, from: &str, to: &str) {
 		if let Some(local) = &self.s.local {
 			local.renamed(from, to);
+		}
+		if let Some(mut renames) = held {
+			*renames += 1;
 		}
 	}
 }
@@ -889,13 +941,16 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn a_kept_write_belongs_to_a_move_only_inside_a_folder_of_its_name() {
+	fn a_kept_write_belongs_to_the_moves_of_its_worktree() {
 		let w = "code/o/n/worktrees/w";
-		assert!(in_cache("code/o/n/worktrees/w/node_modules/x.js", w, "node_modules"));
-		assert!(in_cache("code/o/n/worktrees/w/pkg/node_modules/a/x.js", w, "node_modules"));
-		assert!(!in_cache("code/o/n/worktrees/w/src/node_modules", w, "node_modules"));
-		assert!(!in_cache("code/o/n/worktrees/w2/node_modules/x.js", w, "node_modules"));
-		assert!(!in_cache("code/o/n/worktrees/w/src/x.js", w, "node_modules"));
+		assert!(in_worktree("code/o/n/worktrees/w/node_modules/x.js", w));
+		assert!(in_worktree("code/o/n/worktrees/w/modules/a/x.js", w));
+		assert!(!in_worktree("code/o/n/worktrees/w2/node_modules/x.js", w));
+		assert!(!in_worktree("code/o/n/worktrees/w", w));
+		assert_eq!(worktree_of("code/o/n/worktrees/w/modules/x.js").as_deref(), Some(w));
+		assert_eq!(worktree_of("code/o/n/worktrees/w").as_deref(), Some(w));
+		assert_eq!(worktree_of("code/o/n/repo.git/worktrees/w/index"), None);
+		assert_eq!(worktree_of("notes/node_modules"), None);
 	}
 
 	#[test]

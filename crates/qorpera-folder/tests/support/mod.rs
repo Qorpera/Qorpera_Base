@@ -60,6 +60,8 @@ struct State {
 	busy_closes: usize,
 	busy_discards: usize,
 	busy_links: usize,
+	/// How many of the next renames to answer only a while after they changed the tree and the feeds heard of it.
+	slow_renames: usize,
 	logs: std::collections::HashMap<String, u64>,
 	/// Every read the machine handed over, as (path, version).
 	logged: Vec<(String, Option<String>)>,
@@ -255,6 +257,11 @@ impl FakeNode {
 		self.state.lock().unwrap().busy_links = links;
 	}
 
+	/// The next `renames` renames are answered three seconds after they changed the tree and the feeds heard of it.
+	pub fn slow_renames(&self, renames: usize) {
+		self.state.lock().unwrap().slow_renames = renames;
+	}
+
 	/// How many of the discards `busy_discards` asked for were not answered BUSY yet.
 	pub fn busy_discards_left(&self) -> usize {
 		self.state.lock().unwrap().busy_discards
@@ -297,6 +304,26 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 	loop {
 		let Ok((k, body)) = read_frame(&mut s) else { return };
 		let mut st = state.lock().unwrap();
+		if k == kind::RENAME && st.writable && st.slow_renames > 0 {
+			// The tree changes now and the answer comes later, while the node goes on with other requests.
+			st.slow_renames -= 1;
+			let req: RenameRequest = serde_json::from_slice(&body).unwrap();
+			st.renames.push(req.clone());
+			let done = rename(&mut st, &req);
+			if done.is_ok() {
+				notify(&mut st, vec![req.from, req.to], false);
+			}
+			drop(st);
+			std::thread::sleep(std::time::Duration::from_secs(3));
+			let result = match done {
+				Ok(()) => write_frame(&mut s, kind::DONE, b"{}"),
+				Err(c) => error(&mut s, c),
+			};
+			if result.is_err() {
+				return;
+			}
+			continue;
+		}
 		let result = match k {
 			kind::LIST => {
 				let req: ListRequest = serde_json::from_slice(&body).unwrap();
@@ -363,6 +390,32 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 
 fn version_of(n: &Node) -> String {
 	format!("v{}", n.version)
+}
+
+/// A rename applied to the tree, or the error code the node answers.
+fn rename(st: &mut State, req: &RenameRequest) -> Result<(), &'static str> {
+	let Some(n) = st.entries.get(&req.from).cloned() else { return Err(code::NOT_FOUND) };
+	if let Some(t) = st.entries.get(&req.to) {
+		if req.no_replace {
+			return Err(code::EXISTS);
+		}
+		if t.folder != n.folder {
+			return Err(if t.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });
+		}
+	}
+	let from = format!("{}/", req.from);
+	let moved: Vec<(String, Node)> = st
+		.entries
+		.iter()
+		.filter(|(p, _)| **p == req.from || p.starts_with(&from))
+		.map(|(p, n)| (p.clone(), n.clone()))
+		.collect();
+	st.entries.remove(&req.to);
+	for (p, n) in moved {
+		st.entries.remove(&p);
+		st.entries.insert(format!("{}{}", req.to, &p[req.from.len()..]), n);
+	}
+	Ok(())
 }
 
 /// A write request, applied to the tree at once.
@@ -518,28 +571,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		kind::RENAME => {
 			let req: RenameRequest = serde_json::from_slice(body).unwrap();
 			st.renames.push(req.clone());
-			let Some(n) = st.entries.get(&req.from).cloned() else { return error(s, code::NOT_FOUND) };
-			if let Some(t) = st.entries.get(&req.to) {
-				if req.no_replace {
-					return error(s, code::EXISTS);
-				}
-				if t.folder != n.folder {
-					return error(s, if t.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });
-				}
+			match rename(st, &req) {
+				Ok(()) => write_frame(s, kind::DONE, b"{}"),
+				Err(c) => error(s, c),
 			}
-			let from = format!("{}/", req.from);
-			let moved: Vec<(String, Node)> = st
-				.entries
-				.iter()
-				.filter(|(p, _)| **p == req.from || p.starts_with(&from))
-				.map(|(p, n)| (p.clone(), n.clone()))
-				.collect();
-			st.entries.remove(&req.to);
-			for (p, n) in moved {
-				st.entries.remove(&p);
-				st.entries.insert(format!("{}{}", req.to, &p[req.from.len()..]), n);
-			}
-			write_frame(s, kind::DONE, b"{}")
 		}
 		kind::SYMLINK => {
 			let req: SymlinkRequest = serde_json::from_slice(body).unwrap();
