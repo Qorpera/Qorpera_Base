@@ -113,10 +113,8 @@ select pg_temp.company_machine_repository_patch('public.qorpera_admit_company_ma
 					and volume.machine_id_sha256 = executor.machine_id_sha256))) then$old$,
 	$new$) then$new$);
 
--- machine_start: no repositoryWorker.
-select pg_temp.company_machine_repository_patch('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)'::regprocedure,
-	$old$	v_worker public.qorpera_runtime_workers%rowtype; v_admission jsonb; v_keys text;$old$,
-	$new$	v_admission jsonb; v_keys text;$new$);
+-- machine_start: no repositoryWorker. v_worker's declaration goes last: each patch
+-- replaces the function, and PL/pgSQL refuses a body that uses an undeclared variable.
 select pg_temp.company_machine_repository_patch('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)'::regprocedure,
 	$old$
 			and v_keys is distinct from 'cpus,diskGiB,lifetime,memoryGiB,name,purpose,repositoryWorker')$old$,
@@ -144,6 +142,9 @@ select pg_temp.company_machine_repository_patch('public.qorpera_native_machine_s
 select pg_temp.company_machine_repository_patch('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)'::regprocedure,
 	$old$'standard', v_args ->> 'lifetime', v_worker.id,$old$,
 	$new$'standard', v_args ->> 'lifetime',$new$);
+select pg_temp.company_machine_repository_patch('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)'::regprocedure,
+	$old$	v_worker public.qorpera_runtime_workers%rowtype; v_admission jsonb; v_keys text;$old$,
+	$new$	v_admission jsonb; v_keys text;$new$);
 
 -- The executor's pick: what it may take, and what giving up stopped disks may serve, is any machine free to come.
 select pg_temp.company_machine_repository_patch('public.qorpera_admit_executor_machines(text,text,integer)'::regprocedure,
