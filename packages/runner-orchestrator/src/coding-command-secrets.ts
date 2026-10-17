@@ -88,7 +88,8 @@ interface Machine {
 	readonly sessions: Map<string, Session>;
 	/** The values of the sessions released while another stayed attached. */
 	readonly released: Set<string>;
-	/** The machine's older values from the vault's answers: masked, never put in an environment. */
+	/** The values of the vault's answers no command takes: the machine's older values, and a session's environment asked
+	 * at its attach (5j-5 (a)). Masked, never put in an environment. */
 	readonly history: Set<string>;
 }
 
@@ -103,6 +104,8 @@ interface Machine {
 export class CodingMachineCommandSecrets {
 	readonly #source: CodingEnvironmentSource;
 	readonly #machines = new Map<string, Machine>();
+	/** The machines with a vault answer in this process since their first session attached. */
+	readonly #answered = new Set<string>();
 	constructor(source: CodingEnvironmentSource) {
 		this.#source = source;
 	}
@@ -153,9 +156,40 @@ export class CodingMachineCommandSecrets {
 		machine.sessions.delete(workerId);
 		if (machine.sessions.size === 0) {
 			this.#machines.delete(machineId);
+			this.#answered.delete(machineId);
 			return;
 		}
 		for (const value of values(session.commands.values())) machine.released.add(value);
+	}
+
+	/** The session attached (5j-5 (a)): its environment is asked for now, under `scope`, so the machine's values are
+	 * known before a command starts with them, also when there are none. No command takes this answer; the machine's
+	 * masks cover it, as its older values. A failed ask is not kept and fails the call. */
+	async attached(machineId: string, scope: CodingEnvironmentScope, signal: AbortSignal): Promise<void> {
+		const session = this.#session(machineId, scope.workerId);
+		const asked = Object.freeze({
+			companyId: scope.companyId,
+			workerId: scope.workerId,
+			leaseToken: scope.leaseToken,
+		});
+		signal.throwIfAborted();
+		const answer = await this.#source.environment(asked, signal);
+		signal.throwIfAborted();
+		const kept = [...Object.values(answer.environment), ...answer.mask];
+		// A value the mask refuses fails the call before the answer is kept, as does a release while it asked.
+		this.#mask(machineId, asked, session, Object.freeze({}), kept);
+		for (const value of kept) this.#machines.get(machineId)?.history.add(value);
+		this.#answered.add(machineId);
+	}
+
+	/** The values the machine's masks cover, once, for the folder service's save check (5j-5 (a)): what its views save
+	 * must hold none of them. Undefined until this process has a vault answer for the machine (none since it started, or
+	 * since the machine's last session was released): what it knows of it then is not all. */
+	values(machineId: string): string[] | undefined {
+		const machine = this.#machines.get(machineId);
+		if (!machine || !this.#answered.has(machineId)) return undefined;
+		const kept = [...machine.sessions.values()].flatMap((session) => [...session.commands.values()]);
+		return [...new Set([...values(kept), ...machine.released, ...machine.history])];
 	}
 
 	async #resolve(
@@ -186,6 +220,7 @@ export class CodingMachineCommandSecrets {
 				[...new Set(session.commands.values())].find((kept) => isDeepStrictEqual(kept, answer)) ?? answer;
 			session.commands.set(request.commandId, environment);
 		}
+		this.#answered.add(machineId);
 		return { environment, mask: () => mask.stream() };
 	}
 

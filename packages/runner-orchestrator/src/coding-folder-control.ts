@@ -1,9 +1,16 @@
 import { connect } from "node:net";
 import { isUuid } from "@qorpera/contracts";
+import {
+	CODING_FOLDER_SECRET_MAX_BYTES,
+	CODING_FOLDER_SECRET_MIN_BYTES,
+	CODING_FOLDER_SECRET_VALUES_MAX,
+	type CodingFolderSecretSet,
+} from "./coding-folder-secrets.ts";
 
 // The coding executor's side of the folder service's control socket (F3 step 5g-3b; the socket is 5c's,
 // object-gateway's folder-service/control.ts, the plan's "Boundaries"). It asks for a coding machine's boundary before
-// any of the machine's output reaches a model, and says when it restarted the machine. Each request goes on a
+// any of the machine's output reaches a model, says when it restarted the machine, and gives the service the machine's
+// secret values as keyed hashes for its save check (5j-5 (a)). Each request goes on a
 // connection of its own: one JSON line, then our side ends, and the service answers with one JSON line and ends its
 // own. The service is the host's, but its answer is still read whole and checked against the request before use.
 
@@ -114,26 +121,32 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 export interface CodingFolderControlOptions {
 	readonly path?: string;
 	readonly timeoutMs?: number;
+	/** A machine's secret values for the service's save check (5j-5 (a)), as keyed hashes, or undefined while they are
+	 * not known here. Sent before each boundary, so none saves under an older set. Absent, none is sent. */
+	readonly secrets?: (machine: string) => CodingFolderSecretSet | undefined;
 }
 
 /** The control socket's client. A request that is not well formed rejects with CODING_FOLDER_CONTROL_REQUEST_INVALID
  * before anything connects; no socket, or a connection that ends without an answer, with
  * CODING_FOLDER_CONTROL_UNAVAILABLE; no answer in time with CODING_FOLDER_CONTROL_TIMEOUT; the caller's abort with its
  * reason; an error answer with CodingFolderControlRefused; any other answer with CODING_FOLDER_CONTROL_ANSWER_INVALID.
- * No error quotes the answer. Either request may be sent again. */
+ * No error quotes the answer. Each request may be sent again. */
 export class CodingFolderControl {
 	readonly #path: string;
 	readonly #timeoutMs: number;
+	readonly #secrets: CodingFolderControlOptions["secrets"];
 	constructor(options: CodingFolderControlOptions = {}) {
 		const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS)
 			throw new Error("Invalid folder control timeout");
 		this.#path = options.path ?? CODING_FOLDER_CONTROL_SOCKET;
 		this.#timeoutMs = timeoutMs;
+		this.#secrets = options.secrets;
 	}
 
 	/** Releases the reads of every open view of the machine, publishes what each has pending, and answers once the reads
-	 * served meanwhile are released too. `final` names the views whose last boundary this is, before they close. */
+	 * served meanwhile are released too. `final` names the views whose last boundary this is, before they close. The
+	 * machine's secret values go first (`secrets`); a failure to send them fails the boundary. */
 	async boundary(machine: string, final: readonly string[], signal: AbortSignal): Promise<CodingFolderBoundary> {
 		if (
 			!isUuid(machine) ||
@@ -143,6 +156,7 @@ export class CodingFolderControl {
 			new Set(final).size !== final.length
 		)
 			throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
+		await this.secrets(machine, signal);
 		const answer = objectOf(await this.#ask({ op: "boundary", machine, final: [...final] }, "boundary", signal));
 		if (
 			!answer ||
@@ -180,6 +194,38 @@ export class CodingFolderControl {
 		)
 			throw new Error(INVALID);
 		return answer.dropped !== false;
+	}
+
+	/** Gives the service the machine's secret values (5j-5 (a)) in place of what it was given before: what the machine's
+	 * views save is checked against them, and none saves before the first. The service holds them in memory only, so they
+	 * are sent again before each boundary and while the machine has sessions, never one this process does not know (a
+	 * restarted executor's would replace the set its predecessor sent). Answers how many values the service holds, null
+	 * when nothing was sent, or "unsupported" when the service is from before the check (it answers BAD_REQUEST, and
+	 * checks no save). */
+	async secrets(machine: string, signal: AbortSignal): Promise<number | null | "unsupported"> {
+		if (!isUuid(machine)) throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
+		const set = this.#secrets?.(machine);
+		if (set === undefined) return null;
+		if (!secretSetValid(set)) throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
+		const values = set.values.map(({ length, start, whole }) => ({ length, start, whole }));
+		const request = { op: "secrets", machine, key: set.key, values };
+		let answer: Record<string, unknown> | undefined;
+		try {
+			answer = objectOf(await this.#ask(request, "secrets", signal));
+		} catch (error) {
+			if (error instanceof CodingFolderControlRefused && error.code === "BAD_REQUEST") return "unsupported";
+			throw error;
+		}
+		if (
+			!answer ||
+			Object.keys(answer).sort().join() !== "machine,values" ||
+			answer.machine !== machine ||
+			!Number.isSafeInteger(answer.values) ||
+			(answer.values as number) < 0 ||
+			(answer.values as number) > set.values.length
+		)
+			throw new Error(INVALID);
+		return answer.values as number;
 	}
 
 	/** One request on a connection of its own, and what the answer holds under `key`. */
@@ -291,6 +337,36 @@ function reportOf(value: unknown): { unsaved: number; unsavedOutcome?: string; r
 		...(unsavedOutcome === undefined ? {} : { unsavedOutcome }),
 		...(report.refused === undefined ? {} : { refused: report.refused as string }),
 	};
+}
+
+/** A set as the service takes it: a key of 32 bytes and at most 4096 values, each a length it checks, a 20-bit start
+ * and 16 bytes, all base64url written the one way. */
+function secretSetValid(set: CodingFolderSecretSet): boolean {
+	return (
+		canonical(set.key, 32) &&
+		Array.isArray(set.values) &&
+		set.values.length <= CODING_FOLDER_SECRET_VALUES_MAX &&
+		set.values.every(
+			(value) =>
+				Number.isSafeInteger(value.length) &&
+				value.length >= CODING_FOLDER_SECRET_MIN_BYTES &&
+				value.length <= CODING_FOLDER_SECRET_MAX_BYTES &&
+				Number.isSafeInteger(value.start) &&
+				value.start >= 0 &&
+				value.start < 2 ** 20 &&
+				canonical(value.whole, 16),
+		)
+	);
+}
+
+/** Whether `value` is the one unpadded base64url writing of `bytes` bytes. */
+function canonical(value: unknown, bytes: number): boolean {
+	return (
+		typeof value === "string" &&
+		/^[A-Za-z0-9_-]*$/.test(value) &&
+		Buffer.from(value, "base64url").byteLength === bytes &&
+		Buffer.from(value, "base64url").toString("base64url") === value
+	);
 }
 
 function objectOf(value: unknown): Record<string, unknown> | undefined {

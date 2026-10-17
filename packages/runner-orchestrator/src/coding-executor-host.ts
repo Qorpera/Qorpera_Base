@@ -32,7 +32,7 @@ import type {
 	CodingTurnState,
 	CodingWorkspace,
 } from "./coding-executor.ts";
-import { CodingMachineUnavailable, CodingPushRefused } from "./coding-executor.ts";
+import { CodingMachineUnavailable, CodingPushRefused, CodingSaveRefused } from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
 import { type CodingFolderControl, codingFolderBoundaryHeld } from "./coding-folder-control.ts";
 import {
@@ -166,6 +166,9 @@ export interface LxdCodingExecutorHostOptions {
 	/** On the folder model, where each session's vault environment comes from: the company's secret broker (5j-4). Each
 	 * command gets it, and its output is masked. Absent, a command gets no secrets. */
 	commandEnvironment?: CodingEnvironmentSource;
+	/** Or the secrets built on that source, shared with the folder control's save check (5j-5 a): their `values` for a
+	 * machine are what its views may not save. Given, it is used in place of `commandEnvironment`. */
+	commandSecrets?: CodingMachineCommandSecrets;
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
 	/** How long a freshly started guest may take to bring up its agent and
@@ -188,7 +191,7 @@ export interface LxdCodingExecutorHostOptions {
 	 * Absent, the NAS model. */
 	folder?: {
 		views: Pick<CodingFolderViews, "attach" | "held" | "end" | "endMachine">;
-		control: Pick<CodingFolderControl, "boundary" | "restarted">;
+		control: Pick<CodingFolderControl, "boundary" | "restarted" | "secrets">;
 		/** The guest agent's exec client (the executor's LXD client). */
 		client: LxdInstanceExecStreamClient;
 		/** Where a session's commands start and what its finished turn exports (default: none, at /company). */
@@ -526,9 +529,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				resourceProfile: Object.freeze({ ...options.guest.resourceProfile }),
 			}),
 		};
-		this.#commandSecrets = options.commandEnvironment
-			? new CodingMachineCommandSecrets(options.commandEnvironment)
-			: undefined;
+		this.#commandSecrets =
+			options.commandSecrets ??
+			(options.commandEnvironment ? new CodingMachineCommandSecrets(options.commandEnvironment) : undefined);
 	}
 	#call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		signal.throwIfAborted();
@@ -1021,13 +1024,25 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const credentials = this.#options.repositoryCredentials;
 		return (repository, use, signal) => credentials.withRepositoryToken(scope, repository, use, signal);
 	}
-	/** The command secrets of this turn's session on its machine, asked for under its claim; none without a broker. */
+	/** The command secrets of this turn's session on its machine, asked for under its claim; none without a broker. On the
+	 * folder model, the folder service has the machine's values (5j-5 (a)) before a command starts with them. */
 	#sessionSecrets(ready: Prepared): CodingCommandSecrets | undefined {
-		return this.#commandSecrets?.session(ready.machine.machineId, {
+		const { machineId } = ready.machine;
+		const secrets = this.#commandSecrets?.session(machineId, {
 			companyId: ready.claim.profileId,
 			workerId: ready.claim.workerId,
 			leaseToken: ready.claim.leaseToken,
 		});
+		const control = this.#options.folder?.control;
+		if (!secrets || !control) return secrets;
+		return {
+			...secrets,
+			resolve: async (request, signal) => {
+				const resolved = await secrets.resolve(request, signal);
+				await control.secrets(machineId, signal);
+				return resolved;
+			},
+		};
 	}
 	/** The turn is still prepared: once its detach begins, nothing new starts. */
 	#current(ready: Prepared): void {
@@ -1572,7 +1587,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			};
 			// Its view, under the attachment and while SQL keeps it, never beside the machine's lifecycle steps. A view it
 			// replaces is one whose attachment SQL let lapse: how that one ended is reported. One the node closed is not
-			// replaced: the machine must restart first (CodingFolderRestartRequired, #prepareFolder).
+			// replaced: the machine must restart first (CodingFolderRestartRequired, #prepareFolder). The folder service
+			// has the machine's secret values first (5j-5 (a)), with the session's asked now, so they are known before a
+			// command starts, none too: none of its views saves before.
+			await this.#commandSecrets?.attached(
+				machine.machineId,
+				{ companyId: claim.profileId, workerId: claim.workerId, leaseToken: claim.leaseToken },
+				signal,
+			);
+			await folder.control.secrets(machine.machineId, signal);
 			const { viewId, replaced } = await this.#exclusive(machine.machineId, signal, () =>
 				folder.views.attach(
 					session,
@@ -1696,6 +1719,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					await this.#stopForFolder(folder, machine, journal, signal);
 					await this.#runFolder(folder, claim, machine, storage, journal, signal);
 				});
+			// A path the folder refused (one that carries a secret value, 5j-5 a) stays refused until the session changes
+			// it, so its turn fails with what to do and the session stays attached.
+			if (held === "UNSAVED_REFUSED") throw new CodingSaveRefused();
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(
@@ -2172,6 +2198,28 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			entry.attached.map(({ workerId, attachmentToken }) => [workerId, digest(attachmentToken)]),
 		);
 		const folder = this.#options.folder;
+		// The folder service holds the machine's secret values in memory only (5j-5 (a)): given again each pass, one that
+		// restarted has them back within a pass. Beside the renewals, which a failure here never holds up; it never rejects.
+		// A service from before the check is reported each pass: until it is replaced, no save is checked.
+		const secrets = folder?.control.secrets(machine.machineId, deadline).then(
+			(held): CodingKeepOutcome[] =>
+				held === "unsupported"
+					? [
+							{
+								machineId: machine.machineId,
+								workerId: null,
+								step: "secrets",
+								state: "not-now",
+								code: "CODING_FOLDER_SECRETS_UNSUPPORTED",
+							},
+						]
+					: [],
+			(error: unknown): CodingKeepOutcome[] => {
+				if (signal.aborted) return [];
+				const code = deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error);
+				return [{ machineId: machine.machineId, workerId: null, step: "secrets", state: "failed", code }];
+			},
+		);
 		const observed = folder
 			? await this.#observeFolder(
 					folder,
@@ -2286,7 +2334,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				);
 			else throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 		}
-		return Promise.all(renewals);
+		return [...(await Promise.all(renewals)), ...((await secrets) ?? [])];
 	}
 	/** Takes a released session off, beside the keeper's passes, and records it
 	 * detached with what it stopped. A session whose turn this process still runs
