@@ -2,7 +2,6 @@
 // RPC emulated over psql for the real coding executor's control calls, and, in SQL, the identity host's calls for a
 // coding turn (CloudNativeCodingRuntime and the coding command tools), in the same order and with the same arguments.
 // Plain ESM with no dependencies: it runs on a test machine with Node 24 and Docker, as root, without node_modules.
-import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -83,23 +82,56 @@ export async function openDatabase({ name = `p3_coding_${randomBytes(4).toString
 	let roles;
 	let closed = false;
 
+	// Long-lived psql sessions, as PostgREST keeps a pool of connections: on a loaded test machine a container exec
+	// and a new connection per call took seconds, and the executor's control calls have 10 s (qorpera-49). A script
+	// ends with a rollback, `discard all` (temporary objects, settings, locks) and a marker line; one that fails ends
+	// its session (ON_ERROR_STOP), as it ended its psql before.
+	const IDLE_SESSIONS = 8;
+	const idle = [];
+
+	function openSession() {
+		const child = cluster.spawnPsql(database, ["-qAt"]);
+		const session = { child, out: Buffer.alloc(0), err: [], request: null };
+		const settle = (outcome) => {
+			const request = session.request;
+			session.request = null;
+			if (request) outcome(request);
+		};
+		child.stdout.on("data", (chunk) => {
+			session.out = Buffer.concat([session.out, chunk]);
+			const end = session.request ? session.out.indexOf(session.request.marker) : -1;
+			if (end === -1) return;
+			const stdout = session.out.subarray(0, end).toString("utf8");
+			session.out = Buffer.alloc(0);
+			settle((request) => {
+				if (!closed && idle.length < IDLE_SESSIONS) idle.push(session);
+				else child.stdin.end();
+				request.resolve(stdout);
+			});
+		});
+		child.stderr.on("data", (chunk) => session.err.push(chunk));
+		child.stdin.on("error", () => {});
+		child.on("error", (error) => settle((request) => request.reject(error)));
+		child.on("close", (code, signal) => {
+			const at = idle.indexOf(session);
+			if (at !== -1) idle.splice(at, 1);
+			const stdout = session.out.toString("utf8");
+			const stderr = Buffer.concat(session.err).toString("utf8");
+			settle((request) => (code === 0 ? request.resolve(stdout) : request.reject(sqlError(stderr || stdout, code ?? signal))));
+		});
+		child.stdin.write("\\set VERBOSITY verbose\n");
+		return session;
+	}
+
 	function run(text) {
 		if (closed) return Promise.reject(new Error("The P3 database is closed"));
 		return new Promise((resolveRun, rejectRun) => {
-			const child = spawn("docker", cluster.psqlArgs(database, ["-qAt"]), { stdio: ["pipe", "pipe", "pipe"] });
-			const out = [];
-			const err = [];
-			child.stdout.on("data", (chunk) => out.push(chunk));
-			child.stderr.on("data", (chunk) => err.push(chunk));
-			child.stdin.on("error", () => {});
-			child.on("error", rejectRun);
-			child.on("close", (code, signal) => {
-				const stdout = Buffer.concat(out).toString("utf8");
-				const stderr = Buffer.concat(err).toString("utf8");
-				if (code === 0) resolveRun(stdout);
-				else rejectRun(sqlError(stderr || stdout, code ?? signal));
-			});
-			child.stdin.end(`\\set VERBOSITY verbose\n${text}\n`);
+			const session = idle.pop() ?? openSession();
+			const marker = `@@p3-done-${randomBytes(8).toString("hex")}@@`;
+			session.out = Buffer.alloc(0);
+			session.err = [];
+			session.request = { marker: Buffer.from(`${marker}\n`), resolve: resolveRun, reject: rejectRun };
+			session.child.stdin.write(`${text}\n;\nrollback;\ndiscard all;\n\\echo ${marker}\n`);
 		});
 	}
 
@@ -208,6 +240,7 @@ export async function openDatabase({ name = `p3_coding_${randomBytes(4).toString
 		async close() {
 			if (closed) return;
 			closed = true;
+			for (const session of idle.splice(0)) session.child.stdin.end();
 			hosted.close();
 		},
 	};

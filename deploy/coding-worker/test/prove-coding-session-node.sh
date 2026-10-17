@@ -32,6 +32,23 @@ root=$(ls "$PUSH/coding-image" | grep -vxF "$meta" | head -1 || true)
 lxc image import "$PUSH/coding-image/$meta" ${root:+"$PUSH/coding-image/$root"} --alias p3-coding </dev/null >/dev/null
 [[ $(lxc image info p3-coding </dev/null | awk '/^Fingerprint:/ {print $2}') == "$FINGERPRINT" ]] ||
 	fail "the coding image changed its fingerprint on the way in"
+# Phase B: the company's code host image, in the default project's store as a node keeps it; its files, imported in
+# the export record's order, make the same fingerprint.
+code_host_facts=
+if [[ -d $PUSH/code-host ]]; then
+	record=$PUSH/code-host/code-host-image-export.json
+	code_host=$(node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+		if (!/^[0-9a-f]{64}$/.test(r.imageFingerprint)) process.exit(1); console.log(r.imageFingerprint)' "$record") ||
+		fail "the code host image's record has no fingerprint"
+	mapfile -t parts < <(node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+		for (const file of r.files) console.log(`${process.argv[2]}/${file.name}`)' "$record" "$PUSH/code-host")
+	((${#parts[@]})) || fail "the code host image's record lists no files"
+	lxc image import "${parts[@]}" </dev/null >/dev/null
+	[[ $(lxc image info "$code_host" </dev/null | awk '/^Fingerprint:/ {print $2}') == "$code_host" ]] ||
+		fail "the code host image changed its fingerprint on the way in"
+	code_host_facts=$(printf ',"codeHost":{"imageFingerprint":"%s"}' "$code_host")
+	pass "the node's default image store has the code host image $code_host"
+fi
 # The agent exit's bridge, without the exit: machines' cards go on it, nothing routes.
 ip link add qagent0 type bridge
 ip link set qagent0 up
@@ -111,8 +128,86 @@ ref=$(NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/p3-proof-ca.crt TOKEN
 [[ $ref == "$base" ]] || { tail -n 20 /var/log/p3-github.log; fail "the stand-in api.github.com answers $ref for main"; }
 pass "the stand-in api.github.com answers the executor's calls (main at $ref)"
 
+# The folder model (phase A, when the push has it): the folder service with its vsock bridge and the executor's control
+# socket, as install-folder-service.sh installs them on a node, and the object gateway its views write through. Their
+# core is the test database's PostgREST, which the driver serves through test/p3-postgrest.mjs on 127.0.0.2
+# (p3-supabase.test, a certificate from the node's CA).
+folder_facts=""
+if [[ -d $PUSH/folder ]]; then
+	# The service, the bridge and the guest agent run /usr/bin/node.
+	[[ -x /usr/bin/node ]] || install -m 0755 /usr/local/bin/node /usr/bin/node
+	bash "$PUSH/folder/service/install-folder-service.sh" >/dev/null || fail "install-folder-service.sh failed"
+	(
+		cd /etc/p3-github
+		openssl req -newkey rsa:2048 -nodes -subj "/CN=p3-supabase.test" -keyout supabase.key -out supabase.csr 2>/dev/null
+		printf "subjectAltName=DNS:p3-supabase.test\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n" >supabase.ext
+		openssl x509 -req -in supabase.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 -out supabase.crt \
+			-extfile supabase.ext 2>/dev/null
+	)
+	echo "127.0.0.2 p3-supabase.test" >>/etc/hosts
+	# The object gateway's store, laid out <profile>/<sha256> and written 0600 by its account, qorpera-objects; the folder
+	# service reads it as that account, through the bind deploy/folder-service/README.md's read-objects.conf makes.
+	useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin qorpera-objects
+	install -d -m 0700 -o qorpera-objects -g qorpera-objects /srv/p3-objects /srv/p3-objects/store /srv/p3-objects/state
+	install -d -m 0755 /srv/qorpera /srv/qorpera/canonical
+	# The gateway with the folder service's route alone (test/p3-objects.ts), its database the stand-in PostgREST. Its
+	# tokens are this run's own; the keys are fixed, non-secret proof values (the stand-in takes any key).
+	gateway_token=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+	install -d -m 0700 /etc/p3-objects
+	install -m 0600 /dev/null /etc/p3-objects/env
+	printf '%s\n' "QORPERA_SUPABASE_URL=https://p3-supabase.test" "QORPERA_SUPABASE_PUBLISHABLE_KEY=p3_proof_publishable_key_not_a_secret" \
+		"QORPERA_SUPABASE_SECRET_KEY=p3_proof_service_key_not_a_secret" "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT=/srv/p3-objects/store" \
+		"QORPERA_OBJECT_GATEWAY_STATE_ROOT=/srv/p3-objects/state" \
+		"QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" \
+		"QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN=$gateway_token" \
+		"NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/p3-proof-ca.crt" >/etc/p3-objects/env
+	install -d -m 0755 /opt/p3
+	install -m 0444 "$PUSH/package/p3/p3-objects.mjs" /opt/p3/p3-objects.mjs
+	systemd-run --quiet --unit=p3-objects --property=User=qorpera-objects --property=Group=qorpera-objects \
+		--property=EnvironmentFile=/etc/p3-objects/env --property=Restart=on-failure /usr/local/bin/node /opt/p3/p3-objects.mjs
+	for _ in $(seq 1 50); do journalctl -u p3-objects -o cat --no-pager | grep -q "P3 objects listening" && break; sleep 0.2; done
+	journalctl -u p3-objects -o cat --no-pager | grep -q "P3 objects listening" ||
+		{ journalctl -u p3-objects -n 20 --no-pager; fail "the node's object gateway does not start"; }
+	printf '{"supabaseUrl":"https://p3-supabase.test","storageRoot":"/srv/qorpera/objects","cacheMiB":256,"mounts":[],%s}\n' \
+		"\"codingMachineProjects\":[\"default\"],\"codingExecutorUid\":$(id -u "$EXECUTOR"),\"gatewayUrl\":\"http://127.0.0.1:8090\"" \
+		>/etc/qorpera-folder-service/config.json
+	printf %s p3_proof_service_key_not_a_secret >/etc/qorpera-folder-service/supabase-key
+	printf %s "$gateway_token" >/etc/qorpera-folder-service/gateway-token
+	chmod 0400 /etc/qorpera-folder-service/config.json /etc/qorpera-folder-service/supabase-key /etc/qorpera-folder-service/gateway-token
+	install -d -m 0755 /etc/systemd/system/qorpera-folder-service.service.d
+	# README.md's read-objects.conf (the gateway's account, its store bound read-only, a process namespace of its own),
+	# its writes drop-in (the gateway token), and the node's CA for the stand-in PostgREST.
+	printf '%s\n' "[Service]" "User=qorpera-objects" "Group=qorpera-objects" "PrivatePIDs=yes" "TemporaryFileSystem=/srv/qorpera:ro" \
+		"BindReadOnlyPaths=/srv/p3-objects/store:/srv/qorpera/objects" "InaccessiblePaths=/srv/p3-objects/state /etc/p3-objects" \
+		>/etc/systemd/system/qorpera-folder-service.service.d/read-objects.conf
+	printf '%s\n' "[Service]" "LoadCredential=qorpera-folder-gateway-token:/etc/qorpera-folder-service/gateway-token" \
+		>/etc/systemd/system/qorpera-folder-service.service.d/writes.conf
+	printf '%s\n' "[Service]" "Environment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/p3-proof-ca.crt" \
+		>/etc/systemd/system/qorpera-folder-service.service.d/p3.conf
+	systemctl daemon-reload
+	# The bridge listens on vsock; the host side's transport (LXD loads it with its first VM) is loaded here first.
+	modprobe vhost_vsock
+	enabled=$(systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service qorpera-folder-control.socket 2>&1) ||
+		{ printf '%s\n' "$enabled"; fail "the folder service's units do not start"; }
+	sleep 2
+	for unit in qorpera-folder-service.socket qorpera-folder-bridge.service qorpera-folder-control.socket; do
+		systemctl is-active --quiet "$unit" || { journalctl -u "$unit" -n 20 --no-pager; fail "$unit is not active"; }
+	done
+	[[ $(stat -c %U /run/qorpera-folder-control/control.sock) == "$EXECUTOR" ]] ||
+		fail "the folder control socket is not the executor's"
+	# The executor's pins: the guest agent and the folder program it pushes into each machine, root's and read-only.
+	install -d -m 0755 /opt/p3/folder
+	install -m 0444 "$PUSH/folder/agent.mjs" /opt/p3/folder/agent.mjs
+	install -m 0555 "$PUSH/folder/qorpera-folder" /opt/p3/folder/qorpera-folder
+	agent_sha=$(sha256sum /opt/p3/folder/agent.mjs | awk '{print $1}')
+	program_sha=$(sha256sum /opt/p3/folder/qorpera-folder | awk '{print $1}')
+	folder_facts=$(printf ',"folder":{"agent":{"path":"/opt/p3/folder/agent.mjs","sha256":"%s"},"program":{"path":"/opt/p3/folder/qorpera-folder","sha256":"%s"}}' \
+		"$agent_sha" "$program_sha")
+	pass "the folder service, its bridge on vsock 5250, the executor's control socket and the object gateway run (agent $agent_sha, program $program_sha)"
+fi
+
 # The executor's composition, where the driver starts it.
 install -d -m 0755 /opt/p3
 install -m 0444 "$PUSH/package/p3/p3-executor.mjs" /opt/p3/p3-executor.mjs
-printf 'P3-NODE {"machineId":"%s","baseSha":"%s"}\n' "$(cat /etc/machine-id)" "$base"
+printf 'P3-NODE {"machineId":"%s","baseSha":"%s"%s%s}\n' "$(cat /etc/machine-id)" "$base" "$folder_facts" "$code_host_facts"
 echo "NODE READY"
