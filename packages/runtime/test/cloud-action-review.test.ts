@@ -161,15 +161,13 @@ describe("which calls are reviewed", () => {
 		["apply_proposal", { proposalId: RULE, effect: "destructive" }, "destructive"],
 		["apply_proposal", { proposalId: RULE }, "delegation"],
 		["discard_proposal", { proposalId: RULE }, "internal"],
-		// Interfaces (I8): reading a page or a table.
-		["interface_read", { interface: "pulse", view: null, after: null }, "read"],
+		// Interfaces (I8): reading a table.
 		["table_read", { table: "deals", where: null, after: null, limit: 20 }, "read"],
-		// Rows of a table are the company's records; a save takes the effect its preparation read from the files it
-		// replaces, and an unprepared one is a delegation (I8b).
+		// Rows of a table are the company's records (I8b).
 		["table_write", { table: "deals", operationKey: "k", set: [{ deal: "Acme" }], remove: [] }, "internal"],
-		["save_interface", { operationKey: "k", files: [], effect: "internal" }, "internal"],
-		["save_interface", { operationKey: "k", files: [], effect: "delegation" }, "delegation"],
-		["save_interface", { operationKey: "k", files: [] }, "delegation"],
+		// Since the scope reset (C6b) no run has interface_read or save_interface; a name no catalog has is reviewed.
+		["interface_read", { interface: "pulse", view: null, after: null }, "external"],
+		["save_interface", { operationKey: "k", files: [], effect: "internal" }, "external"],
 		["a_tool_this_table_does_not_know", {}, "external"],
 	] as const)("%s %j is %s", (name, parsed, effect) => {
 		expect(cloudActionEffect(tool(name), parsed as JsonValue)).toBe(effect);
@@ -570,36 +568,6 @@ describe("what the card shows", () => {
 				details: [{ key: "role", value: "Bookkeeper" }, { key: "saved", value: saved }, { value: "no key" }],
 			}),
 		).toEqual({ title: "Hire a new agent", target: "Mira", details: { role: "Bookkeeper", saved } });
-	});
-
-	it("shows an interface save as its preparation described it, never its files", () => {
-		const files = [{ path: "interfaces/deals/interface.toml", expectedVersion: null, text: "format = ..." }];
-		expect(
-			describeCloudAction(tool("save_interface"), {
-				operationKey: "k",
-				files,
-				effect: "delegation",
-				title: "Make a new interface",
-				target: "Deals",
-				details: [
-					{ key: "buttons", value: "adds the button “Call them” (message)" },
-					{ key: "what it is for", value: "The deals we work on.\n\nOne row per deal.", quoted: true },
-				],
-			}),
-		).toEqual({
-			title: "Make a new interface",
-			target: "Deals",
-			details: {
-				buttons: "adds the button “Call them” (message)",
-				"what it is for": "The deals we work on.\n\nOne row per deal.",
-			},
-		});
-		// A call that was never prepared still has a title, and shows nothing it was not told.
-		expect(describeCloudAction(tool("save_interface"), { operationKey: "k", files })).toEqual({
-			title: "Change an interface",
-			target: null,
-			details: {},
-		});
 	});
 });
 
@@ -2142,7 +2110,7 @@ describe("the boundary's review step", () => {
 		expect(failing.execute).not.toHaveBeenCalled();
 	});
 
-	/** A tool that reads what its call changes before the review (I8b's `save_interface`). */
+	/** A tool that reads what its call changes before the review (as I8b's interface save did until C6b). */
 	function preparedFixture(prepare: NonNullable<CloudNativeTool["prepare"]>) {
 		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Saved" }));
 		const check = vi.fn(async () => ({ run: true as const }));
@@ -2151,8 +2119,8 @@ describe("the boundary's review step", () => {
 			runId: randomUUID(),
 			tools: [
 				{
-					name: "save_interface",
-					description: "Save an interface.",
+					name: "save_notes",
+					description: "Save the notes.",
 					source: "company_file",
 					inputSchema: { type: "object", properties: {}, additionalProperties: false },
 					parseArguments: () => ({ operationKey: "k", files: [] }),
@@ -2165,7 +2133,7 @@ describe("the boundary's review step", () => {
 			review: { check },
 		});
 		const invoke = async () => {
-			const response = await boundary.invoke("call_1", "qorpera", "save_interface", {});
+			const response = await boundary.invoke("call_1", "qorpera", "save_notes", {});
 			return JSON.parse(response.contentItems[0].text) as CloudToolResult;
 		};
 		return { invoke, execute, check };
@@ -2175,11 +2143,11 @@ describe("the boundary's review step", () => {
 		const prepare = vi.fn<NonNullable<CloudNativeTool["prepare"]>>(async (parsed) => ({
 			...(parsed as Record<string, JsonValue>),
 			effect: "internal",
-			title: "Change an interface",
+			title: "Change the notes",
 		}));
 		const f = preparedFixture(prepare);
 		expect((await f.invoke()).status).toBe("ok");
-		const prepared = { operationKey: "k", files: [], effect: "internal", title: "Change an interface" };
+		const prepared = { operationKey: "k", files: [], effect: "internal", title: "Change the notes" };
 		expect(prepare).toHaveBeenCalledWith(
 			{ operationKey: "k", files: [] },
 			expect.objectContaining({ callId: "call_1", argumentSha256: expect.any(String) }),
@@ -2194,11 +2162,11 @@ describe("the boundary's review step", () => {
 
 	it("refuses a call its preparation refuses, or cannot read, before any review", async () => {
 		const refused = preparedFixture(async () => {
-			throw new CloudToolRefusal("Only the owners edit this interface");
+			throw new CloudToolRefusal("Only the owners edit the notes");
 		});
 		expect(await refused.invoke()).toMatchObject({
 			status: "denied",
-			content: { text: "REFUSED: Only the owners edit this interface" },
+			content: { text: "REFUSED: Only the owners edit the notes" },
 		});
 		// Any other failure, and a preparation larger than a call's arguments may be, says nothing of what it read.
 		const failed = preparedFixture(async () => {

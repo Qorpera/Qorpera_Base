@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { AREAS_TABLE, CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
-import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
+import { AREAS_TABLE, CARDS_TABLE, NUMBERS_TABLE } from "@qorpera/cloud-client/interface-library";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
@@ -11,7 +10,6 @@ import {
 	type CloudToolContent,
 	type CloudToolContext,
 	CloudToolRefusal,
-	cloudToolJsonText,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
@@ -38,14 +36,8 @@ async function fixture(
 		const prepared = (await tool(name, from).prepare?.(parsed, context)) ?? parsed;
 		return tool(name, from).execute(prepared, context);
 	};
-	const prepare = async (value: JsonValue, context: CloudToolContext = f.context) => {
-		const save = tool("save_interface");
-		return (await save.prepare?.(save.parseArguments(value), context)) as Record<string, JsonValue>;
-	};
 	const version = (path: string) => f.files.get(path)?.version;
-	// The run's context without an approval: a change that needs one is refused.
-	const { actionReviewId: _review, ...direct } = f.context;
-	return { ...f, make, tools, tool, call, prepare, version, direct: direct as CloudToolContext };
+	return { ...f, make, tools, tool, call, version };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -104,49 +96,12 @@ function madeId(runId: string, operationKey: string, set: number, column = "id")
 const AGENT = "0b1c2d3e-1111-4111-8111-111111111111";
 const C1 = "1a2b3c4d-0000-4000-8000-000000000001";
 const C2 = "1a2b3c4d-0000-4000-8000-000000000002";
-const NOTES_ID = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
-const NOTES = "interfaces/notes/interface.toml";
-const NOTES_README = "interfaces/notes/README.md";
-const README = "Notes the team keeps for each other.\n";
 const CARDS_HEAD = "id,card,area,holder,state,added_by,todo";
 const CARDS_ROWS = `${CARDS_HEAD}\n${C1},Bake,sales,,open,,\n${C2},Sell,sales,,open,,\n`;
 const CARDS = { "tables/cards/table.toml": CARDS_TABLE, "tables/cards/rows.csv": CARDS_ROWS };
 const CARDS_FILES = ["tables/cards/table.toml", "tables/cards/rows.csv"];
 const NUMBERS_HEAD = "number,at,value,unit,target,kept_by";
 
-/** The Notes interface: one view with a list of numbers and a message button. */
-const page = (name: string, options: { edit?: "anyone" | "owners"; main?: boolean } = {}) =>
-	`format = "qorpera.interface/v0"
-
-[interface]
-id = "${NOTES_ID}"
-name = "${name}"
-main = ${options.main ?? false}
-
-[access]
-members = "all"
-agents = "all"
-edit = "${options.edit ?? "anyone"}"
-
-[[view]]
-name = "Notes"
-
-[[view.block]]
-kind = "list"
-from = "table:numbers"
-line = "{number}"
-buttons = ["ask"]
-
-[[button]]
-id = "ask"
-verb = "message"
-label = "Ask"
-to = "co-founder"
-`;
-const save = (operationKey: string, files: { path: string; expectedVersion?: string | null; text: string }[]) => ({
-	operationKey,
-	files: files.map((file) => ({ path: file.path, expectedVersion: file.expectedVersion ?? null, text: file.text })),
-});
 const rows = (
 	table: string,
 	operationKey: string,
@@ -154,22 +109,6 @@ const rows = (
 	remove: Record<string, JsonValue>[] = [],
 ) => ({ table, operationKey, set, remove });
 
-const WAITING =
-	"The change waits for a member's approval: do not make it again; tell the member it is waiting for them.";
-const READ_AGAIN = "read it again and make your change on its current version, with a new operationKey";
-const BLOCKED = {
-	exists: `Nothing was saved. A file is already at a path you gave no version for: ${READ_AGAIN}.`,
-	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
-	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
-	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
-	folder_missing:
-		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
-	owners_only:
-		"Nothing was saved. Only the owners edit this interface (access edit = owners): tell the member what you would change.",
-	rows_do_not_fit:
-		"Nothing was saved. The table's rows do not fit the new definition. Change it in steps: add a required column as optional, fill it in every row with table_write, then make it required; to remove a column, make it optional and empty it in every row with table_write, then remove it.",
-};
 const ROWS = {
 	broken: "Nothing was saved. The table's table.toml cannot be read (the problems): tell the member.",
 	rows_do_not_fit:
@@ -182,35 +121,16 @@ const ROWS = {
 		"Nothing was saved. The rows would be larger than 64 KiB, the most a table holds for now: remove rows first, or tell the member.",
 };
 
-it("offers the two write tools as Company File tools", async () => {
+it("offers the write tool as a Company File tool, and no save_interface since the scope reset (C6b)", async () => {
 	const f = await fixture();
-	expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([
-		["save_interface", "company_file"],
-		["table_write", "company_file"],
-	]);
+	expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([["table_write", "company_file"]]);
 	expect(f.tools.map((tool) => (tool.inputSchema as { required: string[] }).required)).toEqual([
-		["operationKey", "files"],
 		["table", "operationKey", "set", "remove"],
 	]);
 });
 
 it("refuses arguments it cannot save before anything is read", async () => {
 	const f = await fixture();
-	const one = (path: string, text = "x") => save("save-1", [{ path, text }]);
-	refusesArguments(f, "save_interface", one("tables/cards/rows.csv"), "A table's rows are written with table_write");
-	for (const path of ["interfaces/Notes/interface.toml", "docs/plan.md", "interfaces/notes/views.toml"])
-		refusesArguments(f, "save_interface", one(path), "each path is interfaces/<name>/interface.toml");
-	refusesArguments(f, "save_interface", { operationKey: "save-1", files: [] }, "files must be a list of 1 to 8 files");
-	refusesArguments(
-		f,
-		"save_interface",
-		save("save-1", [
-			{ path: NOTES_README, text: "a" },
-			{ path: NOTES_README, text: "b" },
-		]),
-		"files names the same path twice",
-	);
-	refusesArguments(f, "save_interface", one(NOTES, "format = 1\n"), `${NOTES} cannot be saved`);
 	refusesArguments(
 		f,
 		"table_write",
@@ -227,423 +147,6 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	);
 	expect(f.releases).toEqual([]);
 	expect(f.commits).toEqual([]);
-});
-
-it("says how to write what a first try at a new page often gets wrong, and saves the page written that way", async () => {
-	// A production run's first three saves of a new page were refused (P0-2, 16 Oct): a text that spans lines and a
-	// made-up id are refused with what to write instead, whole, so the model can fix them in one more call.
-	const f = await fixture({ folders: ["interfaces"] });
-	const launch = (id: string, text: string) => `format = "qorpera.interface/v0"
-
-[interface]
-id = "${id}"
-name = "Launch check"
-
-[[view]]
-name = "Items"
-
-[[view.block]]
-kind = "text"
-text = ${text}
-`;
-	const one = (text: string) => save("launch-1", [{ path: NOTES, text }]);
-	refusesArguments(
-		f,
-		"save_interface",
-		one(launch(NOTES_ID, '"""\nAlpha: open\nBeta: done\n"""')),
-		`${NOTES} cannot be saved: interface.toml line 12: Multi-line strings are not used in these files: write it on one line in "double quotes", with \\n for each line break.`,
-	);
-	refusesArguments(
-		f,
-		"save_interface",
-		one(launch(NOTES_ID, '"Alpha: open\nBeta: done"')),
-		'interface.toml line 12: A quoted text must close on its line: write it on one line in "double quotes"',
-	);
-	refusesArguments(
-		f,
-		"save_interface",
-		one(launch("11111111-2222-3333-4444-555555555555", '"Alpha: open"')),
-		`${NOTES} cannot be saved: interface.toml line 4: interface.id must be a new random lowercase uuid (version 4): 8-4-4-4-12 hex digits, the third group starting with 4 and the fourth with 8, 9, a or b.`,
-	);
-	// A list given its items in place, and a text too long, say what to write instead (the dash kept as one).
-	const list = launch(NOTES_ID, '""').replace(
-		'kind = "text"\ntext = ""',
-		'kind = "list"\nitems = ["Alpha", "Beta", "Gamma"]',
-	);
-	refusesArguments(
-		f,
-		"save_interface",
-		one(list),
-		'This block needs from: the source it shows, like "table:<name>". Only a text block holds its own text.',
-	);
-	refusesArguments(
-		f,
-		"save_interface",
-		one(launch(NOTES_ID, `"${"x".repeat(2001)}"`)),
-		"interface.toml line 12: view[0].block[0].text takes 0-2000 characters.",
-	);
-	expect(f.commits).toEqual([]);
-	const made = await f.call("save_interface", one(launch(NOTES_ID, '"Alpha: open\\nBeta: done"')));
-	expect(read(made)).toMatchObject({ state: "applied", files: [{ path: "interfaces/notes", outcome: "saved" }] });
-	const saved = parseInterfaceFile(f.text(NOTES) ?? "");
-	expect(saved.file?.views[0]?.blocks[0]?.text).toBe("Alpha: open\nBeta: done");
-});
-
-it("makes a new interface as a new folder, only with the review's approval, and a replay finds it made", async () => {
-	const f = await fixture({ folders: ["interfaces"] });
-	const value = save("notes-1", [
-		{ path: NOTES, text: page("Notes") },
-		{ path: NOTES_README, text: README },
-	]);
-	// The review's card says what changes, never the files; nothing is read, so nothing is released.
-	expect(await f.prepare(value)).toMatchObject({
-		operationKey: "notes-1",
-		effect: "delegation",
-		title: "Make a new interface",
-		target: "Notes",
-		details: [
-			{ key: "buttons", value: "adds the button “Ask” (message)" },
-			{ key: "who sees and edits", value: "seen by all members and all agents; anyone may edit it" },
-			{ key: "views", value: "Notes" },
-			{ key: "what it is for", value: README, quoted: true },
-		],
-	});
-	expect(f.releases).toEqual([]);
-	const made = await f.call("save_interface", value);
-	expect(read(made)).toEqual({
-		schema: "qorpera.interface-save-result/v1",
-		state: "applied",
-		operationKey: "notes-1",
-		receiptId: expect.any(String),
-		files: [{ path: "interfaces/notes", outcome: "saved", version: expect.any(String) }],
-		next: [],
-	});
-	// The answer is the commit's outcome, under the call's receipt: nothing in it was read.
-	expect(made.companyReadId).toBeUndefined();
-	expect(f.recordings).toHaveLength(1);
-	expect(f.recordings[0]?.p_request).toMatchObject({
-		actionReviewId: f.context.actionReviewId,
-		tool: "save_interface",
-		argumentSha256: "a".repeat(64),
-	});
-	expect(f.commits).toHaveLength(1);
-	expect(f.commits[0]).toMatchObject({ key: `save_interface:${sha("notes-1")}`, reviewId: expect.any(String) });
-	const units = f.commits[0]?.units ?? [];
-	expect(units.map((unit) => [unit.op, unit.path])).toEqual([["new_folder", "interfaces/notes"]]);
-	expect((units[0]?.contents as { path: string }[]).map((item) => item.path)).toEqual(["interface.toml", "README.md"]);
-	expect(f.text(NOTES)).toBe(page("Notes"));
-	expect(f.text(NOTES_README)).toBe(README);
-	// The change is noted in the run's conversation, with Undo (I10): SQL notes the run's commits that have no note.
-	const note = { p_binding: f.binding, p_request: {} };
-	const noted = vi.spyOn(f.folder, "noteInterfaceChanges");
-	expect(f.notes).toEqual([note]);
-	// The same call again finds its change made, and says so, with what it read; the note is asked for again, and SQL
-	// finds it made.
-	const again = await f.call("save_interface", value);
-	expect(f.notes).toEqual([note, note]);
-	await expect(noted.mock.results[0]?.value).resolves.toBe(0);
-	expect(read(again)).toEqual({
-		schema: "qorpera.interface-save-result/v1",
-		state: "unchanged",
-		operationKey: "notes-1",
-		receiptId: null,
-		files: [],
-		unchanged: [NOTES, NOTES_README],
-		next: ["The files already hold this text, so there was nothing to save."],
-	});
-	cites(f, again, ["interfaces/notes", NOTES, NOTES_README]);
-	expect(f.commits).toHaveLength(1);
-});
-
-it("refuses a change that needs the review's approval when the call has none, before anything is written", async () => {
-	const f = await fixture({ folders: ["interfaces"] });
-	await refuses(
-		f.call("save_interface", save("notes-1", [{ path: NOTES, text: page("Notes") }]), f.direct),
-		CloudToolRefusal,
-		"This change needs the automatic review's approval of this call, and it has none",
-	);
-	expect(f.commits).toEqual([]);
-	expect(f.ledger.size).toBe(0);
-});
-
-it("renames an interface at once, with a card released with the file it replaces", async () => {
-	const f = await fixture({ files: { [NOTES]: page("Notes") } });
-	const expectedVersion = f.version(NOTES) as string;
-	const value = save("rename-1", [{ path: NOTES, expectedVersion, text: page("Notebook") }]);
-	const card = {
-		title: "Change an interface",
-		target: "Notebook",
-		details: [{ key: "also", value: "renamed from “Notes”" }],
-	};
-	expect(await f.prepare(value, f.direct)).toMatchObject({ effect: "internal", ...card });
-	expect(f.releases).toHaveLength(1);
-	expect(f.releases[0]).toMatchObject({ p_output_sha256: sha(cloudToolJsonText(card)) });
-	expect((f.releases[0]?.p_reads as { path: string }[]).map((entry) => entry.path)).toEqual([
-		"interfaces/notes",
-		NOTES,
-	]);
-	const renamed = await f.call("save_interface", value, f.direct);
-	expect(read(renamed)).toMatchObject({
-		state: "applied",
-		files: [{ path: NOTES, outcome: "saved", version: f.version(NOTES) }],
-		next: [],
-	});
-	// The commit's answer is released too, with what the save read.
-	cites(f, renamed, ["interfaces/notes", NOTES]);
-	expect(f.recordings).toEqual([]);
-	expect(f.commits[0]?.key).toBe(`save_interface:${sha("rename-1")}`);
-	expect(f.commits[0]?.units).toMatchObject([{ op: "write", path: NOTES, expectedVersion }]);
-	expect(f.text(NOTES)).toBe(page("Notebook"));
-});
-
-it("saves nothing when a file is not as the call expects, and says why with what it read", async () => {
-	const cases: {
-		name: string;
-		seed: Parameters<typeof folderWriterFixture>[0];
-		files: (f: Fixture) => { path: string; expectedVersion?: string | null; text: string }[];
-		reason: keyof typeof BLOCKED;
-		path: string;
-		reads: string[];
-	}[] = [
-		{
-			name: "a file at a path given no version",
-			seed: { files: { [NOTES]: page("Notes") } },
-			files: () => [{ path: NOTES, text: page("Notebook") }],
-			reason: "exists",
-			path: NOTES,
-			reads: ["interfaces/notes", NOTES],
-		},
-		{
-			name: "a file changed since its version",
-			seed: { files: { [NOTES]: page("Notes") } },
-			files: () => [{ path: NOTES, expectedVersion: randomUUID(), text: page("Notebook") }],
-			reason: "version_changed",
-			path: NOTES,
-			reads: ["interfaces/notes", NOTES],
-		},
-		{
-			name: "a version for a file that is gone",
-			seed: { folders: ["interfaces"] },
-			files: () => [{ path: NOTES, expectedVersion: randomUUID(), text: page("Notes") }],
-			reason: "missing",
-			path: NOTES,
-			reads: [],
-		},
-		{
-			name: "an interface only its owners edit",
-			seed: { files: { [NOTES]: page("Notes", { edit: "owners" }) } },
-			files: (f) => [{ path: NOTES, expectedVersion: f.version(NOTES), text: page("Notebook", { edit: "owners" }) }],
-			reason: "owners_only",
-			path: NOTES,
-			reads: ["interfaces/notes", NOTES],
-		},
-		{
-			name: "a README for an interface that does not exist",
-			seed: { folders: ["interfaces"] },
-			files: () => [{ path: "interfaces/ghost/README.md", text: README }],
-			reason: "folder_missing",
-			path: "interfaces/ghost/README.md",
-			reads: [],
-		},
-		{
-			name: "a file where the interface's folder would be",
-			seed: { files: { "interfaces/odd": "odd" } },
-			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
-			reason: "not_a_folder",
-			path: "interfaces/odd/interface.toml",
-			reads: ["interfaces/odd"],
-		},
-		{
-			// The core keeps links out of interfaces/ (LK1); one is blocked as any other thing that is not a folder.
-			name: "a link where the interface's folder would be",
-			seed: { links: { "interfaces/odd": "../docs" } },
-			files: () => [{ path: "interfaces/odd/interface.toml", text: page("Odd") }],
-			reason: "not_a_folder",
-			path: "interfaces/odd/interface.toml",
-			reads: ["interfaces/odd"],
-		},
-	];
-	for (const example of cases) {
-		const f = await fixture(example.seed);
-		const answer = await f.call("save_interface", save("save-1", example.files(f)));
-		expect(read(answer), example.name).toEqual({
-			schema: "qorpera.interface-save-result/v1",
-			state: "not_applied",
-			operationKey: "save-1",
-			receiptId: null,
-			files: [{ path: example.path, outcome: "blocked", reason: example.reason }],
-			next: [BLOCKED[example.reason]],
-		});
-		if (example.reads.length > 0) cites(f, answer, example.reads);
-		else expect(answer.companyReadId, example.name).toBeUndefined();
-		expect(f.commits, example.name).toEqual([]);
-		// Asked for in case a commit of this call saved before and has no note (none did).
-		expect(
-			f.notes.map((note) => note.p_request),
-			example.name,
-		).toEqual([{}]);
-	}
-});
-
-it("names a file that already holds the call's text as unchanged, an owners-only interface too", async () => {
-	const f = await fixture({ files: { [NOTES]: page("Notes", { edit: "owners" }), [NOTES_README]: README } });
-	const value = save("save-1", [
-		{ path: NOTES, expectedVersion: f.version(NOTES), text: page("Notes", { edit: "owners" }) },
-		{ path: NOTES_README, expectedVersion: f.version(NOTES_README), text: README },
-	]);
-	expect(await f.prepare(value)).toMatchObject({ effect: "internal", details: [] });
-	const answer = await f.call("save_interface", value);
-	expect(read(answer)).toMatchObject({ state: "unchanged", files: [], unchanged: [NOTES, NOTES_README] });
-	cites(f, answer, ["interfaces/notes", NOTES, NOTES_README]);
-	expect(f.commits).toEqual([]);
-});
-
-it("answers a change that waits for a member as proposed, and a replay answers from its receipt", async () => {
-	const f = await fixture(
-		{ files: { [NOTES]: page("Notes"), [NOTES_README]: "Old.\n" } },
-		{
-			hook: (path) =>
-				path === NOTES_README ? { outcome: "waiting_for_review", reason: "waiting_for_review" } : null,
-		},
-	);
-	const value = save("readme-1", [{ path: NOTES_README, expectedVersion: f.version(NOTES_README), text: README }]);
-	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
-	const first = await f.call("save_interface", value, f.direct);
-	const answer = {
-		schema: "qorpera.interface-save-result/v1",
-		state: "proposed",
-		operationKey: "readme-1",
-		receiptId: expect.any(String),
-		files: [{ path: NOTES_README, outcome: "waiting_for_review", reason: "waiting_for_review" }],
-		next: [WAITING],
-	};
-	expect(read(first)).toEqual(answer);
-	expect(f.text(NOTES_README)).toBe("Old.\n");
-	// A new set of tools, as a later turn has: the call's receipt answers, and nothing is committed again.
-	const again = await f.call("save_interface", value, f.direct, f.make());
-	expect(again.value).toBe(first.value);
-	expect(f.commits).toHaveLength(1);
-	// Each answer asks for the note; a commit that saved nothing makes none, so no Undo is offered.
-	expect(f.notes).toHaveLength(2);
-	expect(await Promise.all(note.mock.results.map((result) => result.value))).toEqual([0, 0]);
-});
-
-it("answers a save as unconfirmed when its note fails after the commit, and its repeat makes the note", async () => {
-	const f = await fixture({ files: { [NOTES]: page("Notes") } });
-	const rename = save("rename-1", [{ path: NOTES, expectedVersion: f.version(NOTES), text: page("Notebook") }]);
-	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
-	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
-	// A folder error, never a refusal (which says nothing happened): the boundary answers TOOL_OUTCOME_UNCONFIRMED.
-	const error = await f.call("save_interface", rename, f.direct).then(
-		() => null,
-		(thrown: unknown) => thrown,
-	);
-	expect(error).toBeInstanceOf(CloudCompanyFolderError);
-	expect(error).not.toBeInstanceOf(CloudToolRefusal);
-	expect(f.commits).toHaveLength(1);
-	expect(f.text(NOTES)).toBe(page("Notebook"));
-	expect(f.notes).toEqual([]);
-	// The same call again finds the files saved, and notes the change its commit made.
-	const saved = await f.call("save_interface", rename, f.direct);
-	expect(read(saved)).toMatchObject({ state: "unchanged", files: [], unchanged: [NOTES] });
-	expect(f.notes).toEqual([{ p_binding: f.binding, p_request: {} }]);
-	await expect(note.mock.results[1]?.value).resolves.toBe(1);
-	expect(f.commits).toHaveLength(1);
-	// A repeat whose note fails changed nothing, so it is refused.
-	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
-	await refuses(f.call("save_interface", rename, f.direct), CloudToolRefusal, "COMPANY_FOLDER_UNAVAILABLE");
-	expect(f.commits).toHaveLength(1);
-});
-
-it("saves the interface that stops being main before the one that becomes main", async () => {
-	const pulse = "interfaces/pulse/interface.toml";
-	const f = await fixture({ folders: ["interfaces"], files: { [pulse]: PULSE_INTERFACE } });
-	const value = save("main-1", [
-		{ path: NOTES, text: page("Notes", { main: true }) },
-		{
-			path: pulse,
-			expectedVersion: f.version(pulse),
-			text: PULSE_INTERFACE.replace("main = true\n", "main = false\n"),
-		},
-	]);
-	const card = await f.prepare(value);
-	expect(card).toMatchObject({ effect: "delegation", title: "Change interfaces", target: "Notes, Pulse" });
-	expect(card.details).toEqual(
-		expect.arrayContaining([
-			{ key: "Notes: main", value: "becomes the main interface" },
-			{ key: "Pulse: main", value: "stops being the main interface" },
-		]),
-	);
-	expect(read(await f.call("save_interface", value))).toMatchObject({
-		state: "applied",
-		files: [
-			{ path: pulse, outcome: "saved" },
-			{ path: "interfaces/notes", outcome: "saved" },
-		],
-	});
-	expect(f.commits[0]?.units.map((unit) => [unit.op, unit.path])).toEqual([
-		["write", pulse],
-		["new_folder", "interfaces/notes"],
-	]);
-});
-
-it("takes a column the definition drops out of the rows first, once it is optional and empty in every row", async () => {
-	const definition = "tables/numbers/table.toml";
-	const rowsFile = "tables/numbers/rows.csv";
-	const withoutTarget = NUMBERS_TABLE.replace('[[column]]\nname = "target"\ntype = "number"\noptional = true\n\n', "");
-	expect(withoutTarget).not.toBe(NUMBERS_TABLE);
-	const readings = (target: string) =>
-		`${NUMBERS_HEAD}\nmrr,2026-10-01T09:00:00Z,1200,€,${target},${AGENT}\nsignups,2026-10-08T09:00:00Z,40,count,,${AGENT}\n`;
-	const f = await fixture({ files: { [definition]: NUMBERS_TABLE, [rowsFile]: readings("") } });
-	const value = save("drop-1", [{ path: definition, expectedVersion: f.version(definition), text: withoutTarget }]);
-	expect(await f.prepare(value)).toMatchObject({
-		effect: "delegation",
-		title: "Change a table",
-		target: "Numbers",
-		details: [{ key: "columns", value: "removes target" }],
-	});
-	expect(read(await f.call("save_interface", value))).toMatchObject({
-		state: "applied",
-		files: [
-			{ path: rowsFile, outcome: "saved", version: f.version(rowsFile) },
-			{ path: definition, outcome: "saved", version: f.version(definition) },
-		],
-		next: [],
-	});
-	expect(f.commits[0]?.units.map((unit) => [unit.op, unit.path])).toEqual([
-		["write", rowsFile],
-		["write", definition],
-	]);
-	expect(f.text(rowsFile)).toBe(
-		`number,at,value,unit,kept_by\nmrr,2026-10-01T09:00:00Z,1200,€,${AGENT}\nsignups,2026-10-08T09:00:00Z,40,count,${AGENT}\n`,
-	);
-	// A column a row still holds a value in stays until table_write empties it.
-	const held = await fixture({ files: { [definition]: NUMBERS_TABLE, [rowsFile]: readings("2000") } });
-	const answer = await held.call(
-		"save_interface",
-		save("drop-1", [{ path: definition, expectedVersion: held.version(definition), text: withoutTarget }]),
-	);
-	expect(read(answer)).toEqual({
-		schema: "qorpera.interface-save-result/v1",
-		state: "not_applied",
-		operationKey: "drop-1",
-		receiptId: null,
-		files: [
-			{
-				path: definition,
-				outcome: "blocked",
-				reason: "rows_do_not_fit",
-				problems: [
-					"target is still in the rows: make it optional and empty it in every row with table_write first",
-				],
-			},
-		],
-		next: [BLOCKED.rows_do_not_fit],
-	});
-	cites(held, answer, ["tables/numbers", definition, rowsFile]);
-	expect(held.commits).toEqual([]);
-	// Blocked before any receipt: the boundary observes it as denied, never as succeeded (P5 pass 2 finding 1).
-	expect(held.tool("save_interface").refused?.(answer)).toBe("invalid_arguments");
 });
 
 it("sets, adds and removes rows in place, with the ids it made, and a replay finds its change made", async () => {
@@ -767,7 +270,7 @@ it("changes nothing when the rows already hold the values", async () => {
 	expect(f.commits).toEqual([]);
 });
 
-it("answers a save or row write as unconfirmed when its answer cannot be released after the commit", async () => {
+it("answers a row write as unconfirmed when its answer cannot be released after the commit", async () => {
 	const rowsFile = "tables/cards/rows.csv";
 	const f = await fixture({ files: CARDS });
 	const value = rows("cards", "cards-1", [{ id: C1, state: "done" }]);
@@ -780,18 +283,6 @@ it("answers a save or row write as unconfirmed when its answer cannot be release
 	expect(read(again)).toMatchObject({ state: "unchanged", changed: { updated: 0, added: 0, removed: 0 } });
 	cites(f, again, CARDS_FILES);
 	expect(f.commits).toHaveLength(1);
-
-	const s = await fixture({ files: { [NOTES]: page("Notes") } });
-	const rename = save("rename-1", [{ path: NOTES, expectedVersion: s.version(NOTES), text: page("Notebook") }]);
-	const prepared = await s.prepare(rename, s.direct);
-	vi.spyOn(s.folder, "release").mockRejectedValueOnce(new CloudCompanyFolderError("read_revoked"));
-	await unconfirmed(s.tool("save_interface").execute(prepared, s.direct));
-	expect(s.commits).toHaveLength(1);
-	expect(s.text(NOTES)).toBe(page("Notebook"));
-	const saved = await s.call("save_interface", rename, s.direct);
-	expect(read(saved)).toMatchObject({ state: "unchanged", files: [], unchanged: [NOTES] });
-	cites(s, saved, ["interfaces/notes", NOTES]);
-	expect(s.commits).toHaveLength(1);
 });
 
 it("saves no rows that do not fit, and says why with the files it read", async () => {

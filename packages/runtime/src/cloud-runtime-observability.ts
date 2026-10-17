@@ -68,7 +68,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Changes the agent saved from a computer that wait for review (P40b): applying one, or dropping it.
 	"apply_proposal",
 	"discard_proposal",
-	// Interfaces (I8): reading a page and a table; writing rows, and saving interfaces and tables.
+	// Interfaces (I8): reading a page and a table; writing rows, and saving interfaces and tables. Since the scope reset
+	// (C6b) no run has interface_read or save_interface; their names stay, as the SQL list keeps them.
 	"interface_read",
 	"table_read",
 	"table_write",
