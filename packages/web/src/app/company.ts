@@ -2,6 +2,7 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { type CodingSession, type CodingSessionRead, compareCodingSessions } from "../cloud/coding-session.ts";
+import { createWebConnectors, HOSTED_CONNECTORS } from "../cloud/connectors.ts";
 import {
 	type EmailDraftAction,
 	EmailDraftClient,
@@ -2184,6 +2185,34 @@ export class CompanyController {
 			throw error;
 		}
 		await this.answerInteraction(sessionId, interactionId, "provided", {});
+	}
+
+	/** Starts the provider sign-in for a connect card's service, as Settings → Company connections
+	 * does, and resolves to the provider's page. The sign-in comes back to Company connections, which
+	 * finishes it and shares the account with every agent; the card is answered after that, by the
+	 * member ("It's connected"). Only an owner or admin connects a company service. */
+	async beginConnectSignIn(sessionId: string, request: InteractionRequest): Promise<string> {
+		this.assertCanSend(sessionId);
+		const store = this.conversation(sessionId);
+		const role = this.store.get().team?.role;
+		store.set({ interactionError: undefined });
+		try {
+			const connector = HOSTED_CONNECTORS.find((item) => item.id === request.payload.connectorId);
+			if (request.surface !== "connect" || !connector) throw new Error(t("This service cannot be connected here."));
+			if (role !== "owner" && role !== "admin")
+				throw new Error(t("Only founders and admins can connect the company's services."));
+			const connectors = createWebConnectors(this.#api.cloud, this.profile);
+			// A new sign-in replaces the company's current connection for the service, as in Settings.
+			const existing = (await connectors.list())
+				.filter(
+					(item) => item.connectorId === connector.id && item.status === "active" && item.ownerKind === "company",
+				)
+				.sort((left, right) => right.version - left.version)[0];
+			return await connectors.beginSignIn(connector.id, existing?.secretId);
+		} catch (error) {
+			store.set({ interactionError: describeError(error) });
+			throw error;
+		}
 	}
 
 	/** The quotes of outside content in a conversation's draft: its records' words wherever they stand in «» marks. */

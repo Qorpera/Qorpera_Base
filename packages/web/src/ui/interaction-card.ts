@@ -1,3 +1,4 @@
+import { HOSTED_CONNECTORS } from "../cloud/connectors.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import {
 	type InteractionAnswer,
@@ -30,6 +31,9 @@ export interface InteractionCardContext {
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
+	/** Starts the sign-in for a connect card's service (the page leaves for the provider);
+	 * absent for a member who cannot connect company services. */
+	connect?: () => Promise<void>;
 	emailDraft?: EmailDraftEditor;
 	loadEmailDraft?: () => Promise<EmailDraftState>;
 	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
@@ -60,6 +64,7 @@ const SURFACE_LABEL = {
 	takeover: phrase("Computer"),
 	draft: phrase("Draft"),
 	credential: phrase("Sign-in"),
+	connect: phrase("Connection"),
 } as const;
 
 /** What an answer did, for every outcome but a question's chosen options. */
@@ -72,6 +77,7 @@ const OUTCOME_LABEL: Record<InteractionOutcome, string> = {
 	declined: phrase("Declined"),
 	dismissed: phrase("Skipped"),
 	discarded: phrase("Discarded"),
+	connected: phrase("Connected"),
 };
 
 /** The answer as the card shows it: a question's chosen options in the agent's own
@@ -307,6 +313,42 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				}`,
 			),
 		);
+	} else if (request.surface === "connect") {
+		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : "";
+		const connectorId = typeof request.payload.connectorId === "string" ? request.payload.connectorId : "";
+		const service = HOSTED_CONNECTORS.find((connector) => connector.id === connectorId)?.label ?? connectorId;
+		if (purpose) body.push(h("p", { class: "interaction-text" }, purpose));
+		if (open) {
+			// The sign-in ends in Settings, which shares the account with every agent; the
+			// agent goes on once a member says it is connected and the kernel finds it so.
+			const connect = () => {
+				if (busy || !context.connect) return;
+				busy = true;
+				for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+					control.setAttribute("aria-disabled", "true");
+				void context.connect().then(undefined, () => {
+					busy = false;
+					for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+						control.removeAttribute("aria-disabled");
+				});
+			};
+			body.push(
+				h(
+					"p",
+					{ class: "interaction-note" },
+					context.connect
+						? t("The sign-in ends in Company connections. Then come back here and press It's connected.")
+						: t("Only founders and admins can connect {service}. When one has, press It's connected.", {
+								service,
+							}),
+				),
+			);
+			actions.push(
+				context.connect ? pill(t("Connect {service}", { service }), connect, "primary", busy) : null,
+				pill(t("It's connected"), () => answer("connected"), context.connect ? "secondary" : "primary", busy),
+				pill(t("Skip"), () => answer("declined"), "quiet", busy),
+			);
+		}
 	}
 
 	card = h(

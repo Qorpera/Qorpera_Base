@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
+import { CLOUD_CONNECTORS } from "./cloud-connector-catalog.ts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
 /* Thread interactions (design: THREAD-WIDGETS-DESIGN-20260922.md): an agent asks
@@ -10,16 +11,28 @@ import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
  * there too. The member's answer comes back as an ordinary input in the next
  * wake, as `qorpera.interaction-answer/v1`. Secrets never travel either way:
  * a secret card returns an outcome only, a form answer carries values for
- * non-secret fields only. Agents never author HTML or free forms. */
+ * non-secret fields only, a connect card an outcome only (the sign-in goes
+ * through the broker). Agents never author HTML or free forms. */
 
 export const CLOUD_INTERACTION_SCHEMA = "qorpera.interaction/v1";
 export const CLOUD_INTERACTION_ANSWER_SCHEMA = "qorpera.interaction-answer/v1";
 
-export const CLOUD_INTERACTION_SURFACES = ["question", "secret", "form", "takeover", "draft", "credential"] as const;
+export const CLOUD_INTERACTION_SURFACES = [
+	"question",
+	"secret",
+	"form",
+	"takeover",
+	"draft",
+	"credential",
+	"connect",
+] as const;
 export type CloudInteractionSurface = (typeof CLOUD_INTERACTION_SURFACES)[number];
 
 /** Surfaces with an implemented member workflow. Stored events retain the full protocol. */
-export const CLOUD_ASK_MEMBER_SURFACES = ["question", "secret", "takeover", "draft"] as const;
+export const CLOUD_ASK_MEMBER_SURFACES = ["question", "secret", "takeover", "draft", "connect"] as const;
+
+/** The services a connect card may name: the connector catalog, as the kernel checks it. */
+const CONNECT_SERVICES: readonly string[] = CLOUD_CONNECTORS.map((connector) => connector.id);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -161,6 +174,18 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 		{ name: matching(NAME_PATTERN), domain: matching(HOST_PATTERN), purpose: chars(0, 300) },
 		"surface credential: reserved for host-mediated sign-in from the vault. The current web client does not execute it; do not claim that raising this card signs in.",
 	),
+	connect: closedObject(
+		["connectorId", "purpose"],
+		{
+			connectorId: {
+				type: "string",
+				enum: [...CONNECT_SERVICES],
+				description: "A service the company has not connected.",
+			},
+			purpose: chars(1, 300, "What you need the service for, in a sentence the member reads."),
+		},
+		"surface connect: a founder or admin connects a company service (Settings → Company connections sign-in); you never see a password or token.",
+	),
 };
 
 /** The payload for the surface named beside it, one closed object per surface. */
@@ -198,13 +223,23 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 }
 
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
-	"Show one member card: question, secret, takeover or draft. This ends the turn like a final send; text is its introductory sentence. Finish independent work first, never actions depending on an unanswered decision. " +
+	"Show one member card: question, secret, takeover, draft or connect. This ends the turn like a final send; text is its introductory sentence. Finish independent work first, never actions depending on an unanswered decision. " +
 	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two actual contact matches or specific available times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
 	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
 	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For page entry or authentication, offer takeover only when a member-controllable computer is available; otherwise explain the limitation. After handback, inspect the page before claiming success: I am done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
+	`When the work needs a catalog service (${CONNECT_SERVICES.join(", ")}) the company has not connected, use surface connect` +
+	" with payload {connectorId, purpose}: a founder or admin connects it with the same sign-in as Settings. Never use a secret card, a takeover or the service's website for these. A connected answer means the company has it now and its tools arrive with your next run; declined means do the work without it or explain what is blocked. " +
 	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
 	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
-	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input or newest thread entry named by wake.payload.inputIds. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
+	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input or newest thread entry named by wake.payload.inputIds. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. Connect answers carry only the outcome. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
+
+/** The ask_member description for a run, naming the catalog services it has no tools for: what a connect card is for. */
+export function cloudAskMemberInstructions(connectorIds: readonly string[]): string {
+	const missing = CONNECT_SERVICES.filter((service) => !connectorIds.includes(service));
+	return missing.length > 0
+		? `${CLOUD_ASK_MEMBER_INSTRUCTIONS} Catalog services with no tools in this run: ${missing.join(", ")}.`
+		: `${CLOUD_ASK_MEMBER_INSTRUCTIONS} Every catalog service has its tools in this run: raise no connect card.`;
+}
 
 export interface CloudInteractionRequestData {
 	schema: typeof CLOUD_INTERACTION_SCHEMA;
@@ -429,6 +464,13 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 				typeof payload.domain === "string" &&
 				HOST_PATTERN.test(payload.domain) &&
 				optionalText(payload, "purpose", 0, 300)
+			);
+		case "connect":
+			return (
+				closedKeys(payload, ["connectorId", "purpose"]) &&
+				typeof payload.connectorId === "string" &&
+				CONNECT_SERVICES.includes(payload.connectorId) &&
+				text(payload.purpose, 1, 300)
 			);
 	}
 }

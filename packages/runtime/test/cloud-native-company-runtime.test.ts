@@ -42,7 +42,10 @@ import {
 	parseCloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
-import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
+import {
+	CLOUD_ASK_MEMBER_INSTRUCTIONS,
+	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
+} from "@qorpera/runtime/cloud-thread-interactions";
 import { MEMORY_BRANCHES_SCHEMA } from "@qorpera/runtime/memory-tree/branches";
 import { MEMORY_VIEW_RECORD_SCHEMA, MEMORY_VIEW_SCHEMA } from "@qorpera/runtime/memory-tree/compose";
 import { MEMORY_COMPACTION_RECORD_SCHEMA } from "@qorpera/runtime/memory-tree/conversation-lines";
@@ -1065,10 +1068,13 @@ it("exposes only a named typed connector operation and keeps its grant and desti
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
 	// The vault's company accounts are offered beside the connector (A1-7): every company run is on the company folder.
-	const offered = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
-		(tool: { name: string }) => tool.name,
-	);
+	const tools = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools;
+	const offered = tools.map((tool: { name: string }) => tool.name);
 	expect(offered).toContain("company_account");
+	// Its ask_member names the catalog services this run has no tools for (Linear is not one of the catalog's).
+	expect(tools.find((tool: { name: string }) => tool.name === "ask_member")?.description).toBe(
+		`${CLOUD_ASK_MEMBER_INSTRUCTIONS} Catalog services with no tools in this run: github, gmail, google_drive.`,
+	);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(
@@ -1627,13 +1633,16 @@ it("refuses unavailable form and credential cards without effects and lets the m
 	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
 		(tool: { name: string }) => tool.name === "ask_member",
 	);
-	expect(ask.inputSchema.properties.surface.enum).toEqual(["question", "secret", "takeover", "draft"]);
+	expect(ask.inputSchema.properties.surface.enum).toEqual(["question", "secret", "takeover", "draft", "connect"]);
+	// Without a broker the run has no connector tools at all, and the description names none.
+	expect(ask.description).toBe(CLOUD_ASK_MEMBER_INSTRUCTIONS);
 	expect(ask.inputSchema.properties.payload).toEqual(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 	expect(ask.inputSchema.properties.payload.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
 		["options"],
 		["name", "label", "purpose"],
 		["instruction"],
 		["platform", "connectorId", "from", "to", "body"],
+		["connectorId", "purpose"],
 	]);
 	for (const index of [0, 1]) {
 		const refused = JSON.parse(evidence.fenced.outputs[index].output);
@@ -2712,7 +2721,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
 	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
 	// supervisor, so they moved again. Since save_interface's description gives an interface.toml's form and the files'
-	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again; every other tool is as on master.
+	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again. Since the connect card (contract 16.2),
+	// ask_member's description offers it, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2747,9 +2757,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"e5a6e4334d8d273ddeee2a903049dcf545c2134a72dba7164f567615f78d1023",
+		"094acc830914f6febbaa985c8be94aa872119a3f7f26fb00742ed527726aab31",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"af93a5cf6e612796c0fc8be50b0ac0d736442a474c281eb095ebb9fe05916146",
+		"25212136149ddbd55e63458b3f983ce5089edfc16b0ff1d5a87c0e493afedfef",
 	);
 });

@@ -151,6 +151,79 @@ describe("interaction cards", () => {
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
 	});
 
+	it("starts a connect card's sign-in for who may connect, and lets anyone who answers say it is connected", async () => {
+		const connectCard = item({
+			surface: "connect",
+			title: "Connect Gmail",
+			payload: { connectorId: "gmail", purpose: "Reading the invoices in the inbox." },
+		});
+		const connect = vi.fn(async () => {});
+		const ctx = context({ connect });
+		const card = renderInteractionCard(connectCard, ctx);
+		expect(card.dataset.state).toBe("waiting");
+		expect(card.getAttribute("aria-label")).toBe("Connection from Yang Tang: Connect Gmail");
+		expect(card.textContent).toContain("Reading the invoices in the inbox.");
+		expect(card.textContent).toContain("The sign-in ends in Company connections.");
+		const pills = [...card.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
+		expect(pills.map((pill) => pill.textContent)).toEqual(["Connect Gmail", "It's connected", "Skip"]);
+		expect(pills[0]?.classList.contains("interaction-primary")).toBe(true);
+		pills[0]?.click();
+		expect(connect).toHaveBeenCalledTimes(1);
+		// The sign-in is not an answer; while it starts every control is held.
+		expect(ctx.answer).not.toHaveBeenCalled();
+		expect(pills[1]?.getAttribute("aria-disabled")).toBe("true");
+		pills[1]?.click();
+		expect(ctx.answer).not.toHaveBeenCalled();
+
+		// A sign-in that could not start opens the card again.
+		const failing = context({
+			connect: vi.fn(async () => {
+				throw new Error("no ticket");
+			}),
+		});
+		const again = renderInteractionCard(connectCard, failing);
+		again.querySelector<HTMLButtonElement>(".interaction-primary")?.click();
+		await Promise.resolve();
+		await Promise.resolve();
+		const controls = [...again.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
+		expect(controls.some((control) => control.hasAttribute("aria-disabled"))).toBe(false);
+		controls[1]?.click();
+		expect(failing.answer).toHaveBeenCalledWith("connected", {});
+
+		// A member who cannot connect is told who can, and may still say it is connected, or skip.
+		const member = context();
+		const plain = renderInteractionCard(connectCard, member);
+		expect(plain.textContent).toContain("Only founders and admins can connect Gmail.");
+		const offered = [...plain.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
+		expect(offered.map((pill) => pill.textContent)).toEqual(["It's connected", "Skip"]);
+		expect(offered[0]?.classList.contains("interaction-primary")).toBe(true);
+		offered[1]?.click();
+		expect(member.answer).toHaveBeenCalledWith("declined", {});
+		await Promise.resolve();
+	});
+
+	it("shows an answered or skipped connect card inert", () => {
+		const request: InteractionRequest = {
+			surface: "connect",
+			title: "Connect Google Drive",
+			payload: { connectorId: "google_drive", purpose: "Filing the invoices." },
+		};
+		const connected = renderInteractionCard(
+			item(request, { outcome: "connected", answer: {}, answeredBy: MEMBER, answeredAt: "2026-09-22T20:05:00Z" }),
+			context({ connect: vi.fn(async () => {}) }),
+		);
+		expect(connected.dataset.state).toBe("answered");
+		expect(connected.querySelector(".interaction-chosen")?.textContent).toBe("Connected");
+		expect(connected.querySelector("button")).toBeNull();
+		const skipped = renderInteractionCard(item(request, { outcome: "declined", answer: {} }), context());
+		expect(skipped.dataset.state).toBe("declined");
+		expect(skipped.querySelector(".interaction-result")?.textContent).toBe("Declined");
+		expect(skipped.querySelector("button")).toBeNull();
+		// A member who does not answer it sees the card, with no controls.
+		const readOnly = renderInteractionCard(item(request), context({ canAnswer: false }));
+		expect(readOnly.querySelector("button")).toBeNull();
+	});
+
 	it("keeps historical form cards skippable without suggesting that fields can be filled", () => {
 		const request: InteractionRequest = {
 			surface: "form",

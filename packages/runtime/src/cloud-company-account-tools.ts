@@ -97,7 +97,7 @@ export function companyAccountWayIn(hosts: readonly string[]): string | undefine
 	const official = OFFICIAL.find((service) => hosts.some((host) => under(host, service.domains)));
 	if (official)
 		return official.connected
-			? `${official.name} has an official connection: use it (a member connects it with the Connect card when it is not connected yet). Never sign up or sign in on its website, and never ask anyone for its password.`
+			? `${official.name} has an official connection: use it (when it is not connected yet, raise a connect card with ask_member: a founder or admin connects it). Never sign up or sign in on its website, and never ask anyone for its password.`
 			: `${official.name} is reached only through an official connection, which the company cannot add yet: tell a member what you need. Never sign up or sign in on its website, and never ask anyone for its password.`;
 	const strict = STRICT.find((service) => hosts.some((host) => under(host, service.domains)));
 	if (strict)

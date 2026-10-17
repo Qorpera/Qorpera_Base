@@ -102,6 +102,7 @@ import {
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
 	cloudAskMemberFinalKey,
+	cloudAskMemberInstructions,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
@@ -653,7 +654,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const ask: CloudNativeTool = {
 				name: "ask_member" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
-				description: CLOUD_ASK_MEMBER_INSTRUCTIONS,
+				// With a broker, the services this run has no tools for: a connect card's answer brings them next run.
+				description: this.#secretBroker
+					? cloudAskMemberInstructions(connectorDescriptors.map((descriptor) => descriptor.connectorId))
+					: CLOUD_ASK_MEMBER_INSTRUCTIONS,
 				inputSchema: {
 					type: "object",
 					properties: {
