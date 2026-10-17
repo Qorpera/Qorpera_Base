@@ -91,6 +91,11 @@ export class MemoryView {
 	}
 
 	async #refresh(): Promise<void> {
+		// A load while a change is saved could answer from before it, after it: load once it is done.
+		if (this.#working) {
+			this.#stale = true;
+			return;
+		}
 		const generation = ++this.#generation;
 		// The role is noted as the load starts: a failed load is not retried until the role moves.
 		this.#readRole = this.#role();
@@ -138,6 +143,8 @@ export class MemoryView {
 		this.#draw();
 		try {
 			this.#memory = await this.#client.choose(mode);
+			// The answer is the company's memory now: an earlier failed load no longer matters.
+			this.#loadError = undefined;
 			this.#saved = true;
 		} catch (error) {
 			if (!this.#lifetime.signal.aborted) {
@@ -215,6 +222,7 @@ export class MemoryView {
 			return;
 		}
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
+		this.#retry.disabled = this.#working;
 		replace(
 			this.el,
 			h("h2", null, t("Memory")),

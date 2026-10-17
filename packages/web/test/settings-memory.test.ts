@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryView, type WebCompanyMemory } from "../src/app/views/settings-memory.ts";
 import { CloudApi } from "../src/cloud/api.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
-import { type CompanyMemoryMode, parseCompanyMemory } from "../src/cloud/memory-mode.ts";
-import { id, settle, timestamp } from "./fixtures.ts";
+import { type CompanyMemory, type CompanyMemoryMode, parseCompanyMemory } from "../src/cloud/memory-mode.ts";
+import { deferred, id, settle, timestamp } from "./fixtures.ts";
 
 /** The company's memory as the cloud keeps it: the choice, the beta offer, and each run on its way in its mode. */
 interface Stored {
@@ -287,6 +287,60 @@ describe("Settings → Company → Memory", () => {
 		view.update();
 		await settle();
 		expect(client.read).toHaveBeenCalledTimes(2);
+	});
+
+	it("reads nothing while a choice is saved: Retry waits, and the saved answer replaces a failed read", async () => {
+		const { client } = memoryCloud({ betaOffered: true });
+		let role = "admin";
+		view = await show(client, () => role);
+		const el = view.el;
+		// A read again fails: the choices stay, with Retry.
+		client.read.mockRejectedValueOnce(new Error("The network is down."));
+		role = "owner";
+		view.update();
+		await settle();
+		expect(client.read).toHaveBeenCalledTimes(2);
+		expect(notices(el)).toEqual(["The network is down."]);
+		const save = deferred<void>();
+		const choose = client.choose.getMockImplementation()!;
+		client.choose.mockImplementationOnce(async (mode) => {
+			await save.promise;
+			return choose(mode);
+		});
+		radio(el, "tree").click();
+		const retry = () => [...el.querySelectorAll("button")].find((button) => button.textContent === "Retry")!;
+		expect(retry().disabled).toBe(true);
+		retry().click();
+		await settle();
+		expect(client.read).toHaveBeenCalledTimes(2);
+		save.resolve();
+		await settle();
+		expect(radio(el, "tree").checked).toBe(true);
+		expect(notices(el)).toEqual(["Saved. New runs use Shared context — Beta."]);
+		expect(el.querySelector("button")).toBeNull();
+		expect(client.read).toHaveBeenCalledTimes(2);
+	});
+
+	it("drops a read from before a choice that answers after it, and reads again", async () => {
+		const { client } = memoryCloud({ betaOffered: true });
+		let role = "admin";
+		view = await show(client, () => role);
+		const el = view.el;
+		// The role moves: a read starts, and its answer, from before the choice, comes after it.
+		const late = deferred<CompanyMemory>();
+		client.read.mockReturnValueOnce(late.promise);
+		role = "owner";
+		view.update();
+		await settle();
+		radio(el, "tree").click();
+		await settle();
+		expect(client.choose).toHaveBeenCalledExactlyOnceWith("tree");
+		expect(client.read).toHaveBeenCalledTimes(3);
+		late.resolve(parseCompanyMemory(answer({ ...fresh, betaOffered: true }), id(10)));
+		await settle();
+		expect(radio(el, "tree").checked).toBe(true);
+		expect(notices(el)).toEqual(["Saved. New runs use Shared context — Beta."]);
+		expect(client.read).toHaveBeenCalledTimes(3);
 	});
 
 	it("stays hidden on a cloud without the choice, and shows once a later read finds it", async () => {
