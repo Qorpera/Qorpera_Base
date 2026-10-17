@@ -26,6 +26,7 @@ import {
 	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
+import { type CompanyMemory, type CompanyMemoryMode, chooseCompanyMemory, readCompanyMemory } from "./memory-mode.ts";
 import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
@@ -124,6 +125,16 @@ export class CloudApi {
 	/** The company's computer hours this month, measured (not charged yet). */
 	getCompanyComputerHours(profileId: string): Promise<CompanyComputerHours> {
 		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The company's memory: Agent notebooks or the Shared context beta (C5). Any member may read it. */
+	getCompanyMemory(profileId: string): Promise<CompanyMemory> {
+		return readCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** Owners and admins choose the memory of runs that start from now on. */
+	setCompanyMemory(profileId: string, mode: CompanyMemoryMode): Promise<CompanyMemory> {
+		return chooseCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"), mode);
 	}
 
 	/** Whether the company is out of computer hours, so new work waits until hours are added
