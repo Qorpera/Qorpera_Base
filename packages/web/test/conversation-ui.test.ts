@@ -839,8 +839,9 @@ describe("conversation UI boundaries", () => {
 			`Could not read how the erase of the message from ${what.author} at ${what.time} is going.`,
 		]);
 	});
-	it("leaves the browser's menu to a mouse's right-click on a link, an attachment or text selected in a message", async () => {
-		const f = setup({ messageErases: erases(["pending"]) });
+	it("leaves the browser's menu to a link or an attachment, and to a mouse's right-click on text selected in a message", async () => {
+		const route = erases(["pending"]);
+		const f = setup({ messageErases: route });
 		await settle();
 		const reply: TranscriptMessage = {
 			kind: "agent",
@@ -860,31 +861,57 @@ describe("conversation UI boundaries", () => {
 		const link = message.querySelector<HTMLElement>("a[href]")!;
 		const pressEscape = (menu: HTMLElement | null) =>
 			menu?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		// Open link, Copy link address: the browser's.
+		// Open link, Copy link address: the browser's, by a right-click or a long press.
 		expect(messageMenu(link).offered).toBe(false);
+		expect(messageMenu(link, "touch").offered).toBe(false);
 		expect(document.querySelector(".context-menu")).toBeNull();
-		// Shift+F10 or the menu key on the same link opens the message's, at the link's place; so does a long press on it.
-		for (const from of ["Shift+F10", "menu key", "touch"] as const) {
+		// Shift+F10 or the menu key on the same link opens the message's, at the link's place.
+		for (const from of ["Shift+F10", "menu key"] as const) {
 			const menu = messageMenu(link, from);
 			expect(menu.offered, from).toBe(true);
 			pressEscape(menu.menu);
 		}
-		// Neither sticks: the mouse's next right-click there is the browser's again.
+		// The key doesn't stick: the mouse's next right-click there is the browser's again.
 		expect(messageMenu(link).offered).toBe(false);
 		// An image the message brought, as ReceivedAttachments draws it: Save image as.
 		const attachments = message.appendChild(document.createElement("div"));
 		attachments.className = "received-attachments";
 		const image = attachments.appendChild(document.createElement("img"));
 		expect(messageMenu(image).offered).toBe(false);
+		expect(messageMenu(image, "touch").offered).toBe(false);
 		attachments.remove();
 		// Text selected in the message: Copy.
 		const selection = document.getSelection()!;
 		selection.selectAllChildren(bubble);
+		const text = selection.toString();
 		expect(messageMenu(bubble).offered).toBe(false);
-		// A long press selects the word under the finger before the menu comes: still the message's.
-		const pressed = messageMenu(bubble, "touch");
-		expect(pressed.offered).toBe(true);
-		pressEscape(pressed.menu);
+		// A long press selects the word under the finger before the menu comes: the message's, with Copy in place of the
+		// browser's. A Copy that fails says so above the composer, until one works.
+		const writeText = vi.fn(async (_text: string) => {});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		try {
+			writeText.mockRejectedValueOnce(new DOMException("Denied", "NotAllowedError"));
+			const pressed = messageMenu(bubble, "touch");
+			expect(pressed.items.map((item) => item.textContent)).toEqual(["Copy", "Erase message"]);
+			pressed.items[0]!.click();
+			await settle();
+			expect(writeText).toHaveBeenLastCalledWith(text);
+			expect(notices(f.view.el)).toEqual(["The text could not be copied."]);
+			// jsdom drops the selection when the menu takes focus (a browser keeps it): the next long press selects again.
+			selection.selectAllChildren(bubble);
+			messageMenu(bubble, "touch").items[0]!.click();
+			await settle();
+			expect(writeText).toHaveBeenCalledTimes(2);
+			expect(notices(f.view.el)).toEqual([]);
+			expect(route.request).not.toHaveBeenCalled();
+		} finally {
+			Reflect.deleteProperty(navigator, "clipboard");
+		}
+		// Without text selected in it, a long press gives the message's menu alone.
+		selection.removeAllRanges();
+		const plain = messageMenu(bubble, "touch");
+		expect(plain.items.map((item) => item.textContent)).toEqual(["Erase message"]);
+		pressEscape(plain.menu);
 		// Text selected outside it: the message's own menu.
 		const outside = document.body.appendChild(document.createElement("p"));
 		outside.textContent = "Elsewhere";

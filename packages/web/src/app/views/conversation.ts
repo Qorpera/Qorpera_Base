@@ -317,6 +317,8 @@ export class ConversationView {
 	/** What opens the next message menu: "key" after Shift+F10 or the menu key in the thread, else the type of the
 	 * pointer last pressed there ("mouse", "pen", "touch"). */
 	#menuInput = "";
+	/** Why the last Copy from a message's menu failed, said above the composer until a Copy works. */
+	#copyFailure: string | undefined;
 	/** The member's erases of messages here, one line each, oldest first, each read until it is done or fails (summary
 	 * trees M3c). */
 	#erases: EraseLine[] = [];
@@ -1064,10 +1066,11 @@ export class ConversationView {
 
 	/** A message's menu, for an owner or admin, the roles the erase route takes (M3c): Erase, or for a message already
 	 * erased, how its erase went (its copies included), read again. A message on its way has none, and with nothing to
-	 * offer the browser's own menu stays. So it does for a mouse or pen right-click on a link, an image or attachment, or
-	 * text the member selected in the message (Copy, Open link, Save image). The keyboard (Shift+F10, the menu key) still
-	 * opens the message's, since a link is its only way into a message, and so does a long press, which selects the word
-	 * under the finger before the menu comes. */
+	 * offer the browser's own menu stays. So it does for a right-click or a long press on a link, an image or attachment
+	 * (Open link, Copy link address, Save image), and for a mouse or pen right-click on text the member selected in the
+	 * message (Copy). The keyboard (Shift+F10, the menu key) still opens the message's there, since a link is its only way
+	 * into a message. So does a long press on the message's text, which selects the word under the finger before the menu
+	 * comes; the message's menu then offers Copy in place of the browser's. */
 	#openMessageMenu(event: MouseEvent): void {
 		// What opened it: a key noted, else the event's own pointer (Chrome and Firefox send the menu as a pointer event,
 		// with no pointer type for a key), else the pointer pressed last.
@@ -1090,15 +1093,14 @@ export class ConversationView {
 		)
 			return;
 		const selection = document.getSelection();
-		if (
-			!keyboard &&
-			!touch &&
-			(target.closest("a[href], img, video, audio, .received-attachments") ||
-				(selection &&
-					!selection.isCollapsed &&
-					selection.toString().trim() &&
-					(element.contains(selection.anchorNode) || element.contains(selection.focusNode))))
-		)
+		const selected =
+			selection &&
+			!selection.isCollapsed &&
+			selection.toString().trim() &&
+			(element.contains(selection.anchorNode) || element.contains(selection.focusNode))
+				? selection.toString()
+				: "";
+		if (!keyboard && (target.closest("a[href], img, video, audio, .received-attachments") || (!touch && selected)))
 			return;
 		event.preventDefault();
 		const { item, author, mine } = drawn;
@@ -1111,6 +1113,19 @@ export class ConversationView {
 			x: point.x,
 			y: point.y,
 			items: [
+				...(touch && selected && navigator.clipboard
+					? [
+							{
+								label: t("Copy"),
+								icon: "copy",
+								select: () =>
+									void navigator.clipboard.writeText(selected).then(
+										() => this.#copied(undefined),
+										() => this.#copied(t("The text could not be copied.")),
+									),
+							},
+						]
+					: []),
 				item.erased
 					? {
 							label: t("Show how the erase went"),
@@ -1181,6 +1196,13 @@ export class ConversationView {
 			return;
 		}
 		await this.#followErase(item, what, (error) => eraseFailure(error, what));
+	}
+
+	/** A Copy from a message's menu ended: says so above the composer when it failed, and clears that once one works. */
+	#copied(failure: string | undefined): void {
+		if (this.#lifetime.signal.aborted || failure === this.#copyFailure) return;
+		this.#copyFailure = failure;
+		this.update();
 	}
 
 	/** How the erase of a message already erased went, read again without asking: the erase route answers an erased
@@ -3001,6 +3023,7 @@ export class ConversationView {
 			minutes,
 			stoppable,
 			this.#erases.map(({ what, erase, failure }) => [what, erase?.state, erase?.copies, failure]),
+			this.#copyFailure,
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
@@ -3009,6 +3032,7 @@ export class ConversationView {
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
 		if (conversation.interactionError) children.push(notice("danger", conversation.interactionError));
 		for (const line of this.#erases) children.push(this.#eraseNotice(line));
+		if (this.#copyFailure) children.push(notice("danger", this.#copyFailure));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
