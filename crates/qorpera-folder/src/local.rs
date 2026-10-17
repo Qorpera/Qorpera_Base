@@ -332,11 +332,14 @@ impl Local {
 		}
 	}
 
-	/// Whether the node's folder `path`, or one below it, is marked as one whose caches all move (`whole`).
-	pub fn whole_below(&self, path: &str) -> bool {
+	/// Whether caches are moving into the folder from the node's folder `path`, or from one below it: it is marked as one
+	/// whose caches all move (`whole`), or has a cache folder named one of `names` (those still to move in its worktree),
+	/// which a move has not reached yet.
+	pub fn moving_below(&self, path: &str, names: &[String]) -> bool {
 		let mut todo = vec![self.mirror(path)];
 		while let Some(disk) = todo.pop() {
-			if fs::symlink_metadata(disk.join(WHOLE)).is_ok() {
+			let named = |n: &String| fs::symlink_metadata(disk.join("t").join(n)).is_ok_and(|m| m.is_dir());
+			if fs::symlink_metadata(disk.join(WHOLE)).is_ok() || names.iter().any(named) {
 				return true;
 			}
 			if let Ok(read) = fs::read_dir(disk.join("d")) {
@@ -1117,6 +1120,10 @@ mod tests {
 		assert!(l.is_top("a/b", "node_modules") && !l.is_top("a", "b") && !l.is_top("a/b", "x.js"));
 		assert!(l.tops("a/b") && !l.tops("a") && l.has_caches("a") && !l.has_caches("c"));
 		assert_eq!(l.mirrors("a"), ["b"]);
+		// A move of a name takes the cache folders of that name in and below a folder, not a file of that name.
+		let moving = |path: &str, name: &str| l.moving_below(path, &[name.to_string()]);
+		file(Up::Mount("e".to_string()), "dist");
+		assert!(moving("a", "node_modules") && moving("a/b", "node_modules") && !moving("a", "dist") && !moving("e", "dist"));
 		// The node renamed a to c, in place of an empty c whose folder below had caches.
 		made(Up::Mount("c/old".to_string()), "dist");
 		l.renamed("a", "c");
@@ -1129,6 +1136,7 @@ mod tests {
 		assert_eq!(l.convert("c/b", "dist").unwrap(), true);
 		assert!(!l.is_top("c/b", "dist") && l.is_top("c/b/dist", "y.js"));
 		assert_eq!(l.name(y), Some((Up::Mount("c/b/dist".to_string()), "y.js".to_string(), Area::Cache)));
+		assert!(l.whole("c/b/dist") && l.moving_below("c", &[]) && !l.moving_below("e", &[]));
 		// One whose folder has caches of its own stays as it is.
 		let again = made(Up::Mount("c/b".to_string()), "dist");
 		assert_eq!(l.convert("c/b", "dist").unwrap(), false);

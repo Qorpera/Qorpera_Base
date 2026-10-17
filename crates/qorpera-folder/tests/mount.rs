@@ -823,6 +823,78 @@ fn a_listing_while_the_node_renames_a_folder_keeps_its_caches() {
 }
 
 #[test]
+fn a_listing_a_rename_overtakes_drops_the_caches_of_its_own_folder_only() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (company, runner) = start(&node);
+	let (notes, caches) = (company.join("notes"), node.dir.join("state/local/caches/d/notes"));
+	for dir in ["a/j", "c/k"] {
+		std::fs::create_dir_all(notes.join(dir).join("node_modules")).unwrap();
+		std::fs::write(notes.join(dir).join("node_modules/x"), "cached").unwrap();
+	}
+	// Another view removes a/j, whose caches go when a is listed here. The listing waits for the node at its second
+	// list of a (the check of what is gone in it), and meanwhile a is renamed to b and c to a: what goes is b's j, not
+	// the caches of the folder a names now.
+	node.remove("notes/a/j");
+	node.slow_lists("notes/a", &[1, 3]);
+	let listed = notes.join("a");
+	let listing = std::thread::spawn(move || names(&listed));
+	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	std::fs::rename(notes.join("a"), notes.join("b")).unwrap();
+	std::fs::rename(notes.join("c"), notes.join("a")).unwrap();
+	assert!(listing.join().unwrap().is_empty());
+	assert!(caches.join("d/a/d/k/t/node_modules/x").exists() && !caches.join("d/b/d/j").exists());
+	assert_eq!(std::fs::read_to_string(notes.join("a/k/node_modules/x")).unwrap(), "cached");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_folder_with_caches_still_to_move_stays_in_its_worktree() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/worktrees/v/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, v) = (company.join("code/o/n/worktrees/w"), company.join("code/o/n/worktrees/v"));
+	let dirs = ["a", "b", "c"];
+	for dir in dirs {
+		std::fs::create_dir_all(w.join(dir).join("node_modules")).unwrap();
+		std::fs::write(w.join(dir).join("node_modules/x.js"), "cached").unwrap();
+	}
+	// Git comes to track all three while a boundary settles: the move stops at the first it is at, before it reaches
+	// the other two, which it has not marked.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["a/node_modules/x.js", "b/node_modules/x.js", "c/node_modules/x.js"]))
+		.unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	let made = |dir: &str| node.exists(&format!("code/o/n/worktrees/w/{dir}/node_modules"));
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1 && dirs.into_iter().any(made)));
+	let left: Vec<&str> = dirs.into_iter().filter(|d| !made(*d)).collect();
+	assert_eq!(left.len(), 2, "made at the node: {:?}", dirs.map(made));
+	// One of them leaves the worktree: EXDEV (`mv` copies), as the move would not find its caches there. In the
+	// worktree, the move finds them under its new name.
+	let exdev = std::fs::rename(w.join(left[0]), v.join(left[0])).unwrap_err();
+	assert_eq!(exdev.raw_os_error(), Some(libc::EXDEV));
+	std::fs::rename(w.join(left[0]), w.join("d")).unwrap();
+	node.busy(0, 0);
+	let marker = node.dir.join("state/caches.moving");
+	let moved = |dir: &str| node.content(&format!("code/o/n/worktrees/w/{dir}/node_modules/x.js")).is_some_and(|c| c == b"cached");
+	let done = || ["a", "b", "c", "d"].into_iter().all(|d| d == left[0] || moved(d)) && node.open_handles() == 0 && !marker.exists();
+	assert!(eventually(Duration::from_secs(20), done), "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
+	assert!(!node.exists(&format!("code/o/n/worktrees/v/{}", left[0])) && !node.exists(&format!("code/o/n/worktrees/w/{}", left[0])));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() {
 	if !wanted() {
 		return;

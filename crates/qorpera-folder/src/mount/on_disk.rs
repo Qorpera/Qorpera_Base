@@ -550,7 +550,8 @@ impl FolderFs {
 	/// The local entries of the node's folder `ino` (at `dir`) added to its `entries`: the session-local git files in
 	/// place of the node's, or the folder's caches where the node has nothing. A cache where the node has an entry now
 	/// goes (rule 1), as do the caches of a folder in it the node no longer has (removed or renamed by another view);
-	/// both wait while a worktree's caches move into the folder, whose moves make the node's folders first.
+	/// both wait while a worktree's caches move into the folder, whose moves make the node's folders first. A rename
+	/// here since the listing may have given `dir` to another folder: what goes is that of `ino`'s path now.
 	pub(super) fn merge_local(&self, ino: u64, dir: &str, entries: &mut Vec<(u64, FileType, String)>) -> Result<(), i32> {
 		let Some(local) = &self.s.local else { return Ok(()) };
 		if let Some(seed) = local::seed_of(dir).filter(|_| !self.s.code_host) {
@@ -562,26 +563,35 @@ impl FolderFs {
 		if self.s.cache_dir(ino).is_none() {
 			return Ok(());
 		}
-		let settled = settled(local, dir);
-		let gone = || {
+		let gone = |dir: &str| {
 			let no_folder = |child: &String| match self.s.child(ino, child) {
 				Ok(c) => c.attr.kind != EntryKind::Folder,
 				Err(e) => e == libc::ENOENT,
 			};
 			local.mirrors(dir).into_iter().filter(no_folder).collect::<Vec<_>>()
 		};
-		if settled && !gone().is_empty() {
-			// Asked again once no rename here is between the node's and its caches' (`Local::folders`).
+		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entries.iter().any(|e| e.2 == c.2));
+		if settled(local, dir) && (listed(dir) || !gone(dir).is_empty()) {
+			// Asked again, for the path `ino` has now, once no rename here is between the node's and its caches'
+			// (`Local::folders`); none moves it while this holds.
 			let _held = local.folders.lock().unwrap();
-			for child in gone() {
-				local.drop_mirror(&join(dir, &child));
+			let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
+			if settled(local, &dir) {
+				for child in gone(&dir) {
+					local.drop_mirror(&join(&dir, &child));
+				}
+				for cache in local.entries_of(&dir, Area::Cache) {
+					if self.s.child(ino, &cache.2).is_ok() {
+						local.gone_top(&dir, &cache.2);
+					}
+				}
 			}
 		}
-		for cache in local.entries_of(dir, Area::Cache) {
+		// Those of the folder `ino` is now, whose listing this is.
+		let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
+		for cache in local.entries_of(&dir, Area::Cache) {
 			if !entries.iter().any(|e| e.2 == cache.2) {
 				entries.push(cache);
-			} else if settled {
-				local.gone_top(dir, &cache.2);
 			}
 		}
 		Ok(())
@@ -907,7 +917,8 @@ impl FolderFs {
 	/// Before the node renames its folder `from` to `to` for this view: held until its caches have moved with it
 	/// (`caches_renamed`, `Local::folders`). Refused while caches are moving into the folder in its worktree and one of
 	/// its name is still on the disk (EBUSY: the move makes the node's folder first and empties the cache into it), and
-	/// out of their worktree while some in it or below it are (EXDEV: `mv` copies), where the move would not find them.
+	/// out of their worktree while some in it or below it are, or are still to (EXDEV: `mv` copies), where the move
+	/// would not find them; so is a rename of the worktree, or of a folder it is in.
 	pub(super) fn folder_renaming(&self, from: (u64, &str), to: (u64, &str)) -> Result<Option<MutexGuard<'_, u64>>, i32> {
 		let Some(local) = &self.s.local else { return Ok(None) };
 		let held = local.folders.lock().unwrap();
@@ -916,7 +927,11 @@ impl FolderFs {
 		if local.is_top(&dir, from.1) && !settled(local, &dir) {
 			return Err(libc::EBUSY);
 		}
-		if local.whole_below(&path) {
+		// The names still to move in the worktrees the rename takes caches of: the one it is in, or those it holds.
+		let takes = |worktree: &str| path == worktree || in_worktree(&path, worktree) || in_worktree(worktree, &path);
+		let moves = local.cache.lock().unwrap().moves(None);
+		let names: Vec<String> = moves.into_iter().filter(|(w, _)| takes(w)).map(|(_, n)| n).collect();
+		if local.moving_below(&path, &names) {
 			let worktree = worktree_of(&path);
 			if worktree.is_none() || worktree_of(&join(&self.s.path_of(to.0)?, to.1)) != worktree {
 				return Err(libc::EXDEV);
