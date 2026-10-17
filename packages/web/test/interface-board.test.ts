@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
 import { CompanyInterfaceOffers } from "../src/app/interface-offers.ts";
-import { interfaceRows } from "../src/app/interfaces.ts";
+import { interfaceRows, pagesOn } from "../src/app/interfaces.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
 import type {
 	InterfaceOfferAnswer,
@@ -21,8 +21,8 @@ import { type FolderFake, folderFake } from "./folder-fake.ts";
 /* Interfaces step I9a (RUNTIME-INTERFACES.md §3.2, §3.3, §10): the Members page from the folder. Its board draws the
  * areas and cards in lanes, a card in the open pile is taken and one in the member's own lane released, with a button
  * or a drag, through the member's own folder client (folder-fake.ts); its People view reads the members source with
- * lookups into both tables. Step I9c: a card is offered to another member, and an offer is answered on the card and
- * on Pulse. */
+ * lookups into both tables. Step I9c: a card is offered to another member, and an offer is answered on the card. The
+ * page is the one the web ships, switched on (Interfaces C6a); the folder's interfaces/ is never read. */
 
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Co-Founder", templateId: "co-founder" };
 const ada: HostedStaffAgent = { ...staff, id: id(41), displayName: "Ada", role: "Bookkeeper" };
@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 let companies = 0;
-/** A company of three members. Each test's company is new, so no page state carries over. */
+/** A company of three members, its Members page on. Each test's company is new, so no page state carries over. */
 function company(role: HostedProfileRole = "owner") {
 	const f = fixture();
 	const profile = { ...profileA, profileId: id(300 + ++companies) };
@@ -87,6 +87,7 @@ function company(role: HostedProfileRole = "owner") {
 			capabilities: { ...team.capabilities, write: role !== "viewer" },
 			members: [member(me, "Account A", role), member(cyd, "Cyd", "contributor"), member(bea, "Bea", "admin")],
 		},
+		interfacePages: { pages: [{ page: "members", on: true }], mayChange: role === "owner" || role === "admin" },
 	});
 	cleanup.push(() => controller.stop());
 	return controller;
@@ -102,7 +103,7 @@ function seeded(call = "", send: string = me): FolderFake {
 	return fake;
 }
 
-/** Follows `fake` for `controller`'s company, as the app does; `hint` stands in for the folder's hint. */
+/** Follows `fake` for `controller`'s company's pages, as the app does; `hint` stands in for the folder's hint. */
 async function follow(fake: FolderFake, controller: CompanyController) {
 	let onHint: ((seq: number) => void) | undefined;
 	const stop = new AbortController();
@@ -119,6 +120,7 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 		(state) => controller.store.set({ interfaceFolder: state }),
 	);
 	cleanup.push(() => stop.abort());
+	reader.read(pagesOn(controller.store.get().interfacePages));
 	await reader.open();
 	return {
 		/** The folder's hint, and the sync it asks for a second later. */
@@ -129,9 +131,9 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 	};
 }
 
-/** The Members page (or `page`) on screen, drawn again on every change, writing through `fake`; with `offers`, its
- * offers are read and made through them as the app does (step I9c). */
-async function members(fake: FolderFake, role: HostedProfileRole = "owner", offers?: OffersFake, page = "members") {
+/** The Members page on screen, drawn again on every change, writing through `fake`; with `offers`, its offers are read
+ * and made through them as the app does (step I9c). */
+async function members(fake: FolderFake, role: HostedProfileRole = "owner", offers?: OffersFake) {
 	vi.useFakeTimers();
 	const controller = company(role);
 	const followed = await follow(fake, controller);
@@ -150,7 +152,7 @@ async function members(fake: FolderFake, role: HostedProfileRole = "owner", offe
 	const main = h("main");
 	document.body.append(main);
 	const writes = { folder: () => fake.folder, current: () => {}, ...(reader ? { offers: reader } : {}) };
-	const draw = () => renderInterface(main, controller, page, writes);
+	const draw = () => renderInterface(main, controller, "members", writes);
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
 	return { controller, main, ...followed };
@@ -553,20 +555,6 @@ describe("the Members board (I9a)", () => {
 		expect(fake.folder.commit).not.toHaveBeenCalled();
 		expect(titles(main, "Open pile")).toEqual(["Ops", "Call the bank"]);
 	});
-
-	it("draws a lane per choice when its lanes are a choice column, with no Take or Release", async () => {
-		const fake = seeded();
-		const path = "interfaces/members/interface.toml";
-		fake.put(path, fake.text(path)!.replace('lanes = "members"', 'lanes = "state"'));
-		const { main } = await members(fake);
-		// Areas have no state column, so only cards are drawn.
-		expect(lanes(main)).toEqual(["open", "held", "done"]);
-		expect(titles(main, "open")).toEqual(["Call the bank"]);
-		expect(titles(main, "held")).toEqual(["Send invoices"]);
-		expect(titles(main, "done")).toEqual([]);
-		expect(main.querySelector(".interface-board .interface-actions button")).toBeNull();
-		expect(main.querySelector(".interface-card.is-draggable")).toBeNull();
-	});
 });
 
 describe("offers on the Members board (I9c)", () => {
@@ -792,41 +780,7 @@ describe("offers on the Members board (I9c)", () => {
 	});
 });
 
-describe("offers on Pulse (I9c)", () => {
-	const listed = (main: HTMLElement) =>
-		[...main.querySelectorAll<HTMLElement>(".interface-item-row")].filter((row) =>
-			row.querySelector("strong")?.textContent?.includes(" offers you "),
-		);
-	const title = (main: HTMLElement, text: string) =>
-		[...main.querySelectorAll<HTMLElement>(".interface-block > h2")].find((each) => each.textContent === text);
-
-	it("lists an offer to the member under Needs you, accepted there", async () => {
-		const fake = seeded(bea);
-		const offers = offersFake();
-		offers.add({ table: cardsTable(fake), key: [CALL], from: bea, to: me, was: bea });
-		// One the member made, and one whose cell has changed since it was read, are not listed.
-		offers.add({ table: cardsTable(fake), key: [SEND], from: me, to: bea, was: me });
-		offers.add({ table: cardsTable(fake), key: [SEND], from: bea, to: me, was: bea });
-		const { main, hint } = await members(fake, "owner", offers, "pulse");
-		expect(listed(main).map((row) => row.querySelector("strong")?.textContent)).toEqual([
-			"Bea offers you “Call the bank” in Cards",
-		]);
-		const row = listed(main)[0]!;
-		expect(texts(row, ".interface-actions button")).toEqual(["Accept", "Not now"]);
-		const before = fake.version(CARDS);
-		buttonOf(row, "Accept")!.focus();
-		buttonOf(row, "Accept")!.click();
-		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
-		expect(fake.commits[0]?.operationKey).toMatch(/^web:board-accept:/);
-		expect(fake.commits[0]?.units).toEqual([
-			{ op: "write", path: CARDS, text: cards(me, me), expectedVersion: before },
-		]);
-		await hint();
-		await vi.waitFor(() => expect(listed(main)).toEqual([]));
-		// The page has no control left, so the focus goes to the block's title, not back to the top of the document.
-		expect(document.activeElement).toBe(title(main, "Needs you"));
-	});
-
+describe("offers in what waits for the member (I9c)", () => {
 	it("gives an offer's time to the second, though the cloud's carries microseconds", async () => {
 		const fake = seeded(bea);
 		const offers = offersFake();
@@ -838,31 +792,9 @@ describe("offers on Pulse (I9c)", () => {
 			was: bea,
 			at: "2026-10-07T09:14:49.123456Z",
 		});
-		const { controller } = await members(fake, "owner", offers, "pulse");
+		const { controller } = await members(fake, "owner", offers);
 		const offered = interfaceRows(controller, "waiting")?.filter(({ row }) => row.kind === "offer");
 		expect(offered?.map(({ row }) => row.due)).toEqual(["2026-10-07T09:14:49Z"]);
-	});
-
-	it("declines an offer there with Not now, and the focus goes on to the next one", async () => {
-		const fake = seeded(bea, bea);
-		const offers = offersFake();
-		const call = offers.add({ table: cardsTable(fake), key: [CALL], from: bea, to: me, was: bea });
-		const send = offers.add({ table: cardsTable(fake), key: [SEND], from: bea, to: me, was: bea });
-		const { main } = await members(fake, "owner", offers, "pulse");
-		expect(listed(main)).toHaveLength(2);
-		const [first] = listed(main);
-		const declined = first!.querySelector("strong")?.textContent?.includes("Call the bank") ? call : send;
-		buttonOf(first!, "Not now")!.focus();
-		buttonOf(first!, "Not now")!.click();
-		await vi.waitFor(() => expect(listed(main)).toHaveLength(1));
-		expect(offers.calls.decline).toHaveBeenCalledExactlyOnceWith(declined.id);
-		expect(fake.folder.commit).not.toHaveBeenCalled();
-		const [left] = listed(main);
-		expect(document.activeElement).toBe(buttonOf(left!, "Accept"));
-		// The last one leaves the page no control, so the focus goes to the block's title.
-		buttonOf(left!, "Not now")!.click();
-		await vi.waitFor(() => expect(listed(main)).toEqual([]));
-		expect(document.activeElement).toBe(title(main, "Needs you"));
 	});
 });
 

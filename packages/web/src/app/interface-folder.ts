@@ -7,13 +7,8 @@ import {
 import { COMPANY_STATE_FILE_MAX_BYTES, companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import {
 	decodeInterfaceFile,
-	INTERFACE_FILE_MAX_BYTES,
-	INTERFACE_ORDER_MAX_BYTES,
 	type InterfaceFile,
 	type InterfaceProblem,
-	isInterfaceName,
-	parseInterfaceFile,
-	parseInterfaceOrderFile,
 	parseTableFile,
 	parseTableRows,
 	TABLE_FILE_MAX_BYTES,
@@ -30,32 +25,26 @@ import {
 } from "./interface-sources.ts";
 import { folderSources } from "./interfaces.ts";
 
-/* A folder-v2 company's interfaces and tables, read from its folder (Interfaces step I7; deploy/first-node/
- * RUNTIME-INTERFACES.md §2–§5, §8 and §10). Every `interfaces/<name>/interface.toml` is read with `interfaces/order.md`,
- * and the tables and files the pages' drawn blocks read (app/interfaces.ts, `folderSources`), with the folders and files
- * of the company folder's own sources they name (`vision`, `agents`, `todos`…; app/interface-sources.ts), all with the
- * member's own authority. app/interfaces.ts turns what is read into the Interfaces tab and the pages. While a review
- * card previews the pages a save an agent asks to make would leave (step I10), what those pages read is read too.
+/* What a folder-v2 company's shown pages read from its folder (Interfaces steps I7 and C6a; deploy/first-node/
+ * RUNTIME-INTERFACES.md §2–§5 and §10): the tables and files the pages' drawn blocks read (app/interfaces.ts,
+ * `folderSources`), with the folders and files of the company folder's own sources they name (`vision`, `agents`,
+ * `todos`…; app/interface-sources.ts), all with the member's own authority. The pages are the definitions the web
+ * ships, as app/interfaces.ts hands them over (`read`); the folder's interfaces/ is never read.
  *
  * Every text is parsed here with the cloud client's parsers each time it is read, never taken from a stored parse
- * (§6.1 rule 1). A page whose text doesn't parse is kept with its problems: a broken page, whose buttons never render.
+ * (§6.1 rule 1).
  *
  * The folder's hint asks the feed what changed, at most once a second, with a one-minute poll behind it, as the Company
  * File page follows it (views/company-folder.ts). Only the files whose paths changed are read again; `resync`, too many
  * changes, or a change to what this member may read reads everything again. A file that is missing, too large or not
  * text is left out, with no error. A read that fails keeps what was read before, and the next sync reads everything
- * again; a first read that fails leaves the tab to the library's definitions. Nothing is ever announced. */
+ * again; a first read in which every read failed publishes nothing. Nothing is ever announced. */
 
 /** A problem with a file, in its parser's words, with the line it is on. */
 export interface FolderProblem {
 	readonly line: number | null;
 	readonly message: string;
 }
-
-/** An interface folder's page: its parse, or the problems that keep its text from parsing (a broken page). */
-export type FolderPage =
-	| { readonly name: string; readonly file: InterfaceFile }
-	| { readonly name: string; readonly file: null; readonly problems: readonly FolderProblem[] };
 
 /** A table as its blocks read it: its definition, the rows that fit it and a problem for each row that doesn't
  * (`parseTableRows`). When its definition doesn't parse, or its rows file can't be read at all (a wrong first line),
@@ -67,17 +56,10 @@ export interface FolderTable {
 	readonly rows: readonly TableRow[];
 	readonly problems: readonly FolderProblem[];
 	readonly readable: boolean;
-	/** Its rows file's text: null when it has none, absent when it hasn't been read. A review card's preview reads the
-	 * rows by the definition a save would leave (step I10, app/interfaces.ts `withPreview`). */
-	readonly rowsText?: string | null;
 }
 
-/** What the company's folder says about its interfaces, as last read. */
+/** What the company's folder says for its shown pages, as last read. */
 export interface InterfaceFolderState {
-	/** The interface ids `interfaces/order.md` lists, in its order; none when it doesn't parse. */
-	readonly order: readonly string[];
-	/** Every interface folder's page, by folder name. */
-	readonly pages: readonly FolderPage[];
 	/** The tables the pages' drawn blocks and needs name, by table name; a table that isn't there is left out. */
 	readonly tables: ReadonlyMap<string, FolderTable>;
 	/** The `file:` sources the pages' drawn blocks read, by the path the source names; a file that isn't there is left
@@ -96,8 +78,6 @@ export interface InterfaceFolderSource {
 	folderHints(onHint: (seq: number) => void): { close(): Promise<void> };
 }
 
-const ORDER = "interfaces/order.md";
-const pagePath = (name: string) => `interfaces/${name}/interface.toml`;
 const tablePath = (name: string) => `tables/${name}/table.toml`;
 const rowsPath = (name: string) => `tables/${name}/rows.csv`;
 /** A `file:` source reads at most this much (RUNTIME-INTERFACES.md §4). */
@@ -139,7 +119,7 @@ async function each<T>(items: readonly T[], work: (item: T) => Promise<void>): P
 
 export class CompanyInterfaceFolder {
 	readonly #source: InterfaceFolderSource;
-	readonly #publish: (state: InterfaceFolderState | undefined) => void;
+	readonly #publish: (state: InterfaceFolderState) => void;
 	readonly #stop = new AbortController();
 	#client?: Pick<CloudMemberFolderClient, "read" | "list" | "readFile" | "changes">;
 	#hints?: { close(): Promise<void> };
@@ -155,12 +135,10 @@ export class CompanyInterfaceFolder {
 	#stale = false;
 	/** Reads that failed in this pass. */
 	#failed = 0;
-	/** The interface folders' names, sorted. */
-	#names: string[] = [];
+	/** The shown pages' definitions, whose sources are read. */
+	#pages: readonly InterfaceFile[] = [];
 	/** Every file read, by its path's key. */
 	readonly #reads = new Map<string, Read>();
-	/** Each page text's parse, kept while its read is: a pass parses a text once. */
-	readonly #parses = new WeakMap<NonNullable<Read>, FolderPage>();
 	/** The folders the company folder's own sources list, by their key, as last listed. */
 	readonly #lists = new Map<string, readonly CloudMemberFolderEntry[]>();
 	/** Those sources' files, by their path's key, as last read at the version their listing named. */
@@ -171,17 +149,14 @@ export class CompanyInterfaceFolder {
 	};
 	/** The versions last published; nothing is published while they stay the same. */
 	#shown: string | undefined;
-	/** The pages a save an agent asks to make would leave, by the preview that draws them (step I10): what they read is
-	 * read too, whatever their status. */
-	readonly #previews = new Map<object, readonly InterfaceFile[]>();
 
-	constructor(source: InterfaceFolderSource, publish: (state: InterfaceFolderState | undefined) => void) {
+	constructor(source: InterfaceFolderSource, publish: (state: InterfaceFolderState) => void) {
 		this.#source = source;
 		this.#publish = publish;
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
 
-	/** Reads the company's interfaces, then follows the folder: its hint once a read has landed, and the slow poll,
+	/** Reads what the shown pages read, then follows the folder: its hint once a read has landed, and the slow poll,
 	 * which also tries a failed first read again. */
 	async open(): Promise<void> {
 		if (this.#disposed) return;
@@ -203,14 +178,12 @@ export class CompanyInterfaceFolder {
 		void this.#hints?.close();
 	}
 
-	/** Reads what `pages` read too, for `owner`'s previews of them (a thread's review cards, step I10); none stops it.
-	 * A preview that reads something not read yet has it read at the next sync, and what no page reads any more is
-	 * dropped then. */
-	preview(owner: object, pages: readonly InterfaceFile[]): void {
-		const before = this.#previewSources();
-		if (pages.length > 0) this.#previews.set(owner, pages);
-		else this.#previews.delete(owner);
-		if (this.#previewSources() !== before) this.#schedule();
+	/** Reads what `pages`, the shown pages' definitions, read, in place of what the pages before them read. What is not
+	 * read yet is read at the next sync, and what no page reads any more is dropped then. */
+	read(pages: readonly InterfaceFile[]): void {
+		const before = this.#sourcesKey();
+		this.#pages = pages;
+		if (this.#sourcesKey() !== before) this.#schedule();
 	}
 
 	// ---- lifetime -------------------------------------------------------------
@@ -252,7 +225,8 @@ export class CompanyInterfaceFolder {
 	}
 
 	#schedule(): void {
-		if (this.#disposed || this.#syncTimer) return;
+		// Before `open`, there is nothing to sync: its first read reads what the pages read then.
+		if (this.#disposed || this.#syncTimer || !this.#client) return;
 		this.#syncTimer = setTimeout(() => {
 			this.#syncTimer = undefined;
 			if (this.#busy) {
@@ -271,8 +245,8 @@ export class CompanyInterfaceFolder {
 	}
 
 	/** Reads a file's text when its version changed since the last read. A file that is missing, larger than `max` or
-	 * not text reads as null. A read that fails keeps the last one and marks the pass, unless `strict`. */
-	async #read(path: string, max: number, decode: (bytes: Uint8Array) => string | null, strict = false): Promise<void> {
+	 * not text reads as null. A read that fails keeps the last one and marks the pass. */
+	async #read(path: string, max: number, decode: (bytes: Uint8Array) => string | null): Promise<void> {
 		const key = companyPathKey(path);
 		try {
 			const read = await this.#client!.read(path, this.#signal());
@@ -288,30 +262,10 @@ export class CompanyInterfaceFolder {
 			this.#live();
 			const text = decode(bytes);
 			this.#reads.set(key, text === null ? null : { version: read.entry.version, text });
-		} catch (error) {
+		} catch {
 			this.#live();
-			if (strict) throw error;
 			this.#failed += 1;
 			this.#stale = true;
-		}
-	}
-
-	/** The interface folders' names, every page of the listing. */
-	async #listInterfaces(): Promise<string[]> {
-		const names: string[] = [];
-		let after: string | null = null;
-		let listed = 0;
-		for (;;) {
-			const page = await this.#client!.list("interfaces", after, LIST_PAGE, this.#signal());
-			this.#live();
-			this.#oldest = Math.min(this.#oldest ?? page.asOfSeq, page.asOfSeq);
-			for (const entry of page.entries) {
-				const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-				if (entry.kind === "folder" && isInterfaceName(name)) names.push(name);
-			}
-			listed += page.entries.length;
-			if (page.next === null || listed >= MAX_LISTED) return names.sort();
-			after = page.next;
 		}
 	}
 
@@ -378,23 +332,19 @@ export class CompanyInterfaceFolder {
 		await each(takes, (entry) => this.#take(entry));
 	}
 
-	/** Reads everything: the order file, every page, and what their drawn blocks read. The order file and the listing
-	 * must be read; a page that can't be read is left out (or keeps its last read), unless none can. */
+	/** Reads everything the pages read. A file that can't be read keeps its last read, unless nothing can be. */
 	async #reload(): Promise<void> {
 		this.#oldest = undefined;
 		this.#failed = 0;
 		// Until this pass lands whole, the next sync reads everything again too.
 		this.#stale = true;
-		await this.#read(ORDER, INTERFACE_ORDER_MAX_BYTES, decodeInterfaceFile, true);
-		const names = await this.#listInterfaces();
-		await each(names, (name) => this.#read(pagePath(name), INTERFACE_FILE_MAX_BYTES, decodeInterfaceFile));
-		if (names.length > 0 && this.#failed === names.length) throw new Error("No interface could be read");
-		this.#names = names;
 		await this.#readSources(() => true);
 		await this.#readFolderSources(() => true);
+		if (this.#failed > 0 && this.#oldest === undefined) throw new Error("Nothing the pages read could be read");
 		this.#forget();
 		this.#stale = this.#failed > 0;
-		this.#position = { afterSeq: this.#oldest ?? 0, cursor: null };
+		// With nothing to read there is no seq to follow from: the next sync reads everything, which is nothing, again.
+		this.#position = this.#oldest === undefined ? null : { afterSeq: this.#oldest, cursor: null };
 	}
 
 	/** Asks the feed what changed since the last pass, and reads those files again. */
@@ -424,7 +374,7 @@ export class CompanyInterfaceFolder {
 			position = page.next;
 			if (!page.more) break;
 		}
-		// Even when nothing changed: what a preview reads that isn't read yet is read, and what none reads is dropped.
+		// Even when nothing changed: what a page reads that isn't read yet is read, and what none reads is dropped.
 		await this.#refresh([...touched]);
 		// Moved on only once the changed files are read: a pass that fails follows the same changes again.
 		this.#position = position;
@@ -437,19 +387,6 @@ export class CompanyInterfaceFolder {
 			const key = companyPathKey(path);
 			return touched.some((changed) => key === changed || key.startsWith(`${changed}/`));
 		};
-		if (hit(ORDER)) await this.#read(ORDER, INTERFACE_ORDER_MAX_BYTES, decodeInterfaceFile);
-		const names = new Set(this.#names);
-		for (const changed of touched) {
-			const [root, name] = changed.split("/");
-			if (root === "interfaces" && name !== undefined && isInterfaceName(name)) names.add(name);
-		}
-		const pages = [...names].sort();
-		await each(
-			pages.filter((name) => hit(pagePath(name)) || this.#readOf(pagePath(name)) === undefined),
-			(name) => this.#read(pagePath(name), INTERFACE_FILE_MAX_BYTES, decodeInterfaceFile),
-		);
-		// A folder whose page is gone (deleted, moved away, never written) lists no page; one that failed to read stays.
-		this.#names = pages.filter((name) => this.#readOf(pagePath(name)) !== null);
 		await this.#readSources(hit);
 		// A folder is listed again when something in it, under it or above it changed: a new agent's folder shows in
 		// `agents/` whether or not the feed names the folder itself.
@@ -481,44 +418,12 @@ export class CompanyInterfaceFolder {
 		);
 	}
 
-	/** The pages' texts parsed, by folder name. */
-	#pages(): FolderPage[] {
-		return this.#names.flatMap((name): FolderPage[] => {
-			const read = this.#readOf(pagePath(name));
-			if (!read) return [];
-			let page = this.#parses.get(read);
-			if (!page) {
-				const parsed = parseInterfaceFile(read.text);
-				page = parsed.ok
-					? { name, file: parsed.file }
-					: { name, file: null, problems: problemsOf(parsed.problems) };
-				this.#parses.set(read, page);
-			}
-			return [page];
-		});
-	}
-
-	/** What the previews' pages read, as one key. */
-	#previewSources(): string {
-		const files = [...this.#previews.values()].flat();
-		const read = files.map((file) => folderSources(file));
-		return JSON.stringify([
-			[...new Set(read.flatMap((sources) => sources.tables))].sort(),
-			[...new Set(read.flatMap((sources) => sources.files))].sort(),
-			[...new Set(read.flatMap((sources) => sources.sources))].sort(),
-		]);
-	}
-
-	/** The tables, files and company folder sources the active pages' drawn blocks and needs name, and the previews'
-	 * pages'. */
+	/** The tables, files and company folder sources the pages' drawn blocks and needs name. */
 	#sources(): { tables: string[]; files: string[]; sources: Set<string> } {
 		const tables = new Set<string>();
 		const files = new Set<string>();
 		const named = new Set<string>();
-		const pages = this.#pages().flatMap((page) =>
-			page.file === null || page.file.status !== "active" ? [] : [page.file],
-		);
-		for (const file of [...pages, ...[...this.#previews.values()].flat()]) {
+		for (const file of this.#pages) {
 			const sources = folderSources(file);
 			for (const name of sources.tables) tables.add(name);
 			for (const path of sources.files) files.add(path);
@@ -527,16 +432,17 @@ export class CompanyInterfaceFolder {
 		return { tables: [...tables].sort(), files: [...files].sort(), sources: named };
 	}
 
+	/** What the pages read, as one key. */
+	#sourcesKey(): string {
+		const { tables, files, sources } = this.#sources();
+		return JSON.stringify([tables, files, [...sources].sort()]);
+	}
+
 	/** Drops what no page reads any more. */
 	#forget(): void {
 		const { tables, files, sources } = this.#sources();
 		const kept = new Set(
-			[
-				ORDER,
-				...this.#names.map(pagePath),
-				...tables.flatMap((name) => [tablePath(name), rowsPath(name)]),
-				...files,
-			].map(companyPathKey),
+			[...tables.flatMap((name) => [tablePath(name), rowsPath(name)]), ...files].map(companyPathKey),
 		);
 		for (const key of [...this.#reads.keys()]) if (!kept.has(key)) this.#reads.delete(key);
 		const plan = folderSourcePlan(sources, this.#view);
@@ -546,13 +452,8 @@ export class CompanyInterfaceFolder {
 		for (const key of [...this.#taken.keys()]) if (!takes.has(key)) this.#taken.delete(key);
 	}
 
-	/** What the folder says, or undefined while it keeps no order file (a company seeded before P16b, of which there
-	 * should be none): the Interfaces tab then keeps the library's definitions. */
-	#state(): InterfaceFolderState | undefined {
-		const order = this.#readOf(ORDER);
-		if (!order) return undefined;
-		// An order file that doesn't parse lists nothing: every interface follows by name (§8).
-		const listed = parseInterfaceOrderFile(order.text);
+	/** What the folder says for the pages. */
+	#state(): InterfaceFolderState {
 		const { tables: tableNames, files: filePaths, sources } = this.#sources();
 		const tables = new Map<string, FolderTable>();
 		// Every file a source names has been tried by now: undefined is a read that failed, which is not a file that
@@ -563,16 +464,9 @@ export class CompanyInterfaceFolder {
 			if (definition === undefined) tables.set(name, unread);
 			if (!definition) continue;
 			const rows = this.#readOf(rowsPath(name));
-			const rowsText = rows === undefined ? {} : { rowsText: rows?.text ?? null };
 			const parsed = parseTableFile(definition.text);
 			if (!parsed.ok) {
-				tables.set(name, {
-					table: null,
-					rows: [],
-					problems: problemsOf(parsed.problems),
-					readable: false,
-					...rowsText,
-				});
+				tables.set(name, { table: null, rows: [], problems: problemsOf(parsed.problems), readable: false });
 				continue;
 			}
 			if (rows === undefined) {
@@ -586,7 +480,6 @@ export class CompanyInterfaceFolder {
 				rows: read.rows,
 				problems: problemsOf(read.problems),
 				readable: read.readable,
-				...rowsText,
 			});
 		}
 		const files = new Map<string, string>();
@@ -594,23 +487,14 @@ export class CompanyInterfaceFolder {
 			const read = this.#readOf(path);
 			if (read) files.set(path, read.text);
 		}
-		const pages = this.#pages();
-		return {
-			order: listed.ok ? listed.file.ids : [],
-			pages,
-			tables,
-			files,
-			sources: folderSourceState(sources, this.#view, pages),
-		};
+		return { tables, files, sources: folderSourceState(sources, this.#view) };
 	}
 
 	/** Publishes what the folder says when a file it was read from, or a folder it listed, changed, or when what the
-	 * pages and previews name did: a source such as `interfaces` needs no read of its own. */
+	 * pages name did. */
 	#show(): void {
-		const { tables, files, sources } = this.#sources();
 		const versions = JSON.stringify([
-			this.#names,
-			[tables, files, [...sources].sort()],
+			this.#sourcesKey(),
 			[...this.#reads.entries()].map(([key, read]) => [key, read?.version ?? null]).sort(),
 			[...this.#lists.entries()].map(([key, entries]) => [key, entries.map((entry) => entry.version)]).sort(),
 			[...this.#taken.entries()].map(([key, read]) => [key, read.version]).sort(),

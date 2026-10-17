@@ -1,25 +1,26 @@
 // @vitest-environment jsdom
 
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
+import { MAILBOX_INTERFACE } from "@qorpera/cloud-client/interface-library";
+import { type InterfaceFile, parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { interfaceBadge } from "../src/app/interface-badge.ts";
-import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
+import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces } from "../src/app/interfaces.ts";
 import type { Route } from "../src/app/router.ts";
-import { renderInterface } from "../src/app/views/interface.ts";
+import { renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedProfileRole, HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
-import { folderFake } from "./folder-fake.ts";
 
-/* Interfaces step I5c (RUNTIME-INTERFACES.md §3.2 `mail`, §4, §10): the Mailbox page from the folder's library copy,
- * drawn from the member mail read (cloud/mail.ts). The read here is a fake of its five calls on the fixture's cloud. */
+/* Interfaces step I5c (RUNTIME-INTERFACES.md §3.2 `mail`, §4, §10): the Mailbox page the web ships, switched on (C6a),
+ * drawn from the member mail read (cloud/mail.ts). The read here is a fake of its five calls on the fixture's cloud. A
+ * test of an edited Mailbox draws the edited definition directly: no company can show it, but its blocks draw mail. */
 
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Co-Founder", templateId: "co-founder" };
 const ada: HostedStaffAgent = { ...staff, id: id(41), displayName: "Ada", role: "Bookkeeper" };
@@ -221,6 +222,15 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+/** The company's pages with the Mailbox on or off. */
+const mailboxOn = (on: boolean): InterfacePagesState => ({
+	pages: [
+		{ page: "mailbox", on },
+		{ page: "members", on: false },
+	],
+	mayChange: true,
+});
+
 function company(role: HostedProfileRole = "owner", activity: HostedStaffExecutionActivity[] = []) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
@@ -231,29 +241,17 @@ function company(role: HostedProfileRole = "owner", activity: HostedStaffExecuti
 		sessions: [session],
 		team: { ...team, role, capabilities: { ...team.capabilities, write: role !== "viewer" }, members: [me] },
 		activity,
+		interfacePages: mailboxOn(true),
 	});
 	cleanup.push(() => controller.stop());
 	return { f, controller };
 }
 
-/** The company's folder as at founding, followed as the app does; `edit` changes its Mailbox. */
-async function follow(controller: CompanyController, edit: (text: string) => string = (text) => text) {
-	const fake = folderFake({ seed: [] });
-	let next = 500;
-	for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next))))
-		fake.put(path, path === "interfaces/mailbox/interface.toml" ? edit(text) : text);
-	const stop = new AbortController();
-	const reader = new CompanyInterfaceFolder(
-		{
-			signal: stop.signal,
-			current: () => {},
-			folder: () => fake.folder,
-			folderHints: () => ({ close: async () => {} }),
-		},
-		(state) => controller.store.set({ interfaceFolder: state }),
-	);
-	cleanup.push(() => stop.abort());
-	await reader.open();
+/** The shipped Mailbox with `edit` applied. */
+function edited(edit: (text: string) => string): InterfaceFile {
+	const result = parseInterfaceFile(edit(MAILBOX_INTERFACE));
+	if (!result.ok) throw new Error(JSON.stringify(result.problems));
+	return result.file;
 }
 
 /** The company's mail, read as the app reads it. */
@@ -269,7 +267,7 @@ async function readMail(
 }
 
 /** The Mailbox on screen, drawn again on every change. `setup` fills the mail before it is read; `edit` changes the
- * page's file. */
+ * page's definition. */
 async function mailbox(
 	setup: (fake: MailFake) => void,
 	role: HostedProfileRole = "owner",
@@ -279,12 +277,13 @@ async function mailbox(
 	const fake = mailFake(f);
 	fake.addresses = [ADDRESS];
 	setup(fake);
-	await follow(controller, edit);
 	const accounts = accountsFake();
 	await readMail(controller, f, accounts);
 	const main = h("main");
 	document.body.append(main);
-	const draw = () => renderInterface(main, controller, "mailbox");
+	const file = edit && edited(edit);
+	const draw = () =>
+		file ? renderInterfaceFile(main, controller, "mailbox", file) : renderInterface(main, controller, "mailbox");
 	cleanup.push(controller.store.subscribe(draw));
 	// The page keeps its view and what is open for the company while the app runs: the next test starts on the Inbox,
 	// with nothing open.
@@ -301,7 +300,7 @@ function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
 	document.body.append(h("div", { class: "frame" }, element));
 	const auth = new AuthController(f.cloud);
 	cleanup.push(() => auth.dispose());
-	const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" };
+	const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "mailbox" };
 	renderRail(element, controller, {
 		profiles: [profileA],
 		user: userA,
@@ -333,12 +332,15 @@ describe("the mail need (§3 needs)", () => {
 	it("lists the Mailbox only while the company has an address, and reads its addresses again on coming back", async () => {
 		const { f, controller } = company();
 		const fake = mailFake(f);
-		await follow(controller);
 		await readMail(controller, f);
 		expect(names(controller)).not.toContain("mailbox");
 		fake.addresses = [ADDRESS];
 		window.dispatchEvent(new Event("focus"));
 		await vi.waitFor(() => expect(names(controller)).toContain("mailbox"));
+		// Switched off, it leaves the tab with its address still there (C6a).
+		controller.store.set({ interfacePages: mailboxOn(false) });
+		expect(names(controller)).toEqual([]);
+		controller.store.set({ interfacePages: mailboxOn(true) });
 		// A cloud without the member mail read has no mail: the need is off again.
 		(f.cloud.rpc as unknown as Mock).mockRejectedValue(
 			new CloudRpcError("qorpera_member_mail_addresses", { message: "missing", code: "PGRST202" }, 404),
@@ -1017,8 +1019,8 @@ describe("outside words in the page's other blocks (§4)", () => {
 });
 
 describe("the Mailbox's badge (§3 badge)", () => {
-	it("counts the mail sends that wait, once each, beside what Pulse lists as waiting", async () => {
-		// Ada waits for the member's answer: Pulse lists her as a review; her send is counted under mail only.
+	it("counts the mail sends that wait, once each, beside the agent's own wait", async () => {
+		// Ada waits for the member's answer, a review; her send is counted under mail only.
 		const needsYou: HostedStaffExecutionActivity = {
 			staffAgentId: ada.id,
 			runId: id(81),
@@ -1050,7 +1052,6 @@ describe("the Mailbox's badge (§3 badge)", () => {
 				createdAt: at(2),
 			},
 		];
-		await follow(controller);
 		await readMail(controller, f);
 		const file = companyInterfaces(controller).find((entry) => entry.name === "mailbox")?.file;
 		expect(file).toBeTruthy();
@@ -1062,8 +1063,6 @@ describe("the Mailbox's badge (§3 badge)", () => {
 		expect(row.querySelector(".rail-count")?.textContent).toBe("2");
 		expect(row.querySelector(".rail-count")?.getAttribute("aria-hidden")).toBe("true");
 		expect(row.getAttribute("aria-label")).toBe("Mailbox, 2 waiting");
-		// Pulse has no badge.
-		expect(element.querySelector(".interface-home .rail-count")).toBeNull();
 		// Answered sends leave the count.
 		fake.waiting = [];
 		window.dispatchEvent(new Event("focus"));
@@ -1090,15 +1089,14 @@ describe("the Mailbox's badge (§3 badge)", () => {
 				createdAt: cloudTime(10),
 			},
 		];
-		await follow(controller, (text) =>
+		await readMail(controller, f);
+		const file = edited((text) =>
 			text.replace(
 				'badge = { from = "waiting", where = { kind = "mail" } }',
 				'badge = { from = "waiting", where = { kind = "mail" }, since = "-7d" }',
 			),
 		);
-		await readMail(controller, f);
-		const file = companyInterfaces(controller).find((entry) => entry.name === "mailbox")?.file;
-		expect(file?.badge?.query.since).toBe("-7d");
-		expect(interfaceBadge(controller, file!)).toBe(1);
+		expect(file.badge?.query.since).toBe("-7d");
+		expect(interfaceBadge(controller, file)).toBe(1);
 	});
 });

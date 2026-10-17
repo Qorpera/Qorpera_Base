@@ -50,7 +50,8 @@ async function setup(f = fixture()) {
 	return { ...f, root };
 }
 /** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens) and the
- * company's mail and offers reads, which run while it is open (Interfaces steps I5c and I9c). */
+ * company's mail, offers and pages reads, which run while it is open (Interfaces steps I5c, I9c and C6a), Settings
+ * reading the pages too. */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
@@ -59,7 +60,8 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			(name) =>
 				name !== "qorpera_list_review_rules" &&
 				!name.startsWith("qorpera_member_mail_") &&
-				name !== "qorpera_member_interface_offers",
+				name !== "qorpera_member_interface_offers" &&
+				name !== "qorpera_member_interface_pages",
 		);
 }
 function click(root: Element, selector: string) {
@@ -126,7 +128,10 @@ describe("settings session lifecycle", () => {
 			}
 			// On the company list itself the rail needs no way back to it.
 			expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
-			expect(f.cloud.rpc).not.toHaveBeenCalled();
+			// The only company's settings read its pages, once (Interfaces C6a).
+			expect(vi.mocked(f.cloud.rpc).mock.calls.map(([name]) => name)).toEqual(
+				profiles.length > 1 ? [] : ["qorpera_member_interface_pages"],
+			);
 		},
 	);
 	it("preserves the selected company and focus when the profile list refreshes", async () => {
@@ -272,6 +277,55 @@ describe("settings session lifecycle", () => {
 		view.updateProfiles([profileA]);
 		await settle();
 		expect(shown()).toBe(`#/c/${profileA.profileId}/file`);
+	});
+	it("shows the company's pages on the Company tab, and says when one was switched (Interfaces C6a)", async () => {
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+			if (name !== "qorpera_member_interface_pages" && name !== "qorpera_set_interface_page")
+				throw new Error("Unexpected RPC");
+			const pages = [
+				{ page: "mailbox", on: false },
+				{ page: "members", on: args?.p_on === true },
+			];
+			return { schema: "qorpera.member-interface-pages/v1", pages, mayChange: true };
+		});
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const hub = new HubController(f.api);
+		const changed = vi.fn();
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileA],
+			company,
+			() => {},
+			() => {},
+			"company",
+			changed,
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			company.stop();
+			auth.dispose();
+		};
+		await draw();
+		const section = view.el.querySelector<HTMLElement>("#settings-content .settings-pages")!;
+		expect(section.querySelector("h2")?.textContent).toBe("Pages");
+		const members = () => section.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Members"]')!;
+		expect(members().getAttribute("aria-checked")).toBe("false");
+		members().click();
+		await draw();
+		expect(f.cloud.rpc).toHaveBeenCalledWith("qorpera_set_interface_page", {
+			p_environment_id: profileA.environmentId,
+			p_page: "members",
+			p_on: true,
+		});
+		expect(members().getAttribute("aria-checked")).toBe("true");
+		expect(changed).toHaveBeenCalledWith(profileA.environmentId);
 	});
 	it("shows no other company on a company page that has none to lend", async () => {
 		// A company page without its company: access lost, or not available.
@@ -1187,7 +1241,8 @@ describe("settings session lifecycle", () => {
 			".settings-staff-group + .settings-memory-slot > .settings-memory",
 		)!;
 		expect(section.hidden).toBe(false);
-		expect(f.root.querySelector(".settings-memory-slot + .settings-file")).not.toBeNull();
+		// The company's pages (C6a) come between its memory and its file.
+		expect(f.root.querySelector(".settings-memory-slot + .settings-pages-slot + .settings-file")).not.toBeNull();
 		expect(f.api.getCompanyMemory).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
 		section.querySelector<HTMLInputElement>("input[type=radio][value=tree]")!.click();
 		await draw();
@@ -1417,8 +1472,10 @@ describe("settings session lifecycle", () => {
 		const exit = f.root.querySelector(".company-exit")!;
 		expect(exit.nextElementSibling?.matches(".notice-danger")).toBe(true);
 		expect(exit.nextElementSibling?.textContent).toContain("Deleting is paused");
-		// Not also at the top of the page, above the members.
-		expect(f.root.querySelectorAll(".notice-danger")).toHaveLength(1);
+		// Not also at the top of the page, above the members. (In settings, the pages' read fails too: the fixture
+		// answers no RPC.)
+		const notices = [...f.root.querySelectorAll(".notice-danger")];
+		expect(notices.filter((notice) => notice.textContent?.includes("Deleting is paused"))).toHaveLength(1);
 		expect(location.hash).toBe(place === "settings" ? "#/" : `#/c/${profileA.profileId}/team`);
 	});
 	it("does not restore a removed company from an older company-list request", async () => {

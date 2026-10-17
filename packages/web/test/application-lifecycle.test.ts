@@ -75,6 +75,26 @@ function mounted(hash = "#/") {
 	dispose = mountApplication(root, f.cloud, f.api);
 	return { ...f, root };
 }
+/** A company of two with Members switched on (Interfaces C6a), so the rail has its Agents | Interfaces tabs. The cloud
+ * answers no other RPC. */
+function withInterfacesTab(f: ReturnType<typeof mounted>): void {
+	const members = ["Ann", "Ben"].map((displayName, n) => ({
+		userId: id(200 + n),
+		email: `member${n}@example.invalid`,
+		displayName,
+		role: n === 0 ? ("owner" as const) : ("contributor" as const),
+		joinedAt: "2026-10-02T09:00:00Z",
+	}));
+	vi.mocked(f.api.getTeam).mockResolvedValue({ ...team, members });
+	vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+		if (name !== "qorpera_member_interface_pages") throw new Error("Unexpected RPC");
+		const pages = [
+			{ page: "mailbox", on: false },
+			{ page: "members", on: true },
+		];
+		return { schema: "qorpera.member-interface-pages/v1", pages, mayChange: true };
+	});
+}
 
 function executionTransport() {
 	const send = vi.fn(async (init?: RequestInit) => {
@@ -623,14 +643,25 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
+	it("opens the drawer on the search field while no page is on: there are no tabs (Interfaces C6a)", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
+		await draw();
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(true);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-search input"));
+	});
+
 	it("toggles and closes company navigation without replacing the composer", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		withInterfacesTab(f);
 		await draw();
 		const composer = f.root.querySelector("textarea");
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
 		// The drawer opens on its chosen tab, never on the folded search field.
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(false);
 		expect(document.activeElement).toBe(f.root.querySelector(".rail [role='tab'][aria-selected='true']"));
 		// Esc that ends a composition (a dead key, an IME) leaves the drawer open.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true }));
@@ -645,10 +676,12 @@ describe("account and route ownership", () => {
 
 	it("reopens the drawer on the search field while a query keeps it open over the tabs", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		withInterfacesTab(f);
 		await draw();
 		const toggle = () => f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!;
 		toggle().click();
 		await draw();
+		expect(f.root.querySelector<HTMLElement>(".rail .rail-switch")!.hidden).toBe(false);
 		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
 		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
 		input.value = "Fixture";
@@ -836,14 +869,27 @@ describe("account and route ownership", () => {
 			return { close: async () => {} } as never;
 		});
 		const f = mounted(`#/c/${profileA.profileId}`);
+		// Members is on, so the folder is read for its table. The fixture's cloud answers no other RPC, so each offers
+		// read fails and the reader keeps what it had; the calls are counted.
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name !== "qorpera_member_interface_pages") throw new Error("Unexpected RPC");
+			const pages = [
+				{ page: "mailbox", on: false },
+				{ page: "members", on: true },
+			];
+			return { schema: "qorpera.member-interface-pages/v1", pages, mayChange: true };
+		});
 		await draw();
-		// The fixture's cloud answers no RPC, so each read fails and the reader keeps what it had; the calls are counted.
+		// The table is read at the sync after the page shows.
+		await vi.advanceTimersByTimeAsync(1000);
+		await draw();
 		const reads = () =>
 			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name === "qorpera_member_interface_offers").length;
 		const opened = reads();
 		expect(opened).toBeGreaterThan(0);
 		expect(hints).toHaveLength(1);
-		fake.put("interfaces/order.md", fake.text("interfaces/order.md")!);
+		const rows = "tables/areas/rows.csv";
+		fake.put(rows, fake.text(rows)!);
 		hints[0]!(fake.seq);
 		await vi.advanceTimersByTimeAsync(1000);
 		await draw();
@@ -851,7 +897,7 @@ describe("account and route ownership", () => {
 		const changed = reads();
 		f.auth(null);
 		await draw();
-		fake.put("interfaces/order.md", fake.text("interfaces/order.md")!);
+		fake.put(rows, fake.text(rows)!);
 		hints[0]!(fake.seq);
 		await vi.advanceTimersByTimeAsync(120_000);
 		await draw();
