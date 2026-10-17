@@ -8,7 +8,7 @@
 //! none; `core.excludesFile` does not count here, and matching is case-sensitive (`core.ignoreCase` false).
 
 /// Git leaves out an ignore file this large or larger (`PATTERN_MAX_FILE_SIZE`, with the newline git adds).
-const MAX_FILE: usize = 100 * 1024 * 1024;
+pub const MAX_FILE: usize = 100 * 1024 * 1024;
 
 /// One ignore file's patterns (a `.gitignore`, or `info/exclude`), in its order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -67,15 +67,15 @@ impl Patterns {
 
 /// Whether git ignores `path` in a worktree (relative to its top, `/`-separated, no leading or trailing `/`), a
 /// folder when `folder`. `gitignore(dir)` gives the `.gitignore` in the worktree's folder `dir` ("" for the top),
-/// None when there is none; `exclude` is the repository's `info/exclude`.
+/// None when there is none (a reference to it, or a shared one); `exclude` is the repository's `info/exclude`.
 ///
 /// Each folder on the way down is decided first, with the files above it: once one is ignored, so is everything
 /// under it, and the `.gitignore` files inside it are not asked for (git's `prep_exclude`).
-pub fn ignored<'a>(
+pub fn ignored<P: std::ops::Deref<Target = Patterns>>(
 	path: &str,
 	folder: bool,
-	mut gitignore: impl FnMut(&str) -> Option<&'a Patterns>,
-	exclude: Option<&'a Patterns>,
+	mut gitignore: impl FnMut(&str) -> Option<P>,
+	exclude: Option<&Patterns>,
 ) -> bool {
 	if path.is_empty() {
 		return false;
@@ -98,11 +98,16 @@ pub fn ignored<'a>(
 
 /// The first answer from the `.gitignore` files, deepest first (each with where its folder's part of `path` starts),
 /// then from `info/exclude` (git's `last_matching_pattern_from_lists`).
-fn decided(path: &str, folder: bool, files: &[(usize, &Patterns)], exclude: Option<&Patterns>) -> Option<bool> {
+fn decided<P: std::ops::Deref<Target = Patterns>>(
+	path: &str,
+	folder: bool,
+	files: &[(usize, P)],
+	exclude: Option<&Patterns>,
+) -> Option<bool> {
 	files
 		.iter()
 		.rev()
-		.find_map(|&(start, file)| file.decide(path.get(start..)?, folder))
+		.find_map(|(start, file)| file.decide(path.get(*start..)?, folder))
 		.or_else(|| exclude?.decide(path, folder))
 }
 
@@ -741,7 +746,7 @@ mod tests {
 			false,
 			|dir| {
 				asked.push(dir.to_string());
-				None
+				None::<&Patterns>
 			},
 			None,
 		);

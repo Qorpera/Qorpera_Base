@@ -12,6 +12,7 @@
 use super::*;
 use crate::cache;
 use crate::git::{self, Place};
+use crate::ignore::{self, Patterns};
 use crate::index;
 use crate::local::{self, is_local, Area, Up};
 use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
@@ -111,7 +112,7 @@ impl Shared {
 	}
 
 	/// Where a new `name` in the folder `parent` goes for a file (or, `folder`, a folder) now in `area`: as `found`, or,
-	/// for a cache's folder, a new cache where the node has nothing and the rules make one (`cache`).
+	/// for a cache's, a new cache where the node has nothing and the rules make one (`cache`).
 	fn target(&self, local: &Local, parent: u64, name: &str, area: Area, folder: bool) -> Result<Option<(Up, Area)>, i32> {
 		if let Some(found) = self.here(local, parent, name)? {
 			return Ok(Some(found));
@@ -123,29 +124,110 @@ impl Shared {
 		if self.child(parent, name).is_ok() {
 			return Ok(None);
 		}
-		let cache = local.is_top(&dir, name) || folder && self.cache(local, parent, &dir, name);
+		let cache = local.is_top(&dir, name) || self.cache(local, parent, &dir, name, folder);
 		Ok(cache.then_some((Up::Mount(dir), Area::Cache)))
 	}
 
-	/// Whether a new folder `name` in the node's folder `parent` (at `dir`) is a cache (`cache.rs`): in a worktree, by
-	/// its list, whose index is read first if it was not yet (rule 4); elsewhere in a code area, never; anywhere else, by
-	/// rules 2 and 3.
-	fn cache(&self, local: &Local, parent: u64, dir: &str, name: &str) -> bool {
+	/// Whether a new `name` in the node's folder `parent` (at `dir`) is a cache (`cache.rs`), a folder when `folder`: in a
+	/// worktree, a folder on its list or a path git's ignore rules leave out, but never one its index tracks, which is
+	/// read first if it was not yet, nor a `.git` or one in it, which git never takes (rule 4); elsewhere in a code area,
+	/// never; anywhere else, a folder by rules 2 and 3.
+	fn cache(&self, local: &Local, parent: u64, dir: &str, name: &str, folder: bool) -> bool {
 		match git::place(dir) {
 			Place::Git { .. } => false,
-			Place::Worktree { area, worker, .. } => {
-				if !cache::on_worktree_list(name) {
+			Place::Worktree { area, worker, rest } => {
+				let (worktree, index) = git::worktree(area, worker);
+				let path = join(rest, name);
+				if path.split('/').any(|n| n == ".git") {
 					return false;
 				}
-				let (worktree, index) = git::worktree(area, worker);
+				let named = folder && cache::on_worktree_list(name);
+				// Neither: published, with no need of the index.
+				if !named && !self.ignored(local, area, &worktree, parent, &path, folder) {
+					return false;
+				}
 				if !local.cache.lock().unwrap().read(&worktree) {
 					self.read_index(local, &worktree, &index);
 				}
-				local.cache.lock().unwrap().listed(&worktree, name)
+				let list = local.cache.lock().unwrap();
+				if list.tracks(&worktree, &path) {
+					return false;
+				}
+				if !named || list.listed(&worktree, name) {
+					return true;
+				}
+				drop(list);
+				// A name that left the list: by git's rules alone.
+				self.ignored(local, area, &worktree, parent, &path, folder)
 			}
 			Place::Other if dir == "code" || dir.starts_with("code/") => false,
-			Place::Other => cache::outside(name, || self.project(parent)),
+			Place::Other => folder && cache::outside(name, || self.project(parent)),
 		}
+	}
+
+	/// Whether git's ignore rules leave out `path` in `worktree` (in `area`), a folder when `folder` (`ignore.rs`): the
+	/// `.gitignore` in each of the node's folders from the worktree's top down to `parent`, the one `path` is in, and the
+	/// repository's `info/exclude`. A folder the mount cannot place in the worktree, or an ignore file it cannot read,
+	/// leaves nothing out: the path is published.
+	fn ignored(&self, local: &Local, area: &str, worktree: &str, parent: u64, path: &str, folder: bool) -> bool {
+		let mut dirs = HashMap::new();
+		{
+			let tree = self.tree.lock().unwrap();
+			let (mut ino, mut rel) = (parent, split(path).0);
+			loop {
+				if tree.path(ino) != Some(below(worktree, rel).as_str()) {
+					return false;
+				}
+				dirs.insert(rel.to_string(), ino);
+				if rel.is_empty() {
+					break;
+				}
+				let Some(up) = tree.parent(ino) else { return false };
+				(ino, rel) = (up, split(rel).0);
+			}
+		}
+		let exclude = self.exclude(local, area);
+		let gitignore = |dir: &str| self.gitignore(local, *dirs.get(dir)?, &below(worktree, dir));
+		ignore::ignored(path, folder, gitignore, exclude.as_ref())
+	}
+
+	/// The `.gitignore` in the node's folder `dir` (at `path`), parsed once per version: None when it has none, or one
+	/// that is not a file (git does not follow a link to it), or one it could not give.
+	fn gitignore(&self, local: &Local, dir: u64, path: &str) -> Option<Arc<Patterns>> {
+		let child = self.child(dir, ".gitignore").ok().filter(|c| c.attr.kind == EntryKind::File)?;
+		let file = join(path, ".gitignore");
+		if let Some((version, patterns)) = local.ignores.lock().unwrap().get(&file) {
+			if *version == child.attr.version {
+				return Some(patterns.clone());
+			}
+		}
+		let patterns = if child.attr.size >= ignore::MAX_FILE as u64 {
+			Patterns::default()
+		} else {
+			match self.read_all(&file, &child.attr.version, child.attr.size) {
+				Ok(text) => Patterns::parse(&text),
+				Err(e) => {
+					eprintln!("qorpera-folder: {file} could not be read (errno {e}); it leaves nothing out");
+					return None;
+				}
+			}
+		};
+		let patterns = Arc::new(patterns);
+		local.ignores.lock().unwrap().insert(file, (child.attr.version, patterns.clone()));
+		Some(patterns)
+	}
+
+	/// The repository's `info/exclude` (`area`'s): a session-local git file (`local.rs`), seeded first. A link in its
+	/// place counts as none.
+	fn exclude(&self, local: &Local, area: &str) -> Option<Patterns> {
+		let seed = format!("{area}/repo.git");
+		self.seed(local, &seed).ok()?;
+		let disk = local.disk(Area::Git, &format!("{seed}/info/exclude"));
+		let meta = fs::symlink_metadata(&disk).ok().filter(|m| m.is_file())?;
+		if meta.len() >= ignore::MAX_FILE as u64 {
+			return None;
+		}
+		fs::read(&disk).ok().map(|text| Patterns::parse(&text))
 	}
 
 	/// Whether the node's folder `dir` holds a project file (rule 3).
@@ -237,19 +319,52 @@ impl Shared {
 	}
 
 	/// `worktree`'s index tracks `paths` now: the names under which it tracks files leave its cache list, and their
-	/// cache folders move into the folder (`move_caches`).
+	/// cache folders move into the folder (`move_caches`), as do the caches it tracks, or tracks paths in (`TRACKED`).
 	fn indexed(&self, local: &Local, worktree: &str, paths: &[String]) {
 		local.cache.lock().unwrap().indexed(worktree, paths);
+		if self.tracks_a_cache(local, worktree) {
+			local.cache.lock().unwrap().track(worktree);
+		}
 		self.move_caches(local, Some(worktree));
+	}
+
+	/// Whether `worktree`'s index, as it was read last, tracks one of its caches, or a path in one.
+	fn tracks_a_cache(&self, local: &Local, worktree: &str) -> bool {
+		let list = local.cache.lock().unwrap();
+		let mut todo = vec![String::new()];
+		while let Some(rel) = todo.pop() {
+			let dir = below(worktree, &rel);
+			let tops = fs::read_dir(local.room(&dir, Area::Cache)).into_iter().flatten().flatten();
+			if tops.filter_map(|e| e.file_name().into_string().ok()).any(|n| list.tracks(worktree, &join(&rel, &n))) {
+				return true;
+			}
+			todo.extend(local.mirrors(&dir).iter().map(|m| join(&rel, m)).filter(|r| list.tracks(worktree, r)));
+		}
+		false
 	}
 
 	/// Moves the cache folders of the names that left a worktree's list into the folder (`move_in`): `worktree`'s, or
 	/// every worktree's. A move that fails stays on the list (`cache.rs`), tried again at the worktree's next index and
 	/// every few seconds (`mount.rs`); until none is left, `qorpera-folder publish` refuses the view's boundaries.
 	pub(super) fn move_caches(&self, local: &Local, worktree: Option<&str>) {
+		// What an index tracks is known once it was read since the program started; it is read for a move of what it
+		// tracks (`indexed` makes the moves), which waits for it until then.
+		let unread: Vec<String> = {
+			let list = local.cache.lock().unwrap();
+			let moves = list.moves(worktree).into_iter();
+			moves.filter(|(w, n)| n == cache::TRACKED && !list.read(w)).map(|(w, _)| w).collect()
+		};
+		for worktree in unread {
+			if let Place::Worktree { area, worker, .. } = git::place(&worktree) {
+				self.read_index(local, &worktree, &git::worktree(area, worker).1);
+			}
+		}
 		let mut held = local.moving.lock().unwrap();
 		let moves = local.cache.lock().unwrap().moves(worktree);
 		for (worktree, name) in moves {
+			if name == cache::TRACKED && !local.cache.lock().unwrap().read(&worktree) {
+				continue;
+			}
 			match self.move_in(local, &mut held, &worktree, &name) {
 				Ok(()) => local.cache.lock().unwrap().moved(&worktree, &name),
 				Err(e) => eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder yet (errno {e})"),
@@ -278,7 +393,12 @@ impl Shared {
 	/// the view shows every file all along, at the node's or on the disk. One a move did not finish is in the node's
 	/// folder already, with what is left of it among its caches, marked as all moving (`Local::whole`) under whatever
 	/// name a rename in the worktree gave it since.
+	///
+	/// The move `TRACKED` moves the caches the worktree's index tracks in the same way: a file, or a folder it tracks
+	/// all of (a sparse index's), whole; of a folder it tracks paths in, those paths, the rest staying caches.
 	fn move_in(&self, local: &Local, held: &mut HashMap<String, Writer>, worktree: &str, name: &str) -> Result<(), i32> {
+		let tracked = name == cache::TRACKED;
+		let tracks = |path: &str| local.cache.lock().unwrap().tracks(worktree, within(path, worktree));
 		// The node's folders to look in, and whether all of their caches move (what was in a cache that moves).
 		let start = *local.folders.lock().unwrap();
 		let mut todo = vec![(worktree.to_string(), false)];
@@ -305,16 +425,18 @@ impl Shared {
 			for entry in tops {
 				let Some(child) = entry.file_name().to_str().map(str::to_string) else { continue };
 				let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
-				if !whole && (child != name || !meta.is_dir()) {
+				let path = join(&dir, &child);
+				let picked = if tracked { tracks(&path) } else { child == name && meta.is_dir() };
+				if !whole && !picked {
 					continue;
 				}
-				let path = join(&dir, &child);
 				if meta.is_dir() {
 					match self.link.mkdir(&path) {
 						Err(f) if f.errno() != libc::EEXIST => return Err(f.errno()),
 						_ => {}
 					}
-					if local.convert(&dir, &child).map_err(local::errno)? {
+					let all = whole || !tracked || local.cache.lock().unwrap().covers(worktree, within(&path, worktree));
+					if local.convert(&dir, &child, all).map_err(local::errno)? {
 						made.push(child);
 					} else {
 						// The node's folder has caches of its own (of an earlier folder of that name): this one moves whole.
@@ -332,9 +454,11 @@ impl Shared {
 				}
 			}
 			for child in local.mirrors(&dir) {
-				// A folder of the node's with caches in it or below; one made now, or by a move not finished, moves whole.
-				if folders.contains(&child) || made.contains(&child) {
-					let (whole, path) = (whole || child == name, join(&dir, &child));
+				// A folder of the node's with caches in it or below; one made now, or by a move not finished, moves whole
+				// (`TRACKED`: what the index tracks in it, in those it tracks paths in).
+				let path = join(&dir, &child);
+				if (folders.contains(&child) || made.contains(&child)) && (whole || !tracked || tracks(&path)) {
+					let whole = whole || child == name;
 					if whole {
 						local.mark_whole(&path, true).map_err(local::errno)?;
 					}
@@ -468,6 +592,20 @@ enum Sent {
 	Node(Fail),
 }
 
+/// The folder's path of `rel` in `worktree` ("" for its top).
+fn below(worktree: &str, rel: &str) -> String {
+	if rel.is_empty() {
+		worktree.to_string()
+	} else {
+		join(worktree, rel)
+	}
+}
+
+/// Where the folder's `path` in `worktree` is in it.
+fn within<'a>(path: &'a str, worktree: &str) -> &'a str {
+	path.strip_prefix(worktree).map_or(path, |rest| rest.trim_start_matches('/'))
+}
+
 /// Whether the folder's `path` is in `worktree`.
 fn in_worktree(path: &str, worktree: &str) -> bool {
 	path.strip_prefix(worktree).is_some_and(|rest| rest.starts_with('/'))
@@ -490,6 +628,16 @@ fn settled(local: &Local, dir: &str) -> bool {
 impl FolderFs {
 	fn local(&self) -> Result<&Local, i32> {
 		self.s.local.as_ref().ok_or(libc::ENOENT)
+	}
+
+	/// How long the kernel keeps a new local entry in `up`: one of a node's folder's caches not at all, as the node's
+	/// entry wins once it has one (rule 1, `cache_lookup`).
+	fn ttl(&self, up: &Up, area: Area) -> Duration {
+		if area == Area::Cache && matches!(up, Up::Mount(_)) {
+			Duration::ZERO
+		} else {
+			self.s.ttl
+		}
 	}
 
 	/// lookup of a local file, before the node's.
@@ -612,6 +760,7 @@ impl FolderFs {
 		Some(reply)
 	}
 
+	/// create of a local file: in a local folder, a session-local git file, or a new cache (`target`).
 	pub(super) fn local_create(
 		&self,
 		parent: u64,
@@ -621,7 +770,7 @@ impl FolderFs {
 		reply: ReplyCreate,
 	) -> Option<ReplyCreate> {
 		let Some(local) = &self.s.local else { return Some(reply) };
-		match self.s.found(local, parent, name) {
+		match self.s.target(local, parent, name, Area::Cache, false) {
 			Ok(None) => {
 				if self.s.code_dir(parent).is_some_and(|d| alternates(&join(&d, name))) {
 					reply.error(Errno::EPERM);
@@ -629,10 +778,13 @@ impl FolderFs {
 				}
 				return Some(reply);
 			}
-			Ok(Some((up, area))) => match local.create(up, name, area, mode, flags) {
-				Ok((attr, fh)) => reply.created(&self.s.ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty()),
-				Err(e) => reply.error(Errno::from_i32(e)),
-			},
+			Ok(Some((up, area))) => {
+				let ttl = self.ttl(&up, area);
+				match local.create(up, name, area, mode, flags) {
+					Ok((attr, fh)) => reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty()),
+					Err(e) => reply.error(Errno::from_i32(e)),
+				}
+			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -711,23 +863,15 @@ impl FolderFs {
 	/// cache of that name already, EEXIST: a rule that changed since does not move it, rule 6).
 	pub(super) fn local_mkdir(&self, parent: u64, name: &str, mode: u32, reply: ReplyEntry) -> Option<ReplyEntry> {
 		let Some(local) = &self.s.local else { return Some(reply) };
-		let (up, area) = match self.s.here(local, parent, name) {
+		let (up, area) = match self.s.target(local, parent, name, Area::Cache, true) {
 			Ok(Some(found)) => found,
-			Ok(None) => match self.s.cache_dir(parent) {
-				Some(dir)
-					if (local.is_top(&dir, name) || self.s.cache(local, parent, &dir, name))
-						&& self.s.child(parent, name).is_err() =>
-				{
-					(Up::Mount(dir), Area::Cache)
-				}
-				_ => return Some(reply),
-			},
+			Ok(None) => return Some(reply),
 			Err(e) => {
 				reply.error(Errno::from_i32(e));
 				return None;
 			}
 		};
-		let ttl = if area == Area::Cache && matches!(up, Up::Mount(_)) { Duration::ZERO } else { self.s.ttl };
+		let ttl = self.ttl(&up, area);
 		match local.mkdir(up, name, area, mode) {
 			Ok(attr) => reply.entry(&ttl, &attr, Generation(0)),
 			Err(e) => reply.error(Errno::from_i32(e)),
@@ -757,9 +901,9 @@ impl FolderFs {
 		None
 	}
 
-	/// rename of a local file (within its area: across, EXDEV); of the node's onto a local file's place or, for a folder,
-	/// a new cache's (EXDEV: `mv` copies it, so its files become the cache's), or onto a folder with caches in it
-	/// (ENOTEMPTY); and git's refused rename onto its alternates.
+	/// rename of a local file (within its area: across, EXDEV); of the node's onto a local file's place or a new cache's
+	/// (EXDEV: `mv` copies it, so its files become the cache's), or onto a folder with caches in it (ENOTEMPTY); and
+	/// git's refused rename onto its alternates.
 	pub(super) fn local_rename(
 		&self,
 		from: (u64, &str),
@@ -801,8 +945,8 @@ impl FolderFs {
 		None
 	}
 
-	/// Whether the node may take the rename of its `from` to `to`, by the local files: not onto one's place, nor of a
-	/// folder onto a new cache's (EXDEV), nor onto a folder with caches in it (ENOTEMPTY).
+	/// Whether the node may take the rename of its `from` to `to`, by the local files: not onto one's place, nor onto a
+	/// new cache's (EXDEV), nor onto a folder with caches in it (ENOTEMPTY).
 	fn node_rename(&self, local: &Local, from: (u64, &str), to: (u64, &str)) -> Result<(), i32> {
 		if self.s.found(local, to.0, to.1)?.is_some() {
 			return Err(libc::EXDEV);
@@ -813,7 +957,7 @@ impl FolderFs {
 			Ok(_) => Ok(()),
 			Err(_) => {
 				let folder = self.s.child(from.0, from.1).is_ok_and(|c| c.attr.kind == EntryKind::Folder);
-				if folder && self.s.cache(local, to.0, &dir, to.1) {
+				if self.s.cache(local, to.0, &dir, to.1, folder) {
 					return Err(libc::EXDEV);
 				}
 				Ok(())
@@ -829,12 +973,15 @@ impl FolderFs {
 		reply: ReplyEntry,
 	) -> Option<ReplyEntry> {
 		let Some(local) = &self.s.local else { return Some(reply) };
-		match self.s.found(local, parent, name) {
+		match self.s.target(local, parent, name, Area::Cache, false) {
 			Ok(None) => return Some(reply),
-			Ok(Some((up, area))) => match local.symlink(up, name, area, target) {
-				Ok(attr) => reply.entry(&self.s.ttl, &attr, Generation(0)),
-				Err(e) => reply.error(Errno::from_i32(e)),
-			},
+			Ok(Some((up, area))) => {
+				let ttl = self.ttl(&up, area);
+				match local.symlink(up, name, area, target) {
+					Ok(attr) => reply.entry(&ttl, &attr, Generation(0)),
+					Err(e) => reply.error(Errno::from_i32(e)),
+				}
+			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -842,8 +989,9 @@ impl FolderFs {
 
 	pub(super) fn local_link(&self, ino: u64, to: (u64, &str), reply: ReplyEntry) -> Option<ReplyEntry> {
 		if !is_local(ino) {
-			// A file of the folder's, linked to a name on the machine's disk: another file system.
-			match self.s.local.as_ref().map(|local| self.s.found(local, to.0, to.1)) {
+			// A file of the folder's, linked to a name on the machine's disk (a local file's, or a new cache's): another
+			// file system.
+			match self.s.local.as_ref().map(|local| self.s.target(local, to.0, to.1, Area::Cache, false)) {
 				Some(Ok(Some(_))) => reply.error(Errno::EXDEV),
 				Some(Err(e)) => reply.error(Errno::from_i32(e)),
 				_ => return Some(reply),
@@ -853,12 +1001,12 @@ impl FolderFs {
 		let done = self.local().and_then(|local| {
 			let (_, _, area) = local.name(ino).ok_or(libc::ENOENT)?;
 			match self.s.target(local, to.0, to.1, area, false)? {
-				Some((up, to_area)) if to_area == area => local.link(ino, up, to.1, area),
+				Some((up, to_area)) if to_area == area => Ok((self.ttl(&up, area), local.link(ino, up, to.1, area)?)),
 				_ => Err(libc::EXDEV),
 			}
 		});
 		match done {
-			Ok(attr) => reply.entry(&self.s.ttl, &attr, Generation(0)),
+			Ok((ttl, attr)) => reply.entry(&ttl, &attr, Generation(0)),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -918,7 +1066,8 @@ impl FolderFs {
 	/// (`caches_renamed`, `Local::folders`). Refused while caches are moving into the folder in its worktree and one of
 	/// its name is still on the disk (EBUSY: the move makes the node's folder first and empties the cache into it), and
 	/// out of their worktree while some in it or below it are, or are still to (EXDEV: `mv` copies), where the move
-	/// would not find them; so is a rename of the worktree, or of a folder it is in.
+	/// would not find them (with a move of what its index tracks, any); so is a rename of the worktree, or of a folder
+	/// it is in.
 	pub(super) fn folder_renaming(&self, from: (u64, &str), to: (u64, &str)) -> Result<Option<MutexGuard<'_, u64>>, i32> {
 		let Some(local) = &self.s.local else { return Ok(None) };
 		let held = local.folders.lock().unwrap();
@@ -930,8 +1079,10 @@ impl FolderFs {
 		// The names still to move in the worktrees the rename takes caches of: the one it is in, or those it holds.
 		let takes = |worktree: &str| path == worktree || in_worktree(&path, worktree) || in_worktree(worktree, &path);
 		let moves = local.cache.lock().unwrap().moves(None);
-		let names: Vec<String> = moves.into_iter().filter(|(w, _)| takes(w)).map(|(_, n)| n).collect();
-		if local.moving_below(&path, &names) {
+		let (tracked, names): (Vec<String>, Vec<String>) =
+			moves.into_iter().filter(|(w, _)| takes(w)).map(|(_, n)| n).partition(|n| n == cache::TRACKED);
+		// The caches an index tracks can be anywhere in their worktree.
+		if local.moving_below(&path, &names) || !tracked.is_empty() && local.has_caches(&path) {
 			let worktree = worktree_of(&path);
 			if worktree.is_none() || worktree_of(&join(&self.s.path_of(to.0)?, to.1)) != worktree {
 				return Err(libc::EXDEV);

@@ -24,6 +24,7 @@
 
 use crate::cache::CacheList;
 use crate::git;
+use crate::ignore::Patterns;
 use crate::writer::Writer;
 use fuser::{FileAttr, FileType, INodeNo};
 use std::collections::{HashMap, HashSet};
@@ -34,7 +35,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 /// The bit local inodes and handles have.
@@ -215,6 +216,9 @@ pub struct Local {
 	/// node's folders a move into the folder goes through (`mount/on_disk.rs`): so no listing takes a renamed folder's
 	/// caches for those of one that is gone, and no move goes on under a folder's old name.
 	pub folders: Mutex<u64>,
+	/// The `.gitignore` files read for the caches in worktrees (`ignore.rs`), by their paths: the version each was read
+	/// at, and its patterns.
+	pub ignores: Mutex<HashMap<String, (String, Arc<Patterns>)>>,
 	owner: (u32, u32),
 }
 
@@ -263,6 +267,7 @@ impl Local {
 			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
 			moving: Mutex::new(HashMap::new()),
 			folders: Mutex::new(0),
+			ignores: Mutex::new(HashMap::new()),
 			owner,
 		})
 	}
@@ -416,9 +421,9 @@ impl Local {
 	}
 
 	/// Makes the cache folder `name` in `dir` the caches of the node's folder of that name, which a move has in the
-	/// folder now (`mount/on_disk.rs`): what is in it becomes that folder's top entries, all moving (`whole`). False, and
-	/// nothing done, when that folder has top entries of its own.
-	pub fn convert(&self, dir: &str, name: &str) -> io::Result<bool> {
+	/// folder now (`mount/on_disk.rs`): what is in it becomes that folder's top entries, all moving (`whole`) or (not
+	/// `whole`) those the move picks. False, and nothing done, when that folder has top entries of its own.
+	pub fn convert(&self, dir: &str, name: &str, whole: bool) -> io::Result<bool> {
 		let mut names = self.names.lock().unwrap();
 		let path = crate::proto::join(dir, name);
 		let (top, into) = (self.disk(Area::Cache, &path), self.mirror(&path).join("t"));
@@ -431,7 +436,9 @@ impl Local {
 			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
 			_ => {}
 		}
-		self.mark_whole(&path, true)?;
+		if whole {
+			self.mark_whole(&path, true)?;
+		}
 		fs::rename(&top, &into)?;
 		forget(&mut names, ino, &Up::Mount(dir.to_string()), name);
 		for all in names.values_mut() {
@@ -1133,14 +1140,19 @@ mod tests {
 		// The node took a folder git came to track in place of the cache: what was in it is that folder's caches now.
 		let built = made(Up::Mount("c/b".to_string()), "dist");
 		let y = file(Up::Local(built), "y.js");
-		assert_eq!(l.convert("c/b", "dist").unwrap(), true);
+		assert_eq!(l.convert("c/b", "dist", true).unwrap(), true);
 		assert!(!l.is_top("c/b", "dist") && l.is_top("c/b/dist", "y.js"));
 		assert_eq!(l.name(y), Some((Up::Mount("c/b/dist".to_string()), "y.js".to_string(), Area::Cache)));
 		assert!(l.whole("c/b/dist") && l.moving_below("c", &[]) && !l.moving_below("e", &[]));
 		// One whose folder has caches of its own stays as it is.
 		let again = made(Up::Mount("c/b".to_string()), "dist");
-		assert_eq!(l.convert("c/b", "dist").unwrap(), false);
+		assert_eq!(l.convert("c/b", "dist", true).unwrap(), false);
 		assert!(l.is_top("c/b", "dist") && l.is_top("c/b/dist", "y.js"));
+		// A folder git tracks paths in: the rest of it stays the caches of the node's folder, not all moving.
+		let tracked = made(Up::Mount("e".to_string()), "logs");
+		file(Up::Local(tracked), "keep.log");
+		assert_eq!(l.convert("e", "logs", false).unwrap(), true);
+		assert!(l.is_top("e/logs", "keep.log") && !l.whole("e/logs") && !l.moving_below("e", &[]));
 		// The node's entry wins (rule 1), and a folder gone takes the caches in and below it.
 		l.gone_top("c/b", "dist");
 		assert!(!l.is_top("c/b", "dist") && l.name(again).is_none() && l.getattr(again) == Err(libc::ENOENT));
