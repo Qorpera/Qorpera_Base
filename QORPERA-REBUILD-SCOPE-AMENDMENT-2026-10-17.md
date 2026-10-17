@@ -89,8 +89,8 @@ Maintain three separate tracks. A failed safety or correctness check for an enab
 
 | Track | Completion boundary |
 | --- | --- |
-| **Core rebuild** | Company-folder operation and retained machine/coding/credential behavior; notebook memory with beta off; the two bounded Interfaces; compatible signed deployment and live acceptance. |
-| **Memory beta enablement** | Reversible authorized Settings choice, consistent mode enforcement, data preservation, trust/privacy/erasure and operational checks before beta is offered. Unfinished beta is clearly unavailable and does not hold core completion. |
+| **Core rebuild** | Company-folder operation and retained machine/coding/credential behavior; notebook memory with beta off, plus the smallest company Settings choice (default **Agent notebooks**; **Shared context — Beta** may show as unavailable), a mode recorded per run (turning the beta off applies at the next run boundary) and the mode gate made permanent by a forward change; the two bounded Interfaces; compatible signed deployment and live acceptance. |
+| **Memory beta enablement** | Making the beta option selectable: consistent mode enforcement, data preservation, trust/privacy/erasure and operational checks before beta is offered. Unfinished beta is clearly unavailable and does not hold core completion. |
 | **Deferred enhancements** | Custom interfaces, Pulse, snapshots, coding previews/browser and other explicitly parked additions. No automatic resumption after a deadline or because an agent becomes idle. |
 
 ### Minimum proof of the corrected scope
@@ -99,6 +99,7 @@ Maintain three separate tracks. A failed safety or correctness check for an enab
 
 - With beta off, each agent can write, forget, recall and compose its own notebook; ordinary history and machine workflows still work.
 - New notebook-mode runs do not silently create tree-based work logs or use beta context composition/compaction. Existing beta-run transitions and required data maintenance follow the recorded-mode rule.
+- The company Settings choice exists with **Agent notebooks** as the default (the beta option may show as unavailable); each run records its mode, turning the beta off applies at the next run boundary, and the mode gate is permanent through a forward change.
 
 **Before beta activation is offered**
 
@@ -139,15 +140,15 @@ Reconcile the following documents and active briefs. Historical build records sh
 
 | Document | Required reconciliation |
 | --- | --- |
-| `QORPERA-RUNTIME-CONTRACT.md` | Apply this amendment's precedence; qualify tree requirements in §§5.4, 9, 14.2, 15, 19, 21 and 22 by selected mode; override custom Interface/three-page requirements; separate optional coding extras from core acceptance. |
+| `QORPERA-RUNTIME-CONTRACT.md` | Apply this amendment's precedence; qualify tree requirements by selected mode wherever an "Amended 2026-10-06" note sits: §§5.3, 5.4, 5.6, 6.1, 9.1–9.3, 13, 14.1, 14.2, 15.1, 17 and 19, and §21 items 8 and 9 (checking item 15 against notebook mode); override custom Interface/three-page requirements; separate optional coding extras from core acceptance. |
 | `deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md` | Replace universal replacement/rollout in §§11, 13, 14 and 16 with optional beta; redefine M5 as reversible Settings selection; cancel automatic notebook retirement and gate removal. |
 | `deploy/first-node/RUNTIME-STEP-6-MEMORY.md` | Record notebooks as supported/default; preserve their per-agent behavior. |
-| `deploy/first-node/RUNTIME-INTERFACES.md` | Correct opening scope and §§1–2, 7–10; stop I4/custom I8/I10; bound I2/I3/I6/I7/I9 and necessary I5/I11 to the two pages. |
+| `deploy/first-node/RUNTIME-INTERFACES.md` | Correct opening scope and §§1–2, 7–10; bound I1 (rail tab listing and routes `#/c/{id}/i/{interface}`) to the two pages; stop I4/custom I8/I10; bound I2/I3/I6/I7/I9 and necessary I5/I11 to the two pages. |
 | `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` | Remove mandatory Pulse/numbers/cards seeding from new-company requirements; retain necessary data and platform-owned page configuration. |
 | `supabase/CLIENT-CONTRACT.md` | Document supported page listing, fixed layouts, activation/configuration, direct routes and fallback restrictions. |
 | `deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md` | Mark remaining 5h/5i deferred and split 5m core proofs from future-feature proofs. |
 | Coordinator registry, release list, feature briefs and launch checklist | Record this scope reset, stop conflicting dispatches, retain real core blockers, and separate optional enablement and deferred work. |
 
-The implementation handoff must call out the future removal instruction in `20260930352000_memory_run_log_gate.sql`; preserve an effective mode gate through a forward change rather than rewriting deployed history.
+The implementation handoff must call out the future removal instruction in `20260930352000_memory_run_log_gate.sql`; preserve an effective mode gate through a forward change rather than editing a merged migration.
 
 This amendment authorizes scope correction and implementation planning. It does not itself authorize a new production deployment, destructive data migration, or deletion of user records. Completion reporting must distinguish **scope recorded**, **work reassigned**, **behavior implemented**, and **behavior verified**.
