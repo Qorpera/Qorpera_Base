@@ -129,12 +129,23 @@ interface MessageParts {
 	caption?: HTMLElement;
 }
 
-/** The member's erase of one message here, as the line above the composer tells it: which message (its author and
+/** The member's erase of one message here, as its line above the composer tells it: which message (its author and
  * time, never a file), how far the erase got, and why it stopped if it did. */
 interface EraseLine {
+	readonly messageId: string;
 	readonly what: { readonly author: string; readonly time: string };
 	erase?: MessageErase;
 	failure?: string;
+}
+
+/** Which message an erase line is about. Mid-sentence, the member's own message is "from you", not "from You". */
+function eraseWhat(item: TranscriptMessage, author: string, mine: boolean): EraseLine["what"] {
+	return { author: mine ? t("you") : author, time: fmtTime(item.createdAt) };
+}
+
+/** A line with nothing more to say: refused, failed, or done with no copy left to name. */
+function eraseSettled({ erase, failure }: EraseLine): boolean {
+	return failure !== undefined || erase?.state === "refused" || (erase?.state === "done" && !erase.copies.length);
 }
 
 /** Waits `ms`, or less if `signal` aborts first. */
@@ -150,10 +161,10 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-/** Why an erase could not be asked for, in the member's words. */
+/** Why an erase could not be asked for, in the member's words. A 401 is the member's sign-in, not their role. */
 function eraseFailure(error: unknown, what: EraseLine["what"]): string {
 	const status = error instanceof MessageEraseError ? error.status : null;
-	if (status === 401 || status === 403) return t("Only an owner or admin can erase messages.");
+	if (status === 403) return t("Only an owner or admin can erase messages.");
 	if (status === 404) return t("The message from {author} at {time} can't be erased.", what);
 	if (status === 423) return t("The company is paused, so no message can be erased now.");
 	return t("Could not erase the message from {author} at {time}. Try again.", what);
@@ -303,8 +314,9 @@ export class ConversationView {
 	readonly #undos = new Map<string, InterfaceUndoState>();
 	/** Each message drawn in the thread: what it is and who wrote it, for its right-click menu. */
 	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string; mine: boolean }>();
-	/** The member's latest erase of a message here, from the ask until it is done or fails (summary trees M3c). */
-	#erase: EraseLine | undefined;
+	/** The member's erases of messages here, one line each, oldest first, each read until it is done or fails (summary
+	 * trees M3c). */
+	#erases: EraseLine[] = [];
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
@@ -1037,19 +1049,33 @@ export class ConversationView {
 		this.update();
 	}
 
-	/** A message's menu: Erase, for an owner or admin, the roles the erase route takes (M3c). A message on its way or
-	 * already erased has none, and with nothing to offer the browser's own menu stays. */
+	/** A message's menu, for an owner or admin, the roles the erase route takes (M3c): Erase, or for a message already
+	 * erased, how its erase went (its copies included), read again. A message on its way has none, and with nothing to
+	 * offer the browser's own menu stays. So it does for a right-click on a link, an image or attachment, or text the
+	 * member selected in the message (Copy, Open link, Save image); the keyboard (Shift+F10, the menu key) still opens the
+	 * message's. */
 	#openMessageMenu(event: MouseEvent): void {
-		const element = event.target instanceof Element ? event.target.closest<HTMLElement>("article.message") : null;
+		const target = event.target instanceof Element ? event.target : null;
+		const element = target?.closest<HTMLElement>("article.message") ?? null;
 		const drawn = element ? this.#messageItems.get(element) : undefined;
 		const role = this.#company.store.get().team?.role;
 		if (
+			!target ||
 			!element ||
 			!drawn ||
 			drawn.item.pending ||
-			drawn.item.erased ||
 			!this.#actions.messageErases ||
 			(role !== "owner" && role !== "admin")
+		)
+			return;
+		const selection = document.getSelection();
+		if (
+			(event.clientX || event.clientY) &&
+			(target.closest("a[href], img, video, audio, .received-attachments") ||
+				(selection &&
+					!selection.isCollapsed &&
+					selection.toString().trim() &&
+					(element.contains(selection.anchorNode) || element.contains(selection.focusNode))))
 		)
 			return;
 		event.preventDefault();
@@ -1063,12 +1089,18 @@ export class ConversationView {
 			x: point.x,
 			y: point.y,
 			items: [
-				{
-					label: t("Erase message"),
-					icon: "trash",
-					danger: true,
-					select: () => void this.#eraseMessage(item, author, mine),
-				},
+				item.erased
+					? {
+							label: t("Show how the erase went"),
+							icon: "trash",
+							select: () => void this.#showErase(item, author, mine),
+						}
+					: {
+							label: t("Erase message"),
+							icon: "trash",
+							danger: true,
+							select: () => void this.#eraseMessage(item, author, mine),
+						},
 			],
 			opener,
 			// The message is redrawn as it changes; focus goes back to the new one.
@@ -1105,8 +1137,7 @@ export class ConversationView {
 	async #eraseMessage(item: TranscriptMessage, author: string, mine: boolean): Promise<void> {
 		const erases = this.#actions.messageErases;
 		const signal = this.#lifetime.signal;
-		// Mid-sentence, the member's own message is "from you", not "from You".
-		const what = { author: mine ? t("you") : author, time: fmtTime(item.createdAt) };
+		const what = eraseWhat(item, author, mine);
 		if (
 			!erases ||
 			!(await confirmDialog(
@@ -1127,22 +1158,46 @@ export class ConversationView {
 				this.#focusMessage(item.id);
 			return;
 		}
-		const line: EraseLine = { what };
-		this.#erase = line;
+		await this.#followErase(item, what, (error) => eraseFailure(error, what));
+	}
+
+	/** How the erase of a message already erased went, read again without asking: the erase route answers an erased
+	 * message with the erase that did it, its copies included (an erase this view lost track of, or another member's). */
+	async #showErase(item: TranscriptMessage, author: string, mine: boolean): Promise<void> {
+		const what = eraseWhat(item, author, mine);
+		await this.#followErase(item, what, () =>
+			t("Could not read how the erase of the message from {author} at {time} is going.", what),
+		);
+	}
+
+	/** Asks the erase route for one message's erase and gives it a line of its own above the composer, read again until
+	 * it is done or refused, while the member erases other messages. A new line replaces the message's earlier one and
+	 * takes the place of the lines with nothing more to say (refused, failed, or done with no copy left). */
+	async #followErase(
+		item: TranscriptMessage,
+		what: EraseLine["what"],
+		failure: (error: unknown) => string,
+	): Promise<void> {
+		const erases = this.#actions.messageErases;
+		const signal = this.#lifetime.signal;
+		if (!erases || signal.aborted) return;
+		const line: EraseLine = { messageId: item.id, what };
+		this.#erases = [...this.#erases.filter((other) => other.messageId !== item.id && !eraseSettled(other)), line];
 		this.update();
+		const followed = () => !signal.aborted && this.#erases.includes(line);
 		let erase: MessageErase;
 		try {
 			erase = await erases.request(this.#sessionId, item.id, signal);
 		} catch (error) {
-			if (signal.aborted || this.#erase !== line) return;
-			line.failure = eraseFailure(error, what);
+			if (!followed()) return;
+			line.failure = failure(error);
 			this.update();
 			return;
 		}
 		// Read again after 1, 2, 4… seconds, then every 30 seconds, until it is done or refused.
-		let reread = false;
+		let reread = item.erased === true;
 		for (let wait = 1000; ; wait = Math.min(wait * 2, 30_000)) {
-			if (signal.aborted || this.#erase !== line) return;
+			if (!followed()) return;
 			// From `open` on the message is blank in the cloud: a full read draws it as "(erased)".
 			if (!reread && erase.state !== "pending" && erase.state !== "refused") {
 				reread = true;
@@ -1152,14 +1207,14 @@ export class ConversationView {
 			this.update();
 			if (erase.state === "done" || erase.state === "refused") return;
 			await pause(wait, signal);
-			if (signal.aborted || this.#erase !== line) return;
+			if (!followed()) return;
 			try {
 				erase = await erases.status(erase, signal);
 			} catch (error) {
 				const status = error instanceof MessageEraseError ? error.status : null;
 				// Refused or gone for this member: say so once. Anything else is read again at the next turn.
 				if (status === 401 || status === 403 || status === 404) {
-					if (signal.aborted || this.#erase !== line) return;
+					if (!followed()) return;
 					line.failure = t("Could not read how the erase of the message from {author} at {time} is going.", what);
 					this.update();
 					return;
@@ -2923,7 +2978,7 @@ export class ConversationView {
 			company.waitingForHours,
 			minutes,
 			stoppable,
-			this.#erase && [this.#erase.what, this.#erase.erase?.state, this.#erase.failure],
+			this.#erases.map(({ what, erase, failure }) => [what, erase?.state, erase?.copies, failure]),
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
@@ -2931,7 +2986,7 @@ export class ConversationView {
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
 		if (conversation.interactionError) children.push(notice("danger", conversation.interactionError));
-		if (this.#erase) children.push(this.#eraseNotice(this.#erase));
+		for (const line of this.#erases) children.push(this.#eraseNotice(line));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(

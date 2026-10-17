@@ -381,10 +381,12 @@ describe("conversation UI boundaries", () => {
 		expect(f.bubbles()).toEqual(["(erased)", "Five"]);
 		expect(state.get().memoryGeneration).toBe(1);
 	});
-	/** The menu a right-click on a thread's message opens, and the status lines above the composer (M3e). */
-	const messageMenu = (message: Element) => {
+	/** The menu a right-click on a thread's message opens (with `keyboard`, Shift+F10 or the menu key: an event with no
+	 * pointer position), and the status lines above the composer (M3e). */
+	const messageMenu = (message: Element, keyboard = false) => {
+		const at = keyboard ? 0 : 20;
 		const opened = message.dispatchEvent(
-			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at, clientY: at }),
 		);
 		const menu = document.querySelector<HTMLElement>(".context-menu");
 		return { offered: !opened, menu, items: [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])] };
@@ -410,7 +412,7 @@ describe("conversation UI boundaries", () => {
 		const status = vi.fn(async (_erase: MessageErase, _signal: AbortSignal) => erase(answers[++read] ?? "done"));
 		return { request, status };
 	};
-	it("offers Erase on a message's own menu to an owner or admin, never for one on its way or erased", async () => {
+	it("offers Erase on a message's own menu to an owner or admin, how it went once erased, nothing on its way", async () => {
 		const f = setup({ messageErases: erases(["pending"]) });
 		const sent: TranscriptMessage = {
 			kind: "member",
@@ -435,8 +437,10 @@ describe("conversation UI boundaries", () => {
 		expect(first.items.map((item) => item.textContent)).toEqual(["Erase message"]);
 		first.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(document.querySelector(".context-menu")).toBeNull();
-		// The erased one and the one still on its way keep the browser's own menu.
-		expect(messageMenu(messages()[1]!).offered).toBe(false);
+		// The erased one offers how its erase went; the one still on its way keeps the browser's own menu.
+		const erased = messageMenu(messages()[1]!);
+		expect(erased.items.map((item) => item.textContent)).toEqual(["Show how the erase went"]);
+		erased.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(messageMenu(messages()[2]!).offered).toBe(false);
 		// The route takes owners and admins: a contributor or a viewer is not offered it.
 		for (const role of ["admin", "contributor", "viewer"] as const) {
@@ -490,8 +494,10 @@ describe("conversation UI boundaries", () => {
 		// Done: it reads no more.
 		await vi.advanceTimersByTimeAsync(120_000);
 		expect(route.status).toHaveBeenCalledTimes(2);
-		// No menu on the erased message.
-		expect(messageMenu(f.view.el.querySelector(".message")!).offered).toBe(false);
+		// The erased message's menu no longer offers Erase, only how it went.
+		const erased = messageMenu(f.view.el.querySelector(".message")!);
+		expect(erased.items.map((item) => item.textContent)).toEqual(["Show how the erase went"]);
+		erased.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 	});
 	it("names each copy the erase leaves by its path, and says the message is not gone from them", async () => {
 		const here = profileA.environmentId;
@@ -598,12 +604,12 @@ describe("conversation UI boundaries", () => {
 			menu?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		// Shift+F10 on a link in the message, then Escape: the link has the keyboard again.
 		link.focus();
-		const fromLink = messageMenu(link);
+		const fromLink = messageMenu(link, true);
 		expect(fromLink.offered).toBe(true);
 		pressEscape(fromLink.menu);
 		expect(document.activeElement).toBe(link);
 		// And again after Cancel in the dialog that Erase opens.
-		messageMenu(link).items[0]!.click();
+		messageMenu(link, true).items[0]!.click();
 		await settle();
 		button(document.querySelector(".modal-backdrop")!, "Cancel").click();
 		await settle();
@@ -640,6 +646,12 @@ describe("conversation UI boundaries", () => {
 	it("says in plain words why an erase stopped", async () => {
 		const cases: [Partial<Record<"request" | "status", MessageEraseError>>, MessageErase["state"][], string][] = [
 			[{ request: new MessageEraseError("no", 403) }, [], "Only an owner or admin can erase messages."],
+			// A 401 is the member's sign-in, not their role.
+			[
+				{ request: new MessageEraseError("no", 401) },
+				[],
+				"Could not erase the message from {author} at {time}. Try again.",
+			],
 			[{ request: new MessageEraseError("no", 404) }, [], "The message from {author} at {time} can't be erased."],
 			[{ request: new MessageEraseError("no", 423) }, [], "The company is paused, so no message can be erased now."],
 			[
@@ -700,6 +712,172 @@ describe("conversation UI boundaries", () => {
 		expect(notices(f.view.el)).toEqual([
 			`Erased the message from ${what.author} at ${what.time}: it is gone from the thread and from the company's memory.`,
 		]);
+	});
+	it("follows each erase on its own line, its copies as they come, while the member erases another", async () => {
+		const first = event(1, "First");
+		const second = { ...event(2, "Second"), createdAt: "2026-09-05T11:00:00Z" };
+		const copy = (path: string) => ({ environmentId: profileA.environmentId, path, live: true });
+		const erase = (asked: HostedSessionEvent, state: MessageErase["state"], copies: MessageErase["copies"] = []) => ({
+			eraseId: id(asked.sequence + 90),
+			state,
+			sessionId: session.sessionId,
+			eventId: asked.eventId,
+			copies,
+		});
+		// The first stays `rewritten` while step 3 names its copies, block by block; the second is done at its first read.
+		const answers = new Map<string, MessageErase[]>([
+			[
+				first.eventId,
+				[
+					erase(first, "pending"),
+					erase(first, "rewritten", [copy("a.md")]),
+					erase(first, "rewritten", [copy("a.md"), copy("b.md")]),
+					erase(first, "done", [copy("a.md"), copy("b.md")]),
+				],
+			],
+			[second.eventId, [erase(second, "pending"), erase(second, "done")]],
+		]);
+		const reads = new Map<string, number>();
+		// A request answers with the erase as it stands; a status read moves it on.
+		const latest = (eventId: string) => {
+			const list = answers.get(eventId)!;
+			return list[Math.min(reads.get(eventId) ?? 0, list.length - 1)]!;
+		};
+		const route = {
+			request: vi.fn(async (_session: string, eventId: string, _signal: AbortSignal) => latest(eventId)),
+			status: vi.fn(async (asked: MessageErase, _signal: AbortSignal) => {
+				reads.set(asked.eventId, (reads.get(asked.eventId) ?? 0) + 1);
+				return latest(asked.eventId);
+			}),
+		};
+		const f = await erasable([first, second], 0, { messageErases: route });
+		const messages = () => [...f.view.el.querySelectorAll(".message")];
+		const [a, b] = messages().map(named);
+		const lines = () =>
+			[...f.view.el.querySelectorAll(".notice")].map((item) =>
+				item.children.length ? [...item.children].map((line) => line.textContent) : [item.textContent],
+			);
+		// The second right after the first, while the first is still on its way.
+		for (const index of [0, 1]) {
+			messageMenu(messages()[index]!).items[0]!.click();
+			await settle();
+			button(document.querySelector(".modal-backdrop")!, "Erase").click();
+			await settle();
+		}
+		expect(lines()).toEqual([
+			[`Erasing the message from ${a!.author} at ${a!.time}…`],
+			[`Erasing the message from ${b!.author} at ${b!.time}…`],
+		]);
+		f.server.history = [erasedCopy(first), erasedCopy(second)];
+		f.server.generation = 1;
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		await settle();
+		expect(f.bubbles()).toEqual(["(erased)", "(erased)"]);
+		const clearing = `The message from ${a!.author} at ${a!.time} is erased from the thread. Clearing it from the company's memory…`;
+		expect(lines()).toEqual([
+			[clearing, "A copy stays in a.md."],
+			[
+				`Erased the message from ${b!.author} at ${b!.time}: it is gone from the thread and from the company's memory.`,
+			],
+		]);
+		// The next read, still `rewritten`, names one more copy.
+		await vi.advanceTimersByTimeAsync(2000);
+		await settle();
+		expect(lines()[0]).toEqual([clearing, "A copy stays in a.md.", "A copy stays in b.md."]);
+		await vi.advanceTimersByTimeAsync(4000);
+		await settle();
+		const done = [
+			`Erased the message from ${a!.author} at ${a!.time} from the thread and from the company's memory, but not from files that hold a copy of it.`,
+			"A copy stays in a.md.",
+			"A copy stays in b.md.",
+		];
+		expect(lines()[0]).toEqual(done);
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(route.status).toHaveBeenCalledTimes(4);
+		// Read again from the first message's menu: its new line takes the old one's place, and the second's, done with
+		// nothing left to say, goes.
+		const show = messageMenu(messages()[0]!);
+		expect(show.items.map((item) => item.textContent)).toEqual(["Show how the erase went"]);
+		show.items[0]!.click();
+		await settle();
+		expect(document.querySelector(".modal-backdrop")).toBeNull();
+		expect(route.request).toHaveBeenCalledTimes(3);
+		expect(lines()).toEqual([done]);
+	});
+	it("reads again how an erased message's erase went, without asking", async () => {
+		const before = event(1, "Before");
+		const route = erases(["done"], [{ environmentId: profileA.environmentId, path: "reports/r2.md", live: true }]);
+		const f = await erasable([erasedCopy(before)], 0, { messageErases: route });
+		expect(f.bubbles()).toEqual(["(erased)"]);
+		const what = { author: "you", time: fmtTime(timestamp) };
+		const menu = messageMenu(f.view.el.querySelector(".message")!);
+		expect(menu.items.map((item) => item.textContent)).toEqual(["Show how the erase went"]);
+		menu.items[0]!.click();
+		await settle();
+		// No dialog: the route answers a message already erased with the erase that did it.
+		expect(document.querySelector(".modal-backdrop")).toBeNull();
+		expect(route.request).toHaveBeenCalledWith(session.sessionId, before.eventId, expect.any(AbortSignal));
+		expect(notices(f.view.el)).toEqual([
+			`Erased the message from ${what.author} at ${what.time} from the thread and from the company's memory, but not from files that hold a copy of it.A copy stays in reports/r2.md.`,
+		]);
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(route.status).not.toHaveBeenCalled();
+		// A read that fails says so, and nothing about erasing it.
+		route.request.mockRejectedValueOnce(new MessageEraseError("Message erase is unavailable (503)", 503));
+		messageMenu(f.view.el.querySelector(".message")!).items[0]!.click();
+		await settle();
+		expect(notices(f.view.el)).toEqual([
+			`Could not read how the erase of the message from ${what.author} at ${what.time} is going.`,
+		]);
+	});
+	it("leaves the browser's menu to a right-click on a link, an attachment or text selected in a message", async () => {
+		const f = setup({ messageErases: erases(["pending"]) });
+		await settle();
+		const reply: TranscriptMessage = {
+			kind: "agent",
+			id: id(83),
+			sequence: 1,
+			text: "See [the plan](https://example.com/plan).",
+			attachmentCount: 0,
+			phase: "final",
+			createdAt: timestamp,
+			authorUserId: userA.id,
+		};
+		const state = f.company.conversation(session.sessionId);
+		state.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+		f.view.update();
+		const message = f.view.el.querySelector<HTMLElement>(".message")!;
+		const bubble = message.querySelector(".bubble")!;
+		const link = message.querySelector<HTMLElement>("a[href]")!;
+		const pressEscape = (menu: HTMLElement | null) =>
+			menu?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// Open link, Copy link address: the browser's.
+		expect(messageMenu(link).offered).toBe(false);
+		expect(document.querySelector(".context-menu")).toBeNull();
+		// Shift+F10 on the same link opens the message's.
+		const keyboard = messageMenu(link, true);
+		expect(keyboard.offered).toBe(true);
+		pressEscape(keyboard.menu);
+		// An image the message brought, as ReceivedAttachments draws it: Save image as.
+		const attachments = message.appendChild(document.createElement("div"));
+		attachments.className = "received-attachments";
+		const image = attachments.appendChild(document.createElement("img"));
+		expect(messageMenu(image).offered).toBe(false);
+		attachments.remove();
+		// Text selected in the message: Copy.
+		const selection = document.getSelection()!;
+		selection.selectAllChildren(bubble);
+		expect(messageMenu(bubble).offered).toBe(false);
+		// Text selected outside it: the message's own menu.
+		const outside = document.body.appendChild(document.createElement("p"));
+		outside.textContent = "Elsewhere";
+		selection.selectAllChildren(outside);
+		const pointer = messageMenu(bubble);
+		expect(pointer.offered).toBe(true);
+		pressEscape(pointer.menu);
+		selection.removeAllRanges();
+		outside.remove();
 	});
 	it("closes attachment previews and clears private drafts when the account signs out", async () => {
 		const f = fixture(),

@@ -74,6 +74,7 @@ export const CONVERSATION: Record<string, string> = {
 	"(empty)": "(tom)",
 	"(erased)": "(slettet)",
 	"Erase message": "Slet besked",
+	"Show how the erase went": "Vis, hvordan sletningen gik",
 	Erase: "Slet",
 	"Erase the message from {author} at {time}? It is erased for everyone: the thread shows (erased) in its place, and the company's memory forgets it. This can't be undone.":
 		"Slet beskeden fra {author} kl. {time}? Den slettes for alle: tråden viser (slettet) i stedet, og virksomhedens hukommelse glemmer den. Det kan ikke fortrydes.",
