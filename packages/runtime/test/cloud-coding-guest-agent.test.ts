@@ -27,6 +27,7 @@ interface Unit {
 }
 interface MachineState {
 	boot: string;
+	uptimeMs: number;
 	skewMs: number;
 	folderInMemory: boolean;
 	/** What the folder program does once started: mounts, exits 3 (the node closed the view), or stays silent. */
@@ -93,6 +94,7 @@ async function machine() {
 	const resolv = join(root, "resolv.conf");
 	const work = join(root, "work");
 	await mkdir(work);
+	await mkdir(join(root, "proc"));
 	await writeFile(resolv, "nameserver 192.0.2.53\n");
 	const calls: string[][] = [];
 	const chowns: [string, number, number][] = [];
@@ -104,6 +106,7 @@ async function machine() {
 	const relays: (() => Promise<void>)[] = [];
 	const state: MachineState = {
 		boot: randomUUID(),
+		uptimeMs: 600000,
 		skewMs: 0,
 		folderInMemory: true,
 		folder: "mount",
@@ -213,6 +216,9 @@ async function machine() {
 			return "";
 		},
 		bootId: async () => state.boot,
+		uptimeMs: async () => state.uptimeMs,
+		cgroupRoot: join(root, "cgroup"),
+		procRoot: join(root, "proc"),
 		nowMs: () => Date.now() + state.skewMs,
 		sleep: async (ms) => {
 			sleeps.push(ms);
@@ -414,7 +420,7 @@ async function plant(
 /** The session's commands by id, as status reads them. */
 async function seen(m: Machine, workerId: string) {
 	const answer = await call(m, "status", sessionRequest(workerId));
-	expect(answer.line).toMatchObject({ schema: "qorpera.coding-guest-status/v1", workerId });
+	expect(answer.line).toMatchObject({ schema: "qorpera.coding-guest-status/v2", workerId });
 	return new Map(
 		answer.line.commands.map((command: { commandId: string }) => [command.commandId, command] as const),
 	) as Map<string, unknown>;
@@ -1447,9 +1453,11 @@ describe("a session's status", () => {
 		await mkdir(join(commands, compact(randomUUID()), "intent.json"), { recursive: true });
 		await writeFile(join(commands, "notes"), "");
 		expect((await call(m, "status", sessionRequest(workerId))).line).toEqual({
-			schema: "qorpera.coding-guest-status/v1",
+			schema: "qorpera.coding-guest-status/v2",
 			workerId,
 			commands: [newer, ...tied, older].map((x) => ({ commandId: x.commandId, state: "lost", exit: null, end: 0 })),
+			// No slice and no user: nothing used yet.
+			usage: { bootId: m.state.boot, uptimeMs: 600000, cpuUsageUsec: 0, ioBytes: 0, ioComplete: true },
 		});
 		expect(m.calls).toEqual([]);
 		expect((await call(m, "status", sessionRequest(randomUUID()))).line.commands).toEqual([]);
@@ -1503,6 +1511,110 @@ describe("a session's status", () => {
 		const listed = await seen(m, workerId);
 		expect(listed.size).toBe(CODING_GUEST.maxStatusCommands);
 		expect([...listed.values()].every((x) => (x as { state: string }).state === "running")).toBe(true);
+	});
+	/** The kernel files a usage read reads: a cgroup's processor time, and a process's cgroup, argv and bytes. */
+	const kernel = (m: Awaited<ReturnType<typeof machine>>) => ({
+		cpu: async (group: string, usec: number) => {
+			await mkdir(join(m.root, "cgroup", group), { recursive: true });
+			await writeFile(join(m.root, "cgroup", group, "cpu.stat"), `usage_usec ${usec}\nuser_usec 1000\n`);
+		},
+		proc: async (pid: number, group: string, argv: string[], rchar: number, wchar: number) => {
+			const at = join(m.root, "proc", String(pid));
+			await mkdir(at, { recursive: true });
+			await writeFile(join(at, "cgroup"), `0::/${group}\n`);
+			await writeFile(join(at, "cmdline"), `${argv.join("\0")}\0`);
+			await writeFile(join(at, "io"), `rchar: ${rchar}\nwchar: ${wchar}\nsyscr: 9\n`);
+		},
+		/** `count` processes from `first` on, in no cgroup of any session. */
+		others: async (first: number, count: number) => {
+			for (let at = 0; at < count; at += 512)
+				await Promise.all(
+					Array.from({ length: Math.min(512, count - at) }, (_, i) =>
+						mkdir(join(m.root, "proc", String(first + at + i))),
+					),
+				);
+		},
+	});
+	it("reads its usage: its slice's and its user's processor time, and the bytes their processes moved, the relays aside", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		const c = compact(randomUUID());
+		const { cpu, proc } = kernel(m);
+		const sessionSlice = `qorpera.slice/qorpera-coding.slice/${s.slice}`;
+		const command = `${sessionSlice}/qorpera-coding-${s.w}-${c}.service`;
+		const manager = "user.slice/user-200001.slice/user@200001.service";
+		await cpu(sessionSlice, 1500000);
+		await cpu("user.slice/user-200001.slice", 250000);
+		// Another session's slice and another user's are not this session's.
+		const other = `qorpera.slice/qorpera-coding.slice/qorpera-coding-${compact(randomUUID())}.slice`;
+		await cpu(other, 9000000);
+		await cpu("user.slice/user-200002.slice", 9000000);
+		// The relay only copies its command's output; its command, the user manager and what that started count.
+		await proc(101, command, [CODING_GUEST.node, CODING_GUEST.agent, "relay", s.w, c], 1000000, 1000000);
+		await proc(102, command, ["/bin/bash", "-c", "npm test"], 4096, 1024);
+		await proc(201, `${manager}/init.scope`, ["/usr/lib/systemd/systemd", "--user"], 100, 0);
+		await proc(202, `${manager}/app.slice/made.scope`, ["/usr/bin/node", "server.js", "relay", s.w], 0, 50);
+		await proc(301, `${other}/qorpera-coding-x.service`, ["/bin/bash"], 9000000, 0);
+		await proc(302, "user.slice/user-200002.slice/session-1.scope", ["/bin/bash"], 9000000, 0);
+		// A cgroup whose name only begins as the session's slice is another.
+		await proc(303, `${sessionSlice}x`, ["/bin/bash"], 9000000, 0);
+		// 103 ended before it was read, and the rest of /proc is not processes.
+		await mkdir(join(m.root, "proc", "103"));
+		await mkdir(join(m.root, "proc", "sys"));
+		await writeFile(join(m.root, "proc", "uptime"), "654.32 1000.00\n");
+		m.state.uptimeMs = 654321;
+		expect((await call(m, "status", sessionRequest(workerId))).line.usage).toEqual({
+			bootId: m.state.boot,
+			uptimeMs: 654321,
+			cpuUsageUsec: 1750000,
+			ioBytes: 5270,
+			ioComplete: true,
+		});
+		// Before its user's first mount there is only its slice.
+		await rm(s.user);
+		expect((await call(m, "status", sessionRequest(workerId))).line.usage).toMatchObject({
+			cpuUsageUsec: 1500000,
+			ioBytes: 5120,
+			ioComplete: true,
+		});
+		expect(m.calls).toEqual([]);
+	});
+	it("counts the bytes of a process however many cgroups the session's user makes", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const { proc } = kernel(m);
+		// The user manager's cgroups are delegated to the session's user, who may make any number; none hides a download.
+		const apps = "user.slice/user-200001.slice/user@200001.service/app.slice";
+		for (let at = 0; at <= CODING_GUEST.usageProcesses; at += 512)
+			await Promise.all(
+				Array.from({ length: 512 }, (_, i) =>
+					mkdir(join(m.root, "cgroup", apps, `empty-${at + i}.slice`), { recursive: true }),
+				),
+			);
+		await proc(401, `${apps}/download.service`, ["/usr/bin/curl", "-O", "https://example.com/big"], 614400, 0);
+		expect((await call(m, "status", sessionRequest(workerId))).line.usage).toMatchObject({
+			ioBytes: 614400,
+			ioComplete: true,
+		});
+	});
+	it("says when it could not read every process of the machine", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		const { proc, others } = kernel(m);
+		const usage = async () => (await call(m, "status", sessionRequest(workerId))).line.usage;
+		// As many as one look reads: each is read.
+		const command = `qorpera.slice/qorpera-coding.slice/${s.slice}/qorpera-coding-${s.w}-x.service`;
+		await proc(1, command, ["/bin/bash"], 10, 0);
+		await others(2, CODING_GUEST.usageProcesses - 1);
+		expect(await usage()).toMatchObject({ ioBytes: 10, ioComplete: true });
+		// One more, and the session's bytes may be left out.
+		await others(CODING_GUEST.usageProcesses + 1, 1);
+		expect(await usage()).toMatchObject({ ioComplete: false });
+		// None could be listed.
+		await rm(join(m.root, "proc"), { recursive: true });
+		expect(await usage()).toMatchObject({ ioBytes: 0, ioComplete: false });
 	});
 });
 
