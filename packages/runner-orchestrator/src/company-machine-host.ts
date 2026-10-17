@@ -239,9 +239,11 @@ interface BootFolder {
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
 	/** The paths the boot's boundaries said the company folder did not take, for its next receipt whose output leaves
-	 * (6e-2a, #noted), and how many more there were. */
+	 * (6e-2a, #noted), and how many more there were; and what was said for each path its view still keeps pending, so
+	 * a later boundary trying it again does not say it again. */
 	notSaved: CloudMachineFolderNotSaved[];
 	moreNotSaved: number;
+	said: Map<string, string>;
 }
 export type CompanyMachineCommand =
 	| { action: "start"; commandId: string; inputSha256: string; command: string; timeoutMs: number | null }
@@ -289,16 +291,34 @@ function unreleased(boundary: MachineBoundary | undefined): string {
 	}
 }
 /** The paths a boundary's reports say the company folder did not take (6e-2a), kept on the boot for its next receipt
- * whose output leaves: at most 8, each as the receipt's report checks it, and a count of the rest. A path still
- * pending in its view (`kept`) is said once a later boundary settles it. */
+ * whose output leaves: at most 8, each as the receipt's report checks it, and a count of the rest. A path the core
+ * refused is said even while its view keeps it pending, as the service keeps a denied or refused write with new bytes
+ * (each later boundary tries it again and is refused again): once, until the answer for it changes or it settles
+ * (`said`). A path still on its way (kept `waiting`, an open file, or `not_applied`, not sent or not answered yet), or
+ * kept by a change set refused whole in a way that may lift (the pause, the run check), is said once a later boundary
+ * settles it. */
 function noted(boot: BootFolder | undefined, boundary: MachineBoundary | undefined): void {
 	if (!boot || !boundary) return;
 	for (const view of boundary.views) {
 		const paths = view.report?.paths;
 		if (!Array.isArray(paths)) continue;
+		const lifts = view.report?.refused === "stopped" || view.report?.refused === "run_ended";
 		for (const item of paths as unknown[]) {
 			const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
-			if (entry.outcome === "saved" || entry.kept === true) continue;
+			const path = typeof entry.path === "string" ? entry.path : undefined;
+			if (entry.outcome === "saved") {
+				if (path !== undefined) boot.said.delete(path);
+				continue;
+			}
+			const kept = entry.kept === true;
+			if (kept && (lifts || entry.outcome === "waiting" || entry.outcome === "not_applied")) continue;
+			if (path !== undefined) {
+				const answer = `${String(entry.outcome)}\n${typeof entry.reason === "string" ? entry.reason : ""}`;
+				const before = boot.said.get(path);
+				if (kept) boot.said.set(path, answer);
+				else boot.said.delete(path);
+				if (before === answer) continue;
+			}
 			const shown = boot.notSaved.length < CLOUD_MACHINE_FOLDER_LIMITS.notSaved ? notSavedOf(entry) : undefined;
 			if (shown) boot.notSaved.push(shown);
 			else boot.moreNotSaved++;
@@ -642,6 +662,7 @@ export class LxdCompanyMachineHost {
 				windows: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
+				said: new Map(),
 			};
 			this.#folders.set(e.placementId, f);
 			return {
@@ -670,6 +691,7 @@ export class LxdCompanyMachineHost {
 					windows: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
+					said: new Map(),
 				};
 				this.#folders.set(e.placementId, f);
 			}

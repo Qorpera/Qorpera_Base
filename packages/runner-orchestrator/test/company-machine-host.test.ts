@@ -2683,6 +2683,73 @@ describe("company machine host's report of the company folder on each receipt (F
 		f.running();
 		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
 	});
+
+	it("says a write the folder refused while its view keeps it pending once, and one still on its way once it settles", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const commandId = randomUUID();
+		f.result(finished);
+		// The service keeps a refused write with new bytes pending: each boundary tries it again and reports it again, as
+		// it does an open file and a save not answered yet.
+		f.service.report = {
+			commitId: randomUUID(),
+			seq: 5,
+			paths: [
+				{ path: "people/pay.md", outcome: "denied", reason: "denied", kept: true },
+				{ path: "reports/q3.md", outcome: "refused", reason: "command_ended", kept: true },
+				{ path: "notes/open.md", outcome: "waiting", reason: "still open for writing", kept: true },
+				{ path: "notes/later.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+			],
+		};
+		expect(await f.host.pass(f.signal)).toEqual([quiet]);
+		expect(told(await start(f, commandId))).toEqual({ company: "mounted", heldBack: held.start });
+		expect(told(await read(f, commandId))).toEqual({
+			company: "mounted",
+			notSaved: [
+				{ path: "people/pay.md", outcome: "denied", reason: "denied" },
+				{ path: "reports/q3.md", outcome: "refused", reason: "command_ended" },
+			],
+		});
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
+		// A change set refused whole by the pause keeps what it carried for a later boundary: nothing is said for it yet.
+		f.service.report = {
+			commitId: null,
+			seq: null,
+			refused: "stopped",
+			paths: [{ path: "notes/paused.md", outcome: "refused", reason: "stopped", kept: true }],
+		};
+		expect(told(await read(f, commandId))).toEqual({ company: "mounted" });
+		// Once they settle: a path that was on its way is said with its answer, one said already is not said again, and
+		// one saved and then refused again is said again.
+		f.service.report = {
+			commitId: randomUUID(),
+			seq: 6,
+			paths: [
+				{ path: "people/pay.md", outcome: "saved" },
+				{ path: "reports/q3.md", outcome: "refused", reason: "command_ended" },
+				{ path: "notes/open.md", outcome: "saved" },
+				{ path: "notes/later.md", outcome: "conflict", reason: "changed meanwhile", receipt: randomUUID() },
+				{ path: "notes/paused.md", outcome: "denied", reason: "denied", kept: true },
+			],
+		};
+		expect(told(await read(f, commandId))).toEqual({
+			company: "mounted",
+			notSaved: [
+				{ path: "notes/later.md", outcome: "conflict", reason: "changed meanwhile" },
+				{ path: "notes/paused.md", outcome: "denied", reason: "denied" },
+			],
+		});
+		f.service.report = {
+			commitId: randomUUID(),
+			seq: 7,
+			paths: [{ path: "people/pay.md", outcome: "denied", reason: "denied", kept: true }],
+		};
+		expect(told(await read(f, commandId))).toEqual({
+			company: "mounted",
+			notSaved: [{ path: "people/pay.md", outcome: "denied", reason: "denied" }],
+		});
+	});
 });
 
 // The journal lives on the NAS control path, in its own folder.
