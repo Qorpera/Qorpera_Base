@@ -1,7 +1,7 @@
 // P3's driver, on the test machine (test/prove-coding-session-vm.sh runs it as root once the throwaway node is set up):
 // the test database (p3-database.mjs) with a company whose member has a coding session, the node's executor
 // (p3-executor.ts) started in the node as its service unit would start it, and the runtime's side of four turns (six on
-// the folder model):
+// the folder model's phase B):
 //   turn 1 starts a command that keeps printing, and edits and commits in its workspace (the executor's clone of a
 //     throwaway repository on the node's stand-in GitHub); the turn's end pushes the commit and opens a draft pull request
 //     (on the folder model's phase A, which has no repositories yet, its commands start at /company instead; on phase B,
@@ -12,10 +12,10 @@
 // then the rest of Order 9 (p3-order9.mjs cuts each wait short in the database): the machine sleeps after 10 idle
 // minutes and turn 3 says what stopped; after a quiet day the agent is asked about archiving; archiving stops the
 // session's programs, and a new message reopens it (turn 4, which says what the archive stopped).
-// Then C2 on the folder model (p3-c2.mjs): turn 5 keeps its machine awake through 10 quiet minutes (cut short in the
-// database), then leaves a command that reads the company folder after the turn; the node's folder service is killed,
-// and turn 6 runs on the same machine, restarted for the folder: it says the restart stopped that command, and nothing
-// keeps what the command printed.
+// Then C2 on phase B (p3-c2.mjs): turn 5 keeps its machine awake through 10 quiet minutes (cut short in the database),
+// then leaves a command that reads the company folder after the turn (the file turn 1 committed in its worktree); the
+// node's folder service is killed, and turn 6 runs on the same machine, restarted for the folder: it says the restart
+// stopped that command, and nothing keeps what the command printed.
 // The executor's control RPCs come here over its stdout and run on the database as service_role; the runtime's coding
 // command gateway (packages/runtime/src/cloud-coding-command-http.ts, bundled as p3-gateway.mjs) reaches the
 // executor's command service through the same pipe. Prints PASS lines, then SESSION PROVEN.
@@ -326,9 +326,12 @@ try {
 		console.error(JSON.stringify(await database.describe(db, ids)));
 		pass(`turn 4 ended (${elapsed()})`);
 
-		if (node.folder) {
+		// Phase B only: the node's store has a file's bytes only once a machine saved them, as phase B's code area and the
+		// P3-PROOF.md turn 1 committed in its worktree; the seed's files are in the core alone (a read of one on the node is
+		// UNAVAILABLE), and they are all phase A has.
+		if (node.codeHost) {
 			// --- C2: a long turn whose guest stays quiet keeps its machine awake ----------------------------------------------
-			await database.followUp(db, ids, { workerId, text: "P3 proof: think for a while, then leave a command reading your todo." });
+			await database.followUp(db, ids, { workerId, text: "P3 proof: think for a while, then leave a command reading your proof file." });
 			const turn5 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 5, timeoutMs: 20 * 60000 });
 			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 5 runs on another machine");
 			const quiet5 = await c2.awaitQuiet(db, workerId, machine, 5 * 60000);
@@ -364,21 +367,21 @@ try {
 			await c2.usedNow(db, machine);
 
 			// --- C2: the folder service crashes while a command's read is unreleased ------------------------------------------
-			// The command waits for the driver, then reads the todo after the turn and prints a number only the guest's shell
-			// works out, so neither the command nor anything the driver writes holds it; then it only waits.
+			// The command waits for the driver, then reads turn 1's P3-PROOF.md after the turn and prints a number only the
+			// guest's shell works out, so neither the command nor anything the driver writes holds it; then it only waits.
 			const gateway5 = gatewayFor(turn5);
-			const todo = `/company/${database.fixture.TODO_FOLDER}.md`;
+			const proofFile = `/company/code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}/P3-PROOF.md`;
 			const nonce = randomBytes(4).readUInt32BE();
 			const unsaved = `P3-UNSAVED-${nonce + 1}`;
 			const reader = await database.beginCommand(db, turn5, {
 				operationKey: "p3-unsaved", timeoutMs: null,
-				command: `while [ ! -e /dev/shm/p3-go ]; do sleep 1; done; if cat ${todo} 2>/dev/shm/p3-read-error; then touch /dev/shm/p3-read; fi; ` +
+				command: `while [ ! -e /dev/shm/p3-go ]; do sleep 1; done; if cat ${proofFile} 2>/dev/shm/p3-read-error; then touch /dev/shm/p3-read; fi; ` +
 					`echo P3-UNSAVED-$((${nonce} + 1)); exec sleep 86401`,
 			});
 			const readerStart = await gateway5.start(turn5.scope, reader.input, AbortSignal.timeout(60000));
 			await reader.complete(readerStart);
 			if (readerStart.state !== "running") fail(`turn 5's reading command is ${readerStart.state}, not running: ${JSON.stringify(readerStart)}`);
-			await database.finishTurn(db, turn5, { operationKey: "p3-turn-5", summary: "Stayed awake; left a command reading the todo.", headSha: head });
+			await database.finishTurn(db, turn5, { operationKey: "p3-turn-5", summary: "Stayed awake; left a command reading P3-PROOF.md.", headSha: head });
 			await executor.turnSettled();
 			pass(`turn 5 ended, leaving a command that has read nothing yet (${elapsed()})`);
 			guestRun(machine, "touch", "/dev/shm/p3-go");
@@ -387,7 +390,7 @@ try {
 				await new Promise((settle) => setTimeout(settle, 1000));
 			if (!waiting) fail("turn 5's command did not get past its read within 60 s");
 			if (!guestHas(machine, "/dev/shm/p3-read"))
-				fail(`turn 5's command could not read the todo after the turn: ${guestRun(machine, "cat", "/dev/shm/p3-read-error").trim()}`);
+				fail(`turn 5's command could not read P3-PROOF.md after the turn: ${guestRun(machine, "cat", "/dev/shm/p3-read-error").trim()}`);
 			await order9.awaitRunning(db, workerId, reader.commandId, 60000);
 			const boot5 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
 			const service5 = folderService();
@@ -398,7 +401,7 @@ try {
 			for (let waited = 0; nodeHas(`/proc/${service5.MainPID}`) && waited < 10000; waited += 250) await new Promise((settle) => setTimeout(settle, 250));
 			if (nodeHas(`/proc/${service5.MainPID}`)) fail(`the folder service's process ${service5.MainPID} outlived its SIGKILL`);
 			if (nodeHas("/run/qorpera-folder-service/clean-stop.json")) fail("the folder service's crash left a clean-stop note");
-			pass(`the command read the todo after turn 5 and printed what it read; then the node's folder service ` +
+			pass(`the command read P3-PROOF.md after turn 5 and printed what it read; then the node's folder service ` +
 				`(${service5.MainPID}) is killed, leaving no clean-stop note (${elapsed()})`);
 
 			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the folder service crashed." });
@@ -428,14 +431,14 @@ try {
 				`the session says what stopped: ${JSON.stringify(restartEvent.body)}, and so does turn 6's context (${elapsed()})`);
 			const gateway6 = gatewayFor(turn6);
 			const left6 = await gateway6.read(turn6.scope, { commandId: reader.commandId, offset: 0, limit: 4096 }, AbortSignal.timeout(60000));
-			if (left6.state !== "machine_stopped" || (left6.output ?? "").includes(unsaved) || (left6.output ?? "").includes("P3 task"))
+			if (left6.state !== "machine_stopped" || (left6.output ?? "").includes(unsaved) || (left6.output ?? "").includes("P3 proof"))
 				fail(`turn 6 reads what turn 5's command printed from its unreleased read: ${JSON.stringify(left6)}`);
 			// A command's output is kept in its host record on the NAS (host-commands/<id>/output.log, once its reads are
 			// released); SQL keeps only digests. Neither may hold it.
 			const held = await c2.holding(db, unsaved);
 			if (held?.holding?.length !== 0 || held.unread?.length !== 0) fail(`the core keeps what turn 5's command printed: ${JSON.stringify(held)}`);
 			const records = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/workers`, "-type", "d", "-name", reader.commandId.replaceAll("-", "")).trim();
-			const kept = [nodeGrep(unsaved, nasPolicy.rootPath), records ? nodeGrep("P3 task", ...records.split("\n")) : null].filter(Boolean);
+			const kept = [nodeGrep(unsaved, nasPolicy.rootPath), records ? nodeGrep("P3 proof", ...records.split("\n")) : null].filter(Boolean);
 			const recorded = records ? lxc("exec", vm, "--", "ls", "-la", ...records.split("\n")).trim() : "none";
 			if (kept.length) fail(`the NAS keeps what turn 5's command printed: ${kept.join(" ")} (its host record: ${recorded})`);
 			const dropped = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/control`, "-name", "dropped-start-*.json", "-newer", "/run/p3-c2-crash").trim();
@@ -443,12 +446,12 @@ try {
 			const service6 = folderService();
 			if (!service6.MainPID || service6.MainPID === "0" || service6.MainPID === service5.MainPID)
 				fail(`the node's folder service did not come back: ${JSON.stringify(service6)}`);
-			const read6 = await runToEnd(turn6, gateway6, "p3-todo-6", `cat ${todo}`);
-			if (read6.state !== "succeeded" || !read6.output.includes("P3 task")) fail(`turn 6 cannot read the todo on the new boot: ${JSON.stringify(read6)}`);
+			const read6 = await runToEnd(turn6, gateway6, "p3-read-6", `cat ${proofFile}`);
+			if (read6.state !== "succeeded" || !read6.output.includes("P3 proof")) fail(`turn 6 cannot read P3-PROOF.md on the new boot: ${JSON.stringify(read6)}`);
 			pass(`what turn 5's command printed is gone: turn 6 reads it ${left6.state} with nothing of it, no table in the core and no ` +
 				`file on the NAS holds ${unsaved} (its host record: ${recorded.split("\n").join("; ")}), the crashed boot is marked dropped ` +
-				`(${dropped.split("\n").join(" ")}), and the folder service is back (${JSON.stringify(service6)}), so turn 6 reads the ` +
-				`todo again (${elapsed()})`);
+				`(${dropped.split("\n").join(" ")}), and the folder service is back (${JSON.stringify(service6)}), so turn 6 reads ` +
+				`P3-PROOF.md again (${elapsed()})`);
 			await database.finishTurn(db, turn6, { operationKey: "p3-turn-6", summary: "Carried on after the folder service crashed.", headSha: head });
 			await executor.turnSettled();
 			console.error(JSON.stringify(await database.describe(db, ids)));

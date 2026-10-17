@@ -20,7 +20,7 @@
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
 # the session's repository. test/prove-coding-session-node.sh sets the node
 # up; then test/p3-driver.mjs runs the test database here and the executor in the node, for four turns of one coding
-# session (six on the folder model: C2's two keep a quiet turn awake and kill the folder service inside the node).
+# session (six on phase B: C2's two keep a quiet turn awake and kill the folder service inside the node).
 # Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a proof
 # could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
 # removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines, then ALL PASSED.
