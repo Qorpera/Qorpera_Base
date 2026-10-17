@@ -97,7 +97,11 @@ describe("company machine plan", () => {
 
 	it("refuses a v1 binding and v1's repository key: no disk of the node is attached (6e-1)", () => {
 		const v1 = { ...companyMachineBinding(), schema: "qorpera.lxd-company-machine/v1" };
-		for (const binding of [v1, { ...v1, repositoryWorkerId: null }, { ...companyMachineBinding(), repositoryWorkerId: null }])
+		for (const binding of [
+			v1,
+			{ ...v1, repositoryWorkerId: null },
+			{ ...companyMachineBinding(), repositoryWorkerId: null },
+		])
 			expect(() => lxdCompanyMachinePlan(binding as unknown as LxdCompanyMachineBinding)).toThrow(
 				"INVALID_COMPANY_MACHINE_BINDING",
 			);

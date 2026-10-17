@@ -161,7 +161,8 @@ describe("complete host inventory reconciliation", () => {
 		expect(ready.state).toBe("ready");
 		expect(ready.entries[3].allocation?.providerKind).toBe("machine");
 		// A v1 machine (6e-1 retired them all) is no machine of this node's: it shows by name as unregistered.
-		for (const config of [i.config, i.expandedConfig]) config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v1";
+		for (const config of [i.config, i.expandedConfig])
+			config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v1";
 		a.physical.configurationSha256 = runtimeNodeInstanceConfigurationSha256(i);
 		const left = reconcileRuntimeNodeInventory(f.inventory, f.context);
 		expect(left.state).toBe("unavailable");
@@ -171,7 +172,8 @@ describe("complete host inventory reconciliation", () => {
 			category: "unmanaged",
 			reason: "UNREGISTERED_INSTANCE",
 		});
-		for (const config of [i.config, i.expandedConfig]) config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v2";
+		for (const config of [i.config, i.expandedConfig])
+			config["user.qorpera.schema"] = "qorpera.lxd-company-machine/v2";
 		a.physical.configurationSha256 = runtimeNodeInstanceConfigurationSha256(i);
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
 		// A machine is never a coding machine: a session folder is a change of its enrollment.

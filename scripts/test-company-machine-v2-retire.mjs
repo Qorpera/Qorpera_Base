@@ -22,7 +22,7 @@ async function main() {
 	const migration = readFileSync(join(MIGRATIONS, migrationFile), "utf8");
 	const database = await hostedDatabase(databaseName, { before: migrationFile });
 	try {
-		const run = (sql) => database.cluster.psql(databaseName, sql, ["-qAt"]);
+		const run = (sql) => database.cluster.psql(databaseName, sql, ["-qAt"]).trim();
 		const binding = (machine, placement) =>
 			`jsonb_build_object('schema','qorpera.lxd-company-machine/v1','machineId','${machine}','placementId','${placement}',
 				'repositoryWorkerId',null)`;
