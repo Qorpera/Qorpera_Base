@@ -61,10 +61,17 @@ export interface CodingEnvironmentScope {
 	readonly leaseToken: string;
 }
 
+/** A session's environment from the vault. `mask` holds the older values used on the session's machine by its member,
+ * from the vault too: masked in the machine's output, never put in an environment. */
+export interface CodingEnvironmentAnswer {
+	readonly environment: Readonly<Record<string, string>>;
+	readonly mask: readonly string[];
+}
+
 /** Where a session's environment secrets come from: the company's secret broker (deploy/coding-worker). Each call
  * asks again; a failure fails the call. */
 export interface CodingEnvironmentSource {
-	environment(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<Readonly<Record<string, string>>>;
+	environment(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<CodingEnvironmentAnswer>;
 }
 
 type Environment = Readonly<Record<string, string>>;
@@ -81,15 +88,18 @@ interface Machine {
 	readonly sessions: Map<string, Session>;
 	/** The values of the sessions released while another stayed attached. */
 	readonly released: Set<string>;
+	/** The machine's older values from the vault's answers: masked, never put in an environment. */
+	readonly history: Set<string>;
 }
 
 /** The secrets of the sessions attached to this executor's machines (5j-4). A command's start asks the source, and
  * its reads' masks cover the values it started with, even if one changes while it runs. A failed ask is not kept.
  * Each mask covers every value resolved for any session attached to the command's machine, and for any released while
  * another stayed: root on the machine reaches them all, and the other's commands may not have had their output kept
- * yet. A machine's values go once its last session is released. A command has no mask until the guest takes the start
- * this process resolved: one that started before the executor did, or whose start's answer was lost or refused, may
- * run with an earlier start's environment. */
+ * yet. It also covers the older values the vault's answers name for the machine, so a value from before a rotation and
+ * an executor restart is masked too. A machine's values go once its last session is released. A command has no mask
+ * until the guest takes the start this process resolved: one that started before the executor did, or whose start's
+ * answer was lost or refused, may run with an earlier start's environment. */
 export class CodingMachineCommandSecrets {
 	readonly #source: CodingEnvironmentSource;
 	readonly #machines = new Map<string, Machine>();
@@ -102,6 +112,7 @@ export class CodingMachineCommandSecrets {
 		const machine: Machine = this.#machines.get(machineId) ?? {
 			sessions: new Map<string, Session>(),
 			released: new Set<string>(),
+			history: new Set<string>(),
 		};
 		this.#machines.set(machineId, machine);
 		const session: Session = machine.sessions.get(scope.workerId) ?? {
@@ -147,12 +158,18 @@ export class CodingMachineCommandSecrets {
 	): Promise<{ environment: Environment; mask(): CodingCommandSecretMask }> {
 		this.#check(machineId, scope, request);
 		signal.throwIfAborted();
-		const answer =
-			session.commands.get(request.commandId) ??
-			Object.freeze({ ...(await this.#source.environment(scope, signal)) });
+		let answer = session.commands.get(request.commandId);
+		let history: readonly string[] = [];
+		if (!answer) {
+			const asked = await this.#source.environment(scope, signal);
+			answer = Object.freeze({ ...asked.environment });
+			history = [...asked.mask];
+		}
 		signal.throwIfAborted();
 		// A value the mask refuses fails the call before the answer is kept.
-		const mask = this.#mask(machineId, scope, session, answer);
+		const mask = this.#mask(machineId, scope, session, answer, history);
+		// The older values stay in the machine's masks, never in an environment.
+		for (const value of history) this.#machines.get(machineId)?.history.add(value);
 		let environment = session.commands.get(request.commandId);
 		if (!environment) {
 			// The same answer as an earlier command's is kept once.
@@ -187,19 +204,25 @@ export class CodingMachineCommandSecrets {
 			throw new Error("CODING_COMMAND_SECRETS_SCOPE_DIFFERS");
 	}
 
-	/** A mask for `environment`'s values and every value kept for the machine. */
+	/** A mask for `environment`'s values, the answer's older values and every value kept for the machine. */
 	#mask(
 		machineId: string,
 		scope: CodingEnvironmentScope,
 		session: Session,
 		environment: Environment,
+		history: readonly string[] = [],
 	): CodingSecretMask {
 		const machine = this.#machines.get(machineId);
 		// Released (while it asked, or before): nothing is kept or handed out for a session that is gone.
 		if (!machine || machine.sessions.get(scope.workerId) !== session)
 			throw new Error("CODING_COMMAND_SECRETS_RELEASED");
 		const kept = [...machine.sessions.values()].flatMap((other) => [...other.commands.values()]);
-		return new CodingSecretMask([...values([environment, ...kept]), ...machine.released]);
+		return new CodingSecretMask([
+			...values([environment, ...kept]),
+			...machine.released,
+			...machine.history,
+			...history,
+		]);
 	}
 }
 

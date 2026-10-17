@@ -1,6 +1,7 @@
 import { readBoundedCloudResponse } from "../../packages/cloud-client/src/cloud-request.ts";
 import { CODING_GUEST } from "../../packages/contracts/src/cloud-coding-guest.ts";
 import type {
+	CodingEnvironmentAnswer,
 	CodingEnvironmentScope,
 	CodingEnvironmentSource,
 } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
@@ -59,16 +60,22 @@ const RESERVED = new Set([
 /** A vault value's bytes: at least what the mask takes (the broker's own minimum), at most a vault field's 32 KiB. */
 const MAX_VALUE_BYTES = 32 * 1024;
 /** The broker bounds each name and value but not how many there are. A command takes its whole environment in one
- * guest run request of at most 64 KiB, so a larger answer could never start one. */
-const MAX_RESPONSE_BYTES = CODING_GUEST.maxInputBytes;
+ * guest run request of at most 64 KiB, so a larger environment could never start one. */
+const MAX_ENVIRONMENT_BYTES = CODING_GUEST.maxInputBytes;
+/** The most older values one answer masks (5j-4), as the broker and the database cap them. */
+const MAX_MASK_VALUES = 64;
+/** The answer with its mask: at most 64 older values from at most 256 KiB of envelopes (the database's bound), so
+ * 2 MiB holds them even when JSON escapes every character. */
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * A session's vault environment through the company's secret broker (F3 5j-4). For each command it starts, the
  * executor asks the broker (`POST /v1/coding-environment?company=<profileId>`, the shared origin routes by company)
  * for the environment of one session it holds, with the executor's own broker token (a value no guest holds; the
  * brokers' runtime token does not open this route). The broker asks the kernel, which checks the lease. The values go
- * to the command's processes and its output's mask only: kept in the executor's memory while the session is attached,
- * never written, logged or put in an error. Every failure is the same opaque error.
+ * to the command's processes and its output's mask only, and the older values used on the session's machine (`mask`)
+ * to the mask only: kept in the executor's memory, never written, logged or put in an error. Every failure is the same
+ * opaque error.
  */
 export class BrokerCodingEnvironment implements CodingEnvironmentSource {
 	readonly #origin: string;
@@ -99,16 +106,16 @@ export class BrokerCodingEnvironment implements CodingEnvironmentSource {
 		this.#fetch = options.fetch ?? fetch;
 	}
 
-	async environment(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<Readonly<Record<string, string>>> {
+	async environment(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<CodingEnvironmentAnswer> {
 		signal.throwIfAborted();
 		if (![scope.companyId, scope.workerId, scope.leaseToken].every((value) => UUID.test(value)))
 			throw new Error("CODING_ENVIRONMENT_UNAVAILABLE");
-		const environment = await this.#request(scope, signal);
+		const answer = await this.#request(scope, signal);
 		signal.throwIfAborted();
-		return environment;
+		return answer;
 	}
 
-	async #request(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<Readonly<Record<string, string>>> {
+	async #request(scope: CodingEnvironmentScope, signal: AbortSignal): Promise<CodingEnvironmentAnswer> {
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
 		let bytes: Uint8Array | undefined;
 		try {
@@ -133,39 +140,55 @@ export class BrokerCodingEnvironment implements CodingEnvironmentSource {
 			}
 			bytes = await readBoundedCloudResponse(response, MAX_RESPONSE_BYTES, checked);
 			const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)) as unknown;
+			// A broker before 5j-4 answers no mask: then there is none.
 			if (
 				!value ||
 				typeof value !== "object" ||
 				Array.isArray(value) ||
-				Object.keys(value).sort().join() !== "environment,schema"
+				!["environment,schema", "environment,mask,schema"].includes(Object.keys(value).sort().join())
 			)
 				throw new Error("invalid");
-			const answer = value as { schema: unknown; environment: unknown };
+			const answer = value as { schema: unknown; environment: unknown; mask?: unknown };
 			const environment = answer.environment;
+			const mask = Object.hasOwn(answer, "mask") ? answer.mask : [];
 			if (
 				answer.schema !== "qorpera.coding-environment/v1" ||
 				!environment ||
 				typeof environment !== "object" ||
 				Array.isArray(environment) ||
+				Buffer.byteLength(JSON.stringify(environment)) > MAX_ENVIRONMENT_BYTES ||
 				!Object.entries(environment).every(
 					([name, setting]) =>
 						ENVIRONMENT_NAME.test(name) &&
 						!RESERVED_PREFIX.test(name) &&
 						!RESERVED.has(name) &&
-						typeof setting === "string" &&
-						Buffer.byteLength(setting) >= CODING_SECRET_MASK_MINIMUM_BYTES &&
-						Buffer.byteLength(setting) <= MAX_VALUE_BYTES &&
-						!setting.includes("\0") &&
-						// A lone surrogate is no UTF-8: the guest refuses it, and the mask would look for other bytes.
-						!/[\ud800-\udfff]/u.test(setting),
-				)
+						vaultValue(setting),
+				) ||
+				!Array.isArray(mask) ||
+				mask.length > MAX_MASK_VALUES ||
+				!mask.every(vaultValue)
 			)
 				throw new Error("invalid");
-			return Object.freeze({ ...(environment as Record<string, string>) });
+			return Object.freeze({
+				environment: Object.freeze({ ...(environment as Record<string, string>) }),
+				mask: Object.freeze([...(mask as string[])]),
+			});
 		} catch {
 			throw new Error("CODING_ENVIRONMENT_UNAVAILABLE");
 		} finally {
 			bytes?.fill(0);
 		}
 	}
+}
+
+/** A value the vault hands out, for the environment or the mask. */
+function vaultValue(setting: unknown): boolean {
+	return (
+		typeof setting === "string" &&
+		Buffer.byteLength(setting) >= CODING_SECRET_MASK_MINIMUM_BYTES &&
+		Buffer.byteLength(setting) <= MAX_VALUE_BYTES &&
+		!setting.includes("\0") &&
+		// A lone surrogate is no UTF-8: the guest refuses it, and the mask would look for other bytes.
+		!/[\ud800-\udfff]/u.test(setting)
+	);
 }

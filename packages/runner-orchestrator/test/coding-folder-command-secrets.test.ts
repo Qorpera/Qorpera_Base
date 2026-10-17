@@ -10,7 +10,11 @@ import {
 	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CodingEnvironmentSource, CodingMachineCommandSecrets } from "../src/coding-command-secrets.ts";
+import {
+	type CodingEnvironmentAnswer,
+	type CodingEnvironmentSource,
+	CodingMachineCommandSecrets,
+} from "../src/coding-command-secrets.ts";
 import {
 	LxdCodingFolderCommandTransport,
 	type LxdCodingFolderCommandTransportOptions,
@@ -96,7 +100,10 @@ async function fixture() {
 	const workerId = randomUUID();
 	const source = {
 		environment: vi.fn<CodingEnvironmentSource["environment"]>(
-			async (asked): Promise<Record<string, string>> => (asked.workerId === workerId ? { API_KEY } : { OTHER_KEY }),
+			async (asked): Promise<CodingEnvironmentAnswer> => ({
+				environment: asked.workerId === workerId ? { API_KEY } : { OTHER_KEY },
+				mask: [],
+			}),
 		),
 	};
 	const claim = (worker = workerId) => ({ companyId: machine.companyId, workerId: worker, leaseToken: randomUUID() });
@@ -181,7 +188,7 @@ describe("a folder-model command with its session's vault environment", () => {
 		expect(await first.start(at.scope, input, signal)).toMatchObject({ state: "running", output: "key=***\n" });
 		// The executor starts again, and the secret was rotated meanwhile: the broker's answer no longer has the value
 		// the command runs with.
-		at.source.environment.mockResolvedValue({ API_KEY: ROTATED });
+		at.source.environment.mockResolvedValue({ environment: { API_KEY: ROTATED }, mask: [] });
 		const restarted = new CodingMachineCommandSecrets(at.source);
 		const unread = `again=${API_KEY}\n`;
 		at.guest.print(input.commandId, unread);
@@ -196,11 +203,40 @@ describe("a folder-model command with its session's vault environment", () => {
 		expect(at.source.environment).toHaveBeenCalledOnce();
 	});
 
+	it("masks an earlier command's old value in a new command after an executor restart", async () => {
+		const at = await fixture();
+		const first = at.input();
+		at.guest.print(first.commandId, `key=${API_KEY}\n`);
+		const before = at.transport(new CodingMachineCommandSecrets(at.source));
+		expect(await before.start(at.scope, first, signal)).toMatchObject({ state: "running", output: "key=***\n" });
+		// The secret is rotated and the executor starts again. The vault's answer names the old value, used on this
+		// machine by this member, for the mask only.
+		at.source.environment.mockResolvedValue({ environment: { API_KEY: ROTATED }, mask: [API_KEY] });
+		const restarted = at.transport(new CodingMachineCommandSecrets(at.source));
+		// A new command prints both, as `docker logs` of a container from the first command's time would.
+		const input = at.input();
+		at.guest.print(input.commandId, `old=${API_KEY}\nnew=${ROTATED}\n`);
+		const masked = "old=***\nnew=***\n";
+		expect(await restarted.start(at.scope, input, signal)).toMatchObject({ state: "running", output: masked });
+		at.guest.end(input.commandId);
+		expect(await restarted.read(at.scope, { commandId: input.commandId }, signal)).toMatchObject({
+			state: "succeeded",
+			exitCode: 0,
+			output: masked,
+		});
+		expect(await at.saved(input.commandId)).toBe(masked);
+		// It runs with the rotated value; the old one is nowhere in its run request.
+		const run = at.guest.client.run.mock.calls.find(([request]) => request.commandId === input.commandId)?.[0];
+		expect(run?.environment).toMatchObject({ API_KEY: ROTATED });
+		expect(JSON.stringify(run)).not.toContain(API_KEY);
+		expect(at.source.environment).toHaveBeenCalledTimes(2);
+	});
+
 	it("keeps none of a command's output when the guest runs it with an earlier start's environment", async () => {
 		const at = await fixture();
 		const input = at.input();
 		// An executor before this one started it with a value since rotated, and stopped before it noted the start.
-		at.source.environment.mockResolvedValue({ API_KEY: ROTATED });
+		at.source.environment.mockResolvedValue({ environment: { API_KEY: ROTATED }, mask: [] });
 		const printed = `key=${API_KEY}\n`;
 		at.guest.print(input.commandId, printed);
 		at.guest.client.run.mockRejectedValueOnce(new CodingGuestRefused("CODING_GUEST_COMMAND_CONFLICT"));
@@ -224,7 +260,7 @@ describe("a folder-model command with its session's vault environment", () => {
 	it("keeps none of a command's output when the guest's answer to its start was lost", async () => {
 		const at = await fixture();
 		// As above, but the guest's refusal of this executor's start never arrives: the run ends without an answer.
-		at.source.environment.mockResolvedValue({ API_KEY: ROTATED });
+		at.source.environment.mockResolvedValue({ environment: { API_KEY: ROTATED }, mask: [] });
 		const printed = `key=${API_KEY}\n`;
 		const transport = at.transport(new CodingMachineCommandSecrets(at.source));
 		const lost = async (input: ReturnType<typeof at.input>) => {

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type CodingCommandSecretRequest,
 	type CodingCommandSecrets,
+	type CodingEnvironmentAnswer,
 	type CodingEnvironmentScope,
 	type CodingEnvironmentSource,
 	CodingMachineCommandSecrets,
@@ -16,6 +17,7 @@ const API_KEY = "env-value-api-key-CANARY";
 const ROTATED = "env-value-api-key-ROTATED";
 const OTHER_KEY = "env-value-other-session-CANARY";
 const AWAY_KEY = "env-value-other-machine-CANARY";
+const OLDER_KEY = "env-value-api-key-OLDER";
 
 const signal = () => new AbortController().signal;
 
@@ -30,12 +32,20 @@ async function readMask(secrets: CodingCommandSecrets, request: CodingCommandSec
 	return masks();
 }
 
-/** A broker that answers each session's environment from `answers`, by worker. */
-function fixture(answers: Record<string, Readonly<Record<string, string>>> = {}) {
+/** The vault's answer: the environment, and the older values used on the machine. */
+function answer(environment: Readonly<Record<string, string>>, mask: readonly string[] = []): CodingEnvironmentAnswer {
+	return { environment, mask };
+}
+
+/** A broker that answers each session's environment from `answers`, by worker, with the older values in `history`. */
+function fixture(
+	answers: Record<string, Readonly<Record<string, string>>> = {},
+	history: Record<string, readonly string[]> = {},
+) {
 	const environment = vi.fn<CodingEnvironmentSource["environment"]>(async (scope) => {
-		const answer = answers[scope.workerId];
-		if (!answer) throw new Error("CODING_ENVIRONMENT_UNAVAILABLE");
-		return { ...answer };
+		const found = answers[scope.workerId];
+		if (!found) throw new Error("CODING_ENVIRONMENT_UNAVAILABLE");
+		return answer({ ...found }, history[scope.workerId]);
 	});
 	const secrets = new CodingMachineCommandSecrets({ environment });
 	const companyId = randomUUID();
@@ -73,7 +83,7 @@ describe("a coding session's command secrets on its machine", () => {
 		expect(masked(started.mask(), `key=${API_KEY}\n`)).toBe("key=***\n");
 		// Its reads, the second under a later turn's claim, are masked with the answer it started with, even once the
 		// broker's answer has changed. A start again gets that answer too.
-		f.environment.mockResolvedValue({ API_KEY: ROTATED });
+		f.environment.mockResolvedValue(answer({ API_KEY: ROTATED }));
 		for (const at of [scope, f.scope(workerId)]) {
 			const session = f.secrets.session(machineId, at);
 			expect(masked(await readMask(session, request), `${API_KEY} ${ROTATED}`)).toBe(`*** ${ROTATED}`);
@@ -127,6 +137,69 @@ describe("a coding session's command secrets on its machine", () => {
 		expect(f.environment).toHaveBeenCalledTimes(5);
 	});
 
+	it("masks the vault's older values for the machine in every session's masks, never in an environment", async () => {
+		const mine = randomUUID();
+		const other = randomUUID();
+		const away = randomUUID();
+		// The vault answers the values used on the machine before a rotation, as after an executor restart.
+		const f = fixture(
+			{ [mine]: { API_KEY: ROTATED }, [other]: { OTHER_KEY }, [away]: { AWAY_KEY } },
+			{ [mine]: [API_KEY, OLDER_KEY] },
+		);
+		const machineId = randomUUID();
+		const theirs = f.scope(other);
+		const before = f.request(machineId, theirs);
+		await f.secrets.session(machineId, theirs).resolve(before, signal());
+		f.secrets.session(machineId, theirs).accepted(before);
+		const elsewhere = randomUUID();
+		const there = f.scope(away);
+		const far = await f.secrets.session(elsewhere, there).resolve(f.request(elsewhere, there), signal());
+		const scope = f.scope(mine);
+		const request = f.request(machineId, scope);
+		const resolved = await f.secrets.session(machineId, scope).resolve(request, signal());
+		f.secrets.session(machineId, scope).accepted(request);
+		expect(resolved.environment).toStrictEqual({ API_KEY: ROTATED });
+		const printed = `${API_KEY} ${OLDER_KEY} ${ROTATED} ${OTHER_KEY}`;
+		expect(masked(resolved.mask(), printed)).toBe("*** *** *** ***");
+		// The other session's reads, and its later starts, mask them too; nothing of them goes into its environment, and
+		// another machine's masks do not cover them.
+		expect(masked(await readMask(f.secrets.session(machineId, theirs), before), printed)).toBe("*** *** *** ***");
+		const later = await f.secrets.session(machineId, theirs).resolve(f.request(machineId, theirs), signal());
+		expect(later.environment).toStrictEqual({ OTHER_KEY });
+		expect(masked(later.mask(), printed)).toBe("*** *** *** ***");
+		expect(masked(far.mask(), printed)).toBe(`${API_KEY} ${OLDER_KEY} ${ROTATED} ${OTHER_KEY}`);
+		// A start again does not ask, and its mask still covers them; so do my reads once the other session goes.
+		expect((await f.secrets.session(machineId, scope).resolve(request, signal())).environment).toBe(
+			resolved.environment,
+		);
+		f.secrets.release(machineId, other);
+		expect(masked(await readMask(f.secrets.session(machineId, scope), request), printed)).toBe("*** *** *** ***");
+		expect(f.environment).toHaveBeenCalledTimes(4);
+		// The machine's last session goes: its older values go with it, until an answer names them again.
+		f.secrets.release(machineId, mine);
+		const again = f.scope(other);
+		const next = await f.secrets.session(machineId, again).resolve(f.request(machineId, again), signal());
+		expect(masked(next.mask(), printed)).toBe(`${API_KEY} ${OLDER_KEY} ${ROTATED} ***`);
+	});
+
+	it("fails the ask when an older value cannot be masked, and keeps nothing of the answer", async () => {
+		const workerId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } }, { [workerId]: [OLDER_KEY, "seven77"] });
+		const machineId = randomUUID();
+		const scope = f.scope(workerId);
+		const failed = await f.secrets
+			.session(machineId, scope)
+			.resolve(f.request(machineId, scope), signal())
+			.catch((error: unknown) => error as Error);
+		expect(failed).toBeInstanceOf(RangeError);
+		expect(String(failed)).not.toContain("seven77");
+		// Neither the environment nor the older values of the refused answer are kept.
+		f.environment.mockResolvedValueOnce(answer({ API_KEY: ROTATED }));
+		const next = await f.secrets.session(machineId, scope).resolve(f.request(machineId, scope), signal());
+		expect(next.environment).toStrictEqual({ API_KEY: ROTATED });
+		expect(masked(next.mask(), `${API_KEY} ${OLDER_KEY} ${ROTATED}`)).toBe(`${API_KEY} ${OLDER_KEY} ***`);
+	});
+
 	it("has no mask for a command until the guest takes the start it resolved", async () => {
 		const workerId = randomUUID();
 		const f = fixture({ [workerId]: { API_KEY } });
@@ -144,7 +217,7 @@ describe("a coding session's command secrets on its machine", () => {
 		const started = await session.resolve(request, signal());
 		expect(await session.output(request, signal())).toBeNull();
 		// Its answer still masks the machine's other commands.
-		f.environment.mockResolvedValueOnce({ API_KEY: ROTATED });
+		f.environment.mockResolvedValueOnce(answer({ API_KEY: ROTATED }));
 		const next = await session.resolve(f.request(machineId, scope), signal());
 		expect(masked(next.mask(), `${API_KEY} ${ROTATED}`)).toBe("*** ***");
 		// A start again sends the same environment without asking. Once the guest takes it, the command's reads are masked.
@@ -178,7 +251,7 @@ describe("a coding session's command secrets on its machine", () => {
 			.catch((error: unknown) => error as Error);
 		expect(failed).toBeInstanceOf(RangeError);
 		expect(String(failed)).not.toContain("seven77");
-		g.environment.mockResolvedValueOnce({ API_KEY });
+		g.environment.mockResolvedValueOnce(answer({ API_KEY }));
 		const next = await g.secrets.session(machineId, at).resolve(g.request(machineId, at), signal());
 		expect(next.environment).toStrictEqual({ API_KEY });
 		expect(masked(next.mask(), "seven77 ok")).toBe("seven77 ok");
@@ -200,7 +273,7 @@ describe("a coding session's command secrets on its machine", () => {
 		f.environment.mockImplementationOnce(async (_scope, given) => {
 			expect(given).toBe(asking.signal);
 			asking.abort(new Error("stopped"));
-			return { API_KEY };
+			return answer({ API_KEY });
 		});
 		await expect(f.secrets.session(machineId, scope).resolve(request, asking.signal)).rejects.toThrow("stopped");
 		await f.secrets.session(machineId, scope).resolve(request, signal());
@@ -216,7 +289,7 @@ describe("a coding session's command secrets on its machine", () => {
 		const session = f.secrets.session(machineId, scope);
 		f.environment.mockImplementationOnce(async () => {
 			f.secrets.release(machineId, workerId);
-			return { API_KEY };
+			return answer({ API_KEY });
 		});
 		await expect(session.resolve(request, signal())).rejects.toThrow("CODING_COMMAND_SECRETS_RELEASED");
 		const other = f.scope(workerId);
