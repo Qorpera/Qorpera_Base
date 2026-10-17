@@ -4,7 +4,12 @@ import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CODING_GUEST, type CodingGuestRequests, isUuid, normalizeUuid, parseClosedRecord } from "@qorpera/contracts";
 import { CodingControlRefused } from "./coding-executor.ts";
-import { type CodingFolderBoundary, type CodingFolderReads, codingFolderViewSaved } from "./coding-folder-control.ts";
+import {
+	type CodingFolderBoundary,
+	type CodingFolderReads,
+	codingFolderBoundaryUnreadable,
+	codingFolderViewSaved,
+} from "./coding-folder-control.ts";
 import { CodingGuestRefused, LxdCodingGuestClient } from "./coding-guest-client.ts";
 import { type LxdCodingMachineBinding, lxdCodingMachineName, lxdCodingMachinePlan } from "./coding-machine.ts";
 import type { LxdInstanceExecStreamClient, LxdInstanceProgramClient } from "./lxd-client.ts";
@@ -93,7 +98,8 @@ export class CodingFolderViewRefused extends Error {
  * view the session holds, or the one just opened, under its mount (VIEW_CLOSED), the boundary before a new view
  * answered the machine's reads unproven (READS_UNPROVEN), or the core marked the machine (MACHINE_RESTART_REQUIRED, the
  * open's refusal). The executor stops and starts it, the folder service hearing `restarted` between, and attaches the
- * session again. */
+ * session again. READS_UNREADABLE: that boundary said the machine holds a read no longer readable, so it gets a new disk
+ * on the way (rule 4, `unreadable`). */
 export class CodingFolderRestartRequired extends CodingFolderViewRefused {}
 
 export interface CodingFolderViewsOptions {
@@ -179,8 +185,9 @@ export class CodingFolderViews {
 	 * to replace before its attachment does, so one replaced here is a view whose attachment SQL already gave up. Invalid
 	 * ids, a uid outside the sessions' range or an invalid `until` reject with CODING_FOLDER_VIEW_REQUEST_INVALID before
 	 * anything; a refused open with CodingFolderViewRefused; a machine that must restart first (the node closed the
-	 * session's view, held or new, under its mount; the boundary before a new view answered its reads unproven; or the
-	 * core refused the open so) with CodingFolderRestartRequired, before any other view opens; a guest's refusal with
+	 * session's view, held or new, under its mount; the boundary before a new view answered its reads unproven, or said it
+	 * holds a read no longer readable; or the core refused the open so) with CodingFolderRestartRequired, before any other
+	 * view opens; a guest's refusal with
 	 * CodingGuestRefused, and an agent's answer that is not one with CODING_GUEST_ANSWER_INVALID; records it can't read,
 	 * write or remove with CODING_FOLDER_VIEW_RECORD_FAILED; an open or a mount with no answer is tried again until
 	 * `until`, and then rejects with CODING_FOLDER_VIEW_UNCONFIRMED or CODING_FOLDER_MOUNT_UNANSWERED. */
@@ -227,9 +234,11 @@ export class CodingFolderViews {
 		const finished = held?.machineId ?? machineId;
 		const {
 			reads,
+			unreadable,
 			ends: [replaced],
 		} = await recorded(this.#finish(finished, held ? [held] : [], deadline));
-		// A view opened now would answer unproven until the machine restarted.
+		// A view opened now would answer unproven until the machine restarted, or be refused until it got a new disk.
+		if (finished === machineId && unreadable) throw new CodingFolderRestartRequired("READS_UNREADABLE");
 		if (finished === machineId && reads === "unproven") throw new CodingFolderRestartRequired("READS_UNPROVEN");
 		const view = await this.#open(asked, machineId, until, signal, deadline);
 		await recorded(this.#keep(view, deadline)).catch(async (error: unknown) => {
@@ -349,13 +358,13 @@ export class CodingFolderViews {
 	}
 
 	/** The views' final boundary, then their closes, and then their records go; a boundary with no views only saves what
-	 * the machine's views have pending. Resolves with how each view ended and the boundary's reads (none when it had no
-	 * answer). Rejects when a record stays. */
+	 * the machine's views have pending. Resolves with how each view ended and the boundary's reads, and whether it said
+	 * the machine holds a read no longer readable (none when it had no answer). Rejects when a record stays. */
 	async #finish(
 		machineId: string,
 		views: readonly HeldView[],
 		signal: AbortSignal,
-	): Promise<{ reads?: CodingFolderReads; ends: CodingFolderViewEnd[] }> {
+	): Promise<{ reads?: CodingFolderReads; unreadable?: boolean; ends: CodingFolderViewEnd[] }> {
 		let boundary: CodingFolderBoundary | undefined;
 		try {
 			boundary = await this.#folder.boundary(
@@ -384,7 +393,9 @@ export class CodingFolderViews {
 				failure ??= error;
 			});
 		if (failure) throw failure;
-		return boundary?.machine === machineId ? { reads: boundary.reads, ends } : { ends };
+		return boundary?.machine === machineId
+			? { reads: boundary.reads, unreadable: codingFolderBoundaryUnreadable(boundary), ends }
+			: { ends };
 	}
 
 	/** The view the session holds, by its record. */

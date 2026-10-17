@@ -425,14 +425,24 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      machine id: only `/company` is kept. SQL built (5g-5 part 3, migration `20260930505000`): a take-in refused with
      "A released read is no longer readable" (a turn's wake read, or run authority moving a session onto the machine)
      marks the machine for a new disk (`new_disk_at`, always with `folder_restart_at`) and goes on without the
-     machine's reads; every other refusal still raises. The executor marks it with
-     `qorpera_mark_coding_machine_new_disk`. A machine so marked restarts as above, but the restart's record answers
-     `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants
-     `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the executor rebuilds the instance
-     from its binding's image (`imageFingerprint`), and `qorpera_record_coding_machine_new_disk`, named by the
-     rebuild's LXD operation and replayed like the restart's record, detaches any session attached since, empties the
-     machine's read set, clears both marks and answers `replaced`. It refuses a machine not marked for a new disk, so a
-     record with no rebuild behind it never drops reads the old disk still holds. Then the machine starts. A model hears of it only
+     machine's reads; every other refusal still raises. The executor (5g-5 part 3) marks it with
+     `qorpera_mark_coding_machine_new_disk` whenever a boundary says the machine holds a read no longer readable (its
+     release refused `unreadable`, or a view's change set refused whole for it): the final boundary of the machine's
+     last view, before a turn's view opens (`READS_UNREADABLE`); the boundary before a publication, which then fails
+     and publishes nothing (`CODING_FOLDER_BOUNDARY_HELD:READS_UNREADABLE` or `:REFUSED_UNREADABLE`); and a command's
+     boundary, marked once per transport, which leaves the machine running, so the session's next turn finds its view
+     refused. The turn or publication then stops the machine as for a restart, unless it started since; it is marked
+     all the same then, since that start may not have given it a new disk. A machine so marked restarts as above, but
+     the restart's record answers `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both
+     marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
+     executor rebuilds the instance from its binding's image (`imageFingerprint`), and
+     `qorpera_record_coding_machine_new_disk`, named by the rebuild's LXD operation and replayed like the restart's
+     record, detaches any session attached since, empties the machine's read set, clears both marks and answers
+     `replaced`. It refuses a machine not marked for a new disk, so a record with no rebuild behind it never drops reads
+     the old disk still holds. Then the machine starts. Before the rebuild goes out, the executor checks that the image
+     is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
+     with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
+     until the image is back or the machine is removed; the new disk's record clears that error. A model hears of it only
      through a stopped command's entry: a session that was not attached gets no event.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.

@@ -34,7 +34,11 @@ import type {
 } from "./coding-executor.ts";
 import { CodingMachineUnavailable, CodingPushRefused } from "./coding-executor.ts";
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
-import { type CodingFolderControl, codingFolderBoundaryHeld } from "./coding-folder-control.ts";
+import {
+	type CodingFolderControl,
+	codingFolderBoundaryHeld,
+	codingFolderBoundaryUnreadable,
+} from "./coding-folder-control.ts";
 import {
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
@@ -57,6 +61,7 @@ import {
 	type CodingMachineDesiredState,
 	type CodingMachineIntent,
 	type CodingMachineJournalPlan,
+	type CodingMachineReconcileOptions,
 	type CodingMachineStorage,
 	checkCodingMachineReceipt,
 	codingMachineLastStart,
@@ -76,6 +81,7 @@ import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "./coding-vm.ts";
 import { publishCloudCodingDraftPullRequest } from "./coding-workspace.ts";
 import type {
+	LxdImageClient,
 	LxdInspectableClient,
 	LxdInstanceDeviceClient,
 	LxdInstanceExecStreamClient,
@@ -103,6 +109,9 @@ export const CODING_HOST_RPCS = [
 	// A machine restarted for the company folder (the folder model's rule 4).
 	"qorpera_mark_coding_machine_folder_restart",
 	"qorpera_record_coding_machine_folder_restart",
+	// A machine given a new disk from its image (rule 4, `unreadable`): its disk holds a read no longer readable.
+	"qorpera_mark_coding_machine_new_disk",
+	"qorpera_record_coding_machine_new_disk",
 ] as const;
 
 /** The leased session a repository token is asked for (bundle v88): the
@@ -145,7 +154,8 @@ export interface LxdCodingExecutorHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	client: Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
 		Pick<LxdInspectableClient, "readInstanceFile" | "pushInstanceFile" | "execInstance"> &
-		LxdInstanceDeviceClient;
+		LxdInstanceDeviceClient &
+		LxdImageClient;
 	journalRoot: string;
 	guest: {
 		/** The image's own coding user: sessions whose NAS volume predates
@@ -694,14 +704,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** Drives one machine's journal to the desired state, polling pending LXD
 	 * operations, within its budget. A member's machine found stopped from
 	 * outside is handed to `stoppedFromOutside` before anything else is done to it,
-	 * and a stopped one to `starting` right before each start. */
+	 * and a stopped one to `starting` right before each start (which may answer
+	 * that a rebuild goes out instead). */
 	async #reconcile(
 		journal: CodingMachineJournalPlan,
 		desiredState: CodingMachineDesiredState,
 		authorize: (intent: CodingMachineIntent, signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
-		starting?: (afterOperationId: string, signal: AbortSignal) => Promise<void>,
+		starting?: CodingMachineReconcileOptions["starting"],
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -1219,9 +1230,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			guest = await attach(started);
 		} catch (error) {
 			if (!(error instanceof CodingFolderRestartRequired)) throw error;
-			// No view opened: the machine stops, unless it started since this turn's start, and starts again, and its
-			// restart's record detached the session, which attaches anew on the new boot.
-			started = await this.#startFolder(folder, claim, machine, storage, journal, signal, started.starts);
+			// No view opened: the machine stops, unless it started since this turn's start, and starts again (on a new disk
+			// when it holds a read no longer readable), and its restart's record detached the session, which attaches anew
+			// on the new boot.
+			started = await this.#startFolder(folder, claim, machine, storage, journal, signal, {
+				starts: started.starts,
+				newDisk: error.code === "READS_UNREADABLE",
+			});
 			guest = await attach(started);
 		}
 		const ready: Prepared = {
@@ -1238,7 +1253,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** One lifecycle step on the folder model: the machine runs this plan and its LXD agent answers, and the session's
 	 * user and the boot are read, with how many times this process started the machine so far. With `restart` (that
-	 * count when a turn found the machine must restart for the folder), it stops first, unless it started since. */
+	 * count when a turn found the machine must restart for the folder), it stops first, unless it started since. One that
+	 * must get a new disk is marked for it all the same: a start since may not have given it one. */
 	#startFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1246,12 +1262,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		storage: Readonly<CloudCodingStorageBinding>,
 		journal: CodingMachineJournalPlan,
 		signal: AbortSignal,
-		restart?: number,
+		restart?: { starts: number; newDisk: boolean },
 	): Promise<{ bootId: string; uid: number; starts: number }> {
 		return this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
-			if (restart !== undefined && (this.#folderStarts.get(machine.machineId) ?? 0) === restart)
-				await this.#stopForFolder(folder, machine, journal, signal);
+			if (restart !== undefined && (this.#folderStarts.get(machine.machineId) ?? 0) === restart.starts)
+				await this.#stopForFolder(folder, machine, journal, signal, restart.newDisk);
+			else if (restart?.newDisk) await this.#markForFolder(machine, true, signal);
 			await this.#runFolder(folder, claim, machine, storage, journal, signal);
 			const receipt = await this.#run(claim, machine, storage, signal);
 			// Each session runs as its own user, which SQL assigns in the guest agent's range.
@@ -1262,8 +1279,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			return { bootId, uid, starts: this.#folderStarts.get(machine.machineId) ?? 0 };
 		});
 	}
-	/** The folder model's machine runs, started if it was stopped, under the turn's run authority, and the start it runs
-	 * under is read (#folderStartOperations). Called under #exclusive. */
+	/** The folder model's machine runs, started if it was stopped, under the turn's run authority (a new disk under
+	 * custody's), and the start it runs under is read (#folderStartOperations). Called under #exclusive. */
 	async #runFolder(
 		folder: FolderOptions,
 		claim: CodingSessionClaim,
@@ -1274,10 +1291,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<void> {
 		// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
 		await this.#hostLeases.renew(journal);
+		const text = lxdCodingMachinePlan(machine).text;
 		await this.#reconcile(
 			journal,
 			"running",
-			async (_intent, checked) => this.#run(claim, machine, storage, checked),
+			async (intent, checked) =>
+				intent === "rebuild"
+					? this.#custody(journal, text, "rebuild", checked)
+					: this.#run(claim, machine, storage, checked),
 			signal,
 			// Stopped from outside: its views end while their attachments are still the live ones, so their final
 			// boundary saves what they had pending, and then SQL ends every attachment on it, all before it starts
@@ -1295,18 +1316,27 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// unreleased (F3 5g-5) is written down first, against that boot's start, and taken back only when the service
 			// answers no to the call after that write: an answer unheard may have been yes, and no later call says so
 			// again. The boot's commands then keep nothing more of what it left on the machine's disk. Before all that,
-			// no session's command starts, or is read, under that boot's start any more.
-			async (afterOperationId, checked) => {
+			// no session's command starts, or is read, under that boot's start any more. A machine marked for a new disk
+			// (rule 4, `unreadable`) is rebuilt first, and the start after the rebuild comes here again and records the
+			// new disk.
+			async (afterOperationId, checked, after) => {
 				this.#folderStartOperations.delete(machine.machineId);
 				const journalRoot = await this.#directory("machines", checked);
 				const boot = await codingMachineLastStart(journalRoot, journal);
 				const marked = boot !== null && (await dropCodingMachineStart(journalRoot, journal, boot));
 				const dropped = await folder.control.restarted(machine.machineId, checked);
 				if (boot !== null && marked && !dropped) await undropCodingMachineStart(journalRoot, journal, boot);
-				await this.#recordFolderRestart(machine, afterOperationId, checked);
+				if (after === "rebuild") await this.#recordNewDisk(machine, afterOperationId, checked);
+				else if (await this.#recordFolderRestart(machine, afterOperationId, checked)) return "rebuild";
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
-		);
+		).catch(async (error: unknown) => {
+			// The machine's image is no longer on the node: it stays stopped and marked, with its own error, and each turn
+			// on it fails so until the image is back or the machine is removed.
+			if (error instanceof Error && error.message === "CODING_MACHINE_IMAGE_GONE")
+				await this.#recordError(machine.machineId, "wake", error.message, signal).catch(() => undefined);
+			throw error;
+		});
 		// The start this boot came from: a command's start names it, so a read after a restart knows its boot.
 		this.#folderStartOperations.set(
 			machine.machineId,
@@ -1317,32 +1347,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * view opens on it again. SQL marks it first: from then on no coding view opens on it, its open ones close at their
 	 * next renewal, and its stop is granted while a turn uses it; the start's record clears the mark. Its views end, their
 	 * final boundary saving what it still can: a machine whose reads are unproven saves nothing, and a view whose record
-	 * stays is ended by its session's next attach. Called under #exclusive. */
+	 * stays is ended by its session's next attach. With `newDisk` (rule 4, `unreadable`) it is marked for a new disk,
+	 * which marks it to restart too: its start is then a rebuild first. Called under #exclusive. */
 	async #stopForFolder(
 		folder: FolderOptions,
 		machine: Readonly<LxdCodingMachineBinding>,
 		journal: CodingMachineJournalPlan,
 		signal: AbortSignal,
+		newDisk = false,
 	): Promise<void> {
 		const text = lxdCodingMachinePlan(machine).text;
-		const value = record(
-			await this.#call(
-				"qorpera_mark_coding_machine_folder_restart",
-				{
-					p_machine_id: machine.machineId,
-					p_owner: this.#options.owner,
-					p_binding_text: text,
-					p_machine_id_sha256: this.#options.machineIdSha256,
-				},
-				signal,
-			),
-		);
-		if (
-			value.schema !== "qorpera.coding-machine-folder-restart/v1" ||
-			value.machineId !== machine.machineId ||
-			value.state !== "marked"
-		)
-			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
+		await this.#markForFolder(machine, newDisk, signal);
 		await folder.views.endMachine(machine.machineId, signal).catch(() => undefined);
 		await this.#reconcile(
 			journal,
@@ -1685,15 +1700,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// a path any view left unsaved holds the publication. The error's reason says why, without a path.
 			const { machine, storage } = ready;
 			const starts = this.#folderStarts.get(machine.machineId) ?? 0;
-			const held = codingFolderBoundaryHeld(await folder.control.boundary(machine.machineId, [], signal));
-			if (held === "READS_UNPROVEN")
+			const boundary = await folder.control.boundary(machine.machineId, [], signal);
+			const held = codingFolderBoundaryHeld(boundary),
+				unreadable = codingFolderBoundaryUnreadable(boundary);
+			if (held === "READS_UNPROVEN" || unreadable)
 				// What the machine read can't be proven released (rule 4): it restarts before a view opens on it again,
-				// unless it started since this boundary was asked. The session attaches anew at its next turn.
+				// unless it started since this boundary was asked. One that holds a read no longer readable gets a new disk
+				// (rule 4, `unreadable`), and is marked for it even if it started since: that start may not have given it one. The
+				// session attaches anew at its next turn.
 				await this.#exclusive(machine.machineId, signal, async () => {
-					if ((this.#folderStarts.get(machine.machineId) ?? 0) !== starts) return;
+					if ((this.#folderStarts.get(machine.machineId) ?? 0) !== starts) {
+						if (unreadable) await this.#markForFolder(machine, true, signal);
+						return;
+					}
 					const journal = lxdCodingMachineJournalPlan(machine, this.#placement);
 					await this.#run(claim, machine, storage, signal);
-					await this.#stopForFolder(folder, machine, journal, signal);
+					await this.#stopForFolder(folder, machine, journal, signal, unreadable);
 					await this.#runFolder(folder, claim, machine, storage, journal, signal);
 				});
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
@@ -1999,16 +2021,44 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#forgetDetached(ended);
 		this.#helperBoots.delete(machine.machineId);
 	}
+	/** SQL marks the machine to restart for the company folder (rule 4), or with `newDisk` for a new disk (rule 4,
+	 * `unreadable`), which marks it to restart too. From then on no coding view opens on it. A mark already there stays. */
+	async #markForFolder(
+		machine: Readonly<LxdCodingMachineBinding>,
+		newDisk: boolean,
+		signal: AbortSignal,
+	): Promise<void> {
+		const value = record(
+			await this.#call(
+				newDisk ? "qorpera_mark_coding_machine_new_disk" : "qorpera_mark_coding_machine_folder_restart",
+				{
+					p_machine_id: machine.machineId,
+					p_owner: this.#options.owner,
+					p_binding_text: lxdCodingMachinePlan(machine).text,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+				},
+				signal,
+			),
+		);
+		if (
+			value.schema !== "qorpera.coding-machine-folder-restart/v1" ||
+			value.machineId !== machine.machineId ||
+			value.state !== "marked"
+		)
+			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
+	}
 	/** A stopped machine is about to start: if SQL marked it to restart for the company folder (the folder model's rule
 	 * 4), the restart is recorded, each attachment on it ending as FOLDER_RESTART (not an outside stop: its sessions
 	 * attach again on the new boot) and the mark cleared, so views open on it again. An unmarked machine changes
-	 * nothing. `afterOperationId` names the start (the LXD operation of the effect it follows): SQL answers a second
-	 * record of the same start, however late, what it answered the first and changes nothing. */
+	 * nothing. One marked for a new disk (rule 4, `unreadable`) answers true: each attachment on it ends as
+	 * MACHINE_NEW_DISK and both marks stay, and the machine is rebuilt before it starts (#recordNewDisk clears them).
+	 * `afterOperationId` names the start (the LXD operation of the effect it follows): SQL answers a second record of the
+	 * same start, however late, what it answered the first and changes nothing. */
 	async #recordFolderRestart(
 		machine: Readonly<LxdCodingMachineBinding>,
 		afterOperationId: string,
 		signal: AbortSignal,
-	): Promise<void> {
+	): Promise<boolean> {
 		const value = record(
 			await this.#call(
 				"qorpera_record_coding_machine_folder_restart",
@@ -2026,11 +2076,47 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (
 			value.schema !== "qorpera.coding-machine-folder-restart/v1" ||
 			value.machineId !== machine.machineId ||
-			(value.state !== "restarted" && value.state !== "unmarked") ||
+			(value.state !== "restarted" && value.state !== "unmarked" && value.state !== "new-disk") ||
 			!ended
 		)
 			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
 		this.#forgetDetached(ended);
+		return value.state === "new-disk";
+	}
+	/** The machine marked for a new disk was rebuilt from its image and is about to start: SQL records the new disk,
+	 * named by the rebuild's LXD operation. Its read set goes (the disk that held those reads is gone), each attachment
+	 * still on it ends as MACHINE_NEW_DISK, and both marks are cleared, so views open on it again. A second record of the
+	 * same rebuild answers what the first did. Then the error a rebuild whose image was gone left is cleared. */
+	async #recordNewDisk(
+		machine: Readonly<LxdCodingMachineBinding>,
+		rebuildOperationId: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const value = record(
+			await this.#call(
+				"qorpera_record_coding_machine_new_disk",
+				{
+					p_machine_id: machine.machineId,
+					p_operation_id: rebuildOperationId,
+					p_owner: this.#options.owner,
+					p_binding_text: lxdCodingMachinePlan(machine).text,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+				},
+				signal,
+			),
+		);
+		const ended = detachedSessions(value.detached);
+		if (
+			value.schema !== "qorpera.coding-machine-folder-restart/v1" ||
+			value.machineId !== machine.machineId ||
+			value.state !== "replaced" ||
+			!ended
+		)
+			throw new Error("CODING_HOST_NEW_DISK_UNCONFIRMED");
+		this.#forgetDetached(ended);
+		this.#helperBoots.delete(machine.machineId);
+		this.#settledBoots.delete(machine.machineId);
+		await this.#recordError(machine.machineId, "wake", null, signal).catch(() => undefined);
 	}
 	/** The sessions SQL detached are no longer attached here. */
 	#forgetDetached(ended: readonly { workerId: string; attachmentToken: string }[]): void {
@@ -2607,6 +2693,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
 			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
 			const { machineId } = ready.machine;
+			// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
+			// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
+			let marked = false;
+			const control: Pick<CodingFolderControl, "boundary"> = {
+				boundary: async (id, final, checked) => {
+					const boundary = await folder.control.boundary(id, final, checked);
+					if (!marked && codingFolderBoundaryUnreadable(boundary))
+						marked = await this.#markForFolder(ready.machine, true, checked).then(
+							() => true,
+							() => false,
+						);
+					return boundary;
+				},
+			};
 			return new LxdCodingFolderCommandTransport({
 				machine: ready.machine,
 				scope: ready.scope,
@@ -2620,7 +2720,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				custody: ready.storage.custodySource,
 				limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
 				guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
-				control: folder.control,
+				control,
 				dropped: async (startOperationId, checked) =>
 					codingMachineStartDropped(
 						await this.#directory("machines", checked),
@@ -2967,7 +3067,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	async #recordError(
 		machineId: string,
-		step: CodingHousekeepingOutcome["step"],
+		step: CodingHousekeepingOutcome["step"] | "wake",
 		failure: string | null,
 		signal: AbortSignal,
 	): Promise<void> {

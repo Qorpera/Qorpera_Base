@@ -18,7 +18,7 @@ import {
 	runAgentPlug,
 	withAgentPlug,
 } from "./agent-plug.ts";
-import type { LxdCreateInstanceRequest, LxdInstanceRecord, LxdTrackedClient } from "./lxd-client.ts";
+import type { LxdCreateInstanceRequest, LxdImageClient, LxdInstanceRecord, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -249,7 +249,7 @@ export function assertLxdCodingMachineInstance(
 	return [...sessions].sort();
 }
 
-export type CodingMachineIntent = "run" | "stop" | "detach" | "delete";
+export type CodingMachineIntent = "run" | "stop" | "detach" | "delete" | "rebuild";
 /** A few seconds of SQL authority for one machine effect
  * (qorpera_authorize_coding_machine_run / _custody). */
 export interface CodingMachineAdmissionReceipt {
@@ -363,7 +363,7 @@ export function lxdCodingMachineJournalPlan(
 	});
 }
 
-type Action = "create" | "start" | "stop" | "delete";
+type Action = "create" | "start" | "stop" | "delete" | "rebuild";
 interface Event {
 	sequence: number;
 	previousSha256: string;
@@ -372,7 +372,9 @@ interface Event {
 	operationId: string | null;
 	state: "succeeded" | "failed" | null;
 }
-type Client = Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation">;
+/** A client that can't look up images never rebuilds a machine. */
+type Client = Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
+	Partial<LxdImageClient>;
 export type CodingMachineDesiredState = "running" | "stopped" | "deleted";
 export interface CodingMachineReconcileOptions {
 	plan: CodingMachineJournalPlan;
@@ -380,7 +382,7 @@ export interface CodingMachineReconcileOptions {
 	journalRoot: string;
 	desiredState: CodingMachineDesiredState;
 	client: Client;
-	/** Fresh SQL authority for this effect's intent (run, stop or delete). */
+	/** Fresh SQL authority for this effect's intent (run, stop or delete; rebuild for a run's rebuild). */
 	authorize(intent: CodingMachineIntent, signal: AbortSignal): Promise<unknown>;
 	signal: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
@@ -398,8 +400,15 @@ export interface CodingMachineReconcileOptions {
 	 * restarted (the folder service's `restarted`) and records the restart. `afterOperationId` names the start: the
 	 * LXD operation of the settled effect it follows (the create, the stop, or the start the machine stopped after),
 	 * the same each time this start is about to go out and no other start's, since that effect stays the journal's
-	 * last until the start is dispatched. A failure fails the reconcile, and nothing is dispatched. */
-	starting?: (afterOperationId: string, signal: AbortSignal) => Promise<void>;
+	 * last until the start is dispatched. A failure fails the reconcile, and nothing is dispatched. `after` is that
+	 * effect's action. "rebuild": the machine must get a new disk first (F3 5g-5), so a rebuild from its image goes out
+	 * instead, and the start after it calls this again, named by the rebuild. A failed rebuild is only re-issued, a
+	 * bounded number of times, without this call: a machine never starts on a disk a rebuild left half written. */
+	starting?: (
+		afterOperationId: string,
+		signal: AbortSignal,
+		after: "create" | "start" | "stop" | "rebuild",
+	) => Promise<"rebuild" | undefined>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -415,7 +424,10 @@ export interface CodingMachineReconcileResult {
  * A failed stop leaves the VM's state to physical observation (a re-issued
  * stop while it still runs, else start or delete); a failed delete may only
  * be re-issued. A failed create or start is followed by nothing: an operator
- * settles it. */
+ * settles it. A rebuild (a new disk from the image, F3 5g-5) may come wherever
+ * a start may, from a stopped VM; after it, a start, a delete, or another
+ * rebuild. A failed rebuild is only re-issued, or the VM deleted: it never
+ * starts on what that rebuild left. */
 function nextActions(
 	settled: Event | undefined,
 	segment: number,
@@ -426,11 +438,12 @@ function nextActions(
 	if (settled.state === "succeeded") {
 		if (settled.action === "start")
 			// A disposable VM, or a member's machine, may stop by itself after its start: it is started again or deleted.
-			return disposable || selfStops ? ["stop", "start", "delete"] : ["stop"];
-		return settled.action === "delete" ? [] : ["start", "delete"];
+			return disposable || selfStops ? ["stop", "start", "delete", "rebuild"] : ["stop"];
+		return settled.action === "delete" ? [] : ["start", "delete", "rebuild"];
 	}
-	if (settled.action === "stop") return ["stop", "start", "delete"];
+	if (settled.action === "stop") return ["stop", "start", "delete", "rebuild"];
 	if (settled.action === "delete") return ["delete"];
+	if (settled.action === "rebuild") return ["rebuild", "delete"];
 	// A disposable VM's failed create or start is tried again (or the VM is given up).
 	if (!disposable) return [];
 	return settled.action === "create" ? ["create", "start", "stop", "delete"] : ["start", "stop", "delete"];
@@ -451,7 +464,9 @@ function physical(instance: LxdInstanceRecord): "running" | "stopped" | "other" 
 }
 /** What the VM shows of an effect whose outcome LXD no longer knows: gone is a
  * delete done (and a create not done), stopped is a stop done (and a start not
- * done), running the opposite. null: the VM cannot tell. */
+ * done), running the opposite. A rebuild leaves no trace to tell: a stopped VM
+ * counts it failed, which only another rebuild or a delete follows. null: the
+ * VM cannot tell. */
 function effectFromView(
 	action: Action,
 	plan: CodingMachineJournalPlan,
@@ -463,6 +478,7 @@ function effectFromView(
 	if (action === "create") return "succeeded";
 	const seen = physical(observed);
 	if (seen === "other") return null;
+	if (action === "rebuild") return seen === "stopped" ? "failed" : null;
 	return seen === (action === "stop" ? "stopped" : "running") ? "succeeded" : "failed";
 }
 function encode(value: unknown): Buffer {
@@ -562,6 +578,7 @@ async function readEvents(
 			sha(tail.bytes) !== value.previousTailSha256 ||
 			prior.sequence !== Number(value.previousEventCount) - 1 ||
 			(prior.action !== "stop" &&
+				prior.action !== "rebuild" &&
 				!(disposable && (prior.action === "start" || prior.action === "create")) &&
 				!(selfStops && prior.action === "start" && prior.state === "succeeded")) ||
 			prior.kind !== "settled" ||
@@ -740,15 +757,15 @@ export async function reconcileCodingMachine(
 		instanceName: plan.name,
 		instanceSha256: plan.instanceSha256,
 	});
-	const authorize = async (): Promise<AbortSignal> => {
+	const authorize = async (effect: CodingMachineIntent = intent): Promise<AbortSignal> => {
 		options.signal.throwIfAborted();
 		const started = performance.now();
 		const timeout = AbortSignal.any([options.signal, AbortSignal.timeout(5000)]);
-		const receipt = await options.authorize(intent, timeout);
+		const receipt = await options.authorize(effect, timeout);
 		timeout.throwIfAborted();
 		const remaining = checkCodingMachineReceipt(
 			receipt,
-			{ machineId: plan.machineId, instanceSha256: plan.instanceSha256, intent },
+			{ machineId: plan.machineId, instanceSha256: plan.instanceSha256, intent: effect },
 			performance.now() - started,
 		);
 		return AbortSignal.any([timeout, AbortSignal.timeout(remaining)]);
@@ -808,9 +825,10 @@ export async function reconcileCodingMachine(
 			// LXD keeps a finished operation only briefly. A stop or delete it no
 			// longer knows is settled from the VM itself: stopped (or gone) is the
 			// effect, still running (or still there) is its absence. A disposable
-			// VM's create or start is settled the same way. Anything else stays unknown.
+			// VM's create or start is settled the same way, and a rebuild as failed
+			// on a stopped VM. Anything else stays unknown.
 			if (
-				(tail.action !== "stop" && tail.action !== "delete" && !plan.disposable) ||
+				(tail.action !== "stop" && tail.action !== "delete" && tail.action !== "rebuild" && !plan.disposable) ||
 				!(error instanceof Error) ||
 				error.message !== "LXD_OPERATION_UNKNOWN"
 			)
@@ -829,7 +847,13 @@ export async function reconcileCodingMachine(
 		tail = current.events.at(-1);
 		if (tail?.kind !== "settled" || tail.state !== state) return result("recovery-required");
 	}
-	if (tail?.state === "failed" && tail.action !== "stop" && tail.action !== "delete" && !plan.disposable)
+	if (
+		tail?.state === "failed" &&
+		tail.action !== "stop" &&
+		tail.action !== "delete" &&
+		tail.action !== "rebuild" &&
+		!plan.disposable
+	)
 		return result("recovery-required");
 	signal.throwIfAborted();
 	const instance = await options.client.getInstance(plan.project, plan.name, signal);
@@ -876,11 +900,16 @@ export async function reconcileCodingMachine(
 				// forced stop, which is safe to repeat because the VM keeps no state of
 				// its own. A run never reuses a VM whose stop failed without stopping it
 				// first. A disposable VM's failed create or start is settled the same
-				// way, and a run tries the start again a bounded number of times.
+				// way, and a run tries the start again a bounded number of times. A
+				// failed rebuild is tried again so too, and never followed by a start.
 				if (seen === "stopped") {
 					if (intent === "stop") return result("stopped");
 					if (intent === "delete") action = "delete";
-					else if (
+					else if (tail.action === "rebuild") {
+						if (trailingFailed(current.events, "rebuild") >= MAX_FAILED_ATTEMPTS)
+							return result("recovery-required");
+						action = "rebuild";
+					} else if (
 						tail.action === "stop" ||
 						trailingFailed(current.events, tail.action as Action) < MAX_FAILED_ATTEMPTS
 					)
@@ -889,6 +918,7 @@ export async function reconcileCodingMachine(
 				} else if (
 					seen === "running" &&
 					intent === "stop" &&
+					tail.action !== "rebuild" &&
 					trailingFailed(current.events, "stop") < MAX_FAILED_ATTEMPTS
 				)
 					action = "stop";
@@ -922,7 +952,7 @@ export async function reconcileCodingMachine(
 		}
 	}
 	if (
-		(action === "start" && current.events.length > MAX_EVENTS - 6) ||
+		((action === "start" || action === "rebuild") && current.events.length > MAX_EVENTS - 6) ||
 		(action === "delete" && current.events.length > MAX_RETAINED_EVENTS - 3)
 	) {
 		// Only a physically verified, settled stop can close a segment: a stop
@@ -931,12 +961,14 @@ export async function reconcileCodingMachine(
 		// Every contender derives the same next segment, whose first effect still
 		// competes through the ordinary immutable event CAS.
 		// A disposable VM, or a member's machine, that stopped by itself (its last record a start, LXD showing it
-		// stopped) closes one too.
+		// stopped) closes one too, and so does a rebuild of a VM seen stopped. A start or a rebuild goes out only while
+		// two effects still fit: its own and the stop (or the start) after it.
+		const stopped = instance !== undefined && physical(instance) === "stopped";
 		const selfStopped =
 			((plan.disposable === true && (tail?.action === "start" || tail?.action === "create")) ||
-				(plan.selfStops === true && tail?.action === "start" && tail.state === "succeeded")) &&
-			instance !== undefined &&
-			physical(instance) === "stopped";
+				(plan.selfStops === true && tail?.action === "start" && tail.state === "succeeded") ||
+				tail?.action === "rebuild") &&
+			stopped;
 		if ((tail?.action !== "stop" && !selfStopped) || tail?.kind !== "settled" || current.segment >= 999999)
 			throw new Error("CODING_MACHINE_JOURNAL_FULL");
 		const nextRoot = join(root, `segment-${String(current.segment + 1).padStart(6, "0")}`);
@@ -977,16 +1009,25 @@ export async function reconcileCodingMachine(
 	)
 		throw new Error("AGENT_PLUG_MISSING");
 	// A start goes out only once the executor has said the machine restarted. Before the fresh authority too. The
-	// settled effect it follows names it.
+	// settled effect it follows names it. A machine that must get a new disk is rebuilt instead.
 	if (action === "start" && options.starting) {
-		if (tail?.kind !== "settled" || typeof tail.operationId !== "string")
+		if (tail?.kind !== "settled" || typeof tail.operationId !== "string" || tail.action === "delete")
 			throw new Error("CODING_MACHINE_JOURNAL_INVALID");
-		await options.starting(tail.operationId, options.signal);
+		if ((await options.starting(tail.operationId, options.signal, tail.action)) === "rebuild") action = "rebuild";
+		options.signal.throwIfAborted();
+	}
+	// A rebuild takes the machine's image from the node's store, as its create did. Old images get cleaned up: one that
+	// is gone fails the rebuild here, before its authority and its dispatch, and the machine stays stopped.
+	if (action === "rebuild") {
+		const image = plan.request?.source.fingerprint;
+		if (!image || !options.client.hasImage) return result("recovery-required");
+		if (!(await options.client.hasImage(plan.project, image, options.signal)))
+			throw new Error("CODING_MACHINE_IMAGE_GONE");
 		options.signal.throwIfAborted();
 	}
 	// Fresh authority immediately before irreversible dispatch; journal CAS
 	// chooses one winner across processes. A crash after claiming is unknown.
-	signal = await authorize();
+	signal = await authorize(action === "rebuild" ? "rebuild" : intent);
 	if (!(await append({ action, kind: "dispatch", operationId: null, state: null }))) return result("pending");
 	let operationId: string;
 	try {
@@ -1000,7 +1041,9 @@ export async function reconcileCodingMachine(
 				? { action, request: request as LxdCreateInstanceRequest }
 				: action === "stop"
 					? { action, name: plan.name, force: true }
-					: { action, name: plan.name },
+					: action === "rebuild"
+						? { action, name: plan.name, fingerprint: plan.request?.source.fingerprint as string }
+						: { action, name: plan.name },
 			signal,
 		);
 		if (

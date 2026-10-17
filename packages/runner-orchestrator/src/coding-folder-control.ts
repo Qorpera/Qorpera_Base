@@ -75,6 +75,13 @@ export function codingFolderBoundaryHeld(boundary: CodingFolderBoundary): string
 	return "UNREPORTED";
 }
 
+/** Whether the core said the machine holds a read no longer readable: its release refused (`reads: "unreadable"`), or a
+ * view's change set refused whole for it. A restart does not take that read off the machine's disk, so the machine gets a
+ * new disk (the plan's rule 4, `unreadable`). */
+export function codingFolderBoundaryUnreadable(boundary: CodingFolderBoundary): boolean {
+	return boundary.reads === "unreadable" || boundary.views.some((view) => view.refused === "unreadable");
+}
+
 /** The service answered with an error, such as VIEW_REFUSED (this uid may not connect), UNAVAILABLE or BAD_REQUEST.
  * Its message is not kept. */
 export class CodingFolderControlRefused extends Error {
