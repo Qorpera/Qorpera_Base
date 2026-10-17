@@ -276,6 +276,8 @@ declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
 	room constant uuid := pg_temp.run_id('room'); wc jsonb; x jsonb;
 begin
+	-- The company is on the memory tree's list, so its runs keep logs (20260930352000).
+	insert into public.qorpera_memory_tree_companies(profile_id) values ('63400000-0000-4000-8000-000000000010');
 	-- A run in its agent's thread: the thread's tree, and the folders on the way that are not there yet. Otto's tree is.
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora), jsonb_build_object('path',
 		'agents/nora/memory/thread/runs/' || nora, 'exists', false, 'missing', jsonb_build_array('agents/nora/memory/thread',
@@ -298,8 +300,8 @@ begin
 	-- A run the company does not have.
 	perform pg_temp.same(to_jsonb(array[public.qorpera_memory_run_origin(env, extensions.gen_random_uuid())]), '[null]',
 		'an unknown run''s origin');
-	perform pg_temp.same(public.qorpera_memory_run_log_place(env, extensions.gen_random_uuid()), '{"gone": true}',
-		'an unknown run''s place');
+	perform pg_temp.same(public.qorpera_memory_run_log_place(env, extensions.gen_random_uuid()), '{"off": true}',
+		'an unknown run''s place (no conversation tree, so no log)');
 	-- Only the folder core's caller places a log, hashes and narrows steps, and commits memory.
 	perform pg_temp.path_claims('authenticated');
 	perform pg_temp.raises_like(format('select public.qorpera_memory_run_log_place(%L, %L)', env, nora), '42501',

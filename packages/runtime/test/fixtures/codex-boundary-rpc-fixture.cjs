@@ -146,8 +146,8 @@ const manifest = [
 const compose = (patch = {}) => exchange({ schema: "qorpera.native-context-composition/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", model: "offline-probe", items: manifest, ...patch });
 const contextEvidence = { agent: null, reviewer: null };
 // Memory compactor (M1b-4b): a fresh tool-less thread in the same app-server, opened at the opening (settle), during
-// the turn or at closing.
-const compacting = mode.startsWith("compact") || mode === "review-compact";
+// the turn or at closing. A company run with a work log (W1c-3): its step lines open compactor threads, several at once.
+const compacting = mode.startsWith("compact") || mode === "review-compact" || mode === "company-logged";
 // The modes whose compactor turns reply; compact-opening composes the agent's request too.
 const compactReplies = mode === "compact" || mode === "compact-opening" || mode === "compact-gate";
 const compactThreadId = "thread_compact";
@@ -248,6 +248,16 @@ async function handle(message) {
 		} });
 	} else if (message.method === "turn/start" && compacting && compactThreadIds.includes(message.params.threadId)) {
 		const turn = compactEvidence.compactTurns.push(message.params);
+		if (mode === "company-logged") {
+			// Each of a work log's turns answers one line, while the agent's turn goes on or at its closing.
+			const at = { threadId: message.params.threadId, turnId: `turn_compact_${turn}` };
+			write({ id: message.id, result: { turn: { id: at.turnId } } });
+			write({ method: "turn/started", params: { threadId: at.threadId, turn: { id: at.turnId } } });
+			await fence([], at);
+			write({ method: "item/agentMessage/delta", params: { ...at, delta: `LINE ${turn}` } });
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: at.turnId, status: "completed", error: null } } });
+			return;
+		}
 		compactAt = { threadId: message.params.threadId, turnId: `turn_compact_${turn}` };
 		write({ id: message.id, result: { turn: { id: compactAt.turnId } } });
 		write({ method: "turn/started", params: { threadId: compactAt.threadId, turn: { id: compactAt.turnId } } });

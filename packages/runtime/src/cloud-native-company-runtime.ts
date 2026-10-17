@@ -4,6 +4,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
 	CloudActionReviewGate,
+	cloudActionEffect,
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
@@ -11,6 +12,7 @@ import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-h
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
 	type CloudChatGptPlanAuth,
+	type CloudCodexContextComposer,
 	type CloudCodexOpening,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
@@ -56,6 +58,7 @@ import {
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
+import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
@@ -82,6 +85,11 @@ import {
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
+import { CloudRunLogGone } from "./cloud-run-log.ts";
+import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
+import { openCloudRunLog } from "./cloud-run-log-open.ts";
+import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
+import { CloudRunResumeRpc } from "./cloud-run-resume.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationBatchReceipt,
@@ -390,14 +398,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// Such a run writes its conversation's tree too (§5.4, §7.1, M1b-4b-3), through the compactor its Codex session
 			// answers: the writer reads the conversation and its tree now, alongside the reads below, so the catalog offers
 			// zoom to a run that has the view; it settles the tree at the opening and closes it after the agent's turn.
+			// The tree shares the run's compactor lane with the run's log (below).
 			const compactor = new MemoryCompactChannel();
+			const lane = new MemoryCompactLane();
 			const lines = memoryTree
 				? new CloudConversationLines({
 						control: this.#paths,
 						binding,
 						folder: folder.client,
 						call: compactor.call,
-						lane: new MemoryCompactLane(),
+						lane,
 						record: memoryCompactionRecorder(this.#paths, binding),
 					})
 				: undefined;
@@ -482,6 +492,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const connectorDescriptors = await connectorTools();
 			const viewed = await viewedRequest;
 			signal.throwIfAborted();
+			// The run's work log (RUNTIME-AGENT-MEMORY-TREE.md §4.5, W1c-3), opened with its tools: its step lines build
+			// in the run's compactor lane, on threads this run's Codex session answers (§7.1), and its work composer
+			// serves the agent's requests from then on (§5.7). A run without a log sends each request as Codex built it.
+			let runWork: CloudCodexContextComposer | undefined;
+			const composeRun: CloudCodexContextComposer = (request, composeSignal) =>
+				runWork ? runWork(request, composeSignal) : cloudNativeContextIdentity(request);
+			const connectorEffects = cloudConnectorEffects(connectorDescriptors);
 			// The run's admission (contract §6, M1b-4b-3), before any provider work: its binary, bundle, reasoning policy
 			// and exact tool catalog. The opening binds its context to it once composed.
 			let admitted: Record<string, unknown> | undefined;
@@ -549,17 +566,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						prompt,
 						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
 						// Every request of a run with the view shares its conversation's cache key (§6.2).
-						...(view && context.identity.sessionId !== null
-							? {
-									composeContext: memoryCacheKeyComposer(
+						composeContext:
+							view && context.identity.sessionId !== null
+								? memoryCacheKeyComposer(
 										memoryPromptCacheKey({
 											payerLoginConnectionId: context.identity.providerConnectionId,
 											agentId: context.identity.staffAgentId,
 											conversationId: context.identity.sessionId,
 										}),
-									),
-								}
-							: {}),
+										composeRun,
+									)
+								: composeRun,
 						contextSha256,
 						contextBytes,
 					};
@@ -749,7 +766,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						admitted = admission;
 					},
 					opening,
-					...(lines && viewed ? { compactor, closing: (closingSignal) => lines.close(closingSignal) } : {}),
+					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
+					compactor,
+					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					command: this.#command,
 					binarySha256: this.#sha256,
 					identityRoot,
@@ -771,7 +790,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							reviewer,
 							request: cloudActionReviewRequest(context, wake),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
-							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							connectorEffects,
 							offlineShells,
 							facts: {
 								coworkers: new Map(context.coworkers.map((coworker) => [coworker.id, coworker.name])),
@@ -786,6 +805,37 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							)
 						)
 							throw new Error("Cloud context identity changed before execution");
+						// Before any provider request: a resumed attempt reads its earlier work first (W5b-2). The log
+						// steps a call as auto-review classifies it. A log made once and no longer there ends the run, as
+						// it does mid-run.
+						const opened = await openCloudRunLog({
+							resume: new CloudRunResumeRpc({ run, control: this.#paths }),
+							folder: new CloudRunLogCompanyFolder({
+								environmentId: identity.environmentId,
+								runId: binding.runId,
+								folder: folder.client,
+								control: this.#paths,
+							}),
+							log: {
+								runId: binding.runId,
+								protection: new CloudRunLogRpcProtection({
+									environmentId: identity.environmentId,
+									jobId: binding.jobId,
+									runId: binding.runId,
+									call: (method, argumentsValue, requestSignal) =>
+										this.#paths.call(method, argumentsValue, requestSignal),
+								}),
+								signal: run.signal,
+								effectful: (tool, parsed) =>
+									cloudActionEffect(tool, parsed, connectorEffects, offlineShells) !== "read",
+							},
+							lines: { call: compactor.call, lane },
+						}).catch((error: unknown) => {
+							throw error instanceof CloudRunLogGone
+								? tagNativeRuntimeFailure(error, "native-tools", "authority_unavailable")
+								: error;
+						});
+						runWork = opened?.composeContext;
 						const computer = await this.#computerSession?.(run, operations, { offlineShells });
 						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
@@ -1011,6 +1061,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										},
 									}
 								: {}),
+							...(opened ? { runLog: { log: opened.log, lines: opened.lines } } : {}),
 						};
 					},
 				}).finally(async () => {

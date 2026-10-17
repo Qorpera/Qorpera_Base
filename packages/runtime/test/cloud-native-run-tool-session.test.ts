@@ -3,10 +3,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import { runCloudNativeRunToolSession } from "@qorpera/runtime/cloud-native-run-tool-session";
 import type { CloudNativeTool, CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
+import { type CloudRunLog, CloudRunLogGone } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import { MemoryCompactChannel } from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -353,4 +356,88 @@ it("releases nothing when the one call fails or reads another run's authority", 
 		expect(f.execute).not.toHaveBeenCalled();
 		await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 	}
+});
+
+/** A run's work log and its step lines as the run's closing sees them: each call is step 0, and nothing acts. */
+function workLog(runId: string) {
+	const order: string[] = [];
+	const log = {
+		runId,
+		gone: false,
+		step: vi.fn(() => 0),
+		finish: vi.fn(),
+		agentText: vi.fn(),
+		effectful: vi.fn(() => false),
+		precommit: vi.fn(async () => undefined),
+		close: vi.fn(async (_signal: AbortSignal) => {
+			order.push("log");
+		}),
+	};
+	const lines = {
+		finish: vi.fn(async (_signal: AbortSignal) => {
+			order.push("lines");
+		}),
+	};
+	return { order, log, lines, runLog: { log: log as unknown as CloudRunLog, lines } };
+}
+
+it("steps each call into the run's work log and, after the turn, closes it before its step lines", async () => {
+	const f = fixture();
+	const w = workLog(f.binding.runId);
+	const compactor = new MemoryCompactChannel();
+	const attach = vi.spyOn(compactor, "attach");
+	// A final batch the log could not commit does not undo the verified turn; the lines still build what is left.
+	w.log.close.mockImplementationOnce(async () => {
+		w.order.push("log");
+		throw new Error("PRIVATE_FINAL_BATCH");
+	});
+	await expect(f.start({ compactor, tools: () => ({ ...f.tools(), runLog: w.runLog }) })).resolves.toMatchObject({
+		toolCalls: 1,
+	});
+	expect(w.log.step).toHaveBeenCalledOnce();
+	expect(w.log.finish).toHaveBeenCalledOnce();
+	expect(f.execute).toHaveBeenCalledOnce();
+	expect(w.order).toEqual(["log", "lines"]);
+	// The run's Codex session answers the compactor's calls while it lasts.
+	expect(attach.mock.calls.map(([call]) => typeof call)).toEqual(["function", "undefined"]);
+	await expect(compactor.call("system", new AbortController().signal)).rejects.toMatchObject({ reason: "outage" });
+});
+
+it("ends a run whose work log's folder was deleted with that error, after its closing", async () => {
+	const f = fixture();
+	const w = workLog(f.binding.runId);
+	w.log.gone = true;
+	const started = f.start({ tools: () => ({ ...f.tools(), runLog: w.runLog }) });
+	const error = await started.catch((caught: unknown) => caught);
+	expect(error).toBeInstanceOf(CloudRunLogGone);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({
+		stage: "codex-turn-completion",
+		category: "authority_unavailable",
+	});
+	// Its call could not commit, so it did not run (§4.5).
+	expect(f.execute).not.toHaveBeenCalled();
+	expect(w.order).toEqual(["log", "lines"]);
+});
+
+it("commits a failed run's finished steps, but not a stopped run's", async () => {
+	const f = fixture();
+	const w = workLog(f.binding.runId);
+	f.recordContextView.mockRejectedValue(new Error("Context receipt unavailable"));
+	await expect(f.start({ tools: () => ({ ...f.tools(), runLog: w.runLog }) })).rejects.toThrow(
+		"Native result boundary unavailable",
+	);
+	expect(w.order).toEqual(["log"]);
+	expect(w.log.close.mock.calls[0]![0].aborted).toBe(false);
+
+	const stopped = fixture();
+	const s = workLog(stopped.binding.runId);
+	stopped.execute.mockImplementationOnce(async () => {
+		stopped.abort.abort();
+		return new Promise<never>(() => undefined);
+	});
+	await expect(stopped.start({ tools: () => ({ ...stopped.tools(), runLog: s.runLog }) })).rejects.toThrow(
+		"Native boundary execution stopped",
+	);
+	expect(s.log.close).not.toHaveBeenCalled();
+	expect(s.lines.finish).not.toHaveBeenCalled();
 });

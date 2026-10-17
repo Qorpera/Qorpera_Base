@@ -7,6 +7,7 @@ import {
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
+import { tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
@@ -29,9 +30,11 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
+import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
+import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
@@ -58,6 +61,12 @@ export interface CloudNativeRunToolAdapters {
 	) => Promise<unknown>;
 	/** Release exact resource leases after generation and tool admission have stopped. */
 	close?: (signal: AbortSignal) => Promise<void>;
+	/**
+	 * The run's work log and its step lines (RUNTIME-AGENT-MEMORY-TREE.md §4.5, §7.5): the boundary steps every call
+	 * into the log. At closing the log commits its last steps, then the lines build what is left (§7.1). A log whose
+	 * folder was deleted ends the run with that error (§4.5).
+	 */
+	runLog?: { readonly log: CloudRunLog; readonly lines: Pick<CloudRunStepLines, "finish"> };
 }
 
 /**
@@ -118,6 +127,7 @@ export async function runCloudNativeRunToolSession(options: {
 	let boundary: CloudNativeToolBoundary | undefined;
 	let adapters: CloudNativeRunToolAdapters | undefined;
 	let executionFailed = false;
+	let closingStarted = false;
 	let cleanupError: Error | undefined;
 	let result: Awaited<ReturnType<typeof runCloudCodexToolSession>>;
 	try {
@@ -199,7 +209,9 @@ export async function runCloudNativeRunToolSession(options: {
 			assertActive,
 			signal: run.signal,
 			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),
+			...(adapters.runLog ? { runLog: adapters.runLog.log } : {}),
 		});
+		const runLog = adapters.runLog;
 		result = await runCloudCodexToolSession({
 			observability: options.observability,
 			command: options.command,
@@ -214,7 +226,25 @@ export async function runCloudNativeRunToolSession(options: {
 			// The bind rechecks the run's lease, and the first request's fence its authority.
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
-			...(options.closing ? { closing: options.closing } : {}),
+			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
+			// conversation lines close (§7.1).
+			...(runLog || options.closing
+				? {
+						closing: async (signal: AbortSignal) => {
+							closingStarted = true;
+							try {
+								if (runLog)
+									try {
+										await runLog.log.close(signal);
+									} finally {
+										await runLog.lines.finish(signal);
+									}
+							} finally {
+								await options.closing?.(signal);
+							}
+						},
+					}
+				: {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
@@ -250,11 +280,19 @@ export async function runCloudNativeRunToolSession(options: {
 				await assertActive(signal);
 			},
 		});
+		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5).
+		if (runLog?.log.gone)
+			throw tagNativeRuntimeFailure(new CloudRunLogGone(), "codex-turn-completion", "authority_unavailable");
 	} catch (error) {
 		executionFailed = true;
 		throw error;
 	} finally {
 		boundary?.close();
+		// A run that failed on its own commits the steps it finished, as closing would have, within 10 s: a timed batch
+		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
+		// writing the log.
+		if (executionFailed && !closingStarted && !run.signal.aborted && adapters?.runLog)
+			await adapters.runLog.log.close(AbortSignal.timeout(10_000)).catch(() => undefined);
 		run.close();
 		if (adapters?.close) {
 			try {
