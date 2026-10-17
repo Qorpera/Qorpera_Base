@@ -48,7 +48,6 @@ const notFound = { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }
 const unavailable = { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" };
 
 const signal = () => new AbortController().signal;
-const sha256 = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 
 /** The custody methods these tests never reach. */
 function unusedAuthority(): CloudSecretBrokerAuthority {
@@ -90,7 +89,7 @@ function brokerFixture(
 			keyId: KEY,
 			// PostgreSQL's encode(...,'base64') wraps lines; the broker accepts that.
 			encryptedEnvelopeBase64: envelope.toString("base64").replace(/(.{76})/g, "$1\n"),
-			envelopeSha256: sha256(envelope),
+			envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
 		};
 	};
 	const mcpSecret = sealed(options.mcpFields ?? { value: MCP_VALUE }, 1);
@@ -767,7 +766,13 @@ describe("the broker's relay sign-ins", () => {
 		await expect(
 			authority.authorizeCodingRepositoryFetch({ ...binding, repository: "Qorpera/Qorpera_Base" }, signal()),
 		).resolves.toEqual({ accepted: true });
-		const bound = [authorityId, sha256(capability), binding.workerId, binding.leaseToken, binding.executorOwner];
+		const bound = [
+			authorityId,
+			createHash("sha256").update(capability).digest("hex"),
+			binding.workerId,
+			binding.leaseToken,
+			binding.executorOwner,
+		];
 		expect(queries).toEqual([
 			{
 				text: "select public.qorpera_authorize_coding_mcp_sign_in($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text) as result",
