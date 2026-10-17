@@ -28,6 +28,7 @@ import {
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
 import type { MemberInterfaceOffer } from "../../cloud/interface-offers.ts";
+import type { MemberInterfaceSupervision } from "../../cloud/interface-supervisions.ts";
 import { type MessageQuote, QUOTE_MAX_CHARACTERS, quoteRefFits } from "../../cloud/quotes.ts";
 import type { HostedProfileRole, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -169,6 +170,9 @@ interface PageState {
 	>;
 	/** The board card whose Offer lists the members it may go to (step I9c), by block and card. */
 	offering: string | null;
+	/** The area cards the member took or accepted here, which ask whether they supervise its agents too (step I9b), by
+	 * card. */
+	askSupervise: string[];
 	/** A refused save's problems, listed under the error. */
 	errorProblems: string[];
 	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
@@ -189,6 +193,7 @@ function pageState(key: string): PageState {
 			pending: [],
 			claiming: {},
 			offering: null,
+			askSupervise: [],
 			errorProblems: [],
 			focus: null,
 		};
@@ -651,6 +656,9 @@ export function renderInterfaceFile(
 	const canWrite = state.team?.capabilities.write === true;
 	// Offers are drawn only where the page can make and answer them, once they are read (step I9c).
 	const offers = writes?.offers && state.interfaceOffers ? state.interfaceOffers.offers : null;
+	// An area's supervision is drawn the same way, once its consents are read (step I9b).
+	const supervisions = writes?.offers && state.interfaceOffers ? state.interfaceOffers.supervisions : null;
+	const areas = supervisions === null ? null : tableDefinition(company, AREAS_SOURCE);
 	const listed = companyInterfaces(company).map((entry) => entry.name);
 	const cofounder = company.cofounderId();
 	const moveFocus = page.focus ?? undefined;
@@ -664,6 +672,26 @@ export function renderInterfaceFile(
 	page.claiming = Object.fromEntries(
 		Object.entries(page.claiming).filter(([card, claim]) => !claim.landed || cards.get(card) === claim.was),
 	);
+	// An area the member took here asks whether they supervise its agents too while it can (step I9b): while its take
+	// lands, and its Supervise is on its way, it waits.
+	const reads = { company, supervisions, ...(writes ? { writes } : {}) };
+	const asking = new Set(
+		blocks.flatMap(({ board }) =>
+			(board?.parts ?? []).flatMap((part) =>
+				part.rows.flatMap((item) => {
+					const card = cardKey(part, item);
+					if (!page.askSupervise.includes(card)) return [];
+					if (Object.hasOwn(page.claiming, card)) return [card];
+					const area = areaSupervision(reads, part.source, item.row);
+					if (area === null) return [];
+					const asks =
+						page.pending.includes(superviseBusy(area)) || asksToSupervise(part, item, area, company.userId);
+					return asks ? [card] : [];
+				}),
+			),
+		),
+	);
+	page.askSupervise = page.askSupervise.filter((card) => asking.has(card));
 	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
 	const readsMail = blocks.some(({ source }) => isMailSource(source));
 	const mailLists = blocks.flatMap(({ mail }) => (mail ? [mail.request] : []));
@@ -703,6 +731,15 @@ export function renderInterfaceFile(
 			const offered = offeredRow(company, offer);
 			return offered ? [offered.table, memberMayWriteRows(company, offered.definition)] : null;
 		}) ?? null,
+		// The live consents, the areas that ask to be supervised, and what decides an area's buttons: its supervisor
+		// column and whether the member may change its rows (step I9b).
+		supervisions,
+		page.askSupervise,
+		areas && [
+			areas.id,
+			areas.columns.find((column) => column.name === "supervisor") ?? null,
+			memberMayWriteRows(company, areas),
+		],
 		listed,
 		cofounder,
 		widths,
@@ -756,6 +793,7 @@ export function renderInterfaceFile(
 		canWrite,
 		...(writes ? { writes } : {}),
 		offers,
+		supervisions,
 		stillShown: () => {
 			const shown = container.firstElementChild;
 			return shown instanceof HTMLElement && shown.dataset.interface === name && shown.dataset.profile === profileId;
@@ -895,6 +933,9 @@ interface BlockContext {
 	/** The company's open offers (step I9c), or null when the page can't make or answer them or they aren't read yet:
 	 * then no offer is drawn. */
 	readonly offers: readonly MemberInterfaceOffer[] | null;
+	/** The company's live supervision consents (step I9b), or null when the page can't change them or they aren't read:
+	 * then no area's supervision is drawn. */
+	readonly supervisions: readonly MemberInterfaceSupervision[] | null;
 	/** Whether this page is still the one on screen, for work that finishes after a click. */
 	readonly stillShown: () => boolean;
 }
@@ -1300,6 +1341,7 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		typeof text === "string" && text
 			? h("div", { class: "interface-detail-text" }, markdown(text, { links: false }))
 			: null,
+		detailSupervision(context, drawn, open, lineId),
 		actions,
 	);
 }
@@ -1587,6 +1629,15 @@ function boardCard(
 	const actions = rowButtons(buttons, item, partBlock(drawn, part), context, titleId);
 	const own = [claim, offer].filter((button) => button !== null);
 	if (own.length) actions?.prepend(...own);
+	// An area's card says whose yes its supervisor waits for, or asks the member who just took it (step I9b).
+	const area = areaSupervision(context, part.source, row);
+	const supervision =
+		area &&
+		cardSupervision(context, part, item, area, {
+			titleId,
+			where: `supervise:${drawn.key}:${card}`,
+			focusNext: [`claim:${drawn.key}:${card}`, ...(opens === null ? [] : [`open:${opens}:${item.key}`])],
+		});
 	const element = h(
 		"li",
 		{
@@ -1607,6 +1658,7 @@ function boardCard(
 			},
 			claimable ? holder : null,
 		),
+		supervision,
 		actions ?? (own.length ? h("span", { class: "interface-actions" }, ...own) : null),
 		offering ? offerPicker(context, part, item, candidates, offerKey, titleId) : null,
 		saving ? h("small", { class: "interface-card-saving" }, t("Saving…")) : null,
@@ -1873,13 +1925,13 @@ async function closeOffer(
 const CLAIM_LANDED_WAIT = 10_000;
 
 /** A failed take, release or accept as the page's error: a cell someone else changed says so, and a refused save lists
- * why. */
-function claimError(page: PageState, verb: ClaimVerb, error: unknown): void {
+ * why under `failure`. */
+function claimError(page: PageState, verb: ClaimVerb, error: unknown, failure = claimFailure(verb)): void {
 	const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
 	// Every read found the cell still free (or still the member's, or as the offer read it), so the file kept changing
 	// elsewhere; a cell that was lost says so itself (ClaimLostError).
 	if (rejected?.reason === "version_changed") pageError(page, t("That changed while you were looking."));
-	else if (rejected?.problems.length) pageError(page, claimFailure(verb), rejected.problems);
+	else if (rejected?.problems.length) pageError(page, failure, rejected.problems);
 	else pageError(page, describeError(error));
 }
 
@@ -1927,6 +1979,9 @@ async function claimCard(
 	const without = () => Object.fromEntries(Object.entries(page.claiming).filter(([other]) => other !== card));
 	if (wrote) {
 		void writes?.offers?.refresh();
+		// An area the member takes asks whether they supervise its agents too, once it is theirs (step I9b).
+		if (verb !== "release" && areaSupervision(context, part.source, item.row) !== null)
+			page.askSupervise = [...page.askSupervise.filter((other) => other !== card), card];
 		const landed = { was, landed: true, ...answers };
 		page.claiming = { ...without(), [card]: landed };
 		// A feed that is slow to show the change doesn't keep the card saving.
@@ -2112,6 +2167,246 @@ async function acceptOffer(context: BlockContext, offer: MemberInterfaceOffer, t
 		claimError(page, "accept", error);
 	}
 	page.pending = page.pending.filter((other) => other !== busy);
+	if (context.stillShown()) context.redraw();
+}
+
+/** The table the platform reads supervision from (§5.1). */
+const AREAS_SOURCE = "table:areas";
+
+/** An area's supervision as drawn (step I9b; RUNTIME-INTERFACES.md §5.1). */
+interface AreaSupervision {
+	/** The row's key, as `tableRowKey` writes it. */
+	readonly key: string;
+	/** The member who supervises its agents, or whose yes the `supervisor` cell waits for; or null. */
+	readonly supervisor: string | null;
+	/** Their live consent; undefined while the cell waits for it, or names no one. */
+	readonly live: MemberInterfaceSupervision | undefined;
+	/** Whether the member may change the areas' rows, so take or let go of the cell. */
+	readonly mayWrite: boolean;
+}
+
+/** A row of `tables/areas`' supervision, where the page can change it: the consents are read and the page writes, and
+ * the table keeps `supervisor` as a member cell that needs a yes; else null, and nothing of it is drawn. A live consent
+ * counts before the cell, so a consent read since the folder was shows at once: the save that changes the cell makes
+ * or ends it. */
+function areaSupervision(
+	context: Pick<BlockContext, "company" | "supervisions" | "writes">,
+	source: string,
+	row: TableRow,
+): AreaSupervision | null {
+	const { company, supervisions } = context;
+	if (source !== AREAS_SOURCE || supervisions === null || !context.writes?.offers) return null;
+	const definition = tableDefinition(company, source);
+	if (!definition?.columns.some((column) => column.name === "supervisor" && column.needsYes)) return null;
+	const key = tableRowKey(definition, row);
+	const table = definition.id.toLowerCase();
+	const live = supervisions.find(
+		(each) => each.state === "live" && each.table === table && each.key !== null && JSON.stringify(each.key) === key,
+	);
+	const cell = row.supervisor;
+	return {
+		key,
+		supervisor: live?.user ?? (typeof cell === "string" && cell !== "" ? cell : null),
+		live,
+		mayWrite: memberMayWriteRows(company, definition),
+	};
+}
+
+/** Whether an area's card may ask the member to supervise its agents too: it is theirs, no one supervises them, and the
+ * member may take the cell. */
+function asksToSupervise(part: DrawnPart, item: InterfaceRow, area: AreaSupervision, me: string): boolean {
+	const holder = part.definition?.holder ?? null;
+	return area.supervisor === null && area.mayWrite && holder !== null && item.row[holder] === me;
+}
+
+/** What a member does with an area's supervision: take the empty `supervisor` cell, say yes again where it names them,
+ * pause that yes, or let the cell go. */
+type SuperviseVerb = "take" | "consent" | "withdraw" | "release";
+
+/** An area's change on its way, by its row: its buttons wait, on its card and in its detail. */
+const superviseBusy = (area: AreaSupervision) => `supervise:${area.key}`;
+
+/** One of an area's supervision buttons. `focusNext` names the controls the focus goes to when it goes (`show`). */
+function superviseButton(
+	context: BlockContext,
+	area: AreaSupervision,
+	verb: SuperviseVerb,
+	label: string,
+	place: { readonly where: string; readonly describedBy: string; readonly focusNext: readonly string[] },
+	card?: string,
+): HTMLElement {
+	const busy = context.page.pending.includes(superviseBusy(area));
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "interface-button",
+			"data-focus-key": `${place.where}:${verb}`,
+			"data-focus-then": JSON.stringify(place.focusNext),
+			"aria-describedby": place.describedBy,
+			"aria-disabled": busy ? "true" : null,
+			onclick: () => {
+				if (!busy) void superviseArea(context, area, verb, card);
+			},
+		},
+		label,
+	);
+}
+
+/** An area's supervision in words, with its buttons. */
+function supervisionLine(words: string, buttons: readonly HTMLElement[]): HTMLElement {
+	return h(
+		"p",
+		{ class: "interface-supervision" },
+		h("span", null, words),
+		buttons.length ? h("span", { class: "interface-actions" }, ...buttons) : null,
+	);
+}
+
+/** An area card's supervision line: whose yes its supervisor cell waits for, with Supervise where it is the member's;
+ * or, on an area they just took, whether they supervise its agents too, with Supervise and Not now. Null when there is
+ * nothing to say. An answer whose line goes hands the focus to the card's own controls. */
+function cardSupervision(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	area: AreaSupervision,
+	controls: { readonly titleId: string; readonly where: string; readonly focusNext: readonly string[] },
+): HTMLElement | null {
+	const me = context.company.userId;
+	const card = cardKey(part, item);
+	const place = { where: controls.where, describedBy: controls.titleId, focusNext: controls.focusNext };
+	if (area.supervisor === null) {
+		if (!context.page.askSupervise.includes(card) || !asksToSupervise(part, item, area, me)) return null;
+		const busy = context.page.pending.includes(superviseBusy(area));
+		const notNow = h(
+			"button",
+			{
+				type: "button",
+				class: "interface-button",
+				"data-focus-key": `${controls.where}:not-now`,
+				"data-focus-then": JSON.stringify(controls.focusNext),
+				"aria-describedby": controls.titleId,
+				"aria-disabled": busy ? "true" : null,
+				onclick: () => {
+					if (busy) return;
+					context.page.askSupervise = context.page.askSupervise.filter((other) => other !== card);
+					context.redraw();
+				},
+			},
+			t("Not now"),
+		);
+		return supervisionLine(t("Supervise its agents too?"), [
+			superviseButton(context, area, "take", t("Supervise"), place, card),
+			notNow,
+		]);
+	}
+	if (area.live !== undefined) return null;
+	if (area.supervisor !== me)
+		return supervisionLine(
+			t("Waiting for {name}'s yes to supervise its agents.", { name: memberLabel(context, area.supervisor) }),
+			[],
+		);
+	return supervisionLine(
+		t("Waiting for your yes to supervise its agents."),
+		context.canWrite ? [superviseButton(context, area, "consent", t("Supervise"), place, card)] : [],
+	);
+}
+
+/** An area's supervision in its detail: Supervise where no one supervises its agents; Pause and Step down for the
+ * member who does; Supervise and Step down where the cell waits for the member's yes; and whose yes it waits for
+ * otherwise. Each button hands the focus to the one that takes its place. */
+function detailSupervision(
+	context: BlockContext,
+	drawn: DrawnBlock,
+	open: InterfaceRow,
+	lineId: string,
+): HTMLElement | null {
+	const area = areaSupervision(context, drawn.source, open.row);
+	if (area === null) return null;
+	const where = `supervise:${drawn.key}:${open.key}`;
+	const control = (verb: SuperviseVerb, label: string, then: readonly SuperviseVerb[]) =>
+		superviseButton(context, area, verb, label, {
+			where,
+			describedBy: lineId,
+			focusNext: then.map((each) => `${where}:${each}`),
+		});
+	const { supervisor, live } = area;
+	if (supervisor === null)
+		return supervisionLine(
+			t("Nobody supervises its agents."),
+			area.mayWrite ? [control("take", t("Supervise"), ["withdraw", "release"])] : [],
+		);
+	if (supervisor !== context.company.userId)
+		return live
+			? null
+			: supervisionLine(
+					t("Waiting for {name}'s yes to supervise its agents.", { name: memberLabel(context, supervisor) }),
+					[],
+				);
+	const stepDown = area.mayWrite ? [control("release", t("Step down"), ["take"])] : [];
+	if (live)
+		return supervisionLine(t("You supervise its agents."), [
+			control("withdraw", t("Pause"), ["consent"]),
+			...stepDown,
+		]);
+	return supervisionLine(t("Waiting for your yes to supervise its agents."), [
+		...(context.canWrite ? [control("consent", t("Supervise"), ["withdraw"])] : []),
+		...stepDown,
+	]);
+}
+
+/** Changes an area's supervision (step I9b; §5.1). Take and release write the area's `supervisor` cell the way Take and
+ * Release write a card's holder, and that save makes or ends the member's consent; Supervise where the cell names them
+ * consents again, and Pause ends the consent, the cell staying as it is. The consents are read again before the buttons
+ * come back. A card's question goes once it is answered. */
+async function superviseArea(
+	context: BlockContext,
+	area: AreaSupervision,
+	verb: SuperviseVerb,
+	card?: string,
+): Promise<void> {
+	const { page, company, writes } = context;
+	const busy = superviseBusy(area);
+	const offers = writes?.offers;
+	if (page.pending.includes(busy) || !writes || !offers) return;
+	page.pending = [...page.pending, busy];
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	let done = false;
+	try {
+		if (verb === "consent") {
+			const answer = await offers.consent(JSON.parse(area.key) as TableValue[]);
+			if (answer.ok) done = true;
+			else pageError(page, answer.message);
+		} else if (verb === "withdraw") {
+			if (area.live) await offers.withdrawSupervision(area.live.id);
+			done = true;
+		} else {
+			await claimTableCell({
+				folder: writes.folder(),
+				table: AREAS_SOURCE.slice("table:".length),
+				key: area.key,
+				verb,
+				column: "supervisor",
+				memberId: company.userId,
+				signal: company.signal,
+				check: () => {
+					company.signal.throwIfAborted();
+					writes.current();
+				},
+			});
+			await offers.refresh();
+			done = true;
+		}
+	} catch (error) {
+		if (verb === "take" || verb === "release")
+			claimError(page, verb, error, t("The supervisor could not be changed."));
+		else pageError(page, describeError(error));
+	}
+	page.pending = page.pending.filter((other) => other !== busy);
+	if (done && card !== undefined) page.askSupervise = page.askSupervise.filter((other) => other !== card);
 	if (context.stillShown()) context.redraw();
 }
 

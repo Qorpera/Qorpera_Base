@@ -227,6 +227,11 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 }
 .interface-offer-picker { align-items: center; }
 .interface-offer-picker-label { color: var(--text-soft); font-size: 11.5px; }
+/* An area's supervision (step I9b): a quiet line with what the member may do, on its card and in its detail. */
+.interface-supervision {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; color: var(--text-muted); font-size: 12px;
+}
+.interface-detail .interface-supervision { margin: 0 0 10px; font-size: 13px; }
 @media (max-width: 760px) {
 	/* On a phone the lanes stack, each as wide as the page. */
 	.interface-board { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; }

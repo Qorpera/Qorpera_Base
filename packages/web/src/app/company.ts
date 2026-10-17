@@ -193,8 +193,9 @@ export interface CompanyState {
 	/** The tables and files the shown pages read, as the company's folder holds them (Interfaces step I7;
 	 * app/interface-folder.ts). Unset until the first read lands. */
 	interfaceFolder?: InterfaceFolderState;
-	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts). Unset until the first
-	 * read lands, and on a cloud without them: no page draws an offer then. */
+	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts), with its live
+	 * supervision consents (I9b). Unset until the first read lands, and on a cloud without them: no page draws an offer
+	 * then. */
 	interfaceOffers?: InterfaceOffersState;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;

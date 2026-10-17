@@ -1,18 +1,25 @@
 // @vitest-environment jsdom
 
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
+import type { TableValue } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
 import { CompanyInterfaceOffers } from "../src/app/interface-offers.ts";
 import { interfaceRows, pagesOn } from "../src/app/interfaces.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type {
 	InterfaceOfferAnswer,
 	InterfaceOfferRequest,
 	MemberInterfaceOffer,
 	MemberInterfaceOffers,
 } from "../src/cloud/interface-offers.ts";
+import type {
+	InterfaceSupervisionAnswer,
+	MemberInterfaceSupervision,
+	MemberInterfaceSupervisions,
+} from "../src/cloud/interface-supervisions.ts";
 import type { HostedProfileRole, HostedStaffAgent } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
@@ -131,8 +138,8 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 	};
 }
 
-/** The Members page on screen, drawn again on every change, writing through `fake`; with `offers`, its offers are read
- * and made through them as the app does (step I9c). */
+/** The Members page on screen, drawn again on every change, writing through `fake`; with `offers`, its offers and
+ * supervision consents are read and made through them as the app does (steps I9c and I9b). */
 async function members(fake: FolderFake, role: HostedProfileRole = "owner", offers?: OffersFake) {
 	vi.useFakeTimers();
 	const controller = company(role);
@@ -141,6 +148,7 @@ async function members(fake: FolderFake, role: HostedProfileRole = "owner", offe
 	if (offers) {
 		const opened = new CompanyInterfaceOffers(
 			offers.calls,
+			offers.consents,
 			(state) => controller.store.set({ interfaceOffers: state }),
 			controller.signal,
 		);
@@ -160,9 +168,30 @@ async function members(fake: FolderFake, role: HostedProfileRole = "owner", offe
 
 /** The open offers as the platform keeps them (supabase/CLIENT-CONTRACT.md "Offers of a claimed cell"): each one made
  * goes to the top, a decline or withdraw closes it. A save that changes the cell settles it too; here it stays listed
- * unless a test settles it, so the board must hide it by itself. */
+ * unless a test settles it, so the board must hide it by itself. With them the live supervision consents of `fake`'s
+ * areas ("Supervision consent"): a consent is made and a withdraw ends it; a save that changes an area's supervisor
+ * makes or ends one only where a test does. */
 type OffersFake = ReturnType<typeof offersFake>;
-function offersFake() {
+function offersFake(fake?: FolderFake) {
+	let live: MemberInterfaceSupervision[] = [];
+	let consented = 950;
+	const supervise = (key: readonly TableValue[], user: string = me) => {
+		const supervision: MemberInterfaceSupervision = {
+			id: id(++consented),
+			table: fake ? areasTable(fake) : "",
+			folder: "tables/areas",
+			key,
+			user,
+			state: "live",
+			at: timestamp,
+			endedAt: null,
+		};
+		live = [supervision, ...live];
+		return supervision;
+	};
+	const end = (supervision: string) => {
+		live = live.filter((each) => each.id !== supervision);
+	};
 	let open: MemberInterfaceOffer[] = [];
 	let made = 900;
 	const add = (
@@ -199,12 +228,28 @@ function offersFake() {
 			decline: vi.fn(close),
 			withdraw: vi.fn(close),
 		},
+		/** Makes a live consent, as a save that puts a member in an area's supervisor cell does. */
+		supervise,
+		/** Ends a consent, as a save that changes its cell does. */
+		end,
+		consents: {
+			list: vi.fn(async (): Promise<MemberInterfaceSupervisions> => ({ supervisions: live, truncated: false })),
+			consent: vi.fn(
+				async (key: readonly TableValue[]): Promise<InterfaceSupervisionAnswer> => ({
+					ok: true,
+					supervision: supervise(key),
+				}),
+			),
+			withdraw: vi.fn(async (supervision: string) => end(supervision)),
+		},
 	};
 }
 
-/** The cards table's id in `fake`, as an offer names it. */
-const cardsTable = (fake: FolderFake) =>
-	/^id = "([0-9a-f-]{36})"$/m.exec(fake.text("tables/cards/table.toml") ?? "")?.[1] ?? "";
+/** A table's id in `fake`, as an offer or a consent names it. */
+const tableId = (fake: FolderFake, table: string) =>
+	/^id = "([0-9a-f-]{36})"$/m.exec(fake.text(`tables/${table}/table.toml`) ?? "")?.[1] ?? "";
+const cardsTable = (fake: FolderFake) => tableId(fake, "cards");
+const areasTable = (fake: FolderFake) => tableId(fake, "areas");
 /** The words of a card's offer lines. */
 const offerWords = (element: HTMLElement) => texts(element, ".interface-card-offer > span:first-child");
 
@@ -304,6 +349,8 @@ describe("the Members board (I9a)", () => {
 		for (const other of ["Bea", "Cyd", "Shared", "Someone who left"]) expect(labels(other)).toEqual([]);
 		expect(main.textContent).not.toContain("Offer");
 		expect(main.textContent).not.toContain("Answer");
+		// Nor an area's supervision, which is drawn only where its consents are read (step I9b).
+		expect(main.querySelector(".interface-supervision")).toBeNull();
 		// A card someone else holds can't be dragged; one the member can take or release can.
 		expect(card(main, "Support").classList.contains("is-draggable")).toBe(false);
 		expect(card(main, "Call the bank").classList.contains("is-draggable")).toBe(true);
@@ -780,6 +827,202 @@ describe("offers on the Members board (I9c)", () => {
 	});
 });
 
+describe("an area's supervision on the Members board (I9b)", () => {
+	/** The words of the supervision lines in `element`, and their buttons. */
+	const words = (element: HTMLElement) => texts(element, ".interface-supervision > span:first-child");
+	const supervising = (element: HTMLElement) => texts(element, ".interface-supervision button");
+	const detail = (main: HTMLElement) => main.querySelector<HTMLElement>(".interface-detail.is-open")!;
+	const openArea = (main: HTMLElement, title: string) =>
+		card(main, title).querySelector<HTMLButtonElement>(".interface-card-open")!.click();
+	/** The seeded folder, with Support's supervisor cell waiting for the member's yes. */
+	const waitingForMe = () => {
+		const fake = seeded();
+		fake.put(AREAS, areas(areaRows[0]!, `Support,,${bea},no,${me},`, ...areaRows.slice(2)));
+		return fake;
+	};
+	/** Makes the member's consent with the next save, as the platform's save that puts them in the cell does. */
+	const consentsWithSave = (fake: FolderFake, offers: OffersFake, area: string) => {
+		const original = fake.folder.commit.getMockImplementation()!;
+		fake.folder.commit.mockImplementationOnce(async (...args) => {
+			const saved = await original(...args);
+			offers.supervise([area]);
+			return saved;
+		});
+	};
+
+	it("says whose yes an area's supervisor cell waits for, on its card and in its detail, until it is given", async () => {
+		const fake = seeded();
+		const offers = offersFake(fake);
+		const { main } = await members(fake, "owner", offers);
+		const waiting = "Waiting for Bea's yes to supervise its agents.";
+		expect(words(card(main, "Sales"))).toEqual([waiting]);
+		expect(supervising(card(main, "Sales"))).toEqual([]);
+		// No other area waits for anyone, and the member took none of them here, so their cards say nothing.
+		for (const title of ["Support", "Brand", "Ops", "Legal"])
+			expect(card(main, title).querySelector(".interface-supervision")).toBeNull();
+		openArea(main, "Sales");
+		expect(words(detail(main))).toEqual([waiting]);
+		expect(supervising(detail(main))).toEqual([]);
+		// Bea says yes; the page reads it when the window comes back into focus.
+		offers.supervise(["Sales"], bea);
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(main.querySelector(".interface-supervision")).toBeNull());
+		expect(texts(detail(main), ".interface-fields dd")).toEqual(["Account A", "Bea", "Ada"]);
+	});
+
+	it("says yes in an area's detail where its supervisor cell waits for the member, pauses it, and steps down", async () => {
+		const fake = waitingForMe();
+		const offers = offersFake(fake);
+		const refused = "Only the member it names as supervisor can consent.";
+		offers.consents.consent.mockResolvedValueOnce({ ok: false, reason: "not_yours", message: refused });
+		const { main, hint } = await members(fake, "owner", offers);
+		const button = (label: string) => buttonOf(detail(main), label)!;
+		const waiting = "Waiting for your yes to supervise its agents.";
+		// Bea owns the area, so its card has no Take or Release; it asks for the member's yes there too.
+		expect(words(card(main, "Support"))).toEqual([waiting]);
+		expect(supervising(card(main, "Support"))).toEqual(["Supervise"]);
+		openArea(main, "Support");
+		expect(words(detail(main))).toEqual([waiting]);
+		expect(supervising(detail(main))).toEqual(["Supervise", "Step down"]);
+		// A click in the browser focuses the button; jsdom's doesn't. A refused yes says why, and changes nothing.
+		button("Supervise").focus();
+		button("Supervise").click();
+		await vi.waitFor(() => expect(main.querySelector(".notice")?.textContent).toBe(refused));
+		expect(supervising(detail(main))).toEqual(["Supervise", "Step down"]);
+		button("Supervise").click();
+		await vi.waitFor(() => expect(words(detail(main))).toEqual(["You supervise its agents."]));
+		expect(offers.consents.consent).toHaveBeenLastCalledWith(["Support"]);
+		expect(supervising(detail(main))).toEqual(["Pause", "Step down"]);
+		expect(document.activeElement).toBe(button("Pause"));
+		expect(card(main, "Support").querySelector(".interface-supervision")).toBeNull();
+		expect(main.querySelector(".notice")).toBeNull();
+		// Pause ends the yes, and the cell stays as it is.
+		const [consent] = (await offers.consents.list()).supervisions;
+		button("Pause").click();
+		await vi.waitFor(() => expect(words(detail(main))).toEqual([waiting]));
+		expect(offers.consents.withdraw).toHaveBeenCalledExactlyOnceWith(consent!.id);
+		expect(document.activeElement).toBe(button("Supervise"));
+		expect(fake.folder.commit).not.toHaveBeenCalled();
+		// Step down lets the cell go, the way Release lets a card go.
+		const before = fake.version(AREAS);
+		button("Step down").focus();
+		button("Step down").click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(fake.commits[0]?.operationKey).toMatch(/^web:board-release:[0-9a-f-]{36}$/);
+		expect(fake.commits[0]?.units).toEqual([
+			{ op: "write", path: AREAS, text: areas(...areaRows), expectedVersion: before },
+		]);
+		await hint();
+		await vi.waitFor(() => expect(words(detail(main))).toEqual(["Nobody supervises its agents."]));
+		expect(supervising(detail(main))).toEqual(["Supervise"]);
+		expect(document.activeElement).toBe(button("Supervise"));
+		expect(main.querySelector(".notice")).toBeNull();
+	});
+
+	it("supervises an area no one supervises from its detail: the save puts the member in its supervisor cell", async () => {
+		const fake = seeded();
+		const offers = offersFake(fake);
+		const { main, hint } = await members(fake, "owner", offers);
+		const button = (label: string) => buttonOf(detail(main), label)!;
+		openArea(main, "Ops");
+		expect(words(detail(main))).toEqual(["Nobody supervises its agents."]);
+		consentsWithSave(fake, offers, "Ops");
+		const before = fake.version(AREAS);
+		button("Supervise").focus();
+		button("Supervise").click();
+		// The consent the save made shows before the folder does.
+		await vi.waitFor(() => expect(words(detail(main))).toEqual(["You supervise its agents."]));
+		expect(fake.commits[0]?.operationKey).toMatch(/^web:board-take:[0-9a-f-]{36}$/);
+		expect(fake.commits[0]?.units).toEqual([
+			{
+				op: "write",
+				path: AREAS,
+				text: areas(...areaRows.slice(0, 3), `Ops,,,no,${me},`, ...areaRows.slice(4)),
+				expectedVersion: before,
+			},
+		]);
+		expect(supervising(detail(main))).toEqual(["Pause", "Step down"]);
+		expect(document.activeElement).toBe(button("Pause"));
+		await hint();
+		await vi.waitFor(() => expect(texts(detail(main), ".interface-fields dd")[1]).toBe("Account A"));
+		expect(words(detail(main))).toEqual(["You supervise its agents."]);
+		// The member doesn't own the area, so its card asks nothing.
+		expect(card(main, "Ops").querySelector(".interface-supervision")).toBeNull();
+	});
+
+	it("asks whether the member supervises an area's agents too once the area they took is theirs; Not now lets it be", async () => {
+		const fake = seeded();
+		const offers = offersFake(fake);
+		const { main, hint } = await members(fake, "owner", offers);
+		const ops = () => card(main, "Ops");
+		buttonOf(ops(), "Take")!.focus();
+		buttonOf(ops(), "Take")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(ops().querySelector(".interface-supervision")).toBeNull();
+		await hint();
+		await vi.waitFor(() => expect(words(ops())).toEqual(["Supervise its agents too?"]));
+		expect(titles(main, "You")).toEqual(["Sales", "Ops", "Send invoices"]);
+		expect(supervising(ops())).toEqual(["Supervise", "Not now"]);
+		expect(document.activeElement).toBe(buttonOf(ops(), "Release"));
+		buttonOf(ops(), "Not now")!.focus();
+		buttonOf(ops(), "Not now")!.click();
+		expect(ops().querySelector(".interface-supervision")).toBeNull();
+		// The card's own Release has the focus its answer had.
+		expect(document.activeElement).toBe(buttonOf(ops(), "Release"));
+		expect(offers.consents.consent).not.toHaveBeenCalled();
+		expect(fake.commits).toHaveLength(1);
+	});
+
+	it("supervises an area the member took from its card's question, and the question goes", async () => {
+		const fake = seeded();
+		const offers = offersFake(fake);
+		const { main, hint } = await members(fake, "owner", offers);
+		const ops = () => card(main, "Ops");
+		buttonOf(ops(), "Take")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		await hint();
+		await vi.waitFor(() => expect(words(ops())).toEqual(["Supervise its agents too?"]));
+		consentsWithSave(fake, offers, "Ops");
+		const before = fake.version(AREAS);
+		buttonOf(ops(), "Supervise")!.focus();
+		buttonOf(ops(), "Supervise")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
+		expect(fake.commits[1]?.units).toEqual([
+			{
+				op: "write",
+				path: AREAS,
+				text: areas(...areaRows.slice(0, 3), `Ops,,${me},no,${me},`, ...areaRows.slice(4)),
+				expectedVersion: before,
+			},
+		]);
+		await vi.waitFor(() => expect(ops().querySelector(".interface-supervision")).toBeNull());
+		expect(document.activeElement).toBe(buttonOf(ops(), "Release"));
+		await hint();
+		openArea(main, "Ops");
+		expect(words(detail(main))).toEqual(["You supervise its agents."]);
+		expect(ops().querySelector(".interface-supervision")).toBeNull();
+	});
+
+	it("draws the lines with no buttons for a member who may not write, and nothing where the consents aren't read", async () => {
+		const fake = waitingForMe();
+		const { main } = await members(fake, "viewer", offersFake(fake));
+		expect(words(card(main, "Support"))).toEqual(["Waiting for your yes to supervise its agents."]);
+		openArea(main, "Support");
+		expect(words(detail(main))).toEqual(["Waiting for your yes to supervise its agents."]);
+		openArea(main, "Ops");
+		expect(words(detail(main))).toEqual(["Nobody supervises its agents."]);
+		expect(main.querySelector(".interface-supervision button")).toBeNull();
+		document.body.replaceChildren();
+		const unread = waitingForMe();
+		const offers = offersFake(unread);
+		offers.consents.list.mockRejectedValue(
+			new CloudRpcError("qorpera_member_interface_supervisions", { message: "not found", code: "PGRST202" }, 404),
+		);
+		const owner = await members(unread, "owner", offers);
+		openArea(owner.main, "Support");
+		expect(owner.main.querySelector(".interface-supervision")).toBeNull();
+	});
+});
 describe("offers in what waits for the member (I9c)", () => {
 	it("gives an offer's time to the second, though the cloud's carries microseconds", async () => {
 		const fake = seeded(bea);
