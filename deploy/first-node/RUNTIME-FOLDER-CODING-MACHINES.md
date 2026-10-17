@@ -439,20 +439,23 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      a marked machine (`CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK`). A cancel still goes, but keeps and shows
      nothing of the command: the command transport asks so too once the machine's boundary releases (no answer is
      marked), keeps nothing more of the command's output, and answers the cancel with none of it, what was kept before
-     included. A machine so marked restarts as above, but the restart's record answers `new-disk`: it detaches the
+     included, nor how much it printed or lost, nor how it ended (`unconfirmed`, no exit code, an empty log). A machine
+     so marked restarts as above, but the restart's record answers `new-disk`: it detaches the
      sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
      executor rebuilds the instance from its binding's image (`imageFingerprint`), and
      `qorpera_record_coding_machine_new_disk`, named by the rebuild's LXD operation and replayed like the restart's
      record, detaches any session attached since, empties the machine's read set, clears both marks and answers
      `replaced`. It refuses a machine not marked for a new disk, so a record with no rebuild behind it never drops reads
      the old disk still holds. Right before that record, the executor writes the rebuild down in `disk.json` next to
-     the machine's journal, and each command's kept start names the disk it started on (`diskOperationId`, null for
-     the machine's first disk): once the marks are cleared, a command from a disk the machine no longer has still
-     shows none of its output, read or cancelled in any later turn, ended or not, and one that had not ended is
-     `machine_stopped`. The command logs on the host outlive the disk, but nothing of them is shown, since the reads
-     that output came from left with the disk. The disk is read last before each answer, after the call's last
-     authorization and a cancel's withholding probe: those see the marks, which are cleared only after `disk.json` is
-     written, so a rebuild that ends during a call is seen. A `disk.json` that can't be read withholds. Then the machine
+     the machine's journal, and each command's kept start names the machine and the disk it started on (`machineId`,
+     and `diskOperationId`, null for the machine's first disk): once the marks are cleared, a command from a disk the
+     machine no longer has still shows nothing of itself, read or cancelled in any later turn, ended or not: not its
+     output, nor how much it printed or lost, nor how it ended (`machine_stopped`, no exit code, an empty log). The
+     same holds for a command from another machine the session ran on before, as its custody goes with it. The
+     command logs on the host outlive the disk, but nothing of them is shown, since the reads that output came from
+     left with the disk. The disk is read last before each answer, after the call's last authorization and a cancel's
+     withholding probe: those see the marks, which are cleared only after `disk.json` is written, so a rebuild that
+     ends during a call is seen. A `disk.json` that can't be read withholds (`unconfirmed`, as empty). Then the machine
      starts. Before the rebuild goes out, the executor checks that the image
      is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,

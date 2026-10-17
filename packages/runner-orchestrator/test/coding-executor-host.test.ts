@@ -4079,12 +4079,18 @@ describe("a coding session on the folder model", () => {
 			return answer(called, args, signal);
 		});
 		command.printed = Buffer.concat([command.printed, Buffer.from("old disk\n")]);
-		// The cancel goes, and keeps and shows nothing of the command: not what it printed since, nor what was kept.
-		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toMatchObject({
-			state: "running",
+		// The cancel goes, and keeps and shows nothing of the command: not what it printed since, nor what was kept, nor
+		// how much, nor how it ended.
+		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual({
+			schema: "qorpera.coding-command-result/v2",
+			workerId,
+			commandId: input.commandId,
+			inputSha256: input.inputSha256,
+			state: "unconfirmed",
+			exitCode: null,
 			output: "",
-			truncated: true,
-			log: { offset: 0, nextOffset: 0, totalBytes: 7 },
+			truncated: false,
+			log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: options.limitBytes, limitReached: false },
 		});
 		expect(guest.cancel).toHaveBeenCalledTimes(1);
 		const kept = join(options.custody, "host-commands", input.commandId.replaceAll("-", ""));
@@ -4199,22 +4205,22 @@ describe("a coding session on the folder model", () => {
 		const later = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
 		expect(later.custody).toBe(options.custody);
 		const second = new LxdCodingFolderCommandTransport({ ...later, guest });
-		const shows = (state: string, totalBytes: number) => ({
-			state,
+		// Neither what each printed, nor how much, nor how it ended: both ended with the old disk.
+		const hidden = (input: { commandId: string; inputSha256: string }) => ({
+			schema: "qorpera.coding-command-result/v2",
+			workerId,
+			commandId: input.commandId,
+			inputSha256: input.inputSha256,
+			state: "machine_stopped",
+			exitCode: null,
 			output: "",
-			truncated: true,
-			log: { offset: 0, nextOffset: 0, totalBytes },
+			truncated: false,
+			log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: later.limitBytes, limitReached: false },
 		});
-		for (const call of [
-			() => second.read(f.scope(), { commandId: done.commandId }, f.signal),
-			() => second.cancel(f.scope(), done.commandId, f.signal),
-		])
-			expect(await call()).toMatchObject({ ...shows("succeeded", 7), exitCode: 0 });
-		for (const call of [
-			() => second.read(f.scope(), { commandId: running.commandId }, f.signal),
-			() => second.cancel(f.scope(), running.commandId, f.signal),
-		])
-			expect(await call()).toMatchObject(shows("machine_stopped", 7));
+		for (const input of [done, running]) {
+			expect(await second.read(f.scope(), { commandId: input.commandId }, f.signal)).toStrictEqual(hidden(input));
+			expect(await second.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(hidden(input));
+		}
 		expect(guest.output).toHaveBeenCalledTimes(outputs);
 		expect(guest.cancel).not.toHaveBeenCalled();
 		const kept = (commandId: string) => join(options.custody, "host-commands", commandId.replaceAll("-", ""));
@@ -4230,6 +4236,7 @@ describe("a coding session on the folder model", () => {
 		expect(await second.read(f.scope(), { commandId: fresh.commandId }, f.signal)).toMatchObject({ output: "new\n" });
 		expect(JSON.parse(await readFile(join(kept(fresh.commandId), "request.json"), "utf8"))).toMatchObject({
 			turn: 2,
+			machineId: options.machine.machineId,
 			startOperationId: f.state.startOperationId,
 			diskOperationId: f.state.effects[3],
 		});

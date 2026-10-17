@@ -2780,8 +2780,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// The session's own user runs each command through the guest agent, at its worktree, with Git's settings for
 			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
 			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
-			// That folder outlives a new disk: what a command printed on a disk the machine no longer has is never shown,
-			// whichever turn asks (the transport's `disk`, from next to the machine's journal).
+			// That folder outlives a new disk, and goes with the session to another machine: what a command printed on a disk
+			// the machine no longer has, or on another machine, is never shown, whichever turn asks (the transport's `disk`,
+			// from next to the machine's journal).
 			const { machineId } = ready.machine;
 			// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
 			// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
