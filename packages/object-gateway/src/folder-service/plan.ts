@@ -1,5 +1,5 @@
 import { folderKey } from "@qorpera/contracts";
-import { gitObjectPath, gitSharedPath } from "./git.ts";
+import { gitObjectPath, gitPlace, gitSharedPath } from "./git.ts";
 import { type FileRef, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
 import { parentOf } from "./view-tree.ts";
 
@@ -173,10 +173,13 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 
 	// A new folder whose whole content is new and published here is one unit with its content (§2 "Units").
 	const absorbed = new Set<Item>();
-	// Not a git directory's objects folder: another session may make the same one first, which a `mkdir` of it is saved
-	// over (5b), a `new_folder` not.
+	// Not, in a session's view, a folder in a git directory: 5b refuses a session's `new_folder` there (it checks each
+	// key in it as moved), so each folder there is a `mkdir` and each file its own write, and each meets its key's own
+	// rule (a worktree's first commit makes `logs` and `logs/HEAD`). Nor, in any view, a git directory's objects folder:
+	// another session may make the same one first, which a `mkdir` of it is saved over (5b), a `new_folder` not.
 	for (const create of [...creates].sort((a, b) => a.path.length - b.path.length)) {
 		if (absorbed.has(create) || gitObjectPath(create.path)) continue;
+		if (!view.codeHost && gitPlace(create.path).kind === "git") continue;
 		const inside = [...nodes].filter(([p]) => below(p, create.path));
 		const eligible = inside.every(([p, n]) => {
 			if (unpublished(p, view.codeHost)) return true;
