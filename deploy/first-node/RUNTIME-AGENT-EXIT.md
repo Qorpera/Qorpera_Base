@@ -279,7 +279,8 @@ here and set by the runtime coordinator on 17 October 2026. The details below ar
 
 **The road** (E10b).
 1. The browser asks the member company gateway for `GET /v1/member-agent-exit-log/<company>/<day>`, or
-   `…/<day>/<page>` for a later page, with the member's token.
+   `…/<day>/<page>` for a later page, with the member's token. `<day>` is a date (UTC), or `newest` for the newest
+   day the log has.
 2. The object gateway on node 1 asks the database for the scope with that token. A refusal is a 404, as if there
    were nothing.
 3. It asks the exit's reader on its node for that company's lines of that day, in that scope.
@@ -297,21 +298,27 @@ the node's own disk, the way the lookup reads it:
   attribute it. With `--member`, only the lines of a coding machine whose plug names that member;
 - a connection's name is the last name the machine looked up for that address before it, from the DNS record, as in
   the lookup;
-- the unknown stretches, per node, as in the lookup: the day not closed or not shipped yet (`status.json`), a file
-  deleted before it was shipped (`lost/`), a gap line, a pause, a stretch with no alive line, and a node with no
-  status. They are the node's, not a company's, so a member sees them too.
+- the unknown stretches, per node, as in the lookup: the node's part of the day not shipped yet (`status.json`), a
+  file deleted before it was shipped (`lost/`), a gap line, a pause, a stretch with no alive line, and a node with no
+  status. They are the node's, not a company's, so a member sees them too. Each is a row of kind `unknown`, so every
+  block that draws the source draws them, and an empty table never reads as "no connections".
 
-It answers `{"schema":"qorpera.agent-exit-view/v1","company","day","rows","unknown","next"}`, newest first, with at
-most 2,000 rows a page.
+It answers `{"schema":"qorpera.agent-exit-view/v1","company","day","newest","scope","rows","next"}`, newest first,
+with at most 2,000 rows a page. `newest` is the newest day the log has, where "Later day" stops. `scope` is the
+scope it read, so a block can tell a member who sees no rows that only their own coding machines' lines are shown.
+A day newer than `newest`, or more than 90 days back, is a 404.
 
-**Rows** (the source's columns; RUNTIME-INTERFACES.md §4 lists them with E10c): `at`, `until`, `kind`
-(`connection`, `refused`, `braked` or `unknown`), `machine`, `machine_kind` (`machine`, `coding` or `office`),
-`member`, `to` (address and port), `protocol`, `name`, `sent`, `received`, and `why` (the rule that refused, the
-brake's reason, or why a stretch is unknown). `name` is outside content.
+**Rows** (the source's columns, RUNTIME-INTERFACES.md §4): `at` and `until` (UTC, to the second), `kind`
+(`connection`, `refused`, `braked` or `unknown`), `machine` (an id, drawn as the machine's name), `machine_kind`
+(`machine`, `coding` or `office`), `member` (a user id, drawn as the member's name), `to` (the address alone),
+`port`, `protocol`, `name`, `sent`, `received`, and `why` (the rule that refused, the brake's reason, or why a
+stretch is unknown). `name` is outside content. A brake row and an unknown row leave the machine and the address
+empty.
 
 **Limits.**
-- Today never shows. A day shows about two hours after it ends: it is closed then, and sealed and shipped within the
-  next passes.
+- Today never shows. A day is the newest once it is closed, about two hours after it ends. A node's part that is
+  sealed and shipped only in a later pass is an `unknown` row that says so until then. An unknown row's `why` is the
+  lookup's sentence.
 - A request reads every node's parts of that day, which takes seconds on a busy day. If that gets slow, the tender
   can write each company's lines as it counts the day.
 - A line from an address that no company had at that moment is in no company's view.
@@ -524,7 +531,7 @@ server name check.
 | E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
 | E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c-1 "only listed" by address; E8c-2 its server name check | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
-| E10 | Each company's own log view (§7.1, its own amendment): E10a the amendment, this design and the scope function; E10b the reader and the gateways' route; E10c the `exit_log` source in the clients and the interfaces design | companies see it |
+| E10 | Each company's own log view (§7.1, its own amendment): E10a the amendment, the designs and the scope function; E10b the reader and the gateways' route; E10c the `exit_log` source in the clients (the interfaces design's I12) | companies see it |
 
 Each step is a small PR with an exact-head independent review and a `run-on-node.mjs changed` run on the node 2 test
 machine. The coordinator merges and installs.
