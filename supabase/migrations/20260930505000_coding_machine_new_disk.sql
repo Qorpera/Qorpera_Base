@@ -20,7 +20,8 @@
 -- 6. qorpera_record_coding_machine_new_disk: the executor, after the rebuild and before the start, empties the machine's
 --    read set (its disk is new), detaches any session attached there with MACHINE_NEW_DISK, and clears both marks. It is
 --    named by the rebuild's LXD operation and kept in qorpera_coding_machine_folder_restarts, as a start's record is: a
---    second record of the same rebuild answers what the first did and changes nothing.
+--    second record of the same rebuild answers what the first did and changes nothing. A machine not marked for a new
+--    disk is refused.
 -- 7. qorpera_coding_stopped_event names MACHINE_NEW_DISK: "The machine got a new disk; only the company folder was kept".
 -- Not patched: qorpera_replace_coding_machine_disk (no caller) leaves the marks as they are; a mark it leaves costs one
 -- more rebuild, never a read.
@@ -208,17 +209,20 @@ $old$,
 $new$]);
 
 -- 6. The machine was rebuilt from its image and has not started again. Its disk is new: its read set goes, every
--- session attached to it is detached, each with one MACHINE_NEW_DISK event, and both marks are cleared, whatever they
--- were. p_operation_id names the rebuild: its LXD operation. A second record of the same rebuild answers what the first
--- did and changes nothing; an operation a start's record (4) used is refused. Locks: its own row; then the sessions, in
--- worker order; then the machine (NO KEY UPDATE); then its pairs in a commit's recheck order. Answers the sessions it
--- detached, with the attachment each had.
+-- session attached to it is detached, each with one MACHINE_NEW_DISK event, and both marks are cleared. p_operation_id
+-- names the rebuild: its LXD operation. A second record of the same rebuild answers what the first did and changes
+-- nothing; an operation a start's record (4) used is refused. So is a machine not marked for a new disk: only a marked
+-- one is rebuilt (5), and a record with no rebuild behind it would drop reads its disk still holds. The mark is read
+-- first without a lock, and again under the machine's. Locks: its own row; then the sessions, in worker order; then the
+-- machine (NO KEY UPDATE); then its pairs in a commit's recheck order. Answers the sessions it detached, with the
+-- attachment each had.
 create function public.qorpera_record_coding_machine_new_disk(p_machine_id uuid, p_operation_id uuid, p_owner text,
 	p_binding_text text, p_machine_id_sha256 text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 -- 20260930505000
 declare v_machine public.qorpera_coding_machines%rowtype; v_session public.qorpera_coding_sessions%rowtype;
 	v_worker public.qorpera_runtime_workers%rowtype; v_detached jsonb := '[]'::jsonb; v_first boolean; v_state text;
+	v_workers uuid[];
 begin
 	v_machine := public.qorpera_coding_machine_owned(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);
 	if p_operation_id is null then raise exception 'Coding machine input invalid' using errcode = '22023'; end if;
@@ -231,7 +235,15 @@ begin
 		return jsonb_build_object('schema','qorpera.coding-machine-folder-restart/v1','machineId',v_machine.id,'state',v_state,
 			'detached',v_detached);
 	end if;
-	for v_session in select * from public.qorpera_coding_sessions where attached_machine_id = v_machine.id order by worker_id for update loop
+	if v_machine.new_disk_at is null then
+		raise exception 'Coding machine is not marked for a new disk' using errcode = '55000'; end if;
+	select coalesce(array_agg(locked.worker_id order by locked.worker_id), '{}') into v_workers
+	from (select s.worker_id from public.qorpera_coding_sessions s where s.attached_machine_id = v_machine.id
+		order by s.worker_id for update) locked;
+	select * into strict v_machine from public.qorpera_coding_machines where id = v_machine.id for no key update;
+	if v_machine.new_disk_at is null then
+		raise exception 'Coding machine is not marked for a new disk' using errcode = '55000'; end if;
+	for v_session in select * from public.qorpera_coding_sessions where worker_id = any(v_workers) order by worker_id loop
 		select * into strict v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
 		update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null, attachment_until = null,
 			attachment_turn = null, attached_at = null, running_commands = '[]'::jsonb, observed_at = clock_timestamp()
@@ -241,7 +253,6 @@ begin
 		v_detached := v_detached || jsonb_build_array(jsonb_build_object('workerId', v_session.worker_id,
 			'attachmentToken', v_session.attachment_token));
 	end loop;
-	perform 1 from public.qorpera_coding_machines where id = v_machine.id for no key update;
 	perform 1 from public.qorpera_coding_machine_reads where coding_machine_id = v_machine.id
 	order by resource_id, grant_id nulls first for update;
 	delete from public.qorpera_coding_machine_reads where coding_machine_id = v_machine.id;

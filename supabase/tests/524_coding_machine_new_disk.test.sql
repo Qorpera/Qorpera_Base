@@ -3,10 +3,11 @@
 -- rule 4b, "A new disk"). The executor marks a machine for a new disk; both marks are set, and the restart's mark does
 -- what it did: no coding view opens, a renewal closes one. The rebuild's custody is granted only for a machine marked for
 -- a new disk, under a leased turn too, and changes nothing. A start's record on such a machine detaches every session
--- attached there, each with one MACHINE_NEW_DISK event, keeps both marks and answers 'new-disk'. The rebuild's record
--- empties the machine's read set, detaches any session still attached, clears both marks and answers 'replaced'; a
--- second record of the rebuild answers what the first did and changes nothing. The take-in that marks a machine is in
--- 485 (I) and 486 (9); 523 covers the plain restart. The office, the folders and the helpers are 639's.
+-- attached there, each with one MACHINE_NEW_DISK event, keeps both marks and answers 'new-disk'. The rebuild's record,
+-- only on a machine marked for a new disk, empties the machine's read set, detaches any session still attached, clears
+-- both marks and answers 'replaced'; a second record of the rebuild answers what the first did and changes nothing.
+-- The take-in that marks a machine is in 485 (I) and 486 (9); 523 covers the plain restart. The office, the folders and
+-- the helpers are 639's.
 
 -- 0. Markers and privileges: each patched, replaced or new function names this migration and keeps the earlier
 -- markers; the executor (service_role) marks and records, the words stay internal, and the take-in's callers' owners
@@ -355,7 +356,8 @@ end $$;
 -- no start's record used. It empties cm's read set (cm2's stays), detaches k, attached since the start's record, with
 -- one MACHINE_NEW_DISK event, and clears both marks; the turn keeps its lease. A session attached anew opens a view.
 -- Again for d1, even after a new mark, it answers what it did and changes nothing, and a start's record named by d1
--- answers the same. On a machine not marked (cm2) it gives the new disk all the same.
+-- answers the same. A machine not marked for a new disk (cm2: unmarked, then marked only to restart) is refused and
+-- keeps everything; once marked, it gets the new disk.
 do $$
 declare cm uuid := pg_temp.nd_get('cm')::uuid; cm2 uuid := pg_temp.nd_machine(); l jsonb := pg_temp.nd_get('l')::jsonb;
 	k jsonb := pg_temp.nd_session(cm); c jsonb; r jsonb; v_first jsonb; v_at timestamptz; v jsonb;
@@ -433,18 +435,31 @@ begin
 			jsonb_build_object('operationId', '52400000-0000-4000-8000-0000000000f1', 'state', 'new-disk', 'detached',
 				pg_temp.nd_get('f1')::jsonb)) then
 		raise exception 'Each record is kept'; end if;
-	-- cm2, not marked: a start's record (u1) answers 'unmarked', and its operation is then refused for a rebuild; d2's
-	-- record gives cm2 a new disk all the same.
+	-- cm2, not marked: a start's record (u1) answers 'unmarked', and its operation is then refused for a rebuild. d2's
+	-- record is refused while cm2 is not marked for a new disk, unmarked or marked only to restart, and keeps everything;
+	-- once cm2 is so marked, it gives cm2 the new disk.
 	if pg_temp.nd_call('qorpera_record_coding_machine_folder_restart', cm2, p_operation => u1) ->> 'state' is distinct from 'unmarked' then
 		raise exception 'cm2 is not marked'; end if;
 	perform pg_temp.nd_refused(format('select pg_temp.nd_call(%L, %L, p_operation => %L)', 'qorpera_record_coding_machine_new_disk', cm2,
 		u1), '22023', 'Coding machine input invalid');
+	perform pg_temp.nd_refused(format('select pg_temp.nd_call(%L, %L, p_operation => %L)', 'qorpera_record_coding_machine_new_disk', cm2,
+		d2), '55000', 'Coding machine is not marked for a new disk');
+	if pg_temp.nd_call('qorpera_mark_coding_machine_folder_restart', cm2) ->> 'state' is distinct from 'marked' then
+		raise exception 'cm2 is marked to restart'; end if;
+	perform pg_temp.nd_refused(format('select pg_temp.nd_call(%L, %L, p_operation => %L)', 'qorpera_record_coding_machine_new_disk', cm2,
+		d2), '55000', 'Coding machine is not marked for a new disk');
+	if exists (select 1 from public.qorpera_coding_machine_folder_restarts where machine_id = cm2 and operation_id = d2)
+		or pg_temp.nd_reads(cm2) <> 2 or pg_temp.nd_attached(cm2) <> jsonb_build_array(c)
+		or pg_temp.nd_events((c ->> 'workerId')::uuid) <> '[]'::jsonb or pg_temp.nd_restart_at(cm2) is null then
+		raise exception 'A record refused for no new disk keeps and changes nothing'; end if;
+	perform pg_temp.nd_call('qorpera_mark_coding_machine_new_disk', cm2);
 	r := pg_temp.nd_call('qorpera_record_coding_machine_new_disk', cm2, p_operation => d2);
 	if r is distinct from jsonb_build_object('schema', 'qorpera.coding-machine-folder-restart/v1', 'machineId', cm2, 'state', 'replaced',
 			'detached', jsonb_build_array(c))
 		or pg_temp.nd_reads(cm2) <> 0 or not pg_temp.nd_detached((c ->> 'workerId')::uuid)
-		or pg_temp.nd_events((c ->> 'workerId')::uuid) -> 0 -> 'body' ->> 'reason' is distinct from 'MACHINE_NEW_DISK' then
-		raise exception 'An unmarked machine''s rebuild: %', r; end if;
+		or pg_temp.nd_events((c ->> 'workerId')::uuid) -> 0 -> 'body' ->> 'reason' is distinct from 'MACHINE_NEW_DISK'
+		or pg_temp.nd_new_disk_at(cm2) is not null or pg_temp.nd_restart_at(cm2) is not null then
+		raise exception 'cm2''s rebuild, once marked: %', r; end if;
 end $$;
 
 -- 6. The reason's words; the others keep theirs.

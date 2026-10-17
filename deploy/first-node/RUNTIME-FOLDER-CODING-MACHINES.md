@@ -431,7 +431,8 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the executor rebuilds the instance
      from its binding's image (`imageFingerprint`), and `qorpera_record_coding_machine_new_disk`, named by the
      rebuild's LXD operation and replayed like the restart's record, detaches any session attached since, empties the
-     machine's read set, clears both marks and answers `replaced`. Then the machine starts. A model hears of it only
+     machine's read set, clears both marks and answers `replaced`. It refuses a machine not marked for a new disk, so a
+     record with no rebuild behind it never drops reads the old disk still holds. Then the machine starts. A model hears of it only
      through a stopped command's entry: a session that was not attached gets no event.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.
