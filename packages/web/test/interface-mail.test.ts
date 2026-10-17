@@ -96,7 +96,8 @@ interface MailFake {
 	waiting: Record<string, unknown>[];
 	/** Newest first. */
 	threads: Record<string, unknown>[];
-	/** What the thread call answers, by thread id; a thread not here has one message. */
+	/** What the thread call answers, by thread id (an older page by `<thread> before <id>`); a thread not here has one
+	 * message. */
 	reads: Record<string, Record<string, unknown>>;
 	/** Threads the call refuses with 22023. */
 	gone: Set<string>;
@@ -117,6 +118,7 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 			const request = args.p_request as {
 				state?: string;
 				address?: string;
+				direction?: string;
 				before?: { lastAt: string; thread: string };
 				limit: number;
 			};
@@ -125,6 +127,7 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 				(item) =>
 					(request.state === undefined || item.state === request.state) &&
 					(request.address === undefined || item.address === request.address) &&
+					(request.direction === undefined || item.direction === request.direction) &&
 					(before === undefined || older(item, before)),
 			);
 			const page = rows.slice(0, request.limit);
@@ -139,8 +142,9 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 			throw new CloudRpcError(fn, { message: "That is not a mail thread of this company.", code: "22023" }, 400);
 		if (fn === "qorpera_member_mail_thread") {
 			const n = Number(threadId.slice("thread-".length));
+			const before = args.p_before as { id: string } | undefined;
 			return (
-				fake.reads[threadId] ?? {
+				fake.reads[before ? `${threadId} before ${before.id}` : threadId] ?? {
 					thread: threadId,
 					address: ADDRESS.address,
 					messages: [received(n)],
@@ -396,7 +400,7 @@ describe("the Inbox list", () => {
 		await vi.waitFor(() => expect(lines(main)).toEqual(["Sender 1", "Sender 2"]));
 	});
 
-	it("reads the first page again every 20 seconds while the page is on screen, keeping the older pages", async () => {
+	it("reads the list again every 20 seconds while the page is on screen, with the older pages it shows", async () => {
 		vi.useFakeTimers();
 		const { main, fake } = await mailbox((mail) => {
 			mail.threads = Array.from({ length: 51 }, (_, index) => summary(index + 2));
@@ -472,7 +476,7 @@ describe("the Inbox list", () => {
 });
 
 describe("the views", () => {
-	it("asks the threads call for waiting threads, and narrows the Inbox to sent ones here", async () => {
+	it("asks the threads call for waiting threads and for sent ones", async () => {
 		const { main, fake } = await mailbox((mail) => {
 			mail.threads = [
 				summary(1, { state: "waiting" }),
@@ -493,15 +497,63 @@ describe("the views", () => {
 		const asked = calls(fake, "qorpera_member_mail_threads").length;
 		view(main, "Sent");
 		await vi.waitFor(() => expect(lines(main)).toEqual(["Ada"]));
-		// The Sent view reads the Inbox's list, afresh as it comes back on screen: the call has no direction to ask for.
+		// The Sent view asks the call for sent threads itself, so it pages through all of them.
 		expect(calls(fake, "qorpera_member_mail_threads").slice(asked)).toEqual([
-			{ p_environment_id: profileA.environmentId, p_request: { limit: 50 } },
+			{ p_environment_id: profileA.environmentId, p_request: { direction: "sent", limit: 50 } },
 		]);
 		view(main, "Inbox");
 		await vi.waitFor(() => expect(main.querySelector(".interface-item-status")?.textContent).toBe("Handled"));
 		expect(rows(main)).toHaveLength(3);
-		// The Inbox shares that list: it is not read again.
-		expect(calls(fake, "qorpera_member_mail_threads")).toHaveLength(asked + 1);
+		// The Inbox is read afresh as it comes back on screen.
+		expect(calls(fake, "qorpera_member_mail_threads").slice(asked + 1)).toEqual([
+			{ p_environment_id: profileA.environmentId, p_request: { limit: 50 } },
+		]);
+	});
+
+	it("shows sent threads older than the Inbox's first page in Sent, and pages through them", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = Array.from({ length: 110 }, (_, n) =>
+				summary(n + 1, n < 55 ? {} : { direction: "sent", fromName: `Sent ${n + 1}` }),
+			);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(50));
+		view(main, "Sent");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(50));
+		expect(lines(main)[0]).toBe("Sent 56");
+		button(main, "Show older")?.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(55));
+		expect(lines(main).at(-1)).toBe("Sent 110");
+		expect(calls(fake, "qorpera_member_mail_threads").at(-1)).toEqual({
+			p_environment_id: profileA.environmentId,
+			p_request: { direction: "sent", before: { lastAt: at(105), thread: thread(105) }, limit: 50 },
+		});
+		expect(button(main, "Show older")).toBeUndefined();
+	});
+
+	it("takes a thread out of Sent at the next read once mail comes into it, on a page Show older read too", async () => {
+		vi.useFakeTimers();
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = Array.from({ length: 110 }, (_, n) =>
+				summary(n + 1, n < 55 ? {} : { direction: "sent", fromName: `Sent ${n + 1}` }),
+			);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(50));
+		view(main, "Sent");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(50));
+		button(main, "Show older")!.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(55));
+		// A reply comes into the oldest sent thread: its newest message is received now, and it is the newest thread.
+		const replied = fake.threads.pop()!;
+		fake.threads.unshift({ ...replied, direction: "received", lastAt: at(0), fromName: "Reply" });
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(54));
+		expect(lines(main)).not.toContain("Sent 110");
+		expect(lines(main).at(-1)).toBe("Sent 109");
+		expect(calls(fake, "qorpera_member_mail_threads").at(-1)).toEqual({
+			p_environment_id: profileA.environmentId,
+			p_request: { direction: "sent", before: { lastAt: at(105), thread: thread(105) }, limit: 50 },
+		});
+		expect(button(main, "Show older")).toBeUndefined();
 	});
 });
 
@@ -534,6 +586,7 @@ describe("an open thread", () => {
 					},
 				],
 				more: true,
+				nextBefore: { at: at(2), kind: "received", id: id(902) },
 				waiting: [],
 			};
 		});
@@ -568,9 +621,8 @@ describe("an open thread", () => {
 		expect(second!.querySelector(".interface-outside")).toBeNull();
 		expect(second!.querySelector(".review-email-body")?.textContent).toBe("Thanks, paid.");
 		expect(texts(second!, ".email-draft-status")).toEqual(["Ada", "Sent", expect.any(String)]);
-		expect(open.querySelector(".interface-mail-more")?.textContent).toBe(
-			"Only the newest 2 messages of this thread are shown here.",
-		);
+		// The thread has older messages: they are a button away.
+		expect(open.querySelector(".interface-mail-more button")?.textContent).toBe("Show older messages");
 		await vi.waitFor(() => expect(calls(fake, "qorpera_mark_mail_thread_read")).toHaveLength(1));
 		expect(calls(fake, "qorpera_mark_mail_thread_read")[0]).toEqual({
 			p_environment_id: profileA.environmentId,
@@ -584,6 +636,118 @@ describe("an open thread", () => {
 		rows(main)[0]!.click();
 		await vi.waitFor(() => expect(calls(fake, "qorpera_mark_mail_thread_read")).toHaveLength(2));
 		expect(calls(fake, "qorpera_member_mail_thread")).toHaveLength(2);
+	});
+
+	it("reads older messages a page at a time on Show older messages, and keeps them through the 20-second reads", async () => {
+		vi.useFakeTimers();
+		const page = (messages: number[], next?: number) => ({
+			thread: thread(1),
+			address: ADDRESS.address,
+			messages: messages.map((n) => received(n)),
+			more: next !== undefined,
+			...(next === undefined ? {} : { nextBefore: { at: at(next), kind: "received", id: id(900 + next) } }),
+			waiting: [],
+		});
+		const { main, f, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { messages: 6 })];
+			// Pages of two, each oldest first: 2 and 1 are the newest, 4 and 3 come before them, 6 and 5 are the oldest.
+			mail.reads[thread(1)] = page([2, 1], 2);
+			mail.reads[`${thread(1)} before ${id(902)}`] = page([4, 3], 4);
+			mail.reads[`${thread(1)} before ${id(904)}`] = page([6, 5]);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		rows(main)[0]!.click();
+		const senders = () => texts(opened()!, ".interface-mail-message h3").map((line) => line?.split(" <")[0]);
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 2", "Sender 1"]));
+		button(opened()!, "Show older messages")!.click();
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 4", "Sender 3", "Sender 2", "Sender 1"]));
+		expect(calls(fake, "qorpera_member_mail_thread").at(-1)).toEqual({
+			p_environment_id: profileA.environmentId,
+			p_thread: thread(1),
+			p_before: { at: at(2), kind: "received", id: id(902) },
+		});
+		// New mail pushes message 2 out of the newest page: the 20-second read keeps it, and the older page with it.
+		fake.reads[thread(1)] = page([1, 0], 1);
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 4", "Sender 3", "Sender 2", "Sender 1", "Sender 0"]));
+		// A read that fails says so, and Try again reads the page; the oldest page offers nothing older.
+		const rpc = f.cloud.rpc as unknown as Mock;
+		const answer = rpc.getMockImplementation()!;
+		let down = true;
+		rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_thread" && args.p_before && down) {
+				down = false;
+				throw new Error("The network is down.");
+			}
+			return answer(fn, args);
+		});
+		button(opened()!, "Show older messages")!.click();
+		await vi.waitFor(() =>
+			expect(opened()!.querySelector(".interface-mail-more [role=alert]")?.textContent).toBe(
+				"Older messages can't be read.",
+			),
+		);
+		expect(senders()).toHaveLength(5);
+		button(opened()!, "Try again")!.click();
+		await vi.waitFor(() => expect(senders()).toHaveLength(7));
+		expect(senders()).toEqual(["Sender 6", "Sender 5", "Sender 4", "Sender 3", "Sender 2", "Sender 1", "Sender 0"]);
+		expect(calls(fake, "qorpera_member_mail_thread").at(-1)?.p_before).toEqual({
+			at: at(4),
+			kind: "received",
+			id: id(904),
+		});
+		expect(opened()!.querySelector(".interface-mail-more")).toBeNull();
+	});
+
+	it("reads back to the messages shown when more than a page came between two reads, so none is skipped", async () => {
+		vi.useFakeTimers();
+		const page = (messages: number[], next?: number) => ({
+			thread: thread(1),
+			address: ADDRESS.address,
+			messages: messages.map((n) => received(n)),
+			more: next !== undefined,
+			...(next === undefined ? {} : { nextBefore: { at: at(next), kind: "received", id: id(900 + next) } }),
+			waiting: [],
+		});
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { messages: 4 })];
+			// Pages of two, each oldest first: 4 and 3 are the newest, 6 and 5 the oldest.
+			mail.reads[thread(1)] = page([4, 3], 4);
+			mail.reads[`${thread(1)} before ${id(904)}`] = page([6, 5]);
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		rows(main)[0]!.click();
+		const senders = () => texts(opened()!, ".interface-mail-message h3").map((line) => line?.split(" <")[0]);
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 4", "Sender 3"]));
+		button(opened()!, "Show older messages")!.click();
+		await vi.waitFor(() => expect(senders()).toEqual(["Sender 6", "Sender 5", "Sender 4", "Sender 3"]));
+		// Three messages come before the next read, more than its newest page holds: the page before it is read too,
+		// up to message 3, the newest one shown, and no further.
+		fake.reads[thread(1)] = page([1, 0], 1);
+		fake.reads[`${thread(1)} before ${id(901)}`] = page([3, 2], 3);
+		fake.reads[`${thread(1)} before ${id(903)}`] = page([5, 4], 5);
+		const asked = calls(fake, "qorpera_member_mail_thread").length;
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() =>
+			expect(senders()).toEqual([
+				"Sender 6",
+				"Sender 5",
+				"Sender 4",
+				"Sender 3",
+				"Sender 2",
+				"Sender 1",
+				"Sender 0",
+			]),
+		);
+		expect(calls(fake, "qorpera_member_mail_thread").slice(asked)).toEqual([
+			{ p_environment_id: profileA.environmentId, p_thread: thread(1) },
+			{
+				p_environment_id: profileA.environmentId,
+				p_thread: thread(1),
+				p_before: { at: at(1), kind: "received", id: id(901) },
+			},
+		]);
+		expect(opened()!.querySelector(".interface-mail-more")).toBeNull();
 	});
 
 	it("shows account mail as account mail only: which account and who last used it, never its words", async () => {

@@ -3,6 +3,9 @@ import {
 	MAIL_PAGE_SIZE,
 	type MailAddress,
 	type MailCursor,
+	type MailDirection,
+	type MailMessage,
+	type MailMessageCursor,
 	type MailThread,
 	type MailThreadState,
 	type MailThreadSummary,
@@ -24,17 +27,20 @@ import { type CompanyController, needsModelAccount } from "./company.ts";
  * app is in front, and when it comes back to the front: the addresses say whether the company's mail is on (the `mail`
  * need), and the waiting sends are the Mailbox's badge. A page that draws mail says which lists and threads it shows
  * (`watch`), each time it draws; they are read once, and while that page stays on screen and the app is in front,
- * every 20 seconds and on coming back to the front, the first page of each list and each open thread are read again.
+ * every 20 seconds and on coming back to the front, each list (its first page, and the older pages it shows) and each
+ * open thread are read again.
  * The web has no change signal for mail or for a send's review card, so this poll is what keeps the page fresh.
  *
  * A thread opened is marked read once its read lands, and its list's unread mark goes when that mark lands. A thread
  * the cloud no longer has (22023) is gone. A read that fails keeps what was read before, and says so where nothing
- * was. */
+ * was. A thread's older messages are read a page at a time when the member asks (`olderMessages`); the 20-second read
+ * of its newest page keeps them, until the thread is closed, and reads back to them when more than a page came since. */
 
 /** The lists a page can ask for: the threads call's own filters. */
 export interface MailListRequest {
 	readonly address?: string;
 	readonly state?: MailThreadState;
+	readonly direction?: MailDirection;
 }
 
 export interface MailList {
@@ -43,7 +49,7 @@ export interface MailList {
 	readonly threads: readonly MailThreadSummary[];
 	/** Where older threads start; none once the last page is read. */
 	readonly next?: MailCursor;
-	/** How many pages are read: a fresh first page keeps the older ones and their cursor. */
+	/** How many pages are read: each read of the list reads as many again. */
 	readonly pages: number;
 	readonly status: "ready" | "error";
 	readonly error?: string;
@@ -51,7 +57,15 @@ export interface MailList {
 }
 
 export type MailThreadRead =
-	| { readonly status: "ready"; readonly thread: MailThread }
+	| {
+			readonly status: "ready";
+			/** Every message read, oldest first: the newest page, and the older pages the member asked for before it. Its
+			 * `more` and `nextBefore` are the oldest page's. */
+			readonly thread: MailThread;
+			/** How many pages are read: a fresh newest page keeps the older ones and their cursor. */
+			readonly pages: number;
+			readonly older: "idle" | "loading" | "error";
+	  }
 	| { readonly status: "gone" }
 	| { readonly status: "error"; readonly error: string };
 
@@ -79,7 +93,7 @@ export interface MailState {
 }
 
 export function mailListKey(request: MailListRequest): string {
-	return JSON.stringify([request.address ?? null, request.state ?? null]);
+	return JSON.stringify([request.address ?? null, request.state ?? null, request.direction ?? null]);
 }
 
 const COMPANY_POLL_MS = 60_000;
@@ -89,10 +103,11 @@ const EMPTY: MailState = { addresses: [], waiting: [], lists: {}, threads: {}, a
 
 const readers = new WeakMap<CompanyController, CompanyMail>();
 
-/** Newest first, as the threads call orders them: by last message, then by id. */
-function newerFirst(a: MailThreadSummary | MailCursor, b: MailThreadSummary | MailCursor): number {
-	const at = Date.parse(b.lastAt) - Date.parse(a.lastAt);
-	return at !== 0 ? at : a.thread < b.thread ? 1 : a.thread > b.thread ? -1 : 0;
+/** A message's place in its thread, as the thread call names it. */
+const messageKey = (message: MailMessage) => `${message.kind}:${message.id}`;
+
+function sameCursor(a: MailMessageCursor | undefined, b: MailMessageCursor): boolean {
+	return a?.at === b.at && a.kind === b.kind && a.id === b.id;
 }
 
 /** Whether the call reports the thread is not the company's, or not a thread at all. */
@@ -248,36 +263,47 @@ export class CompanyMail {
 		await Promise.all([...threads].map((thread) => this.#readThread(thread)));
 	}
 
-	/** Reads a list's first page. A list already read keeps its older pages after it, and their cursor. */
+	/** Reads a list's first page, and as many pages after it as the list shows, each from where the one before ends: a
+	 * thread whose newest message went the other way, or whose state changed, leaves a filtered list on screen too. */
 	#readFirst(key: string, request: MailListRequest): Promise<void> {
 		return this.#once(`list:${key}`, async () => {
 			try {
-				const page = await readMailThreads(this.#cloud, this.#environmentId, { ...request, limit: MAIL_PAGE_SIZE });
+				const drawn = this.#state?.lists[key];
+				const shown = drawn?.status === "ready" ? Math.max(drawn.pages, 1) : 1;
+				let page = await readMailThreads(this.#cloud, this.#environmentId, { ...request, limit: MAIL_PAGE_SIZE });
+				const read = [...page.threads];
+				let pages = 1;
+				while (pages < shown && page.nextBefore) {
+					page = await readMailThreads(this.#cloud, this.#environmentId, {
+						...request,
+						before: page.nextBefore,
+						limit: MAIL_PAGE_SIZE,
+					});
+					read.push(...page.threads);
+					pages += 1;
+				}
+				const next = page.nextBefore;
 				const opened = this.#watched.threads;
 				// Newer mail in a thread the member has open is read with it, and marked read again.
-				const arrived = page.threads.filter((item) => item.unread && opened.has(item.thread));
+				const arrived = read.filter((item) => item.unread && opened.has(item.thread));
 				for (const item of arrived) this.#marked.delete(item.thread);
 				this.#set((state) => {
 					const was = state.lists[key];
-					const fresh = page.threads.map((item) => (opened.has(item.thread) ? { ...item, unread: false } : item));
-					const seen = new Set(fresh.map((item) => item.thread));
-					const cursor = page.nextBefore;
-					// Without a cursor the first page is all there is; with one, older threads read before still follow it.
-					const older =
-						was && was.pages > 1 && cursor
-							? was.threads.filter((item) => !seen.has(item.thread) && newerFirst(cursor, item) < 0)
-							: [];
+					// Show older landed while these pages were read: the list stays as it is, and its next read reads that
+					// page too.
+					if (was?.status === "ready" && was.pages > shown) return state;
+					const seen = new Set<string>();
+					const threads: MailThreadSummary[] = [];
+					for (const item of read) {
+						if (seen.has(item.thread)) continue;
+						seen.add(item.thread);
+						threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
+					}
 					const list: MailList = {
 						request,
-						threads: [...fresh, ...older].sort(newerFirst),
-						...(was && was.pages > 1 && cursor
-							? was.next
-								? { next: was.next }
-								: {}
-							: cursor
-								? { next: cursor }
-								: {}),
-						pages: was && was.pages > 1 && cursor ? was.pages : 1,
+						threads,
+						...(next ? { next } : {}),
+						pages,
 						status: "ready",
 						older: was?.older === "loading" ? "loading" : "idle",
 					};
@@ -352,6 +378,54 @@ export class CompanyMail {
 		if (list) void this.#readFirst(key, list.request);
 	}
 
+	/** Reads a thread's next page of older messages, before the ones it shows. */
+	olderMessages(thread: string): void {
+		const read = this.#state?.threads[thread];
+		if (read?.status !== "ready") return;
+		const before = read.thread.nextBefore;
+		if (!before || read.older === "loading") return;
+		const mark = (older: "idle" | "loading" | "error") =>
+			this.#set((state) => {
+				const now = state.threads[thread];
+				return now?.status === "ready"
+					? { ...state, threads: { ...state.threads, [thread]: { ...now, older } } }
+					: state;
+			});
+		mark("loading");
+		void this.#once(`older-messages:${thread}`, async () => {
+			try {
+				const page = await readMailThread(this.#cloud, this.#environmentId, thread, before);
+				this.#set((state) => {
+					const now = state.threads[thread];
+					if (now?.status !== "ready") return state;
+					// A newest page that landed meanwhile moved where older messages start (newer mail pushed it): this page
+					// no longer follows the thread, so it is dropped, and Show older messages reads from there.
+					if (!sameCursor(now.thread.nextBefore, before))
+						return { ...state, threads: { ...state.threads, [thread]: { ...now, older: "idle" } } };
+					const shown = new Set(now.thread.messages.map(messageKey));
+					const { nextBefore: _next, ...rest } = now.thread;
+					const grown: MailThreadRead = {
+						...now,
+						thread: {
+							...rest,
+							messages: [
+								...page.messages.filter((message) => !shown.has(messageKey(message))),
+								...rest.messages,
+							],
+							more: page.more,
+							...(page.nextBefore ? { nextBefore: page.nextBefore } : {}),
+						},
+						pages: now.pages + 1,
+						older: "idle",
+					};
+					return { ...state, threads: { ...state.threads, [thread]: grown } };
+				});
+			} catch {
+				mark("error");
+			}
+		});
+	}
+
 	/** Reads a thread again after its read failed. */
 	retryThread(thread: string): void {
 		void this.#readThread(thread);
@@ -360,8 +434,30 @@ export class CompanyMail {
 	#readThread(thread: string): Promise<void> {
 		return this.#once(`thread:${thread}`, async () => {
 			let read: MailThread;
+			let pages = 1;
 			try {
 				read = await readMailThread(this.#cloud, this.#environmentId, thread);
+				// With older pages kept, more than a page of mail may have come since the last read: the pages before the
+				// newest are read too, back to the newest message shown, so the kept ones still follow on with none between.
+				const shown = this.#state?.threads[thread];
+				const upTo = shown?.status === "ready" && shown.pages > 1 ? shown.thread.messages.at(-1) : undefined;
+				const reaches = (messages: readonly MailMessage[]) =>
+					upTo === undefined || messages.some((message) => messageKey(message) === messageKey(upTo));
+				while (read.thread !== undefined && read.nextBefore && !reaches(read.messages)) {
+					const page = await readMailThread(this.#cloud, this.#environmentId, thread, read.nextBefore);
+					if (page.thread === undefined) {
+						read = page;
+						break;
+					}
+					const { nextBefore: _before, ...rest } = read;
+					read = {
+						...rest,
+						messages: [...page.messages, ...read.messages],
+						more: page.more,
+						...(page.nextBefore ? { nextBefore: page.nextBefore } : {}),
+					};
+					pages += 1;
+				}
 			} catch (error) {
 				const gone = threadGone(error);
 				this.#set((state) => {
@@ -375,11 +471,43 @@ export class CompanyMail {
 				return;
 			}
 			// While the company's mail is off the call answers with no thread.
-			const found: MailThreadRead =
-				read.thread === undefined ? { status: "gone" } : { status: "ready", thread: read };
-			this.#set((state) => ({ ...state, threads: { ...state.threads, [thread]: found } }));
-			if (found.status === "ready" && this.#watched.threads.has(thread) && !this.#marked.has(thread))
-				await this.#markRead(thread);
+			if (read.thread === undefined) {
+				this.#set((state) => ({ ...state, threads: { ...state.threads, [thread]: { status: "gone" } } }));
+				return;
+			}
+			this.#set((state) => {
+				const was = state.threads[thread];
+				// Older pages are kept only while the fresh pages reach the newest message they show.
+				const last = was?.status === "ready" ? was.thread.messages.at(-1) : undefined;
+				const joins =
+					last !== undefined && read.messages.some((message) => messageKey(message) === messageKey(last));
+				if (was?.status !== "ready" || was.pages < 2 || !joins) {
+					const found: MailThreadRead = {
+						status: "ready",
+						thread: read,
+						pages,
+						older: was?.status === "ready" && was.older === "loading" ? "loading" : "idle",
+					};
+					return { ...state, threads: { ...state.threads, [thread]: found } };
+				}
+				// Older pages were read: they stay before the fresh pages, with the messages newer mail pushed out of them,
+				// and so does where the next older page starts.
+				const fresh = new Set(read.messages.map(messageKey));
+				const kept = was.thread.messages.filter((message) => !fresh.has(messageKey(message)));
+				const { nextBefore: _next, ...newest } = read;
+				const found: MailThreadRead = {
+					...was,
+					pages: was.pages + pages - 1,
+					thread: {
+						...newest,
+						messages: [...kept, ...read.messages],
+						more: was.thread.more,
+						...(was.thread.nextBefore ? { nextBefore: was.thread.nextBefore } : {}),
+					},
+				};
+				return { ...state, threads: { ...state.threads, [thread]: found } };
+			});
+			if (this.#watched.threads.has(thread) && !this.#marked.has(thread)) await this.#markRead(thread);
 		});
 	}
 

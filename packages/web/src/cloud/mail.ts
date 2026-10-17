@@ -13,6 +13,7 @@ import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, 
 /** A thread id: 43 base64url characters. */
 export const MAIL_THREAD_ID = /^[A-Za-z0-9_-]{43}$/;
 export const MAIL_PAGE_SIZE = 50;
+export const MAIL_DIRECTIONS = ["received", "sent"] as const;
 export type MailThreadState = "new" | "handled" | "waiting";
 const MAIL_THREAD_STATES = ["new", "handled", "waiting"] as const;
 
@@ -45,9 +46,20 @@ export interface MailCursor {
 	readonly thread: string;
 }
 
+export type MailDirection = "received" | "sent";
+
+/** Where a thread's older messages start: the oldest message of the page that named it. */
+export interface MailMessageCursor {
+	readonly at: string;
+	readonly kind: MailDirection;
+	readonly id: string;
+}
+
 export interface MailThreadRequest {
 	readonly address?: string;
 	readonly state?: MailThreadState;
+	/** Only the threads whose newest message went this way: the `direction` each one shows. */
+	readonly direction?: MailDirection;
 	readonly before?: MailCursor;
 	readonly limit?: number;
 }
@@ -62,7 +74,7 @@ export interface MailThreadSummary {
 	readonly lastAt: string;
 	readonly state: MailThreadState;
 	readonly handledBy?: MailAgent;
-	readonly direction: "received" | "sent";
+	readonly direction: MailDirection;
 	readonly unread: boolean;
 	readonly messages: number;
 	readonly account?: MailAccount;
@@ -126,10 +138,12 @@ export interface MailThread {
 	/** Absent while the company's mail is off. */
 	readonly thread?: string;
 	readonly address?: string;
-	/** Oldest first: the newest 50. */
+	/** Oldest first: the newest 50, or the 50 before a cursor. */
 	readonly messages: readonly MailMessage[];
 	/** The thread has older messages than these. */
 	readonly more: boolean;
+	/** Where they start, while `more` is true. */
+	readonly nextBefore?: MailMessageCursor;
 	readonly waiting: readonly MailWaitingSend[];
 }
 
@@ -242,6 +256,15 @@ function parseCursor(value: unknown): MailCursor {
 	return { lastAt: timestamp(item.lastAt, "mail page time"), thread: threadId(item.thread, "mail page thread") };
 }
 
+function parseMessageCursor(value: unknown): MailMessageCursor {
+	const item = record(value, "mail thread page");
+	return {
+		at: timestamp(item.at, "mail thread page time"),
+		kind: oneOf(item.kind, MAIL_DIRECTIONS, "mail thread page kind"),
+		id: uuid(item.id, "mail thread page message"),
+	};
+}
+
 function parseSummary(value: unknown): MailThreadSummary {
 	const item = record(value, "mail thread");
 	const found = account(item.account);
@@ -256,7 +279,7 @@ function parseSummary(value: unknown): MailThreadSummary {
 		lastAt: timestamp(item.lastAt, "mail thread time"),
 		state: oneOf(item.state, MAIL_THREAD_STATES, "mail thread state"),
 		...(handledBy ? { handledBy } : {}),
-		direction: oneOf(item.direction, ["received", "sent"] as const, "mail thread direction"),
+		direction: oneOf(item.direction, MAIL_DIRECTIONS, "mail thread direction"),
 		unread: flag(item.unread, "mail thread unread"),
 		messages: absent(item.messages) ? 0 : boundedInteger(item.messages, "mail count", 0, Number.MAX_SAFE_INTEGER),
 		...(found ? { account: found } : {}),
@@ -351,6 +374,7 @@ export async function readMailThreads(
 			p_request: {
 				...(request.address === undefined ? {} : { address: request.address }),
 				...(request.state === undefined ? {} : { state: request.state }),
+				...(request.direction === undefined ? {} : { direction: request.direction }),
 				...(request.before === undefined ? {} : { before: request.before }),
 				limit: request.limit ?? MAIL_PAGE_SIZE,
 			},
@@ -363,17 +387,29 @@ export async function readMailThreads(
 	};
 }
 
-/** One thread: its newest 50 messages, oldest first, and the sends in it that wait for a person. */
-export async function readMailThread(cloud: Cloud, environmentId: string, thread: string): Promise<MailThread> {
+/** One thread: its newest 50 messages, or with `before` the 50 before that one, oldest first, and the sends in it that
+ * wait for a person. */
+export async function readMailThread(
+	cloud: Cloud,
+	environmentId: string,
+	thread: string,
+	before?: MailMessageCursor,
+): Promise<MailThread> {
 	const answer = record(
-		await cloud.rpc("qorpera_member_mail_thread", { p_environment_id: environmentId, p_thread: thread }),
+		await cloud.rpc("qorpera_member_mail_thread", {
+			p_environment_id: environmentId,
+			p_thread: thread,
+			...(before === undefined ? {} : { p_before: before }),
+		}),
 		"mail thread",
 	);
+	const more = flag(answer.more, "mail thread more");
 	return {
 		...(absent(answer.thread) ? {} : { thread: threadId(answer.thread, "mail thread") }),
 		...optional("address", shownText(answer.address, 320)),
 		messages: array(answer.messages, "mail messages").map(parseMessage),
-		more: flag(answer.more, "mail thread more"),
+		more,
+		...(more && !absent(answer.nextBefore) ? { nextBefore: parseMessageCursor(answer.nextBefore) } : {}),
 		waiting: array(answer.waiting ?? [], "mail waiting sends").map(parseWaitingSend),
 	};
 }
