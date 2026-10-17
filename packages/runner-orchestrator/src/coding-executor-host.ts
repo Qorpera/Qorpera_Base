@@ -232,13 +232,15 @@ interface ObservedCommand {
 	turn: number;
 	command: string;
 }
-/** What the guest's observe action published (cloud-coding-guest-observation.ts). */
+/** What the guest's observe action published (cloud-coding-guest-observation.ts), or the guest agent's status of each
+ * session on the folder model. */
 interface Observed {
 	bootId: string;
-	uptimeMs: number;
 	sessions: Map<
 		string,
 		{
+			/** When its processor time and bytes were read, on the boot's clock. */
+			uptimeMs: number;
 			cpuUsageUsec: number;
 			ioBytes: number;
 			running: ObservedCommand[];
@@ -2127,17 +2129,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				lost.add(workerId);
 				continue;
 			}
-			if (folder) {
-				// The folder model reads no processor time or bytes yet (5g-6a): a session is busy while a command runs.
-				sessions.push({ workerId, busy: seen.running.length > 0, running: seen.running });
-				continue;
-			}
 			const sample = this.#samples.get(workerId);
 			const now = {
 				bootId: observed.bootId,
 				cpuSeconds: seen.cpuUsageUsec / 1e6,
 				ioBytes: seen.ioBytes,
-				at: observed.uptimeMs,
+				at: seen.uptimeMs,
 			};
 			// Busy by the one idle rule since the last look of this boot (`@qorpera/contracts` idle-rule): at least 5% of
 			// one core, or 512 KiB read or written in 30 seconds. A server that only waits does neither.
@@ -2441,19 +2438,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				});
 			}
 			sessions.set(session.workerId, {
+				uptimeMs: Number(value.uptimeMs),
 				cpuUsageUsec: Number(session.cpuUsageUsec),
 				ioBytes: Number(session.ioBytes),
 				running,
 				lease: lease && { tokenSha256: String(lease.tokenSha256), expiresInMs: Number(lease.expiresInMs) },
 			});
 		}
-		return { bootId, uptimeMs: Number(value.uptimeMs), sessions };
+		return { bootId, sessions };
 	}
 	/** The folder model's observation (5g-6a): the machine's boot, and for each of `workerIds` the commands the guest
-	 * agent still runs, as the host kept them when they started (one the host kept no start of is not reported). The
-	 * agent lists every command it still runs, however old, or refuses (CODING_GUEST_STATUS_OVERFLOW), and reports a
-	 * session it does not carry with none. Every session is in it: one left out would be released. Processor time,
-	 * bytes and guest leases are not read. */
+	 * agent still runs, as the host kept them when they started (one the host kept no start of is not reported), and
+	 * the session's processor time and bytes so far on this boot's clock, for the one idle rule. The agent lists every
+	 * command it still runs, however old, or refuses (CODING_GUEST_STATUS_OVERFLOW), and reports a session it does not
+	 * carry with none. Every session is in it: one left out would be released. Guest leases are not read. */
 	async #observeFolder(
 		folder: FolderOptions,
 		machine: Readonly<LxdCodingMachineBinding>,
@@ -2473,6 +2471,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const sessions: Observed["sessions"] = new Map();
 		for (const workerId of workerIds) {
 			const status = await guest.status({ schema: "qorpera.coding-guest-session/v1", workerId }, signal);
+			// Read on another boot's clock, it compares with nothing this boot's samples hold.
+			if (status.usage.bootId !== bootId) throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
 			const custody = lxdCodingSessionStorage(machine, this.#placement, workerId).custodySource;
 			const running: ObservedCommand[] = [];
 			for (const { commandId, state } of status.commands) {
@@ -2485,9 +2485,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						command: clipped(kept.command, CODING_OBSERVED_COMMAND_BYTES),
 					});
 			}
-			sessions.set(workerId, { cpuUsageUsec: 0, ioBytes: 0, running, lease: null });
+			const { uptimeMs, cpuUsageUsec, ioBytes } = status.usage;
+			sessions.set(workerId, { uptimeMs, cpuUsageUsec, ioBytes, running, lease: null });
 		}
-		return { bootId, uptimeMs: 0, sessions };
+		return { bootId, sessions };
 	}
 	/** Throws CODING_HOST_GUEST_WATCHDOG_FAILED or _DISABLED for a timer that
 	 * cannot become active; returns while it may still be starting. */

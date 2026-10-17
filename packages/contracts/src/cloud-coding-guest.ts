@@ -154,12 +154,25 @@ export interface CodingGuestSessionStoppedAnswer {
 	readonly schema: "qorpera.coding-guest-session-stopped/v1";
 	readonly workerId: string;
 }
+/** The session's work so far, on its boot's clock: what the executor's one idle rule (`@qorpera/contracts` idle-rule)
+ * compares between two looks, to tell busy commands from waiting ones. */
+export interface CodingGuestUsage {
+	readonly bootId: string;
+	/** When it was read: /proc/uptime. */
+	readonly uptimeMs: number;
+	/** The processor time of the session's slice and of its user's slice (the user manager and what that started). */
+	readonly cpuUsageUsec: number;
+	/** The bytes their running processes passed to read and write calls so far (/proc/<pid>/io rchar + wchar), the
+	 * command relays' aside. */
+	readonly ioBytes: number;
+}
 export interface CodingGuestStatusAnswer {
-	readonly schema: "qorpera.coding-guest-status/v1";
+	readonly schema: "qorpera.coding-guest-status/v2";
 	readonly workerId: string;
 	/** Every running command, then the newest of the rest; at most CODING_GUEST.maxStatusCommands. The agent refuses
 	 * rather than leave a running command out. */
 	readonly commands: readonly CodingGuestCommand[];
+	readonly usage: CodingGuestUsage;
 }
 export interface CodingGuestAnswers {
 	mount: CodingGuestMountAnswer;
@@ -386,9 +399,9 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 		if (input.schema !== schema) throw new Error(error);
 		return Object.freeze({ schema, workerId }) as never;
 	}
-	const input = object(value, "commands,schema,workerId", error);
+	const input = object(value, "commands,schema,usage,workerId", error);
 	if (
-		input.schema !== "qorpera.coding-guest-status/v1" ||
+		input.schema !== "qorpera.coding-guest-status/v2" ||
 		!Array.isArray(input.commands) ||
 		input.commands.length > CODING_GUEST.maxStatusCommands
 	)
@@ -397,9 +410,16 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 		Object.freeze(command(object(entry, "commandId,end,exit,state", error), error)),
 	);
 	if (new Set(commands.map((entry) => entry.commandId)).size !== commands.length) throw new Error(error);
+	const usage = object(input.usage, "bootId,cpuUsageUsec,ioBytes,uptimeMs", error);
 	return Object.freeze({
-		schema: "qorpera.coding-guest-status/v1",
+		schema: "qorpera.coding-guest-status/v2",
 		workerId,
 		commands: Object.freeze(commands),
+		usage: Object.freeze({
+			bootId: id(usage.bootId, error),
+			uptimeMs: count(usage.uptimeMs, Number.MAX_SAFE_INTEGER, error),
+			cpuUsageUsec: count(usage.cpuUsageUsec, Number.MAX_SAFE_INTEGER, error),
+			ioBytes: count(usage.ioBytes, Number.MAX_SAFE_INTEGER, error),
+		}),
 	}) as never;
 }

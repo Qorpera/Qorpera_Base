@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODING_GUEST, cloudCodingSessionLayout, parseCloudCodingNasPolicy } from "@qorpera/contracts";
+import {
+	CODING_GUEST,
+	type CodingGuestUsage,
+	cloudCodingSessionLayout,
+	parseCloudCodingNasPolicy,
+} from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodingMachineUnavailable, type CodingSessionClaim, type CodingTurnState } from "../src/coding-executor.ts";
 import {
@@ -2561,7 +2566,15 @@ async function folderFixture(repositories = true) {
 		viewId = randomUUID(),
 		cwd = `/company/code/app/worktrees/${f.claim.workerId}`;
 	mocked.startOperation.mockResolvedValue(startOperationId);
-	mocked.guestStatus.mockResolvedValue({ commands: [] });
+	/** The guest agent's status of a session: `commands`, and its usage so far on this boot, `usage` aside. */
+	const status = (
+		commands: readonly { commandId: string; state: string }[] = [],
+		usage: Partial<CodingGuestUsage> = {},
+	) => ({
+		commands,
+		usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 0, ioBytes: 0, ...usage },
+	});
+	mocked.guestStatus.mockResolvedValue(status());
 	mocked.guestCancel.mockResolvedValue({});
 	mocked.guestQuiesce.mockResolvedValue({});
 	mocked.guestStop.mockResolvedValue({});
@@ -2621,6 +2634,7 @@ async function folderFixture(repositories = true) {
 		startOperationId,
 		viewId,
 		cwd,
+		status,
 	};
 }
 
@@ -3523,7 +3537,7 @@ describe("a coding session on the folder model", () => {
 		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow("CODING_FOLDER_EXPORT_EMPTY");
 		expect(mocked.push).not.toHaveBeenCalled();
 	});
-	it("reports a session busy while a command it started runs, as the host kept it, and renews no guest lease", async () => {
+	it("reports a session busy by the one idle rule, a waiting command quiet, its commands as the host kept them, and renews no guest lease", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
@@ -3532,20 +3546,18 @@ describe("a coding session on the folder model", () => {
 		const running = randomUUID(),
 			exited = randomUUID(),
 			unkept = randomUUID();
-		mocked.guestStatus.mockResolvedValue({
-			commands: [
-				{ commandId: running, state: "running" },
-				{ commandId: exited, state: "exited" },
-				{ commandId: unkept, state: "running" },
-			],
-		});
+		const commands = [
+			{ commandId: running, state: "running" },
+			{ commandId: exited, state: "exited" },
+			{ commandId: unkept, state: "running" },
+		];
+		mocked.guestStatus.mockResolvedValue(f.status(commands, { cpuUsageUsec: 1000 }));
 		// The host kept no start of the third: it is not reported.
 		mocked.keptCommand.mockImplementation(async (_custody: string, _workerId: string, commandId: string) =>
 			commandId === running ? { turn: 1, command: `npm run dev ${"é".repeat(200)}` } : undefined,
 		);
-		expect(await f.host.keep(f.signal)).toEqual([
-			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
-		]);
+		const kept = [{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" }];
+		expect(await f.host.keep(f.signal)).toEqual(kept);
 		expect(mocked.guestStatus.mock.calls).toEqual([
 			[{ schema: "qorpera.coding-guest-session/v1", workerId: f.claim.workerId }, expect.any(AbortSignal)],
 		]);
@@ -3558,11 +3570,12 @@ describe("a coding session on the folder model", () => {
 			expect.objectContaining({
 				p_observation: {
 					schema: "qorpera.coding-machine-observation/v1",
-					busy: true,
+					// The first look has nothing to compare the processor time with.
+					busy: false,
 					sessions: [
 						{
 							workerId: f.claim.workerId,
-							busy: true,
+							busy: false,
 							// Clipped to 300 bytes, whole characters.
 							running: [{ commandId: running, turn: 1, command: `npm run dev ${"é".repeat(144)}` }],
 						},
@@ -3570,14 +3583,36 @@ describe("a coding session on the folder model", () => {
 				},
 			}),
 		]);
+		// The one idle rule's two signals, as on the NAS model: a command that waits stays quiet though it runs; a build
+		// that works is busy, and so is a download that moves data with little processor.
+		const look = async (now: readonly { commandId: string; state: string }[], usage: Partial<CodingGuestUsage>) => {
+			mocked.guestStatus.mockResolvedValue(f.status(now, usage));
+			expect(await f.host.keep(f.signal)).toEqual(kept);
+			const keep = f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { busy: boolean } };
+			return keep.p_observation.busy;
+		};
+		expect(await look(commands, { uptimeMs: 610_000, cpuUsageUsec: 1000 + 100_000, ioBytes: 1000 })).toBe(false);
+		expect(await look(commands, { uptimeMs: 620_000, cpuUsageUsec: 1000 + 5_100_000, ioBytes: 2000 })).toBe(true);
+		// 0.1 s of processor in 10 s (1%), but 200 KB moved (more than 512 KiB in 30 s): busy by its data.
+		expect(await look(commands, { uptimeMs: 630_000, cpuUsageUsec: 1000 + 5_200_000, ioBytes: 202_000 })).toBe(true);
+		// 100 KB in 10 s and as little processor: below both thresholds.
+		expect(await look(commands, { uptimeMs: 640_000, cpuUsageUsec: 1000 + 5_300_000, ioBytes: 302_000 })).toBe(false);
 		// Nothing runs: quiet, and still named in the observation, so SQL keeps it.
-		mocked.guestStatus.mockResolvedValue({ commands: [] });
-		expect(await f.host.keep(f.signal)).toEqual([
-			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
-		]);
+		expect(await look([], { uptimeMs: 650_000, cpuUsageUsec: 1000 + 5_300_000, ioBytes: 302_000 })).toBe(false);
 		expect(f.calls("qorpera_keep_coding_attachments").at(-1)).toMatchObject({
-			p_observation: { busy: false, sessions: [{ workerId: f.claim.workerId, busy: false, running: [] }] },
+			p_observation: { sessions: [{ workerId: f.claim.workerId, busy: false, running: [] }] },
 		});
+		// A usage read on another boot's clock compares with nothing: the observation is refused.
+		mocked.guestStatus.mockResolvedValue(f.status([], { bootId: randomUUID(), uptimeMs: 1000 }));
+		expect(await f.host.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_OBSERVATION_UNCONFIRMED",
+			},
+		]);
 		// The guest agent answers it all: no helper runs, and no guest lease is renewed.
 		expect(f.execs()).toEqual([]);
 		expect(mocked.refresh).not.toHaveBeenCalled();
@@ -3587,7 +3622,7 @@ describe("a coding session on the folder model", () => {
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
 		const command = randomUUID();
-		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: command, state: "running" }] });
+		mocked.guestStatus.mockResolvedValue(f.status([{ commandId: command, state: "running" }]));
 		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
 		f.state.release.set(f.claim.workerId, "ARCHIVED");
 		f.state.listed = [f.entry()];
@@ -3653,7 +3688,7 @@ describe("a coding session on the folder model", () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
-		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: randomUUID(), state: "running" }] });
+		mocked.guestStatus.mockResolvedValue(f.status([{ commandId: randomUUID(), state: "running" }]));
 		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
 		mocked.guestCancel.mockRejectedValue(new Error("LXD exec stream failed"));
 		mocked.guestQuiesce.mockRejectedValue(new Error("CODING_GUEST_SESSION_STILL_RUNNING"));
@@ -3736,7 +3771,7 @@ describe("a coding session on the folder model", () => {
 		mocked.guestStatus.mockImplementation(async () => {
 			// Stopped elsewhere between the keeper's look and the take-off.
 			f.lxd.running = false;
-			return { commands: [] };
+			return f.status();
 		});
 		expect(await pass(f)).toEqual([
 			{
@@ -3758,7 +3793,7 @@ describe("a coding session on the folder model", () => {
 		vi.mocked(f.client.execInstance).mockClear();
 		f.call.mockClear();
 		const command = randomUUID();
-		mocked.guestStatus.mockResolvedValue({ commands: [{ commandId: command, state: "running" }] });
+		mocked.guestStatus.mockResolvedValue(f.status([{ commandId: command, state: "running" }]));
 		mocked.keptCommand.mockResolvedValue({ turn: 1, command: "npm run dev" });
 		f.views.endMachine.mockResolvedValue([
 			{ workerId: f.claim.workerId, viewId: f.viewId, saved: true, closed: true },

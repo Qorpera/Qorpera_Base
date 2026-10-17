@@ -39,8 +39,10 @@ import {
 	type CodingGuestSessionRequest,
 	type CodingGuestSessionStoppedAnswer,
 	type CodingGuestStatusAnswer,
+	type CodingGuestUsage,
 	type CodingGuestVerb,
 	type CodingGuestView,
+	idleRuleProcessIoBytes,
 	isUuid,
 	parseClosedRecord,
 	parseCodingGuestRequest,
@@ -76,6 +78,8 @@ const INPUT_GRACE_MS = 60000;
 const OUTCOME_KEEP_MS = 3600000;
 const RING_ENTRIES = 64;
 const RELAY_REFUSED = 125;
+/** At most this many cgroups and processes are read for a session's usage. A bound on the reads, not on the work. */
+const USAGE_READS = 8192;
 const TOOLS = Object.freeze({
 	systemctl: "/usr/bin/systemctl",
 	systemdRun: "/usr/bin/systemd-run",
@@ -104,6 +108,11 @@ export interface CodingGuestAgentPorts {
 	/** Runs a tool; throws CODING_GUEST_SYSTEM_UNCONFIRMED with the exit status (null when it did not exit). */
 	system?: (executable: string, args: readonly string[]) => Promise<string>;
 	bootId?: () => Promise<string>;
+	/** This boot's clock (/proc/uptime), which a status's usage is read on. */
+	uptimeMs?: () => Promise<number>;
+	/** Where the cgroup tree and the processes' files are read, for a status's usage. */
+	cgroupRoot?: string;
+	procRoot?: string;
 	nowMs?: () => number;
 	sleep?: (ms: number) => Promise<void>;
 	readMountinfo?: () => Promise<string>;
@@ -129,6 +138,11 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		agent: ports.agent ?? CODING_GUEST.agent,
 		system: ports.system ?? system,
 		bootId: ports.bootId ?? currentBoot,
+		uptimeMs:
+			ports.uptimeMs ??
+			(async () => Math.floor(Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]) * 1000)),
+		cgroupRoot: ports.cgroupRoot ?? "/sys/fs/cgroup",
+		procRoot: ports.procRoot ?? "/proc",
 		nowMs: ports.nowMs ?? Date.now,
 		sleep: ports.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))),
 		readMountinfo: ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8")),
@@ -1103,9 +1117,58 @@ export async function cancelCodingGuestCommand(
 	return Object.freeze({ schema: "qorpera.coding-guest-command/v1", workerId: request.workerId, ...now });
 }
 
-/** `status`: every command of the session that still runs, then the newest of the rest, at most maxStatusCommands.
- * Each command without an outcome is observed, however old, so none that runs is left out; more running than one
- * answer holds is refused. */
+/** The session's usage so far, for the executor's idle rule: the processor time of its slice and of its user's slice
+ * (the user manager and what that started), and the bytes their processes passed to read and write calls
+ * (/proc/<pid>/io rchar + wchar). A command's relay, which only copies its command's output to the ring, is left out;
+ * its command counts. Kernel files that vanish while read (a unit or process ended) count as nothing. */
+async function readSessionUsage(at: Agent, session: Places): Promise<CodingGuestUsage> {
+	const bootId = await at.bootId();
+	const uptimeMs = await at.uptimeMs();
+	const user = await readSessionUser(session);
+	const kernel = (path: string) => readFile(path, "utf8").catch(() => "");
+	const groups = [
+		join(at.cgroupRoot, "qorpera.slice", "qorpera-coding.slice", session.slice),
+		...(user ? [join(at.cgroupRoot, "user.slice", `user-${user.uid}.slice`)] : []),
+	];
+	let cpuUsageUsec = 0;
+	for (const top of groups) {
+		const usage = /^usage_usec ([0-9]+)$/m.exec(await kernel(join(top, "cpu.stat")));
+		if (usage) cpuUsageUsec += Number(usage[1]);
+	}
+	let ioBytes = 0;
+	let reads = 0;
+	// Every cgroup under them, breadth first. The user manager's are delegated, so the session user may make more of
+	// them: the walk is bounded.
+	for (let index = 0; index < groups.length && reads < USAGE_READS; index++) {
+		reads++;
+		const group = groups[index];
+		for (const entry of await readdir(group, { withFileTypes: true }).catch(() => []))
+			if (entry.isDirectory() && groups.length < USAGE_READS) groups.push(join(group, entry.name));
+		for (const pid of (await kernel(join(group, "cgroup.procs"))).split("\n")) {
+			if (!/^[1-9][0-9]*$/.test(pid) || reads >= USAGE_READS) continue;
+			reads++;
+			const argv = (await kernel(join(at.procRoot, pid, "cmdline"))).replace(/\0$/, "").split("\0");
+			if (
+				argv.at(-4) === at.agent &&
+				argv.at(-3) === "relay" &&
+				argv.at(-2) === session.worker &&
+				COMPACT.test(argv.at(-1) ?? "")
+			)
+				continue;
+			ioBytes += idleRuleProcessIoBytes(await kernel(join(at.procRoot, pid, "io")));
+		}
+	}
+	return Object.freeze({
+		bootId,
+		uptimeMs,
+		cpuUsageUsec: Math.min(cpuUsageUsec, Number.MAX_SAFE_INTEGER),
+		ioBytes: Math.min(ioBytes, Number.MAX_SAFE_INTEGER),
+	});
+}
+
+/** `status`: every command of the session that still runs, then the newest of the rest, at most maxStatusCommands,
+ * and the session's usage. Each command without an outcome is observed, however old, so none that runs is left out;
+ * more running than one answer holds is refused. */
 export async function readCodingGuestStatus(
 	request: CodingGuestSessionRequest,
 	ports: CodingGuestAgentPorts = {},
@@ -1136,9 +1199,10 @@ export async function readCodingGuestStatus(
 		commands.push(seen ?? Object.freeze(await observe(at, commandPlaces(at, session, commandId), commandId)));
 	}
 	return Object.freeze({
-		schema: "qorpera.coding-guest-status/v1",
+		schema: "qorpera.coding-guest-status/v2",
 		workerId: request.workerId,
 		commands: Object.freeze(commands),
+		usage: await readSessionUsage(at, session),
 	});
 }
 

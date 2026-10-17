@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- A coding session's guest status is `qorpera.coding-guest-status/v2` (C1: idle sleep and the quiet-day archive on the folder model; P3 phase B run 11): beside its commands it carries the session's usage, `CodingGuestUsage` (`bootId`, `uptimeMs` from `/proc/uptime`, `cpuUsageUsec`, `ioBytes`), for the executor's one idle rule. `parseCodingGuestAnswer` refuses a v1 status, a missing or malformed usage and any other key in it.
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 
