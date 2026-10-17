@@ -239,7 +239,7 @@ describe("the save check of a coding machine", () => {
 			{ path: "docs", outcome: "refused", reason: NAME_CARRIES, kept: true },
 		]);
 		expect(core.entries.get("docs/fine.md")?.fileSha256).toBe(hashOf("fine"));
-		expect(await namesIn(view, "docs")).toEqual([`${VALUE}.md`, "fine.md", "notes.md"]);
+		expect(await namesIn(view, "docs")).toEqual(["fine.md", "notes.md", `${VALUE}.md`]);
 		// Moved back, the file is where it was: the next boundary has nothing to save, and removes nothing.
 		const commits = core.commits.length;
 		await view.rename({ from: `docs/${VALUE}.md`, to: "docs/plan.md", noReplace: false });

@@ -934,14 +934,14 @@ export class PendingView {
 			if (target.kind === "live" && target.entry.kind === "folder" && this.#pendingBelow(to, target.source))
 				throw new PublishFirst("replacing a folder with changes inside it");
 		} else {
+			// A moved folder goes back where it came from at once: only it left that path.
+			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
 			// A name never published renamed only in case to a published one is a new name there too.
 			if (
 				folderKey(from) !== folderKey(to) ||
 				(unpublished(from, this.#codeHost) && !unpublished(to, this.#codeHost))
 			)
-				this.#newName(to, from);
-			// A moved folder goes back where it came from at once: only it left that path.
-			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
+				this.#newName(to, from, origin === to);
 			if (origin !== to && this.#freedFolder(to))
 				throw new PublishFirst("reusing a path a folder this view moved or removed left");
 			// Moves that take each other's places (a swap, a ring) publish one at a time.
@@ -1046,8 +1046,9 @@ export class PendingView {
 
 	/** A new name in an existing folder: allowed, and not a sibling's spelled otherwise (`EEXIST`); a path a moved or
 	 * removed live folder left, or one a pending file, link or folder spells otherwise, or a folder above it (beside a
-	 * live one another machine made or renamed), publishes what is pending first. `except`: what a rename moves from. */
-	#newName(path: string, except?: string): void {
+	 * live one another machine made or renamed), publishes what is pending first. `except`: what a rename moves from;
+	 * `back`, it moves there from `path`, which only it left. */
+	#newName(path: string, except?: string, back = false): void {
 		const parent = this.resolve(parentOf(path));
 		if (!parent) fail(ErrorCode.notFound, "No such folder");
 		if ((parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
@@ -1064,7 +1065,8 @@ export class PendingView {
 				this.resolve(join(parentOf(path), name))
 			)
 				fail(ErrorCode.exists, "A path differing only in case exists");
-		if (this.#freedFolder(path)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
+		if (!back && this.#freedFolder(path))
+			throw new PublishFirst("reusing a path a folder this view moved or removed left");
 		// Under a parent spelled otherwise (another machine made or renamed one only in case), a pending file, link or
 		// folder at its path is no sibling, and does not show: in the core it is the same path, whose unit this one's
 		// would need the version of, or a new folder this name would go into, so it publishes first. A name never
