@@ -4,13 +4,20 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import {
+	CLOUD_MACHINE_FOLDER_LIMITS,
+	CLOUD_MACHINE_FOLDER_LOST,
 	CLOUD_MACHINE_GUEST_PATHS,
 	type CloudCodingCommandRead,
 	type CloudCodingNasPolicy,
+	type CloudMachineCommandFolder,
 	type CloudMachineCommandReceipt,
+	type CloudMachineFolderNotSaved,
+	cloudMachineFolderBytes,
 	type IdleRuleSample,
 	idleRuleBusy,
+	isCloudMachineFolderLost,
 	parseCloudCodingNasPolicy,
+	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
 import type { AgentPlug } from "./agent-plug.ts";
@@ -62,6 +69,45 @@ const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "
 /** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
 const LOG_LIMIT_BYTES = 67108864;
 
+/** Why a boot whose folder ended (6d-2) has no /company, by the cause its ending keeps (#endings). */
+const FOLDER_ENDED: Readonly<Record<string, string>> = Object.freeze({
+	restart_unproven:
+		"the executor is restarting the machine because it could not prove what the machine read in /company",
+	restart_view_closed: "the executor is restarting the machine because its /company view was closed",
+	restart_view_gone:
+		"the executor is restarting the machine because the company folder service lost its /company view",
+	moved_unchecked: "the machine is moving to a new disk because a command ran on this one before /company was checked",
+	moved_starter:
+		"the machine is moving to a new disk because the agent or member who started it no longer reads the whole company folder",
+	moved_unreadable: "the machine is moving to a new disk because something it read in /company is no longer readable",
+	stale: "this boot of the machine is no longer the current one",
+});
+/** Why a boot without a view of its own has no /company (#viewless). */
+const FOLDER_VIEWLESS = Object.freeze({
+	"old-helper":
+		"this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+	refused: "the company folder refused this machine's view",
+	closed: "the machine could not mount /company: the company folder closed each view it was handed",
+});
+/** The core's refusal of a view of a machine that is stopping, moving or on another boot (20260928549400). */
+const VIEW_NOT_CURRENT = "Folder view machine is not current";
+/** Why a receipt's output is held back. */
+const HELD = Object.freeze({
+	ended: "this boot's output stays on the machine: the boot no longer has /company, as `why` says",
+	start: "a start shows no output: machine_read shows it once the company folder has released what the machine read",
+	unanswered: "the company folder has not said yet whether what the machine read may be shown; read again",
+	unproven:
+		"the executor cannot prove what the machine read in /company: it restarts the machine, and this boot's output stays on it",
+	unreadable:
+		"something the machine read in /company is no longer readable: this boot's output stays on it, and the machine moves to a new disk",
+	paused: "the company folder is paused; read again later",
+	unreleased: "the company folder did not release what the machine read; read again",
+	// As SQL tells a woken run (qorpera_folder_test_machine_event_report).
+	refused:
+		"this run could not take in what the machine read in /company: a read is no longer readable to it, or it does not read the whole company folder",
+	untaken: "the company folder did not answer this run's take-in of what the machine read; read again",
+});
+
 export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_admit_executor_machines",
 	"qorpera_list_executor_machines",
@@ -76,6 +122,7 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_folder_view_close",
 	"qorpera_retire_company_machine",
 	"qorpera_folder_test_machine_inherit_reads",
+	"qorpera_mark_company_machine_folder_restart",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -156,6 +203,8 @@ export interface CompanyMachineCommandAuthority {
 	runId?: string;
 	staffAgentId?: string;
 	requestedByUserId?: string;
+	/** Why the machine lost the command, when SQL ended it lost for the machine's folder (6e-2a): a key of CLOUD_MACHINE_FOLDER_LOST. */
+	folderLost?: string | null;
 }
 /** A boot's company folder (F3 6d), in this process's memory only (the pass is never written anywhere). */
 interface BootFolder {
@@ -175,8 +224,10 @@ interface BootFolder {
 	opens: number;
 	/** Whether the service was asked which views of the boot it holds (after a restart). */
 	asked: boolean;
-	/** Why the boot has no view of its own (#viewless). */
+	/** Why the boot has no view of its own (#viewless), and for a refused open the core's words, when the control keeps
+	 * them. */
 	reason?: "old-helper" | "refused" | "closed";
+	refusal?: string;
 	/** The service listed a view of the boot's own: from then on, that view missing restarts the guest (#watch). */
 	held: boolean;
 	/** Since when the boot's own view is missing from the service's answers. */
@@ -187,6 +238,18 @@ interface BootFolder {
 	/** The windows this process opened for the boot's commands, until their command ends: the service keeps them in
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
+	/** The paths the boot's boundaries said the company folder let go unsaved, for its next receipt whose output leaves
+	 * (6e-2a, #noted), and how many more there were. */
+	notSaved: CloudMachineFolderNotSaved[];
+	moreNotSaved: number;
+	/** The paths the folder did not save that each open view of the boot keeps pending, as the view's newest boundary
+	 * reported them (#noted): every receipt whose output leaves says them while they last. */
+	stillNotSaved: Map<string, StillNotSaved>;
+}
+/** One view's paths not saved that it keeps pending: at most 8, and a count of the rest (6e-2a). */
+interface StillNotSaved {
+	paths: CloudMachineFolderNotSaved[];
+	more: number;
 }
 export type CompanyMachineCommand =
 	| { action: "start"; commandId: string; inputSha256: string; command: string; timeoutMs: number | null }
@@ -216,6 +279,75 @@ function held(receipt: CloudMachineCommandReceipt, offset: number): CloudMachine
 		}),
 	};
 	return Object.freeze(kept);
+}
+/** Why a boundary that did not release the machine's reads holds its output (6e-2a). */
+function unreleased(boundary: MachineBoundary | undefined): string {
+	switch (boundary?.reads) {
+		case undefined:
+		case "unanswered":
+			return HELD.unanswered;
+		case "unproven":
+			return HELD.unproven;
+		case "unreadable":
+			return HELD.unreadable;
+		case "stopped":
+			return HELD.paused;
+		default:
+			return HELD.unreleased;
+	}
+}
+/** What a boundary's reports say the company folder did not take (6e-2a), for the boot's receipts whose output leaves,
+ * each path as the receipt's report checks it: at most 8, and a count of the rest. A path the folder let go unsaved is
+ * said once, on the next such receipt (`notSaved`). A path its view keeps pending for the service to try again at each
+ * boundary (a write the core refused, or a conflict whose bytes the receipt did not keep) is said on every such receipt
+ * while the view's newest boundary still reports it so (`stillNotSaved`): one saved meanwhile (by a quiet publish, whose
+ * outcome only the service's notices keep) is no longer said, and one refused again is. A path still on its way (kept
+ * `waiting`, an open file, or `not_applied`, not sent or not answered yet), or kept by a change set refused whole in a
+ * way that may lift (the pause, the run check), is said once it settles. */
+function noted(boot: BootFolder | undefined, boundary: MachineBoundary | undefined): void {
+	if (!boot || !boundary) return;
+	// A view the boundary no longer lists, or says is closed, keeps nothing pending.
+	for (const viewId of boot.stillNotSaved.keys())
+		if (!boundary.views.some((view) => view.viewId === viewId && view.error?.code !== "VIEW_CLOSED"))
+			boot.stillNotSaved.delete(viewId);
+	for (const view of boundary.views) {
+		const paths = view.report?.paths;
+		// A view without a report this time keeps what its last one said.
+		if (!Array.isArray(paths)) continue;
+		const lifts = view.report?.refused === "stopped" || view.report?.refused === "run_ended";
+		const still: StillNotSaved = { paths: [], more: 0 };
+		for (const item of paths as unknown[]) {
+			const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+			if (entry.outcome === "saved") continue;
+			const kept = entry.kept === true;
+			if (kept && (lifts || entry.outcome === "waiting" || entry.outcome === "not_applied")) continue;
+			const list = kept ? still.paths : boot.notSaved;
+			const shown = list.length < CLOUD_MACHINE_FOLDER_LIMITS.notSaved ? notSavedOf(entry) : undefined;
+			if (shown) list.push(shown);
+			else if (kept) still.more++;
+			else boot.moreNotSaved++;
+		}
+		if (still.paths.length || still.more) boot.stillNotSaved.set(view.viewId, still);
+		else boot.stillNotSaved.delete(view.viewId);
+	}
+}
+/** One path not saved as a receipt shows it, or none when it cannot be (its reason dropped first). */
+function notSavedOf(entry: Record<string, unknown>): CloudMachineFolderNotSaved | undefined {
+	const { path, outcome, reason } = entry;
+	if (typeof path !== "string" || typeof outcome !== "string") return undefined;
+	const tries = [
+		...(typeof reason === "string"
+			? [{ path, outcome, reason: reason.slice(0, CLOUD_MACHINE_FOLDER_LIMITS.reason) }]
+			: []),
+		{ path, outcome },
+	];
+	for (const shown of tries)
+		try {
+			return parseCloudMachineCommandFolder({ company: "pending", notSaved: [shown] }).notSaved?.[0];
+		} catch {
+			// The next try, or none.
+		}
+	return undefined;
 }
 function errorCode(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
@@ -263,8 +395,9 @@ export class LxdCompanyMachineHost {
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
 	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
-	 * it whatever came of its folder, a stop or a record (#ended). Dropped only with the placement (#remove). */
-	readonly #endings = new Map<string, { by: "restart" | "retirement"; code: string }>();
+	 * it whatever came of its folder, a stop or a record (#ended). Dropped only with the placement (#remove). Its cause,
+	 * a key of FOLDER_ENDED, says why in each receipt of the boot (6e-2a). */
+	readonly #endings = new Map<string, { by: "restart" | "retirement"; code: string; cause: string }>();
 	/** Per placement and command: the starts being delivered (from their window's open to the guest's answer). */
 	readonly #delivering = new Map<string, number>();
 	/** Per look inside a machine with a folder, until its ends are worked out: the commands whose start's delivery
@@ -499,7 +632,10 @@ export class LxdCompanyMachineHost {
 		// placement waits for its stop.
 		const over = this.#endings.get(`${e.placementId}/${bootId}`);
 		if (over) {
-			if (over.by === "restart") await this.#reboot(e, signal);
+			if (over.by === "restart") {
+				await this.#mark(e, bootId, over.cause, signal);
+				await this.#reboot(e, signal);
+			}
 			return { placementId: e.placementId, step: "commands", state: "done", folder: over.code };
 		}
 		if (e.bootId !== bootId) {
@@ -530,6 +666,9 @@ export class LxdCompanyMachineHost {
 				asked: true,
 				held: false,
 				windows: new Map(),
+				notSaved: [],
+				moreNotSaved: 0,
+				stillNotSaved: new Map(),
 			};
 			this.#folders.set(e.placementId, f);
 			return {
@@ -556,6 +695,9 @@ export class LxdCompanyMachineHost {
 					asked: false,
 					held: false,
 					windows: new Map(),
+					notSaved: [],
+					moreNotSaved: 0,
+					stillNotSaved: new Map(),
 				};
 				this.#folders.set(e.placementId, f);
 			}
@@ -656,7 +798,9 @@ export class LxdCompanyMachineHost {
 			let held: string[];
 			try {
 				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-				held = (await folder.boundary(e.placementId, [], checked)).views.map((view) => view.viewId);
+				const boundary = await folder.boundary(e.placementId, [], checked);
+				noted(f, boundary);
+				held = boundary.views.map((view) => view.viewId);
 			} catch (error) {
 				return errorCode(error);
 			}
@@ -688,6 +832,7 @@ export class LxdCompanyMachineHost {
 				if (!(error instanceof CodingControlRefused)) return errorCode(error);
 				// A disk the core cannot prove (a test machine's new disk) moves the machine to a new one (6d-2).
 				if (error.detail === "qorpera.test-machine/new-disk") return this.#retire(e, f, "new-disk", signal);
+				f.refusal = error.reason ?? undefined;
 				return this.#viewless(e, f, "refused", signal);
 			}
 			if (
@@ -743,6 +888,7 @@ export class LxdCompanyMachineHost {
 			} catch (error) {
 				return errorCode(error);
 			}
+			noted(f, boundary);
 			if (!boundary.views.length && boundary.reads === "released") {
 				f.state = "none";
 				return `FOLDER_NONE:${code}`;
@@ -774,27 +920,47 @@ export class LxdCompanyMachineHost {
 		}
 		if (retired.state === "kept" && retired.reason === "FOLDER_DISK_USABLE") return "FOLDER_DISK_USABLE";
 		let code: string;
-		if (retired.state === "stale") code = "FOLDER_RETIRE_STALE";
-		else if (
+		let cause: string;
+		if (retired.state === "stale") {
+			code = "FOLDER_RETIRE_STALE";
+			cause = "stale";
+		} else if (
 			retired.state === "retired" &&
 			retired.placementId === e.placementId &&
 			["unchecked", "starter", "unreadable"].includes(retired.reason as string)
-		)
+		) {
 			code = `FOLDER_RETIRED:${String(retired.reason).toUpperCase()}`;
-		else return "COMPANY_MACHINE_RETIRE_INVALID";
-		this.#endings.set(`${e.placementId}/${f.bootId}`, { by: "retirement", code });
+			cause = `moved_${String(retired.reason)}`;
+		} else return "COMPANY_MACHINE_RETIRE_INVALID";
+		this.#endings.set(`${e.placementId}/${f.bootId}`, { by: "retirement", code, cause });
 		return code;
 	}
 	/** A boot whose folder can never be proven again (6d-2): its reads stay unproven, or its own view was closed or is
 	 * gone. Its guest restarts, and the next boot gets a view of its own; until then its starts are refused, and its
 	 * output and its ends stay held. A start on its way into the guest goes in before the reboot is asked
-	 * (#delivered). */
-	async #restart(e: CompanyMachineEntry, f: BootFolder, why: string, signal: AbortSignal): Promise<string> {
+	 * (#delivered), and SQL keeps why for the commands the restart loses (#mark). */
+	async #restart(
+		e: CompanyMachineEntry,
+		f: BootFolder,
+		why: "UNPROVEN" | "VIEW_CLOSED" | "VIEW_GONE",
+		signal: AbortSignal,
+	): Promise<string> {
 		const code = `FOLDER_RESTART:${why}`;
-		this.#endings.set(`${e.placementId}/${f.bootId}`, { by: "restart", code });
+		const cause = `restart_${why.toLowerCase()}`;
+		this.#endings.set(`${e.placementId}/${f.bootId}`, { by: "restart", code, cause });
 		await this.#delivered(e, signal);
+		await this.#mark(e, f.bootId, cause, signal);
 		await this.#reboot(e, signal);
 		return code;
+	}
+	/** The commands still open on a boot the executor restarts end lost in its restart: SQL keeps why for their runs
+	 * (6e-2a). Asked before each reboot, at best: a mark that fails, or a start let in after it, leaves a command lost
+	 * without a cause. */
+	async #mark(e: CompanyMachineEntry, bootId: string, cause: string, signal: AbortSignal): Promise<void> {
+		await this.#custody(e, "qorpera_mark_company_machine_folder_restart", signal, {
+			p_boot_id: bootId,
+			p_reason: cause.slice("restart_".length),
+		}).catch(() => undefined);
 	}
 	/** Waits until no start is being delivered to the machine, for at most a delivery's 30 s: one let in before its boot
 	 * ended reaches its guest first (and is lost in the restart), and one not yet in is refused (#command). */
@@ -924,6 +1090,7 @@ export class LxdCompanyMachineHost {
 				this.#closing.set(key, closing);
 				const answer = await closing;
 				if (this.#closing.get(key) === closing) this.#closing.delete(key);
+				if (f?.bootId === bootId) noted(f, answer);
 				boundary = answer ?? boundary;
 				if (answer?.reads === "released") ended.push(item);
 			}
@@ -962,6 +1129,7 @@ export class LxdCompanyMachineHost {
 			try {
 				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
 				boundary = await (this.#options.folder as FolderControl).boundary(e.placementId, [], checked);
+				noted(f, boundary);
 			} catch {
 				return undefined;
 			}
@@ -1326,10 +1494,12 @@ export class LxdCompanyMachineHost {
 					: "MACHINE_GUEST_REFUSED",
 			);
 		const receipt = parseCloudMachineCommandReceipt(value);
+		// The company folder's report is the executor's to make, never the guest's (6e-2a).
 		if (
 			receipt.machineId !== machine.machineId ||
 			receipt.commandId !== commandId ||
-			receipt.inputSha256 !== authority.inputSha256
+			receipt.inputSha256 !== authority.inputSha256 ||
+			receipt.companyFolder !== undefined
 		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		if (!folder) return receipt;
@@ -1340,40 +1510,117 @@ export class LxdCompanyMachineHost {
 		// whatever came of its folder: its guest may still run, its reboot not taken yet. A boot can end while its guest
 		// answers or the boundary is out, so it is checked after each. Only a boot without /company (none) skips the
 		// boundary. Then the run that gets the output takes in the reads of the machine's views (6d-3b, "Reads" rule 3),
-		// on a boot without /company too: the disk keeps what any boot of it was served.
+		// on a boot without /company too: the disk keeps what any boot of it was served. Each receipt says why what it
+		// holds back is held (6e-2a, #told).
 		const ended = () => !!authority.bootId && this.#ended(authority.placementId, authority.bootId);
 		const f = this.#folders.get(authority.placementId);
 		const boot = f?.bootId === authority.bootId ? f : undefined;
 		const none = boot?.state === "none";
 		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
-		if (
-			(request.action === "start" && !none) ||
-			ended() ||
-			boot?.unreadable ||
-			(receipt.state === "running" && receipt.log.totalBytes === 0)
-		)
-			return held(receipt, at);
+		const holding = (heldBack?: string) => this.#told(authority, boot, held(receipt, at), heldBack, false);
+		const over = () => holding(HELD.ended);
+		if (ended()) return over();
+		if (boot?.unreadable) return holding(HELD.unreadable);
+		if (request.action === "start" && !none) return holding(HELD.start);
+		if (receipt.state === "running" && receipt.log.totalBytes === 0) return holding();
 		if (!none) {
 			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
 			const answer = await folder.boundary(authority.placementId, [], checked).catch(() => undefined);
-			if (answer?.reads !== "released" || ended()) return held(receipt, at);
+			noted(boot, answer);
+			if (ended()) return over();
+			if (answer?.reads !== "released") return holding(unreleased(answer));
 		}
-		return (await this.#inherit(authority, boot, signal)) && !ended() ? receipt : held(receipt, at);
+		const refused = await this.#inherit(authority, boot, signal);
+		if (ended()) return over();
+		return refused === undefined ? this.#told(authority, boot, receipt, undefined, true) : holding(refused);
+	}
+	/** Why a boot whose folder ended has no /company (6e-2a). */
+	#endedWhy(authority: CompanyMachineCommandAuthority): string {
+		const ending =
+			typeof authority.bootId === "string"
+				? this.#endings.get(`${authority.placementId}/${authority.bootId}`)
+				: undefined;
+		return (ending && FOLDER_ENDED[ending.cause]) || FOLDER_ENDED.stale;
+	}
+	/** A receipt with the company folder's report (6e-2a): whether the command's boot has /company, and why not; why
+	 * its output is held back (`heldBack`); why the machine lost the command (`lost`, SQL's cause); and, on a receipt
+	 * whose output leaves (`released`), the paths the folder let go unsaved since the boot's last such receipt, once
+	 * (`notSaved`), and those it did not save that the boot's views still keep pending (`stillNotSaved`, #noted). The
+	 * report fits the agent's tool result as it measures it: paths that do not are counted instead. */
+	#told(
+		authority: CompanyMachineCommandAuthority,
+		boot: BootFolder | undefined,
+		receipt: CloudMachineCommandReceipt,
+		heldBack: string | undefined,
+		released: boolean,
+	): CloudMachineCommandReceipt {
+		const ended = typeof authority.bootId === "string" && this.#ended(authority.placementId, authority.bootId);
+		let why: string | undefined;
+		if (ended) why = this.#endedWhy(authority);
+		else if (boot?.reason === "refused" && boot.refusal !== undefined)
+			why =
+				boot.refusal === VIEW_NOT_CURRENT
+					? `${FOLDER_VIEWLESS.refused} because the machine is stopping, moving or starting again`
+					: `${FOLDER_VIEWLESS.refused}: ${boot.refusal}`;
+		else if (boot?.reason) why = FOLDER_VIEWLESS[boot.reason];
+		// Why the machine lost the command, by the authority's `folderLost`: the words SQL tells its run.
+		const lost =
+			receipt.state === "lost" && isCloudMachineFolderLost(authority.folderLost)
+				? CLOUD_MACHINE_FOLDER_LOST[authority.folderLost]
+				: undefined;
+		const report: CloudMachineCommandFolder = {
+			company: why !== undefined ? "none" : boot?.held ? "mounted" : "pending",
+			...(why !== undefined ? { why } : {}),
+			...(heldBack !== undefined ? { heldBack } : {}),
+			...(lost !== undefined ? { lost } : {}),
+		};
+		// What was let go unsaved since the last such receipt, once; and what the boot's views still keep pending.
+		const notSaved = released && boot ? boot.notSaved.splice(0) : [];
+		let more = 0;
+		const still: CloudMachineFolderNotSaved[] = [];
+		let moreStill = 0;
+		if (released && boot) {
+			more = boot.moreNotSaved;
+			boot.moreNotSaved = 0;
+			for (const view of boot.stillNotSaved.values()) {
+				moreStill += view.more;
+				for (const item of view.paths)
+					if (still.length < CLOUD_MACHINE_FOLDER_LIMITS.notSaved) still.push(item);
+					else moreStill++;
+			}
+		}
+		const shown = () => ({
+			...report,
+			...(notSaved.length ? { notSaved } : {}),
+			...(more ? { moreNotSaved: more } : {}),
+			...(still.length ? { stillNotSaved: still } : {}),
+			...(moreStill ? { moreStillNotSaved: moreStill } : {}),
+		});
+		// Over the bytes, what the next receipt says again goes first.
+		while (still.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes) {
+			still.pop();
+			moreStill++;
+		}
+		while (notSaved.length && cloudMachineFolderBytes(shown()) > CLOUD_MACHINE_FOLDER_LIMITS.bytes) {
+			notSaved.pop();
+			more++;
+		}
+		return Object.freeze({ ...receipt, companyFolder: parseCloudMachineCommandFolder(shown()) });
 	}
 	/** The run a command's output goes to takes in the reads of its machine's newest view first (6d-3b): SQL builds the
 	 * run's actor, and answers a placement that never had a view with nothing to take in. Each take-in has its own id:
 	 * SQL checks the view's whole read set for the run each time, and copies only what the run has not taken in from
-	 * that view (20260930498000). Any failure holds the output. The core's refusal of a read it
-	 * can no longer read ("qorpera.test-machine/unreadable") marks the boot, which holds every later output of it, and
-	 * the next pass retires the placement (rule 5). */
+	 * that view (20260930498000). Any failure holds the output, and says why (6e-2a): undefined means taken in. The
+	 * core's refusal of a read it can no longer read ("qorpera.test-machine/unreadable") marks the boot, which holds
+	 * every later output of it, and the next pass retires the placement (rule 5). */
 	async #inherit(
 		authority: CompanyMachineCommandAuthority,
 		boot: BootFolder | undefined,
 		signal: AbortSignal,
-	): Promise<boolean> {
+	): Promise<string | undefined> {
 		const { placementId, bootId, runId } = authority;
 		if (typeof bootId !== "string" || typeof runId !== "string" || !UUID.test(bootId) || !UUID.test(runId))
-			return false;
+			return HELD.untaken;
 		const inheritId = randomUUID();
 		try {
 			const taken = record(
@@ -1384,11 +1631,13 @@ export class LxdCompanyMachineHost {
 				),
 				"COMPANY_MACHINE_INHERIT_INVALID",
 			);
-			return taken.schema === "qorpera.folder-inherit/v1" && taken.inheritId === inheritId;
+			return taken.schema === "qorpera.folder-inherit/v1" && taken.inheritId === inheritId
+				? undefined
+				: HELD.untaken;
 		} catch (error) {
-			if (boot && error instanceof CodingControlRefused && error.detail === "qorpera.test-machine/unreadable")
-				boot.unreadable = true;
-			return false;
+			if (!(error instanceof CodingControlRefused)) return HELD.untaken;
+			if (boot && error.detail === "qorpera.test-machine/unreadable") boot.unreadable = true;
+			return HELD.refused;
 		}
 	}
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s

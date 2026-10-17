@@ -2,6 +2,7 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import {
 	type CloudCodingCommandRead,
 	type CloudMachineCommandReceipt,
+	isCloudMachineFolderLost,
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
@@ -195,17 +196,22 @@ export function createHttpCloudMachineCommandGateway(options: {
 						body,
 					});
 					if (response.status !== 200) {
-						// A refusal names a fixed code the agent can act on (not running, a start given up).
-						let code: unknown;
+						// A refusal names a fixed code the agent can act on (not running, a start given up), and why
+						// the machine lost the command when the company folder made it (6e-2a): an unknown cause is dropped.
+						let refused: { code?: unknown; folderLost?: unknown } = {};
 						if (response.status === 409)
-							code = (
-								JSON.parse(
-									new TextDecoder("utf8", { fatal: true }).decode(
-										await readBoundedCloudResponse(response, 4096, requestSignal),
-									),
-								) as { code?: unknown }
-							).code;
+							refused = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as typeof refused;
 						else void response.body?.cancel().catch(() => undefined);
+						const { code, folderLost } = refused ?? {};
+						if ((CLOUD_MACHINE_COMMAND_REFUSALS as readonly unknown[]).includes(code))
+							throw new CloudMachineCommandRefusal(
+								code as CloudMachineCommandRefusalCode,
+								isCloudMachineFolderLost(folderLost) ? folderLost : undefined,
+							);
 						throw new Error(typeof code === "string" && /^[A-Z][A-Z0-9_]{2,60}$/.test(code) ? code : ERROR);
 					}
 					const bytes = await readBoundedCloudResponse(response, RESULT_LIMIT, requestSignal);
@@ -228,14 +234,17 @@ export function createHttpCloudMachineCommandGateway(options: {
 	});
 }
 
-/** A refusal the agent can act on, sent back as 409 with only its code. */
+/** A refusal the agent can act on, sent back as 409 with its code, and for a command its machine lost for the
+ * company folder, the cause (`folderLost`, a key of CLOUD_MACHINE_FOLDER_LOST; F3 6e-2a). */
 export const CLOUD_MACHINE_COMMAND_REFUSALS = ["MACHINE_NOT_RUNNING", "MACHINE_COMMAND_ENDED"] as const;
 export type CloudMachineCommandRefusalCode = (typeof CLOUD_MACHINE_COMMAND_REFUSALS)[number];
 export class CloudMachineCommandRefusal extends Error {
 	readonly code: CloudMachineCommandRefusalCode;
-	constructor(code: CloudMachineCommandRefusalCode) {
+	readonly folderLost?: string;
+	constructor(code: CloudMachineCommandRefusalCode, folderLost?: string) {
 		super(code);
 		this.code = code;
+		if (folderLost !== undefined) this.folderLost = folderLost;
 	}
 }
 /** A refusal as it reaches a caller: from this executor's SQL, or from a peer's 409. */

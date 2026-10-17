@@ -298,7 +298,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
 					inputSha256: authority.inputSha256, bootId: authority.bootId, runId: authority.runId,
-					staffAgentId: authority.staffAgentId, requestedByUserId: authority.requestedByUserId },
+					staffAgentId: authority.staffAgentId, requestedByUserId: authority.requestedByUserId, folderLost: authority.folderLost },
 				request.action === "start" ? { action: "start", commandId: request.input.commandId, inputSha256: request.input.inputSha256,
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
