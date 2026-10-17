@@ -421,8 +421,18 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      since a restart writes the mark before the boundary answers `released` again; so a call begun before that restart
      keeps nothing of the dropped boot either. A test machine says `restarted` at its first
      boot too, and at each boot after a stop, before SQL hears of the boot; it keeps nothing of a boot before.
-   - **`unreadable`** (a released read the core can no longer place) moves the machine's sessions to a new machine id
-     with a new disk, or archives them; the old disk is removed.
+   - **`unreadable`** (a released read the core can no longer place) gives the machine a new disk, under the same
+     machine id: only `/company` is kept. SQL built (5g-5 part 3, migration `20260930505000`): a take-in refused with
+     "A released read is no longer readable" (a turn's wake read, or run authority moving a session onto the machine)
+     marks the machine for a new disk (`new_disk_at`, always with `folder_restart_at`) and goes on without the
+     machine's reads; every other refusal still raises. The executor marks it with
+     `qorpera_mark_coding_machine_new_disk`. A machine so marked restarts as above, but the restart's record answers
+     `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants
+     `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the executor rebuilds the instance
+     from its binding's image (`imageFingerprint`), and `qorpera_record_coding_machine_new_disk`, named by the
+     rebuild's LXD operation and replayed like the restart's record, detaches any session attached since, empties the
+     machine's read set, clears both marks and answers `replaced`. Then the machine starts. A model hears of it only
+     through a stopped command's entry: a session that was not attached gets no event.
    - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
      (the pause) is held, `denied` is held, and is final at the final boundary.
 
@@ -432,7 +442,8 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
   job KEY SHARE in id order;
 - every coding commit rechecks it at rank 10, as a run's read set is rechecked today;
 - a turn takes it in at its lease;
-- the executor's disk-replacement call empties it, and that call is refused while a session is attached.
+- the executor's disk-replacement call empties it, and that call is refused while a session is attached;
+- a new disk's record (5g-5 part 3) empties it once it has detached every session.
 
 **Narrow marks (W6).** W6's machine rule assumed "if F3 shares mounts between sessions on one machine, the rule widens
 to every mount on that machine". Step 5 is that case. 5a does `create or replace` on
