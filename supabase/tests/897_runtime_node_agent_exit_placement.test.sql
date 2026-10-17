@@ -1,10 +1,9 @@
 -- @fixture 628_runtime_company_machines.test.sql until "-- 4. Full: the next machine waits in line, unplaced, with its place and its reason."
 -- Agent exit E2d part 2 (20260930089100): a node whose exit is not healthy takes no new agent road machine.
 --   * Agents' machines: no new one is placed there (it waits as for room), a sleeping one does not wake there (refused
---     NODE_AGENT_EXIT_UNHEALTHY) and moves to a node whose exit is healthy; one already reserved keeps going, and one
---     tied to its repository's node wakes there. A node that never reported its exit takes nothing. An observer that
---     stopped is not an exit that is down: the node's observation is checked first, and its grace keeps a sleeping
---     machine on its node.
+--     NODE_AGENT_EXIT_UNHEALTHY) and moves to a node whose exit is healthy; one already reserved keeps going. A node
+--     that never reported its exit takes nothing. An observer that stopped is not an exit that is down: the node's
+--     observation is checked first, and its grace keeps a sleeping machine on its node.
 --   * Company Computers: no new one there (the node is not a candidate, and its reservation is refused); a sleeping one
 --     wakes on its node (it cannot move).
 --   * Coding machines are never refused (they cannot move); only the executor pick's fresh branch asks for the exit.
@@ -70,16 +69,6 @@ begin
 			v_place.instance_sha256, repeat('c',64), 2000, 4294967296) ->> 'reason' = 'NODE_AGENT_EXIT_UNHEALTHY'
 		and (select last_refusal from public.qorpera_runtime_node_demands where allocation_id = v_place.id) = 'NODE_AGENT_EXIT_UNHEALTHY',
 		'The reservation is refused, with the reason on the demand');
-	-- Tied to its repository's node, it wakes there (without internet while the exit is down). Rolled back.
-	begin
-		perform pg_temp.synthetic(format('update public.qorpera_company_machines set repository_worker_id = %L where id = %L',
-			'89700000-0000-4000-8000-0000000000d1', (pg_temp.mc_machine('build-a')).id));
-		perform pg_temp.base_assert(public.qorpera_reserve_runtime_node_machine(v_place.id, 'machine', 'machine-fixture',
-			repeat('f',64), v_place.instance_sha256, repeat('c',64), 2000, 4294967296) ->> 'state' = 'reserved',
-			'A repository-tied machine wakes on its node');
-		raise sqlstate 'P0T97';
-	exception when sqlstate 'P0T97' then null;
-	end;
 	perform pg_temp.base_assert(public.qorpera_admit_executor_machines('mx-a', repeat('c', 64)) = '[]'::jsonb
 		and (pg_temp.mc_placement('build-a')).owner = 'mx-a', 'Node A admits nothing while its exit is down');
 end $$;

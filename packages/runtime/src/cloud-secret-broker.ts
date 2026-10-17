@@ -53,6 +53,37 @@ const EXECUTOR_OWNER = /^[A-Za-z0-9_.:-]{1,120}$/;
 const REPOSITORY_TOKEN = /^[A-Za-z0-9_]{20,512}$/;
 /** A coding session's environment variable name: the vault name in upper case (5j-1). */
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** An MCP server's origin as the vault keeps it (5j-6a): lower case, no `:443`, at most 267 characters. */
+const MCP_ORIGIN = /^https:\/\/[a-z0-9.-]{1,253}(?::[1-9][0-9]{0,4})?$/;
+/** An MCP sign-in's value goes after its prefix on one header line: visible ASCII with inner spaces, at most 4 KiB. */
+const MCP_SIGN_IN_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]{0,4094}[\x21-\x7e])?$/;
+const MCP_HEADER_PREFIX = /^(?:[A-Za-z][A-Za-z0-9_-]{0,31} )?$/;
+/** The headers an MCP sign-in never names (qorpera_coding_mcp_header_allowed, 5j-6a): the ones the relay sets or
+ * forwards itself, and the ones that would change how the request travels. */
+const MCP_RESERVED_HEADERS = new Set([
+	"host",
+	"connection",
+	"keep-alive",
+	"transfer-encoding",
+	"te",
+	"trailer",
+	"upgrade",
+	"content-length",
+	"content-type",
+	"content-encoding",
+	"cookie",
+	"accept",
+	"accept-encoding",
+	"expect",
+	"forwarded",
+	"via",
+	"origin",
+	"referer",
+	"x-real-ip",
+	"last-event-id",
+]);
+/** A coding session's repository as its relay requests name it: `<owner>/<name>`, GitHub's rules. */
+const REPOSITORY_PATH = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
 const MAX_RPC_BYTES = 256 * 1024;
 
 /** The shortest environment value, in UTF-8 bytes, the vault takes or hands out. It equals
@@ -194,6 +225,47 @@ export interface CodingEnvironmentAuthorization {
 	readonly secrets: readonly CodingEnvironmentSecret[];
 }
 
+/** A coding session's request through the broker to an MCP server (5j-6b): the session and the server's origin.
+ * Naming only: the kernel checks every part against the lease. */
+export interface CodingMcpSignInRequest extends CodingEnvironmentRequest {
+	readonly origin: string;
+}
+
+/** A coding session's fetch through the broker (5j-6b): the session and the repository it names
+ * (`<owner>/<name>`), which must be the session's own. Naming only: the kernel checks the session. */
+export interface CodingRepositoryFetchRequest extends CodingEnvironmentRequest {
+	readonly repository: string;
+}
+
+/** Where the broker's relay sends one coding session's request (5j-6b), and the header that signs it in. It
+ * never leaves the broker process: the relay sends the header upstream and never answers with it. */
+export interface CodingRelaySignIn {
+	readonly origin: string;
+	/** The repository on GitHub (`/<owner>/<name>.git`) for a fetch; empty for an MCP server. */
+	readonly path: string;
+	readonly headerName: string;
+	readonly headerValue: string;
+}
+
+interface CodingMcpSignInAuthorization {
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly signIn:
+		| (CloudSecretEnvelopeIdentity & {
+				readonly headerName: string;
+				readonly headerPrefix: string;
+				readonly encryptedEnvelopeBase64: string;
+				readonly envelopeSha256: string;
+		  })
+		| null;
+}
+
+interface CodingRepositoryFetchAuthorization extends CloudSecretEnvelopeIdentity {
+	readonly encryptedEnvelopeBase64: string;
+	readonly envelopeSha256: string;
+	readonly repository: CloudCodingRepository;
+}
+
 export interface CloudSecretBrokerAuthority {
 	claimEmailDraftAction?(actionId: string, capabilitySha256: string, signal: AbortSignal): Promise<unknown>;
 	finishEmailDraftAction?(
@@ -216,6 +288,10 @@ export interface CloudSecretBrokerAuthority {
 	/** A coding session's environment secrets (5j-3); a broker whose database role cannot run the
 	 * function leaves this out and refuses every environment request. */
 	authorizeCodingEnvironment?(request: CodingEnvironmentRequest, signal: AbortSignal): Promise<unknown>;
+	/** A coding session's MCP sign-in for one origin, and the company's GitHub connection for its own fetch (5j-6b);
+	 * a broker whose database role cannot run the functions leaves these out and refuses every relay request. */
+	authorizeCodingMcpSignIn?(request: CodingMcpSignInRequest, signal: AbortSignal): Promise<unknown>;
+	authorizeCodingRepositoryFetch?(request: CodingRepositoryFetchRequest, signal: AbortSignal): Promise<unknown>;
 	/** Company website accounts (A1); a broker whose database cannot serve them leaves these out. */
 	describeCompanyAccountOpen?: CompanyAccountAuthority["describeCompanyAccountOpen"];
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
@@ -610,6 +686,170 @@ function environmentValue(fields: Readonly<Record<string, string>>): string {
 	return value;
 }
 
+export function parseCodingMcpSignInRequest(value: {
+	readonly workerId: unknown;
+	readonly leaseToken: unknown;
+	readonly executorOwner: unknown;
+	readonly origin: unknown;
+}): CodingMcpSignInRequest {
+	if (typeof value.origin !== "string" || !MCP_ORIGIN.test(value.origin))
+		throw new Error("Coding MCP sign-in request is invalid");
+	return { ...parseCodingEnvironmentRequest(value), origin: value.origin };
+}
+
+export function parseCodingRepositoryFetchRequest(value: {
+	readonly workerId: unknown;
+	readonly leaseToken: unknown;
+	readonly executorOwner: unknown;
+	readonly repository: unknown;
+}): CodingRepositoryFetchRequest {
+	if (typeof value.repository !== "string" || !REPOSITORY_PATH.test(value.repository))
+		throw new Error("Coding repository fetch request is invalid");
+	return { ...parseCodingEnvironmentRequest(value), repository: value.repository };
+}
+
+/** The kernel's answer for one MCP sign-in. `companyId` is the shared vault's company the request came for, which
+ * the session must belong to; a one-company broker names none. */
+function parseCodingMcpSignInAuthorization(
+	value: unknown,
+	request: CodingMcpSignInRequest,
+	companyId: string | undefined,
+): CodingMcpSignInAuthorization {
+	const input = record(value, "Coding MCP sign-in authorization");
+	exact(
+		input,
+		["schema", "companyId", "environmentId", "workerId", "origin", "signIn"],
+		"Coding MCP sign-in authorization",
+	);
+	const company = uuid(input.companyId, "Cloud secret company");
+	if (
+		input.schema !== "qorpera.coding-mcp-sign-in-authorization/v1" ||
+		typeof input.workerId !== "string" ||
+		input.workerId.toLowerCase() !== request.workerId ||
+		(companyId !== undefined && company.toLowerCase() !== companyId.toLowerCase()) ||
+		input.origin !== request.origin
+	)
+		throw new Error("Coding MCP sign-in authorization differs from its request");
+	const environmentId = uuid(input.environmentId, "Cloud secret environment");
+	if (input.signIn === null) return { companyId: company, environmentId, signIn: null };
+	const signIn = record(input.signIn, "Coding MCP sign-in");
+	exact(
+		signIn,
+		[
+			"secretId",
+			"secretVersion",
+			"keyId",
+			"ownerKind",
+			"kind",
+			"headerName",
+			"headerPrefix",
+			"encryptedEnvelopeBase64",
+			"envelopeSha256",
+		],
+		"Coding MCP sign-in",
+	);
+	if (
+		(signIn.ownerKind !== "company" && signIn.ownerKind !== "member") ||
+		// OAuth sign-ins are 5j-7's; until then the relay sends only an API key.
+		signIn.kind !== "api_key" ||
+		typeof signIn.headerName !== "string" ||
+		!/^[a-z0-9][a-z0-9-]{0,63}$/.test(signIn.headerName) ||
+		/^(?:proxy|x-forwarded|mcp|sec)-/.test(signIn.headerName) ||
+		MCP_RESERVED_HEADERS.has(signIn.headerName) ||
+		typeof signIn.headerPrefix !== "string" ||
+		!MCP_HEADER_PREFIX.test(signIn.headerPrefix) ||
+		typeof signIn.keyId !== "string" ||
+		!KEY_ID.test(signIn.keyId) ||
+		typeof signIn.encryptedEnvelopeBase64 !== "string" ||
+		!/^[A-Za-z0-9+/=\r\n]+$/.test(signIn.encryptedEnvelopeBase64) ||
+		typeof signIn.envelopeSha256 !== "string" ||
+		!SHA.test(signIn.envelopeSha256)
+	)
+		throw new Error("Coding MCP sign-in is invalid");
+	return {
+		companyId: company,
+		environmentId,
+		signIn: {
+			companyId: company,
+			environmentId,
+			secretId: uuid(signIn.secretId, "Cloud secret id"),
+			version: integer(signIn.secretVersion, "Cloud secret version"),
+			keyId: signIn.keyId,
+			headerName: signIn.headerName,
+			headerPrefix: signIn.headerPrefix,
+			encryptedEnvelopeBase64: signIn.encryptedEnvelopeBase64,
+			envelopeSha256: signIn.envelopeSha256,
+		},
+	};
+}
+
+/** The kernel's answer for one fetch: the company's GitHub connection and the session's repository, which must be
+ * the one the request names (GitHub compares owner and name without case). `companyId` as above. */
+function parseCodingRepositoryFetchAuthorization(
+	value: unknown,
+	request: CodingRepositoryFetchRequest,
+	companyId: string | undefined,
+): CodingRepositoryFetchAuthorization {
+	const input = record(value, "Coding repository fetch authorization");
+	exact(
+		input,
+		[
+			"schema",
+			"companyId",
+			"environmentId",
+			"secretId",
+			"secretVersion",
+			"keyId",
+			"connectorId",
+			"credentialName",
+			"encryptedEnvelopeBase64",
+			"envelopeSha256",
+			"workerId",
+			"repository",
+		],
+		"Coding repository fetch authorization",
+	);
+	const repository = parseCloudCodingRepository(input.repository);
+	const company = uuid(input.companyId, "Cloud secret company");
+	if (
+		input.schema !== "qorpera.coding-repository-fetch-authorization/v1" ||
+		input.connectorId !== "github" ||
+		input.credentialName !== "access_token" ||
+		typeof input.workerId !== "string" ||
+		input.workerId.toLowerCase() !== request.workerId ||
+		(companyId !== undefined && company.toLowerCase() !== companyId.toLowerCase()) ||
+		`${repository.owner}/${repository.name}`.toLowerCase() !== request.repository.toLowerCase() ||
+		typeof input.keyId !== "string" ||
+		!KEY_ID.test(input.keyId) ||
+		typeof input.encryptedEnvelopeBase64 !== "string" ||
+		!/^[A-Za-z0-9+/=\r\n]+$/.test(input.encryptedEnvelopeBase64) ||
+		typeof input.envelopeSha256 !== "string" ||
+		!SHA.test(input.envelopeSha256)
+	)
+		throw new Error("Coding repository fetch authorization differs from its request");
+	return {
+		companyId: company,
+		environmentId: uuid(input.environmentId, "Cloud secret environment"),
+		secretId: uuid(input.secretId, "Cloud secret id"),
+		version: integer(input.secretVersion, "Cloud secret version"),
+		keyId: input.keyId,
+		encryptedEnvelopeBase64: input.encryptedEnvelopeBase64,
+		envelopeSha256: input.envelopeSha256,
+		repository,
+	};
+}
+
+/** An MCP sign-in's one value (5j-6b): exactly the field `value`, which the relay sends after the sign-in's prefix
+ * on one header line, so visible ASCII with inner spaces only (no CR, LF or NUL) and at most 4 KiB. The error never
+ * carries the value. */
+function mcpSignInValue(fields: Readonly<Record<string, string>>): string {
+	const names = Object.keys(fields);
+	const value = names.length === 1 && names[0] === "value" ? fields.value : undefined;
+	if (typeof value !== "string" || !MCP_SIGN_IN_VALUE.test(value))
+		throw new Error("Coding MCP sign-in value is invalid");
+	return value;
+}
+
 function adapterKey(value: {
 	connectorId: string;
 	operationId: string;
@@ -804,6 +1044,8 @@ export class CloudSecretBroker {
 		// A coding session's environment secret (5j-3) is handed out only if it has the shape and length the
 		// coding machine can mask, so a value that could never be handed out is not sealed either.
 		if (description.connectorId === "environment") environmentValue(request.fields);
+		// So is an MCP sign-in (5j-6b) only if the relay can send it on one header line.
+		if (description.connectorId === "mcp") mcpSignInValue(request.fields);
 		const capabilitySha256 = createHash("sha256").update(request.captureCapability).digest("hex");
 		const envelope = this.#keys.seal(request.fields, description);
 		try {
@@ -1109,6 +1351,106 @@ export class CloudSecretBroker {
 		signal.throwIfAborted();
 		return { schema: "qorpera.coding-environment/v1", environment };
 	}
+
+	/**
+	 * A coding session's MCP sign-in for one server (5j-6b), for the broker's relay: the header the
+	 * session's request is sent upstream with, released only for a session the kernel confirms the
+	 * executor holds right now. `companyId` is the shared vault's company the request came for. The
+	 * header stays in the broker process; no sign-in for the origin and every failure are the same
+	 * opaque refusal.
+	 */
+	async codingMcpSignIn(
+		request: CodingMcpSignInRequest,
+		signal: AbortSignal,
+		companyId?: string,
+	): Promise<CodingRelaySignIn> {
+		try {
+			return await this.#codingMcpSignIn(request, signal, companyId);
+		} catch {
+			throw new Error("Coding MCP sign-in is unavailable");
+		}
+	}
+
+	async #codingMcpSignIn(
+		value: CodingMcpSignInRequest,
+		signal: AbortSignal,
+		companyId: string | undefined,
+	): Promise<CodingRelaySignIn> {
+		if (!this.#authority.authorizeCodingMcpSignIn) throw new Error("Coding MCP sign-in is unavailable");
+		const request = parseCodingMcpSignInRequest(value);
+		const { signIn } = parseCodingMcpSignInAuthorization(
+			await this.#authority.authorizeCodingMcpSignIn(request, signal),
+			request,
+			companyId,
+		);
+		if (!signIn) throw new Error("Coding MCP sign-in is unavailable");
+		const envelope = Buffer.from(signIn.encryptedEnvelopeBase64, "base64");
+		try {
+			if (createHash("sha256").update(envelope).digest("hex") !== signIn.envelopeSha256)
+				throw new Error("Cloud secret envelope digest differs");
+			return await this.#keys.use(envelope, signIn, async (fields) => {
+				const headerValue = `${signIn.headerPrefix}${mcpSignInValue(fields)}`;
+				signal.throwIfAborted();
+				return { origin: request.origin, path: "", headerName: signIn.headerName, headerValue };
+			});
+		} finally {
+			envelope.fill(0);
+		}
+	}
+
+	/**
+	 * A running coding session's fetch of its own repository (5j-6b), for the broker's relay: the
+	 * company's GitHub connection as the header GitHub's smart HTTP takes, released only for a session
+	 * the kernel confirms the executor holds right now and only for the session's repository.
+	 * `companyId` as above. The token stays in the broker process; every failure is the same opaque
+	 * refusal.
+	 */
+	async codingRepositoryFetch(
+		request: CodingRepositoryFetchRequest,
+		signal: AbortSignal,
+		companyId?: string,
+	): Promise<CodingRelaySignIn> {
+		try {
+			return await this.#codingRepositoryFetch(request, signal, companyId);
+		} catch {
+			throw new Error("Coding repository fetch is unavailable");
+		}
+	}
+
+	async #codingRepositoryFetch(
+		value: CodingRepositoryFetchRequest,
+		signal: AbortSignal,
+		companyId: string | undefined,
+	): Promise<CodingRelaySignIn> {
+		if (!this.#authority.authorizeCodingRepositoryFetch) throw new Error("Coding repository fetch is unavailable");
+		const request = parseCodingRepositoryFetchRequest(value);
+		const authorization = parseCodingRepositoryFetchAuthorization(
+			await this.#authority.authorizeCodingRepositoryFetch(request, signal),
+			request,
+			companyId,
+		);
+		const envelope = Buffer.from(authorization.encryptedEnvelopeBase64, "base64");
+		try {
+			if (createHash("sha256").update(envelope).digest("hex") !== authorization.envelopeSha256)
+				throw new Error("Cloud secret envelope digest differs");
+			return await this.#keys.use(envelope, authorization, async (fields) => {
+				const token = Object.hasOwn(fields, "access_token") ? fields.access_token : undefined;
+				if (typeof token !== "string" || !REPOSITORY_TOKEN.test(token))
+					throw new Error("Cloud secret credential field is unavailable");
+				signal.throwIfAborted();
+				// The session's repository as the kernel names it, never the request's spelling.
+				const { owner, name } = authorization.repository;
+				return {
+					origin: "https://github.com",
+					path: `/${owner}/${name}.git`,
+					headerName: "authorization",
+					headerValue: `Basic ${Buffer.from(`x-access-token:${token}`, "utf8").toString("base64")}`,
+				};
+			});
+		} finally {
+			envelope.fill(0);
+		}
+	}
 }
 
 function cloudOrigin(value: string): string {
@@ -1217,7 +1559,8 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 	}
 
 	// No authorizeCodingEnvironment: service_role cannot execute qorpera_authorize_coding_environment (5j-1),
-	// so a broker on this authority refuses every coding environment request.
+	// so a broker on this authority refuses every coding environment request. Nor the relay's two reads
+	// (5j-6a), for the same reason: it refuses every relay request.
 
 	async #rpc(name: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		return withCloudDeadline(
@@ -1250,8 +1593,9 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 
 /** Least-privilege broker authority. The database login is the NOINHERIT
  * `qorpera_secret_broker` role and can execute only the custody RPCs (capture
- * description and completion, operation, repository credential and coding
- * environment authorization, handing a live run its model login and saving or
+ * description and completion, operation, repository credential, coding
+ * environment, MCP sign-in and repository fetch authorization, handing a live
+ * run its model login and saving or
  * giving back one renewal); it has no table privileges and never holds a
  * Supabase service key. */
 export class PostgresCloudSecretBrokerAuthority
@@ -1597,6 +1941,35 @@ export class PostgresCloudSecretBrokerAuthority
 	authorizeCodingEnvironment(request: CodingEnvironmentRequest, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_authorize_coding_environment($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.workerId,
+				request.leaseToken,
+				request.executorOwner,
+			],
+			signal,
+		);
+	}
+
+	authorizeCodingMcpSignIn(request: CodingMcpSignInRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_authorize_coding_mcp_sign_in($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.workerId,
+				request.leaseToken,
+				request.executorOwner,
+				request.origin,
+			],
+			signal,
+		);
+	}
+
+	authorizeCodingRepositoryFetch(request: CodingRepositoryFetchRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_authorize_coding_repository_fetch($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,

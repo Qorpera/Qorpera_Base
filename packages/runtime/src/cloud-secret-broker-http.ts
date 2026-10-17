@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { pipeline } from "node:stream/promises";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
@@ -55,11 +56,21 @@ import {
 	type CloudSecretDescriptor,
 	type CloudSecretOperationRequest,
 	type CodingEnvironmentRequest,
+	type CodingMcpSignInRequest,
+	type CodingRelaySignIn,
 	type CodingRepositoryCredentialRequest,
+	type CodingRepositoryFetchRequest,
 	parseCloudSecretAccountLabel,
 	parseCodingEnvironmentRequest,
+	parseCodingMcpSignInRequest,
 	parseCodingRepositoryCredentialRequest,
+	parseCodingRepositoryFetchRequest,
 } from "./cloud-secret-broker.ts";
+import {
+	CLOUD_SECRET_RELAY_TRANSPORT,
+	type CloudSecretRelayTransport,
+	openCloudSecretRelay,
+} from "./cloud-secret-broker-relay.ts";
 import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -69,6 +80,14 @@ const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 96 * 1024;
 const MAX_RESPONSE_BYTES = 48 * 1024;
+/** A header value the coding relay reads or passes on (5j-6b): visible ASCII with inner spaces, at most 4 KiB. */
+const RELAY_HEADER_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]{0,4094}[\x21-\x7e])?$/;
+/** The relay's idle timeout, on either side: an MCP server's event stream may wait minutes between events, and a
+ * git answer streams without long pauses. */
+const MCP_RELAY_IDLE_MS = 5 * 60_000;
+const GIT_RELAY_IDLE_MS = 2 * 60_000;
+/** The request headers an MCP client's streamable HTTP needs, the only ones the relay passes on. */
+const MCP_RELAY_HEADERS = ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"];
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (
@@ -209,6 +228,125 @@ function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentReq
 		leaseToken: input.leaseToken,
 		executorOwner: input.executorOwner,
 	});
+}
+
+/** What the relay sends upstream for one request (5j-6b), all of it checked before the database is asked. */
+interface RelayRequest {
+	readonly method: "GET" | "POST" | "DELETE";
+	/** The path and query after the sign-in's own path. */
+	readonly path: string;
+	readonly headers: Readonly<Record<string, string>>;
+}
+
+type RelayShape =
+	| { readonly kind: "mcp"; readonly binding: CodingMcpSignInRequest; readonly relay: RelayRequest }
+	| {
+			readonly kind: "git";
+			readonly binding: CodingRepositoryFetchRequest;
+			readonly relay: RelayRequest;
+			/** The content type a successful answer has. */
+			readonly answerType: string;
+	  };
+
+/** One request header the relay reads: absent, or sent once with a header-safe value. */
+function relayHeader(request: IncomingMessage, name: string): string | undefined {
+	const values = request.headersDistinct[name];
+	if (values === undefined) return undefined;
+	if (values.length !== 1 || !RELAY_HEADER_VALUE.test(values[0])) throw new Error("Coding relay request is invalid");
+	return values[0];
+}
+
+function relayHeaders(request: IncomingMessage, names: readonly string[]): Record<string, string> {
+	const headers: Record<string, string> = {};
+	for (const name of names) {
+		const value = relayHeader(request, name);
+		if (value !== undefined) headers[name] = value;
+	}
+	return headers;
+}
+
+/** The session binding every relay request carries in its headers, as the other coding requests carry it in JSON;
+ * the relay routes take no query but the router's `?company=`. */
+function relayBinding(
+	request: IncomingMessage,
+	url: URL,
+): { workerId: unknown; leaseToken: unknown; executorOwner: unknown } {
+	const keys = [...url.searchParams.keys()];
+	if (keys.length > 1 || keys.some((key) => key !== "company")) throw new Error("Coding relay request is invalid");
+	return {
+		workerId: relayHeader(request, "x-qorpera-coding-worker"),
+		leaseToken: relayHeader(request, "x-qorpera-coding-lease"),
+		executorOwner: relayHeader(request, "x-qorpera-coding-executor"),
+	};
+}
+
+/** A POST's body streams on with its own length when it gave one (chunked otherwise); GET and DELETE have none. */
+function relayBody(request: IncomingMessage): Record<string, string> {
+	const length = relayHeader(request, "content-length");
+	if (request.method === "POST") return length === undefined ? {} : { "content-length": length };
+	if (request.headers["transfer-encoding"] !== undefined || (length !== undefined && length !== "0"))
+		throw new Error("Coding relay request is invalid");
+	return {};
+}
+
+/** An MCP request names its server in `x-qorpera-mcp-url`: an absolute https URL with no userinfo or fragment. The
+ * vault keeps the server by its origin, lower case and without `:443` as URL writes it; the path and query go on
+ * as they are. The body is never re-encoded, so it must come plain. */
+function parseMcpRelayRequest(request: IncomingMessage, url: URL): RelayShape {
+	const target = relayHeader(request, "x-qorpera-mcp-url");
+	if (
+		target === undefined ||
+		!/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:[/?][^#]*)?$/.test(target) ||
+		request.headers["content-encoding"] !== undefined
+	)
+		throw new Error("Coding relay request is invalid");
+	const server = new URL(target);
+	if (server.username || server.password || server.hash) throw new Error("Coding relay request is invalid");
+	return {
+		kind: "mcp",
+		binding: parseCodingMcpSignInRequest({ ...relayBinding(request, url), origin: server.origin }),
+		relay: {
+			method: request.method as RelayRequest["method"],
+			path: `${server.pathname}${server.search}`,
+			headers: { ...relayHeaders(request, MCP_RELAY_HEADERS), ...relayBody(request) },
+		},
+	};
+}
+
+/** A fetch of the session's own repository, GitHub's smart HTTP with upload-pack only: the advertisement (GET), or
+ * one negotiation round (POST, gzip or plain). `git-protocol` is git's own `version=N`. */
+function parseGitRelayRequest(request: IncomingMessage, url: URL, refs: boolean): RelayShape {
+	const headers = relayHeaders(request, ["content-type", "content-encoding", "accept", "git-protocol"]);
+	const type = headers["content-type"];
+	const encoding = headers["content-encoding"];
+	if (
+		(headers["git-protocol"] !== undefined && !/^version=[0-9]$/.test(headers["git-protocol"])) ||
+		(refs
+			? type !== undefined || encoding !== undefined
+			: type !== "application/x-git-upload-pack-request" || (encoding !== undefined && encoding !== "gzip"))
+	)
+		throw new Error("Coding relay request is invalid");
+	return {
+		kind: "git",
+		binding: parseCodingRepositoryFetchRequest({
+			...relayBinding(request, url),
+			repository: relayHeader(request, "x-qorpera-coding-repository"),
+		}),
+		relay: {
+			method: refs ? "GET" : "POST",
+			path: refs ? "/info/refs?service=git-upload-pack" : "/git-upload-pack",
+			headers: { ...headers, ...relayBody(request), "user-agent": "qorpera-cloud-secret-broker" },
+		},
+		answerType: refs ? "application/x-git-upload-pack-advertisement" : "application/x-git-upload-pack-result",
+	};
+}
+
+/** One answer header the relay passes back: absent, or a header-safe value. */
+function relayAnswerHeader(answer: IncomingMessage, name: string): string | undefined {
+	const value = answer.headers[name];
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || !RELAY_HEADER_VALUE.test(value)) throw new Error("Coding relay answer is refused");
+	return value;
 }
 
 function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
@@ -448,11 +586,14 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** Connector OAuth flows (Step 7); absent means the OAuth routes answer 404. */
 	readonly oauth?: CloudConnectorOAuthFlows;
 	/** The coding executor's own bearer for `/v1/repository-credentials`
-	 * (bundle v88) and `/v1/coding-environment` (5j-3); credential
+	 * (bundle v88), `/v1/coding-environment` (5j-3) and the relay's
+	 * `/v1/coding-mcp` and `/v1/coding-repository-fetch/*` (5j-6b); credential
 	 * `qorpera-cloud-secret-coding-executor`. Distinct from the runtime token
-	 * every guest holds; absent means both routes answer 404. The runtime token
-	 * never opens those routes, and this token never opens `/v1/operations`. */
+	 * every guest holds; absent means those routes answer 404. The runtime token
+	 * never opens them, and this token never opens `/v1/operations`. */
 	readonly codingExecutorToken?: string;
+	/** How the relay resolves and connects; tests pass a local upstream. Absent means real DNS and HTTPS. */
+	readonly relayTransport?: CloudSecretRelayTransport;
 	/** The lease proof every runtime-token route asks before it serves a run binding (G2-6a). Absent, those routes
 	 * refuse every request. */
 	readonly proveBinding?: NativeBindingProof;
@@ -487,7 +628,9 @@ interface RequestScope {
  * executor's repository token requires the executor's own separate token and
  * the database's current session lease, repository grant and connection grant,
  * and a coding session's environment requires that same token and the
- * session's current lease.
+ * session's current lease. So does the relay, which sends a running session's
+ * request on to its MCP server or to GitHub with a sign-in the session never
+ * holds.
  */
 export class HttpCloudSecretBrokerService {
 	/** One company's broker, or the shared vault's companies (Vault By Default). */
@@ -499,6 +642,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #memberOrigins: ReadonlySet<string>;
 	readonly #oauth: CloudConnectorOAuthFlows | undefined;
 	readonly #codingExecutorToken: string | undefined;
+	readonly #relayTransport: CloudSecretRelayTransport;
 	readonly #proveBinding: NativeBindingProof | undefined;
 	readonly #modelLogins: CloudModelLoginVault | undefined;
 	readonly #modelLoginSignIns: CloudModelLoginSignIns | undefined;
@@ -542,6 +686,7 @@ export class HttpCloudSecretBrokerService {
 		this.#memberOrigins = new Set(origins.map(parseMemberOrigin));
 		this.#oauth = options.oauth;
 		this.#codingExecutorToken = options.codingExecutorToken;
+		this.#relayTransport = options.relayTransport ?? CLOUD_SECRET_RELAY_TRANSPORT;
 		this.#proveBinding = options.proveBinding;
 		this.#modelLogins = options.modelLogins;
 		this.#modelLoginSignIns = options.modelLoginSignIns;
@@ -597,6 +742,69 @@ export class HttpCloudSecretBrokerService {
 		await this.#proveBinding(binding, holder);
 	}
 
+	/**
+	 * One relay request (5j-6b): sent on to the MCP server the session has a sign-in for, or to GitHub for the
+	 * session's own repository, with the header the session never holds. The request's shape is checked before the
+	 * database is asked, once per request; the answer streams back with its status and only the headers the caller
+	 * needs. A redirect is refused, never followed. Every failure before the answer is the caller's opaque 403.
+	 */
+	async #relay(path: string, url: URL, request: IncomingMessage, reply: ServerResponse): Promise<void> {
+		// Either side's end ends the other: the reply's close, after a refusal too, ends the upstream connection.
+		const controller = new AbortController();
+		reply.once("close", () => controller.abort());
+		const mcp = path === "/v1/coding-mcp";
+		const methods = mcp ? ["GET", "POST", "DELETE"] : [path.endsWith("/refs") ? "GET" : "POST"];
+		if (!methods.includes(request.method ?? "")) {
+			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+			return;
+		}
+		const shape = mcp
+			? parseMcpRelayRequest(request, url)
+			: parseGitRelayRequest(request, url, path.endsWith("/refs"));
+		const scope = await this.#scope(url.searchParams.get("company")?.toLowerCase());
+		if (!scope) {
+			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+			return;
+		}
+		const signIn: CodingRelaySignIn =
+			shape.kind === "mcp"
+				? await scope.broker.codingMcpSignIn(shape.binding, AbortSignal.timeout(10_000), scope.companyId)
+				: await scope.broker.codingRepositoryFetch(shape.binding, AbortSignal.timeout(10_000), scope.companyId);
+		const idleMs = shape.kind === "mcp" ? MCP_RELAY_IDLE_MS : GIT_RELAY_IDLE_MS;
+		const answer = await openCloudSecretRelay(
+			this.#relayTransport,
+			{
+				origin: signIn.origin,
+				method: shape.relay.method,
+				path: `${signIn.path}${shape.relay.path}`,
+				headers: { ...shape.relay.headers, [signIn.headerName]: signIn.headerValue },
+				body: shape.relay.method === "POST" ? request : undefined,
+				idleMs,
+			},
+			controller.signal,
+		);
+		const status = answer.statusCode ?? 0;
+		const type = relayAnswerHeader(answer, "content-type");
+		const session = shape.kind === "mcp" ? relayAnswerHeader(answer, "mcp-session-id") : undefined;
+		const encoding = answer.headers["content-encoding"];
+		if (
+			status < 200 ||
+			(status >= 300 && status < 400) ||
+			status > 599 ||
+			(encoding !== undefined && encoding !== "identity") ||
+			(shape.kind === "git" && status === 200 && type !== shape.answerType)
+		)
+			throw new Error("Coding relay answer is refused");
+		reply.writeHead(status, {
+			"cache-control": "no-store",
+			...(type === undefined ? {} : { "content-type": type }),
+			...(session === undefined ? {} : { "mcp-session-id": session }),
+		});
+		reply.flushHeaders();
+		reply.setTimeout(idleMs, () => reply.destroy());
+		await pipeline(answer, reply);
+	}
+
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
 		const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
 		const path = url.pathname;
@@ -628,6 +836,21 @@ export class HttpCloudSecretBrokerService {
 			}
 			if (request.method === "GET" && path === "/v1/oauth/callback") {
 				await this.#oauthCallback(url, reply);
+				return;
+			}
+			// A running coding session's relay (5j-6b), under the repository token's gate: only the executor's own
+			// bearer opens it. Its requests and answers stream, so it is answered before the JSON routes.
+			if (
+				path === "/v1/coding-mcp" ||
+				path === "/v1/coding-repository-fetch/refs" ||
+				path === "/v1/coding-repository-fetch/upload-pack"
+			) {
+				if (
+					this.#codingExecutorToken === undefined ||
+					!tokenMatches(this.#codingExecutorToken, request.headers.authorization)
+				)
+					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+				else await this.#relay(path, url, request, reply);
 				return;
 			}
 			if (request.method !== "POST" || request.headers["content-type"]?.split(";", 1)[0] !== "application/json") {

@@ -137,6 +137,11 @@ create function pg_temp.nora() returns jsonb language sql as $$
 		'name', 'Nora')
 $$;
 
+-- The company chose Shared context, the beta its place on the test list offers, so its runs are recorded in the beta
+-- (C5, 20260930508000).
+insert into public.qorpera_memory_tree_companies(profile_id) values ('63400000-0000-4000-8000-000000000010');
+insert into public.qorpera_company_memory_modes(profile_id, mode) values ('63400000-0000-4000-8000-000000000010', 'tree');
+
 -- The setup: two hires and their group chat; the zoom run (Agent A's, for the member); Nora's transcript, nine
 -- included events and a session_info; Nora's tree, with lines 0-3 at level 0, both at level 1 and the first at level 2.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'zoom-setup', '[{"op":"mkdir","path":"agents"},{"op":"mkdir","path":"agents/groups"}]'),

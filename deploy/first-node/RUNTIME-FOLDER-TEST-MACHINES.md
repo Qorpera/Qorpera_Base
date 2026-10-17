@@ -23,7 +23,7 @@ program that keeps running publishes about two seconds after its last change, ea
 ends (item 3). Each save is credited to the commands that ran while it was made, from #419's command records on the
 node. Starting a command passes the automatic review as an outside effect, with or without `/company` (Q2; design: "a
 worker's commands pass under its agent's rules"). The read-only repository disk at `/mnt/repository`, and the copy of it
-to the machine's own disk, retire (build order row 6).
+to the machine's own disk, retire (build order row 6; 6e-1, migration `20260930506000`).
 
 What does not change: a test machine is the company's own scratch compute, any agent of the company may use it, and every
 member sees it. Its only network is the agent exit: it reaches the internet but no private network, the NAS, the nodes or
@@ -192,7 +192,8 @@ mount propagation proof for a container started before the mount came up.
   links lane), so a test machine gets them with the program.
 - **Item 8's caches** stay on the machine's disk: "The folder program keeps item 8's caches on the machine." Step 6
   uses that part of the program as whichever slice builds it first leaves it (step 5's plan: "whichever of it and 5d
-  lands first builds the program's part, and the other reuses it"). 6e, which retires the copy to the machine's disk, waits for it.
+  lands first builds the program's part, and the other reuses it"). 6e-1, which retires the copy to the machine's disk,
+  does not wait for it (coordinator, 17 Oct); a build in `/company` (README's acceptance step 4) does: item 8's MC1–MC3.
   5d builds that part for worktrees, and item 8's plan
   ([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)) extends it; there a test machine's cache is
   one per machine, in the folder 6d's guest gives (`--cache-dir`).
@@ -371,10 +372,10 @@ why not when it does not (cards show changes, not files).
 
 ## What replaces `/mnt/repository`
 
-Today `machine_start` with `repositoryWorker` attaches a coding session's repository folder read-only at
-`/mnt/repository`, places the machine on the node whose NAS holds that session, and the agent copies it to the
-machine's disk before building (README, "A coding session's repository"). The design's build order row 6 retires
-"`/mnt/repository` and copies to the machine's disk".
+Until 6e-1, `machine_start` with `repositoryWorker` attached a coding session's repository folder read-only at
+`/mnt/repository`, placed the machine on the node whose NAS held that session, and the agent copied it to the
+machine's disk before building. The design's build order row 6 retires "`/mnt/repository` and copies to the machine's
+disk".
 
 **What replaces it.** The folder. After step 5 a session's work is in the code area of the company folder
 (`code/<owner>/<name>/worktrees/<workerId>/`, step 5's layout), which a test machine with `/company` sees like any other
@@ -382,29 +383,39 @@ path, and changes there follow step 5's code area rules (5b). Builds run in plac
 in the machine's own cache (item 8), so nothing is copied to the disk first. A machine no longer needs a particular
 node, so it places and wakes like any other.
 
-**What 6e removes**, with no compatibility (there are no users):
+**What 6e-1 removed** (migration `20260930506000`, test 684, `scripts/test-company-machine-v2-retire.mjs`), with no
+compatibility (there are no users):
 
 - `packages/runner-orchestrator/src/company-machine.ts`: `repositoryWorkerId` in the binding and
   `COMPANY_MACHINE_KEYS`, `CompanyMachineRepositoryStorage`, `companyMachineRepositorySource`, the `storage` parameter
   of `lxdCompanyMachinePlan` and `lxdCompanyMachineJournalPlan`, `COMPANY_MACHINE_REPOSITORY_UNAVAILABLE` and the
-  `repository` disk device. The binding's schema becomes `qorpera.lxd-company-machine/v2` (the observer that knows it
-  rolls first, as README's step 6 says for v1). 6e's migration retires every placement bound under v1, so each machine
-  starts fresh under v2.
+  `repository` disk device. The binding's schema is `qorpera.lxd-company-machine/v2`, and the executor and the observer
+  know only v2.
 - `packages/contracts/src/cloud-machine.ts`: `CLOUD_MACHINE_GUEST_PATHS.repository`.
-- `packages/runtime/src/cloud-machine-tools.ts`: the `repositoryWorker` argument and its description.
-- SQL (`20260928259050_runtime_company_machines.sql`): `machine_start`'s `repositoryWorker` branch
-  (`REPOSITORY_UNAVAILABLE`), the uses of `repository_worker_id` in the machine's JSON (:398), the binding (:471–478),
-  the wake rule (:542) and the candidates (:570), then the column itself. Each function is patched by an anchor that
-  must be present exactly once, as `20260928489995_runtime_node_agent_exit_placement.sql` does, and that file's clause
-  "a repository-tied machine's wake … cannot move" (:66–73) is patched out the same way; its copy in
-  `deploy/agent-exit/undo-20260930089100.sql:31` changes with it.
-- `deploy/machine/prove-machine-node.ts:61`, and the tests that cover the repository in
-  `packages/runner-orchestrator/test/` (`company-machine-host.test.ts:53`, `company-machine.test.ts`,
-  `runtime-node-inventory.test.ts:156`), `supabase/tests/628_runtime_company_machines.test.sql` and
+- `packages/runtime/src/cloud-machine-tools.ts`: the `repositoryWorker` argument; the description names where a coding
+  session's work is in `/company`.
+- SQL: `machine_start`'s `repositoryWorker` branch (`REPOSITORY_UNAVAILABLE`), the machine's view's `repository`, the
+  binding, admission's wake rule and largest sizes, the executor's pick (`qorpera_admit_executor_machines`), the node
+  reservation's repository-tied wake (`20260928489995`) and the operator's `codingWorkerId` (null for every company
+  machine), then the column itself. Each function is patched by an anchor that must be present exactly once. The
+  binding text keeps `repositoryWorkerId` in its key order for the v1 executor's custody of its retired placements.
+  `deploy/agent-exit/undo-20260930089100.sql` is refused after it (its text is gone).
+- `deploy/machine/prove-machine-node.ts`, and the tests that cover the repository in
+  `packages/runner-orchestrator/test/`, `supabase/tests/628_runtime_company_machines.test.sql` and
   `supabase/tests/897_runtime_node_agent_exit_placement.test.sql`.
-- `deploy/machine/README.md`: "A coding session's repository" goes, Lifetime's "nor one with a repository attached"
-  goes, and acceptance step 4 becomes: the agent runs `cd /company/code/<owner>/<name>/worktrees/<workerId> && npm ci
-  --ignore-scripts && npm run test:hosted-db` with `notify: true`, ends its turn and is woken with the result.
+- `deploy/machine/README.md`: "A coding session's repository" and Lifetime's "nor one with a repository attached" went,
+  and acceptance step 4 builds in `/company` once item 8's caches (MC1–MC3) are in.
+
+**Rollout: the database first, then the node.** The migration retires every current v1 placement, as a move retires
+one: its open commands end lost, and the machine is placed again with a v2 binding (at once when it wants to run, at its
+next wake when it sleeps). The executor already on the node
+(it knows v1) stops and deletes each retired v1 instance and releases it, and refuses to start a v2 placement
+(`start:INVALID_COMPANY_MACHINE_BINDING`, harmless: it is started once the node rolls). Once no retired v1 placement is
+left (`select count(*) from public.qorpera_company_machine_placements where binding ->> 'schema' =
+'qorpera.lxd-company-machine/v1' and removed_at is null` is 0), the observer and the executor roll. An executor that
+knows only v2 leaves a v1 instance it still finds (a node that was off during the database step) and logs each pass
+`company-machine-error` with its `placementId` and `INVALID_COMPANY_MACHINE_BINDING`; the observer shows the instance
+(`qorpera-machine-<placement id without dashes>`) as unregistered and the node unavailable until someone deletes it.
 
 Step 5's Q3 already accepts the gap between its retirement of the session folder and this one.
 
@@ -442,12 +453,13 @@ Reserved in the registry: migration slots 20260930420000–429000 and SQL tests 
 | 6b | Folder service: test machine views. The `test_machine` kind in `coreAccess`, served only to its own instance in `testMachineProjects`; command windows on 5c's control socket; per-change tags; per-unit `credits`; the quiet publish; a command's end boundary and the machine's final boundary; reasons as 4c | The service's tests with a stand-in core: a `test_machine` view refused from another test machine, an office, a coding machine or an unlisted project; a change made in one window credited to it, one made in two windows to both, one with none to the starter; a quiet publish about 2 s after the last change; an end boundary that publishes the command's changes before it answers; the final boundary with `final`; a window message from a peer that is not the executor's uid refused |
 | 6c | Image, guest helper and mount. `build-machine-image.sh`: the toolbox (item 7) as 4e's list, `fuse3` and the folder program, in a new image generation. The guest helper starts the folder program at `/company` with the pass from exec stdin and restarts it while the view is open. `security.devlxd=false` on test machines | The image contract tests: every toolbox command answers `--version`, the folder program and `fuse3` are present. The helper's tests: the pass is in no file, unit environment or log, and the program restarts after it exits. The plan's tests: `security.devlxd=false` and no pass in any config key. Step 4's mount propagation proof for a Docker container started before the mount, in a throwaway nested VM on the test machine |
 | 6d | Executor cutover, review and output paths. The executor opens the boot's view after `qorpera_mark_company_machine_running` and hands over the pass; a start waits for the boot's open; windows; a boundary before every answer that carries output; the end order; the final boundary before every power-off, not held past a minute; a guest reboot's final boundary before the new boot is recorded; a restart on a narrowing or a crashed service; the placement retired on `unreadable`, and when a later boot's open on a placement that had a view is refused for the starter's authority; the placement retired and the machine started again on a new disk when the open is refused because the disk was used without the root-read check. `machine_run` becomes "external". Every output path takes in the view's reads first | `company-machine-host` tests with a stand-in folder service: the order of window, boundary and recorded end; the final boundary before the power-off, and a stop not held past a minute; a reboot's final boundary before the new boot; the placement retired on `unreadable`; after a narrowing, the restart's refused open retires the placement, and the machine starts on a new disk with today's access, while a refused open on a placement that never had a view does not retire it; an open refused because the disk was used without the check retires the placement and starts the machine again on a new disk, whose boot opens the view, before any command of the refused boot starts. `cloudActionEffect`: `machine_run` "external", the other machine tools unchanged. The receipts, the notify continuation and a worker's read take in the view's reads before they return output. A worker's `machine_run` reaches the review with its agent's rules |
-| 6e | The report and the retirements ("What replaces `/mnt/repository`", "The report"). The binding becomes v2, and v1 placements are retired by the migration | `company-machine.test.ts` with the v2 binding and no repository device; a v1 placement retired by the migration (SQL); `machine_start` without `repositoryWorker`; 628 and 897 without the repository; the report's fields (`/company` or why not, credits, refused units, overlaps) |
+| 6e | The report and the retirements ("What replaces `/mnt/repository`", "The report"). 6e-1 (migration `20260930506000`, test 684): the binding becomes v2, and v1 placements are retired by the migration. 6e-2: the report | `company-machine.test.ts` with the v2 binding and no repository device; a v1 placement retired by the migration (SQL); `machine_start` without `repositoryWorker`; 628 and 897 without the repository; the report's fields (`/company` or why not, credits, refused units, overlaps) |
 | 6f | Live proof, below | Below |
 
 **Order.** 6a, 6b and 6c can be built side by side (6b against a stand-in core; it merges after 4c and 5c, which it
 reuses; 6a's crashed-service refusal needs 5a's `served_by`). 6d needs 6a, 6b and 6c; no test machine mounts the
-folder before 6d. 6e needs 6d and item 8's caches in the folder program. 6f comes last.
+folder before 6d. 6e needs 6d; a build in `/company` needs item 8's caches in the folder program (MC1–MC3). 6f comes
+last.
 
 **Live proof (6f)**, on a test company, without Codex (the tools called by a script, as `prove-machine-node.ts` does):
 

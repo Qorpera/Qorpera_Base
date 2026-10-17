@@ -186,10 +186,20 @@ request; the authority's `service_origin` stays that bare origin.
   or exec host ever receives it. Since 5j-3 the same token, and only it, also
   opens `/v1/coding-environment`, which returns a leased session's environment
   variables opened from its `environment` secrets (`{schema, environment}`,
-  `Cache-Control: no-store`). A broker without the credential answers 404 on
-  both routes; the executor's token opens nothing else (`/v1/operations` stays
-  runtime-token only). Give it only to the brokers of companies that run coding
-  sessions, in a drop-in:
+  `Cache-Control: no-store`). Since 5j-6b it also opens the relay, which sends
+  a running session's request on with a sign-in the session never holds:
+  `/v1/coding-mcp` (GET, POST, DELETE) to the MCP server named in
+  `x-qorpera-mcp-url`, with that server's API-key sign-in as its header, and
+  `/v1/coding-repository-fetch/refs` (GET) and `/upload-pack` (POST) to the
+  session's own GitHub repository, with the company's GitHub token (never
+  receive-pack). Each request names the session in `x-qorpera-coding-worker`,
+  `x-qorpera-coding-lease` and `x-qorpera-coding-executor`, costs one database
+  read, and streams both ways; the answer keeps its status (a redirect becomes
+  the refusal), its content type, the MCP session id and
+  `Cache-Control: no-store`. A broker without the credential answers 404 on
+  all of these routes; the executor's token opens nothing else
+  (`/v1/operations` stays runtime-token only). Give it only to the brokers of
+  companies that run coding sessions, in a drop-in:
   `LoadCredential=qorpera-cloud-secret-coding-executor:/etc/qorpera-secret-broker/coding-executor`.
   Follow-up (not in v88): move the coding claim and lease RPCs off
   service_role to a dedicated executor authority, so a guest's service-role key
@@ -268,6 +278,44 @@ location = /v1/coding-environment {
     proxy_buffering off;
     proxy_pass http://$qorpera_operations_broker;
 }
+# F3 5j-6b: a running coding session's relay to its MCP servers and its own
+# repository, for the same executor token, routed by the same ?company= map
+# (the MCP server's URL travels in a header, so the query is the company
+# alone). Both ways stream: an MCP event stream and a git pack pass through as
+# they arrive, so buffering is off for the request and the answer, the body
+# has no size limit, and the read timeout outlasts the broker's own idle
+# timeout (5 minutes for MCP, 2 for git). The request carries the session's
+# lease and the answer its data; never add body logging or a proxy cache here.
+location = /v1/coding-mcp {
+    limit_except GET POST DELETE { deny all; }
+    if ($qorpera_operations_broker = "") { return 404; }
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    client_max_body_size 0;
+    proxy_read_timeout 600s;
+    proxy_pass http://$qorpera_operations_broker;
+}
+location = /v1/coding-repository-fetch/refs {
+    limit_except GET { deny all; }
+    if ($qorpera_operations_broker = "") { return 404; }
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    client_max_body_size 0;
+    proxy_read_timeout 600s;
+    proxy_pass http://$qorpera_operations_broker;
+}
+location = /v1/coding-repository-fetch/upload-pack {
+    limit_except POST { deny all; }
+    if ($qorpera_operations_broker = "") { return 404; }
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    client_max_body_size 0;
+    proxy_read_timeout 600s;
+    proxy_pass http://$qorpera_operations_broker;
+}
 ```
 
 The executor always sends `?company=<profileId>`. The operations map's empty
@@ -281,7 +329,13 @@ in a scratch prefix with a stand-in capture map). 5j-3's passes too (nginx
 1.28.3, the `nginx:1.28-alpine` image on the test machine, scratch prefix,
 stand-in map). There, a 16 MiB synthetic answer to an executor that read nothing
 for 5 s logged no "buffered to a temporary file" warning, and the same block
-without `proxy_buffering off;` logged one. nginx unlinks a temporary file as
+without `proxy_buffering off;` logged one. 5j-6b's three relay locations pass
+too (the same image, prefix and stand-in map). PUT, a GET to upload-pack and a
+POST to refs got 403, an unknown company 404. An event stream reached the
+reader event by event, a 4 MiB chunked upload reached the upstream as it was
+sent, and a 16 MiB answer to a reader that stalled 5 s arrived whole, with no
+temporary-file warning either way; the same blocks without the two buffering
+lines logged one for the upload and one for the answer. nginx unlinks a temporary file as
 soon as it opens it, so look for that warning, not for files under
 `proxy_temp_path`. A regex with `{}` must stay quoted. The callback's
 `error_log … crit` was chosen over accepting the leak: with the broker down,

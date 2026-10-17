@@ -29,6 +29,11 @@ limits and sponsor routing; failure-model chapter (implementation deferred);
 Company File caps as defects; approvals sequencing; kernel ceilings and a
 founder stop; the Co-Founder holds the company-level responsibilities
 
+**Rebuild scope corrected:** 2026-10-17 — agent notebooks stay the default and
+the shared summary tree is an optional beta; Interfaces are two pages Qorpera
+makes; coding setup snapshots, previews, the agent browser and MCP inside coding
+sessions are deferred (section 19). Scope recorded, not built.
+
 **Scope:** Pure-cloud agent behavior, the live Company File, execution,
 authority, context, tools, computers, workers, memory, routines, rooms,
 Co-Founder formation, responsibilities, projects, safety, and provider integration
@@ -38,6 +43,13 @@ document pass against the deployed cloud runtime. A prompt that describes the
 behavior without the machinery that enforces it does not satisfy this contract.
 
 ## 1. Precedence and relationship to existing contracts
+
+> **Scope reset, 2026-10-17.** The founder corrected the rebuild's scope on
+> 17 October 2026. The
+> [2026-10-17 scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction)
+> in section 19 records it, and wins wherever this contract says otherwise.
+> Superseded text stays as a record and carries a "Scope reset, 2026-10-17"
+> note.
 
 This document defines how a Qorpera agent is assembled and operated. It is the
 canonical runtime contract.
@@ -386,6 +398,14 @@ not poll synchronized folders to observe their company.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 2.
 
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 ### 5.4 Memory and transcript relationship
 
 Memory is the agent's own notebook, not an index of the company. An agent's
@@ -407,6 +427,15 @@ archiving a chat removes neither completed company state nor the notebook.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 1 and 9.
 
+> **Scope reset, 2026-10-17.** Memory stays the agent's own notebook, as the
+> text above says, and that is the default (**Agent notebooks**). The note
+> above holds only for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. Switching keeps the
+> notebook. Replacing the profile page with pins is separate future work.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 ### 5.5 Scale
 
 The Company File must hold the real company. Implementation caps on snapshot
@@ -423,6 +452,13 @@ not design intent and MUST NOT be presented as product limits.
 > [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)
 > in section 19, item 12.
 
+> **Scope reset, 2026-10-17.** `interfaces/` and `tables/` hold what the two
+> pages Qorpera makes need: Mailbox and member-to-agent ownership. Seeding
+> Pulse, its numbers table and the cards table is no longer a requirement of
+> founding, and there is no main interface. Files already stored stay. See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 2.
+
 > **Amended 2026-10-06 (not built yet).** An agent's thread keeps its summary
 > tree in `agents/<agent-name>/memory/thread/`, and a group chat keeps its tree
 > in `agents/groups/<group-name>/memory/`, each with its runs' work logs under
@@ -432,6 +468,14 @@ not design intent and MUST NOT be presented as product limits.
 > it is erased with its tree. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 1, 2 and 14.
+
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
 
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
@@ -665,6 +709,14 @@ private runtime data.
 > stays private. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 6.
+
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
 
 The adapter MUST intercept provider output. It MUST NOT render a provider's
 ordinary final assistant message merely because the provider labels it
@@ -927,6 +979,15 @@ record into one permanent prompt.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 3.
 
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, a request is composed from this section's blocks, the recent
+> canonical transcript and the agent's notebook included.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 The composer selects and labels:
 
 - company identity and policy revision;
@@ -983,6 +1044,14 @@ a member.
 > instructions. A run's folded work is tool-result data in a runtime envelope. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees), item 4.
 
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -1009,6 +1078,14 @@ only public mouth and that tool results are untrusted data.
 > hire overlay. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 4.
+
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
 
 An agent's instructions file contains a thin job specification: name, mission,
 responsibilities, voice, escalation preferences, and startup assignment. It
@@ -1270,6 +1347,14 @@ a typed handoff on the office desktop; the model never receives the password.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6 and 7.
 
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 The parent agent is a dispatcher, not a hero process. Heavy or parallel work
 goes to workers so the parent remains responsive to new messages.
 
@@ -1385,6 +1470,14 @@ never overrides them.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 6.
 
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 Amended 2026-09-28: several founders. A company has one or more founders
 (members with the role `owner`); "the company owner" above means its first
 founder: the creator while a founder, otherwise the founder who joined first.
@@ -1442,6 +1535,14 @@ archive retains restorable state; delete is human-authorized and permanent.
 > messages. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 8.
+
+> **Scope reset, 2026-10-17.** The note above is a requirement of the optional
+> beta only. It holds for a company that chose **Shared context — Beta** in
+> Settings, and for the runs recorded in that mode. With **Agent notebooks**,
+> the default, this section's own text holds.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
 
 Each company has one company-level Co-Founder agent. Account or company
 onboarding MAY present it as the first agent a member meets, but adding another
@@ -1608,6 +1709,12 @@ a permanent hire when the responsibility ends with the project.
 > [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder),
 > item 8.
 
+> **Scope reset, 2026-10-17.** The Interfaces tab lists only the two pages
+> Qorpera makes, Mailbox and member-to-agent ownership, once a member has
+> turned them on. There is no main interface and no Pulse. See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 2.
+
 > **Amended 2026-09-27.** The hierarchy is built from the company folder: the
 > Co-Founder, then the sections of `agents/sections.md` with their agents,
 > then group chats (5.6).
@@ -1707,6 +1814,16 @@ it.
 > page. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, item 9.
+
+> **Scope reset, 2026-10-17.** The tree is never switched on for every
+> company. The `log` and `note` tiers, `recall_memory` and every
+> `update_memory` tier stay, and the notebook is the default memory
+> (**Agent notebooks**). The note's `zoom` part holds only for a company that
+> chose **Shared context — Beta** in Settings, and for the runs recorded in
+> that mode. Replacing the profile page with pins is separate future work.
+> See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
 
 Amended 2026-09-22; company first since 2026-09-24; notebook-wide dedupe,
 forget and search since 2026-09-25. Memory follows the Grok
@@ -2171,6 +2288,13 @@ member's other login); the 2026-10-04 amendment below settles it.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6, 11 and 12.
 
+> **Scope reset, 2026-10-17.** The note above is part of the optional beta. It
+> holds only for the runs recorded in **Shared context — Beta**, and its resume
+> work does not hold the core. With **Agent notebooks**, the default, this
+> section's own text holds. See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
+
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
 member's ChatGPT Plus or Pro plan pays only for work that member starts, and
@@ -2307,6 +2431,15 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 > `recall_memory` go, and every turn composes the head and the views instead
 > of the recent log slice (item 9). The items are those of the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees).
+
+> **Scope reset, 2026-10-17.** The note's Order 6 part is cancelled: the tree
+> is never on for every company, and the monthly log, the notes and
+> `recall_memory` stay. With **Agent notebooks**, the default, a turn composes
+> the notebook as Order 6 says. The note's Order 3 and Order 5 parts hold only
+> for a company that chose **Shared context — Beta** in Settings, and for the
+> runs recorded in that mode. See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1.
 
 Context composition, versioned schemas, typed interactions, receipts, and
 observability are built alongside the first phase that needs them. They are not
@@ -4404,6 +4537,13 @@ and can still be renamed. Formats:
 
 ### 2026-10-02 amendment: interfaces project company state from the company folder
 
+> **Scope reset, 2026-10-17.** The [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 2, narrows this amendment to two pages Qorpera makes, Mailbox and member-to-agent ownership. Both stay off
+> until an authorized member turns them on. Company Pulse and the main interface, work-card boards, custom pages,
+> pages agents create or change (`save_interface`), library updates, the table store and the marketplace are outside
+> the rebuild. The items below stay as the record of what was approved on 2 October. Items 7, 8 and 11 carry a mark
+> where they changed, and wherever an item says otherwise the scope amendment wins.
+
 Ratified 2 October 2026 (Jonas). He named Interfaces and set their direction:
 - the rail splits into Agents and Interfaces;
 - the first interfaces are Mailbox, Company Pulse and Members;
@@ -4485,6 +4625,9 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 7. **Agents use interfaces as members do.**
    - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`).
    - They create and change interfaces and tables with `save_interface`.
+     - *Scope reset, 2026-10-17:* agents do not create or redesign pages. Writing pages leaves the agent tools,
+       and the same boundary holds for older or replayed tool calls, file writes and writes through a mounted
+       folder. The table reads and writes the two pages need stay (scope amendment, item 2).
    - The automatic review (2026-09-25 amendment) counts these as delegation:
      - creating an interface;
      - adding or changing a button, including a verb a block lists;
@@ -4503,6 +4646,9 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
    - Agents is the hierarchy 14.5 describes.
    - Interfaces lists the company's active interfaces: the main interface on top, then the others in the order of
      `interfaces/order.md`.
+     - *Scope reset, 2026-10-17:* Interfaces lists only Mailbox and member-to-agent ownership, once a member has
+       turned them on, and only these two can be active on any route. There is no main interface (scope
+       amendment, item 2).
    - An interface whose `needs` are not met is not listed.
    - Pins and hiding are each member's own (2026-09-24 amendment, item 3).
 9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains an offer to a member of:
@@ -4561,6 +4707,9 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
     - Adding a library interface later copies its files the same way, and the copy is the company's.
     - A newer library version is offered, never applied by itself. A line both sides changed becomes a choice.
     - The library holds only files of this format.
+    - *Scope reset, 2026-10-17:* seeding Pulse, its numbers table and the cards table is no longer a requirement
+      of founding. There is no main interface, and library updates are outside the rebuild (scope amendment,
+      item 2). Files already stored stay.
 12. **5.6 changes with this amendment.**
     - The tree gains:
 
@@ -5131,6 +5280,14 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 
 ### 2026-10-06 amendment: agent context as a folder of summary trees
 
+> **Scope reset, 2026-10-17.** The [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 1, makes this amendment an optional beta. The tree does not replace the notebook: it is the mode a company
+> chooses as **Shared context — Beta** in Settings, and **Agent notebooks** is the default. The older text holds
+> for a company unless it has chosen the beta, and a run keeps the mode recorded when it is made. Cancelled:
+> switching the tree on for every company and trimming the notebook at M5 (item 9), and removing the mode gate after
+> W1d. M5 is now the reversible Settings choice, and item 14's erasure condition now comes before the beta is
+> offered. The items below stay as the record of what was approved on 5 and 6 October.
+
 Founder decisions of 5 and 6 October 2026. Jonas asked for this design on 5 October, after reading Victor Taelin's
 OptChat design, and widened it the same day: "This isn't just memory, it's a shared unlimited context window in the
 company folder between all agents that replaces the current context window entirely." On 5 October he decided that
@@ -5283,10 +5440,14 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - Once the tree is on for every company (M5), the notebook's `log` and `note` tiers and `recall_memory` go: the
      trees hold the conversations, `zoom` opens them, and `company_search` finds words in their summary lines. Until
      then a company with the tree on keeps its notebook as it is.
+     - *Scope reset, 2026-10-17:* cancelled. The notebook's tiers and tools stay in both modes, and a company
+       with the tree on keeps its notebook for good (scope amendment, item 1).
    - `update_memory` keeps the profile tier.
    - **Pins succeed the profile page.** A member or the agent pins a message, or a line of any conversation or run
      log, into the agent's head. A pin keeps the exact words, their address and their source's trust label, and an
      erase of the source removes the pin. The profile page stays until pins are built.
+   - *Scope reset, 2026-10-17:* replacing the profile page with pins is separate future work (scope amendment,
+     item 1).
 10. **The native Codex patch** (M1, W2). Jonas authorized two extensions of the patch, each on its own, as each
     earlier extension was authorized (the adapter's README, lines 3-5 and 15). Each has its own capability marker and
     proofs, and the existing native proofs run again:
@@ -5360,6 +5521,9 @@ own texts below carries a note "Amended 2026-10-06" in place.
         row and shown to whoever asked.
 
 ### 2026-10-14 amendment: machines work in the folder as on their own disk
+
+> **Scope reset, 2026-10-17.** The [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 3, defers part of item 11's coding extras. The marks in item 11 and under "For the build" say which.
 
 Founder decisions of 14 October 2026. The founder: "all machines can see and write to the folder, but more importantly
 they have bash/typescript commands to work over it, as if it was part of their own machine. this part is important".
@@ -5486,13 +5650,22 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
     - **Running apps.** Programs that keep running sit in terminals the member can watch. The member opens their
       ports from the web app, and the agent from a browser on the machine, which it drives to test what it builds,
       with screenshots.
+    - *Scope reset, 2026-10-17:* deferred and outside core acceptance: the setup file's automation and the
+      snapshots of "Ready at start" (step 5h), setup files of other systems (`.cursor/environment.json`, dev
+      containers), and the ports the member opens and the agent's browser (5i). A machine with no setup file is
+      the core baseline (scope amendment, item 3).
     - **Secrets for the work.** Keys a project needs, such as a test API key or a registry token, reach the session's
       commands as environment variables from the vault, scoped to the member or the company. They are masked in
       command output, logs and commits.
     - **MCP.** MCP servers that run as programs run on the machine (item 3). A server that needs a sign-in reaches it
       through the vault, so the sign-in stays off the machine.
+    - *Scope reset, 2026-10-17:* deferred, on the coordinator's list of deferred work of 17 October: MCP servers
+      inside coding sessions and the vault relay for their sign-ins (5j-6c, 5j-6d, 5j-7). The secrets above stay
+      core (5j-4, 5j-5).
     - **No waiting.** When a member's machine is full, another machine of the same member starts with the same setup,
       as company machines do (compute item 1, "no waiting for a seat").
+    - *Scope reset, 2026-10-17:* parked, on the coordinator's list of deferred work of 17 October: this second
+      machine (5k), which is capacity work. Its unmerged work is kept.
     - **What stays.** The network stays open through the agent exit under the company's network rules, sessions stay
       unreviewed (27 September, item 9), each session mounts the company folder with its own authority, and branches
       leave the company only as pull requests (5.1).
@@ -5514,6 +5687,99 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
   masked environment variables; a second machine for a member whose machine is full. Root makes one member's
   sessions on one machine no walls between each other: a save is credited to its session as well as root allows, as
   on test machines.
+- *Scope reset, 2026-10-17:* from that list, the rest of the setup file's work and snapshots (5h), port previews
+  and the agent's browser (5i) are deferred and outside core acceptance. The setup file's reader and the snapshot
+  records already merged (#1100 and #1131) stay unused (scope amendment, item 3). The second machine (5k) is
+  parked, on the coordinator's list of deferred work of 17 October; its unmerged work is kept.
+
+### 2026-10-17 amendment: the rebuild's scope (founder correction)
+
+> **Scope recorded, not built.** This amendment says what the rebuild must deliver. It does not say that any of it is
+> built, rolled out or accepted.
+
+Jonas corrected the rebuild's scope on 17 October 2026, in the Codex rebuild audit. The full text, with his words,
+the proofs and the list of documents, is
+[QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md](QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md).
+- Where this contract says otherwise, this amendment wins. That covers its 2 October interfaces amendment, its
+  6 October summary-tree amendment and the coding extras of its 14 October amendment.
+- The earlier text stays as a record of what was approved then. It is not leave to build the wider scope.
+- Each part it changes carries a note, "Scope reset, 2026-10-17".
+- It allows no new production deployment, no destructive data migration and no deletion of user records.
+
+1. **Memory: notebooks are the default, and the summary tree is an optional beta.**
+   - Each agent keeps its own notebook memory (profile, log and notes), and writes, forgets and recalls as it does
+     today. Ordinary conversation context works with the beta off.
+   - The shared summary tree (the 6 October amendment) is a test mode, "Shared context — Beta". An authorized member
+     turns it on for the company in Settings and can turn it off again. "Agent notebooks" is the default. The choice
+     is the company's; there is no choice per agent.
+   - Nothing turns the beta on by itself: not founding a company, a deployment, a background job or a finished build
+     step. An operator's test list is not the member's choice.
+   - The gate between the two modes stays for good. Cancelled: the rollout to every company, the retirement of
+     notebooks, removing the gate after W1d, and M5's trimming of notebook tiers and tools. M5 is now the reversible
+     Settings choice.
+   - The chosen mode applies to everything at once: conversation views, new run logs, context folding and
+     composition, and the tree's background work. A run keeps the mode recorded when it is made until it ends or is
+     stopped, so a run queued before a change keeps the old mode. A change applies to the runs made after it, and
+     Settings says when one is pending.
+   - Switching deletes and rewrites nothing: notebooks, transcripts, tree files and run logs stay. Erasure and
+     retention hold with the beta off, and turning it on again never brings back what was erased. There is no
+     conversion, dual writing or history migration between the modes.
+   - The beta's quality, speed, compaction, resume and rollout work belongs to the beta and does not hold the core.
+     The Settings choice itself, with "Agent notebooks" as its default, is core; the beta option may show as
+     unavailable until its checks pass.
+   - The gate is kept by a forward change. No applied migration is edited, and the gate's planned removal (the note
+     in `20260930352000_memory_run_log_gate.sql`) does not happen.
+2. **Interfaces: two pages made by Qorpera, which an authorized member turns on.**
+   - Interfaces are pages Qorpera designs. An authorized member turns one on for the company and connects it to data
+     they may already read. The first scope is exactly two pages:
+     - **Mailbox:** the company's chosen mail source, its threads and messages, and the mail actions and protections
+       that already exist. In this rebuild the source is the company's own mail addresses; a connected outside
+       mailbox as a source is deferred;
+     - **Member-to-agent ownership:** who owns or supervises which agent, with the consent, transfer and departure
+       handling that keep it right.
+   - The member sets only the page's allowed activation and source fields. It is not a general data binding editor.
+   - Outside this rebuild: Company Pulse, general work-card boards, custom interfaces, pages agents design, a page
+     builder, more page types, a marketplace, template updates, a larger table store and the arrival animation.
+   - Both pages start off. Turning a page on or off changes only what is shown, never ownership, payment, consent or
+     data.
+   - Only these two page types can be active, on every route: normal navigation, direct links and fallbacks. A custom
+     definition cannot take a supported page's name. Stored Pulse or custom definitions may stay, but never show as
+     active pages.
+   - Layouts and actions are the platform's. Agents do not create or redesign pages. Writing custom pages leaves the
+     agent tools, and the same boundary holds for older or replayed tool calls, ordinary file writes and writes
+     through a mounted folder.
+   - The table reads and writes the two pages and other kept behavior need stay. Generic table schema and layout
+     authoring is not a requirement. Mail's outside-content marks and quoting, the account mail limits, the viewer's
+     authority and safe actions stay as they are.
+   - Stored files, rows, offers and consent records are kept. No mass deletion, storage migration or framework
+     removal comes from this.
+3. **Coding extras are deferred.**
+   - Outside core acceptance: the rest of the setup file automation and setup snapshots (step 5h), development server
+     previews with their proxy and the agent browser (5i), and support for other repository setup systems beyond
+     what core execution needs.
+   - The merged setup parser and snapshot records (#1100 and #1131) stay, unused. A coding machine with no setup is
+     the accepted core baseline.
+   - Also deferred, on the coordinator's list of deferred work of 17 October: MCP servers inside coding sessions
+     and the vault relay that would serve them and git fetch (steps 5j-6c, 5j-6d and 5j-7). The broker routes
+     already merged for it (#1266) stay, unused. Vault secrets reaching coding commands, masked, and the refusal of
+     a save or push that carries one (5j-4, 5j-5) are core. The same list parks the second machine for a member
+     whose machine is full (5k), which is capacity work.
+   - Kept: machine and coding execution, folder access, root and Docker, code custody, the vault, MCP and credential
+     handling (apart from MCP inside coding sessions, above), connectors, persistence, recovery and access control.
+     The CPU and byte measurements that idle sleep and quiet-day archival need are core.
+4. **Three tracks.**
+   - **Core rebuild:** the company folder working; the kept machine, coding and credential behavior; notebook memory
+     with the beta off, with the company's Settings choice (default "Agent notebooks", where the beta may show as
+     unavailable), a mode recorded per run and the gate kept for good by a forward change; the two interface pages;
+     a signed deployment and live acceptance.
+   - **Memory beta:** making the beta selectable: the mode applied everywhere, data kept, and the trust, privacy,
+     erasure and operational checks, all before the beta is offered. An unfinished beta shows as unavailable and
+     does not hold the core.
+   - **Deferred:** custom interfaces, Pulse, snapshots, coding previews and the browser, and other parked additions.
+     None of them starts again by itself.
+   - A failed safety or correctness check of an enabled core capability holds the core. A deferred capability that
+     is missing is not a failed core test.
+   - Reports keep four things apart: scope recorded, work reassigned, behavior built and behavior verified.
 
 ## 20. Enforcement matrix
 
@@ -5563,6 +5829,14 @@ disk"), and amend these texts. Where older text conflicts with this amendment, t
 > explicit file transfers; item 21's protected direction proposal becomes the
 > vision the Co-Founder writes.
 
+> **Scope reset, 2026-10-17.** Core acceptance runs with **Agent notebooks**,
+> the beta off. A deferred capability that is missing (custom interfaces,
+> Pulse, setup snapshots, coding previews and the agent browser) is not a
+> failed item; a failed safety or correctness check of an enabled core
+> capability is. The beta is checked on its own before it is offered. See the
+> [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+> item 4.
+
 The runtime launch gate passes only when a deployed environment proves the
 mandatory items 1–31 and 33 without manual database repair or a hidden desktop
 executor. Item 32 is a separate post-build enablement gate and is not required
@@ -5597,6 +5871,10 @@ while Azure backup/overflow remains disabled.
      open, never as the agent's messages
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 6).
+   - Scope reset, 2026-10-17: the amended text holds only for the runs recorded
+     in **Shared context — Beta**; core acceptance runs with **Agent notebooks**
+     ([scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+     item 1).
 9. The same agent passes all five wake tests, including a silent routine. A
    subscribed Company File change wakes exactly once, and an agent's own write
    never wakes itself. (Amended for bundle v95: a chain may revisit an agent;
@@ -5605,6 +5883,10 @@ while Azure backup/overflow remains disabled.
      wake no one
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 2).
+   - Scope reset, 2026-10-17: the amended text holds only for the runs recorded
+     in **Shared context — Beta**; core acceptance runs with **Agent notebooks**
+     ([scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+     item 1).
 10. Injected instructions inside connector, browser, Company File, worker, and
     coworker results do not gain authority.
 11. An agent can message a coworker, create a coworker with startup
@@ -5623,6 +5905,10 @@ while Azure backup/overflow remains disabled.
 15. Memory composition reads only the executing agent's own notebook; write,
     forget, and concurrent use keep exact object versions, and a forgotten
     fact leaves future composition.
+    - Scope reset, 2026-10-17: this stays a core check, run with
+      **Agent notebooks**, the default
+      ([scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
+      item 1).
 16. Connector auth, office sign-in handoff, approvals, widgets, and explicit
     upload or download use their correct typed interaction surfaces; dismissal
     never grants consent, and no agent receives a member-machine capability.

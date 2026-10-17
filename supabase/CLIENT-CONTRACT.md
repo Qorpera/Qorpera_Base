@@ -352,6 +352,23 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera_answer_interaction`: its approval surface is owner/admin-only and
   does not know the review.
 
+### Company memory (2) — C5, `20260930508000_memory_mode.sql`
+
+- `qorpera_company_memory_mode(p_profile_id)` → `qorpera.company-memory-mode/v1`:
+  `mode` (the company's choice: `notebooks`, Agent notebooks, the default, or
+  `tree`, Shared context — Beta), `setAt` (null until first chosen),
+  `effective` (what new runs get: `tree` only while the choice is `tree` and
+  the beta is offered), `betaOffered` (false: show the beta as unavailable),
+  `canManage` (owner or admin), and `runsInOtherMode` (runs made before the
+  last change that are still queued or running in the other mode; each
+  finishes in its own mode). Any member, viewers included.
+- `qorpera_set_company_memory_mode(p_profile_id, p_mode)`: owners and admins
+  (42501 otherwise); `p_mode` `notebooks|tree` (22023 otherwise). `tree` is
+  refused with 55000 while `betaOffered` is false; `notebooks` always works.
+  The same choice again changes nothing. Returns the same object as the read.
+  A change applies to runs made after it: a run keeps the mode it was made
+  with, also when it resumes. Switching deletes and rewrites nothing.
+
 ### Conversations, turns, wakes (13)
 
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
@@ -964,6 +981,20 @@ environment.
   never the member who ended it. A key the supervisor
   changed in their own save that consents to the renamed row tells nobody.
 
+> **Scope reset, 2026-10-17.** Interfaces are two pages Qorpera makes, Mailbox and member-to-agent ownership
+> ([the scope amendment](../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §2). The calls for the company's pages
+> must cover these rules, and a client keeps to them:
+> - **listing:** only the two supported pages are listed, each with whether it is on; both start off;
+> - **fixed layouts:** a page's layout and actions are the platform's, never a definition a company or an agent
+>   wrote;
+> - **turning on and off, and source settings:** only an authorized member changes them, for the whole company,
+>   and only the allowed fields. It changes what is shown, never ownership, payment, consent or data;
+> - **direct routes and fallbacks:** a direct link, a stored route or a fallback opens only a supported page that
+>   is on, and never a Pulse or custom definition, whatever its name.
+>
+> Consent records stay. No call for the page set is listed here yet. This note records scope; it says nothing
+> about what is built.
+
 ### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
@@ -1238,6 +1269,10 @@ machine.
 | Connectors (Gmail, Google Drive, GitHub), company-owned | Order 7 (bundle v87) | web Settings → Connections → Services |
 | Coding sessions (thread element: list, read, answer, delegate) | Order 9 part 1 (PR #211); no executor yet, so no session exists in production until part 3 | build the thread element against the RPCs above; render nothing when the list RPC is not deployed |
 | Repositories, coding executors, preview route | Order 9 parts 3–4 | later |
+
+> **Scope reset, 2026-10-17.** The preview route (development server previews, step 5i) is deferred and outside
+> this rebuild ([the scope amendment](../QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md), §3). Repositories and
+> coding executors stay.
 
 ### Thread interactions (typed cards, bundle v75)
 

@@ -210,6 +210,13 @@ export interface CommitOutcome {
 	readonly outcome: CommitOutcomeKind;
 	readonly reason: string | null;
 	readonly version: string | null;
+	/** A rule's refusal: the first problem the core names, its stable code and plain message (C6: layout_authoring). */
+	readonly problem?: CommitProblem;
+}
+
+export interface CommitProblem {
+	readonly code: string;
+	readonly message: string;
 }
 
 export interface CommitAnswer {
@@ -277,11 +284,22 @@ export function parseCommitAnswer(value: unknown, units: number): CommitAnswer {
 			if (u.unit !== index + 1 || typeof u.outcome !== "string" || !OUTCOMES.has(u.outcome))
 				invalidAnswer("commit unit");
 			if (u.reason !== undefined && typeof u.reason !== "string") invalidAnswer("commit reason");
+			// The first problem a rule names, when it has a code and a message; only the report's words, so never a reason
+			// to refuse the answer.
+			const first: unknown = Array.isArray(u.problems) ? u.problems[0] : undefined;
+			const problem =
+				typeof first === "object" &&
+				first !== null &&
+				typeof (first as Record<string, unknown>).code === "string" &&
+				typeof (first as Record<string, unknown>).message === "string"
+					? (first as { code: string; message: string })
+					: undefined;
 			return {
 				unit: index + 1,
 				outcome: u.outcome as CommitOutcomeKind,
 				reason: (u.reason as string | undefined) ?? null,
 				version: u.version === undefined || u.version === null ? null : versionOf(u.version),
+				...(problem ? { problem: { code: problem.code, message: problem.message } } : {}),
 			};
 		}),
 	};

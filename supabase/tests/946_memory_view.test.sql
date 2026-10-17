@@ -1,6 +1,6 @@
 -- @fixture 970_memory_branches.test.sql until "-- The checks start here."
 -- Summary trees M1b-4a (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §5.3, §13; 20260930204000): the primary view and
--- its record, native host calls. The gate (a listed company, a conversation of the run's environment); T, the included
+-- its record, native host calls. The gate (a beta run, a conversation of the run's environment); T, the included
 -- events before the inputs that woke the run (the run's own, or those its wake names, as a room post's), or up to the
 -- transcript start with no such event; the tree. A record per step of an attempt, with the folder clock as the view
 -- reference's asOfSeq: replays, a different request, a new attempt, malformed requests; the run check first; the grants
@@ -29,17 +29,21 @@ create function pg_temp.t(p_who text default 'nora') returns jsonb language sql 
 	from (select public.qorpera_memory_view_of(pg_temp.run_id(p_who)) as v) x
 $$;
 
--- 1. The gate: a listed company, a conversation of the run's environment ----------------------------------------------
+-- 1. The gate: a run recorded in the beta (C5), a conversation of the run's environment -------------------------------
 
 do $$
 declare
-	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora uuid := pg_temp.thread('nora');
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora uuid := pg_temp.thread('nora'); mode text;
 begin
-	perform pg_temp.same(pg_temp.view('nora'), null, 'A company not listed');
-	perform pg_temp.fx('insert into public.qorpera_memory_tree_companies(profile_id) values (''63400000-0000-4000-8000-000000000010'')');
+	-- A notebook run has no view, nor has a run made before C5 (no mode): the run's mode decides, not the company's choice.
+	foreach mode in array array['notebooks', null] loop
+		perform pg_temp.fx(format('update public.qorpera_execution_runs set memory_mode = %L where id = %L', mode, pg_temp.run_id('nora')));
+		perform pg_temp.same(pg_temp.view('nora'), null, format('A run in mode %s', coalesce(mode, 'none')));
+	end loop;
+	perform pg_temp.fx(format('update public.qorpera_execution_runs set memory_mode = %L where id = %L', 'tree', pg_temp.run_id('nora')));
 	perform pg_temp.same(pg_temp.view('nora'), jsonb_build_object('schema', 'qorpera.memory-view/v1',
 		'conversation', jsonb_build_object('sessionId', nora, 'kind', 'thread', 'name', 'Nora'), 'messages', 0, 'lastSequence', null,
-		'tree', public.qorpera_memory_tree_read(env, nora)), 'A listed company: Nora''s view, at transcript start 0');
+		'tree', public.qorpera_memory_tree_read(env, nora)), 'A beta run: Nora''s view, at transcript start 0');
 	perform pg_temp.same(pg_temp.view('nora') #> '{tree,root}', 'null', 'No tree yet');
 
 	-- A conversation of another environment has no view; the run check refuses it first.

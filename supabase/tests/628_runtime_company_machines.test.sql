@@ -205,13 +205,13 @@ begin
 		'Placed and starting, once: '||v_first::text);
 	perform pg_temp.base_assert(v_place.machine_id = v_row.id and v_place.id <> v_row.id and v_place.owner = 'mx-a'
 		and v_place.machine_id_sha256 = repeat('c',64)
-		and v_place.binding = jsonb_build_object('schema','qorpera.lxd-company-machine/v1','machineId',v_row.id,'placementId',v_place.id,
+		and v_place.binding = jsonb_build_object('schema','qorpera.lxd-company-machine/v2','machineId',v_row.id,'placementId',v_place.id,
 			'companyId',v_row.profile_id,
 			'environmentId',v_row.environment_id,'providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
 			'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0',
-			'cpus',2,'memoryBytes',4294967296,'rootDiskBytes',42949672960,'repositoryWorkerId',null)
+			'cpus',2,'memoryBytes',4294967296,'rootDiskBytes',42949672960)
 		and v_place.instance_sha256 = encode(extensions.digest(convert_to(public.qorpera_company_machine_binding_text(v_place.binding),'utf8'),'sha256'),'hex')
-		and public.qorpera_company_machine_binding_text(v_place.binding) like '{"schema":"qorpera.lxd-company-machine/v1","machineId":%,"placementId":%,"repositoryWorkerId":null}'
+		and public.qorpera_company_machine_binding_text(v_place.binding) like '{"schema":"qorpera.lxd-company-machine/v2","machineId":%,"placementId":%,"rootDiskBytes":42949672960}'
 		and v_allocation.company_machine_placement_id = v_place.id and v_allocation.coding_machine_id is null and v_allocation.run_id is null
 		and v_allocation.provider_adapter = 'machine-fixture'
 		and v_demand.provider_kind = 'machine' and v_demand.cpu_millis = 2000 and v_demand.memory_bytes = 4294967296
@@ -666,17 +666,17 @@ end $$;
 --     (packages/runner-orchestrator/test/company-machine.test.ts asserts the same string).
 do $$
 begin
-	perform pg_temp.base_assert(public.qorpera_company_machine_binding_text(jsonb_build_object('schema','qorpera.lxd-company-machine/v1',
+	perform pg_temp.base_assert(public.qorpera_company_machine_binding_text(jsonb_build_object('schema','qorpera.lxd-company-machine/v2',
 		'machineId','00000000-0000-4000-8000-000000000002','placementId','00000000-0000-4000-8000-000000000005',
 		'companyId','00000000-0000-4000-8000-000000000003',
 		'environmentId','00000000-0000-4000-8000-000000000004','providerId','machine-node','providerPolicySha256',repeat('a',64),
 		'project','machines','imageFingerprint',repeat('b',64),'bootstrapSha256',repeat('c',64),'storagePool','machines',
-		'network','qagent0','cpus',8,'memoryBytes',34359738368,'rootDiskBytes',107374182400,'repositoryWorkerId',null))
-		= '{"schema":"qorpera.lxd-company-machine/v1","machineId":"00000000-0000-4000-8000-000000000002",'
+		'network','qagent0','cpus',8,'memoryBytes',34359738368,'rootDiskBytes',107374182400))
+		= '{"schema":"qorpera.lxd-company-machine/v2","machineId":"00000000-0000-4000-8000-000000000002",'
 			|| '"placementId":"00000000-0000-4000-8000-000000000005","companyId":"00000000-0000-4000-8000-000000000003",'
 			|| '"environmentId":"00000000-0000-4000-8000-000000000004","providerId":"machine-node","providerPolicySha256":"' || repeat('a',64)
 			|| '","project":"machines","imageFingerprint":"' || repeat('b',64) || '","bootstrapSha256":"' || repeat('c',64)
-			|| '","storagePool":"machines","network":"qagent0","cpus":8,"memoryBytes":34359738368,"rootDiskBytes":107374182400,"repositoryWorkerId":null}',
+			|| '","storagePool":"machines","network":"qagent0","cpus":8,"memoryBytes":34359738368,"rootDiskBytes":107374182400}',
 		'The binding text matches the executor''s');
 	perform pg_temp.base_assert(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
 		like '%''machine_start'',''machine_run'',''machine_read'',''machine_cancel'',''machine_stop'',''machine_delete'',''machine_list''%',

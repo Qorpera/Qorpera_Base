@@ -46,13 +46,15 @@ begin
 		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
 	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}',
 		v_owner, 'leased', v_runner, v_assignment, repeat('a', 64), clock_timestamp() + interval '1 hour', v_run);
+	-- The memory mode as the run row's trigger pins it (C5, 20260930508000), which replica turns off.
 	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
 		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
 		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
-		audience_kind, audience_user_id, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids)
+		audience_kind, audience_user_id, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids, memory_mode)
 	values (v_run, v_profile, v_env, 'room_delivery', v_wake, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
 		v_staff, 1, v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_owner, v_owner, 'openai', 'gpt-test',
-		'provider_default', 'company', null, v_bundle, repeat('b', 64), p_session, '{}'::uuid[]);
+		'provider_default', 'company', null, v_bundle, repeat('b', 64), p_session, '{}'::uuid[],
+		public.qorpera_company_memory_mode_effective(v_profile));
 	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
 		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
 		sponsor_version, session_id, causal_root_id, causal_agent_ids, payload)
@@ -168,9 +170,11 @@ begin
 					'people','["64800000-0000-4000-8000-000000000001"]'::jsonb,'purpose','Plan the launch.'))))))),
 		'["saved", null]', 'the launch group');
 end $$;
-select pg_temp.run('one', pg_temp.thread()), pg_temp.run('two', pg_temp.thread()), pg_temp.run('g', pg_temp.chat()) \g /dev/null
--- The company is on the memory tree's list, so its runs keep logs (20260930352000); the fixture's removal takes the row.
+-- The company chose Shared context, the beta its place on the test list offers, so its runs are recorded in the beta
+-- and keep logs (20260930508000); the fixture's removal takes the rows.
 insert into public.qorpera_memory_tree_companies(profile_id) values ('64800000-0000-4000-8000-000000000010');
+insert into public.qorpera_company_memory_modes(profile_id, mode) values ('64800000-0000-4000-8000-000000000010', 'tree');
+select pg_temp.run('one', pg_temp.thread()), pg_temp.run('two', pg_temp.thread()), pg_temp.run('g', pg_temp.chat()) \g /dev/null
 
 -- The folders on the way to the logs, made by runs one and g; g's log with step 0.
 do $$

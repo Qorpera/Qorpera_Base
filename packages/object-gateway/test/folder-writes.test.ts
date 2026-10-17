@@ -559,6 +559,29 @@ describe("writes through the mount", () => {
 		expect((await view.publish()).paths).toEqual([{ path: "locked/x.txt", outcome: "saved" }]);
 	});
 
+	it("says which rule refused a change and why, as the core names it; the boundary's other changes save", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("interfaces")]);
+		core.rule = (path) =>
+			path.startsWith("interfaces/")
+				? { code: "layout_authoring", message: "page and table layout authoring is not available" }
+				: undefined;
+		const view = await open();
+		await write(view, "interfaces/page.md", "p");
+		await write(view, "notes.md", "n");
+		const report = await view.publish();
+		expect(report.paths).toHaveLength(2);
+		expect(report.paths).toContainEqual({
+			path: "interfaces/page.md",
+			outcome: "refused",
+			reason: "structured_rule: layout_authoring (page and table layout authoring is not available)",
+			kept: true,
+		});
+		expect(report.paths).toContainEqual({ path: "notes.md", outcome: "saved" });
+		expect(core.entries.has("notes.md")).toBe(true);
+		expect(core.entries.has("interfaces/page.md")).toBe(false);
+	});
+
 	it("publishes what is pending first when a change needs it", async () => {
 		const { root, core, open } = await fixture();
 		core.seed([folder("A"), await storeFile(root, "A/x", "x", 2, BIG)]);
