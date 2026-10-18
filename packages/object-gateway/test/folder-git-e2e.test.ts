@@ -258,6 +258,7 @@ async function area(files: Readonly<Record<string, string>> = {}, coding = false
 	cleanup.push(() => rm(base, { recursive: true, force: true }));
 	const root = join(base, "share");
 	const core = new FakeCore();
+	core.gitObjectRules = true;
 	const tree = await seedArea(base);
 	for (const [path, content] of Object.entries(files)) {
 		await mkdir(join(tree, dirname(path)), { recursive: true });
@@ -428,6 +429,23 @@ function refusedIn(boundary: MachineBoundary): { carries: string[]; waiting: str
 	expect(lines.filter((line) => ![CARRIES, WAITS_FOR_REFUSED].some((why) => line.endsWith(`: ${why}`)))).toEqual([]);
 	expect(waiting.filter((path) => !path.startsWith(`${R}/`))).toEqual([]);
 	return { carries, waiting };
+}
+
+/** How many removals a coding machine's boundary left unsaved in the first worker's view, after a repack: the core keeps
+ * the objects it holds and their folders (`git_object_delete`, 446200), and the view lets each removal go, kept nowhere.
+ * Nothing else is unsaved. */
+function removalsOnly(boundary: MachineBoundary): number {
+	const report = boundary.views.find((view) => view.viewId === WORKERS.first.viewId)?.report;
+	const unsaved = (report?.paths ?? []).filter((entry) => entry.outcome !== "saved");
+	const other = unsaved.filter(
+		(entry) =>
+			entry.outcome !== "refused" ||
+			entry.reason !== "git_object_delete" ||
+			entry.kept ||
+			!entry.path.startsWith(`${R}/objects/`),
+	);
+	expect(other.map((entry) => `${entry.path}: ${entry.outcome} ${entry.reason}`)).toEqual([]);
+	return unsaved.length;
 }
 
 /** The test value the coding sessions' secret check looks for (not a secret). */
@@ -1063,7 +1081,9 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			expect(await first.git("log", "--format=%s")).toBe("settings\nfirst\n");
 			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
 			await expect(stat(join(first.company, blob))).rejects.toMatchObject({ code: "ENOENT" });
-			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			// The repack's removals of the objects the core holds are refused once and let go; nothing else is unsaved.
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
 			expect(at.core.entries.has(blob)).toBe(false);
 			expect(at.core.entries.get(env)?.fileSha256).toBe(hashOf("KEY=from-the-vault\n"));
 			// No log names the refused commit, on the machine or in the core.
@@ -1118,7 +1138,8 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			await first.git("commit", "-q", "-m", "settings");
 			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
 			await expect(stat(join(first.company, blob))).rejects.toMatchObject({ code: "ENOENT" });
-			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
 			expect(at.core.entries.has(blob)).toBe(false);
 			await readsNoValue(first, oidOf(name));
 			await at.service.poll();
@@ -1126,6 +1147,81 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			expect(await eventually(async () => (await second.git("log", "--format=%s", "w1")) === log)).toBe(true);
 			expect(await second.git("show", "w1:notes.md")).toBe("plain notes\n");
 			await readsNoValue(second, oidOf(name));
+
+			// Git's own indexes of the objects stay in the view that made them, the way out's `objects/info/packs` among
+			// them: the core takes none from a session, and another session's git never reads one listing what this
+			// session's git held.
+			await first.git("commit-graph", "write", "--reachable");
+			await first.git("multi-pack-index", "write");
+			const indexes = ["info/commit-graph", "info/packs", "pack/multi-pack-index"].map((i) => `${R}/objects/${i}`);
+			for (const index of indexes) await stat(join(first.company, index));
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			for (const index of indexes) {
+				expect(at.core.entries.has(index)).toBe(false);
+				await expect(stat(join(second.company, index))).rejects.toMatchObject({ code: "ENOENT" });
+			}
+			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+			expect(await second.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"a coding session's own repack, then git gc, then the refusal's way out: each boundary saves, and git stays whole (C4)",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			for (const n of [1, 2]) {
+				await writeFile(join(first.worktree, `notes-${n}.md`), `notes ${n}\n`);
+				await first.git("add", `notes-${n}.md`);
+				await first.git("commit", "-q", "-m", `notes ${n}`);
+			}
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
+			const refs = versions(at.core, `${R}/refs/`);
+			const packedRefs = versions(at.core, `${R}/packed-refs`);
+			const packedRefsHere = await readFile(join(first.company, `${R}/packed-refs`), "utf8");
+			const published = at.core.gitPublishes.length;
+			const packs = join(first.company, R, "objects", "pack");
+			const packsHeld = async () => {
+				const files = await readdir(packs);
+				expect(files.filter((file) => file.endsWith(".pack")).length).toBeGreaterThan(0);
+				for (const file of files) expect(at.core.entries.has(`${R}/objects/pack/${file}`), file).toBe(true);
+			};
+
+			// A plain repack, with git's defaults: its pack is saved, its `objects/info/packs` stays in the view, and the
+			// removals of the loose objects the core holds are refused once and let go.
+			await first.git("repack", "-d");
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
+			await packsHeld();
+			await stat(join(first.company, `${R}/objects/info/packs`));
+			expect(at.core.entries.has(`${R}/objects/info/packs`)).toBe(false);
+
+			// `git gc` stops at its first file, `gc.pid.lock`: no lease guards it, so it is refused, and gc changes nothing.
+			const gc = await first.gitRun("gc");
+			expect(gc.code).not.toBe(0);
+			expect(gc.out).toContain("gc.pid.lock");
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
+
+			// The refusal's way out, as the executor words it: the same.
+			await wayOut(first);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
+			await packsHeld();
+
+			// No ref and no `packed-refs` changed, in the core or the view, and no lease is left; both sessions' git is whole.
+			expect(versions(at.core, `${R}/refs/`)).toEqual(refs);
+			expect(versions(at.core, `${R}/packed-refs`)).toEqual(packedRefs);
+			expect(await readFile(join(first.company, `${R}/packed-refs`), "utf8")).toBe(packedRefsHere);
+			expect(at.core.gitPublishes).toHaveLength(published);
+			expect(at.core.gitLeases.size).toBe(0);
+			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+			await at.service.poll();
+			const log = "notes 2\nnotes 1\nfirst\n";
+			expect(await eventually(async () => (await second.git("log", "--format=%s", "w1")) === log)).toBe(true);
+			expect(await second.git("fsck", "--no-progress", "--no-dangling")).toBe("");
 		},
 		TIMEOUT,
 	);
@@ -1218,7 +1314,8 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			await first.git("commit", "-q", "-m", "settings");
 			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
 			expect((await readdir(packs)).filter((file) => file.startsWith(`${pack}.`))).toEqual([]);
-			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
 			expect(held(at.core, `${P}.`)).toEqual([]);
 			await readsNoValue(first, oidOf(name));
 			await at.service.poll();
@@ -1286,7 +1383,8 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			await first.git("commit", "-q", "-m", "notes");
 			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
 			await expect(stat(join(first.company, `${P}.pack`))).rejects.toMatchObject({ code: "ENOENT" });
-			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBeGreaterThan(0);
+			expect(removalsOnly(await at.service.boundary(CODING_MACHINE_ID))).toBe(0);
 			expect(held(at.core, `${P}.`)).toEqual([]);
 			await readsNoValue(first, o1);
 		},

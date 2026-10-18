@@ -25,7 +25,14 @@ import {
 	type UploadSeal,
 	type ViewRenewal,
 } from "../src/folder-service/core.ts";
-import { type GitUnit, gitObjectPath, gitPlace, gitReflog } from "../src/folder-service/git.ts";
+import {
+	type GitUnit,
+	gitObject,
+	gitObjectPath,
+	gitPlace,
+	gitPublishedObject,
+	gitReflog,
+} from "../src/folder-service/git.ts";
 import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
 import type { CommitUnit, NewFolderEntry } from "../src/folder-service/plan.ts";
@@ -97,6 +104,19 @@ export function folder(path: string, version = 1): CoreEntry {
 /** A link's core entry (20260930380000): its target, and nothing of a file's. */
 export function link(path: string, target: string, version = 1): CoreEntry {
 	return { path, kind: "symlink", version: v(version), target, updatedAt: "2026-10-01T12:00:00.000Z" };
+}
+
+/** Why the core refuses a session's write, link or folder under a code area's `repo.git/objects` (446200's
+ * `qorpera_folder_git_refusal`), or null where it takes one. */
+function gitObjectRefusal(u: CommitUnit): string | null {
+	if (u.op === "move") return null;
+	const place = gitPlace(u.path);
+	if (place.kind !== "git" || !gitObject(place.rest)) return null;
+	if (/^objects\/pack\/[^/]*\.keep$/.test(place.rest)) return "git_keep_file";
+	const folder = /^objects(\/[0-9a-f]{2}|\/pack)?$/.test(place.rest);
+	if (u.op === "delete") return folder || gitPublishedObject(u.path) ? "git_object_delete" : "git_platform_only";
+	const taken = u.op === "write" ? gitPublishedObject(u.path) : u.op !== "symlink" && folder;
+	return taken ? null : "git_platform_only";
 }
 
 /** The folder core, in memory: one company, a journal of change sets and access changes, and a visibility rule for
@@ -320,6 +340,11 @@ export class FakeCore implements FolderCore {
 	readonly endedCommands = new Set<string>();
 	/** A path's units the core parks for review, applying nothing (P40: an agent's change that needs a member's). */
 	park: (path: string) => boolean = () => false;
+	/** Opt-in: the core's rule for what a view other than the code host's (the platform's) writes under a code area's
+	 * `repo.git/objects` (446200): a pack's `.keep` is refused (`git_keep_file`), and a file there that is no object, a
+	 * link, or a folder but `objects/xx` and `objects/pack` is the platform's (`git_platform_only`), and an object or
+	 * one of those folders is never removed (`git_object_delete`). */
+	gitObjectRules = false;
 	/** Whether a conflicting write, link or new folder keeps its files and links on the receipt (P17 keeps them only
 	 * when their bytes would have passed); the copies kept, by commit. */
 	copyConflicts = true;
@@ -476,6 +501,8 @@ export class FakeCore implements FolderCore {
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
 			const problem = this.rule(path);
 			if (problem) return { ...no("refused", "structured_rule"), problem };
+			const git = this.gitObjectRules && view && view.kind !== "code_host" ? gitObjectRefusal(u) : null;
+			if (git) return no("refused", git);
 			if (this.park(path)) return no("waiting_for_review", "parked");
 			// The receipt keeps a conflicting unit's files and links (20260930380000), each with its place in the unit.
 			const conflict = (reason: string): CommitOutcome => {
