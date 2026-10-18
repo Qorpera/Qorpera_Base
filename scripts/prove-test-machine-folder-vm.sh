@@ -56,25 +56,37 @@ cleanup() {
 		lxc --force-local project delete "$project" </dev/null || status=1
 	fi
 	if ((made_pool)); then lxc --force-local storage delete "$pool" </dev/null || status=1; fi
-	machine_state >"$work/after"
-	diff -u "$work/before" "$work/after" || status=1
-	awk '{print $1}' /proc/modules | sort >"$work/modules-after"
-	if [[ -n $(comm -23 "$work/modules-before" "$work/modules-after") ]]; then
-		echo 'FAIL: a shared-test-VM kernel module disappeared' >&2
-		status=1
-	fi
-	for module in br_netfilter bridge stp llc tun macvlan macvtap vhost_net nft_meta_bridge nf_conntrack_bridge fuse \
-		vsock vhost_vsock vmw_vsock_virtio_transport_common vsock_loopback vmw_vsock_virtio_transport; do
-		if grep -qx "$module" "$work/modules-after" && ! grep -qx "$module" "$work/modules-before"; then
-			echo "FAIL: shared-test-VM module appeared: $module" >&2
-			status=1
-		fi
-	done
 	if [[ -f "$work/evidence.json" ]]; then
 		echo 'TEST_MACHINE_FOLDER_EVIDENCE_BEGIN'
 		cat "$work/evidence.json"
 		echo 'TEST_MACHINE_FOLDER_EVIDENCE_END'
 	fi
+	# The last thing that runs, with the project and pool gone: the test machine's state before, and what changed (the
+	# log's proof that nothing did).
+	machine_state >"$work/after"
+	awk '{print $1}' /proc/modules | sort >"$work/modules-after"
+	echo 'TEST_MACHINE_HOST_DIFF_BEGIN'
+	echo '# before: links, nft tables, sysctls, bridge-nf-call-iptables'
+	cat "$work/before"
+	echo '# after, against before:'
+	if diff -u "$work/before" "$work/after"; then echo 'host state unchanged'; else status=1; fi
+	local modules_ok=1 gone
+	gone=$(comm -23 "$work/modules-before" "$work/modules-after" | tr '\n' ' ')
+	if [[ -n $gone ]]; then
+		echo "FAIL: a shared-test-VM kernel module disappeared: $gone"
+		modules_ok=0
+		status=1
+	fi
+	for module in br_netfilter bridge stp llc tun macvlan macvtap vhost_net nft_meta_bridge nf_conntrack_bridge fuse \
+		vsock vhost_vsock vmw_vsock_virtio_transport_common vsock_loopback vmw_vsock_virtio_transport; do
+		if grep -qx "$module" "$work/modules-after" && ! grep -qx "$module" "$work/modules-before"; then
+			echo "FAIL: shared-test-VM module appeared: $module"
+			modules_ok=0
+			status=1
+		fi
+	done
+	if ((modules_ok)); then echo "# modules: no module appeared or disappeared ($(wc -l <"$work/modules-before") before)"; fi
+	echo 'TEST_MACHINE_HOST_DIFF_END'
 	rm -rf -- "$work"
 	exit "$status"
 }
