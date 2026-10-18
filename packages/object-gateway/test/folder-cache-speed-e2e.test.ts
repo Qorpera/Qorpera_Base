@@ -116,7 +116,10 @@ const PROJECT: Readonly<Record<string, string>> = {
 		"",
 	].join("\n"),
 	...Object.fromEntries(
-		Array.from({ length: PUBLISHED }, (_, f) => [`proj/data/f${f}.txt`, `${f} `.padEnd(PUBLISHED_BYTES - 1, "x") + "\n"]),
+		Array.from({ length: PUBLISHED }, (_, f) => [
+			`proj/data/f${f}.txt`,
+			`${`${f} `.padEnd(PUBLISHED_BYTES - 1, "x")}\n`,
+		]),
 	),
 };
 
@@ -397,9 +400,9 @@ describe.skipIf(!program)("the machine's caches at the speed of a local disk", (
 			}
 			const find = (name: string) => mounts.find((m) => m.name === name)?.mount;
 			const [a, b] = [find("3 on one cache folder: A")!, find("3 on one cache folder: B")!];
-			expect(await eventually(async () => (await readdir(join(b.company, "proj/node_modules"))).includes("pkg0"))).toBe(
-				true,
-			);
+			expect(
+				await eventually(async () => (await readdir(join(b.company, "proj/node_modules"))).includes("pkg0")),
+			).toBe(true);
 			// The programs' places, and B's load while A makes and removes names in the node_modules they share.
 			const placeOf = (m: Mount, name: string): Place => ({ name, root: m.company, pid: m.pid });
 			const plainPlace: Place = { name: "plain disk", root: plain };
@@ -415,7 +418,7 @@ describe.skipIf(!program)("the machine's caches at the speed of a local disk", (
 				"const start = Date.now();",
 				"(function batch() {",
 				'\tfor (let i = 0; i < 50; i++, n++) { const f = dir + "/.churn" + (n % 64); fs.writeFileSync(f, ""); fs.unlinkSync(f); }',
-				'\tif (!stop) return setImmediate(batch);',
+				"\tif (!stop) return setImmediate(batch);",
 				'\tprocess.stdout.write("CHURN " + (n / ((Date.now() - start) / 1000)) + "\\n");',
 				"})();",
 			]);
@@ -448,7 +451,7 @@ describe.skipIf(!program)("the machine's caches at the speed of a local disk", (
 				"let bytes = 0;",
 				`for (let f = 0; f < ${PUBLISHED}; f++) {`,
 				'\tconst file = data + "/f" + f + ".txt";',
-				"\tif (fs.statSync(file).size !== " + PUBLISHED_BYTES + ') throw new Error("size of " + file);',
+				`\tif (fs.statSync(file).size !== ${PUBLISHED_BYTES}) throw new Error("size of " + file);`,
 				"\tbytes += fs.readFileSync(file).length;",
 				"}",
 				`if (bytes !== ${PUBLISHED * PUBLISHED_BYTES}) throw new Error("read " + bytes);`,
