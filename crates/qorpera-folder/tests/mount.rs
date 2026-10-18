@@ -799,6 +799,12 @@ fn a_caches_file_renamed_into_the_folder_is_the_sessions_save_there() {
 	assert!(!caches.join("run.sh.tmp").exists() && !modules.join("run.sh.tmp").exists());
 	assert_eq!(std::fs::read_to_string(notes.join("run.sh")).unwrap(), "saved");
 	assert_eq!(std::fs::metadata(notes.join("run.sh")).unwrap().permissions().mode() & 0o111, 0);
+	// The folder's file changed its executable bit and the feed has not told of it yet: the save still takes the bit the
+	// disk's file had.
+	node.chmod_quietly("notes/run.sh", true);
+	write("run.sh.tmp", "again", 0o644);
+	std::fs::rename(modules.join("run.sh.tmp"), notes.join("run.sh")).unwrap();
+	assert!(node.content("notes/run.sh").is_some_and(|c| c == b"again") && !node.executable("notes/run.sh"));
 	// Onto a new name, the session's new file, which it can rename back into a cache until a boundary publishes it.
 	write("new.sh", "new", 0o755);
 	assert_eq!(rename_no_replace(&modules.join("new.sh"), &notes.join("new.sh")), None);
@@ -816,6 +822,10 @@ fn a_caches_file_renamed_into_the_folder_is_the_sessions_save_there() {
 	assert_eq!(node.content("notes/plain").unwrap(), b"typed");
 	std::fs::rename(modules.join("new.sh"), notes.join("plain")).unwrap();
 	assert!(node.content("notes/plain").is_some_and(|c| c == b"new") && node.executable("notes/plain"));
+	node.chmod_quietly("notes/plain", false);
+	write("plain.tmp", "again", 0o755);
+	std::fs::rename(modules.join("plain.tmp"), notes.join("plain")).unwrap();
+	assert!(node.content("notes/plain").is_some_and(|c| c == b"again") && node.executable("notes/plain"));
 	// A cache's file still open for writing here is waited for a moment: closed meanwhile, it moves; else EXDEV.
 	let mut held = std::fs::File::create(modules.join("held")).unwrap();
 	held.write_all(b"held").unwrap();
@@ -870,6 +880,28 @@ fn a_file_this_view_made_and_no_boundary_published_renames_into_a_cache() {
 	assert!(in_folder("y.txt") && std::fs::read_to_string(caches.join("t/old.log")).unwrap() == "new");
 	std::fs::rename(w.join("y.txt"), w.join("old.log")).unwrap();
 	assert!(!in_folder("y.txt") && std::fs::read_to_string(caches.join("t/old.log")).unwrap() == "y");
+	// One the node took off but whose answer was lost is asked for again, and the node no longer has it: it moved, over
+	// a cache's file or onto a new name.
+	std::fs::write(w.join("z.txt"), "z").unwrap();
+	node.lost_removes(1);
+	std::fs::rename(w.join("z.txt"), w.join("old.log")).unwrap();
+	assert!(!in_folder("z.txt") && std::fs::read_to_string(caches.join("t/old.log")).unwrap() == "z");
+	std::fs::write(w.join("z.txt"), "z2").unwrap();
+	node.lost_removes(1);
+	std::fs::rename(w.join("z.txt"), w.join("z.log")).unwrap();
+	assert!(!in_folder("z.txt") && std::fs::read_to_string(caches.join("t/z.log")).unwrap() == "z2");
+	// One whose removal stays unknown (the node is busy each time it is asked again) keeps its bytes in the cache, and
+	// the rename is EIO; the kernel then finds the folder's name as the node has it.
+	std::fs::write(w.join("k.txt"), "k").unwrap();
+	node.lost_removes(1);
+	node.busy_removes(usize::MAX);
+	let started = Instant::now();
+	assert_eq!(std::fs::rename(w.join("k.txt"), w.join("k.log")).unwrap_err().raw_os_error(), Some(libc::EIO));
+	assert!(started.elapsed() >= Duration::from_secs(3));
+	node.busy_removes(0);
+	assert!(!in_folder("k.txt") && std::fs::read_to_string(caches.join("t/k.log")).unwrap() == "k");
+	assert!(eventually(Duration::from_secs(5), || !w.join("k.txt").exists()));
+	assert_eq!(std::fs::read_to_string(w.join("k.log")).unwrap(), "k");
 	// Into a cache folder, from a folder this view made.
 	std::fs::create_dir(w.join("node_modules")).unwrap();
 	std::fs::create_dir(w.join("src")).unwrap();

@@ -109,7 +109,10 @@ cache too.
       answers `EXDEV`), and when a folder's rename takes the file along (the folder service gives the moved files new
       versions);
     - at the rename, the folder service must list the file as this mount's own save (the version the mount wrote, with
-      no authority of its own), and nothing may have it open for writing.
+      no authority of its own), and nothing may have it open for writing;
+    - when the answer to the program's removal of the folder's file is lost, it asks again for up to five seconds. A
+      file whose removal it still cannot confirm stays in the cache as well, and the rename answers `EIO`: the folder
+      may then still have the file too, as after a crash in the middle of a rename, but its bytes are never lost.
     Anything else answers `EXDEV`, so `mv` copies: the cache gets the machine's copy, and the folder keeps its file
     until `mv` removes it, which is a pending change like any removal.
 - **A published folder holding a cache:**
@@ -117,7 +120,9 @@ cache too.
   - renaming the folder moves its cache with it, once the folder service has taken the rename;
   - when the folder goes from the view in another way (another machine removed or moved it), its cache folders are
     dropped.
-- **Boundaries** do not wait for cache files: a cache file open for writing holds up nothing.
+- **Boundaries** do not wait for cache files: a cache file open for writing holds up nothing. The one exception is a
+  cache git came to track (rule 4): its move into the folder waits for a writer to close the file, and until the move
+  is done `qorpera-folder publish` refuses ("publish again shortly"), so no boundary leaves out a file git tracks.
 - **A full disk** answers `ENOSPC` to the writer, as a local disk does.
 
 ## Where the cache lives

@@ -29,6 +29,10 @@ use std::sync::MutexGuard;
 /// program's close is done before the kernel lets go of its handle (`Local::seal_name`).
 const SEAL_WAIT: Duration = Duration::from_secs(1);
 
+/// How long a file renamed into a cache whose removal's answer was lost asks the node again (`removed`), while the
+/// node does not take it now.
+const UNLINK_WAIT: Duration = Duration::from_secs(5);
+
 /// Whether the kernel must ask the node again for `path` each time: git's shared files, which other sessions change.
 pub(super) fn fresh(path: &str) -> bool {
 	matches!(git::place(path), Place::Git { rest, .. } if git::shared(rest))
@@ -1153,7 +1157,8 @@ impl FolderFs {
 	}
 
 	/// `out_of_cache`'s write of the sealed file (at `disk`, opened, its inode) to the folder's `path`, over the node's
-	/// file `replaced`, and its executable bit after: the draft takes that of the file it replaces, or none.
+	/// file `replaced`, and its executable bit after: the draft takes that of the file it lands over, or none, and the
+	/// node's file may have changed its bit since the mount last heard of it, so the disk file's is set each time.
 	fn write_out(
 		&self,
 		local: &Local,
@@ -1186,12 +1191,9 @@ impl FolderFs {
 				});
 			}
 		};
-		let landed = replaced.is_some_and(|c| c.attr.executable);
-		let set = (executable != landed).then(|| self.s.link.set_executable(path, Some(version.clone()), executable));
-		let (version, set) = match set {
-			Some(Ok(version)) => (version, Ok(())),
-			Some(Err(f)) => (version, Err(f.errno())),
-			None => (version, Ok(())),
+		let (version, set) = match self.s.link.set_executable(path, Some(version.clone()), executable) {
+			Ok(version) => (version, Ok(())),
+			Err(f) => (version, Err(f.errno())),
 		};
 		self.s.versions.lock().unwrap().saved(path, &version);
 		self.s.tree.lock().unwrap().removed_local(path);
@@ -1210,6 +1212,8 @@ impl FolderFs {
 	/// moves into the cache and leaves the view's changes, as it takes nothing from the folder; as a build's output
 	/// written beside its place and renamed into it does. Any other, the folder's, is EXDEV (`mv` copies), as is one
 	/// open for writing here (`Shared::unwritten`) and any while the feed is down, which would not tell of a boundary.
+	/// One whose removal the node may or may not have made (`removed`) stays in the cache too, as its bytes may be
+	/// there only, and the rename is EIO.
 	fn into_cache(&self, local: &Local, from: (u64, &str), to: (u64, &str), up: Up, flags: RenameFlags) -> Result<(), i32> {
 		if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT)
 			|| !self.s.feed_up.load(Ordering::SeqCst)
@@ -1224,7 +1228,7 @@ impl FolderFs {
 		let no_replace = flags.contains(RenameFlags::RENAME_NOREPLACE);
 		// No rename of the node's moves `from` meanwhile, and no cache move seals what the file goes over.
 		let _held = local.folders.lock().unwrap();
-		self.s.unwritten(source.ino, || {
+		let known = self.s.unwritten(source.ino, || {
 			let (dir, name) = split(&path);
 			let listed = self.s.link.list(dir).map_err(|f| f.errno())?;
 			let entry = listed.into_iter().find(|e| e.name == name).ok_or(libc::ENOENT)?;
@@ -1234,24 +1238,63 @@ impl FolderFs {
 			}
 			let bytes = self.s.read_all(&path, &entry.version, entry.size)?;
 			let placed = local.place(&up, to.1, Area::Cache, &bytes, entry.executable, no_replace)?;
-			if let Err(f) = self.s.link.unlink(&path, Some(entry.version.clone())) {
-				placed.undo();
-				return Err(f.errno());
+			match self.removed(&path, &entry.version) {
+				Ok(known) => {
+					placed.keep();
+					Ok(known)
+				}
+				Err(e) => {
+					placed.undo();
+					Err(e)
+				}
 			}
-			placed.keep();
-			Ok(())
 		})?;
-		self.s.versions.lock().unwrap().removed(&path);
 		self.s.unpublished.lock().unwrap().forget(&path);
+		self.s.made(local, to.0, to.1, false);
+		if !known {
+			// The kernel looks both names up again: the node's file may be gone or still there.
+			drop(self.s.tree.lock().unwrap().invalidate([path.as_str()]));
+			let _ = self.s.chased.send(vec![(from.0, from.1.to_string()), (to.0, to.1.to_string())]);
+			return Err(libc::EIO);
+		}
+		self.s.versions.lock().unwrap().removed(&path);
 		{
 			let mut tree = self.s.tree.lock().unwrap();
 			tree.removed_local(&path);
 			tree.moved_to_cache(source.ino);
 		}
-		self.s.made(local, to.0, to.1, false);
 		// The kernel moves the node's entry to `to` once it has the reply: the next lookup finds the cache's file.
 		let _ = self.s.chased.send(vec![(to.0, to.1.to_string())]);
 		Ok(())
+	}
+
+	/// `into_cache`'s removal of the node's `path` at `version`: made (true), refused (its errno, so the cache's file
+	/// gives the place back), or not known (false). One whose answer was lost, which the node may have made, is asked
+	/// for again while the node does not take it now (`again`), for up to `UNLINK_WAIT`: made now, or the file gone
+	/// (NOT_FOUND: the first took it off) is made. Anything else leaves it not known.
+	fn removed(&self, path: &str, version: &str) -> Result<bool, i32> {
+		let unlink = || self.s.link.unlink(path, Some(version.to_string()));
+		match unlink() {
+			Ok(()) => return Ok(true),
+			Err(f @ Fail::Remote(_)) => return Err(f.errno()),
+			Err(Fail::Link(_)) => {}
+		}
+		let until = Instant::now() + UNLINK_WAIT;
+		let mut wait = Duration::from_millis(50);
+		loop {
+			match unlink() {
+				Ok(()) => return Ok(true),
+				Err(Fail::Remote(e)) if e.code == code::NOT_FOUND => return Ok(true),
+				Err(f) if again(&f) && Instant::now() + wait < until => {
+					std::thread::sleep(wait);
+					wait = (wait * 2).min(Duration::from_secs(1));
+				}
+				Err(f) => {
+					eprintln!("qorpera-folder: {path} may still be in the folder as well as in its cache: {f}");
+					return Ok(false);
+				}
+			}
+		}
 	}
 
 	pub(super) fn local_symlink(

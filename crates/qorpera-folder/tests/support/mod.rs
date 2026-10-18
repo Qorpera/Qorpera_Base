@@ -65,6 +65,8 @@ struct State {
 	busy_discards: usize,
 	busy_links: usize,
 	busy_removes: usize,
+	/// How many of the next removes of a file to make, then drop the connection with no answer.
+	lost_removes: usize,
 	/// How many of the next renames to answer only a while after they changed the tree and the feeds heard of it.
 	slow_renames: usize,
 	/// How many of the next renames to make (and answer) only a while after they came.
@@ -158,6 +160,16 @@ impl FakeNode {
 		let mut s = self.state.lock().unwrap();
 		s.entries.remove(path);
 		notify(&mut s, vec![path.to_string()], false);
+	}
+
+	/// Sets a file's executable bit (a new version) without telling anyone (as if the feed had missed it).
+	pub fn chmod_quietly(&self, path: &str, executable: bool) {
+		let mut s = self.state.lock().unwrap();
+		let n = s.entries.get_mut(path).expect("the file");
+		assert_ne!(n.executable, executable);
+		n.executable = executable;
+		n.version += 1;
+		s.seq += 1;
 	}
 
 	/// Changes the tree without telling anyone (as if the feed had missed it).
@@ -309,6 +321,12 @@ impl FakeNode {
 	/// The next `removes` removes of a file or folder are answered BUSY.
 	pub fn busy_removes(&self, removes: usize) {
 		self.state.lock().unwrap().busy_removes = removes;
+	}
+
+	/// The next `removes` removes of a file are made, and then the connection is dropped with no answer (before the
+	/// removes `busy_removes` asks for).
+	pub fn lost_removes(&self, removes: usize) {
+		self.state.lock().unwrap().lost_removes = removes;
 	}
 
 	/// The next `renames` renames are answered three seconds after they changed the tree and the feeds heard of it.
@@ -687,6 +705,11 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::UNLINK | kind::RMDIR => {
 			let req: RemoveRequest = serde_json::from_slice(body).unwrap();
+			if k == kind::UNLINK && st.lost_removes > 0 && st.entries.get(&req.path).is_some_and(|n| !n.folder) {
+				st.lost_removes -= 1;
+				st.entries.remove(&req.path);
+				return Err(std::io::Error::other("the answer is lost"));
+			}
 			if st.busy_removes > 0 {
 				st.busy_removes -= 1;
 				return error(s, code::BUSY);
