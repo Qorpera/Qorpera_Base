@@ -286,9 +286,13 @@ async function main(): Promise<void> {
 			while (!stop.signal.aborted) {
 				const started = performance.now();
 				try {
-					for (const outcome of await running.keep(stop.signal))
+					const outcomes = await running.keep(stop.signal);
+					for (const outcome of outcomes)
 						if (outcome.state === "failed") log({ event: "coding-session-error", ...outcome });
 						else if (outcome.step === "detach" || outcome.state === "not-now") log({ event: "coding-session", ...outcome });
+					// And the pass's end, with every outcome, done ones too: the driver judges turn 9's keep by a pass that ended
+					// (c2.judgeKeep), never by SQL's lease alone, which a keep renews before its pass ends.
+					if (outcomes.length) log({ event: "coding-keep-pass", outcomes });
 				} catch (error) {
 					if (!stop.signal.aborted) log({ event: "coding-session-error", code: errorCode(error), causes: causes(error) });
 				}

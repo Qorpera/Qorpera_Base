@@ -166,26 +166,45 @@ export function attachment(db, workerId) {
 		from public.qorpera_coding_sessions s where s.worker_id = ${quote(workerId)}::uuid`);
 }
 
+/** The first keep pass that ended after turn 9's view mounted on the machine and kept turn 9's session there, with no
+ * failure for the machine in it, from the executor's lines (`lines`, in order, as judgeKeep's); none: undefined. */
+export function keptPass(lines, machineId, workerId) {
+	const mounted = lines.findIndex((line) => line.event === "coding-folder-mount" && line.machineId === machineId);
+	return mounted < 0 ? undefined : lines.slice(mounted + 1).find((line) => line.event === "coding-keep-pass" &&
+		line.outcomes.some((outcome) => outcome.machineId === machineId && outcome.workerId === workerId && outcome.step === "keep" && outcome.state === "done") &&
+		!line.outcomes.some((outcome) => outcome.machineId === machineId && outcome.state === "failed"));
+}
+
 /** Whether the executor's keeper kept turn 9's attachment on the machine's new boot (49's check), judged from the
- * executor's mount and session-error lines since turn 8 ended (`lines`, in order) and the session's `attachment`.
+ * executor's mount, session-error and keep-pass lines since turn 8 ended (`lines`, in order) and the session's
+ * `attachment`, read after them.
  * - Turn 9's view mounted on the machine: its first mount in `lines`, right after its session attached.
  * - No session error for the machine, or for a whole keep pass, after that mount. Those before it are the rebuild's and
  *   expected: the keeper cuts a machine's step at 15 s while guest.status hangs in the shutdown (ceh:353-356), and it
  *   skips the machine from the start's detach to turn 9's attach.
+ * - A keep pass ended after the mount with turn 9's session kept and no failure for the machine (keptPass). SQL's lease
+ *   alone does not say it: the keep RPC renews it before the pass's attachment step and its secrets request end, and a
+ *   failure of either is logged only once the pass ends.
  * - A keep renewed the attachment: its lease is past 61 s. An attach alone gives 60 s, give or take the microseconds
  *   between its two readings of the clock.
- * Answers each failure (none: so it was) and the session errors before the mount. */
-export function judgeKeep({ lines, machineId, attachment }) {
+ * Answers each failure (none: so it was), the session errors before the mount and the pass. */
+export function judgeKeep({ lines, machineId, workerId, attachment }) {
 	const failures = [];
 	const mounted = lines.findIndex((line) => line.event === "coding-folder-mount" && line.machineId === machineId);
 	const errors = (from, to) => lines.slice(from, to)
 		.filter((line) => line.event === "coding-session-error" && (line.machineId === machineId || line.machineId === undefined));
+	const pass = keptPass(lines, machineId, workerId);
 	if (mounted < 0) failures.push(`turn 9's view did not mount on the machine: ${JSON.stringify(lines)}`);
-	else if (errors(mounted + 1).length)
-		failures.push(`the executor logged session errors for the machine after turn 9's view mounted: ${JSON.stringify(errors(mounted + 1))}`);
+	else {
+		if (errors(mounted + 1).length)
+			failures.push(`the executor logged session errors for the machine after turn 9's view mounted: ${JSON.stringify(errors(mounted + 1))}`);
+		if (!pass)
+			failures.push(`no keep pass ended after turn 9's view mounted with its session kept and no failure for the machine: ` +
+				`${JSON.stringify(lines.slice(mounted + 1).filter((line) => line.event === "coding-keep-pass"))}`);
+	}
 	if (attachment?.machineId !== machineId || !(attachment.lease > 61))
 		failures.push(`no keep renewed turn 9's attachment past its attach's 60 s: ${JSON.stringify(attachment)}`);
-	return { failures, before: mounted < 0 ? [] : errors(0, mounted) };
+	return { failures, before: mounted < 0 ? [] : errors(0, mounted), pass };
 }
 
 /** The machine's instance as LXD answers it (`/1.0/instances/<name>`): its UUID, its vsock id, the image its disk came

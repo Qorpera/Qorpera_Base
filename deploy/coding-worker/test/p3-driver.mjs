@@ -593,18 +593,18 @@ try {
 			const identity9 = instanceIdentity(machine);
 			pass(`turn 9 finds only the company folder kept: its home ${home} is new, its worktree is at ${head}, and it no longer reads ` +
 				`${shared} (${read9.state}); the machine booted again (boot ${boot7} → ${boot9}) (${elapsed()})`);
-			// The keeper keeps turn 9's attachment on the new boot, read before turn 10's attach moves it again: a keep renewed
-			// it (its first pass after the attach, within about 10 s plus the pass), and the executor logged no session error
-			// for the machine after turn 9's view mounted (c2.judgeKeep).
-			let attachment9 = await c2.attachment(db, workerId);
-			for (let waited = 0; !(attachment9?.lease > 61) && waited < 45000; waited += 2000) {
+			// The keeper keeps turn 9's attachment on the new boot, read before turn 10's attach moves it again: a keep pass
+			// ended after turn 9's view mounted with the session kept (within about 10 s plus a pass of at most 15 s), the
+			// attachment SQL holds after that pass is renewed, and the executor logged no session error for the machine after
+			// the mount (c2.judgeKeep).
+			for (let waited = 0; !c2.keptPass(executor.keepLines.slice(keepFrom9), machine.machineId, workerId) && waited < 45000; waited += 2000)
 				await new Promise((settle) => setTimeout(settle, 2000));
-				attachment9 = await c2.attachment(db, workerId);
-			}
-			const keep9 = c2.judgeKeep({ lines: executor.keepLines.slice(keepFrom9), machineId: machine.machineId, attachment: attachment9 });
+			const attachment9 = await c2.attachment(db, workerId);
+			const keep9 = c2.judgeKeep({ lines: executor.keepLines.slice(keepFrom9), machineId: machine.machineId, workerId, attachment: attachment9 });
 			if (keep9.failures.length) fail(keep9.failures.join("; "));
-			pass(`the keeper renewed turn 9's attachment on the new boot (${JSON.stringify(attachment9)}), and the executor logged no ` +
-				`session error for the machine after turn 9's view mounted; before it, during the rebuild: ${JSON.stringify(keep9.before)} (${elapsed()})`);
+			pass(`the keeper renewed turn 9's attachment on the new boot (${JSON.stringify(attachment9)}) in a pass that ended after turn 9's ` +
+				`view mounted (${JSON.stringify(keep9.pass.outcomes)}), and the executor logged no session error for the machine after the ` +
+				`mount; before it, during the rebuild: ${JSON.stringify(keep9.before)} (${elapsed()})`);
 			await database.finishTurn(db, turn9, { operationKey: "p3-turn-9", summary: "Read that the machine got a new disk.", headSha: head });
 			await executor.turnSettled();
 			pass(`turn 9 ended (${elapsed()})`);
@@ -844,7 +844,7 @@ function startExecutor() {
 	// housekeeping logs for a machine (sleep, delete, release, archive).
 	const folderLines = { start: null, mounts: [] };
 	const machineLines = [];
-	// And, in one order, each view it mounts and each session error its keeper logs (c2.judgeKeep).
+	// And, in one order, each view it mounts, each session error its keeper logs and each keep pass that ended (c2.judgeKeep).
 	const keepLines = [];
 	createInterface({ input: child.stderr }).on("line", (line) => {
 		console.error(`executor: ${line}`);
@@ -854,7 +854,7 @@ function startExecutor() {
 		} catch {
 			return;
 		}
-		if (logged?.event === "coding-folder-mount" || logged?.event === "coding-session-error") keepLines.push(logged);
+		if (["coding-folder-mount", "coding-session-error", "coding-keep-pass"].includes(logged?.event)) keepLines.push(logged);
 		if (logged?.event === "coding-executor-folder") folderLines.start = line;
 		else if (logged?.event === "coding-folder-mount") folderLines.mounts.push(line);
 		else if (logged?.event === "coding-machine" || logged?.event === "coding-machine-error") machineLines.push(logged);

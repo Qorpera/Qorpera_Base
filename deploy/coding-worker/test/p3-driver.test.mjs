@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk } from "./p3-c2.mjs";
+import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
 const driver = fileURLToPath(new URL("./p3-driver.mjs", import.meta.url));
@@ -137,28 +137,55 @@ test("turn 9 fails each broken record of the new disk", () => {
 });
 
 // Turn 9's keep on the new boot (49's check): run 2's executor lines since turn 8 ended, as they were (the keeper's
-// error during the rebuild, then turn 9's mount), and an attachment shaped as SQL's with made-up times (run 2 failed
-// before it was read).
+// error during the rebuild, then turn 9's mount), then a keep pass that ended, as p3-executor.ts logs it, and an
+// attachment shaped as SQL's with made-up times (run 2 failed before it was read, and logged no pass).
 const MACHINE = "c80a26ba-d3ab-488e-b15c-ecdbcab20f25", WORKER = "2ff0dc3d-d146-4b9d-b732-36a0dc3f8c61";
-const KEEP_DEADLINE = { event: "coding-session-error", machineId: MACHINE, workerId: null, step: "keep", state: "failed", code: "CODING_HOST_KEEP_DEADLINE" };
+const OTHER = "c80a26ba-0000-4000-8000-000000000000";
+const MACHINE_DEADLINE = { machineId: MACHINE, workerId: null, step: "keep", state: "failed", code: "CODING_HOST_KEEP_DEADLINE" };
+const KEEP_DEADLINE = { event: "coding-session-error", ...MACHINE_DEADLINE };
 const MOUNT9 = { event: "coding-folder-mount", workerId: WORKER, machineId: MACHINE, viewId: "8791c73e-8b2b-4617-a857-f418c53f8429" };
+const PASS9 = { event: "coding-keep-pass", outcomes: [{ machineId: MACHINE, workerId: WORKER, step: "keep", state: "done" }] };
 const KEPT9 = {
-	lines: [KEEP_DEADLINE, MOUNT9],
+	lines: [KEEP_DEADLINE, MOUNT9, PASS9],
 	machineId: MACHINE,
+	workerId: WORKER,
 	attachment: { machineId: MACHINE, attachedAt: "2026-10-18T03:09:20.104218+00:00", until: "2026-10-18T03:10:31.523811+00:00", lease: 71.419593 },
 };
 
 test("turn 9 judges the keeper kept its attachment on the new boot", () => {
-	assert.deepEqual(judgeKeep(KEPT9), { failures: [], before: [KEEP_DEADLINE] });
-	// Another machine's error after the mount is not this machine's.
-	assert.deepEqual(judgeKeep({ ...KEPT9, lines: [...KEPT9.lines, { ...KEEP_DEADLINE, machineId: "c80a26ba-0000-4000-8000-000000000000" }] }).failures, []);
+	assert.deepEqual(judgeKeep(KEPT9), { failures: [], before: [KEEP_DEADLINE], pass: PASS9 });
+	assert.equal(keptPass(KEPT9.lines, MACHINE, WORKER), PASS9);
+	// Another machine's error after the mount is not this machine's, nor its pass's failure.
+	const elsewhere = { ...MACHINE_DEADLINE, machineId: OTHER };
+	const other = { event: "coding-keep-pass", outcomes: [...PASS9.outcomes, elsewhere] };
+	assert.deepEqual(judgeKeep({ ...KEPT9, lines: [KEEP_DEADLINE, MOUNT9, { event: "coding-session-error", ...elsewhere }, other] }).failures, []);
+	// A pass that skipped the session (a turn attached it during the pass) is waited past, to the next that kept it.
+	const skipped = { event: "coding-keep-pass", outcomes: [{ ...PASS9.outcomes[0], state: "not-now", code: "TURN_ATTACHED" }] };
+	assert.equal(judgeKeep({ ...KEPT9, lines: [KEEP_DEADLINE, MOUNT9, skipped, PASS9] }).pass, PASS9);
+	assert.equal(keptPass([KEEP_DEADLINE, MOUNT9, skipped], MACHINE, WORKER), undefined);
 });
 
 test("turn 9 fails each broken record of the keep", () => {
 	const errors = /^the executor logged session errors for the machine after turn 9's view mounted: /;
+	const ended = /^no keep pass ended after turn 9's view mounted with its session kept and no failure for the machine: /;
 	const renewed = /^no keep renewed turn 9's attachment past its attach's 60 s: /;
 	const mount = /^turn 9's view did not mount on the machine: /;
+	const secrets = { machineId: MACHINE, workerId: null, step: "secrets", state: "failed", code: "CODING_FOLDER_SECRETS_FAILED" };
 	const cases = [
+		// The review's case: the keep RPC renewed SQL's lease, then the pass's secrets request (or its attachment step)
+		// stalls to the machine's deadline. Read then, the lease alone would pass.
+		["the lease renewed, its pass not ended", (run) => { run.lines.pop(); }, [ended]],
+		["the lease renewed, its pass ended at the deadline", (run) => {
+			run.lines.splice(2, 1, KEEP_DEADLINE, { event: "coding-keep-pass", outcomes: [MACHINE_DEADLINE] });
+		}, [errors, ended]],
+		["the session kept, the pass's secrets failed", (run) => {
+			run.lines.splice(2, 1, { event: "coding-session-error", ...secrets }, { event: "coding-keep-pass", outcomes: [...PASS9.outcomes, secrets] });
+		}, [errors, ended]],
+		["the pass ended before the mount", (run) => { run.lines = [KEEP_DEADLINE, PASS9, MOUNT9]; }, [ended]],
+		["the pass kept another session", (run) => { run.lines[2] = { ...PASS9, outcomes: [{ ...PASS9.outcomes[0], workerId: "2ff0dc3d-0000-4000-8000-000000000000" }] }; }, [ended]],
+		["the pass kept the session on another machine", (run) => { run.lines[2] = { ...PASS9, outcomes: [{ ...PASS9.outcomes[0], machineId: OTHER }] }; }, [ended]],
+		["the pass skipped the session", (run) => { run.lines[2] = { ...PASS9, outcomes: [{ ...PASS9.outcomes[0], state: "not-now", code: "TURN_ATTACHED" }] }; }, [ended]],
+		["the pass took the session off", (run) => { run.lines[2] = { ...PASS9, outcomes: [{ ...PASS9.outcomes[0], step: "detach", code: "EXPIRED" }] }; }, [ended]],
 		// The keeper off, or its keep RPC skipped: the attach's own 60 s, either way round its two readings of the clock.
 		["no keep after the attach", (run) => { run.attachment.lease = 59.999996; }, [renewed]],
 		["no keep after the attach, the clock read the other way", (run) => { run.attachment.lease = 60.000004; }, [renewed]],
