@@ -327,8 +327,10 @@ it.
 - The record is written just before its entry is made, so a pass never judges a new entry by a record an earlier
   entry of that name left, and it is locked until the entry is made, so a removal of an earlier entry never takes it.
   It is written only where no entry is, with the names held from that check until the entry is made, so it never
-  takes the place of the record of an entry another program made at that name meanwhile. A record left without its
-  entry goes after an hour.
+  takes the place of the record of an entry another program made at that name meanwhile. A change the mount began on
+  an entry it found there, gone by the time the names are held while its record is still there, fails as stale
+  (ESTALE): the kernel asks again, and the new entry is judged by the rules, never by the record the gone one left. A
+  record left without its entry goes after an hour.
 - **In a cache folder several programs share** (`--cache-dir`), each record also names the view whose program made
   the entry. A program removes by age only its own view's entries and those of a view with no program running (each
   program holds its view's lock while it runs). With a gone parent it removes only its own view's: the folder may be

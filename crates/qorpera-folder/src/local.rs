@@ -1091,21 +1091,32 @@ impl Local {
 		Ok(Disk { dir: found, name: name.into(), at: self.record(dir, name) })
 	}
 
-	/// Writes the record of a new cache's top entry `name` in the mount folder `up`, made by this view as `kind` (none:
-	/// not a new cache's), and used now, before it is made at `disk`; with the names held until it is, so no other
-	/// program sharing these caches makes an entry there or writes its record meanwhile, and removing old caches never
-	/// judges the new entry by a record an earlier one of that name left (`mount/pass.rs`). Nothing is written where an
-	/// entry is on the disk already, one made since the mount found none: its own record stays. The record is locked
-	/// shared until the file returned is dropped; while a removal of an earlier cache of that name has it, or after one
-	/// took it, the change waits and is made again (`Change::Sealed`), as `hold_top`'s does. One that cannot be written
-	/// (logged) leaves the cache counted as kept.
-	fn record_new(&self, up: &Up, name: &str, disk: &Disk, kind: Option<Kind>) -> Result<Option<File>, Change> {
-		let (Up::Mount(dir), Some(kind)) = (up, kind) else { return Ok(None) };
+	/// Writes the record of a new cache's top entry `name` in the mount folder `up` (in `area`), made by this view as
+	/// `kind`, and used now, before it is made at `disk`; with the names held until it is, so no other program sharing
+	/// these caches makes an entry there or writes its record meanwhile, and removing old caches never judges the new
+	/// entry by a record an earlier one of that name left (`mount/pass.rs`). Nothing is written where an entry is on the
+	/// disk already, one made since the mount found none: its own record stays. The record is locked shared until the
+	/// file returned is dropped; while a removal of an earlier cache of that name has it, or after one took it, the change
+	/// waits and is made again (`Change::Sealed`), as `hold_top`'s does. One that cannot be written (logged) leaves the
+	/// cache counted as kept. With no `kind`, the mount found an entry there (`target`), and one gone since makes the
+	/// change stale (`found_gone`).
+	fn record_new(
+		&self,
+		up: &Up,
+		name: &str,
+		disk: &Disk,
+		area: Area,
+		kind: Option<Kind>,
+	) -> Result<Option<File>, Change> {
+		let (Up::Mount(dir), Area::Cache) = (up, area) else { return Ok(None) };
 		match fs::symlink_metadata(disk.path()) {
 			Err(e) if e.kind() == io::ErrorKind::NotFound => {}
 			Err(e) => return Err(Change::Failed(errno(e))),
 			Ok(_) => return Ok(None),
 		}
+		let Some(kind) = kind else {
+			return if self.found_gone(up, name, area) { Err(Change::Failed(libc::ESTALE)) } else { Ok(None) };
+		};
 		let failed = |e: io::Error| -> Result<Option<File>, Change> {
 			eprintln!("qorpera-folder: the record of the cache {name} in {dir:?} could not be written ({e})");
 			Ok(None)
@@ -1131,6 +1142,17 @@ impl Local {
 		}
 		self.pause("record_new");
 		Ok(Some(file))
+	}
+
+	/// Whether the mount's answer that a cache's top entry `name` is in `up` (`target`, which then gives no kind) went
+	/// stale before the change held the names, with none on the disk there now: the record written for the one gone
+	/// since is still there. The change is then ESTALE, so the kernel asks again, and the entry it makes is judged by the
+	/// rules, never by the record the gone one left (`record_new`, `rename`). With none there, or one that says nothing
+	/// (as `hold_top` leaves for an entry made with no kind), the new entry counts as kept, as with no record.
+	fn found_gone(&self, up: &Up, name: &str, area: Area) -> bool {
+		let (Up::Mount(dir), Area::Cache) = (up, area) else { return false };
+		let left = self.record_at(dir, name, false).ok().and_then(|record| records::read_path(&record.path()));
+		left.is_some_and(|record| record.view.is_some())
 	}
 
 	/// The records a rename within the caches changes (`rename`): an exchange of two top entries swaps their records,
@@ -1733,7 +1755,7 @@ impl Local {
 				}
 				self.make_room(&up, area)?;
 				let (disk, area) = self.disk_under(&names, &up, name, area)?;
-				let _record = self.record_new(&up, name, &disk, kind)?;
+				let _record = self.record_new(&up, name, &disk, area, kind)?;
 				// Before the file is made: one made again after a wait for a removal would find it there.
 				let top = self.hold_top(&names, &up, name, area)?;
 				let file = options.open(disk.path()).map_err(errno)?;
@@ -1757,7 +1779,7 @@ impl Local {
 			|mut names, _| {
 				self.make_room(&up, area)?;
 				let (disk, area) = self.disk_under(&names, &up, name, area)?;
-				let _record = self.record_new(&up, name, &disk, kind)?;
+				let _record = self.record_new(&up, name, &disk, area, kind)?;
 				fs::DirBuilder::new().mode(mode & 0o7777).create(disk.path()).map_err(errno)?;
 				Ok(self.known_at(&mut names, up.clone(), name, area, &disk)?)
 			},
@@ -1770,7 +1792,7 @@ impl Local {
 			|mut names, _| {
 				self.make_room(&up, area)?;
 				let (disk, area) = self.disk_under(&names, &up, name, area)?;
-				let _record = self.record_new(&up, name, &disk, kind)?;
+				let _record = self.record_new(&up, name, &disk, area, kind)?;
 				std::os::unix::fs::symlink(target, disk.path()).map_err(errno)?;
 				Ok(self.known_at(&mut names, up.clone(), name, area, &disk)?)
 			},
@@ -1799,7 +1821,7 @@ impl Local {
 				}
 				self.make_room(&up, area)?;
 				let (to, area) = self.disk_under(&names, &up, name, area)?;
-				let _record = self.record_new(&up, name, &to, kind)?;
+				let _record = self.record_new(&up, name, &to, area, kind)?;
 				fs::hard_link(from.path(), to.path()).map_err(errno)?;
 				Ok(self.known_at(&mut names, up.clone(), name, area, &to)?)
 			},
@@ -1999,9 +2021,10 @@ impl Local {
 	}
 
 	/// Renames within one area; `exchange` swaps the two (RENAME_EXCHANGE), `no_replace` refuses an existing target. The
-	/// inodes moved and replaced. A cache's top entry made at `to` is one made as `kind` (`records_renamed`). In the
-	/// caches, the top entries at both names are held first (`hold_top`), so a removal of either that another program
-	/// has begun ends before anything moves, and none begins until the records have followed the rename.
+	/// inodes moved and replaced. A cache's top entry made at `to` is one made as `kind` (`records_renamed`); with none,
+	/// one the mount found there and gone since makes the rename stale (`found_gone`). In the caches, the top entries at
+	/// both names are held first (`hold_top`), so a removal of either that another program has begun ends before
+	/// anything moves, and none begins until the records have followed the rename.
 	pub fn rename(
 		&self,
 		from: (&Up, &str),
@@ -2034,6 +2057,9 @@ impl Local {
 				};
 				let ino_at = |d: &Disk| fs::symlink_metadata(d.path()).ok().map(|m| self.id(area, &m)).transpose();
 				let (moved, replaced) = (ino_at(&source)?, ino_at(&target)?);
+				if kind.is_none() && replaced.is_none() && !exchange && self.found_gone(to.0, to.1, area) {
+					return Err(Change::Failed(libc::ESTALE));
+				}
 				#[cfg(test)]
 				tests::parked("rename", &target.at);
 				renameat2(&source.path(), &target.path(), flags).map_err(stale(waited))?;
@@ -2360,7 +2386,7 @@ impl Local {
 						Err(e) if e.kind() == io::ErrorKind::NotFound => None,
 						Err(e) => return Err(Change::Failed(errno(e))),
 					};
-					let _record = self.record_new(up, name, &target, kind)?;
+					let _record = self.record_new(up, name, &target, area, kind)?;
 					let flags = if replaced.is_some() { libc::RENAME_EXCHANGE } else { libc::RENAME_NOREPLACE };
 					renameat2(&temp, &target.path(), flags)?;
 					if let Some(old) = replaced {
@@ -3341,6 +3367,38 @@ mod tests {
 		});
 		assert_eq!(recorded("out"), Some((Kind::Name, Some(a.view().to_string()))));
 		assert!(a.is_top("p", "out"));
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn a_new_entry_where_the_mount_found_a_cache_gone_since_is_judged_again_and_never_takes_its_record() {
+		let (a, b, base) = sharing("shared-gone");
+		let up = Up::Mount("p".to_string());
+		let recorded = |name: &str| records::read_path(&a.record("p", name)).map(|r| (r.kind, r.view));
+		let modules = a.mkdir(up.clone(), "node_modules", Area::Cache, 0o755, Some(Kind::Name)).unwrap().ino.0;
+		let (attr, fh) = a.create(Up::Local(modules), "x.js", Area::Cache, 0o644, libc::O_WRONLY, None).unwrap();
+		a.release(fh);
+		// v1's mount found v2's dist there (`target`, so with no kind); v2 removed it since, and its record is still there.
+		b.mkdir(up.clone(), "dist", Area::Cache, 0o755, Some(Kind::Name)).unwrap();
+		assert!(a.is_top("p", "dist"));
+		b.rmdir(&up, "dist", Area::Cache).unwrap();
+		// Each make there by that answer is stale: the kernel asks again, and the mount judges the new entry by the rules.
+		let stale = [
+			a.create(up.clone(), "dist", Area::Cache, 0o644, libc::O_WRONLY, None).map(|(_, fh)| a.release(fh)),
+			a.mkdir(up.clone(), "dist", Area::Cache, 0o755, None).map(drop),
+			a.symlink(up.clone(), "dist", Area::Cache, Path::new("x"), None).map(drop),
+			a.link(attr.ino.0, up.clone(), "dist", Area::Cache, None).map(drop),
+			a.place(&up, "dist", Area::Cache, b"x", false, false, None).map(Placed::keep),
+			a.rename((&up, "node_modules"), (&up, "dist"), Area::Cache, false, false, None).map(drop),
+		];
+		assert_eq!(stale, [Err(libc::ESTALE); 6]);
+		assert!(!a.is_top("p", "dist") && a.is_top("p", "node_modules"));
+		assert_eq!(recorded("dist"), Some((Kind::Name, Some(b.view().to_string()))));
+		// Judged again, as a kept file: so its record says.
+		let (_, fh) = a.create(up.clone(), "dist", Area::Cache, 0o644, libc::O_WRONLY, Some(Kind::Kept)).unwrap();
+		a.release(fh);
+		assert_eq!(recorded("dist"), Some((Kind::Kept, Some(a.view().to_string()))));
 		drop((a, b));
 		fs::remove_dir_all(&base).unwrap();
 	}
