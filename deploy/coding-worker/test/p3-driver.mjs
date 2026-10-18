@@ -542,10 +542,8 @@ try {
 				await new Promise((settle) => setTimeout(settle, 2000));
 				restarts9 = await c2.restartsSince(db, machine, narrowed.now);
 			}
-			const stoppedFor = restarts9.findIndex((row) => row.state === "new-disk");
 			const replaced = restarts9.find((row) => row.state === "replaced");
-			if (stoppedFor < 0 || restarts9.filter((row) => row.state === "replaced").length !== 1 || restarts9.indexOf(replaced) < stoppedFor)
-				fail(`the machine was not stopped for a new disk and then rebuilt once: ${JSON.stringify(restarts9)}`);
+			if (!replaced) fail(`the machine was not rebuilt for turn 9: ${JSON.stringify(restarts9)}`);
 			const between = await c2.inTurn(db, workerId, 8, replaced.recordedAt);
 			if (!between?.inTurn) fail(`the rebuild's record is not between turns 8 and 9: ${JSON.stringify(replaced)} ${JSON.stringify(between)}`);
 			const after9 = await c2.standing(db, workerId, machine);
@@ -563,27 +561,19 @@ try {
 				!context9.commands.stopped.some((stopped) => stopped.commandId === sleeper7.commandId && stopped.reason === "MACHINE_NEW_DISK"))
 				fail(`turn 9's context does not say the machine got a new disk, which stopped turn 7's command: ` +
 					`${JSON.stringify({ machine: context9.machine, stopped: context9.commands.stopped })}`);
-			// Custody grants count nothing that ran: rebuild custody is also how the executor asks whether SQL marked the
-			// machine for a new disk (#newDiskDue, granted for a marked one and changing nothing), and a pending stop is
-			// authorized again on each pass. So a stop is granted and a rebuild after it; the journal below shows what ran.
-			const custody9 = calls.custody.slice(custody7).filter((entry) => entry.machineId === machine.machineId && entry.answer === "granted");
-			const stopAt = custody9.findIndex((entry) => entry.intent === "stop");
-			if (stopAt < 0 || !custody9.slice(stopAt + 1).some((entry) => entry.intent === "rebuild"))
-				fail(`the executor's custody did not grant a stop, then a rebuild: ${JSON.stringify(calls.custody.slice(custody7))}`);
-			// The journal on the NAS: a stop, the rebuild, a start, each settled; the rebuild's LXD operation names both the
-			// disk record next to the journal and SQL's record.
+			// The records since the narrowing, read again now that turn 9 is attached (its machine started): SQL's, the
+			// custody the executor was answered for the machine, and its journal on the NAS (c2.judgeNewDisk).
 			const journal9 = journalOf(machine);
-			const settled = journal9.events.filter((event) => event.kind === "settled");
-			const rebuilt = settled.findLastIndex((event) => event.action === "rebuild");
-			if (rebuilt < 1 || settled[rebuilt].state !== "succeeded" || settled[rebuilt].operationId !== replaced.operationId ||
-				journal9.disk?.schema !== "qorpera.coding-machine-disk/v1" || journal9.disk.operationId !== replaced.operationId ||
-				settled[rebuilt - 1].action !== "stop" || settled[rebuilt - 1].state !== "succeeded" ||
-				settled[rebuilt + 1]?.action !== "start" || settled[rebuilt + 1].state !== "succeeded")
-				fail(`the machine's journal does not run a stop, the rebuild and a start, the rebuild named by its disk record and SQL's: ` +
-					`${JSON.stringify({ directory: journal9.directory, disk: journal9.disk, replaced, settled: settled.slice(-6) })}`);
-			pass(`before turn 9 the executor stopped the machine for a new disk and rebuilt it from its image: ${JSON.stringify(restarts9)} ` +
-				`(the rebuild between turns 8 and 9: ${JSON.stringify(between)}); custody granted ${custody9.map((entry) => entry.intent).join(" → ")}; ` +
-				`the journal ran ${settled.slice(rebuilt - 1, rebuilt + 2).map((event) => `${event.action} ${event.operationId}`).join(" → ")} ` +
+			const restartsNow = await c2.restartsSince(db, machine, narrowed.now);
+			const rebuild9 = c2.judgeNewDisk({
+				restarts: restartsNow,
+				custody: calls.custody.slice(custody7).filter((entry) => entry.machineId === machine.machineId),
+				journal: journal9,
+			});
+			if (rebuild9.failures.length) fail(`${rebuild9.failures.join("; ")} (journal ${journal9.directory})`);
+			pass(`before turn 9 the executor stopped the machine for a new disk and rebuilt it from its image: ${JSON.stringify(restartsNow)} ` +
+				`(the rebuild between turns 8 and 9: ${JSON.stringify(between)}); custody granted ${rebuild9.granted.join(" → ")}; ` +
+				`the journal ran ${rebuild9.ran.join(" → ")} ` +
 				`and its disk record is ${JSON.stringify(journal9.disk)}; the session says what stopped: ${JSON.stringify(newDisk[0].body)}, ` +
 				`turn 9's context says ${JSON.stringify(context9.machine)}, the read set is empty (${JSON.stringify(reads9)}), and the ` +
 				`machine is attached, marks clear, with no error (${JSON.stringify(after9)}) (${elapsed()})`);

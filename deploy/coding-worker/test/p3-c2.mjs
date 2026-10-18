@@ -125,6 +125,38 @@ export function inTurn(db, workerId, sequence, at) {
 		from (select ${began(workerId, sequence)} as began, ${began(workerId, sequence + 1)} as next) b`);
 }
 
+/** Whether the executor stopped the machine for a new disk and rebuilt it once, judged from what was recorded after
+ * the narrowing: SQL's folder restart records (`restarts`, oldest first), the custody SQL answered for the machine
+ * (`custody`: intent and answer, in answer order), and the machine's journal on the NAS with the disk record next to
+ * it (`journal`: its events in order, and `disk`).
+ * - SQL has a 'new-disk' record, then exactly one 'replaced' record.
+ * - Custody granted a stop, and a rebuild after it. Grants count nothing that ran: rebuild custody is also how the
+ *   executor asks whether SQL marked the machine for a new disk (#newDiskDue, granted for a marked one and changing
+ *   nothing), and a pending stop is authorized again on each pass.
+ * - So the journal shows what ran: a stop, the rebuild and a start, each settled succeeded, the rebuild's LXD
+ *   operation named by the disk record and by SQL's 'replaced' record.
+ * Answers each failure (none: so it was), the intents granted, and the journal's stop, rebuild and start. */
+export function judgeNewDisk({ restarts, custody, journal }) {
+	const failures = [];
+	const stoppedFor = restarts.findIndex((row) => row.state === "new-disk");
+	const replaced = restarts.filter((row) => row.state === "replaced");
+	if (stoppedFor < 0 || replaced.length !== 1 || restarts.indexOf(replaced[0]) < stoppedFor)
+		failures.push(`the machine was not stopped for a new disk and then rebuilt once: ${JSON.stringify(restarts)}`);
+	const granted = custody.filter((entry) => entry.answer === "granted").map((entry) => entry.intent);
+	const stopAt = granted.indexOf("stop");
+	if (stopAt < 0 || !granted.slice(stopAt + 1).includes("rebuild"))
+		failures.push(`the executor's custody did not grant a stop, then a rebuild: ${JSON.stringify(custody)}`);
+	const settled = journal.events.filter((event) => event.kind === "settled");
+	const rebuilt = settled.findLastIndex((event) => event.action === "rebuild");
+	const ran = rebuilt < 1 ? [] : settled.slice(rebuilt - 1, rebuilt + 2);
+	if (ran.length !== 3 || ran.map((event) => `${event.action} ${event.state}`).join(", ") !== "stop succeeded, rebuild succeeded, start succeeded" ||
+		ran[1].operationId !== replaced[0]?.operationId || journal.disk?.schema !== "qorpera.coding-machine-disk/v1" ||
+		journal.disk.operationId !== ran[1].operationId)
+		failures.push(`the machine's journal does not run a stop, the rebuild and a start, the rebuild named by its disk record and SQL's: ` +
+			`${JSON.stringify({ disk: journal.disk, replaced, settled: settled.slice(-6) })}`);
+	return { failures, granted, ran: ran.map((event) => `${event.action} ${event.operationId}`) };
+}
+
 /** The core's tables with a row that holds `text`, as text or as its UTF-8 bytes in hex (a bytea column), and the
  * tables it could not read. */
 export async function holding(db, text) {
