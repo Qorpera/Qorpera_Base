@@ -1,6 +1,7 @@
 -- Company folder core, C1b-3a: views under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1B.md, "C1b-3: views"
--- §3 and §4). Other connections race view saves: a holder change that commits while a save waits at its anchor step
--- refuses the save; the office's and the coding archive's plain updates wait for a save in flight; the company row at
+-- §3 and §4). Other connections race view saves: a holder change or a coding session's detach that commits while a save
+-- waits at its anchor step refuses the save, and its archive lets the save land (its final boundary, 20260930517000);
+-- the office's and a coding session's plain updates wait for a save in flight; the company row at
 -- rank 0 never deadlocks with #462's order (company row, then member); a shell command's end and its view's final race
 -- the view's saves (20260930183000). The fixture is committed so the connections can see it, and removed at the end.
 -- Waits are detected with pg_blocking_pids, never by wall-clock time.
@@ -277,8 +278,9 @@ begin
 		<> (current_setting('qorpera_test.run_two')::jsonb ->> 'runId')::uuid then raise exception 'The screen update must land'; end if;
 end $$;
 
--- C. The same two races for a coding session: its plain updates wait for a save in flight; an archive that commits in
--- the anchor window refuses the save.
+-- C. The same races for a coding session: its plain updates wait for a save in flight. An archive that commits in the
+-- anchor window (as qorpera_archive_coding_worker makes it: the attachment ends now) lets the save land, as the final
+-- boundary's would (20260930517000); the detach that follows refuses one.
 select pg_temp.renew('coding');
 do $$
 declare r jsonb; v_state text;
@@ -299,12 +301,27 @@ begin
 		where worker_id = '64400000-0000-4000-8000-0000000000c1' for update$q$) as t(x integer);
 	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('coding'), 'coding-archived-1', '[{"op":"mkdir","path":"code/archived"}]'));
 	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The coding save did not wait at its anchor step'; end if;
-	perform dblink_exec('view_one', $q$update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = 'member'
-		where worker_id = '64400000-0000-4000-8000-0000000000c1'$q$);
+	perform dblink_exec('view_one', $q$update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = 'member',
+		attachment_until = least(attachment_until, clock_timestamp()) where worker_id = '64400000-0000-4000-8000-0000000000c1'$q$);
+	perform dblink_exec('view_one', 'commit');
+	v_state := pg_temp.outcome('view_two');
+	if v_state <> 'ok' then raise exception 'An archive in the anchor window leaves the save, got %', v_state; end if;
+	if not exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+		and key_text = 'code/archived') then raise exception 'The save behind the archive must land'; end if;
+
+	perform dblink_exec('view_one', 'begin');
+	perform * from dblink('view_one', $q$select 1 from public.qorpera_coding_sessions
+		where worker_id = '64400000-0000-4000-8000-0000000000c1' for update$q$) as t(x integer);
+	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('coding'), 'coding-detached-1', '[{"op":"mkdir","path":"code/detached"}]'));
+	if not pg_temp.waits_for('view_two', 'view_one') then raise exception 'The coding save did not wait at its anchor step'; end if;
+	perform dblink_exec('view_one', $q$update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null,
+		attachment_until = null, attachment_turn = null, attached_at = null where worker_id = '64400000-0000-4000-8000-0000000000c1'$q$);
 	perform dblink_exec('view_one', 'commit');
 	v_state := pg_temp.outcome('view_two');
 	if v_state not like '42501 %Folder view has ended%' then
-		raise exception 'An archive in the anchor window must refuse the save, got %', v_state; end if;
+		raise exception 'A detach in the anchor window must refuse the save, got %', v_state; end if;
+	if exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+		and key_text = 'code/detached') then raise exception 'The save behind the detach must leave nothing'; end if;
 end $$;
 
 select dblink_connect('view_three', 'dbname=' || current_database());
@@ -688,11 +705,13 @@ end $$;
 -- M. A coding view's commit checks its own read set and its machine's at rank 10 without writing them (20260930445000),
 -- so it holds no read-set row while it waits for its session at the anchor step. A commit that re-stamped a moved pair
 -- there would close a cycle: qorpera_keep_coding_attachments holds the session FOR UPDATE and waits to mark the machine
--- busy, and a release holds the machine FOR SHARE and waits for the pair (40P01). The session archived in C comes back;
--- its view releases P (code) under resource X, so the view's set and the machine's both hold (X, grant), and X moves
--- without P becoming unreadable.
+-- busy, and a release holds the machine FOR SHARE and waits for the pair (40P01). The session archived and detached in
+-- C comes back; its view releases P (code) under resource X, so the view's set and the machine's both hold (X, grant),
+-- and X moves without P becoming unreadable.
 set session_replication_role = replica;
-update public.qorpera_coding_sessions set archived_at = null, archived_by = null, attachment_until = clock_timestamp() + interval '30 minutes'
+update public.qorpera_coding_sessions set archived_at = null, archived_by = null, attached_machine_id = '64400000-0000-4000-8000-0000000000c2',
+	attachment_token = '64400000-0000-4000-8000-0000000000c3', attachment_until = clock_timestamp() + interval '30 minutes', attachment_turn = 1,
+	attached_at = clock_timestamp()
 where worker_id = '64400000-0000-4000-8000-0000000000c1';
 set session_replication_role = origin;
 create function pg_temp.open_coding(p_name text) returns void language sql as $$
