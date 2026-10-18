@@ -1075,17 +1075,24 @@ impl Local {
 		self.mirror(dir).join("r").join(name)
 	}
 
+	/// The record of the cache `name` in the node's folder `dir` on the disk, as `folder` finds the folder it is in
+	/// (made where missing when `make`): never through a link another program sharing these caches put above it.
+	fn record_at(&self, dir: &str, name: &str, make: bool) -> io::Result<Disk> {
+		let found = self.folder(Area::Cache, &mirror_in(dir).join("r"), make).map_err(io::Error::from_raw_os_error)?;
+		Ok(Disk { dir: found, name: name.into(), at: self.record(dir, name) })
+	}
+
 	/// Writes the record of the cache `name` in the node's folder `dir`: made by this view as `kind`, and used now. One
 	/// that cannot be written leaves the cache counted as kept. It is locked shared until the file returned is dropped,
 	/// once the cache is made: a removal of an earlier cache of that name that has the record is waited for, and the
 	/// record written again in its place, so no removal takes the new cache's record (`remove_old`).
 	pub fn write_record(&self, dir: &str, name: &str, kind: Kind) -> Option<File> {
-		let path = self.record(dir, name);
 		let locked = || -> io::Result<Option<File>> {
-			let file = records::open(&path)?;
+			let record = self.record_at(dir, name, true)?;
+			let file = records::open(&record.path())?;
 			crate::viewfile::flock(&file, libc::LOCK_SH)?;
 			let ino = file.metadata()?.ino();
-			Ok((fs::symlink_metadata(&path).map(|m| m.ino()).ok() == Some(ino)).then_some(file))
+			Ok((fs::symlink_metadata(record.path()).map(|m| m.ino()).ok() == Some(ino)).then_some(file))
 		};
 		let written = loop {
 			match locked() {
@@ -1110,23 +1117,26 @@ impl Local {
 	/// renamed into a folder of the caches stays for removing old caches to take (`mount/pass.rs`).
 	fn records_renamed(&self, from: (&Up, &str), to: (&Up, &str), kind: Option<Kind>, exchange: bool) {
 		let record = |up: &Up, name: &str| match up {
-			Up::Mount(dir) => Some(self.record(dir, name)),
+			Up::Mount(dir) => Some(self.record_at(dir, name, true)),
 			Up::Local(_) => None,
 		};
 		let (source, Some(target), Up::Mount(dir)) = (record(from.0, from.1), record(to.0, to.1), to.0) else { return };
-		let done = if exchange {
-			match &source {
-				Some(source) => records::exchange(source, &target),
-				None => records::open(&target).and_then(|file| records::touch(&file)),
+		let done = source.transpose().and_then(|source_at| {
+			let target_at = target?;
+			let (source, target) = (source_at.as_ref().map(Disk::path), target_at.path());
+			if exchange {
+				return match &source {
+					Some(source) => records::exchange(source, &target),
+					None => records::open(&target).and_then(|file| records::touch(&file)),
+				};
 			}
-		} else {
 			let kind = kind.unwrap_or_else(|| records::read_path(&target).map_or(Kind::Kept, |r| r.kind));
 			let moved = match source.map(|source| fs::rename(source, &target)) {
 				Some(Err(e)) if e.kind() != io::ErrorKind::NotFound => Err(e),
 				_ => Ok(()),
 			};
 			moved.and_then(|()| records::open(&target)).and_then(|file| records::write(&file, kind, &self.view))
-		};
+		});
 		if let Err(e) = done {
 			eprintln!("qorpera-folder: the record of the cache {} in {dir:?} could not follow its rename ({e})", to.1);
 		}
@@ -1210,19 +1220,23 @@ impl Local {
 	/// The caches' top entries, and the records left without one, of every node's folder (`Recorded`).
 	pub fn recorded(&self) -> Vec<Recorded> {
 		let mut found = Vec::new();
-		let mut todo = vec![(String::new(), self.mirror(""))];
-		while let Some((dir, disk)) = todo.pop() {
+		let mut todo = vec![String::new()];
+		while let Some(dir) = todo.pop() {
+			// Read as `folder` finds each folder: never through a link another program sharing these caches put there.
+			let mirror = mirror_in(&dir);
 			let names = |sub: &str| -> HashSet<String> {
-				let Ok(read) = fs::read_dir(disk.join(sub)) else { return HashSet::new() };
-				read.flatten().filter_map(|e| e.file_name().into_string().ok()).collect()
+				let listed = self.listed(Area::Cache, &mirror.join(sub));
+				listed.into_iter().filter_map(|(name, _)| name.into_string().ok()).collect()
 			};
 			let (tops, written) = (names("t"), names("r"));
+			let r = self.folder(Area::Cache, &mirror.join("r"), false).ok();
 			for name in tops.union(&written) {
-				let record = written.contains(name).then(|| records::read_path(&disk.join("r").join(name))).flatten();
+				let record = r.as_ref().filter(|_| written.contains(name));
+				let record = record.and_then(|r| records::read_path(&fd_path(r).join(name)));
 				found.push(Recorded { dir: dir.clone(), name: name.clone(), top: tops.contains(name), record });
 			}
 			for name in names("d") {
-				todo.push((crate::proto::join(&dir, &name), disk.join("d").join(&name)));
+				todo.push(crate::proto::join(&dir, &name));
 			}
 		}
 		found
@@ -1234,11 +1248,25 @@ impl Local {
 	/// held, as `gone_top` takes one; the folder it is in there is returned to take off the disk after the caller let
 	/// go of its locks. None if nothing was removed, or only a record.
 	pub fn remove_old(&self, dir: &str, name: &str, old: impl Fn(&Record, bool) -> bool) -> io::Result<Option<PathBuf>> {
-		let path = self.record(dir, name);
-		let top = self.disk(Area::Cache, &crate::proto::join(dir, name));
-		let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
-			Ok(file) => file,
-			Err(e) if e.kind() == io::ErrorKind::NotFound && fs::symlink_metadata(&top).is_ok() => records::open(&path)?,
+		// The cache and its record found as `folder` finds a folder: never through a link another program sharing these
+		// caches put above them.
+		let top = match self.beneath(Area::Cache, &self.disk(Area::Cache, &crate::proto::join(dir, name))) {
+			Ok(top) => Some(top),
+			Err(libc::ENOENT) => None,
+			Err(e) => return Err(io::Error::from_raw_os_error(e)),
+		};
+		let there = || top.as_ref().is_some_and(|top| fs::symlink_metadata(top.path()).is_ok());
+		let opened = self.record_at(dir, name, false).and_then(|record| {
+			let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(record.path())?;
+			Ok((record, file))
+		});
+		let (record, file) = match opened {
+			Ok(opened) => opened,
+			Err(e) if e.kind() == io::ErrorKind::NotFound && there() => {
+				let record = self.record_at(dir, name, true)?;
+				let file = records::open(&record.path())?;
+				(record, file)
+			}
 			Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
 			Err(e) => return Err(e),
 		};
@@ -1246,22 +1274,23 @@ impl Local {
 			Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
 			done => done?,
 		}
+		self.pause("removing");
 		let mut names = self.names();
 		// A rename moved it, or removing it took it, since it was opened.
-		if fs::symlink_metadata(&path).map(|m| m.ino()).ok() != Some(file.metadata()?.ino()) {
+		if fs::symlink_metadata(record.path()).map(|m| m.ino()).ok() != Some(file.metadata()?.ino()) {
 			return Ok(None);
 		}
-		let there = fs::symlink_metadata(&top).is_ok();
+		let there = there();
 		if !old(&records::read(&file)?, there) {
 			return Ok(None);
 		}
 		let gone = there.then(|| aside(self.gone(Area::Cache)));
-		if let Some(gone) = &gone {
-			fs::rename(&top, gone)?;
+		if let (Some(gone), Some(top)) = (&gone, &top) {
+			fs::rename(top.path(), gone)?;
 			let up = Up::Mount(dir.to_string());
 			forget_all(&mut names, |u, n, area| area == Area::Cache && *u == up && n == name);
 		}
-		fs::remove_file(&path)?;
+		fs::remove_file(record.path())?;
 		Ok(gone)
 	}
 
@@ -2104,7 +2133,16 @@ impl Local {
 			},
 			Up::Mount(_) => return Ok(none),
 		};
-		let path = self.record(&dir, &top);
+		let failed = |e: io::Error| eprintln!("qorpera-folder: the cache {top} in {dir:?} is not held ({e})");
+		// Found as `folder` finds a folder: never through a link another program sharing these caches put above it.
+		let at = match self.record_at(&dir, &top, true) {
+			Ok(at) => at,
+			Err(e) => {
+				failed(e);
+				return Ok(none);
+			}
+		};
+		let path = at.path();
 		let mut held = self.held.lock().unwrap();
 		let known = fs::symlink_metadata(&path).ok().map(|m| m.ino()).filter(|ino| held.contains_key(ino));
 		if let Some(key) = known {
@@ -2114,7 +2152,6 @@ impl Local {
 			entry.used_now();
 			return Ok(Holding { local: self, key: Some(key) });
 		}
-		let failed = |e: io::Error| eprintln!("qorpera-folder: the cache {top} in {dir:?} is not held ({e})");
 		let record = match records::open(&path) {
 			Ok(file) => file,
 			Err(e) => {
@@ -2226,9 +2263,11 @@ impl Local {
 	}
 
 	pub fn release(&self, fh: u64) {
-		let handle = self.handles.lock().unwrap().remove(&fh);
+		// The file closed, and its writer's lock let go of, before a seal waiting for it wakes (`seal_name`).
+		let top = self.handles.lock().unwrap().remove(&fh).and_then(|h| h.top);
 		self.released.notify_all();
-		if let Some(key) = handle.and_then(|h| h.top) {
+		self.pause("released");
+		if let Some(key) = top {
 			self.let_go_top(key);
 		}
 	}
@@ -3174,21 +3213,21 @@ mod tests {
 		a.release(fh);
 		a.mkdir(up.clone(), "dist", Area::Cache, 0o755).unwrap();
 		a.let_go_idle_tops(Duration::ZERO);
-		// v2's removal of dist has its record: v1's rename of node_modules onto dist waits until dist is gone, and the
-		// removal takes the old dist, not node_modules.
+		// v2's removal of dist has its record, not yet the names (paused by the hook): v1's rename of node_modules onto
+		// dist waits until dist is gone, and the removal takes the old dist, not node_modules.
+		let any = |_: &Record, there: bool| there;
+		let (got_there, go_on) = pause_at(&b, "removing");
 		let gone = std::thread::scope(|s| {
-			let renaming = std::cell::OnceCell::new();
-			let (a, up) = (&a, &up);
-			let old = |_: &Record, there: bool| {
-				let rename = move || a.rename((up, "node_modules"), (up, "dist"), Area::Cache, false, false, None);
-				let renamed = s.spawn(move || rename().map(drop));
-				std::thread::sleep(Duration::from_millis(300));
-				assert!(!renamed.is_finished());
-				assert!(renaming.set(renamed).is_ok());
-				there
-			};
-			let gone = b.remove_old("p", "dist", old).unwrap().expect("a removed cache");
-			renaming.into_inner().expect("a rename").join().unwrap().unwrap();
+			let go_on = go_on;
+			let removed = s.spawn(|| b.remove_old("p", "dist", any));
+			got_there.recv_timeout(Duration::from_secs(10)).expect("the removal paused");
+			let rename = || a.rename((&up, "node_modules"), (&up, "dist"), Area::Cache, false, false, None).map(drop);
+			let renamed = s.spawn(rename);
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!renamed.is_finished());
+			drop(go_on);
+			let gone = removed.join().unwrap().unwrap().expect("a removed cache");
+			renamed.join().unwrap().unwrap();
 			gone
 		});
 		assert_eq!(fs::read(a.disk(Area::Cache, "p/dist").join("x.js")).unwrap(), b"x");
@@ -3327,6 +3366,27 @@ mod tests {
 		b.release(fh);
 		drop((a, b));
 		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn a_seal_a_release_wakes_finds_the_writers_lock_let_go_of() {
+		let (l, dir) = local("seal-woken", "v1");
+		let up = Up::Mount("code/o/n/worktrees/w/node_modules".to_string());
+		let (attr, fh) = l.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		// The release stops once it has woken the seal waiting for it, before it lets go of the cache's hold.
+		let (got_there, go_on) = pause_at(&l, "released");
+		std::thread::scope(|s| {
+			let go_on = go_on;
+			let sealing = s.spawn(|| l.seal_name(&up, "a", Area::Cache, Duration::from_secs(10)).map(|s| s.1));
+			std::thread::sleep(Duration::from_millis(300));
+			let released = s.spawn(|| l.release(fh));
+			got_there.recv_timeout(Duration::from_secs(10)).expect("the release paused");
+			assert_eq!(sealing.join().unwrap(), Ok(attr.ino.0));
+			drop(go_on);
+			released.join().unwrap();
+		});
+		l.unseal(attr.ino.0);
+		fs::remove_dir_all(&dir).unwrap();
 	}
 
 	#[test]
