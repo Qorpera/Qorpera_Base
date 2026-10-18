@@ -111,7 +111,13 @@ starts takes off those no mount holds. A mount sharing the folder keeps the cach
 as another view may have made that folder and not published it yet: they go when removing old caches finds the folder
 gone ("Removing old caches"). A cache move seals its file for every mount sharing it: each handle that changes a cache
 file's bytes holds a shared lock on it, which the seal takes exclusively, without waiting; a rename or removal of the
-file in another mount waits for the seal. A local file's mode, size and times change, and a link's target is read, on
+file in another mount waits for the seal, and so do a placed file and its undo. Every check and change of names in the
+caches (a create, rename or removal, a cache move and the removal after it) holds an exclusive lock on `<dir>/names`,
+so no mount changes a name between another's look and its change. A local file's folder is reached from its area's top
+one folder at a time, never through a link, each checked to be the folder the kernel asked of (`ESTALE` if not), and
+the change is made in that folder. Up to 64 folders reached lately are held open and used again only while the kernel
+names each where the mount's names say (`/proc/self/fd`); one moved, or with a link or another folder in its place,
+is walked to again. A local file's mode, size and times change, and a link's target is read, on
 the file itself: through the handle the change came with, else by its name checked to be the inode the kernel asked of
 (`ESTALE` if not), never through a link (a link's mode is `EOPNOTSUPP`); a create never follows a link (`ELOOP`). A
 file on another disk than its area's (one mounted in the folder) is not shown (`EXDEV`). A node folder's rename moves

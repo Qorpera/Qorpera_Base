@@ -338,6 +338,49 @@ fn a_change_through_a_handle_never_reaches_what_a_link_another_program_renamed_o
 	closed(&node, vec![a, b]);
 }
 
+/// A cache folder another program renamed and put a link to a folder on the machine in the place of, before this
+/// program heard of it: an open through a folder held open from before reaches nothing past the link, neither a file
+/// there nor a new one.
+#[test]
+fn an_open_in_a_held_cache_folder_never_reaches_past_a_link_another_program_put_in_its_place() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (a, b) = two(&node);
+	std::fs::create_dir(b.at(TOP)).unwrap();
+	std::fs::create_dir(b.at(&format!("{TOP}/d"))).unwrap();
+	let held = File::open(a.at(&format!("{TOP}/d"))).unwrap();
+	let host = node.dir.join("host");
+	std::fs::create_dir(&host).unwrap();
+	std::fs::write(host.join("x"), "host bytes").unwrap();
+	// Behind every program's back, as b's swap lands while a is in the middle of an open there: a's names still
+	// have `d` the folder it holds.
+	std::fs::rename(disk(&node, "d"), disk(&node, "e")).unwrap();
+	std::os::unix::fs::symlink(&host, disk(&node, "d")).unwrap();
+	let opened = |name: &str, flags: i32| open_in(&held, name, flags | libc::O_WRONLY | libc::O_CREAT);
+	assert!(opened("x", libc::O_TRUNC).is_err());
+	assert!(opened("y", 0).is_err());
+	assert_eq!(std::fs::read_to_string(host.join("x")).unwrap(), "host bytes");
+	assert!(!host.join("y").exists());
+	drop(held);
+	closed(&node, vec![a, b]);
+}
+
+/// `openat` of `name` in the folder `dir` holds open, with `flags` (and a mode for a file it makes); closed at once.
+fn open_in(dir: &File, name: &str, flags: i32) -> std::io::Result<()> {
+	let name = CString::new(name).unwrap();
+	// SAFETY: an open fd, a C string, and a mode.
+	let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags | libc::O_CLOEXEC, 0o644 as libc::c_uint) };
+	if fd < 0 {
+		return Err(std::io::Error::last_os_error());
+	}
+	// SAFETY: the descriptor just opened, closed once.
+	unsafe { libc::close(fd) };
+	Ok(())
+}
+
 /// A program's epoch rises only for a name its kernel may hold (`Kernel::hold`). Each of the next tests changes one name
 /// after the other program's kernel took it, with no other change told in between, so only that name's hold can make
 /// the other program show the change at once.

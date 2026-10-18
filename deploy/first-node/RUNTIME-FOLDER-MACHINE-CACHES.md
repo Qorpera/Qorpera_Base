@@ -175,6 +175,12 @@ is never under `/run`, which empties at every start and is memory.
   - the node's rename of a folder whose caches another program already moved does nothing;
   - MC2a's seal sees the other programs' write handles: each handle that changes a cache file's bytes holds a shared
     lock on the file, which the seal takes exclusively, without waiting;
+  - every check and change of names in the caches (a create, rename or removal, a cache move and its removal after)
+    holds an exclusive lock on `<cache-dir>/names`, so no program changes a name between another's look and its
+    change;
+  - a program reaches a cache folder from the top one folder at a time, never through a link, each checked to be the
+    folder it asked of, so a link another program puts in a folder's place never leads it outside the caches; a
+    folder reached lately is held open and used again only while the kernel names it where the program's names say;
   - each program takes what it removes off the disk through its own folder in `gone/`, which it holds locked; a
     program that starts takes off only what no running program holds.
 - **Speed.** "At the speed of a local disk" is the point of item 8. With no kernel cache, every `stat` and `open` in a
@@ -184,8 +190,9 @@ is never under `/run`, which empties at every start and is memory.
   (`packages/object-gateway/test/folder-cache-speed-e2e.test.ts`, run by hand on a node) times the same project on the
   plain disk and on mounts: `tsc --noEmit` on a project with its dependencies installed, a load of 3000 small modules,
   alone and while another mount on the cache folder makes and removes names in it, and stats and reads of 2000
-  published files; and each program's CPU over a minute idle. The target is about twice the plain disk at most. MC3a's
-  PR body gives the numbers.
+  published files; and each program's CPU over a minute idle. The target is about twice the plain disk at most for the
+  load alone, and with a busy peer no worse than MC2b's (the coordinator's ruling, 18 October). MC3a's PR body gives
+  the numbers.
 
 ## The kernel cache
 

@@ -24,7 +24,7 @@ use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::MutexGuard;
 
 /// How long a cache's file renamed into the folder waits for the mount's handles writing it to be let go of: a
@@ -225,8 +225,7 @@ impl Shared {
 		let (version, size, disk) = match self.child(dir, ".gitignore") {
 			Ok(child) if child.attr.kind == EntryKind::File => (child.attr.version, child.attr.size, None),
 			Err(libc::ENOENT) => {
-				let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
-				let disk = fs::OpenOptions::new().read(true).custom_flags(flags).open(local.disk(Area::Cache, &file)).ok()?;
+				let disk = local.open_in(Area::Cache, &file).ok()?;
 				let meta = disk.metadata().ok().filter(|m| m.is_file())?;
 				let (ino, len) = (meta.ino(), meta.len());
 				let version = format!("disk:{ino}:{len}:{}.{}:{}.{}", meta.mtime(), meta.mtime_nsec(), meta.ctime(), meta.ctime_nsec());
@@ -410,12 +409,8 @@ impl Shared {
 		let mut todo = vec![String::new()];
 		while let Some(rel) = todo.pop() {
 			let dir = below(worktree, &rel);
-			let mut tops = fs::read_dir(local.room(&dir, Area::Cache)).into_iter().flatten().flatten();
-			let tracked = |e: fs::DirEntry| {
-				let folder = e.file_type().is_ok_and(|t| t.is_dir());
-				e.file_name().into_string().is_ok_and(|n| list.tracks(worktree, &join(&rel, &n), folder))
-			};
-			if tops.any(tracked) {
+			let mut tops = local.tops_in(&dir).into_iter();
+			if tops.any(|(n, meta)| list.tracks(worktree, &join(&rel, &n), meta.is_dir())) {
 				return true;
 			}
 			todo.extend(local.mirrors(&dir).iter().map(|m| join(&rel, m)).filter(|r| list.tracks(worktree, r, true)));
@@ -525,10 +520,7 @@ impl Shared {
 				return Err(libc::EAGAIN);
 			}
 			let whole = whole || local.whole(&dir);
-			let tops: Vec<fs::DirEntry> = match fs::read_dir(local.room(&dir, Area::Cache)) {
-				Ok(read) => read.flatten().collect(),
-				Err(_) => Vec::new(),
-			};
+			let tops = local.tops_in(&dir);
 			if tops.is_empty() && local.mirrors(&dir).is_empty() {
 				local.mark_whole(&dir, false).map_err(local::errno)?;
 				continue;
@@ -538,10 +530,9 @@ impl Shared {
 				Err(f) => return Err(f.errno()),
 			};
 			let mut made = Vec::new();
-			for entry in tops {
-				let Some(child) = entry.file_name().to_str().map(str::to_string) else { continue };
-				let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
+			for (child, meta) in tops {
 				let path = join(&dir, &child);
+				let disk = local.disk(Area::Cache, &path);
 				let picked = if tracked { tracks(&path, meta.is_dir()) } else { child == name && meta.is_dir() };
 				if !whole && !picked {
 					continue;
@@ -563,13 +554,13 @@ impl Shared {
 						made.push(child);
 					} else {
 						// The node's folder has caches of its own, and all of this one moves: it moves whole.
-						self.move_folder(local, held, &path, &entry.path())?;
+						self.move_folder(local, held, &path, &disk)?;
 					}
 				} else if meta.is_file() {
-					self.write_in(local, held, &path, &entry.path())?;
+					self.write_in(local, held, &path, &disk)?;
 				} else if meta.file_type().is_symlink() {
-					if self.link_in(&path, &entry.path())? {
-						local.moved_out(&entry.path())?;
+					if let Some(ino) = self.link_in(local, &path, &disk)? {
+						local.moved_file_out(&disk, ino)?;
 					}
 				} else {
 					eprintln!("qorpera-folder: {path} is not a file, a folder or a link, and stays out of the folder");
@@ -613,8 +604,8 @@ impl Shared {
 			} else if meta.is_file() {
 				self.write_in(local, held, &to, &disk.join(rel))?;
 			} else if meta.file_type().is_symlink() {
-				if self.link_in(&to, &disk.join(rel))? {
-					local.moved_out(&disk.join(rel))?;
+				if let Some(ino) = self.link_in(local, &to, &disk.join(rel))? {
+					local.moved_file_out(&disk.join(rel), ino)?;
 				}
 			} else {
 				eprintln!("qorpera-folder: {to} is not a file, a folder or a link, and stays out of the folder");
@@ -628,24 +619,25 @@ impl Shared {
 		Ok(())
 	}
 
-	/// Makes the disk's link `disk` the folder's link at `path`, to the same target (protocol 4): whether it did. One the
+	/// Makes the disk's link `disk` the folder's link at `path`, to the same target (protocol 4): the local inode of the
+	/// link it made it from, which leaves the disk only while that link is there (`Local::moved_file_out`). One the
 	/// folder cannot keep (a target that is not UTF-8, a name it has already, one it refuses) is not made, and stays on
 	/// the disk; one the node did not take now (`again`) is a failure, so the move stays to be made.
-	fn link_in(&self, path: &str, disk: &Path) -> Result<bool, i32> {
-		let target = fs::read_link(disk).map_err(local::errno)?;
+	fn link_in(&self, local: &Local, path: &str, disk: &Path) -> Result<Option<u64>, i32> {
+		let (target, ino) = local.read_link(disk)?;
 		let Some(target) = target.to_str() else {
 			eprintln!("qorpera-folder: the link {path} stays out of the folder: its target is not UTF-8");
-			return Ok(false);
+			return Ok(None);
 		};
 		match self.link.symlink(path, target) {
 			Ok(version) => {
 				self.versions.lock().unwrap().saved(path, &version);
-				Ok(true)
+				Ok(Some(ino))
 			}
 			Err(f) if again(&f) => Err(f.errno()),
 			Err(f) => {
 				eprintln!("qorpera-folder: the link {path} stays out of the folder: {f}");
-				Ok(false)
+				Ok(None)
 			}
 		}
 	}
