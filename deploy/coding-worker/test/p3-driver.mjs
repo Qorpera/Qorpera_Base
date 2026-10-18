@@ -45,8 +45,8 @@ import { pathToFileURL } from "node:url";
 import * as c1v from "./p3-c1v.mjs";
 import * as c2 from "./p3-c2.mjs";
 import {
-	brokerDatabase, CARRIES, custodyForms, DELTA_PACK, databaseHolds, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, value as databaseValue,
-	WAITS_FOR_REFUSED, wayOutScript, withhold,
+	brokerDatabase, CARRIES, countSearch, custodyForms, DELTA_PACK, databaseHolds, fileSearch, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED,
+	turnRefusals, value as databaseValue, WAITS_FOR_REFUSED, wayOutScript, withhold,
 } from "./p3-custody.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
@@ -763,30 +763,25 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		const turn = await database.awaitIdentityTurn(db, ids, { workerId, sequence, timeoutMs: 20 * 60000 });
 		return [turn, gatewayFor(turn)];
 	};
-	// The folder's refusals in the boundary answers since `mark` (each command's and the turn's end): path and reason,
-	// and how many answers could not be read.
-	const refusalsSince = (mark) => {
-		const refused = new Map();
-		let unread = 0;
-		for (const paths of executor.boundaries.slice(mark))
-			if (!paths) unread += 1;
-			else for (const { path, reason } of paths) refused.set(path, reason);
-		return { refused, unread };
-	};
-	// Ends turn `n`: how it settled, its completion, the folder's refusals since `mark`, the session's machine and the
-	// published branch. The boundary answers come on the executor's other pipe: a second for the last to arrive.
+	// Ends turn `n`: how it settled, its completion, the folder's refusals in the boundary answers since `mark` (each
+	// command's, then the turn's end, whose last decides its save: p3-custody.mjs turnRefusals), the session's machine and
+	// the published branch. The boundary answers come on the executor's other pipe: a second for the last to arrive.
 	const endTurn = async (turn, n, mark, summary, headSha, expected) => {
 		const before = custody.completions.length;
+		const end = executor.boundaries.length;
 		custody.expect = expected === "failed" ? "failed" : null;
 		await database.finishTurn(db, turn, { operationKey: `p3-turn-${n}`, summary, headSha });
 		const settled = await executor.turnSettled();
 		custody.expect = null;
 		await new Promise((settle) => setTimeout(settle, 1000));
-		return { n, settled, completed: lastCompletion(before), ...refusalsSince(mark), still: await attachment(), pushed: published(workerId) };
+		return { n, settled, completed: lastCompletion(before), ...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`),
+			still: await attachment(), pushed: published(workerId) };
 	};
+	// What every turn's boundaries must show: an answer at its end, each answer read, and no refusal for another reason.
+	const answered = (end) => `${end.ends} boundary answers at its end, ${end.unread} unread; refused for another reason: ${list(end.odd)}`;
 	// The turn's end is refused: it ends failed with the save refusal (which names no path) and, for a git change, its way
-	// out (each of GIT_WAY_OUT); the folder refuses each of `paths` as carrying the value and holds back nothing but the
-	// rest of the repo.git, the session stays attached, and nothing is published.
+	// out (each of GIT_WAY_OUT); the end's last boundary refuses each of `paths` as carrying the value and holds back
+	// nothing but the rest of the repo.git, the session stays attached, and nothing is published.
 	const refusedTurn = (end, paths, what, git) => {
 		const summary = end.completed?.summary ?? "";
 		const missing = paths.filter((path) => end.refused.get(path) !== CARRIES);
@@ -794,24 +789,24 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		const stray = held.filter((path) => end.refused.get(path) !== WAITS_FOR_REFUSED || !path.startsWith(`${code}/repo.git/`));
 		const untold = git ? GIT_WAY_OUT.filter((step) => !summary.includes(`\`${step}\``)) : [];
 		if (end.settled !== "failed" || end.completed?.outcome !== "failed" || !summary.startsWith(SAVE_REFUSED) || untold.length || missing.length ||
-			stray.length || end.unread || end.still !== attached || end.pushed.sha !== head)
+			stray.length || end.odd.length || !end.ends || end.unread || end.still !== attached || end.pushed.sha !== head)
 			fail(`turn ${end.n}'s save of ${what} is not refused: the turn settled ${end.settled}, completed ${end.completed?.outcome} ` +
 				`(${summary.startsWith(SAVE_REFUSED) ? "with" : "NOT with"} the save refusal; its way out lacks ${untold.join(", ") || "nothing"}); ` +
 				`not refused as carrying the value: ${missing.join(", ") || "none"}; refused otherwise than held with it: ` +
-				`${list(stray.map((path) => [path, end.refused.get(path)]))}; ${end.unread} boundary answers unread; ` +
+				`${list(stray.map((path) => [path, end.refused.get(path)]))}; ${answered(end)}; ` +
 				`the session attached to ${attached} then ${end.still}; the branch at ${end.pushed.sha}`);
 		pass(`turn ${end.n}'s end is refused (CODING_FOLDER_SAVE_REFUSED): the turn ends failed with the save refusal, which names no path` +
 			`${git ? ", and gives the way out" : ""}; the folder refuses ${list(paths.map((path) => [path, CARRIES]))}` +
 			`${held.length ? ` and holds back ${held.length} more paths of ${code}/repo.git with it (${WAITS_FOR_REFUSED})` : ""}; nothing is ` +
 			`published (${end.pushed.branch} stays at ${head}), and the session stays attached to ${end.still} (${elapsed()})`);
 	};
-	// The turn's end saves: it completes, the folder refuses nothing, the session stays attached, and the branch is at
-	// `branch` (null: not looked at here).
+	// The turn's end saves: it completes, the end's last boundary refuses nothing, the session stays attached, and the
+	// branch is at `branch` (null: not looked at here).
 	const savedTurn = (end, what, branch) => {
-		if (end.settled !== "completed" || end.completed?.outcome !== "succeeded" || end.refused.size || end.unread || end.still !== attached ||
-			(branch && end.pushed.sha !== branch))
-			fail(`turn ${end.n}'s end does not save ${what}: the turn settled ${end.settled}, completed ${end.completed?.outcome}; refused: ` +
-				`${list(end.refused)}; ${end.unread} boundary answers unread; the session attached to ${attached} then ${end.still}; the branch at ${end.pushed.sha}`);
+		if (end.settled !== "completed" || end.completed?.outcome !== "succeeded" || end.refused.size || end.odd.length || !end.ends || end.unread ||
+			end.still !== attached || (branch && end.pushed.sha !== branch))
+			fail(`turn ${end.n}'s end does not save ${what}: the turn settled ${end.settled}, completed ${end.completed?.outcome}; refused at its end: ` +
+				`${list(end.refused)}; ${answered(end)}; the session attached to ${attached} then ${end.still}; the branch at ${end.pushed.sha}`);
 	};
 	// A file with the value, committed from the index alone (never in the worktree): the folder refuses the commit's ref
 	// update, so the commit must fail. Then the head, the commit the worktree's HEAD log names last (the refused one),
@@ -859,8 +854,8 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	pass(`turn 2's end gives the agent the refusal and its way out: "${end2.completed.summary}"`);
 
 	// --- Turn 3 takes the way out: git cannot read the blob, nothing git reads holds the value, and its end saves -------
-	const [turn3, gateway3] = await nextTurn(3, "P3 proof: the save was refused; take its way out.");
 	const mark3 = executor.boundaries.length;
+	const [turn3, gateway3] = await nextTurn(3, "P3 proof: the save was refused; take its way out.");
 	const out3 = await wayOut(turn3, gateway3, 3, wayOutScript([blob2], "p3-leak.txt"), [blob2, made2], [blob2]);
 	const end3 = await endTurn(turn3, 3, mark3, "Took the refusal's way out.", head, "completed");
 	savedTurn(end3, "the way out", head);
@@ -869,21 +864,21 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		`the folder refuses nothing, and the session stays attached (${elapsed()})`);
 
 	// --- Turn 4 writes a file with the value: refused; turn 5 removes it and saves ---------------------------------------
-	const [turn4, gateway4] = await nextTurn(4, "P3 proof: carry on.");
 	const mark4 = executor.boundaries.length;
+	const [turn4, gateway4] = await nextTurn(4, "P3 proof: carry on.");
 	const written = await runToEnd(turn4, gateway4, "p3-custody-file", "printf '%s' \"$P3_PROBE\" >p3-probe.txt && echo \"in-file=$(grep -cF \"$P3_PROBE\" p3-probe.txt)\"");
 	if (written.state !== "succeeded" || written.output.trim() !== "in-file=1") fail(`turn 4 cannot write the value in a file: ${written.state}`);
 	refusedTurn(await endTurn(turn4, 4, mark4, "Wrote a file.", head, "failed"), [`${worktree}/p3-probe.txt`], "a file that carries the value");
-	const [turn5, gateway5] = await nextTurn(5, "P3 proof: the save was refused; remove the file and finish.");
 	const mark5 = executor.boundaries.length;
+	const [turn5, gateway5] = await nextTurn(5, "P3 proof: the save was refused; remove the file and finish.");
 	const removed = await runToEnd(turn5, gateway5, "p3-custody-remove", "rm -f p3-probe.txt && test ! -e p3-probe.txt && echo removed");
 	if (removed.state !== "succeeded" || removed.output.trim() !== "removed") fail(`turn 5 cannot remove the file: ${removed.state}`);
 	savedTurn(await endTurn(turn5, 5, mark5, "Removed the file.", head, "completed"), "the file's removal", head);
 	pass(`turn 5 removes the file; its end saves, the folder refuses nothing, and the session stays attached (${elapsed()})`);
 
 	// --- Turn 6 repacks a refused commit: the value is only in a pack, whole; refused. Turn 7 takes the way out ---------
-	const [turn6, gateway6] = await nextTurn(6, "P3 proof: carry on.");
 	const mark6 = executor.boundaries.length;
+	const [turn6, gateway6] = await nextTurn(6, "P3 proof: carry on.");
 	const packed6 = await runToEnd(turn6, gateway6, "p3-custody-pack", `${COMMIT_VALUE("p3-pack.txt", "P3 custody: a value in a pack")}; ` +
 		"warned=$(git repack -d -q 2>&1 >/dev/null); echo \"repack=$? $(printf '%s' \"$warned\" | grep -c .)\"; git rm -q --cached p3-pack.txt; " +
 		"objects=$(git rev-parse --git-path objects); echo \"loose=$(test -e \"$objects/${blob:0:2}/${blob:2}\" && echo 1 || echo 0)\"; " +
@@ -897,8 +892,8 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		`whole only in ${left6.pack}, no loose copy left (git warned ${left6.repack.split(" ")[1]} lines) (${elapsed()})`);
 	refusedTurn(await endTurn(turn6, 6, mark6, "Committed a file, which was refused, and repacked.", head, "failed"), [packPath(left6.pack)],
 		"a pack that holds the value whole", true);
-	const [turn7, gateway7] = await nextTurn(7, "P3 proof: the save was refused; take its way out.");
 	const mark7 = executor.boundaries.length;
+	const [turn7, gateway7] = await nextTurn(7, "P3 proof: the save was refused; take its way out.");
 	const out7 = await wayOut(turn7, gateway7, 7, wayOutScript([left6.blob]), [left6.blob, left6.made], [left6.blob], left6.pack);
 	savedTurn(await endTurn(turn7, 7, mark7, "Took the refusal's way out.", head, "completed"), "the pack's way out", head);
 	pass(`turn 7 takes the way out for a pack: git cannot read the blob ${left6.blob} (${out7.said}), ${left6.pack}.pack is gone (left of it: ` +
@@ -906,8 +901,8 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		`its end saves, the folder refuses nothing, and the session stays attached (${elapsed()})`);
 
 	// --- Turn 8 writes a pack in which the value is whole only once a delta is resolved: refused -----------------------
-	const [turn8, gateway8] = await nextTurn(8, "P3 proof: carry on.");
 	const mark8 = executor.boundaries.length;
+	const [turn8, gateway8] = await nextTurn(8, "P3 proof: carry on.");
 	const delta = await runToEnd(turn8, gateway8, "p3-custody-delta", DELTA_PACK);
 	const pack8 = fields(delta.output);
 	if (delta.state !== "succeeded" || !/^pack-[0-9a-f]{40}$/.test(pack8.pack ?? "") || !OID.test(pack8.base ?? "") || !OID.test(pack8.target ?? "") ||
@@ -921,8 +916,8 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		"a pack in which the value is whole only once a delta is resolved", true);
 
 	// --- Turn 9 takes the way out, commits the control, and publishes through the repository's credential ---------------
-	const [turn9, gateway9] = await nextTurn(9, "P3 proof: the save was refused; take its way out, commit the control and finish.");
 	const mark9 = executor.boundaries.length;
+	const [turn9, gateway9] = await nextTurn(9, "P3 proof: the save was refused; take its way out, commit the control and finish.");
 	const out9 = await wayOut(turn9, gateway9, 9, wayOutScript([pack8.target]), [pack8.base, pack8.target], [pack8.target], pack8.pack);
 	const cleaned = await runToEnd(turn9, gateway9, "p3-custody-control",
 		`git add p3-control.txt && ${AUTHOR} commit -q -m 'P3 custody: a control' && echo "head=$(git rev-parse HEAD)"`);
@@ -954,10 +949,16 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	if (!(audited >= 1)) problems.push("the broker audited no use of the secret by the session");
 	// The node's files: its NAS, the object store and its state, the stand-in GitHub, the folder service's and the
 	// executor's runtime directories, logs, temporary folders, configuration and LXD's logs. Not the coding machines' disks.
-	const PLACES = "places=(); for place in /srv/nas /srv/p3-objects/state /srv/p3-objects/store /srv/p3-github /srv/qorpera " +
-		"/run/qorpera-folder-* /run/qorpera-coding-host /var/log /tmp /var/tmp /etc /var/snap/lxd/common/lxd/logs /var/lib/qorpera*; " +
-		"do [[ -e $place ]] && places+=(\"$place\"); done; grep -rlsF -D skip -f \"$1\" \"${places[@]}\" || true";
-	const search = (script, needles) => lxc("exec", vm, "--", "bash", "-c", script, "p3", needles).trim();
+	const PLACES = fileSearch(["/srv/nas", "/srv/p3-objects/state", "/srv/p3-objects/store", "/srv/p3-github", "/srv/qorpera", "/run/qorpera-folder-*",
+		"/run/qorpera-coding-host", "/var/log", "/tmp", "/var/tmp", "/etc", "/var/snap/lxd/common/lxd/logs", "/var/lib/qorpera*"]);
+	// A search that fails (a place it could not read, or its producer ended early) is no answer: the run fails on it.
+	const search = (script, needles) => {
+		try {
+			return lxc("exec", vm, "--", "bash", "-c", script, "p3", needles).trim();
+		} catch (error) {
+			return fail(`a search of the node for ${needles} could not finish: ${String(error.stderr ?? "").trim().split("\n").at(-1) || error.message}`);
+		}
+	};
 	const STORED = /^\/srv\/p3-objects\/store\/.*\/([0-9a-f]{64})$/;
 	const fileHits = search(PLACES, "/root/p3-custody-forms").split("\n").filter(Boolean);
 	const elsewhere = fileHits.filter((path) => !STORED.test(path));
@@ -972,14 +973,14 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	if (named.length) problems.push(`the company folder saved a form of the value: the objects ${named.join(", ")}`);
 	const controlFiles = search(PLACES, "/root/p3-custody-control").split("\n").filter(Boolean);
 	if (!controlFiles.length) problems.push("no file in the node holds the control");
-	const GITHUB = "git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch | grep -caF -f \"$1\" || true";
+	const GITHUB = countSearch("git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch");
 	const githubForms = Number(search(GITHUB, "/root/p3-custody-forms"));
 	const githubControl = Number(search(GITHUB, "/root/p3-custody-control"));
 	if (githubForms !== 0) problems.push(`the stand-in GitHub's objects hold a form of the value (${githubForms} lines)`);
 	if (!(githubControl >= 1)) problems.push("the stand-in GitHub's objects do not hold the control");
 	// The control goes to the journal here, after the file search, so the journal's search reads it.
 	search("logger -t p3-custody -- \"$(cat \"$1\")\"; journalctl --sync 2>/dev/null; sleep 1", "/root/p3-custody-control");
-	const JOURNAL = "journalctl --no-pager -o cat | grep -caF -f \"$1\" || true";
+	const JOURNAL = countSearch("journalctl --no-pager -o cat");
 	const journalForms = Number(search(JOURNAL, "/root/p3-custody-forms"));
 	const journalControl = Number(search(JOURNAL, "/root/p3-custody-control"));
 	if (journalForms !== 0) problems.push(`the node's journal holds a form of the value (${journalForms} lines)`);

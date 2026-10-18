@@ -19,7 +19,8 @@ import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
 import {
-	CARRIES, custodyForms, DELTA_PACK, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, WAITS_FOR_REFUSED, wayOutScript, withhold,
+	CARRIES, countSearch, custodyForms, DELTA_PACK, fileSearch, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, turnRefusals, WAITS_FOR_REFUSED,
+	wayOutScript, withhold,
 } from "./p3-custody.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
@@ -344,6 +345,86 @@ test("the custody proof reads the executor's own reason for a refused save, and 
 	}
 	assert.match(readFileSync(secretScan, "utf8"), new RegExp(`^export const CARRIES = ${JSON.stringify(CARRIES)};$`, "m"));
 	assert.match(readFileSync(plan, "utf8"), new RegExp(`^export const WAITS_FOR_REFUSED = ${JSON.stringify(WAITS_FOR_REFUSED)};$`, "m"));
+});
+
+test("a turn's save is judged by its end's last boundary, and a refusal for another reason fails it wherever it comes", () => {
+	const UNCHECKED = /^export const UNCHECKED = "([^"]*)";$/m.exec(readFileSync(secretScan, "utf8"))?.[1];
+	assert.ok(UNCHECKED);
+	const repoGit = "code/qorpera/proof/repo.git/";
+	const carrier = `${repoGit}objects/ab/cdef0123`;
+	const pack = `${repoGit}objects/pack/pack-0123.pack`;
+	const held = `${repoGit}logs/HEAD`;
+	const refused = (path, reason = CARRIES) => ({ path, reason });
+	const judged = (answers, end) => {
+		const { refused: last, odd, unread, ends } = turnRefusals(answers, end, repoGit);
+		return { refused: [...last], odd, unread, ends };
+	};
+	// Review r1 F2: a cleanup's command shows output while the carrier it removes is still there, so that boundary refuses
+	// it; the turn's end refuses nothing, and saves.
+	assert.deepEqual(judged([[], [refused(carrier)], [refused(carrier), refused(held, WAITS_FOR_REFUSED)], []], 3),
+		{ refused: [], odd: [], unread: 0, ends: 1 });
+	// Turn 6: a boundary refuses the loose blob before the repack; the end refuses only the pack, and holds back the rest.
+	assert.deepEqual(judged([[refused(carrier)], [refused(pack), refused(held, WAITS_FOR_REFUSED)]], 1),
+		{ refused: [[pack, CARRIES], [held, WAITS_FOR_REFUSED]], odd: [], unread: 0, ends: 1 });
+	// An end asked again while a check runs: its last answer decides.
+	assert.deepEqual(judged([[], [], [refused(pack)]], 1), { refused: [[pack, CARRIES]], odd: [], unread: 0, ends: 2 });
+	// Review r1 F3: a refusal for another reason is odd, though a later answer says the path carries the value; so is a
+	// hold outside a repo.git. Each is named once.
+	assert.deepEqual(judged([[refused(carrier, UNCHECKED)], [refused(carrier, UNCHECKED)], [refused(carrier)]], 2),
+		{ refused: [[carrier, CARRIES]], odd: [[carrier, UNCHECKED]], unread: 0, ends: 1 });
+	const file = "code/qorpera/proof/worktrees/w1/p3-probe.txt";
+	assert.deepEqual(judged([[refused(file, WAITS_FOR_REFUSED)], []], 1).odd, [[file, WAITS_FOR_REFUSED]]);
+	// An answer that cannot be read is counted; an end that got no answer has none, and refuses nothing.
+	assert.deepEqual(judged([null, [refused(carrier)]], 2), { refused: [], odd: [], unread: 1, ends: 0 });
+	// The driver takes the end's mark before it finishes the turn, and both judgments ask each of these.
+	const driven = readFileSync(driver, "utf8");
+	assert.match(driven, /const end = executor\.boundaries\.length;\n(?:[^\n]*\n)?\t*await database\.finishTurn\(/);
+	assert.ok(driven.includes("...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`),"));
+	assert.equal(driven.split("end.odd.length || !end.ends || end.unread").length, 3, "refusedTurn and savedTurn");
+	assert.ok(!driven.includes("refusalsSince"));
+});
+
+test("the custody proof's searches fail when what they read fails, though it printed the control first", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-search-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const control = `p3-control-${randomBytes(16).toString("hex")}`;
+	const needles = join(root, "control");
+	writeFileSync(needles, `${control}\n`);
+	const bash = (script, file = needles) => spawnSync("bash", ["--noprofile", "--norc", "-c", script, "p3", file], { encoding: "utf8" });
+	// A producer that reads to its end: the count of lines with the control, or none.
+	let run = bash(countSearch("printf 'a\\n%s\\nb\\n' \"$(cat \"$1\")\""));
+	assert.deepEqual([run.status, run.stdout.trim()], [0, "1"], run.stderr);
+	run = bash(countSearch("printf 'a\\nb\\n'"));
+	assert.deepEqual([run.status, run.stdout.trim()], [0, "0"], run.stderr);
+	// Review r1 F1: one that prints the control, then fails before the rest, is no answer. Nor is a grep with no lines.
+	run = bash(countSearch("{ cat \"$1\"; exit 3; }"));
+	assert.equal(run.status, 2, run.stdout);
+	assert.match(run.stderr, /the search failed: its producer and grep ended 3 0/);
+	assert.equal(bash(countSearch("printf 'a\\n'"), join(root, "missing")).status, 2);
+
+	// The files under each place that exists (a pattern that matches none is skipped): each that holds the control.
+	const places = join(root, "places");
+	mkdirSync(join(places, "deep"), { recursive: true });
+	writeFileSync(join(places, "deep", "holds"), `x ${control} y`);
+	writeFileSync(join(places, "clean"), "nothing");
+	run = bash(fileSearch([places, join(root, "absent"), join(root, "none-*")]));
+	assert.deepEqual([run.status, run.stdout.trim()], [0, join(places, "deep", "holds")], run.stderr);
+	// A file grep cannot read fails it (root reads every file).
+	if (process.getuid?.() !== 0) {
+		writeFileSync(join(places, "unread"), "anything", { mode: 0o000 });
+		run = bash(fileSearch([places]));
+		assert.equal(run.status, 2, run.stdout);
+		assert.match(run.stderr, /^the file search failed: grep ended 2: grep: .*\/unread: Permission denied$/m);
+	}
+	// No lines to search for, or no place to search: no answer.
+	assert.equal(bash(fileSearch([places]), join(root, "missing")).status, 2);
+	assert.equal(bash(fileSearch([join(root, "absent")])).status, 2);
+	// The driver's searches are these, and a search that fails fails the run.
+	const driven = readFileSync(driver, "utf8");
+	assert.ok(driven.includes('const PLACES = fileSearch(["/srv/nas", '));
+	assert.ok(driven.includes('const GITHUB = countSearch("git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch");'));
+	assert.ok(driven.includes('const JOURNAL = countSearch("journalctl --no-pager -o cat");'));
+	assert.match(driven, /const search = \(script, needles\) => \{\n\t*try \{\n\t*return lxc\("exec", vm, "--", "bash", "-c", script, "p3", needles\)\.trim\(\);\n\t*\} catch \(error\) \{\n\t*return fail\(/);
 });
 
 test("the executor composition asks the broker as production's client, and gives the save check the machine's values", () => {

@@ -19,6 +19,48 @@ export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret va
 /** The way out of a refused git commit, as the save refusal gives it (#1299): each step, in order. */
 export const GIT_WAY_OUT = ["git reflog expire --expire-unreachable=now HEAD", "git repack -a -d --max-pack-size=64m", "git prune --expire=now"];
 
+/** The folder's refusals in a turn's boundary answers, each the paths one refused (`{ path, reason }`) or null for one
+ * that cannot be read: `answers` from the turn's start, of which those from `end` on came at its end (the save its end
+ * asks for, asked again while a check runs). The last of those decides the save, so `refused` is its paths and reasons: a
+ * command's boundary may refuse a path the command then clears. But every refusal of the turn, a command's or the end's,
+ * must say the path carries the value, or is the rest of a repo.git (under `repoGit`) held back with one: any other is
+ * `odd` (path and reason), even if a later answer gives that path one of the two. `unread` counts the answers that cannot
+ * be read, and `ends` those at the end. */
+export function turnRefusals(answers, end, repoGit) {
+	const odd = new Map();
+	for (const paths of answers)
+		for (const { path, reason } of paths ?? [])
+			if (reason !== CARRIES && !(reason === WAITS_FOR_REFUSED && path.startsWith(repoGit))) odd.set(`${path}\n${reason}`, [path, reason]);
+	const ending = answers.slice(end);
+	return {
+		refused: new Map((ending.at(-1) ?? []).map(({ path, reason }) => [path, reason])),
+		odd: [...odd.values()],
+		unread: answers.filter((paths) => !paths).length,
+		ends: ending.length,
+	};
+}
+
+/** A search (bash) of what `producer` prints for the lines of the file `$1`: it prints how many of its lines hold one. It
+ * fails when the producer or grep does, as a search that stopped early is no answer, even where what it read held the
+ * control. */
+export const countSearch = (producer) => [
+	`${producer} | grep -caF -f "$1"`,
+	"ended=(\"${PIPESTATUS[@]}\")",
+	"[[ ${ended[0]} == 0 && ${ended[1]} -le 1 ]] || { echo \"the search failed: its producer and grep ended ${ended[*]}\" >&2; exit 2; }",
+].join("\n");
+
+/** A search (bash) of the files under each of `places` that exists for the lines of the file `$1`: it prints each file
+ * that holds one. It fails when grep cannot read a file, as a search that skipped one is no answer; a file that went
+ * between grep's listing and its read is not kept, and does not fail it. */
+export const fileSearch = (places) => [
+	`places=(); for place in ${places.join(" ")}; do [[ -e $place ]] && places+=("$place"); done`,
+	"[[ -s $1 && ${#places[@]} -gt 0 ]] || { echo 'the file search has no lines to search for or no place to search' >&2; exit 2; }",
+	"exec 3>&1",
+	"errors=$(LC_ALL=C grep -rlF -D skip -f \"$1\" \"${places[@]}\" 2>&1 >&3); ended=$?",
+	"unread=$(printf '%s' \"$errors\" | grep -v ': No such file or directory$' | head -n3)",
+	"[[ $ended -le 1 || ( $ended == 2 && -z $unread ) ]] || { printf 'the file search failed: grep ended %s: %s\\n' \"$ended\" \"$unread\" >&2; exit 2; }",
+].join("\n");
+
 /** A command that prints which of `oids` the repository has, as the field `name`. */
 const has = (name, oids) => `echo "${name}=$(for oid in ${oids.join(" ")}; do git cat-file -e "$oid" 2>/dev/null && printf '%s ' "$oid"; done)"`;
 
