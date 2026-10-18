@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { DESKTOP_QUIET_MS } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { NAME_CARRIES, TARGET_CARRIES, WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
 import type { BridgeInfo, Hello } from "../src/folder-service/protocol.ts";
-import { CARRIES, type SecretSet } from "../src/folder-service/secret-scan.ts";
+import { CARRIES, type SecretSet, UNCHECKED } from "../src/folder-service/secret-scan.ts";
 import { FolderService, type MachineBoundary, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
@@ -19,6 +20,8 @@ import {
 	FakeUploads,
 	folder,
 	hashOf,
+	looseObject,
+	noSecrets,
 	OFFICE,
 	SECRET_KEY,
 	secretHashes,
@@ -119,9 +122,9 @@ async function company(secrets?: SecretSet, more: Record<string, string | null> 
 }
 
 /** A small file, written as the folder program writes it: opened with truncate, its one chunk, closed. */
-async function write(view: ViewHandle, path: string, text: string): Promise<void> {
+async function write(view: ViewHandle, path: string, text: string | Buffer): Promise<void> {
 	const { handle } = await view.open({ path, create: true, exclusive: false, truncate: true });
-	const data = Buffer.from(text);
+	const data = typeof text === "string" ? Buffer.from(text) : text;
 	await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 	await view.close(handle, data.byteLength);
 }
@@ -135,6 +138,31 @@ const refusedIn = (boundary: MachineBoundary) => pathsOf(boundary).filter((entry
 /** The names the view shows in the folder `path`. */
 async function namesIn(view: ViewHandle, path: string): Promise<string[]> {
 	return (await view.list(path, undefined)).entries.map((entry) => entry.name).sort();
+}
+
+/** A file written where no folder of its path may be yet: the missing ones are made first, as git makes them. */
+async function put(view: ViewHandle, path: string, data: Buffer): Promise<void> {
+	const parts = path.split("/");
+	for (let i = 1; i < parts.length - 1; i++)
+		if (!(await namesIn(view, parts.slice(0, i).join("/"))).includes(parts[i]!))
+			await view.mkdir(parts.slice(0, i + 1).join("/"));
+	await write(view, path, data);
+}
+
+/** A pack of one blob holding `text`, as the node's git writes it, made in the scratch repository `dir`. */
+function packHolding(dir: string, text: string): Buffer {
+	const git = (args: string[], input: string) => {
+		const run = spawnSync("/usr/bin/git", args, {
+			cwd: dir,
+			input,
+			env: { PATH: "/usr/bin:/bin", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+		});
+		if (run.status !== 0) throw new Error(`git ${args[0]} failed: ${run.stderr.toString()}`);
+		return run.stdout;
+	};
+	git(["init", "-q", "--bare", "."], "");
+	const oid = git(["hash-object", "-w", "--stdin"], text).toString().trim();
+	return git(["pack-objects", "--stdout", "-q"], `${oid}\n`);
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -301,6 +329,99 @@ describe("the save check of a coding machine", () => {
 		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
 		expect(core.entries.get("docs/e.txt")?.fileSha256).toBe(hashOf(`the key is ${VALUE}.`));
 		expect(staged()).toBe(3);
+		nothingNamed();
+	});
+});
+
+/** A copy of a repository's objects anywhere in the folder: they are checked by their names' shape, as git stores
+ * them, not by where the repository is. */
+const MIRROR = "docs/mirror";
+const refused = (path: string, reason: string) => ({ path, outcome: "refused", reason, kept: true });
+const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? -1 : 1);
+
+describe("the save check of git's own storage (repo.git)", () => {
+	it("refuses a loose object whose compressed content carries a value: a file's, a name in a tree, a commit message", async () => {
+		const { core, service, open, nothingNamed } = await company(secretsOf(VALUE));
+		const view = await open();
+		const carrying = [
+			looseObject("blob", `the key is ${VALUE}.\n`),
+			looseObject("tree", Buffer.concat([Buffer.from(`100644 ${VALUE}.txt\0`), Buffer.alloc(20, 7)])),
+			looseObject("commit", `tree ${"4b825dc6".repeat(5)}\nauthor A <a@example.com> 1 +0000\n\nadd ${VALUE}\n`),
+		];
+		const honest = looseObject("blob", "the key is gone.\n");
+		for (const object of [...carrying, honest]) {
+			expect(object.data.includes(VALUE)).toBe(false);
+			await put(view, `${MIRROR}/${object.name}`, object.data);
+		}
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual(
+			carrying.map((object) => refused(`${MIRROR}/${object.name}`, CARRIES)).sort(byPath),
+		);
+		expect(core.entries.get(`${MIRROR}/${honest.name}`)?.fileSha256).toBe(hashOf(honest.data));
+		for (const object of carrying) expect(core.entries.has(`${MIRROR}/${object.name}`)).toBe(false);
+		nothingNamed();
+	});
+
+	it("refuses as not checked what is not one whole object at an object's name, and saves it on a machine with no values", async () => {
+		const blob = looseObject("blob", "fine\n").data;
+		const broken = [
+			Buffer.from("not an object at all"),
+			Buffer.concat([blob, Buffer.from("x")]),
+			blob.subarray(0, blob.length - 2),
+		].map((data, i) => ({ path: `${MIRROR}/objects/0${i}/${"e".repeat(38)}`, data }));
+		const { core, service, open } = await company(secretsOf(VALUE));
+		const view = await open();
+		for (const { path, data } of broken) await put(view, path, data);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual(
+			broken.map(({ path }) => refused(path, UNCHECKED)),
+		);
+		for (const { path } of broken) expect(core.entries.has(path)).toBe(false);
+		// With no values to look for, nothing is read: the same bytes are saved.
+		const plain = await company(noSecrets());
+		const other = await plain.open();
+		for (const { path, data } of broken) await put(other, path, data);
+		expect(refusedIn(await plain.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		for (const { path, data } of broken) expect(plain.core.entries.get(path)?.fileSha256).toBe(hashOf(data));
+	});
+
+	it("checks an object git wrote under a temporary name as the object's name it moves or links it to", async () => {
+		const { core, service, open, nothingNamed } = await company(secretsOf(VALUE));
+		const view = await open();
+		const moved = looseObject("blob", `moved: ${VALUE}\n`);
+		const linked = looseObject("blob", `linked: ${VALUE}\n`);
+		const honest = looseObject("blob", "honest\n");
+		for (const [i, object] of [moved, linked, honest].entries()) {
+			const temporary = `${MIRROR}/${object.name.slice(0, "objects/xx/".length)}tmp_obj_${i}`;
+			await put(view, temporary, object.data);
+			if (object === linked) {
+				await view.link({ from: temporary, to: `${MIRROR}/${object.name}` });
+				await view.unlink(temporary, undefined);
+			} else await view.rename({ from: temporary, to: `${MIRROR}/${object.name}`, noReplace: true });
+		}
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual(
+			[moved, linked].map((object) => refused(`${MIRROR}/${object.name}`, CARRIES)).sort(byPath),
+		);
+		expect(core.entries.get(`${MIRROR}/${honest.name}`)?.fileSha256).toBe(hashOf(honest.data));
+		expect([...core.entries.keys()].filter((path) => path.includes("tmp_obj_"))).toEqual([]);
+		nothingNamed();
+	});
+
+	it("refuses a pack holding a value as git reads it, moved from git's temporary name, and saves an honest pack", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const carrying = packHolding(scratch, `the key is ${VALUE}.\n`);
+		const honest = packHolding(scratch, "the key is gone.\n");
+		expect(carrying.includes(VALUE)).toBe(false);
+		const { core, service, open, nothingNamed } = await company(secretsOf(VALUE));
+		const view = await open();
+		const packs = `${MIRROR}/objects/pack`;
+		await put(view, `${packs}/tmp_pack_a1`, carrying);
+		await view.rename({ from: `${packs}/tmp_pack_a1`, to: `${packs}/pack-${"1".repeat(40)}.pack`, noReplace: true });
+		await put(view, `${packs}/pack-${"2".repeat(40)}.pack`, honest);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([
+			refused(`${packs}/pack-${"1".repeat(40)}.pack`, CARRIES),
+		]);
+		expect(core.entries.get(`${packs}/pack-${"2".repeat(40)}.pack`)?.fileSha256).toBe(hashOf(honest));
+		expect(core.entries.has(`${packs}/tmp_pack_a1`)).toBe(false);
 		nothingNamed();
 	});
 });

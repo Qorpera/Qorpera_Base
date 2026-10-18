@@ -3,6 +3,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import {
 	COMMAND_ENDED,
 	type CommitActor,
@@ -978,6 +979,21 @@ export function secretsOf(...values: string[]): SecretSet {
 		SECRET_KEY,
 		values.map((value) => secretHashes(SECRET_KEY, value)),
 	);
+}
+
+/** A loose git object as git stores it (sha1): its path under a repository, `objects/xx/<38 hex>`, and its bytes, the
+ * deflated "<type> <size>\0" and content. */
+export function looseObject(
+	type: "blob" | "tree" | "commit" | "tag",
+	content: Buffer | string,
+): {
+	name: string;
+	data: Buffer;
+} {
+	const body = typeof content === "string" ? Buffer.from(content) : content;
+	const whole = Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body]);
+	const oid = createHash("sha1").update(whole).digest("hex");
+	return { name: `objects/${oid.slice(0, 2)}/${oid.slice(2)}`, data: deflateSync(whole) };
 }
 
 /** The node's test machine project (F3 6b), a test machine's placement, and the instance the node made for it, named

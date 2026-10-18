@@ -104,7 +104,7 @@ export class CodingSaveRefused extends Error {
 }
 /** The reason a publication held by a refused save fails its turn with: what to change, never the value or the path. */
 const SAVE_REFUSAL =
-	"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again.";
+	"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and `git add` them) or the message, run `git reflog expire --expire-unreachable=now HEAD` and `git prune --expire=now`, then commit again.";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */

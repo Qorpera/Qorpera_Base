@@ -130,7 +130,7 @@ function carrierBelow(view: PendingView, from: string, to: string, check: Secret
  */
 export function planBoundary(
 	view: PendingView,
-	staged: (node: PendingFile) => FileRef | undefined,
+	staged: (node: PendingFile, path: string) => FileRef | undefined,
 	check?: SecretCheck,
 ): BoundaryPlan {
 	const keep = new Set<string>();
@@ -210,7 +210,7 @@ export function planBoundary(
 			refuse(path, refusal);
 			continue;
 		}
-		const file = staged(node);
+		const file = staged(node, path);
 		if (!file) {
 			keep.add(path);
 			waiting.push({ path, reason: "its bytes are not saved yet" });

@@ -21,18 +21,24 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
+import { CARRIES } from "../src/folder-service/secret-scan.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
-import { FolderService } from "../src/folder-service/service.ts";
+import { FolderService, type MachineBoundary } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
 	ALLOCATION,
+	CODING,
+	CODING_MACHINE_ID,
 	codeHostGrants,
+	codingGrants,
 	ENV,
 	FakeCore,
 	FakeUploads,
 	folder,
 	hashOf,
+	looseObject,
 	OFFICE,
+	secretsOf,
 	storeFile,
 } from "./folder-service-fixtures.ts";
 
@@ -236,8 +242,9 @@ interface Session {
 	kill(): Promise<void>;
 }
 
-/** The folder service and the bridge, over a stand-in core holding the seeded code area and `files` (path, content). */
-async function area(files: Readonly<Record<string, string>> = {}) {
+/** The folder service and the bridge, over a stand-in core holding the seeded code area and `files` (path, content).
+ * `coding`: the sessions are coding sessions on one coding machine (F3 5c), whose saves are checked (5j-5). */
+async function area(files: Readonly<Record<string, string>> = {}, coding = false) {
 	const base = await mkdtemp(join(tmpdir(), "qorpera-git-e2e-"));
 	cleanup.push(() => rm(base, { recursive: true, force: true }));
 	const root = join(base, "share");
@@ -254,7 +261,7 @@ async function area(files: Readonly<Record<string, string>> = {}) {
 	const service = new FolderService({
 		core,
 		objects,
-		grants: codeHostGrants(),
+		grants: coding ? codingGrants() : codeHostGrants(),
 		staging: new FolderStaging(core, new FakeUploads(root, core), objects),
 		log: (line) => {
 			logged += `${line}\n`;
@@ -277,7 +284,8 @@ async function area(files: Readonly<Record<string, string>> = {}) {
 	const bridgeSocket = join(base, "bridge.sock");
 	const bridge = createServer((machine) => {
 		const upstream = connect(serviceSocket, () => {
-			upstream.write(encodeJson(Kind.bridge, { cid: 90, lookup: "found", machine: OFFICE }));
+			const named = coding ? { cid: 95, machine: CODING } : { cid: 90, machine: OFFICE };
+			upstream.write(encodeJson(Kind.bridge, { ...named, lookup: "found" }));
 			machine.pipe(upstream);
 			upstream.pipe(machine);
 		});
@@ -288,19 +296,23 @@ async function area(files: Readonly<Record<string, string>> = {}) {
 	});
 	await listen(bridge, bridgeSocket);
 	cleanup.push(() => new Promise<void>((resolve) => bridge.close(() => resolve())));
-	return { base, root, core, service, bridgeSocket };
+	return { base, root, core, service, bridgeSocket, coding };
 }
 
 type Area = Awaited<ReturnType<typeof area>>;
 
-/** Opens the worker's shell command's view and mounts the company folder for it, with the machine's own disk. */
+/** Opens the worker's shell command's view (its coding session's, in a coding area) and mounts the company folder for
+ * it, with the machine's own disk. */
 async function mountSession(at: Area, which: keyof typeof WORKERS): Promise<Session> {
 	const { worker, viewId, pass } = WORKERS[which];
 	const host = which === "host";
-	at.core.openView(viewId, pass, {
-		kind: host ? "code_host" : "computer_shell_command",
-		machineId: host ? null : ALLOCATION,
-	});
+	at.core.openView(
+		viewId,
+		pass,
+		at.coding && !host
+			? { kind: "coding_session", codingMachineId: CODING_MACHINE_ID }
+			: { kind: host ? "code_host" : "computer_shell_command", machineId: host ? null : ALLOCATION },
+	);
 	const dir = join(at.base, which);
 	const company = join(dir, "company");
 	const home = join(dir, "home");
@@ -373,6 +385,16 @@ async function mountSession(at: Area, which: keyof typeof WORKERS): Promise<Sess
 async function refs(session: Session, prefix: string): Promise<string[]> {
 	const out = await session.git("for-each-ref", "--format=%(refname)", prefix);
 	return out.split("\n").filter((line) => line !== "");
+}
+
+/** The paths a coding machine's boundary refused in the first worker's view, each with why, in order. */
+function refusedAt(boundary: MachineBoundary): string[] {
+	const report = boundary.views.find((view) => view.viewId === WORKERS.first.viewId)?.report;
+	const paths = report?.paths ?? [];
+	return paths
+		.filter((entry) => entry.outcome === "refused")
+		.map((entry) => `${entry.path}: ${entry.reason}`)
+		.sort();
 }
 
 /** The paths the core holds under `prefix`. */
@@ -947,6 +969,57 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			expect(await eventually(async () => (await readFile(join(there, "notes.md"), "utf8")) === "new\n")).toBe(true);
 			expect((await readdir(there)).sort()).toEqual(names.filter((name) => name !== ".env"));
 			expect(await readFile(join(first.worktree, ".env"), "utf8")).toBe("A=2\n");
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"refuses a coding session's commit of a file carrying a secret value at its ref update, and saves it after the refusal's way out (5j-5)",
+		async () => {
+			const value = "test-value-0001";
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(value));
+			const first = await mountSession(at, "first");
+			const tip = (await first.git("rev-parse", "HEAD")).trim();
+			const env = `${AREA}/worktrees/w1/.env`;
+			const blob = `${R}/${looseObject("blob", `KEY=${value}\n`).name}`;
+			await writeFile(join(first.worktree, ".env"), `KEY=${value}\n`);
+			await first.git("add", ".env");
+			const refused = await first.gitRun("commit", "-q", "-m", "settings");
+			expect(refused.code, refused.out).not.toBe(0);
+			expect((await first.git("rev-parse", "HEAD")).trim()).toBe(tip);
+			expect(at.core.gitPublishes).toEqual([]);
+			// Git logged the commit it made in the worktree's own HEAD log, a plain file the refused change leaves.
+			const headLog = `${R}/worktrees/w1/logs/HEAD`;
+			const made = (await readFile(join(first.company, headLog), "utf8")).trim().split("\n").at(-1)?.split(" ")[1];
+			expect(made).toMatch(/^[0-9a-f]{40}$/);
+			expect(made).not.toBe(tip);
+			// The turn's boundary: the file and its object are refused and kept on the machine.
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([
+				`${blob}: ${CARRIES}`,
+				`${env}: ${CARRIES}`,
+			]);
+			expect(at.core.entries.has(blob)).toBe(false);
+
+			// The refusal's way out, as the executor words it.
+			await writeFile(join(first.worktree, ".env"), "KEY=from-the-vault\n");
+			await first.git("add", ".env");
+			await first.git("reflog", "expire", "--expire-unreachable=now", "HEAD");
+			await first.git("prune", "--expire=now");
+			await first.git("commit", "-q", "-m", "settings");
+			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
+			expect(await first.git("log", "--format=%s")).toBe("settings\nfirst\n");
+			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+			await expect(stat(join(first.company, blob))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(at.core.entries.has(blob)).toBe(false);
+			expect(at.core.entries.get(env)?.fileSha256).toBe(hashOf("KEY=from-the-vault\n"));
+			// No log names the refused commit, on the machine or in the core.
+			for (const log of [headLog, `${R}/logs/refs/heads/w1`]) {
+				const bytes = await readFile(join(first.company, log));
+				expect(bytes.toString()).not.toContain(made);
+				expect(at.core.entries.get(log)?.fileSha256).toBe(hashOf(bytes));
+			}
 		},
 		TIMEOUT,
 	);

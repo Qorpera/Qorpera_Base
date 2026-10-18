@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { FolderActor, FolderCore } from "./core.ts";
+import { type ContentCheck, SaveChecks, type StoredForm } from "./git-objects.ts";
 import type { NasObjects } from "./objects.ts";
 import type { ChunkRef, Content, FileRef } from "./pending.ts";
 import { ErrorCode, ProtocolError } from "./protocol.ts";
@@ -159,11 +160,13 @@ export class FolderStaging {
 	readonly #core: FolderCore;
 	readonly #uploads: FolderUploads;
 	readonly #objects: NasObjects;
+	readonly #checks: SaveChecks;
 
-	constructor(core: FolderCore, uploads: FolderUploads, objects: NasObjects) {
+	constructor(core: FolderCore, uploads: FolderUploads, objects: NasObjects, checks = new SaveChecks()) {
 		this.#core = core;
 		this.#uploads = uploads;
 		this.#objects = objects;
+		this.#checks = checks;
 	}
 
 	/** Opens a chunk's own intent. `present`: the actor holds it already, and need not send it. */
@@ -212,8 +215,8 @@ export class FolderStaging {
 
 	/** Stages a whole file: its hash from its chunks on the share, its manifest, any chunk the actor does not hold, and
 	 * the seal. Returns the file's reference and the sealed intent that holds its bytes until it is published (renewed
-	 * by the caller while it waits). With `secrets`, its bytes are checked for them first: it throws `SecretRefusal`
-	 * before anything is sent to the core. */
+	 * by the caller while it waits). With `secrets`, its bytes are checked for them first, as `form` stores them: it
+	 * throws `SecretRefusal` before anything is sent to the core. */
 	async stageFile(
 		environmentId: string,
 		actor: FolderActor,
@@ -222,15 +225,12 @@ export class FolderStaging {
 		mediaType: string,
 		executable: boolean,
 		secrets?: SecretSet,
+		form: StoredForm = "plain",
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const hash = createHash("sha256");
-		const scan = secrets?.scan(content.size);
-		for (const c of content.chunks) {
-			const bytes = await this.#objects.chunk(profileId, c.sha256, c.bytes);
-			scan?.push(bytes);
-			hash.update(bytes);
-		}
-		scan?.end();
+		await this.#read(profileId, content, secrets && this.#checks.start(secrets, content.size, form), (bytes) =>
+			hash.update(bytes),
+		);
 		const text = manifestText({
 			fileSha256: hash.digest("hex"),
 			bytes: content.size,
@@ -262,12 +262,32 @@ export class FolderStaging {
 		throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be saved now");
 	}
 
-	/** Checks a file's bytes, from its chunks on the share, for `secrets`: throws `SecretRefusal` if they carry one. */
-	async check(profileId: string, content: Content, secrets: SecretSet): Promise<void> {
+	/** Checks a file's bytes, from its chunks on the share, for `secrets`, as `form` stores them: throws
+	 * `SecretRefusal` if they carry one or cannot be checked. */
+	async check(profileId: string, content: Content, secrets: SecretSet, form: StoredForm = "plain"): Promise<void> {
 		if (secrets.size === 0) return;
-		const scan = secrets.scan(content.size);
-		for (const c of content.chunks) scan.push(await this.#objects.chunk(profileId, c.sha256, c.bytes));
-		scan.end();
+		await this.#read(profileId, content, this.#checks.start(secrets, content.size, form));
+	}
+
+	/** Reads a file's chunks in order, each through `check` (to its end) and then `each`. A check that fails, or is
+	 * left by a failed read, is stopped. */
+	async #read(
+		profileId: string,
+		content: Content,
+		check: ContentCheck | undefined,
+		each?: (bytes: Buffer) => void,
+	): Promise<void> {
+		try {
+			for (const c of content.chunks) {
+				const bytes = await this.#objects.chunk(profileId, c.sha256, c.bytes);
+				await check?.push(bytes);
+				each?.(bytes);
+			}
+			await check?.end();
+		} catch (error) {
+			await check?.abort();
+			throw error;
+		}
 	}
 
 	async #put(

@@ -319,7 +319,7 @@ describe("the coding executor over a session turn", () => {
 		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
 		expect(completion.p_outcome).toBe("failed");
 		expect(completion.p_summary).toBe(
-			"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again.",
+			"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and `git add` them) or the message, run `git reflog expire --expire-unreachable=now HEAD` and `git prune --expire=now`, then commit again.",
 		);
 		expect(completion.p_pull_request).toBeNull();
 		expect(w.host.endTurn).toHaveBeenCalledTimes(1);

@@ -14,7 +14,7 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
 | `qorpera-folder-bridge.service` | node host, `qorpera-folder-bridge` (+ group `lxd`) | vsock port 5250 to the socket, naming each machine as LXD sees it. No credential. |
 | `qorpera-folder-mount@.service` | execution host, from the shared-execution package | One read-only mount per instance: `/srv/qorpera-folder/<id>` from `/etc/qorpera-folder/mounts/<id>.json`. |
-| `install-folder-service.sh` | node host | Verify the package, install, enable nothing. |
+| `install-folder-service.sh` | node host | Verify the package, install, enable nothing. Refuses a host without `/usr/bin/git` and `/usr/bin/prlimit`: the service reads the git packs coding machines save with them (F3 5j-5). |
 
 ## Build and package (from the release commit, on the node 2 test machine or in the build space)
 

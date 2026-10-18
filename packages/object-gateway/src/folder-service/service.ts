@@ -31,6 +31,7 @@ import {
 	gitRefused,
 	gitSharedPath,
 } from "./git.ts";
+import { type StoredForm, storedForm } from "./git-objects.ts";
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
 import { NOTICES_KEPT, noticeOf, pageOfNotices } from "./notices.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
@@ -668,8 +669,9 @@ export class FolderService {
 	readonly #windows = new CommandWindows();
 	/** Each coding machine's secret values, as its executor last sent them (`secrets`, 5j-5), for this run only. */
 	readonly #secrets = new Map<string, SecretSet>();
-	/** The values each staged file's bytes were checked against: checked again, they are checked for the others alone. */
-	readonly #checked = new WeakMap<FileRef, SecretSet>();
+	/** The values each staged file's bytes were checked against, and as which stored form (git-objects.ts): checked
+	 * again as a form that one covers, they are checked for the other values alone. */
+	readonly #checked = new WeakMap<FileRef, { readonly secrets: SecretSet; readonly form: StoredForm }>();
 	/** Each file the check refused: at which version, under which values, and why. */
 	readonly #refusals = new WeakMap<
 		PendingFile,
@@ -2770,8 +2772,10 @@ export class FolderService {
 	/** Stages a closed file's current version (its bytes, its origin's chunks under a new bit, or a hard link's copy of
 	 * another file's) at `path`, once; the intent it is sealed under is renewed while the file is pending. A coding
 	 * view's bytes (5j-5) are checked against its machine's secret values first, and staged only if they carry none: a
-	 * staging checked against older values is checked again for the new ones. Nothing is staged while the machine's
-	 * values have not come. Only the machine's own bytes are checked: a live file's are in the folder already. */
+	 * staging checked against older values is checked again for the new ones. They are checked as `path` stores them: a
+	 * git object's inflated, a pack's as git reads it (git-objects.ts), and a staging checked under another name (git's
+	 * temporary one) is checked again as its new name's form. Nothing is staged while the machine's values have not
+	 * come. Only the machine's own bytes are checked: a live file's are in the folder already. */
 	async #stage(
 		view: View,
 		node: PendingFile,
@@ -2784,12 +2788,14 @@ export class FolderService {
 		const check = node.content === undefined ? undefined : secrets;
 		if (check && this.#refusalOf(node, check)) return undefined;
 		const version = node.version;
+		const form = storedForm(path);
 		if (this.#stagedNow(view, node, path)) {
 			const file = node.staged?.file;
-			if (!check || !file || this.#checked.get(file) === check) return file;
+			const left = check && file && this.#uncheckedOf(file, check, form);
+			if (!left) return file;
 			const bytes = await this.#bytesOf(view, node);
 			try {
-				if (bytes) await staging.check(bytes.profile, bytes.content, check.since(this.#checked.get(file)));
+				if (bytes) await staging.check(bytes.profile, bytes.content, left, form);
 			} catch (error) {
 				if (!(error instanceof SecretRefusal)) throw error;
 				if (node.version === version) {
@@ -2798,7 +2804,7 @@ export class FolderService {
 				}
 				return undefined;
 			}
-			this.#checked.set(file, check);
+			this.#checked.set(file, { secrets: check, form });
 			return file;
 		}
 		// A staging for another version or media type is never used again.
@@ -2816,13 +2822,14 @@ export class FolderService {
 				mediaType,
 				node.executable,
 				check,
+				form,
 			);
 		} catch (error) {
 			if (!(error instanceof SecretRefusal) || !check) throw error;
 			if (node.version === version) this.#refusals.set(node, { version, secrets: check, reason: error.message });
 			return undefined;
 		}
-		if (check) this.#checked.set(staged.file, check);
+		if (check) this.#checked.set(staged.file, { secrets: check, form });
 		if (node.version === version) {
 			node.staged = { version, file: staged.file };
 			view.intents.set(staged.intentId, { renewed: this.#now(), node, staged: staged.file });
@@ -2865,12 +2872,22 @@ export class FolderService {
 		return refusal?.version === node.version && refusal.secrets === secrets ? refusal.reason : undefined;
 	}
 
-	/** A node's staged file, if it is for the node's version and, where its bytes are checked, checked against
-	 * `secrets`. */
-	#stagedFor(node: PendingFile, secrets: SecretSet | undefined): FileRef | undefined {
+	/** A node's staged file at `path`, if it is for the node's version and, where its bytes are checked, checked
+	 * against `secrets` as `path` stores them. */
+	#stagedFor(node: PendingFile, secrets: SecretSet | undefined, path: string): FileRef | undefined {
 		const file = node.staged?.version === node.version ? node.staged.file : undefined;
 		if (!file || !secrets || node.content === undefined) return file;
-		return this.#checked.get(file) === secrets ? file : undefined;
+		return this.#uncheckedOf(file, secrets, storedForm(path)) ? undefined : file;
+	}
+
+	/** The values of `secrets` a staged file's bytes still need checking for, as `form`: none (`undefined`) if they
+	 * were checked against these values as a form that covers it; only the newer ones if against older values so;
+	 * else all. A plain check covers no git form; every form's check scans the bytes as they are too. */
+	#uncheckedOf(file: FileRef, secrets: SecretSet, form: StoredForm): SecretSet | undefined {
+		const had = this.#checked.get(file);
+		const covered = had !== undefined && (form === "plain" || had.form === form);
+		if (covered && had.secrets === secrets) return undefined;
+		return covered ? secrets.since(had.secrets) : secrets;
 	}
 
 	/** What a boundary checks against `secrets` (plan.ts). */
@@ -2967,7 +2984,7 @@ export class FolderService {
 				refused: "unproven",
 				paths: uncheckedOf(planBoundary(pending, () => undefined)),
 			};
-		const plan = planBoundary(pending, (node) => this.#stagedFor(node, secrets), this.#checkOf(secrets));
+		const plan = planBoundary(pending, (node, path) => this.#stagedFor(node, secrets, path), this.#checkOf(secrets));
 		return {
 			commitId: null,
 			seq: null,
@@ -3060,7 +3077,7 @@ export class FolderService {
 			return { commitId: null, seq: null, paths: uncheckedOf(planBoundary(pending, () => undefined)) };
 		}
 		await this.#stageAll(view, secrets);
-		const plan = planBoundary(pending, (node) => this.#stagedFor(node, secrets), this.#checkOf(secrets));
+		const plan = planBoundary(pending, (node, path) => this.#stagedFor(node, secrets, path), this.#checkOf(secrets));
 		// A test machine's units are credited from what they publish, as planned (F3 6b). A change undone before it was
 		// published, as a move moved back, leaves nothing to publish: its tags go, even when nothing is published.
 		const credited = view.credit.credits(plan.units, pending);
@@ -3346,7 +3363,7 @@ export class FolderService {
 			(entry): entry is [string, PendingFile] =>
 				entry[1].kind === "file" &&
 				entry[1].open === 0 &&
-				!(this.#stagedNow(view, entry[1], entry[0]) && this.#stagedFor(entry[1], secrets)) &&
+				!(this.#stagedNow(view, entry[1], entry[0]) && this.#stagedFor(entry[1], secrets, entry[0])) &&
 				!(secrets && this.#refusalOf(entry[1], secrets)),
 		);
 		for (let i = 0; i < nodes.length; i += STAGING_PARALLEL)
