@@ -658,6 +658,42 @@ export function followUp(db, ids, { workerId, text }) {
 	);
 }
 
+// ---- the company folder ----------------------------------------------------------------------------------------------
+
+// A text the platform saves in a folder of its own (672's shared file), staged as 924's seed stages one: the upload's
+// objects confirmed in SQL, so the caller puts their bytes in the node's store first (the gateway's put, then confirm).
+const SHARE_SQL = `
+do $p3$
+declare v_in jsonb := pg_temp.p3_in(); v_path text := v_in ->> 'path';
+begin
+	perform pg_temp.base_commit('{"kind":"platform"}', v_in ->> 'key', jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', v_in ->> 'folder'),
+		jsonb_build_object('op', 'write', 'path', v_path, 'file', pg_temp.base_stage(v_in ->> 'text'))));
+	perform pg_temp.p3_out(jsonb_build_object('manifest', pg_temp.base_manifest(v_in ->> 'text'), 'version', pg_temp.base_version(v_path)));
+end $p3$;
+`;
+
+/** The platform saves `text` at `path`, in a new top-level folder: no machine saved it, so none has a copy. Answers the
+ * file's manifest text (whose bytes and chunk the caller put in the store) and its version. */
+export function shareFile(db, ids, { path, text }) {
+	const folder = path.split("/")[0];
+	return script(db, ids, { key: `p3-share-${folder}`, folder, path, text }, SHARE_SQL);
+}
+
+// A folder narrowed to the company's members (486 §9): no agent reads it without a grant on it, and none has one.
+const NARROW_SQL = `
+do $p3$
+begin
+	perform pg_temp.p3_out(public.qorpera_folder_set_resource('${ENV}', pg_temp.base_owner(), pg_temp.p3_in() ->> 'path', 'subtree',
+		'company_shared', 'normal'));
+end $p3$;
+`;
+
+/** The owner narrows the folder at `path` to the company's members. Answers the resource. */
+export function narrow(db, ids, { path }) {
+	return script(db, ids, { path }, NARROW_SQL);
+}
+
 // ---- the identity host's coding turn -----------------------------------------------------------------------------------
 
 // The coding tools' catalog, as CloudNativeCodingRuntime sends it to begin_native_coding_execution (its text is
@@ -938,8 +974,8 @@ async function readContext(db, turn, workerId, sequence) {
 	return context;
 }
 
-/** The turn's context as the identity host reads it now (read_coding_turn_context, v2): input, earlier turns, and
- * commands {running, stopped, omitted}. The turn's job must still be leased (before finishTurn). */
+/** The turn's context as the identity host reads it now (read_coding_turn_context, v2): input, earlier turns,
+ * commands {running, stopped, omitted}, and machine {newDisk}. The turn's job must still be leased (before finishTurn). */
 export function turnContext(db, turn) {
 	return readContext(db, turn, turn.workerId, turn.sequence);
 }
