@@ -735,6 +735,19 @@ export class FolderService {
 		this.#restarts.set(machine, (this.#restarts.get(machine) ?? 0) + 1);
 		// A test machine's commands ended with it (F3 6b).
 		this.#windows.clear(machine);
+		// A view of the boot before that the core closed is listed closed no more (#close): an executor that restarted
+		// itself meanwhile would take it for the next boot's own (company-machine-host.ts #settle), and restart again.
+		for (const view of this.#views.values())
+			if (
+				view.closed &&
+				view.closedAt !== undefined &&
+				!view.movedTo &&
+				view.access?.testMachine &&
+				view.access.machine === machine
+			) {
+				view.closedAt = undefined;
+				this.#forgetClosed(view);
+			}
 		if (unreleased) {
 			this.#log(`folder-service: machine ${machine} restarted with reads unreleased; its views are unproven`);
 			for (const view of views) {

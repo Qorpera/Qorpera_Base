@@ -44,6 +44,9 @@ afterEach(async () => {
 
 const TEST_VIEW = "7e57f1e0-0001-4a00-8b00-000000000001";
 const PASS = "testpass_0123456789-abcdefghijklmnopqrstuvw";
+/** The view the machine's next boot mounts. */
+const NEXT_VIEW = "7e57f1e0-0002-4a00-8b00-000000000002";
+const NEXT_PASS = "testpass_9876543210-zyxwvutsrqponmlkjihgfed";
 const AT_TEST: BridgeInfo = { cid: 95, lookup: "found", machine: TEST_MACHINE };
 const FIRST = "c0aa0001-0000-4a00-8b00-000000000001";
 const SECOND = "c0aa0002-0000-4a00-8b00-000000000002";
@@ -412,6 +415,30 @@ describe("test machine views", () => {
 		clock.now += 1_000;
 		await service.poll();
 		expect((await service.boundary(PLACEMENT, [])).views).toEqual([]);
+	});
+
+	it("lists a closed view no more once its machine restarted: the next boot's boundaries list its own view alone", async () => {
+		const { core, service, open } = await company();
+		await open();
+		const held = core.views.get(TEST_VIEW);
+		if (held) held.state = "closed";
+		await service.renewLeases();
+		const closed = { viewId: TEST_VIEW, error: { code: "VIEW_CLOSED", message: "The view was ended" } };
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([closed]);
+		// The executor restarts the machine, whose next boot mounts its own view. An executor that restarted itself then
+		// takes every view the machine's boundaries list for that boot's own (company-machine-host.ts #settle).
+		service.restarted(PLACEMENT);
+		core.openView(NEXT_VIEW, NEXT_PASS, { kind: "test_machine", machineId: PLACEMENT });
+		const next = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: NEXT_VIEW, pass: NEXT_PASS, role: "io" },
+			AT_TEST,
+		);
+		cleanups.push(async () => next.release());
+		expect((await service.boundary(PLACEMENT, [])).views.map((view) => view.viewId)).toEqual([NEXT_VIEW]);
+		expect((await service.boundary(PLACEMENT, [TEST_VIEW])).views).toContainEqual({
+			viewId: TEST_VIEW,
+			error: { code: "VIEW_CLOSED", message: "This service holds no open view of the machine by that id" },
+		});
 	});
 
 	it("lists a view the core ended during a boundary once in it, and closed from its machine's next boundary", async () => {

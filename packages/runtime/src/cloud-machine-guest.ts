@@ -299,6 +299,8 @@ function commandPaths(ports: MachineGuestPorts, commandId: string) {
 		intent: join(directory, "intent.json"),
 		completion: join(directory, "completion.json"),
 		cancel: join(directory, "cancel.json"),
+		/** The start is past `systemd-run`: from now on, a unit systemd does not know ended or never came. */
+		launched: join(directory, "launched.json"),
 		log: join(directory, "output.log"),
 		unit: `${PATHS.unitPrefix}${commandId}.service`,
 	};
@@ -376,9 +378,10 @@ async function observe(
 					if (state === "cancelled") exitCode = null;
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
-			} else if (fields.LoadState === "not-found" && cancelled) {
+			} else if (fields.LoadState === "not-found" && cancelled && (await missing(() => lstat(paths.launched)))) {
 				// A cancel's stop that ends the command cleanly (SIGTERM is clean) lets systemd forget the transient
-				// unit at once, so the cancel finds no unit left to show.
+				// unit at once, so the cancel finds no unit left to show. Before the start is past `systemd-run`, the
+				// unit may still come: the cancel stays unconfirmed, and the start stops the unit it made.
 				state = "cancelled";
 			}
 		} catch {
@@ -487,8 +490,9 @@ export async function startMachineCommand(
 	} catch {
 		/* An unknown submission stays retained and is observed below. */
 	}
-	// A cancel between the intent and the unit found no unit to stop, and its receipt already said cancelled: the unit
-	// stops now, so a command said cancelled never runs on.
+	await retain(paths.launched, { commandId });
+	// A cancel before the unit was made found none to stop, and stayed unconfirmed: the unit stops now. A stop that
+	// fails leaves the command running, and said so, and the next cancel stops it again.
 	if (await missing(() => lstat(paths.cancel)))
 		await (ports.system ?? system)("/usr/bin/systemctl", ["stop", paths.unit]).catch(() => undefined);
 	return receipt(ports, guest, commandId, {});
