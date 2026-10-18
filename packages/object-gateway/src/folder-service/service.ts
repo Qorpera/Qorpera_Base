@@ -827,20 +827,20 @@ export class FolderService {
 				}
 			}),
 		);
-		// A test machine's view the core closed otherwise than by its final is listed closed while it stays (#close).
-		for (const view of this.#views.values())
+		// A test machine's view the core closed otherwise than by its final is listed closed while it stays (#close), once:
+		// one this boundary closed has its report in it already, and is listed closed from the next.
+		for (const view of this.#views.values()) {
+			const viewId = view.key.slice("view:".length);
 			if (
 				view.closed &&
 				this.#retained(view) &&
 				!view.movedTo &&
 				view.access?.testMachine &&
 				view.access.machine === machine &&
-				this.#views.get(view.key) === view
+				!reports.some((report) => report.viewId === viewId)
 			)
-				reports.push({
-					viewId: view.key.slice("view:".length),
-					error: { code: ErrorCode.viewClosed, message: view.closed },
-				});
+				reports.push({ viewId, error: { code: ErrorCode.viewClosed, message: view.closed } });
+		}
 		for (const viewId of final)
 			if (!reports.some((report) => report.viewId === viewId))
 				reports.push({

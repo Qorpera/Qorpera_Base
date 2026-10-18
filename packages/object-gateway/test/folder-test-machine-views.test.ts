@@ -414,6 +414,24 @@ describe("test machine views", () => {
 		expect((await service.boundary(PLACEMENT, [])).views).toEqual([]);
 	});
 
+	it("lists a view the core ended during a boundary once in it, and closed from its machine's next boundary", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await view.unlink("docs/a.md", undefined);
+		// The core ended the view before a renewal heard so: the window's change set is refused for it, which closes it.
+		const held = core.views.get(TEST_VIEW);
+		if (held) held.state = "closed";
+		expect((await service.closeWindow(PLACEMENT, FIRST)).views).toMatchObject([
+			{ viewId: TEST_VIEW, report: { refused: "denied" } },
+		]);
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([
+			{ viewId: TEST_VIEW, error: { code: "VIEW_CLOSED", message: "Folder view has ended" } },
+		]);
+		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("a"));
+	});
+
 	it("credits a moved file's removal to its command when a new file made at its origin replaces it", async () => {
 		const { root, core, service, open } = await company();
 		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
