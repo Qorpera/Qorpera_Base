@@ -157,6 +157,37 @@ export function judgeNewDisk({ restarts, custody, journal }) {
 	return { failures, granted, ran: ran.map((event) => `${event.action} ${event.operationId}`) };
 }
 
+/** The session's attachment as SQL holds it: its machine, when it attached and until when, and the lease between the
+ * two in seconds. An attach leases 60 s from its attached_at (20260928187000:227); only a keep moves attachment_until
+ * past that (187000:341) until the next attach, which resets both. */
+export function attachment(db, workerId) {
+	return one(db, `select jsonb_build_object('machineId', s.attached_machine_id, 'attachedAt', s.attached_at, 'until', s.attachment_until,
+			'lease', extract(epoch from s.attachment_until - s.attached_at), 'now', clock_timestamp())
+		from public.qorpera_coding_sessions s where s.worker_id = ${quote(workerId)}::uuid`);
+}
+
+/** Whether the executor's keeper kept turn 9's attachment on the machine's new boot (49's check), judged from the
+ * executor's mount and session-error lines since turn 8 ended (`lines`, in order) and the session's `attachment`.
+ * - Turn 9's view mounted on the machine: its first mount in `lines`, right after its session attached.
+ * - No session error for the machine, or for a whole keep pass, after that mount. Those before it are the rebuild's and
+ *   expected: the keeper cuts a machine's step at 15 s while guest.status hangs in the shutdown (ceh:353-356), and it
+ *   skips the machine from the start's detach to turn 9's attach.
+ * - A keep renewed the attachment: its lease is past 61 s. An attach alone gives 60 s, give or take the microseconds
+ *   between its two readings of the clock.
+ * Answers each failure (none: so it was) and the session errors before the mount. */
+export function judgeKeep({ lines, machineId, attachment }) {
+	const failures = [];
+	const mounted = lines.findIndex((line) => line.event === "coding-folder-mount" && line.machineId === machineId);
+	const errors = (from, to) => lines.slice(from, to)
+		.filter((line) => line.event === "coding-session-error" && (line.machineId === machineId || line.machineId === undefined));
+	if (mounted < 0) failures.push(`turn 9's view did not mount on the machine: ${JSON.stringify(lines)}`);
+	else if (errors(mounted + 1).length)
+		failures.push(`the executor logged session errors for the machine after turn 9's view mounted: ${JSON.stringify(errors(mounted + 1))}`);
+	if (attachment?.machineId !== machineId || !(attachment.lease > 61))
+		failures.push(`no keep renewed turn 9's attachment past its attach's 60 s: ${JSON.stringify(attachment)}`);
+	return { failures, before: mounted < 0 ? [] : errors(0, mounted) };
+}
+
 /** The core's tables with a row that holds `text`, as text or as its UTF-8 bytes in hex (a bytea column), and the
  * tables it could not read. */
 export async function holding(db, text) {

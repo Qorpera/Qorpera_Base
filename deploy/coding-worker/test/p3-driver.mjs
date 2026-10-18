@@ -19,7 +19,8 @@
 // its own (so no machine has a copy) and leaves a command running; the owner narrows that folder to the company's
 // members, so turn 8's lease marks the machine for a new disk, and before turn 9 the executor stops it (the session's
 // MACHINE_NEW_DISK event names the command) and rebuilds it from its image: turn 9 says so, finds only the company folder
-// kept (its home is new, its worktree's head the same) and no longer reads the file; turn 10 no longer says so.
+// kept (its home is new, its worktree's head the same) and no longer reads the file, and the keeper keeps its attachment
+// on the new boot; turn 10 no longer says so.
 // The executor's control RPCs come here over its stdout and run on the database as service_role; the runtime's coding
 // command gateway (packages/runtime/src/cloud-coding-command-http.ts, bundled as p3-gateway.mjs) reaches the
 // executor's command service through the same pipe. Prints PASS lines, then SESSION PROVEN.
@@ -534,6 +535,7 @@ try {
 
 			// Before turn 9 the executor stops the machine ('new-disk', which ends the session's attachment and the command
 			// turn 7 left) and rebuilds it from its image ('replaced', which empties the read set), then starts it.
+			const keepFrom9 = executor.keepLines.length;
 			await database.followUp(db, ids, { workerId, text: "P3 proof: what happened to your machine?" });
 			const turn9 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 9, timeoutMs: 20 * 60000 });
 			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 9 runs on another machine");
@@ -591,6 +593,18 @@ try {
 			const identity9 = instanceIdentity(machine);
 			pass(`turn 9 finds only the company folder kept: its home ${home} is new, its worktree is at ${head}, and it no longer reads ` +
 				`${shared} (${read9.state}); the machine booted again (boot ${boot7} → ${boot9}) (${elapsed()})`);
+			// The keeper keeps turn 9's attachment on the new boot, read before turn 10's attach moves it again: a keep renewed
+			// it (its first pass after the attach, within about 10 s plus the pass), and the executor logged no session error
+			// for the machine after turn 9's view mounted (c2.judgeKeep).
+			let attachment9 = await c2.attachment(db, workerId);
+			for (let waited = 0; !(attachment9?.lease > 61) && waited < 45000; waited += 2000) {
+				await new Promise((settle) => setTimeout(settle, 2000));
+				attachment9 = await c2.attachment(db, workerId);
+			}
+			const keep9 = c2.judgeKeep({ lines: executor.keepLines.slice(keepFrom9), machineId: machine.machineId, attachment: attachment9 });
+			if (keep9.failures.length) fail(keep9.failures.join("; "));
+			pass(`the keeper renewed turn 9's attachment on the new boot (${JSON.stringify(attachment9)}), and the executor logged no ` +
+				`session error for the machine after turn 9's view mounted; before it, during the rebuild: ${JSON.stringify(keep9.before)} (${elapsed()})`);
 			await database.finishTurn(db, turn9, { operationKey: "p3-turn-9", summary: "Read that the machine got a new disk.", headSha: head });
 			await executor.turnSettled();
 			pass(`turn 9 ended (${elapsed()})`);
@@ -841,6 +855,8 @@ function startExecutor() {
 	// housekeeping logs for a machine (sleep, delete, release, archive).
 	const folderLines = { start: null, mounts: [] };
 	const machineLines = [];
+	// And, in one order, each view it mounts and each session error its keeper logs (c2.judgeKeep).
+	const keepLines = [];
 	createInterface({ input: child.stderr }).on("line", (line) => {
 		console.error(`executor: ${line}`);
 		let logged;
@@ -849,6 +865,7 @@ function startExecutor() {
 		} catch {
 			return;
 		}
+		if (logged?.event === "coding-folder-mount" || logged?.event === "coding-session-error") keepLines.push(logged);
 		if (logged?.event === "coding-executor-folder") folderLines.start = line;
 		else if (logged?.event === "coding-folder-mount") folderLines.mounts.push(line);
 		else if (logged?.event === "coding-machine" || logged?.event === "coding-machine-error") machineLines.push(logged);
@@ -894,6 +911,7 @@ function startExecutor() {
 		ready,
 		folderLines,
 		machineLines,
+		keepLines,
 		http(url, init) {
 			const id = ++nextHttp;
 			const path = new URL(url).pathname;

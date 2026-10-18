@@ -1,15 +1,15 @@
 // What node --check cannot see in the P3 driver: that its imports link, and that no top-level binding is declared below
 // the main flow's start (the flow's callbacks would find it uninitialized: a run's ReferenceError at its first core call,
 // 38 minutes in). And that its stand-in PostgREST fails a call as PostgREST does, for the executor's control, which is
-// production's own, as for the folder service. And that turn 9's judgment of the new disk passes a real run's records
-// and fails each of them broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
+// production's own, as for the folder service. And that turn 9's judgments of the new disk and of the keep on it pass
+// a real run's records and fail each of them broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
 // builds anything.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { judgeNewDisk } from "./p3-c2.mjs";
+import { judgeKeep, judgeNewDisk } from "./p3-c2.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
 const driver = fileURLToPath(new URL("./p3-driver.mjs", import.meta.url));
@@ -131,6 +131,51 @@ test("turn 9 fails each broken record of the new disk", () => {
 		const run = structuredClone(RUN2);
 		broken(run);
 		const { failures } = judgeNewDisk(run);
+		assert.equal(failures.length, expected.length, `${name}: ${JSON.stringify(failures)}`);
+		expected.forEach((pattern, index) => assert.match(failures[index], pattern, name));
+	}
+});
+
+// Turn 9's keep on the new boot (49's check): run 2's executor lines since turn 8 ended, as they were (the keeper's
+// error during the rebuild, then turn 9's mount), and an attachment shaped as SQL's with made-up times (run 2 failed
+// before it was read).
+const MACHINE = "c80a26ba-d3ab-488e-b15c-ecdbcab20f25", WORKER = "2ff0dc3d-d146-4b9d-b732-36a0dc3f8c61";
+const KEEP_DEADLINE = { event: "coding-session-error", machineId: MACHINE, workerId: null, step: "keep", state: "failed", code: "CODING_HOST_KEEP_DEADLINE" };
+const MOUNT9 = { event: "coding-folder-mount", workerId: WORKER, machineId: MACHINE, viewId: "8791c73e-8b2b-4617-a857-f418c53f8429" };
+const KEPT9 = {
+	lines: [KEEP_DEADLINE, MOUNT9],
+	machineId: MACHINE,
+	attachment: { machineId: MACHINE, attachedAt: "2026-10-18T03:09:20.104218+00:00", until: "2026-10-18T03:10:31.523811+00:00", lease: 71.419593 },
+};
+
+test("turn 9 judges the keeper kept its attachment on the new boot", () => {
+	assert.deepEqual(judgeKeep(KEPT9), { failures: [], before: [KEEP_DEADLINE] });
+	// Another machine's error after the mount is not this machine's.
+	assert.deepEqual(judgeKeep({ ...KEPT9, lines: [...KEPT9.lines, { ...KEEP_DEADLINE, machineId: "c80a26ba-0000-4000-8000-000000000000" }] }).failures, []);
+});
+
+test("turn 9 fails each broken record of the keep", () => {
+	const errors = /^the executor logged session errors for the machine after turn 9's view mounted: /;
+	const renewed = /^no keep renewed turn 9's attachment past its attach's 60 s: /;
+	const mount = /^turn 9's view did not mount on the machine: /;
+	const cases = [
+		// The keeper off, or its keep RPC skipped: the attach's own 60 s, either way round its two readings of the clock.
+		["no keep after the attach", (run) => { run.attachment.lease = 59.999996; }, [renewed]],
+		["no keep after the attach, the clock read the other way", (run) => { run.attachment.lease = 60.000004; }, [renewed]],
+		["a keep refused (the attachment cut to now)", (run) => { run.attachment.lease = 12.3; }, [renewed]],
+		["the session detached", (run) => { run.attachment = { machineId: null, attachedAt: null, until: null, lease: null }; }, [renewed]],
+		["no session", (run) => { run.attachment = null; }, [renewed]],
+		["attached to another machine", (run) => { run.attachment.machineId = "c80a26ba-0000-4000-8000-000000000000"; }, [renewed]],
+		["the keeper's deadline after the mount", (run) => { run.lines.push(KEEP_DEADLINE); }, [errors]],
+		["a whole keep pass failed after the mount", (run) => { run.lines.push({ event: "coding-session-error", code: "CODING_CONTROL_BUSY" }); }, [errors]],
+		["no mount on the machine", (run) => { run.lines = [KEEP_DEADLINE]; }, [mount]],
+		["the mount was another machine's", (run) => { run.lines[1].machineId = "c80a26ba-0000-4000-8000-000000000000"; }, [mount]],
+		["no keep and an error after the mount", (run) => { run.attachment.lease = 60; run.lines.push(KEEP_DEADLINE); }, [errors, renewed]],
+	];
+	for (const [name, broken, expected] of cases) {
+		const run = structuredClone(KEPT9);
+		broken(run);
+		const { failures } = judgeKeep(run);
 		assert.equal(failures.length, expected.length, `${name}: ${JSON.stringify(failures)}`);
 		expected.forEach((pattern, index) => assert.match(failures[index], pattern, name));
 	}
