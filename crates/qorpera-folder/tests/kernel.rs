@@ -1072,6 +1072,44 @@ fn a_create_answered_after_the_ends_drop_opens_nothing() {
 	assert_eq!(a.child.wait().unwrap().code(), Some(0), "{}", a.logged());
 }
 
+/// A hard link of a cache file a process holds open, let through before the end, whose reply goes out only after the
+/// end's drop (`LATE_CREATE`): the kernel takes a link's attributes for the inode it has without asking whether it
+/// dropped newer ones. The reply hands none to keep, so a stat through the held fd asks for them, during the end and
+/// after it, and fails.
+#[test]
+fn a_link_answered_after_the_ends_drop_gives_a_held_fd_nothing() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let gate = node.dir.join("gate");
+	let mut a = Program::start(&node, "a", &[(CLOSE_GATE, gate.to_str().unwrap()), (LATE_CREATE, "late.js")]);
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), "one").unwrap();
+	let x = File::open(a.at(X)).unwrap();
+	assert_eq!(read_at(&x), "one");
+	let linked = {
+		let (from, to) = (a.at(X), a.at(&format!("{TOP}/late.js")));
+		std::thread::spawn(move || std::fs::hard_link(from, to))
+	};
+	let waits = "qorpera-folder: test switch: a link of late.js was let through and waits for the end's drop";
+	assert!(eventually(Duration::from_secs(10), || a.logged().contains(waits)), "{}", a.logged());
+	a.signal(libc::SIGTERM);
+	// The file's inode was in the drop; the reply goes out after it, during the end.
+	linked.join().unwrap().unwrap();
+	assert!(a.logged().contains(DROP_WAITS), "{}", a.logged());
+	assert!(a.child.try_wait().unwrap().is_none(), "the program ended during the drop: {}", a.logged());
+	let stat = x.metadata();
+	assert!(stat.is_err(), "a stat through the held fd during the end gave {stat:?}");
+	std::fs::write(&gate, "").unwrap();
+	let ended = eventually(Duration::from_secs(20), || a.child.try_wait().unwrap().is_some());
+	assert!(ended, "the program did not stop: {}", a.logged());
+	assert_eq!(a.child.wait().unwrap().code(), Some(0), "{}", a.logged());
+	let stat = x.metadata();
+	assert!(stat.is_err(), "a stat through the held fd after the end gave {stat:?}");
+}
+
 /// A fallback that cannot drop what the kernel holds ends the program (exit 1) through the same end as a stop. A
 /// SIGTERM during that end's drop waits for it (`Kernel::close`): the program neither unmounts nor exits before the
 /// drop is done, and a fd held past the end reads nothing more.

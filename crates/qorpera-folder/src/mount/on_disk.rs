@@ -1040,7 +1040,7 @@ impl FolderFs {
 									local.release(fh);
 									return None;
 								};
-								self.s.kernel.late(name);
+								self.s.kernel.late("create", name);
 								reply.created(&CREATED, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
 							}
 							Err(e) => {
@@ -1531,6 +1531,9 @@ impl FolderFs {
 		None
 	}
 
+	/// link of a local file to a new name in its own area. The reply hands the kernel no attributes to keep (`CREATED`):
+	/// it takes a link's attributes for the inode it has without asking whether it dropped newer ones since, so a reply
+	/// after the end's drop would give a fd held on the file its attributes again (`Kernel::close`).
 	pub(super) fn local_link(&self, ino: u64, to: (u64, &str), reply: ReplyEntry) -> Option<ReplyEntry> {
 		if !is_local(ino) {
 			// A file of the folder's, linked to a name on the machine's disk (a local file's, or a new cache's): another
@@ -1546,19 +1549,24 @@ impl FolderFs {
 			let (_, _, area) = local.name(ino).ok_or(libc::ENOENT)?;
 			match self.s.target(local, to.0, to.1, area, false)? {
 				Some((up, to_area)) if to_area == area => {
-					let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
-					let held = self.s.kernel.hold(&up, to.1, ttl);
+					// No name to hold (`Kernel::hold`): the reply hands the kernel no entry to keep (`CREATED`).
+					let dir = told_parent(&up);
 					let attr = local.link(ino, up, to.1, area)?;
 					self.s.made(local, to.0, to.1, false);
 					// The file's link count changed, and a name came.
 					self.tell(area, || vec![Change { ino: Some(ino), name: Some((dir, to.1.to_string())) }])?;
-					Ok((ttl, attr, held))
+					Ok(attr)
 				}
 				_ => Err(libc::EXDEV),
 			}
 		});
 		match done {
-			Ok((ttl, attr, _held)) => self.entry(reply, &ttl, &attr),
+			Ok(attr) => {
+				// Refused here, the link stays made: the program is ending.
+				let reply = self.noted(ino, reply)?;
+				self.s.kernel.late("link", to.1);
+				self.entry(reply, &CREATED, &attr)
+			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None

@@ -45,7 +45,7 @@ const NAMES_MAX: usize = 100_000;
 /// and the reply (`QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>`); a fallback waiting `SLOW_FALL_BACK` between turning the
 /// kernel cache off and dropping what the kernel holds (`QORPERA_FOLDER_TEST_SLOW_FALL_BACK=1`); the end's drop, once
 /// it dropped every inode, not done until a file is there (`QORPERA_FOLDER_TEST_CLOSE_GATE=<path>`); a name whose
-/// creates wait between their check and their reply until the end's drop dropped every inode
+/// creates, and links to it, wait between their check and their reply until the end's drop dropped every inode
 /// (`QORPERA_FOLDER_TEST_LATE_CREATE=<name>`).
 const TEST_OFF: &str = "QORPERA_FOLDER_TEST_KERNEL_OFF";
 const TEST_NOTIFY_FAILS: &str = "QORPERA_FOLDER_TEST_NOTIFY_FAILS";
@@ -525,7 +525,8 @@ impl Kernel {
 	/// takes the set; and a read checked before the refusals began fills a page the kernel holds locked until the
 	/// answer, which the drop waits for. A create's inode the kernel makes only when it reads the reply, which may be
 	/// after the drop: its reply hands no attributes to keep (`CREATED`), so the open asks for them before it is done,
-	/// and is refused.
+	/// and is refused. Nor does a hard link's of a local file: the kernel takes them for the inode it has without asking
+	/// whether it dropped newer ones, so a fd held on the file asks for them at its next stat, and is refused.
 	///
 	/// The end has one owner, the first call (the view's close, a stop, or a fallback that cannot drop what the kernel
 	/// holds). A call during its drop waits for it, until the same `CLOSE_WAIT` has passed: no caller unmounts or exits
@@ -602,13 +603,13 @@ impl Kernel {
 		}
 	}
 
-	/// The test switch's wait in a create of its name, after its check and before its reply: until the end's drop
-	/// dropped every inode, at most `CLOSE_WAIT`.
-	pub(super) fn late(&self, name: &str) {
+	/// The test switch's wait in a `request` (a create, or a link) of its name, after its check and before its reply:
+	/// until the end's drop dropped every inode, at most `CLOSE_WAIT`.
+	pub(super) fn late(&self, request: &str, name: &str) {
 		if self.late.as_deref() != Some(name) {
 			return;
 		}
-		eprintln!("qorpera-folder: test switch: a create of {name} was let through and waits for the end's drop");
+		eprintln!("qorpera-folder: test switch: a {request} of {name} was let through and waits for the end's drop");
 		let start = Instant::now();
 		while !self.dropped.load(Ordering::SeqCst) && start.elapsed() < CLOSE_WAIT {
 			std::thread::sleep(Duration::from_millis(10));

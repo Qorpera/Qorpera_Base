@@ -967,7 +967,7 @@ impl Filesystem for FolderFs {
 		let fh = self.s.handle(Handle::Write { ino, open, opener: process_of(req.pid()) });
 		// Refused here, the file stays made with its handle: the program is ending.
 		let Some(reply) = self.noted(ino, reply) else { return };
-		self.s.kernel.late(&name);
+		self.s.kernel.late("create", &name);
 		reply.created(&CREATED, &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
 	}
 

@@ -154,9 +154,10 @@ written back are lost (`msync` and `fsync` give `EIO`), and a folder or file hel
 an `O_PATH` fd) keeps its attributes until their time-out. A SIGKILL before the drop is done ends the session with the
 pages not yet dropped still held. The end has one owner, its first caller; a second waits for its drop (at most the
 same 15 seconds), so neither unmounts nor exits before it is done. A create answered after the drop opens nothing: its
-open asks for the attributes, and is refused. In tests, `QORPERA_FOLDER_TEST_CLOSE_GATE=<path>` holds the drop, once
-done, until that file exists, and `QORPERA_FOLDER_TEST_LATE_CREATE=<name>` holds a create of that name, after its
-check, until the drop is done.
+open asks for the attributes, and is refused. A hard link of a cache file answered after it hands a fd held on the
+file no attributes either: its next stat asks, and is refused. In tests, `QORPERA_FOLDER_TEST_CLOSE_GATE=<path>` holds
+the drop, once done, until that file exists, and `QORPERA_FOLDER_TEST_LATE_CREATE=<name>` holds a create of that name,
+or a link to it, after its check, until the drop is done.
 
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
