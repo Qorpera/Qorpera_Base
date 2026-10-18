@@ -53,9 +53,11 @@ NODE=$(command -v node || true)
 [[ -n $NODE ]] || NODE=$(ls /usr/local/bin/node /opt/node/bin/node 2>/dev/null | head -1 || true)
 [[ -x $NODE ]] || fail "no node here"
 NODE=$(readlink -f "$NODE")
-# The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first.
-driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" 2>&1 </dev/null) ||
-	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs failed"; }
+# The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first, and
+# C1-V's judgments (test/p3-c1v.mjs, which P3_C1V=1 runs after phase B's last turn).
+[[ ${P3_C1V:-0} != 1 || ${P3_CODE_HOST:-0} == 1 ]] || fail "P3_C1V=1 runs after phase B's last turn: set P3_CODE_HOST=1 too"
+driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" "$HERE/p3-c1v.test.mjs" 2>&1 </dev/null) ||
+	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs or test/p3-c1v.test.mjs failed"; }
 # The image's build and export, the node's disk and the coding machine in it: before anything is made.
 for place in /var/tmp /var/snap/lxd/common/lxd; do
 	[[ -d $place ]] || continue
