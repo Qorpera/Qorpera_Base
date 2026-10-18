@@ -6,7 +6,12 @@
 //   the folder service crashes mid-session: the machine restarts for the company folder before a view opens on it again
 //     (20260930501000, its records in qorpera_coding_machine_folder_restarts), each session attached there gets a
 //     FOLDER_RESTART event, and what a command printed from a read the crash left unreleased is kept nowhere: not in
-//     the core's tables, not on the NAS.
+//     the core's tables, not on the NAS;
+//   a read the session's turn can no longer place gets its machine a new disk (20260930505000): the machine's read set
+//     (20260928549470) holds a file a turn read, the owner narrows its folder, the next turn's lease marks the machine,
+//     and the executor stops it (its 'new-disk' record and the session's MACHINE_NEW_DISK event) and rebuilds it from
+//     its image (its 'replaced' record, which empties the read set); the turn after says so in its context
+//     (20260930515000), and the one after that no longer does.
 import { randomBytes } from "node:crypto";
 import { quote } from "./p3-database.mjs";
 
@@ -63,14 +68,14 @@ export async function listed(db, owner, machineIdSha256, machine) {
 	return (Array.isArray(entries) ? entries : []).find((entry) => entry?.machineId === machine.machineId) ?? null;
 }
 
-/** Where the session and its machine stand now: its attachment, the machine's node demand, both folder marks, the
- * session's newest event, and the database's clock. */
+/** Where the session and its machine stand now: its attachment, the machine's node demand, both folder marks, its last
+ * error, the session's newest event, and the database's clock. */
 export function standing(db, workerId, machine) {
 	return one(db, `select jsonb_build_object('attachedMachineId', s.attached_machine_id,
 			'attached', coalesce(s.attachment_until > clock_timestamp(), false),
 			'demand', exists (select from public.qorpera_runtime_node_demands d where d.allocation_id = m.id and d.released_at is null),
 			'suspendedAt', (select d.suspended_at from public.qorpera_runtime_node_demands d where d.allocation_id = m.id and d.released_at is null),
-			'folderRestartAt', m.folder_restart_at, 'newDiskAt', m.new_disk_at,
+			'folderRestartAt', m.folder_restart_at, 'newDiskAt', m.new_disk_at, 'lastError', m.last_error,
 			'lastEventId', (select max(e.id) from public.qorpera_coding_session_events e where e.worker_id = s.worker_id),
 			'now', clock_timestamp())
 		from public.qorpera_coding_sessions s, public.qorpera_coding_machines m
@@ -90,6 +95,34 @@ export async function restartsSince(db, machine, since) {
 			'detached', r.detached, 'recordedAt', r.recorded_at) order by r.recorded_at), '[]'::jsonb)
 		from public.qorpera_coding_machine_folder_restarts r
 		where r.machine_id = ${quote(machine.machineId)}::uuid and r.recorded_at > ${quote(since)}::timestamptz`)) ?? [];
+}
+
+/** The machine's read set, as its views' releases wrote it at each turn's boundary: its pairs, its records of released
+ * reads, whether a record names `path`, and the first 20 paths they name. */
+export function readSet(db, machine, path) {
+	const id = `${quote(machine.machineId)}::uuid`;
+	return one(db, `select jsonb_build_object(
+			'pairs', (select count(*) from public.qorpera_coding_machine_reads r where r.coding_machine_id = ${id}),
+			'records', (select count(*) from public.qorpera_coding_machine_read_records r where r.coding_machine_id = ${id}),
+			'holds', exists (select from public.qorpera_coding_machine_read_records r where r.coding_machine_id = ${id}
+				and r.reads @> jsonb_build_array(jsonb_build_object('path', ${quote(path)}::text))),
+			'paths', (select coalesce(jsonb_agg(p.path order by p.path), '[]'::jsonb) from (select distinct x ->> 'path' as path
+				from public.qorpera_coding_machine_read_records r, jsonb_array_elements(r.reads) x
+				where r.coding_machine_id = ${id} order by 1 limit 20) p))`);
+}
+
+/** When the session's turn began, as 20260930515000 counts it: when its wake occurrence was made, or, never begun, when
+ * it opened. */
+const began = (workerId, sequence) => `(select coalesce(o.created_at, t.created_at) from public.qorpera_coding_session_turns t
+	left join public.qorpera_wake_occurrences o on o.id = t.occurrence_id
+	where t.worker_id = ${quote(workerId)}::uuid and t.sequence = ${Number(sequence)})`;
+
+/** Whether `at` (the database's clock) falls in turn `sequence`'s time: at or after it began, before the next turn
+ * began. */
+export function inTurn(db, workerId, sequence, at) {
+	return one(db, `select jsonb_build_object('began', b.began, 'nextBegan', b.next,
+			'inTurn', coalesce(${quote(at)}::timestamptz >= b.began and ${quote(at)}::timestamptz < b.next, false))
+		from (select ${began(workerId, sequence)} as began, ${began(workerId, sequence + 1)} as next) b`);
 }
 
 /** The core's tables with a row that holds `text`, as text or as its UTF-8 bytes in hex (a bytea column), and the
