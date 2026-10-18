@@ -1,8 +1,9 @@
 // What node --check cannot see in the P3 driver: that its imports link, and that no top-level binding is declared below
 // the main flow's start (the flow's callbacks would find it uninitialized: a run's ReferenceError at its first core call,
 // 38 minutes in). And that its stand-in PostgREST fails a call as PostgREST does, for the executor's control, which is
-// production's own, as for the folder service. And that turn 9's judgments of the new disk and of the keep on it, and
-// turn 10's of the rebuilt instance, pass a real run's records and fail each of them broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
+// production's own, as for the folder service. And that the archive's judgment (49's archive row), turn 9's of the new
+// disk and of the keep on it, and turn 10's of the rebuilt instance, pass a real run's records and fail each of them
+// broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
 // builds anything.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -10,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
+import { detachDone, judgeArchive } from "./p3-order9.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
 const driver = fileURLToPath(new URL("./p3-driver.mjs", import.meta.url));
@@ -57,6 +59,69 @@ test("the stand-in's error body is PostgREST's, exactly", () => {
 	assert.deepEqual(postgrestError(new Error("psql exited")), {
 		status: 500, body: JSON.stringify({ code: null, message: "psql exited", details: null, hint: null }),
 	});
+});
+
+// The archive's row (49's), on evidence run 3's executor lines after its archive (node02 20261018T031524-61288-88f952c7,
+// its machine and worker): its first take-off failed CODING_FOLDER_VIEW_UNSAVED, as master's does today, and a later one
+// recorded the detach.
+// The keep passes are as p3-executor.ts logs them now (run 3 logged none), and the core's copy and the store's bytes
+// are made up: run 3's command wrote nothing. With 49's fix the first take-off saves the line and reports it done.
+const MACHINE3 = "3c8c07b4-5211-41ba-8458-896548b57a24", WORKER3 = "dafac108-7649-47fc-b4e7-af33e346674f";
+const UNSAVED = { machineId: MACHINE3, workerId: WORKER3, step: "detach", state: "failed", code: "CODING_FOLDER_VIEW_UNSAVED" };
+const DETACHED = { machineId: MACHINE3, workerId: WORKER3, step: "detach", state: "done", code: "ARCHIVED" };
+const MOUNT4 = { event: "coding-folder-mount", workerId: WORKER3, machineId: MACHINE3, viewId: "98134fbb-e8bb-4186-bf18-282cb64c2e41" };
+const STOPPED = "stopped\n";
+const ARCHIVED = {
+	lines: [{ event: "coding-keep-pass", outcomes: [DETACHED] }],
+	workerId: WORKER3,
+	entry: {
+		version: "01a14d10-0000-7000-8000-000000000001", fileSha256: "f247a76b2893208aae7751dbf51f4c495efacfb6d9e743802870300f31ac45c8", bytes: 8,
+		commitId: "01a14d10-0000-7000-8000-000000000002",
+	},
+	stored: STOPPED,
+	text: STOPPED,
+};
+
+test("the archive judges a take-off that saved what the stopped command wrote", () => {
+	assert.deepEqual(judgeArchive(ARCHIVED), { failures: [], done: DETACHED });
+	// Another session's failed detach is not this one's; a pass that skipped the take-off is waited past.
+	const elsewhere = { ...UNSAVED, workerId: "dafac108-0000-4000-8000-000000000000" };
+	const busy = { ...DETACHED, state: "not-now", code: "MACHINE_IN_USE" };
+	const lines = [{ event: "coding-session-error", ...elsewhere }, { event: "coding-keep-pass", outcomes: [elsewhere, busy] }, ...ARCHIVED.lines];
+	assert.deepEqual(judgeArchive({ ...ARCHIVED, lines }), { failures: [], done: DETACHED });
+	assert.equal(detachDone(lines.slice(0, 2), WORKER3), undefined);
+});
+
+test("the archive fails master's take-off and each broken record of it", () => {
+	const errors = /^the executor logged session errors for the archive's detach: /;
+	const done = /^no keep pass reported the archive's detach done: /;
+	const copy = /^the folder's copy of the file is not "stopped\\n": /;
+	const store = /^the node's store does not hold the file's bytes: /;
+	const master = [{ event: "coding-session-error", ...UNSAVED }, { event: "coding-keep-pass", outcomes: [UNSAVED] }, MOUNT4, ...ARCHIVED.lines];
+	const cases = [
+		// Master today (run 3's lines): the line lost with the session's state, and the error logged.
+		["master's take-off", (run) => { run.lines = master; run.entry = null; run.stored = null; }, [errors, copy]],
+		["the take-off failed, though the line was saved", (run) => { run.lines = master; }, [errors]],
+		["no pass reported the take-off", (run) => { run.lines = []; }, [done]],
+		["only the failed take-off reported", (run) => { run.lines = master.slice(0, 2); }, [errors, done]],
+		["the pass reported another session's take-off", (run) => { run.lines[0].outcomes[0].workerId = "dafac108-0000-4000-8000-000000000000"; }, [done]],
+		["the pass skipped the take-off", (run) => { Object.assign(run.lines[0].outcomes[0], { state: "not-now", code: "MACHINE_IN_USE" }); }, [done]],
+		["the session detached for another reason", (run) => { run.lines[0].outcomes[0].code = "REVOKED"; }, [done]],
+		["the folder has no such file", (run) => { run.entry = null; }, [copy]],
+		["the command wrote nothing", (run) => {
+			Object.assign(run.entry, { fileSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", bytes: 0 });
+		}, [copy]],
+		["the folder's copy has the line's sha256 but another size", (run) => { run.entry.bytes = 9; }, [copy]],
+		["the store has no bytes for it", (run) => { run.stored = null; }, [store]],
+		["the store's bytes are another file's", (run) => { run.stored = "stop\n"; }, [store]],
+	];
+	for (const [name, broken, expected] of cases) {
+		const run = structuredClone(ARCHIVED);
+		broken(run);
+		const { failures } = judgeArchive(run);
+		assert.equal(failures.length, expected.length, `${name}: ${JSON.stringify(failures)}`);
+		expected.forEach((pattern, index) => assert.match(failures[index], pattern, name));
+	}
 });
 
 // Turn 9's judgment of the new disk (C2 step 2), on evidence run 2's records (node02 20261018T021854-39829-59b06489):
