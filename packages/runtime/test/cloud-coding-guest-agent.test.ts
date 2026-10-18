@@ -752,7 +752,10 @@ describe("mounting a session", () => {
 			await make(m);
 			const answer = await call(m, "mount", mountRequest(randomUUID()));
 			expect(answer.line, name).toEqual(refusal("FOLDER_CACHE_DIR_UNCONFIRMED"));
-			expect(m.calls.some(([tool]) => tool === "systemd-run"), name).toBe(false);
+			expect(
+				m.calls.some(([tool]) => tool === "systemd-run"),
+				name,
+			).toBe(false);
 		}
 	});
 	it("refuses another user for a mounted session", async () => {

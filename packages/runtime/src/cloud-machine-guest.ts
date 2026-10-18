@@ -16,8 +16,8 @@ import {
 	parseCloudMachineCommandRequest,
 } from "@qorpera/contracts";
 import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
-import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
+import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts";
 
 // The command guest's machine profile (2026-09-28). A company machine is a
 // whole VM for one company job: its commands run as root with no sandbox of
