@@ -11,7 +11,9 @@
 //     it and leaves another running;
 // then the rest of Order 9 (p3-order9.mjs cuts each wait short in the database): the machine sleeps after 10 idle
 // minutes and turn 3 says what stopped; after a quiet day the agent is asked about archiving; archiving stops the
-// session's programs, and a new message reopens it (turn 4, which says what the archive stopped).
+// session's programs, and a new message reopens it (turn 4, which says what the archive stopped). On phase B, turn 3's
+// command writes a line in its worktree once stopped, and the archive keeps it in the company folder (49's archive row).
+// With P3_UNTIL_ARCHIVE=1 (phase B) the session ends there, after turn 4: a short run, which ends ARCHIVE PROVEN.
 // Then C2 on phase B (p3-c2.mjs): turn 5 keeps its machine awake through 10 quiet minutes (cut short in the database),
 // then leaves a command that reads the company folder after the turn (the file turn 1 committed in its worktree); the
 // node's folder service is killed, and turn 6 runs on the same machine, restarted for the folder: it says the restart
@@ -86,6 +88,10 @@ const repository = { host: "github.com", owner: "qorpera-p3", name: "proof", bas
 const machineIdSha256 = sha256(node.machineId);
 const commandToken = randomBytes(32).toString("base64url");
 const SLEEPER = "sleep 86400";
+// Phase B's turn 3 leaves this one: stopped, it writes a line in its worktree. The archive's take-off stops the
+// session's programs before it saves the session's view, so the line is the folder's only if that save keeps it.
+const ARCHIVE_WATCH = `sh -c 'trap "echo stopped > p3-archived.txt; exit 0" TERM; ${SLEEPER} & wait'`;
+const untilArchive = process.env.P3_UNTIL_ARCHIVE === "1";
 // The workspace's head (the clone), an edit, a commit, the new head.
 const EDIT = "git rev-parse HEAD && printf 'P3 proof\\n' >P3-PROOF.md && git add P3-PROOF.md && " +
 	"git -c user.name='P3 proof' -c user.email=p3@qorpera.invalid commit -q -m 'P3 proof: an edit' && git rev-parse HEAD";
@@ -293,17 +299,18 @@ try {
 			fail(`turn 3's context does not say the sleep stopped turn 2's command: ${JSON.stringify(stopped3)}`);
 		pass(`turn 3 wakes the machine (${guestState(machine)}), and its context says what stopped: ${JSON.stringify(stopped3)} (${elapsed()})`);
 		const gateway3 = gatewayFor(turn3);
-		const sleeper3 = await startSleeper(turn3, gateway3, "p3-sleeper-3");
+		const watch3 = node.codeHost ? ARCHIVE_WATCH : SLEEPER;
+		const sleeper3 = await startSleeper(turn3, gateway3, "p3-sleeper-3", watch3);
 		await database.finishTurn(db, turn3, { operationKey: "p3-turn-3", summary: "Read what the sleep stopped; left a command running.", headSha: head });
 		await executor.turnSettled();
-		pass(`turn 3 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
+		pass(`turn 3 ended, leaving \`${watch3}\` running (${elapsed()})`);
 
 		// --- Order 9: after a quiet day the agent is asked about archiving --------------------------------------------------
 		await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
 		const settled = await database.settleParent(db, ids, { workerId });
 		note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
 		const idle3 = await order9.awaitIdle(db, workerId, machine);
-		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
+		pass(`with only \`${watch3}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
 		const quiet = await order9.quietDay(db, workerId);
 		note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
 		if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
@@ -312,6 +319,7 @@ try {
 			`(${quiet.asked.status}): ${JSON.stringify(quiet.asked.summary)} (${elapsed()})`);
 
 		// --- Order 9: archiving stops the session's programs, and a new message reopens it ----------------------------------
+		const keepFromArchive = executor.keepLines.length;
 		if ((await order9.archive(db, workerId)) !== true) fail("the agent's archive archived nothing");
 		const archived = await order9.awaitDetached(db, workerId, machine, "ARCHIVED", 2 * 60000);
 		if (!archived.event.body.stopped.some((stopped) => stopped.commandId === sleeper3.commandId))
@@ -319,6 +327,21 @@ try {
 		const left = guestProcesses(machine, SLEEPER);
 		if (left) fail(`the archived session's command still runs on its machine: ${left}`);
 		pass(`archiving stops the session's programs: ${JSON.stringify(archived.event.body)}; no \`${SLEEPER}\` is left on ${machine.name} (${elapsed()})`);
+		if (node.codeHost) {
+			// 49's archive row: what turn 3's command wrote once stopped is the folder's after the archive. The keeper's next
+			// pass (every 10 s) reports the take-off, once it ended.
+			for (let waited = 0; !order9.detachDone(executor.keepLines.slice(keepFromArchive), workerId) && waited < 60000; waited += 2000)
+				await new Promise((settle) => setTimeout(settle, 2000));
+			const watched = `code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}/p3-archived.txt`;
+			const entry = await order9.savedFile(db, ids.environmentId, watched);
+			const kept = order9.judgeArchive({
+				lines: executor.keepLines.slice(keepFromArchive), workerId, entry, stored: entry && storedObject(ids.profileId, entry.fileSha256), text: "stopped\n",
+			});
+			if (kept.failures.length) fail(`the archive did not keep what turn 3's command wrote once stopped: ${kept.failures.join("; ")}`);
+			pass(`the archive keeps what turn 3's command wrote once stopped: the folder's ${watched} says "stopped" ` +
+				`(${JSON.stringify(entry)}, its bytes in the node's store), and its detach is done with no session error: ` +
+				`${JSON.stringify(kept.done)} (${elapsed()})`);
+		}
 		await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the archive." });
 		const turn4 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 4, timeoutMs: 20 * 60000 });
 		const reopened = await order9.event(db, workerId, "reopened");
@@ -335,8 +358,8 @@ try {
 
 		// Phase B only: the node's store has a file's bytes only once a machine saved them, as phase B's code area and the
 		// P3-PROOF.md turn 1 committed in its worktree; the seed's files are in the core alone (a read of one on the node is
-		// UNAVAILABLE), and they are all phase A has.
-		if (node.codeHost) {
+		// UNAVAILABLE), and they are all phase A has. P3_UNTIL_ARCHIVE=1 ends the session before them.
+		if (node.codeHost && !untilArchive) {
 			// --- C2: a long turn whose guest stays quiet keeps its machine awake ----------------------------------------------
 			await database.followUp(db, ids, { workerId, text: "P3 proof: think for a while, then leave a command reading your proof file." });
 			const turn5 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 5, timeoutMs: 20 * 60000 });
@@ -627,7 +650,7 @@ try {
 			pass(`turn 10 ended (${elapsed()})`);
 		}
 		// C1-V (p3-c1v.mjs), with P3_C1V=1: a second session busy beside this one keeps the machine awake, not this session.
-		if (node.codeHost && process.env.P3_C1V === "1")
+		if (node.codeHost && !untilArchive && process.env.P3_C1V === "1")
 			await c1v.run({ db, ids, executor, calls, workerId, machine, head, machineIdSha256, gatewayFor, startSleeper, runToEnd,
 				guestState, guestProcesses, pass, note, fail, elapsed });
 		if (node.folder) pass(`the session's folder view mounts, worker and view: ${mounted().join(" ")}`);
@@ -636,7 +659,7 @@ try {
 	}
 	await executor.stop();
 	if (postgrest) pass(`the folder service's calls on its core: ${postgrest.summary()}`);
-	console.log("SESSION PROVEN");
+	console.log(untilArchive ? "ARCHIVE PROVEN" : "SESSION PROVEN");
 } catch (error) {
 	if (stopping) await stopping;
 	console.error(`p3: ${error?.stack ?? error}`);
@@ -648,12 +671,13 @@ try {
 	await db.close();
 }
 
-/** Starts a command that uses nothing and never ends on its own, which the turn leaves running. */
-async function startSleeper(turn, gateway, operationKey) {
-	const begun = await database.beginCommand(db, turn, { operationKey, command: SLEEPER, timeoutMs: null });
+/** Starts a command that uses nothing and never ends on its own (`command`, SLEEPER unless given), which the turn
+ * leaves running. */
+async function startSleeper(turn, gateway, operationKey, command = SLEEPER) {
+	const begun = await database.beginCommand(db, turn, { operationKey, command, timeoutMs: null });
 	const start = await gateway.start(turn.scope, begun.input, AbortSignal.timeout(60000));
 	await begun.complete(start);
-	if (start.state !== "running") fail(`turn ${turn.scope.turn}'s \`${SLEEPER}\` is ${start.state}, not running: ${JSON.stringify(start)}`);
+	if (start.state !== "running") fail(`turn ${turn.scope.turn}'s \`${command}\` is ${start.state}, not running: ${JSON.stringify(start)}`);
 	return begun;
 }
 
@@ -758,6 +782,16 @@ function storeObject(profileId, bytes) {
 		lxc("exec", vm, "--", "install", "-m", "0600", "-o", "qorpera-objects", "-g", "qorpera-objects", `/run/p3-object-${sha}`, `${folder}/${sha}`);
 	} finally {
 		lxc("exec", vm, "--", "rm", "-f", `/run/p3-object-${sha}`);
+	}
+}
+
+/** The node's object store's bytes for `sha256` in the profile's folder, as text, or null when it has none. */
+function storedObject(profileId, sha256) {
+	try {
+		return lxc("exec", vm, "--", "cat", `/srv/p3-objects/store/${profileId}/${sha256}`);
+	} catch (error) {
+		if (error.status === 1) return null;
+		throw error;
 	}
 }
 
