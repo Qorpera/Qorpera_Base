@@ -24,6 +24,7 @@ const KERNEL_OFF: &str = "QORPERA_FOLDER_TEST_KERNEL_OFF";
 const NOTIFY_FAILS: &str = "QORPERA_FOLDER_TEST_NOTIFY_FAILS";
 const NAMES: &str = "QORPERA_FOLDER_TEST_NAMES";
 const SLOW_LOOKUP: &str = "QORPERA_FOLDER_TEST_SLOW_LOOKUP";
+const SLOW_FALL_BACK: &str = "QORPERA_FOLDER_TEST_SLOW_FALL_BACK";
 /// A cache top in a node folder (a dependency folder is a cache anywhere, `cache.rs`), and files in it.
 const TOP: &str = "notes/node_modules";
 const X: &str = "notes/node_modules/x.js";
@@ -101,7 +102,7 @@ impl Program {
 			.arg("mount").arg("--view-file").arg(view(node)).arg("--mountpoint").arg(&mountpoint)
 			.arg("--connect").arg(&node.addr).arg("--state-dir").arg(node.dir.join(format!("{name}.state")))
 			.arg("--cache-dir").arg(caches(node))
-			.env_remove(KERNEL_OFF).env_remove(NOTIFY_FAILS).env_remove(NAMES).env_remove(SLOW_LOOKUP)
+			.env_remove(KERNEL_OFF).env_remove(NOTIFY_FAILS).env_remove(NAMES).env_remove(SLOW_LOOKUP).env_remove(SLOW_FALL_BACK)
 			.envs(env.iter().copied())
 			.stdout(Stdio::null()).stderr(File::create(&log).unwrap())
 			.spawn().unwrap();
@@ -304,6 +305,39 @@ fn what_one_program_changes_in_the_shared_caches_another_shows_at_once() {
 	closed(&node, vec![a, b]);
 }
 
+/// A truncate, a mode and times through a handle reach the file it has open: not what another program renamed over its
+/// name, and never what a link renamed there names, a file on the machine outside every cache.
+#[test]
+fn a_change_through_a_handle_never_reaches_what_a_link_another_program_renamed_over_it_names() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (a, b) = two(&node);
+	let victim = node.dir.join("victim");
+	std::fs::write(&victim, "host").unwrap();
+	std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+	let mtime = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+	File::options().write(true).open(&victim).unwrap().set_modified(mtime).unwrap();
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), "mine").unwrap();
+	let held = OpenOptions::new().read(true).write(true).open(a.at(X)).unwrap();
+	std::os::unix::fs::symlink(&victim, b.at(Y)).unwrap();
+	std::fs::rename(b.at(Y), b.at(X)).unwrap();
+	// An ftruncate carries the handle: the file a has open is cut short.
+	held.set_len(1).unwrap();
+	assert_eq!(read_at(&held), "m");
+	// An fchmod and a futimens carry none: the name is another file now, so neither is made.
+	let _ = held.set_permissions(std::fs::Permissions::from_mode(0o666));
+	let _ = held.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH).set_accessed(std::time::UNIX_EPOCH));
+	let meta = std::fs::metadata(&victim).unwrap();
+	let host = (std::fs::read_to_string(&victim).unwrap(), meta.permissions().mode() & 0o777, meta.modified().unwrap());
+	assert_eq!(host, ("host".to_string(), 0o644, mtime));
+	drop(held);
+	closed(&node, vec![a, b]);
+}
+
 /// A program's epoch rises only for a name its kernel may hold (`Kernel::hold`). Each of the next tests changes one name
 /// after the other program's kernel took it, with no other change told in between, so only that name's hold can make
 /// the other program show the change at once.
@@ -457,6 +491,30 @@ fn a_folder_another_program_renames_under_a_walked_path_moves_at_once() {
 	closed(&node, vec![a, b]);
 }
 
+/// A folder of the node's that one program renames takes its caches along, and every other program forgets them before
+/// the rename returns: the node tells it of the rename only later.
+#[test]
+fn a_folder_one_program_renames_moves_its_caches_in_every_program_at_once() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let (a, b) = two(&node);
+	let (from, to) = ("notes/a/node_modules/x.js", "notes/b/node_modules/x.js");
+	std::fs::create_dir_all(a.at("notes/a/node_modules")).unwrap();
+	std::fs::write(a.at(from), "one").unwrap();
+	assert_eq!(b.read(from), "one");
+	std::fs::rename(a.at("notes/a"), a.at("notes/b")).unwrap();
+	// b's kernel holds the folder's name for the TTL unless b is told.
+	for gone in ["notes/a/node_modules", from] {
+		assert!(!b.at(gone).exists(), "b's kernel kept {gone} where it was");
+	}
+	node.tell(&["notes/a", "notes/b"]);
+	assert_eq!((a.read(to), b.read(to)), ("one".to_string(), "one".to_string()));
+	closed(&node, vec![a, b]);
+}
+
 /// A change to a name b's kernel was never handed raises no epoch in b: b keeps what its kernel holds (here a name it
 /// kept absent, which was made behind every program's back).
 #[test]
@@ -602,6 +660,34 @@ fn a_program_that_does_not_answer_fails_the_change_in_time_and_turns_its_kernel_
 	std::fs::write(a.at(X), "three").unwrap();
 	assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
 	assert_eq!(b.read(X), "three");
+	closed(&node, vec![a, b]);
+}
+
+#[test]
+fn a_change_told_while_a_fallback_drops_what_the_kernel_holds_is_answered_after_the_drop() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let a = Program::start(&node, "a", &[]);
+	let b = Program::start(&node, "b", &[(SLOW_FALL_BACK, "1")]);
+	assert!(b.logged().contains("qorpera-folder: kernel cache on"), "{}", b.logged());
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), "one").unwrap();
+	assert_eq!((b.len(X), b.len(X)), (3, 3), "b's kernel keeps the attributes");
+	// A change told long ago: b turns its kernel cache off, and waits before it drops what its kernel holds.
+	let mut late = UnixStream::connect(b.socket(&node)).unwrap();
+	late.write_all(b"{\"seq\":1,\"at\":1,\"dir\":\"notes\",\"name\":\"zz\"}\n").unwrap();
+	let off = "qorpera-folder: kernel cache off: a change was told later than the teller waits";
+	let dropped = "qorpera-folder: kernel cache: dropped what the kernel held";
+	assert!(eventually(Duration::from_secs(10), || b.logged().contains(off)), "{}", b.logged());
+	assert!(!b.logged().contains(dropped), "{}", b.logged());
+	// a's change meanwhile: b answers it once the drop is done, so a's write returns with b's kernel holding nothing.
+	std::fs::write(a.at(X), "two!").unwrap();
+	assert_eq!(b.len(X), 4);
+	assert!(eventually(Duration::from_secs(10), || b.logged().contains(dropped)), "{}", b.logged());
+	drop(late);
 	closed(&node, vec![a, b]);
 }
 

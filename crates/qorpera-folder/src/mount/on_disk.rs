@@ -888,11 +888,11 @@ impl FolderFs {
 		None
 	}
 
-	pub(super) fn local_getattr(&self, ino: u64, reply: ReplyAttr) -> Option<ReplyAttr> {
+	pub(super) fn local_getattr(&self, ino: u64, fh: Option<u64>, reply: ReplyAttr) -> Option<ReplyAttr> {
 		if !is_local(ino) {
 			return Some(reply);
 		}
-		match self.local().and_then(|l| l.getattr(ino)) {
+		match self.local().and_then(|l| l.getattr(ino, fh)) {
 			Ok(attr) => reply.attr(&self.attr_ttl(ino), &attr),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
@@ -1120,20 +1120,21 @@ impl FolderFs {
 		None
 	}
 
-	/// setattr of a local file; and of the node's objects' times, which git sets to keep an object it would otherwise
-	/// write again: refused, so it writes it again.
+	/// setattr of a local file (through the handle `fh` the kernel gives for a truncate of an open file); and of the
+	/// node's objects' times, which git sets to keep an object it would otherwise write again: refused, so it writes it
+	/// again.
 	pub(super) fn local_setattr(
 		&self,
 		ino: u64,
+		fh: Option<u64>,
 		mode: Option<u32>,
 		size: Option<u64>,
-		atime: Option<TimeOrNow>,
-		mtime: Option<TimeOrNow>,
+		(atime, mtime): (Option<TimeOrNow>, Option<TimeOrNow>),
 		reply: ReplyAttr,
 	) -> Option<ReplyAttr> {
 		if is_local(ino) {
 			let set = self.local().and_then(|l| {
-				let attr = l.setattr(ino, mode, size, (when(atime), when(mtime)))?;
+				let attr = l.setattr(ino, fh, mode, size, (when(atime), when(mtime)))?;
 				self.tell(l.name(ino).map_or(Area::Git, |(_, _, area)| area), || vec![Change::ino(ino)])?;
 				Ok(attr)
 			});
@@ -1406,7 +1407,7 @@ impl FolderFs {
 		// The file is in the folder, but not as it was on the disk: the rename fails, and the cache's file stays.
 		set?;
 		match local.moved_file_out(disk, ino) {
-			// Another took its name since (`Local::rename` onto it): that one stays.
+			// Another took its name since (its folder's caches renamed, and a new one made there): that one stays.
 			Ok(()) | Err(libc::EBUSY) => {}
 			Err(e) => eprintln!("qorpera-folder: {} could not be taken off the disk (errno {e})", disk.display()),
 		}
@@ -1651,14 +1652,22 @@ impl FolderFs {
 		Ok(Some(held))
 	}
 
-	/// The node renamed its folder `from` to `to` for this view (`folder_renaming`): its caches move with it.
-	pub(super) fn caches_renamed(&self, held: Option<MutexGuard<'_, u64>>, from: &str, to: &str) {
-		if let Some(local) = &self.s.local {
-			local.renamed(from, to);
-		}
+	/// The node renamed its folder `from` to `to` for this view (`folder_renaming`): its caches move with it, and every
+	/// other program forgets them at both names before the reply (EIO if one did not answer).
+	pub(super) fn caches_renamed(&self, held: Option<MutexGuard<'_, u64>>, from: &str, to: &str) -> Result<(), i32> {
+		let moved = self.s.local.as_ref().is_some_and(|local| local.renamed(from, to));
 		if let Some(mut renames) = held {
 			*renames += 1;
 		}
+		if !moved {
+			return Ok(());
+		}
+		// A name told in a node folder raises the epoch, which drops every name a kernel holds below it too.
+		self.s.kernel.own();
+		let ((from_parent, from_last), (to_parent, to_last)) = (split(from), split(to));
+		self.tell(Area::Cache, || {
+			vec![Change::name(Parent::Dir(from_parent.to_string()), from_last), Change::name(Parent::Dir(to_parent.to_string()), to_last)]
+		})
 	}
 }
 

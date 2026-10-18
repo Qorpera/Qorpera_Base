@@ -37,12 +37,15 @@ const NAMES_MAX: usize = 100_000;
 /// Test switches: the kernel cache off with this reason, as a kernel without the epoch would (`QORPERA_FOLDER_TEST_KERNEL_OFF`);
 /// a told change's notify failing (`QORPERA_FOLDER_TEST_NOTIFY_FAILS=1`), not the fallback's; the names held at most
 /// (`QORPERA_FOLDER_TEST_NAMES=<n>`); a name whose lookups in a local folder wait `SLOW_LOOKUP` between reading the disk
-/// and the reply (`QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>`).
+/// and the reply (`QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>`); a fallback waiting `SLOW_FALL_BACK` between turning the
+/// kernel cache off and dropping what the kernel holds (`QORPERA_FOLDER_TEST_SLOW_FALL_BACK=1`).
 const TEST_OFF: &str = "QORPERA_FOLDER_TEST_KERNEL_OFF";
 const TEST_NOTIFY_FAILS: &str = "QORPERA_FOLDER_TEST_NOTIFY_FAILS";
 const TEST_NAMES: &str = "QORPERA_FOLDER_TEST_NAMES";
 const TEST_SLOW_LOOKUP: &str = "QORPERA_FOLDER_TEST_SLOW_LOOKUP";
 const SLOW_LOOKUP: Duration = Duration::from_millis(300);
+const TEST_SLOW_FALL_BACK: &str = "QORPERA_FOLDER_TEST_SLOW_FALL_BACK";
+const SLOW_FALL_BACK: Duration = Duration::from_secs(2);
 
 pub(super) struct Kernel {
 	/// A writable view, which has caches.
@@ -52,7 +55,7 @@ pub(super) struct Kernel {
 	/// The kernel cache is on: from `init` and `mounted`, whichever comes last, until a fallback.
 	on: AtomicBool,
 	/// Whether the kernel's INIT allows the kernel cache, until the mount is made too (fuser answers INIT before
-	/// `Session::new` returns, so before `mounted`).
+	/// `Session::new` returns, so before `mounted`). Also held by a fallback until it has dropped what the kernel holds.
 	init: Mutex<Option<Result<(), String>>>,
 	/// The first fallback's reason, also one heard before the kernel cache was decided.
 	off: OnceLock<String>,
@@ -360,24 +363,25 @@ impl Kernel {
 		}
 	}
 
-	/// Forgets on this mount what another program told (`peers.rs`), before the answer.
+	/// Forgets on this mount what another program told (`peers.rs`), before the answer. With the kernel cache off, the
+	/// answer waits for a fallback still dropping what the kernel holds.
 	fn heard(&self, h: Heard) {
 		match h {
 			Heard::Change(change) => {
-				if self.on() {
-					if let Err(e) = self.drop_change(&change) {
-						self.fall_back(&format!("a told change's notify failed: {e}"));
-					}
+				if !self.on() {
+					drop(self.init.lock().unwrap());
+				} else if let Err(e) = self.drop_change(&change) {
+					self.fall_back(&format!("a told change's notify failed: {e}"));
 				}
 			}
 			Heard::Late(_) => self.fall_back("a change was told later than the teller waits"),
 			Heard::Malformed(why) => {
 				// The change it meant is unknown: everything handed out goes, still only invalidation.
 				eprintln!("qorpera-folder: kernel cache: a malformed message from another program: {why}");
-				if self.on() {
-					if let Err(e) = self.drop_all() {
-						self.fall_back(&format!("dropping all after a malformed message failed: {e}"));
-					}
+				if !self.on() {
+					drop(self.init.lock().unwrap());
+				} else if let Err(e) = self.drop_all() {
+					self.fall_back(&format!("dropping all after a malformed message failed: {e}"));
 				}
 			}
 			Heard::Deaf(why) => self.fall_back(&format!("this program no longer hears the others: {why}")),
@@ -424,15 +428,20 @@ impl Kernel {
 	/// The kernel cache off for good: every later answer is as without it, and what the kernel holds goes. If it cannot,
 	/// the program stops: its mount answers ENOTCONN, never stale.
 	fn fall_back(&self, why: &str) {
-		{
+		let dropped = {
+			// Held until the drop is done: a change heard meanwhile is answered after it (`heard`).
 			let _init = self.init.lock().unwrap();
 			let _ = self.off.set(why.to_string());
 			if !self.on.swap(false, Ordering::SeqCst) {
 				return;
 			}
-		}
-		eprintln!("qorpera-folder: kernel cache off: {why}");
-		if let Err(e) = self.drop_all() {
+			eprintln!("qorpera-folder: kernel cache off: {why}");
+			if std::env::var(TEST_SLOW_FALL_BACK).as_deref() == Ok("1") {
+				std::thread::sleep(SLOW_FALL_BACK);
+			}
+			self.drop_all()
+		};
+		if let Err(e) = dropped {
 			eprintln!("qorpera-folder: kernel cache: could not drop what the kernel holds ({e}); stopping");
 			self.stop();
 			std::process::exit(1);

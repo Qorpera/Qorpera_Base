@@ -748,8 +748,8 @@ impl Filesystem for FolderFs {
 		self.s.tree.lock().unwrap().forget(ino.0, nlookup);
 	}
 
-	fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-		let Some(reply) = self.local_getattr(ino.0, reply) else { return };
+	fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
+		let Some(reply) = self.local_getattr(ino.0, fh.map(|fh| fh.0), reply) else { return };
 		self.reply_attr(ino.0, reply);
 	}
 
@@ -1096,7 +1096,7 @@ impl Filesystem for FolderFs {
 		atime: Option<TimeOrNow>,
 		mtime: Option<TimeOrNow>,
 		_ctime: Option<SystemTime>,
-		_fh: Option<FileHandle>,
+		fh: Option<FileHandle>,
 		_crtime: Option<SystemTime>,
 		_chgtime: Option<SystemTime>,
 		_bkuptime: Option<SystemTime>,
@@ -1110,7 +1110,7 @@ impl Filesystem for FolderFs {
 		if uid.is_some_and(|u| u != self.s.owner.0) || gid.is_some_and(|g| g != self.s.owner.1) {
 			return reply.error(Errno::EPERM);
 		}
-		let Some(reply) = self.local_setattr(ino.0, mode, size, atime, mtime, reply) else { return };
+		let Some(reply) = self.local_setattr(ino.0, fh.map(|fh| fh.0), mode, size, (atime, mtime), reply) else { return };
 		let attr = match self.s.attr(ino.0) {
 			Ok((a, _)) => a,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -1230,11 +1230,12 @@ impl Filesystem for FolderFs {
 		self.s.unpublished.lock().unwrap().renamed(&from, &to, folder, stays);
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
 		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
-		if folder {
-			self.caches_renamed(held, &from, &to);
-		}
+		let told = if folder { self.caches_renamed(held, &from, &to) } else { Ok(()) };
 		self.index_after(&to, index);
-		reply.ok();
+		match told {
+			Ok(()) => reply.ok(),
+			Err(e) => reply.error(Errno::from_i32(e)),
+		}
 	}
 
 	fn mknod(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _mode: u32, _umask: u32, _rdev: u32, reply: ReplyEntry) {

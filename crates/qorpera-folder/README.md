@@ -110,7 +110,14 @@ Each mount takes what it removes off the disk through its own `<dir>/gone/p-…`
 starts takes off those no mount holds. A mount sharing the folder keeps the caches of a folder its own view has not,
 as another view may have made that folder and not published it yet: they go when removing old caches finds the folder
 gone ("Removing old caches"). A cache move seals its file for every mount sharing it: each handle that changes a cache
-file's bytes holds a shared lock on it, which the seal takes exclusively, without waiting.
+file's bytes holds a shared lock on it, which the seal takes exclusively, without waiting; a rename or removal of the
+file in another mount waits for the seal. A local file's mode, size and times change, and a link's target is read, on
+the file itself: through the handle the change came with, else by its name checked to be the inode the kernel asked of
+(`ESTALE` if not), never through a link (a link's mode is `EOPNOTSUPP`); a create never follows a link (`ELOOP`). A
+file on another disk than its area's (one mounted in the folder) is not shown (`EXDEV`). A node folder's rename moves
+its caches under an exclusive lock on `<dir>/caches`, which a mount takes before it looks again for caches another
+mount may have moved meanwhile, and the mount that moved them tells the others before its reply (`EIO` if one does not
+answer).
 
 Cache files have a kernel cache (`src/mount/kernel.rs`, the plan's "The kernel cache"): names, absent names and
 attributes for `--ttl-seconds` (a cache top's while the feed is up), and the pages of a read-only open of a file as

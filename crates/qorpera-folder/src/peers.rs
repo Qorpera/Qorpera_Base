@@ -5,7 +5,7 @@
 //!
 //! A listener that does not answer within `WAIT` fails the teller's request (EIO); one that hears a change later than
 //! that may have answered stale meanwhile, which its handler learns as `Heard::Late`. A refused connection is a dead
-//! program, whose socket is removed. Local inode numbers are the disk's (`| LOCAL`), the same in every program; a cache
+//! program, whose socket is removed. Local inode numbers are the disk's (`Local::id`), the same in every program; a cache
 //! top's folder goes by its node path, which each program maps to its own inode.
 
 use crate::local::LOCAL;
@@ -313,6 +313,8 @@ impl Teller {
 			return Ok(());
 		}
 		let mut programs = self.programs()?;
+		// A program that removed its socket and ended is never listed again: its kept connections go now.
+		self.idle.lock().unwrap().retain(|name, _| programs.contains(name));
 		let mut failed = None;
 		let mut fail = |name: &str, e: io::Error| {
 			eprintln!("qorpera-folder: program {name} in {}: {e}", self.dir.display());
@@ -546,6 +548,10 @@ mod tests {
 		a.tell(&changes[..1]).unwrap();
 		assert_eq!(heard_b.lock().unwrap().len(), 603);
 		assert_eq!(heard_c.lock().unwrap().len(), 605);
+		// Nor does it keep its connection open.
+		let idle = a.idle.lock().unwrap();
+		assert!(!idle.contains_key(b.name()));
+		assert_eq!(idle.values().map(Vec::len).sum::<usize>(), 1);
 	}
 
 	#[test]

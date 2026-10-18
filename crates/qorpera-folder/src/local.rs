@@ -21,7 +21,8 @@
 //! program's own folder in `gone/` first and taken off the disk there apart from the requests.
 //!
 //! The kernel knows a local file by its inode on the disk with the top bit set (`LOCAL`); the node's inodes never have
-//! it. So does a handle open on one.
+//! it. So does a handle open on one. A cache's has the next bit set too (`CACHE`), as the caches may be on a disk of
+//! their own; a file on a disk mounted in the local or cache folder is not shown (`Local::id`).
 
 use crate::cache::CacheList;
 use crate::git;
@@ -32,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -41,6 +43,9 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// The bit local inodes and handles have.
 pub const LOCAL: u64 = 1 << 63;
+
+/// The bit the local inodes of the caches have as well (`Local::id`).
+const CACHE: u64 = 1 << 62;
 
 pub fn is_local(ino: u64) -> bool {
 	ino & LOCAL != 0
@@ -162,6 +167,76 @@ fn writer(file: File) -> Result<File, Change> {
 		Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(Change::Sealed(file)),
 		Err(e) => Err(Change::Failed(errno(e))),
 	}
+}
+
+/// `writer`, once `file` is still the file at `disk`: a cache move of another program sharing these caches may have
+/// sealed it, written it into the folder, taken it off the disk and let go of it between its open and the lock, and a
+/// change then would go to a file no one sees (ESTALE: the kernel looks its name up again). With the lock held, no move
+/// seals it.
+fn writer_at(file: File, disk: &Path) -> Result<File, Change> {
+	#[cfg(test)]
+	tests::parked(disk);
+	let file = writer(file)?;
+	let ino = file.metadata().map_err(errno)?.ino();
+	match fs::symlink_metadata(disk) {
+		Ok(meta) if meta.ino() == ino => Ok(file),
+		Err(e) if e.kind() != io::ErrorKind::NotFound => Err(Change::Failed(errno(e))),
+		_ => Err(Change::Failed(libc::ESTALE)),
+	}
+}
+
+/// The file at `disk`, locked as a writer's is (`writer_at`) for a rename or removal of its name, which another
+/// program's cache move that has sealed it then waits for (`Change::Sealed`): so the move never takes another file off
+/// the disk in its place (`Local::moved_file_out`). None for what no move seals: no file, a link, a folder, or one a
+/// read cannot open.
+fn named_file(disk: &Path) -> Result<Option<File>, Change> {
+	let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+	let file = match OpenOptions::new().read(true).custom_flags(flags).open(disk) {
+		Ok(file) => file,
+		Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ELOOP | libc::EACCES | libc::ENXIO)) => return Ok(None),
+		Err(e) => return Err(Change::Failed(errno(e))),
+	};
+	if !file.metadata().map_err(errno)?.is_file() {
+		return Ok(None);
+	}
+	writer_at(file, disk).map(Some)
+}
+
+/// Sets `mode` on what `place` is (`Local::place_of`), which an `O_PATH` descriptor has no fchmod for: through its name in
+/// /proc, which reaches that inode itself, as glibc's fchmodat does for AT_SYMLINK_NOFOLLOW. Not a link, which has no
+/// mode of its own on Linux.
+fn set_mode(place: &File, mode: u32) -> Result<(), i32> {
+	if place.metadata().map_err(errno)?.is_symlink() {
+		return Err(libc::EOPNOTSUPP);
+	}
+	let at = format!("/proc/self/fd/{}", place.as_raw_fd());
+	fs::set_permissions(at, fs::Permissions::from_mode(mode & 0o7777)).map_err(errno)
+}
+
+/// Sets the access and change times `times` gives (each kept where `None`) on what `place` is, a link too
+/// (`AT_EMPTY_PATH`, which takes an `O_PATH` descriptor).
+fn set_times(place: &File, times: (Option<std::time::SystemTime>, Option<std::time::SystemTime>)) -> Result<(), i32> {
+	if times == (None, None) {
+		return Ok(());
+	}
+	let spec = |t: Option<std::time::SystemTime>| {
+		let (tv_sec, tv_nsec) = match t.map(|t| t.duration_since(UNIX_EPOCH)) {
+			None => (0, libc::UTIME_OMIT),
+			Some(Ok(d)) => (d.as_secs() as i64, d.subsec_nanos() as i64),
+			// Before 1970: whole seconds back, and nanoseconds on from there.
+			Some(Err(e)) => match (e.duration().as_secs() as i64, e.duration().subsec_nanos() as i64) {
+				(s, 0) => (-s, 0),
+				(s, ns) => (-s - 1, 1_000_000_000 - ns),
+			},
+		};
+		libc::timespec { tv_sec, tv_nsec }
+	};
+	let specs = [spec(times.0), spec(times.1)];
+	// SAFETY: a descriptor, an empty NUL-ended path, and two timespecs.
+	if unsafe { libc::utimensat(place.as_raw_fd(), c"".as_ptr(), specs.as_ptr(), libc::AT_EMPTY_PATH) } < 0 {
+		return Err(errno(io::Error::last_os_error()));
+	}
+	Ok(())
 }
 
 /// `ino` is known by `name` in `up`, its latest name.
@@ -349,6 +424,8 @@ pub struct Local {
 	/// at, and its patterns.
 	pub ignores: Mutex<HashMap<String, (String, Arc<Patterns>)>>,
 	owner: (u32, u32),
+	/// The disks the git files and the caches are on (`id`).
+	devs: (u64, u64),
 }
 
 impl Local {
@@ -402,9 +479,11 @@ impl Local {
 		}
 		let caches_gone = caches.as_ref().map(|dir| Gone::open(&dir.join(GONE))).transpose()?;
 		let caches = caches.unwrap_or_else(|| root.to_path_buf());
-		for dir in [root.join(Area::Git.dir()), caches.join(Area::Cache.dir())] {
+		let (git, cache) = (root.join(Area::Git.dir()), caches.join(Area::Cache.dir()));
+		for dir in [&git, &cache] {
 			fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
 		}
+		let devs = (fs::symlink_metadata(&git)?.dev(), fs::symlink_metadata(&cache)?.dev());
 		let seeded = match fs::read_to_string(root.join("seeded")) {
 			Ok(text) => text.lines().map(str::to_string).collect(),
 			Err(e) if e.kind() == io::ErrorKind::NotFound => HashSet::new(),
@@ -428,7 +507,26 @@ impl Local {
 			folders: Mutex::new(0),
 			ignores: Mutex::new(HashMap::new()),
 			owner,
+			devs,
 		})
+	}
+
+	/// The local inode the file `meta` gives in `area` is known by: its inode on the disk with `LOCAL`, and with `CACHE`
+	/// for the caches', which may be on a disk of their own (`--cache-dir`) with the git files' inodes; the same in every
+	/// program sharing them. Not for a file on another disk than its area's (one mounted in the local or cache folder,
+	/// whose inodes may be its area's too), which is not shown (`EXDEV`), nor for an inode with those bits (`EOVERFLOW`).
+	fn id(&self, area: Area, meta: &fs::Metadata) -> Result<u64, i32> {
+		let (dev, bit) = match area {
+			Area::Git => (self.devs.0, 0),
+			Area::Cache => (self.devs.1, CACHE),
+		};
+		if meta.dev() != dev {
+			return Err(libc::EXDEV);
+		}
+		if meta.ino() & (LOCAL | CACHE) != 0 {
+			return Err(libc::EOVERFLOW);
+		}
+		Ok(meta.ino() | LOCAL | bit)
 	}
 
 	/// This program's own folder in the `gone/` on the disk of `area`'s files.
@@ -606,12 +704,18 @@ impl Local {
 	/// The node took the rename of its folder `from` to `to`: the caches in it and below move with it. Those of a folder
 	/// it replaced at `to` go; in a repository's git folder, where no cache is shown, they go too. With none at `from`,
 	/// nothing changes: those at `to` may be another program's (`shared`), or ones another program's rename of the same
-	/// folder moved there already.
-	pub fn renamed(&self, from: &str, to: &str) {
+	/// folder moved there already, which is looked for again once no other program is moving caches (`renaming`). A
+	/// rename of `to` the node took from another program before this one moved them still leaves them at `to`, where
+	/// removing old caches finds the folder gone. Whether the caches changed.
+	pub fn renamed(&self, from: &str, to: &str) -> bool {
 		let (source, target) = (self.mirror(from), self.mirror(to));
 		let there = |p: &Path| fs::symlink_metadata(p).is_ok();
 		if from == to || !there(&source) {
-			return;
+			return false;
+		}
+		let _renaming = self.renaming();
+		if !there(&source) {
+			return false;
 		}
 		let mut names = self.names.lock().unwrap();
 		match trash(self.gone(Area::Cache), &target) {
@@ -633,7 +737,8 @@ impl Local {
 		}
 		forget_all(&mut names, |u, _, area| area == Area::Cache && matches!(u, Up::Mount(p) if under(p, to)));
 		if into_git {
-			return forget_all(&mut names, |u, _, area| area == Area::Cache && matches!(u, Up::Mount(p) if under(p, from)));
+			forget_all(&mut names, |u, _, area| area == Area::Cache && matches!(u, Up::Mount(p) if under(p, from)));
+			return true;
 		}
 		for all in names.values_mut() {
 			for (up, _, area) in all.iter_mut() {
@@ -644,6 +749,19 @@ impl Local {
 				}
 			}
 		}
+		true
+	}
+
+	/// Held while one program moves caches with a folder the node renamed (`renamed`), for every program sharing these
+	/// caches: their folder, locked exclusively, taken before the names and never with them. None, logged, when it
+	/// cannot be: the move goes on as it would without.
+	fn renaming(&self) -> Option<File> {
+		let locked = OpenOptions::new()
+			.read(true)
+			.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+			.open(self.mirror(""))
+			.and_then(|dir| crate::viewfile::flock(&dir, libc::LOCK_EX).map(|()| dir));
+		locked.inspect_err(|e| eprintln!("qorpera-folder: the caches move without their lock ({e})")).ok()
 	}
 
 	/// Makes the cache folder `name` in `dir` the caches of the node's folder of that name, which a move has in the
@@ -655,7 +773,7 @@ impl Local {
 		let mut names = self.names.lock().unwrap();
 		let path = crate::proto::join(dir, name);
 		let (top, into) = (self.disk(Area::Cache, &path), self.mirror(&path).join("t"));
-		let ino = fs::symlink_metadata(&top)?.ino() | LOCAL;
+		let ino = self.id(Area::Cache, &fs::symlink_metadata(&top)?).map_err(io::Error::from_raw_os_error)?;
 		fs::DirBuilder::new().recursive(true).mode(0o755).create(self.mirror(&path))?;
 		let joined = match fs::remove_dir(&into) {
 			Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) || e.raw_os_error() == Some(libc::EEXIST) => {
@@ -782,18 +900,28 @@ impl Local {
 	/// `name` in `up`, at `disk`, now known by its inode (`names` held since it was found or made there).
 	fn known_at(&self, names: &mut Names, up: Up, name: &str, area: Area, disk: &Path) -> Result<FileAttr, i32> {
 		let meta = fs::symlink_metadata(disk).map_err(errno)?;
-		known(names, meta.ino() | LOCAL, up, name, area);
-		Ok(self.attr(&meta))
+		let ino = self.id(area, &meta)?;
+		known(names, ino, up, name, area);
+		Ok(self.attr(ino, &meta))
 	}
 
-	/// The attributes of a local inode, from the disk (with the names held, as `disk_at` says).
-	pub fn getattr(&self, ino: u64) -> Result<FileAttr, i32> {
+	/// The attributes of a local inode, from the disk: of the mount's handle `fh` when it is one of `ino`'s (an fstat),
+	/// otherwise of what its name has (with the names held, as `disk_at` says), checked to be `ino` still (ESTALE).
+	pub fn getattr(&self, ino: u64, fh: Option<u64>) -> Result<FileAttr, i32> {
+		if let Some(file) = self.handle_of(fh, ino, false) {
+			return file.and_then(|f| f.metadata()).map(|m| self.attr(ino, &m)).map_err(errno);
+		}
 		let names = self.names.lock().unwrap();
-		let (disk, _) = self.disk_at(&names, ino)?;
-		fs::symlink_metadata(disk).map(|m| self.attr(&m)).map_err(errno)
+		let (disk, area) = self.disk_at(&names, ino)?;
+		let meta = fs::symlink_metadata(disk).map_err(errno)?;
+		if self.id(area, &meta) != Ok(ino) {
+			return Err(libc::ESTALE);
+		}
+		Ok(self.attr(ino, &meta))
 	}
 
-	pub fn attr(&self, meta: &fs::Metadata) -> FileAttr {
+	/// The attributes of the local inode `ino`, from the disk's `meta`.
+	fn attr(&self, ino: u64, meta: &fs::Metadata) -> FileAttr {
 		let time = |s: i64, ns: i64| {
 			if s >= 0 {
 				UNIX_EPOCH + Duration::new(s as u64, ns as u32)
@@ -802,7 +930,7 @@ impl Local {
 			}
 		};
 		FileAttr {
-			ino: INodeNo(meta.ino() | LOCAL),
+			ino: INodeNo(ino),
 			size: meta.size(),
 			blocks: meta.blocks(),
 			atime: time(meta.atime(), meta.atime_nsec()),
@@ -820,7 +948,8 @@ impl Local {
 		}
 	}
 
-	/// The local entries of a mount folder (`dir`, in `area`), each now known by its inode.
+	/// The local entries of a mount folder (`dir`, in `area`), each now known by its inode; not one on another disk
+	/// (`id`).
 	pub fn entries_of(&self, dir: &str, area: Area) -> Vec<(u64, FileType, String)> {
 		let Ok(read) = fs::read_dir(self.room(dir, area)) else { return Vec::new() };
 		let mut out = Vec::new();
@@ -829,14 +958,14 @@ impl Local {
 			let (Ok(meta), Some(name)) = (entry.metadata(), entry.file_name().to_str().map(str::to_string)) else {
 				continue;
 			};
-			let ino = meta.ino() | LOCAL;
+			let Ok(ino) = self.id(area, &meta) else { continue };
 			known(&mut names, ino, Up::Mount(dir.to_string()), &name, area);
 			out.push((ino, kind(&meta.file_type()), name));
 		}
 		out
 	}
 
-	/// The entries of a local folder, each now known by its inode.
+	/// The entries of a local folder, each now known by its inode; not one on another disk (`id`).
 	pub fn children(&self, ino: u64) -> Result<Vec<(u64, FileType, String)>, i32> {
 		let mut out = Vec::new();
 		let mut names = self.names.lock().unwrap();
@@ -845,7 +974,7 @@ impl Local {
 			let (Ok(meta), Some(name)) = (entry.metadata(), entry.file_name().to_str().map(str::to_string)) else {
 				continue;
 			};
-			let child = meta.ino() | LOCAL;
+			let Ok(child) = self.id(area, &meta) else { continue };
 			known(&mut names, child, Up::Local(ino), &name, area);
 			out.push((child, kind(&meta.file_type()), name));
 		}
@@ -863,9 +992,10 @@ impl Local {
 	/// Creates a file and opens it: its attributes and the handle.
 	pub fn create(&self, up: Up, name: &str, area: Area, mode: u32, flags: i32) -> Result<(FileAttr, u64), i32> {
 		self.make_room(&up, area)?;
-		// Truncated once it is locked (`writer`), not before.
+		// Truncated once it is locked (`writer`), not before. Never through a link another program sharing these caches
+		// made at the name meanwhile: what it names may be outside them.
 		let mut options = open_options(flags & !libc::O_TRUNC);
-		options.create(true).mode(mode & 0o7777);
+		options.create(true).mode(mode & 0o7777).custom_flags(libc::O_NOFOLLOW);
 		if flags & libc::O_EXCL != 0 {
 			options.create_new(true);
 		}
@@ -878,15 +1008,16 @@ impl Local {
 				}
 				let (disk, area) = self.disk_under(&names, &up, name, area)?;
 				let file = options.open(&disk).map_err(errno)?;
-				let file = if changes_bytes(flags) { writer(file)? } else { file };
+				let file = if changes_bytes(flags) { writer_at(file, &disk)? } else { file };
 				if flags & libc::O_TRUNC != 0 {
 					file.set_len(0).map_err(errno)?;
 				}
 				let meta = file.metadata().map_err(errno)?;
-				known(&mut names, meta.ino() | LOCAL, up.clone(), name, area);
-				let fh = self.hold(file, meta.ino() | LOCAL, flags);
+				let ino = self.id(area, &meta)?;
+				known(&mut names, ino, up.clone(), name, area);
+				let fh = self.hold(file, ino, flags);
 				drop(names);
-				Ok((self.attr(&meta), fh))
+				Ok((self.attr(ino, &meta), fh))
 			},
 		)
 	}
@@ -907,10 +1038,19 @@ impl Local {
 		self.known_at(&mut names, up, name, area, &disk)
 	}
 
+	/// A local link's target: of the link its name has, checked to be `ino` still (`place_of`).
 	pub fn readlink(&self, ino: u64) -> Result<Vec<u8>, i32> {
 		let names = self.names.lock().unwrap();
-		let (disk, _) = self.disk_at(&names, ino)?;
-		fs::read_link(disk).map(|t| t.as_os_str().as_bytes().to_vec()).map_err(errno)
+		let place = self.place_of(&names, ino)?;
+		drop(names);
+		let mut target = vec![0u8; libc::PATH_MAX as usize];
+		// SAFETY: a descriptor, an empty NUL-ended path (the link the descriptor is), and a buffer of its length.
+		let read = unsafe { libc::readlinkat(place.as_raw_fd(), c"".as_ptr(), target.as_mut_ptr().cast(), target.len()) };
+		if read < 0 {
+			return Err(errno(io::Error::last_os_error()));
+		}
+		target.truncate(read as usize);
+		Ok(target)
 	}
 
 	/// A second name for a local file, in the same area.
@@ -926,21 +1066,27 @@ impl Local {
 		self.known_at(&mut names, up, name, area, &to)
 	}
 
-	/// Removes the file `name` in `up`: its inode.
+	/// Removes the file `name` in `up`: its inode. One a cache move has, of this program or another, once it is in the
+	/// folder (`named_file`).
 	pub fn unlink(&self, up: &Up, name: &str, area: Area) -> Result<u64, i32> {
-		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, up, name, area));
-		let (disk, _) = self.disk_under(&names, up, name, area).map_err(stale(waited))?;
-		let ino = fs::symlink_metadata(&disk).map_err(errno).map_err(stale(waited))?.ino() | LOCAL;
-		fs::remove_file(disk).map_err(errno)?;
-		forget(&mut names, ino, up, name);
-		Ok(ino)
+		self.changing(
+			|names| self.ino_under(names, up, name, area),
+			|mut names, waited| {
+				let (disk, area) = self.disk_under(&names, up, name, area).map_err(stale(waited))?;
+				let _locked = named_file(&disk)?;
+				let ino = self.id(area, &fs::symlink_metadata(&disk).map_err(errno).map_err(stale(waited))?)?;
+				fs::remove_file(disk).map_err(errno)?;
+				forget(&mut names, ino, up, name);
+				Ok(ino)
+			},
+		)
 	}
 
 	/// Removes the empty folder `name` in `up`: its inode.
 	pub fn rmdir(&self, up: &Up, name: &str, area: Area) -> Result<u64, i32> {
 		let mut names = self.names.lock().unwrap();
-		let (disk, _) = self.disk_under(&names, up, name, area)?;
-		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
+		let (disk, area) = self.disk_under(&names, up, name, area)?;
+		let ino = self.id(area, &fs::symlink_metadata(&disk).map_err(errno)?)?;
 		fs::remove_dir(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
 		Ok(ino)
@@ -959,16 +1105,16 @@ impl Local {
 	pub fn moved_file_out(&self, disk: &Path, ino: u64) -> Result<(), i32> {
 		let mut names = self.names.lock().unwrap();
 		let meta = fs::symlink_metadata(disk).map_err(errno)?;
-		if meta.ino() | LOCAL != ino {
+		if self.id(Area::Cache, &meta) != Ok(ino) {
 			return Err(libc::EBUSY);
 		}
 		self.take_off(&mut names, disk, &meta)
 	}
 
 	fn take_off(&self, names: &mut Names, disk: &Path, meta: &fs::Metadata) -> Result<(), i32> {
+		let ino = self.id(Area::Cache, meta)?;
 		let removed = if meta.is_dir() { fs::remove_dir(disk) } else { fs::remove_file(disk) };
 		removed.map_err(errno)?;
-		let ino = meta.ino() | LOCAL;
 		let gone: Vec<(Up, String)> = names
 			.get(&ino)
 			.into_iter()
@@ -989,12 +1135,12 @@ impl Local {
 	/// sealed (`EBUSY`): the move is made again until its writers are done. So for the other programs sharing these
 	/// caches (`--cache-dir`), whose handles that change a file's bytes hold a shared lock on it (`writer`): the seal
 	/// takes it exclusively, without waiting, and keeps it until `unseal`, and their changes to the file's bytes wait for
-	/// it. Not their renames, removals and changes of its mode or times, which this mount's wait for: one made while the
-	/// move is leaves the file in the folder and under its new name on the disk too (`moved_file_out`), in the folder
-	/// though it was removed, or in the folder with the mode it had when sealed. No byte written is lost.
+	/// it, as do their renames and removals of it or over it (`named_file`). Not their changes of its mode or times,
+	/// which this mount's wait for: one made while the move is leaves the file in the folder with the mode it had when
+	/// sealed. No byte written is lost.
 	pub fn seal(&self, disk: &Path) -> Result<(File, u64), i32> {
 		let names = self.names.lock().unwrap();
-		self.seal_at(&names, disk)?.map_err(|_| libc::EBUSY)
+		self.seal_at(&names, Area::Cache, disk)?.map_err(|_| libc::EBUSY)
 	}
 
 	/// `seal` for the cache file `name` in `up` (`mount/on_disk.rs`), and where it is on the disk. One the mount has open
@@ -1004,8 +1150,8 @@ impl Local {
 		let until = Instant::now() + wait;
 		loop {
 			let names = self.names.lock().unwrap();
-			let (disk, _) = self.disk_under(&names, up, name, area)?;
-			let handles = match self.seal_at(&names, &disk)? {
+			let (disk, area) = self.disk_under(&names, up, name, area)?;
+			let handles = match self.seal_at(&names, area, &disk)? {
 				Ok((file, ino)) => return Ok((file, ino, disk)),
 				Err(handles) => handles,
 			};
@@ -1021,12 +1167,17 @@ impl Local {
 	/// `seal` with the names held; the handles, held still, when the mount has the file open for writing, so a wait for
 	/// one to be let go of (`release`) misses none.
 	#[allow(clippy::type_complexity)]
-	fn seal_at(&self, _names: &Names, disk: &Path) -> Result<Result<(File, u64), MutexGuard<'_, HashMap<u64, Handle>>>, i32> {
+	fn seal_at(
+		&self,
+		_names: &Names,
+		area: Area,
+		disk: &Path,
+	) -> Result<Result<(File, u64), MutexGuard<'_, HashMap<u64, Handle>>>, i32> {
 		// Not a pipe that took its place since it was listed, whose open would wait with the names held.
 		let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
 		let file = OpenOptions::new().read(true).custom_flags(flags).open(disk).map_err(errno)?;
 		let meta = file.metadata().map_err(errno)?;
-		let ino = meta.ino() | LOCAL;
+		let ino = self.id(area, &meta)?;
 		if !meta.is_file() || self.sealed.lock().unwrap().contains_key(&ino) {
 			return Err(libc::EBUSY);
 		}
@@ -1097,8 +1248,8 @@ impl Local {
 
 	/// The local inode of the file `name` in `up` names, if one is on the disk.
 	fn ino_under(&self, names: &Names, up: &Up, name: &str, area: Area) -> Option<u64> {
-		let (disk, _) = self.disk_under(names, up, name, area).ok()?;
-		fs::symlink_metadata(disk).ok().map(|m| m.ino() | LOCAL)
+		let (disk, area) = self.disk_under(names, up, name, area).ok()?;
+		fs::symlink_metadata(disk).ok().and_then(|m| self.id(area, &m).ok())
 	}
 
 	/// Renames within one area; `exchange` swaps the two (RENAME_EXCHANGE), `no_replace` refuses an existing target. The
@@ -1112,82 +1263,114 @@ impl Local {
 		exchange: bool,
 	) -> Result<(Option<u64>, Option<u64>), i32> {
 		// A file a cache move has, renamed once it is in the folder; one that takes its name meanwhile is moved again
-		// (`moved_file_out`).
-		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, from.0, from.1, area));
-		let (source, from_area) = self.disk_under(&names, from.0, from.1, area).map_err(stale(waited))?;
-		let (target, to_area) = self.disk_under(&names, to.0, to.1, area).map_err(stale(waited))?;
-		if from_area != to_area {
-			return Err(libc::EXDEV);
-		}
-		self.make_room(to.0, area)?;
-		let flags = if exchange {
-			libc::RENAME_EXCHANGE
-		} else if no_replace {
-			libc::RENAME_NOREPLACE
-		} else {
-			0
-		};
-		let ino_at = |p: &Path| fs::symlink_metadata(p).ok().map(|m| m.ino() | LOCAL);
-		let (moved, replaced) = (ino_at(&source), ino_at(&target));
-		renameat2(&source, &target, flags).map_err(stale(waited))?;
-		if moved.is_some() && moved == replaced {
-			// Two names of one file: the rename left both.
-			return Ok((moved, replaced));
-		}
-		if let Some(ino) = replaced {
-			forget(&mut names, ino, to.0, to.1);
-		}
-		if let Some(ino) = moved {
-			forget(&mut names, ino, from.0, from.1);
-			known(&mut names, ino, to.0.clone(), to.1, area);
-		}
-		if let (true, Some(ino)) = (exchange, replaced) {
-			known(&mut names, ino, from.0.clone(), from.1, area);
-		}
-		Ok((moved, replaced))
+		// (`moved_file_out`). So for another program's move, of the files at both names (`named_file`).
+		self.changing(
+			|names| self.ino_under(names, from.0, from.1, area),
+			|mut names, waited| {
+				let (source, from_area) = self.disk_under(&names, from.0, from.1, area).map_err(stale(waited))?;
+				let (target, to_area) = self.disk_under(&names, to.0, to.1, area).map_err(stale(waited))?;
+				if from_area != to_area {
+					return Err(Change::Failed(libc::EXDEV));
+				}
+				self.make_room(to.0, area)?;
+				let _locked = (named_file(&source)?, named_file(&target)?);
+				let flags = if exchange {
+					libc::RENAME_EXCHANGE
+				} else if no_replace {
+					libc::RENAME_NOREPLACE
+				} else {
+					0
+				};
+				let ino_at = |p: &Path| fs::symlink_metadata(p).ok().map(|m| self.id(area, &m)).transpose();
+				let (moved, replaced) = (ino_at(&source)?, ino_at(&target)?);
+				renameat2(&source, &target, flags).map_err(stale(waited))?;
+				if moved.is_some() && moved == replaced {
+					// Two names of one file: the rename left both.
+					return Ok((moved, replaced));
+				}
+				if let Some(ino) = replaced {
+					forget(&mut names, ino, to.0, to.1);
+				}
+				if let Some(ino) = moved {
+					forget(&mut names, ino, from.0, from.1);
+					known(&mut names, ino, to.0.clone(), to.1, area);
+				}
+				if let (true, Some(ino)) = (exchange, replaced) {
+					known(&mut names, ino, from.0.clone(), from.1, area);
+				}
+				Ok((moved, replaced))
+			},
+		)
 	}
 
-	/// Changes a local inode's mode, size or times; a size once the file is locked (`writer`), before anything changes.
+	/// Changes a local inode's mode, size or times, on that inode itself: through the mount's handle `fh` when it is one
+	/// of `ino`'s (a truncate of an open file), otherwise through what `ino`'s name has now, checked to be `ino` still
+	/// and never followed when a link (`place_of`). Another program sharing these caches may have renamed a file or a
+	/// link over the name. A size once the file is locked (`writer`), before anything changes.
 	pub fn setattr(
 		&self,
 		ino: u64,
+		fh: Option<u64>,
 		mode: Option<u32>,
 		size: Option<u64>,
 		times: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
 	) -> Result<FileAttr, i32> {
-		self.changing(
+		let meta = self.changing(
 			|_| Some(ino),
 			|names, waited| {
-				let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
-				let truncate = match size {
-					Some(size) => {
-						let file = OpenOptions::new().write(true).open(&disk).map_err(errno).map_err(stale(waited))?;
-						Some((writer(file)?, size))
+				let (place, truncate) = match self.handle_of(fh, ino, size.is_some()).transpose().map_err(errno)? {
+					// Its bytes change with the lock it has held since it was opened (`writer`).
+					Some(file) => (file.try_clone().map_err(errno)?, size.map(|size| (file, size))),
+					None => {
+						let place = self.place_of(&names, ino).map_err(stale(waited))?;
+						let truncate = match size {
+							Some(size) => {
+								let (disk, area) = self.disk_at(&names, ino)?;
+								let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+								let file = OpenOptions::new().write(true).custom_flags(flags).open(&disk);
+								let file = file.map_err(errno).map_err(stale(waited))?;
+								if self.id(area, &file.metadata().map_err(errno)?) != Ok(ino) {
+									return Err(Change::Failed(libc::ESTALE));
+								}
+								Some((writer_at(file, &disk)?, size))
+							}
+							None => None,
+						};
+						(place, truncate)
 					}
-					None => None,
 				};
 				if let Some(mode) = mode {
-					fs::set_permissions(&disk, fs::Permissions::from_mode(mode & 0o7777)).map_err(errno)?;
+					set_mode(&place, mode)?;
 				}
 				if let Some((file, size)) = truncate {
 					file.set_len(size).map_err(errno)?;
 				}
-				if times.0.is_some() || times.1.is_some() {
-					let mut t = fs::FileTimes::new();
-					if let Some(a) = times.0 {
-						t = t.set_accessed(a);
-					}
-					if let Some(m) = times.1 {
-						t = t.set_modified(m);
-					}
-					// A folder or a file alike: opened for reading only, as utimensat would need no more.
-					File::open(&disk).and_then(|f| f.set_times(t)).map_err(errno)?;
-				}
+				set_times(&place, times)?;
 				drop(names);
-				Ok(())
+				place.metadata().map_err(|e| Change::Failed(errno(e)))
 			},
 		)?;
-		self.getattr(ino)
+		Ok(self.attr(ino, &meta))
+	}
+
+	/// The file of the mount's handle `fh`, when it is one of the local inode `ino`'s (and one that changes its bytes,
+	/// for `bytes`).
+	fn handle_of(&self, fh: Option<u64>, ino: u64, bytes: bool) -> Option<io::Result<File>> {
+		let handles = self.handles.lock().unwrap();
+		let handle = handles.get(&fh?).filter(|h| h.ino == ino && (h.writes || !bytes))?;
+		Some(handle.file.try_clone())
+	}
+
+	/// What the local inode `ino`'s name has now (`disk_at`), opened as a place to read or change its attributes on
+	/// (`O_PATH`), a link itself and not what it names, and checked to be `ino` still (ESTALE).
+	fn place_of(&self, names: &Names, ino: u64) -> Result<File, i32> {
+		let (disk, area) = self.disk_at(names, ino)?;
+		let flags = libc::O_PATH | libc::O_NOFOLLOW;
+		let place = OpenOptions::new().read(true).custom_flags(flags).open(disk).map_err(errno)?;
+		if self.id(area, &place.metadata().map_err(errno)?) != Ok(ino) {
+			return Err(libc::ESTALE);
+		}
+		Ok(place)
 	}
 
 	/// Opens a local file: the handle. It is found, opened and kept with the names held (`disk_at`, `hold`), once no
@@ -1198,13 +1381,13 @@ impl Local {
 		self.changing(
 			|_| changes.then_some(ino),
 			|names, waited| {
-				let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
-				let options = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(disk);
+				let (disk, area) = self.disk_at(&names, ino).map_err(stale(waited))?;
+				let options = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(&disk);
 				let file = options.map_err(errno).map_err(stale(waited))?;
-				if file.metadata().map_err(errno)?.ino() | LOCAL != ino {
+				if self.id(area, &file.metadata().map_err(errno)?) != Ok(ino) {
 					return Err(Change::Failed(libc::ESTALE));
 				}
-				let file = if changes { writer(file)? } else { file };
+				let file = if changes { writer_at(file, &disk)? } else { file };
 				if flags & libc::O_TRUNC != 0 {
 					file.set_len(0).map_err(errno)?;
 				}
@@ -1287,7 +1470,7 @@ impl Local {
 			let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
 			file.write_all(bytes)?;
 			file.set_permissions(fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }))?;
-			Ok(file.metadata()?.ino() | LOCAL)
+			self.id(area, &file.metadata()?).map_err(io::Error::from_raw_os_error)
 		})();
 		let placed = written.map_err(errno).and_then(|ino| {
 			let (mut names, waited) = self.unsealed(|names| self.ino_under(names, up, name, area));
@@ -1295,7 +1478,7 @@ impl Local {
 			let replaced = match fs::symlink_metadata(&target) {
 				Ok(m) if m.is_dir() => return Err(libc::EISDIR),
 				Ok(_) if no_replace => return Err(libc::EEXIST),
-				Ok(m) => Some(m.ino() | LOCAL),
+				Ok(m) => Some(self.id(area, &m)?),
 				Err(e) if e.kind() == io::ErrorKind::NotFound && waited => return Err(libc::ESTALE),
 				Err(e) if e.kind() == io::ErrorKind::NotFound => None,
 				Err(e) => return Err(errno(e)),
@@ -1320,7 +1503,8 @@ impl Local {
 	}
 
 	/// The files and folders under a cache folder's disk path, folders before what they hold, with their paths below
-	/// it: what moves into the folder when its name leaves the list.
+	/// it: what moves into the folder when its name leaves the list. None of it on another disk (`id`): the walk stops
+	/// there (`EXDEV`).
 	pub fn walk(&self, disk: &Path) -> io::Result<Vec<(String, fs::Metadata)>> {
 		let mut out = Vec::new();
 		let mut todo = vec![String::new()];
@@ -1330,6 +1514,7 @@ impl Local {
 				let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
 				let rel = crate::proto::join(&rel, &name);
 				let meta = entry.metadata()?;
+				self.id(Area::Cache, &meta).map_err(io::Error::from_raw_os_error)?;
 				if meta.is_dir() {
 					todo.push(rel.clone());
 				}
@@ -1366,7 +1551,7 @@ impl Placed<'_> {
 		let (up, name, area) = (&self.up, self.name.as_str(), self.area);
 		let (mut names, _) = local.unsealed(|names| local.ino_under(names, up, name, area));
 		let target = local.disk_under(&names, up, name, area).map(|(disk, _)| disk);
-		let here = target.as_ref().ok().and_then(|t| fs::symlink_metadata(t).ok()).map(|m| m.ino() | LOCAL);
+		let here = target.as_ref().ok().and_then(|t| local.id(area, &fs::symlink_metadata(t).ok()?).ok());
 		let back = match (&target, self.replaced) {
 			(Ok(target), Some(_)) if here == Some(self.ino) => renameat2(&self.aside, target, libc::RENAME_EXCHANGE),
 			(Ok(target), None) if here == Some(self.ino) => fs::remove_file(target).map_err(errno),
@@ -1456,6 +1641,23 @@ mod tests {
 		}
 	}
 
+	type Park = (PathBuf, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+	/// A file a test stops the next change to at, between its open and its lock (`writer_at`): it is told when one
+	/// stopped there, and tells it to go on.
+	static PARK: Mutex<Option<Park>> = Mutex::new(None);
+
+	pub(super) fn parked(disk: &Path) {
+		let mut park = PARK.lock().unwrap();
+		if park.as_ref().is_none_or(|(at, _, _)| at != disk) {
+			return;
+		}
+		let (_, parked, go) = park.take().unwrap();
+		drop(park);
+		parked.send(()).unwrap();
+		go.recv().unwrap();
+	}
+
 	#[test]
 	fn seeds_and_git_files() {
 		assert!(git_file("code/o/n/repo.git/config") && git_file("code/o/n/repo.git/hooks/pre-commit"));
@@ -1484,7 +1686,7 @@ mod tests {
 		l.release(fh);
 		assert_eq!(l.path(attr.ino.0), Some(("code/o/n/repo.git/hooks/pre-commit".to_string(), Area::Git)));
 		assert_eq!(fs::read(dir.join("git/code/o/n/repo.git/hooks/pre-commit")).unwrap(), b"#!/bin/sh\n");
-		assert_eq!(l.getattr(attr.ino.0).unwrap().perm, 0o755);
+		assert_eq!(l.getattr(attr.ino.0, None).unwrap().perm, 0o755);
 		assert_eq!(
 			l.create(Up::Local(hooks_ino), "pre-commit", Area::Git, 0o644, libc::O_WRONLY | libc::O_EXCL).unwrap_err(),
 			libc::EEXIST
@@ -1506,6 +1708,30 @@ mod tests {
 		);
 		l.unlink(&Up::Local(hooks_ino), "post-commit", Area::Git).unwrap();
 		l.rmdir(&up, "hooks", Area::Git).unwrap();
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_local_inode_is_its_areas_and_never_one_on_another_disk() {
+		let (mut l, dir) = local("ids", "v1");
+		let git = l.mkdir(Up::Mount("code/o/n/repo.git".to_string()), "hooks", Area::Git, 0o755).unwrap();
+		let top = Up::Mount("p".to_string());
+		let cache = l.mkdir(top.clone(), "node_modules", Area::Cache, 0o755).unwrap();
+		assert_eq!((git.ino.0 & (LOCAL | CACHE), cache.ino.0 & (LOCAL | CACHE)), (LOCAL, LOCAL | CACHE));
+		assert_eq!(l.getattr(cache.ino.0, None).unwrap().ino, cache.ino);
+		// The caches may be on a disk of their own, with the git files' inodes: one inode is told apart by its area.
+		let disk = dir.join("caches/d/p/t/node_modules");
+		let meta = fs::symlink_metadata(&disk).unwrap();
+		assert_eq!((l.id(Area::Git, &meta), l.id(Area::Cache, &meta)), (Ok(meta.ino() | LOCAL), Ok(cache.ino.0)));
+		// A file on another disk than its area's is none of its files.
+		assert_eq!(l.id(Area::Git, &fs::symlink_metadata("/proc/self").unwrap()), Err(libc::EXDEV));
+		// As if a disk were mounted in the cache folder, with these caches on it: they are not shown, looked up or walked.
+		fs::create_dir(disk.join("x")).unwrap();
+		l.devs.1 = !l.devs.1;
+		assert!(l.entries_of("p", Area::Cache).is_empty());
+		assert_eq!(l.entry(top, "node_modules", Area::Cache).unwrap_err(), libc::EXDEV);
+		assert_eq!(l.walk(&disk).unwrap_err().raw_os_error(), Some(libc::EXDEV));
+		assert_eq!(l.entries_of("code/o/n/repo.git", Area::Git).len(), 1);
 		fs::remove_dir_all(&dir).unwrap();
 	}
 
@@ -1597,7 +1823,7 @@ mod tests {
 				}
 			});
 			let reads = (0..2000).try_for_each(|_| {
-				let attr = l.getattr(a)?;
+				let attr = l.getattr(a, None)?;
 				let target = l.readlink(a)?;
 				if attr.ino.0 != a || attr.size != 4 || target != b"to-a" {
 					return Err(-1);
@@ -1626,7 +1852,7 @@ mod tests {
 		l.moved_out(&modules.join("b")).unwrap();
 		l.moved_out(&modules).unwrap();
 		assert_eq!(l.path(a), Some(("code/o/n/worktrees/w/target/a".to_string(), Area::Cache)));
-		assert_eq!(l.getattr(a).map(|attr| attr.nlink), Ok(1));
+		assert_eq!(l.getattr(a, None).map(|attr| attr.nlink), Ok(1));
 		l.release(l.open_file(a, libc::O_RDONLY).unwrap());
 		fs::remove_dir_all(&dir).unwrap();
 	}
@@ -1649,7 +1875,7 @@ mod tests {
 			// An open for writing, a truncate, a create, an unlink or a rename waits until the move is done with the
 			// file; a read does not.
 			let opened = s.spawn(|| l.open_file(a, libc::O_WRONLY).map(drop));
-			let truncated = s.spawn(|| l.setattr(a, None, Some(0), (None, None)).map(drop));
+			let truncated = s.spawn(|| l.setattr(a, None, None, Some(0), (None, None)).map(drop));
 			let made = s.spawn(|| l.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).map(drop));
 			let removed = s.spawn(|| l.unlink(&up, "a", Area::Cache).map(drop));
 			let renamed = s.spawn(|| l.rename((&up, "a"), (&up, "z"), Area::Cache, false, false).map(drop));
@@ -1685,14 +1911,28 @@ mod tests {
 			assert_eq!(l.seal(&disk).map(|(_, ino)| ino), Err(libc::EBUSY));
 			l.release(fh);
 		});
-		// A file that took its name meanwhile stays on the disk, for the move to be made again.
+		// A rename over it waits for the move, which takes only its own file off the disk.
 		let (_, ino) = l.seal(&disk).unwrap();
 		let (_, fh) = l.create(up.clone(), "c", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		l.write(fh, 0, b"c").unwrap();
 		l.release(fh);
-		l.rename((&up, "c"), (&up, "b"), Area::Cache, false, false).unwrap();
+		std::thread::scope(|s| {
+			let sealed = Sealed(&l, ino);
+			let over = s.spawn(|| l.rename((&up, "c"), (&up, "b"), Area::Cache, false, false).map(drop));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!over.is_finished());
+			l.moved_file_out(&disk, ino).unwrap();
+			drop(sealed);
+			over.join().unwrap().unwrap();
+		});
+		assert_eq!(fs::read(&disk).unwrap(), b"c");
+		// A file that took its name meanwhile behind the mount's back stays on the disk, for the move to be made again.
+		let (_, ino) = l.seal(&disk).unwrap();
+		fs::write(disk.with_file_name("d"), "d").unwrap();
+		fs::rename(disk.with_file_name("d"), &disk).unwrap();
 		assert_eq!(l.moved_file_out(&disk, ino), Err(libc::EBUSY));
 		l.unseal(ino);
-		assert!(disk.exists());
+		assert_eq!(fs::read(&disk).unwrap(), b"d");
 		fs::remove_dir_all(&dir).unwrap();
 	}
 
@@ -1826,7 +2066,7 @@ mod tests {
 		l.renamed("a", "c");
 		assert!(!l.has_caches("a") && !l.is_top("c/old", "dist") && l.mirrors("c") == ["b"]);
 		assert_eq!(l.path(x), Some(("c/b/node_modules/x.js".to_string(), Area::Cache)));
-		assert!(l.getattr(x).is_ok());
+		assert!(l.getattr(x, None).is_ok());
 		// The node took a folder git came to track in place of the cache: what was in it is that folder's caches now.
 		let built = made(Up::Mount("c/b".to_string()), "dist");
 		let y = file(Up::Local(built), "y.js");
@@ -1853,7 +2093,7 @@ mod tests {
 		assert!(!l.whole("e/logs") && !dir.join("caches/d/e/t/logs").exists());
 		// The node's entry wins (rule 1), and a folder gone takes the caches in and below it.
 		l.gone_top("c/b", "dist");
-		assert!(!l.is_top("c/b", "dist") && l.name(again).is_none() && l.getattr(again) == Err(libc::ESTALE));
+		assert!(!l.is_top("c/b", "dist") && l.name(again).is_none() && l.getattr(again, None) == Err(libc::ESTALE));
 		l.drop_mirror("c");
 		assert!(!l.has_caches("c") && l.name(x).is_none() && l.name(modules).is_none() && l.name(y).is_none());
 		// Moved into a repository's git folder, where no cache is shown, they go too.
@@ -1952,12 +2192,13 @@ mod tests {
 		a.drop_mirror("p");
 		assert!(a.has_caches("p") && a.is_top("p/q", "node_modules"));
 		// Nor a rename of a folder v1 has no caches in onto p: p's are v2's.
-		a.renamed("r", "p");
+		assert!(!a.renamed("r", "p"));
 		assert!(b.is_top("p/q", "node_modules"));
-		// One that has, moves them, as a program on its own does.
+		// One that has, moves them, as a program on its own does; the same rename by the other program finds none.
 		a.mkdir(Up::Mount("s".to_string()), "dist", Area::Cache, 0o755).unwrap();
-		a.renamed("s", "t");
+		assert!(a.renamed("s", "t"));
 		assert!(b.is_top("t", "dist") && !b.has_caches("s"));
+		assert!(!b.renamed("s", "t"));
 		// Not sharing them, a program takes off the caches of a folder gone from its view (`drop_mirror`).
 		let (alone, dir) = local("shared-alone", "v1");
 		alone.mkdir(Up::Mount("p".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
@@ -1967,6 +2208,68 @@ mod tests {
 		drop((a, b, alone));
 		fs::remove_dir_all(&base).unwrap();
 		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_folders_caches_another_program_moved_while_this_one_waited_are_not_moved_again() {
+		let (a, b, base) = sharing("shared-renaming");
+		a.mkdir(Up::Mount("s".to_string()), "dist", Area::Cache, 0o755).unwrap();
+		// v2's program is moving caches: v1's rename of the same folder waits, and then finds them moved.
+		let held = File::open(a.mirror("")).unwrap();
+		crate::viewfile::flock(&held, libc::LOCK_EX).unwrap();
+		std::thread::scope(|s| {
+			let renamed = s.spawn(|| a.renamed("s", "t"));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!renamed.is_finished());
+			fs::rename(b.mirror("s"), b.mirror("t")).unwrap();
+			drop(held);
+			assert!(!renamed.join().unwrap());
+		});
+		assert!(b.is_top("t", "dist") && a.is_top("t", "dist") && !a.has_caches("s"));
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn another_programs_renames_and_removals_of_a_file_a_cache_move_has_wait_for_it() {
+		let (a, b, base) = sharing("shared-names");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let disk = |name: &str| a.disk(Area::Cache, &format!("code/o/n/worktrees/w/target/{name}"));
+		for (name, bytes) in [("x", "mine"), ("y", "peer"), ("u", "gone"), ("v", "away")] {
+			let (_, fh) = b.create(up.clone(), name, Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+			b.write(fh, 0, bytes.as_bytes()).unwrap();
+			b.release(fh);
+		}
+		// v1's move has x: v2's rename of y over it waits, so the move takes x off the disk, not y.
+		let (_, ino) = a.seal(&disk("x")).unwrap();
+		std::thread::scope(|s| {
+			let sealed = Sealed(&a, ino);
+			let over = s.spawn(|| b.rename((&up, "y"), (&up, "x"), Area::Cache, false, false).map(drop));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!over.is_finished());
+			a.moved_file_out(&disk("x"), ino).unwrap();
+			drop(sealed);
+			over.join().unwrap().unwrap();
+		});
+		assert_eq!(fs::read(disk("x")).unwrap(), b"peer");
+		// A removal or a rename of a file it has waits too, and finds it in the folder (stale).
+		let (_, u) = a.seal(&disk("u")).unwrap();
+		let (_, v) = a.seal(&disk("v")).unwrap();
+		std::thread::scope(|s| {
+			let sealed = (Sealed(&a, u), Sealed(&a, v));
+			let removed = s.spawn(|| b.unlink(&up, "u", Area::Cache).map(drop));
+			let renamed = s.spawn(|| b.rename((&up, "v"), (&up, "w"), Area::Cache, false, false).map(drop));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!removed.is_finished() && !renamed.is_finished());
+			a.moved_file_out(&disk("u"), u).unwrap();
+			a.moved_file_out(&disk("v"), v).unwrap();
+			drop(sealed);
+			assert_eq!(removed.join().unwrap(), Err(libc::ESTALE));
+			assert_eq!(renamed.join().unwrap(), Err(libc::ESTALE));
+		});
+		assert!(!disk("w").exists());
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
 	}
 
 	#[test]
@@ -1992,7 +2295,7 @@ mod tests {
 			let sealed = Sealed(&a, ino);
 			let opened = s.spawn(|| b.open_file(ino, libc::O_WRONLY).map(drop));
 			let emptied = s.spawn(|| b.open_file(ino, libc::O_WRONLY | libc::O_TRUNC).map(drop));
-			let truncated = s.spawn(|| b.setattr(ino, None, Some(0), (None, None)).map(drop));
+			let truncated = s.spawn(|| b.setattr(ino, None, None, Some(0), (None, None)).map(drop));
 			let made = s.spawn(|| b.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY | libc::O_TRUNC).map(drop));
 			std::thread::sleep(Duration::from_millis(300));
 			assert!([&opened, &emptied, &truncated, &made].iter().all(|t| !t.is_finished()));
@@ -2033,6 +2336,92 @@ mod tests {
 		a.unseal(sealed);
 		let (_, sealed) = b.seal(&disk("b")).unwrap();
 		b.unseal(sealed);
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn a_file_another_programs_cache_move_takes_between_its_open_and_its_lock_is_stale() {
+		let (a, b, base) = sharing("shared-park");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let disk = a.disk(Area::Cache, "code/o/n/worktrees/w/target/a");
+		let (attr, fh) = b.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		b.release(fh);
+		let (parked, stopped) = std::sync::mpsc::channel();
+		let (go, until) = std::sync::mpsc::channel();
+		*PARK.lock().unwrap() = Some((disk.clone(), parked, until));
+		std::thread::scope(|s| {
+			let opened = s.spawn(|| b.open_file(attr.ino.0, libc::O_WRONLY).map(drop));
+			stopped.recv().unwrap();
+			// v1's move seals it, writes it into the folder and takes it off the disk, all before v2's open locks it.
+			let (_, sealed) = a.seal(&disk).unwrap();
+			a.moved_file_out(&disk, sealed).unwrap();
+			a.unseal(sealed);
+			go.send(()).unwrap();
+			assert_eq!(opened.join().unwrap(), Err(libc::ESTALE));
+		});
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn a_change_through_a_handle_reaches_the_file_it_opened_not_one_another_program_renamed_over_it() {
+		let (a, b, base) = sharing("shared-setattr");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let disk = |name: &str| a.disk(Area::Cache, &format!("code/o/n/worktrees/w/target/{name}"));
+		let (x, fh) = a.create(up.clone(), "x", Area::Cache, 0o644, libc::O_RDWR).unwrap();
+		a.write(fh, 0, b"old").unwrap();
+		let (_, y) = b.create(up.clone(), "y", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		b.write(y, 0, b"peer").unwrap();
+		b.release(y);
+		b.rename((&up, "y"), (&up, "x"), Area::Cache, false, false).unwrap();
+		// v1's ftruncate: its own file, not v2's.
+		assert_eq!(a.setattr(x.ino.0, Some(fh), None, Some(0), (None, None)).map(|attr| attr.size), Ok(0));
+		assert_eq!(fs::read(disk("x")).unwrap(), b"peer");
+		// Without a handle (an fchmod): stale, and v2's file keeps its mode.
+		assert_eq!(a.setattr(x.ino.0, None, Some(0o600), None, (None, None)).map(drop), Err(libc::ESTALE));
+		assert_eq!(a.getattr(x.ino.0, None).map(drop), Err(libc::ESTALE));
+		assert_eq!(a.getattr(x.ino.0, Some(fh)).map(|attr| attr.size), Ok(0));
+		assert_eq!(fs::metadata(disk("x")).unwrap().mode() & 0o777, 0o644);
+		// A link renamed over it: what it names is never changed.
+		let victim = base.join("victim");
+		fs::write(&victim, "v").unwrap();
+		fs::set_permissions(&victim, fs::Permissions::from_mode(0o644)).unwrap();
+		let mtime = fs::metadata(&victim).unwrap().modified().unwrap();
+		let (z, zfh) = a.create(up.clone(), "z", Area::Cache, 0o644, libc::O_RDWR).unwrap();
+		b.symlink(up.clone(), "s", Area::Cache, &victim).unwrap();
+		b.rename((&up, "s"), (&up, "z"), Area::Cache, false, false).unwrap();
+		let epoch = Some(UNIX_EPOCH);
+		assert_eq!(a.setattr(z.ino.0, None, Some(0o666), None, (None, None)).map(drop), Err(libc::ESTALE));
+		assert_eq!(a.setattr(z.ino.0, None, None, Some(0), (None, None)).map(drop), Err(libc::ESTALE));
+		assert_eq!(a.setattr(z.ino.0, None, None, None, (epoch, epoch)).map(drop), Err(libc::ESTALE));
+		assert_eq!(a.readlink(z.ino.0), Err(libc::ESTALE));
+		a.setattr(z.ino.0, Some(zfh), None, Some(0), (None, None)).unwrap();
+		// Nor by a create at a name a link took meanwhile.
+		let made = a.create(up.clone(), "z", Area::Cache, 0o644, libc::O_WRONLY | libc::O_TRUNC);
+		assert_eq!(made.map(drop), Err(libc::ELOOP));
+		let meta = fs::metadata(&victim).unwrap();
+		assert_eq!((fs::read(&victim).unwrap(), meta.mode() & 0o777, meta.modified().unwrap()), (b"v".to_vec(), 0o644, mtime));
+		// A link's own times change, never what it names; it has no mode of its own.
+		let s = b.symlink(up.clone(), "t", Area::Cache, &victim).unwrap();
+		let before = Some(UNIX_EPOCH - Duration::from_millis(1_500));
+		let set = b.setattr(s.ino.0, None, None, None, (before, before)).unwrap();
+		assert_eq!(set.kind, FileType::Symlink);
+		let link = fs::symlink_metadata(disk("t")).unwrap();
+		assert_eq!((link.mtime(), link.mtime_nsec(), link.atime()), (-2, 500_000_000, -2));
+		assert_eq!(b.setattr(s.ino.0, None, Some(0o600), None, (None, None)).map(drop), Err(libc::EOPNOTSUPP));
+		assert_eq!(b.readlink(s.ino.0), Ok(victim.as_os_str().as_bytes().to_vec()));
+		assert_eq!(fs::metadata(&victim).unwrap().modified().unwrap(), mtime);
+		// Its own file, by name: each change made.
+		let (w, wfh) = b.create(up.clone(), "w", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		b.write(wfh, 0, b"abc").unwrap();
+		b.release(wfh);
+		let at = Some(UNIX_EPOCH + Duration::from_secs(1_000));
+		let set = b.setattr(w.ino.0, None, Some(0o600), Some(1), (at, at)).unwrap();
+		assert_eq!((set.perm, set.size, set.mtime), (0o600, 1, at.unwrap()));
+		assert_eq!(fs::read(disk("w")).unwrap(), b"a");
+		a.release(fh);
+		a.release(zfh);
 		drop((a, b));
 		fs::remove_dir_all(&base).unwrap();
 	}
