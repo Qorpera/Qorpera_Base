@@ -77,7 +77,7 @@ fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread:
 		4,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state, reads: None, local: None };
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state, reads: None, local: None, caches: None };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -220,7 +220,7 @@ fn a_refused_view_is_never_mounted() {
 		2,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None, reads: None, local: None };
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None, reads: None, local: None, caches: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),

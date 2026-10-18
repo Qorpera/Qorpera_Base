@@ -101,6 +101,34 @@ the folders below it, as git then walks the loose refs, which the node read the 
 create, the publish on its rename or removal) is the folder service's
 (`packages/object-gateway/src/folder-service/git.ts`).
 
+The machine's caches (`deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md`) live in `<local-dir>/caches`, or, given
+`--cache-dir <dir>`, in `<dir>/caches`, shared by every mount on the machine given that folder. Its starter makes the
+folder: an absolute path of at most 80 bytes, a folder (not a link) only the mounting account can use, neither inside
+the local folder nor holding it. The program never makes it; a writable mount given one it cannot use exits 1 with a
+line starting `qorpera-folder: FOLDER_CACHE_DIR_UNUSABLE: <dir>:`. Every mount sharing it runs as the same account.
+Each mount takes what it removes off the disk through its own `<dir>/gone/p-…` folder, which it holds locked; one that
+starts takes off those no mount holds. A mount sharing the folder keeps the caches of a folder its own view has not,
+as another view may have made that folder and not published it yet: they go when removing old caches finds the folder
+gone ("Removing old caches"). A cache move seals its file for every mount sharing it: each handle that changes a cache
+file's bytes holds a shared lock on it, which the seal takes exclusively, without waiting.
+
+Cache files have a kernel cache (`src/mount/kernel.rs`, the plan's "The kernel cache"): names, absent names and
+attributes for `--ttl-seconds` (a cache top's while the feed is up), and the pages of a read-only open of a file as
+this mount last opened it. A mount's own changes the kernel did not see raise its epoch. Every other mount on the
+cache folder listens on `<dir>/programs/<pid>.<nonce>`, and each change is told to all of them before its reply; a
+told mount drops the inode's attributes, raises its epoch for a name its kernel may hold, and answers, then drops the
+pages on another thread. A mount keeps a table of the names in local folders it handed its kernel (lookups found and
+absent, its own creates, renames and removals), each from before the disk read until 60 seconds past the time-out it
+handed; a cache top's name always raises the epoch. The table holds at most 100 000 names (about 4.3 MB); full, it
+lets go of the expired ones, or of all of them with an epoch. `QORPERA_FOLDER_TEST_NAMES=<n>` makes it smaller and
+`QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>` holds a lookup of that name for 300 ms after its disk read, in tests. The
+program uses the kernel cache only when the kernel granted `FUSE_AUTO_INVAL_DATA` and has the epoch
+notify (FUSE 7.44), on a writable mount whose cache folder changes a file's times at each write; otherwise, and for
+good after a notify fails, a told change comes late or a mount no longer hears the others, it runs without (zero
+time-outs for cache tops, and for every cache name on a shared cache folder), and drops all it handed the kernel. Its
+log says `qorpera-folder: kernel cache on` or `kernel cache off: <why>`. `QORPERA_FOLDER_TEST_KERNEL_OFF=<why>` turns
+it off in tests. A mapping in another mount sees a change shortly after it (the page drop), not at once.
+
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
 `node scripts/build-folder-program.mjs --out <file>`. Build output never goes in this folder (`CARGO_TARGET_DIR`).

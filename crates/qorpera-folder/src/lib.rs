@@ -13,6 +13,7 @@ pub mod link;
 pub mod local;
 pub mod lxd;
 pub mod mount;
+pub mod peers;
 pub mod proto;
 pub mod reads;
 pub mod relay;
