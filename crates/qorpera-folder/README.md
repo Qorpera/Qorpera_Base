@@ -101,6 +101,17 @@ the folders below it, as git then walks the loose refs, which the node read the 
 create, the publish on its rename or removal) is the folder service's
 (`packages/object-gateway/src/folder-service/git.ts`).
 
+The machine's caches (`deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md`) live in `<local-dir>/caches`, or, given
+`--cache-dir <dir>`, in `<dir>/caches`, shared by every mount on the machine given that folder. Its starter makes the
+folder: an absolute path of at most 80 bytes, a folder (not a link) only the mounting account can use, neither inside
+the local folder nor holding it. The program never makes it; a writable mount given one it cannot use exits 1 with a
+line starting `qorpera-folder: FOLDER_CACHE_DIR_UNUSABLE: <dir>:`. Every mount sharing it runs as the same account. Each mount takes what it removes off the disk
+through its own `<dir>/gone/p-…` folder, which it holds locked; one that starts takes off those no mount holds. A mount
+sharing the folder keeps the caches of a folder its own view has not, as another view may have made that folder and
+not published it yet: they go when removing old caches finds the folder gone ("Removing old caches"). A cache move
+seals its file for every mount sharing it: each handle that changes a cache file's bytes holds a shared lock on it,
+which the seal takes exclusively, without waiting.
+
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
 `node scripts/build-folder-program.mjs --out <file>`. Build output never goes in this folder (`CARGO_TARGET_DIR`).

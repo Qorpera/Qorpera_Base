@@ -9,15 +9,16 @@
 //! - **The machine's caches** (`cache.rs`): a new folder an install or a build makes under a cache name, where the
 //!   node has nothing at that path, and what is in it. Whatever the node has at a path wins.
 //!
-//! They live in the local folder (`--local-dir`, by default `local/` in the mount's state folder). Git files are at
-//! `git/<path>`, by their paths in the folder. Caches are kept by the node's folder they are in: the top entries (a
-//! cache folder or file whose folder is the node's) of the folder `a/b` are in `caches/d/a/d/b/t/`, so a cache is told
-//! from the caches of a folder below its own, and the caches of a folder and of all below it move or go together with
-//! it. A folder of the node's whose caches are moving into the folder (`mount/on_disk.rs`) is marked (`w`, beside its
-//! `t/`) until all of them have, so the move goes on there under whatever name a rename gives it. A local folder that
-//! a program started for another view finds is that view's: its git files go (they are seeded again), its caches stay
-//! (they can be rebuilt at any time, and are only ever the machine's own). What goes is moved to `gone/` first and
-//! taken off the disk there apart from the requests.
+//! They live in the local folder (`--local-dir`, by default `local/` in the mount's state folder), the caches in the
+//! cache folder when there is one (`--cache-dir`, which the programs serving one owner's mounts on the machine share).
+//! Git files are at `git/<path>`, by their paths in the folder. Caches are kept by the node's folder they are in: the
+//! top entries (a cache folder or file whose folder is the node's) of the folder `a/b` are in `caches/d/a/d/b/t/`, so a
+//! cache is told from the caches of a folder below its own, and the caches of a folder and of all below it move or go
+//! together with it. A folder of the node's whose caches are moving into the folder (`mount/on_disk.rs`) is marked
+//! (`w`, beside its `t/`) until all of them have, so the move goes on there under whatever name a rename gives it. A
+//! local folder that a program started for another view finds is that view's: its git files go (they are seeded again),
+//! its caches stay (they can be rebuilt at any time, and are only ever the machine's own). What goes is moved to the
+//! program's own folder in `gone/` first and taken off the disk there apart from the requests.
 //!
 //! The kernel knows a local file by its inode on the disk with the top bit set (`LOCAL`); the node's inodes never have
 //! it. So does a handle open on one.
@@ -45,6 +46,16 @@ pub fn is_local(ino: u64) -> bool {
 	ino & LOCAL != 0
 }
 
+/// A local file as an open found it (`Local::stamp`). On a disk with fine-grained times (`Local::probe`), the same stamp
+/// at a later open means nothing wrote the file in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+	mtime: (i64, i64),
+	ctime: (i64, i64),
+	size: u64,
+	generation: u64,
+}
+
 /// Which local files a path is among.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Area {
@@ -63,6 +74,13 @@ impl Area {
 
 /// Where what goes from the local folder waits to be taken off the disk.
 const GONE: &str = "gone";
+
+/// What a `--cache-dir` the program cannot use starts its error with, for its starter to tell it from another failure.
+pub const UNUSABLE: &str = "FOLDER_CACHE_DIR_UNUSABLE";
+
+/// The longest `--cache-dir`: the programs' sockets in it (`<dir>/programs/<name>`, `mount/peers.rs`) must fit a
+/// socket's 108 bytes.
+pub const CACHE_DIR_MAX: usize = 80;
 
 /// The mark of a folder whose caches are moving into the folder (`Local::whole`).
 const WHOLE: &str = "w";
@@ -103,7 +121,8 @@ pub fn seeded_names(seed: &str) -> &'static [&'static str] {
 
 type Names = HashMap<u64, Vec<(Up, String, Area)>>;
 
-/// A local file the mount has open: the file, its inode, and whether the handle writes to it (`Local::seal`).
+/// A local file the mount has open: the file, its inode, and whether the handle changes its bytes (`Local::seal`),
+/// which then holds the file's lock (`writer`).
 struct Handle {
 	file: File,
 	ino: u64,
@@ -114,6 +133,35 @@ struct Handle {
 /// the folder now, so the name or inode it was asked by is stale, for the kernel to look up again (ESTALE).
 fn stale(waited: bool) -> impl Fn(i32) -> i32 {
 	move |e| if waited && e == libc::ENOENT { libc::ESTALE } else { e }
+}
+
+/// Whether an open with `flags` changes the file's bytes: one for writing, or a truncate.
+fn changes_bytes(flags: i32) -> bool {
+	flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
+}
+
+/// A change to a local file's bytes not made (`Local::changing`): failed, or the file, opened, that a cache move of
+/// another program sharing these caches has sealed, made again once that move is done with it.
+enum Change {
+	Failed(i32),
+	Sealed(File),
+}
+
+impl From<i32> for Change {
+	fn from(e: i32) -> Self {
+		Change::Failed(e)
+	}
+}
+
+/// `file`, a local file opened to change its bytes, with the shared lock a cache move's seal takes exclusively
+/// (`Local::seal`), held for as long as the file is: `Sealed` while a move has it, of this program or another sharing
+/// these caches.
+fn writer(file: File) -> Result<File, Change> {
+	match crate::viewfile::flock(&file, libc::LOCK_SH | libc::LOCK_NB) {
+		Ok(()) => Ok(file),
+		Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(Change::Sealed(file)),
+		Err(e) => Err(Change::Failed(errno(e))),
+	}
 }
 
 /// `ino` is known by `name` in `up`, its latest name.
@@ -186,31 +234,93 @@ fn under(path: &str, dir: &str) -> bool {
 	path == dir || dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Moves `disk` (a file or a folder) into `gone/` and takes it off the disk there, apart from the request.
-fn trash(root: &Path, disk: &Path) -> io::Result<()> {
+/// Moves `disk` (a file or a folder) into `gone` (this program's, `Gone`) and takes it off the disk there, apart from
+/// the request.
+fn trash(gone: &Path, disk: &Path) -> io::Result<()> {
 	static NEXT: AtomicU64 = AtomicU64::new(0);
 	let started = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-	let to = root.join(GONE).join(format!("{started}-{}", NEXT.fetch_add(1, Ordering::SeqCst)));
+	let to = gone.join(format!("{started}-{}", NEXT.fetch_add(1, Ordering::SeqCst)));
 	fs::rename(disk, &to)?;
-	take_off(to);
+	take_off(to, None);
 	Ok(())
 }
 
-fn take_off(disk: PathBuf) {
+/// Takes `disk` off the disk on a thread of its own, holding `held` (its lock, `Gone::open`) until it is gone.
+fn take_off(disk: PathBuf, held: Option<File>) {
 	std::thread::spawn(move || {
 		let removed = match fs::symlink_metadata(&disk) {
 			Ok(m) if m.is_dir() => fs::remove_dir_all(&disk),
 			Ok(_) => fs::remove_file(&disk),
 			Err(e) => Err(e),
 		};
-		if let Err(e) = removed {
-			eprintln!("qorpera-folder: {} could not be taken off the disk ({e})", disk.display());
+		match removed {
+			Err(e) if e.kind() != io::ErrorKind::NotFound => {
+				eprintln!("qorpera-folder: {} could not be taken off the disk ({e})", disk.display())
+			}
+			_ => {}
 		}
+		drop(held);
 	});
+}
+
+/// This program's own folder in a `gone/`, locked while it runs: what goes waits in it to be taken off the disk, and so
+/// does a file being put in place (`Local::place`). The caches' `gone/` is shared by every program given the same
+/// `--cache-dir`, so a program starting takes off only what no running program holds.
+struct Gone {
+	dir: PathBuf,
+	_held: File,
+}
+
+impl Gone {
+	/// Takes off what programs no longer running left in `gone`, and makes this program's own folder there.
+	fn open(gone: &Path) -> io::Result<Gone> {
+		fs::DirBuilder::new().recursive(true).mode(0o700).create(gone)?;
+		for left in fs::read_dir(gone)? {
+			let path = left?.path();
+			match hold(&path) {
+				// Left by a program that stopped.
+				Ok(lock) => take_off(path, Some(lock)),
+				// Not a folder: left by a program from before these folders.
+				Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)) => take_off(path, None),
+				// A running program's own, or one another program is taking off.
+				Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::NotFound) => {}
+				Err(e) => eprintln!("qorpera-folder: {} is left where it is ({e})", path.display()),
+			}
+		}
+		static NEXT: AtomicU64 = AtomicU64::new(0);
+		for _ in 0..100 {
+			let started = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+			let dir = gone.join(format!("p-{started}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+			fs::DirBuilder::new().mode(0o700).create(&dir)?;
+			// Another program starting may take it for one left before this one holds it: then another.
+			let lock = match hold(&dir) {
+				Ok(lock) => lock,
+				Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::NotFound) => continue,
+				Err(e) => return Err(e),
+			};
+			let (now, made) = (fs::symlink_metadata(&dir), lock.metadata()?);
+			if now.is_ok_and(|m| m.dev() == made.dev() && m.ino() == made.ino()) {
+				return Ok(Gone { dir, _held: lock });
+			}
+		}
+		Err(io::Error::other(format!("no folder of its own in {}", gone.display())))
+	}
+}
+
+/// The folder `path` (never through a link), locked exclusively without waiting: `WouldBlock` while a program holds it.
+fn hold(path: &Path) -> io::Result<File> {
+	let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
+	crate::viewfile::flock(&file, libc::LOCK_EX | libc::LOCK_NB)?;
+	Ok(file)
 }
 
 pub struct Local {
 	root: PathBuf,
+	/// Where the caches are: `--cache-dir`, which several programs can share, or else `root`.
+	caches: PathBuf,
+	/// This program's own folders in `root`'s `gone/` and, with a cache folder of its own, in the caches' (`Gone`).
+	gone: Gone,
+	caches_gone: Option<Gone>,
 	/// By local inode: the names it is known by (the folder it is in, its name, its area), the latest last. A file with
 	/// more than one name (a hard link) is found by the latest, and by one left when that one goes.
 	names: Mutex<Names>,
@@ -222,8 +332,9 @@ pub struct Local {
 	handles: Mutex<HashMap<u64, Handle>>,
 	released: Condvar,
 	next_fh: AtomicU64,
-	/// The local files a cache move is writing into the folder, by inode (`seal`), and the wait for one to be done.
-	sealed: Mutex<HashSet<u64>>,
+	/// The local files a cache move is writing into the folder, by inode, each with the file that holds its lock for
+	/// other programs (`seal`), and the wait for one to be done.
+	sealed: Mutex<HashMap<u64, File>>,
 	lifted: Condvar,
 	pub cache: Mutex<CacheList>,
 	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same; with the writes of a
@@ -241,10 +352,29 @@ pub struct Local {
 }
 
 impl Local {
-	/// The local folder `root` (made 0700 if missing) for view `view`, its files owned by `owner` in the mount; `marker`
-	/// is there while a cache folder git came to track has not moved into the folder (`cache.rs`).
-	pub fn open(root: &Path, view: &str, owner: (u32, u32), marker: Option<PathBuf>) -> io::Result<Local> {
+	/// The local folder `root` (made 0700 if missing) for view `view`, with the caches in `caches` (a folder its starter
+	/// made, `UNUSABLE` otherwise; none keeps them in `root`), its files owned by `owner` in the mount; `marker` is there
+	/// while a cache folder git came to track has not moved into the folder (`cache.rs`).
+	pub fn open(root: &Path, caches: Option<&Path>, view: &str, owner: (u32, u32), marker: Option<PathBuf>) -> io::Result<Local> {
 		fs::DirBuilder::new().recursive(true).mode(0o700).create(root)?;
+		let caches = match caches {
+			Some(dir) => {
+				let unusable = |why: &str| io::Error::other(format!("{UNUSABLE}: {}: {why}", dir.display()));
+				let meta = fs::symlink_metadata(dir).map_err(|e| unusable(&e.to_string()))?;
+				if !dir.is_absolute() || dir.as_os_str().len() > CACHE_DIR_MAX {
+					return Err(unusable(&format!("must be an absolute path of at most {CACHE_DIR_MAX} bytes")));
+				}
+				if !meta.is_dir() || !crate::viewfile::private(&meta) {
+					return Err(unusable("must be a folder (not a link) only this account can use"));
+				}
+				let (a, b) = (fs::canonicalize(root)?, fs::canonicalize(dir)?);
+				if a != b && (a.starts_with(&b) || b.starts_with(&a)) {
+					return Err(unusable("must not be inside the local folder, nor hold it"));
+				}
+				(a != b).then_some(b)
+			}
+			None => None,
+		};
 		let mark = root.join("view");
 		if fs::read_to_string(&mark).ok().as_deref() != Some(view) {
 			// Another view's: its git files are not this session's.
@@ -259,16 +389,21 @@ impl Local {
 			let mut file = OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&mark)?;
 			file.write_all(view.as_bytes())?;
 		}
-		for dir in [Area::Git.dir(), Area::Cache.dir(), GONE] {
-			fs::DirBuilder::new().recursive(true).mode(0o700).create(root.join(dir))?;
+		// What an earlier program left to take off the disk goes (`Gone`); so do the caches of 5d's program, kept by their
+		// paths, and, given a cache folder, those an earlier program kept here.
+		let gone = Gone::open(&root.join(GONE))?;
+		let mut old = vec![root.join("cache")];
+		old.extend(caches.as_ref().map(|_| root.join(Area::Cache.dir())));
+		for old in old {
+			match trash(&gone.dir, &old) {
+				Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+				_ => {}
+			}
 		}
-		// What an earlier program left to take off the disk, and the caches of 5d's program, kept by their paths.
-		for left in fs::read_dir(root.join(GONE))? {
-			take_off(left?.path());
-		}
-		match trash(root, &root.join("cache")) {
-			Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-			_ => {}
+		let caches_gone = caches.as_ref().map(|dir| Gone::open(&dir.join(GONE))).transpose()?;
+		let caches = caches.unwrap_or_else(|| root.to_path_buf());
+		for dir in [root.join(Area::Git.dir()), caches.join(Area::Cache.dir())] {
+			fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
 		}
 		let seeded = match fs::read_to_string(root.join("seeded")) {
 			Ok(text) => text.lines().map(str::to_string).collect(),
@@ -277,13 +412,16 @@ impl Local {
 		};
 		Ok(Local {
 			root: root.to_path_buf(),
+			caches,
+			gone,
+			caches_gone,
 			names: Mutex::new(HashMap::new()),
 			seeded: Mutex::new(seeded),
 			seeding: Mutex::new(()),
 			handles: Mutex::new(HashMap::new()),
 			released: Condvar::new(),
 			next_fh: AtomicU64::new(1),
-			sealed: Mutex::new(HashSet::new()),
+			sealed: Mutex::new(HashMap::new()),
 			lifted: Condvar::new(),
 			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
 			moving: Mutex::new(HashMap::new()),
@@ -291,6 +429,14 @@ impl Local {
 			ignores: Mutex::new(HashMap::new()),
 			owner,
 		})
+	}
+
+	/// This program's own folder in the `gone/` on the disk of `area`'s files.
+	fn gone(&self, area: Area) -> &Path {
+		match (area, &self.caches_gone) {
+			(Area::Cache, Some(gone)) => &gone.dir,
+			_ => &self.gone.dir,
+		}
 	}
 
 	/// Where the local file at the folder's `path` is on the disk: a git file, or a cache's top entry.
@@ -310,7 +456,7 @@ impl Local {
 	/// Where the caches of the node's folder `dir` are on the disk: its top entries in `t/`, the caches of each folder
 	/// in it in `d/<name>/`.
 	fn mirror(&self, dir: &str) -> PathBuf {
-		let mut disk = self.root.join(Area::Cache.dir());
+		let mut disk = self.caches.join(Area::Cache.dir());
 		for name in dir.split('/').filter(|n| !n.is_empty()) {
 			disk.push("d");
 			disk.push(name);
@@ -378,7 +524,7 @@ impl Local {
 	/// The node has an entry where `dir` has the cache `name` (rule 1): the cache goes.
 	pub fn gone_top(&self, dir: &str, name: &str) {
 		let mut names = self.names.lock().unwrap();
-		match trash(&self.root, &self.disk(Area::Cache, &crate::proto::join(dir, name))) {
+		match trash(self.gone(Area::Cache), &self.disk(Area::Cache, &crate::proto::join(dir, name))) {
 			Ok(()) => {}
 			Err(e) if e.kind() == io::ErrorKind::NotFound => return,
 			Err(e) => return eprintln!("qorpera-folder: the cache {name} in {dir:?} could not go ({e})"),
@@ -387,10 +533,69 @@ impl Local {
 		forget_all(&mut names, |u, n, area| area == Area::Cache && *u == up && n == name);
 	}
 
-	/// The node's folder `path` is gone from the view: its caches, and those of every folder below it, go.
+	/// Whether other programs may serve these caches too: they are in a cache folder (`--cache-dir`). A folder one view
+	/// has not may then be another's (made there and not published yet), so no program drops caches because its own
+	/// view has no folder for them (`drop_mirror`).
+	pub fn shared(&self) -> bool {
+		self.caches_gone.is_some()
+	}
+
+	/// The folder the programs sharing the caches listen in (`crate::peers`), when they are shared.
+	pub fn programs(&self) -> Option<PathBuf> {
+		self.shared().then(|| self.caches.join("programs"))
+	}
+
+	/// Whether the caches' disk gives a file a new mtime and ctime at each write, however soon after a stat: the kernel
+	/// cache's open-time check (`stamp`) needs that. Fifty rounds of a stat, a write of the same size and a stat, on a
+	/// file in this program's own `gone/` folder there.
+	pub fn probe(&self) -> io::Result<bool> {
+		use std::os::unix::fs::FileExt;
+		let path = self.gone(Area::Cache).join(format!("probe-{}", std::process::id()));
+		let file = OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path);
+		let _ = fs::remove_file(&path);
+		let file = file?;
+		file.write_all_at(b"0", 0)?;
+		let mut before = file.metadata()?;
+		for round in 0..50u8 {
+			file.write_all_at(&[b'0' + round % 10], 0)?;
+			let after = file.metadata()?;
+			let times = |m: &fs::Metadata| ((m.mtime(), m.mtime_nsec()), (m.ctime(), m.ctime_nsec()));
+			let (was, now) = (times(&before), times(&after));
+			if now.0 == was.0 || now.1 == was.1 {
+				return Ok(false);
+			}
+			before = after;
+		}
+		Ok(true)
+	}
+
+	/// What the open-time check compares for the open handle `fh`: the file's times and size, and its generation, which a
+	/// disk inode number reused after an unlink does not keep (0 where the disk has none).
+	pub fn stamp(&self, fh: u64) -> Result<Stamp, i32> {
+		const FS_IOC_GETVERSION: libc::c_ulong = 0x8008_7601;
+		let handles = self.handles.lock().unwrap();
+		let file = &handles.get(&fh).ok_or(libc::EBADF)?.file;
+		let meta = file.metadata().map_err(errno)?;
+		let mut generation: libc::c_long = 0;
+		// SAFETY: the ioctl writes at most a long to `generation`; on a disk without generations it fails and writes nothing.
+		unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(file), FS_IOC_GETVERSION as _, &mut generation) };
+		Ok(Stamp {
+			mtime: (meta.mtime(), meta.mtime_nsec()),
+			ctime: (meta.ctime(), meta.ctime_nsec()),
+			size: meta.size(),
+			generation: generation as u64,
+		})
+	}
+
+	/// The node's folder `path` is gone from the view: its caches, and those of every folder below it, go. Not those of
+	/// a cache folder other programs share (`shared`): they stay until removing old caches finds the folder gone from
+	/// the folder (RUNTIME-FOLDER-MACHINE-CACHES.md "Removing old caches").
 	pub fn drop_mirror(&self, path: &str) {
+		if self.shared() {
+			return;
+		}
 		let mut names = self.names.lock().unwrap();
-		match trash(&self.root, &self.mirror(path)) {
+		match trash(self.gone(Area::Cache), &self.mirror(path)) {
 			Ok(()) => {}
 			Err(e) if e.kind() == io::ErrorKind::NotFound => return,
 			Err(e) => return eprintln!("qorpera-folder: the caches in {path:?} could not go ({e})"),
@@ -399,23 +604,23 @@ impl Local {
 	}
 
 	/// The node took the rename of its folder `from` to `to`: the caches in it and below move with it. Those of a folder
-	/// it replaced at `to` go; in a repository's git folder, where no cache is shown, they go too.
+	/// it replaced at `to` go; in a repository's git folder, where no cache is shown, they go too. With none at `from`,
+	/// nothing changes: those at `to` may be another program's (`shared`), or ones another program's rename of the same
+	/// folder moved there already.
 	pub fn renamed(&self, from: &str, to: &str) {
 		let (source, target) = (self.mirror(from), self.mirror(to));
 		let there = |p: &Path| fs::symlink_metadata(p).is_ok();
-		if from == to || !there(&source) && !there(&target) {
+		if from == to || !there(&source) {
 			return;
 		}
 		let mut names = self.names.lock().unwrap();
-		match trash(&self.root, &target) {
+		match trash(self.gone(Area::Cache), &target) {
 			Err(e) if e.kind() != io::ErrorKind::NotFound => eprintln!("qorpera-folder: the caches in {to:?} could not go ({e})"),
 			_ => {}
 		}
 		let into_git = matches!(git::place(to), git::Place::Git { .. });
-		let moved = if !there(&source) {
-			Ok(())
-		} else if into_git {
-			trash(&self.root, &source)
+		let moved = if into_git {
+			trash(self.gone(Area::Cache), &source)
 		} else {
 			fs::DirBuilder::new()
 				.recursive(true)
@@ -486,7 +691,7 @@ impl Local {
 		}
 		let up = Up::Mount(dir.to_string());
 		if joined.is_some() {
-			trash(&self.root, &top)?;
+			trash(self.gone(Area::Cache), &top)?;
 			forget_all(&mut names, |u, n, area| area == Area::Cache && *u == up && n == name);
 		} else {
 			forget(&mut names, ino, &up, name);
@@ -658,23 +863,32 @@ impl Local {
 	/// Creates a file and opens it: its attributes and the handle.
 	pub fn create(&self, up: Up, name: &str, area: Area, mode: u32, flags: i32) -> Result<(FileAttr, u64), i32> {
 		self.make_room(&up, area)?;
-		let mut options = open_options(flags);
+		// Truncated once it is locked (`writer`), not before.
+		let mut options = open_options(flags & !libc::O_TRUNC);
 		options.create(true).mode(mode & 0o7777);
 		if flags & libc::O_EXCL != 0 {
 			options.create_new(true);
 		}
-		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, &up, name, area));
-		if waited && self.ino_under(&names, &up, name, area).is_none() {
-			// The file of that name a cache move had is in the folder now, not made again here.
-			return Err(libc::ESTALE);
-		}
-		let (disk, area) = self.disk_under(&names, &up, name, area)?;
-		let file = options.open(&disk).map_err(errno)?;
-		let meta = file.metadata().map_err(errno)?;
-		known(&mut names, meta.ino() | LOCAL, up, name, area);
-		let fh = self.hold(file, meta.ino() | LOCAL, flags);
-		drop(names);
-		Ok((self.attr(&meta), fh))
+		self.changing(
+			|names| self.ino_under(names, &up, name, area),
+			|mut names, waited| {
+				if waited && self.ino_under(&names, &up, name, area).is_none() {
+					// The file of that name a cache move had is in the folder now, not made again here.
+					return Err(Change::Failed(libc::ESTALE));
+				}
+				let (disk, area) = self.disk_under(&names, &up, name, area)?;
+				let file = options.open(&disk).map_err(errno)?;
+				let file = if changes_bytes(flags) { writer(file)? } else { file };
+				if flags & libc::O_TRUNC != 0 {
+					file.set_len(0).map_err(errno)?;
+				}
+				let meta = file.metadata().map_err(errno)?;
+				known(&mut names, meta.ino() | LOCAL, up.clone(), name, area);
+				let fh = self.hold(file, meta.ino() | LOCAL, flags);
+				drop(names);
+				Ok((self.attr(&meta), fh))
+			},
+		)
 	}
 
 	pub fn mkdir(&self, up: Up, name: &str, area: Area, mode: u32) -> Result<FileAttr, i32> {
@@ -712,22 +926,24 @@ impl Local {
 		self.known_at(&mut names, up, name, area, &to)
 	}
 
-	pub fn unlink(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
+	/// Removes the file `name` in `up`: its inode.
+	pub fn unlink(&self, up: &Up, name: &str, area: Area) -> Result<u64, i32> {
 		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, up, name, area));
 		let (disk, _) = self.disk_under(&names, up, name, area).map_err(stale(waited))?;
 		let ino = fs::symlink_metadata(&disk).map_err(errno).map_err(stale(waited))?.ino() | LOCAL;
 		fs::remove_file(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
-		Ok(())
+		Ok(ino)
 	}
 
-	pub fn rmdir(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
+	/// Removes the empty folder `name` in `up`: its inode.
+	pub fn rmdir(&self, up: &Up, name: &str, area: Area) -> Result<u64, i32> {
 		let mut names = self.names.lock().unwrap();
 		let (disk, _) = self.disk_under(&names, up, name, area)?;
 		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
 		fs::remove_dir(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
-		Ok(())
+		Ok(ino)
 	}
 
 	/// Takes the file, or the empty folder, at `disk` off the disk once a cache move has it in the folder
@@ -770,14 +986,20 @@ impl Local {
 	/// opened for reading, and its inode. Until `unseal`, an open of it for writing, a change of its attributes and one
 	/// of a name it has wait (`unsealed`), so what the move reads is all that was written to it, and nothing is written
 	/// to it once the move takes it off the disk. One the mount has open for writing, or another move has sealed, is not
-	/// sealed (`EBUSY`): the move is made again until its writers are done.
+	/// sealed (`EBUSY`): the move is made again until its writers are done. So for the other programs sharing these
+	/// caches (`--cache-dir`), whose handles that change a file's bytes hold a shared lock on it (`writer`): the seal
+	/// takes it exclusively, without waiting, and keeps it until `unseal`, and their changes to the file's bytes wait for
+	/// it. Not their renames, removals and changes of its mode or times, which this mount's wait for: one made while the
+	/// move is leaves the file in the folder and under its new name on the disk too (`moved_file_out`), in the folder
+	/// though it was removed, or in the folder with the mode it had when sealed. No byte written is lost.
 	pub fn seal(&self, disk: &Path) -> Result<(File, u64), i32> {
 		let names = self.names.lock().unwrap();
 		self.seal_at(&names, disk)?.map_err(|_| libc::EBUSY)
 	}
 
 	/// `seal` for the cache file `name` in `up` (`mount/on_disk.rs`), and where it is on the disk. One the mount has open
-	/// for writing is waited for up to `wait`, as a program's close is done before the kernel lets go of its handle.
+	/// for writing is waited for up to `wait`, as a program's close is done before the kernel lets go of its handle; one
+	/// another program has open for writing is not (`EBUSY` at once).
 	pub fn seal_name(&self, up: &Up, name: &str, area: Area, wait: Duration) -> Result<(File, u64, PathBuf), i32> {
 		let until = Instant::now() + wait;
 		loop {
@@ -805,7 +1027,7 @@ impl Local {
 		let file = OpenOptions::new().read(true).custom_flags(flags).open(disk).map_err(errno)?;
 		let meta = file.metadata().map_err(errno)?;
 		let ino = meta.ino() | LOCAL;
-		if !meta.is_file() || self.sealed.lock().unwrap().contains(&ino) {
+		if !meta.is_file() || self.sealed.lock().unwrap().contains_key(&ino) {
 			return Err(libc::EBUSY);
 		}
 		let handles = self.handles.lock().unwrap();
@@ -813,13 +1035,21 @@ impl Local {
 			return Ok(Err(handles));
 		}
 		drop(handles);
-		self.sealed.lock().unwrap().insert(ino);
+		// Nor one another program has open to change it (`writer`), or has sealed.
+		match crate::viewfile::flock(&file, libc::LOCK_EX | libc::LOCK_NB) {
+			Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Err(libc::EBUSY),
+			locked => locked.map_err(errno)?,
+		}
+		self.sealed.lock().unwrap().insert(ino, file.try_clone().map_err(errno)?);
 		Ok(Ok((file, ino)))
 	}
 
-	/// The cache move is done with the local file `ino` (`seal`).
+	/// The cache move is done with the local file `ino` (`seal`): its lock goes too, though the move may hold the file
+	/// still.
 	pub fn unseal(&self, ino: u64) {
-		self.sealed.lock().unwrap().remove(&ino);
+		if let Some(file) = self.sealed.lock().unwrap().remove(&ino) {
+			let _ = crate::viewfile::flock(&file, libc::LOCK_UN);
+		}
 		self.lifted.notify_all();
 	}
 
@@ -831,15 +1061,37 @@ impl Local {
 			let names = self.names.lock().unwrap();
 			let Some(ino) = changed(&names) else { return (names, waited) };
 			let mut sealed = self.sealed.lock().unwrap();
-			if !sealed.contains(&ino) {
+			if !sealed.contains_key(&ino) {
 				drop(sealed);
 				return (names, waited);
 			}
 			drop(names);
-			while sealed.contains(&ino) {
+			while sealed.contains_key(&ino) {
 				sealed = self.lifted.wait(sealed).unwrap();
 			}
 			waited = true;
+		}
+	}
+
+	/// `unsealed`, and `change` made with the names it gives and whether it waited: made again, with the names let go of
+	/// meanwhile, once the cache move of another program sharing these caches that has sealed the file `change` opened
+	/// (`Change::Sealed`) lets go of its lock (`unseal`), or that program ends.
+	fn changing<'a, T>(
+		&'a self,
+		changed: impl Fn(&Names) -> Option<u64>,
+		change: impl Fn(MutexGuard<'a, Names>, bool) -> Result<T, Change>,
+	) -> Result<T, i32> {
+		let mut waited = false;
+		loop {
+			let (names, unsealed) = self.unsealed(&changed);
+			match change(names, waited || unsealed) {
+				Ok(done) => return Ok(done),
+				Err(Change::Failed(e)) => return Err(e),
+				Err(Change::Sealed(file)) => {
+					crate::viewfile::flock(&file, libc::LOCK_SH).map_err(errno)?;
+					waited = true;
+				}
+			}
 		}
 	}
 
@@ -849,7 +1101,8 @@ impl Local {
 		fs::symlink_metadata(disk).ok().map(|m| m.ino() | LOCAL)
 	}
 
-	/// Renames within one area; `exchange` swaps the two (RENAME_EXCHANGE), `no_replace` refuses an existing target.
+	/// Renames within one area; `exchange` swaps the two (RENAME_EXCHANGE), `no_replace` refuses an existing target. The
+	/// inodes moved and replaced.
 	pub fn rename(
 		&self,
 		from: (&Up, &str),
@@ -857,7 +1110,7 @@ impl Local {
 		area: Area,
 		no_replace: bool,
 		exchange: bool,
-	) -> Result<(), i32> {
+	) -> Result<(Option<u64>, Option<u64>), i32> {
 		// A file a cache move has, renamed once it is in the folder; one that takes its name meanwhile is moved again
 		// (`moved_file_out`).
 		let (mut names, waited) = self.unsealed(|names| self.ino_under(names, from.0, from.1, area));
@@ -879,7 +1132,7 @@ impl Local {
 		renameat2(&source, &target, flags).map_err(stale(waited))?;
 		if moved.is_some() && moved == replaced {
 			// Two names of one file: the rename left both.
-			return Ok(());
+			return Ok((moved, replaced));
 		}
 		if let Some(ino) = replaced {
 			forget(&mut names, ino, to.0, to.1);
@@ -891,10 +1144,10 @@ impl Local {
 		if let (true, Some(ino)) = (exchange, replaced) {
 			known(&mut names, ino, from.0.clone(), from.1, area);
 		}
-		Ok(())
+		Ok((moved, replaced))
 	}
 
-	/// Changes a local inode's mode, size or times.
+	/// Changes a local inode's mode, size or times; a size once the file is locked (`writer`), before anything changes.
 	pub fn setattr(
 		&self,
 		ino: u64,
@@ -902,55 +1155,71 @@ impl Local {
 		size: Option<u64>,
 		times: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
 	) -> Result<FileAttr, i32> {
-		let (names, waited) = self.unsealed(|_| Some(ino));
-		let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
-		if let Some(mode) = mode {
-			fs::set_permissions(&disk, fs::Permissions::from_mode(mode & 0o7777)).map_err(errno)?;
-		}
-		if let Some(size) = size {
-			OpenOptions::new().write(true).open(&disk).and_then(|f| f.set_len(size)).map_err(errno)?;
-		}
-		if times.0.is_some() || times.1.is_some() {
-			let mut t = fs::FileTimes::new();
-			if let Some(a) = times.0 {
-				t = t.set_accessed(a);
-			}
-			if let Some(m) = times.1 {
-				t = t.set_modified(m);
-			}
-			// A folder or a file alike: opened for reading only, as utimensat would need no more.
-			File::open(&disk).and_then(|f| f.set_times(t)).map_err(errno)?;
-		}
-		drop(names);
+		self.changing(
+			|_| Some(ino),
+			|names, waited| {
+				let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
+				let truncate = match size {
+					Some(size) => {
+						let file = OpenOptions::new().write(true).open(&disk).map_err(errno).map_err(stale(waited))?;
+						Some((writer(file)?, size))
+					}
+					None => None,
+				};
+				if let Some(mode) = mode {
+					fs::set_permissions(&disk, fs::Permissions::from_mode(mode & 0o7777)).map_err(errno)?;
+				}
+				if let Some((file, size)) = truncate {
+					file.set_len(size).map_err(errno)?;
+				}
+				if times.0.is_some() || times.1.is_some() {
+					let mut t = fs::FileTimes::new();
+					if let Some(a) = times.0 {
+						t = t.set_accessed(a);
+					}
+					if let Some(m) = times.1 {
+						t = t.set_modified(m);
+					}
+					// A folder or a file alike: opened for reading only, as utimensat would need no more.
+					File::open(&disk).and_then(|f| f.set_times(t)).map_err(errno)?;
+				}
+				drop(names);
+				Ok(())
+			},
+		)?;
 		self.getattr(ino)
 	}
 
 	/// Opens a local file: the handle. It is found, opened and kept with the names held (`disk_at`, `hold`), once no
-	/// cache move has it sealed where the open changes it (`unsealed`), and what was opened is checked to be `ino` before
-	/// a truncate touches it.
+	/// cache move has it sealed where the open changes it (`unsealed`, `writer`), and what was opened is checked to be
+	/// `ino` before a truncate touches it.
 	pub fn open_file(&self, ino: u64, flags: i32) -> Result<u64, i32> {
-		let changes = flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
-		let (names, waited) = self.unsealed(|_| changes.then_some(ino));
-		let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
-		let options = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(disk);
-		let file = options.map_err(errno).map_err(stale(waited))?;
-		if file.metadata().map_err(errno)?.ino() | LOCAL != ino {
-			return Err(libc::ESTALE);
-		}
-		if flags & libc::O_TRUNC != 0 {
-			file.set_len(0).map_err(errno)?;
-		}
-		let fh = self.hold(file, ino, flags);
-		drop(names);
-		Ok(fh)
+		let changes = changes_bytes(flags);
+		self.changing(
+			|_| changes.then_some(ino),
+			|names, waited| {
+				let (disk, _) = self.disk_at(&names, ino).map_err(stale(waited))?;
+				let options = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(disk);
+				let file = options.map_err(errno).map_err(stale(waited))?;
+				if file.metadata().map_err(errno)?.ino() | LOCAL != ino {
+					return Err(Change::Failed(libc::ESTALE));
+				}
+				let file = if changes { writer(file)? } else { file };
+				if flags & libc::O_TRUNC != 0 {
+					file.set_len(0).map_err(errno)?;
+				}
+				let fh = self.hold(file, ino, flags);
+				drop(names);
+				Ok(fh)
+			},
+		)
 	}
 
 	/// Keeps `file`, the local file `ino` opened with `flags`: its handle. With the names held, so a cache move's `seal`
-	/// sees every handle that writes to the file.
+	/// sees every handle that changes the file's bytes.
 	fn hold(&self, file: File, ino: u64, flags: i32) -> u64 {
 		let fh = self.next_fh.fetch_add(1, Ordering::SeqCst) | LOCAL;
-		let writes = flags & libc::O_ACCMODE != libc::O_RDONLY;
-		self.handles.lock().unwrap().insert(fh, Handle { file, ino, writes });
+		self.handles.lock().unwrap().insert(fh, Handle { file, ino, writes: changes_bytes(flags) });
 		fh
 	}
 
@@ -987,6 +1256,11 @@ impl Local {
 		handles.get(&fh).ok_or(libc::EBADF)?.file.sync_data().map_err(errno)
 	}
 
+	/// The local inode the handle `fh` has open.
+	pub fn opened(&self, fh: u64) -> Option<u64> {
+		self.handles.lock().unwrap().get(&fh).map(|h| h.ino)
+	}
+
 	pub fn release(&self, fh: u64) {
 		self.handles.lock().unwrap().remove(&fh);
 		self.released.notify_all();
@@ -1008,7 +1282,7 @@ impl Local {
 		static NEXT: AtomicU64 = AtomicU64::new(0);
 		self.make_room(up, area)?;
 		let started = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-		let temp = self.root.join(GONE).join(format!("in-{started}-{}", NEXT.fetch_add(1, Ordering::SeqCst)));
+		let temp = self.gone(area).join(format!("in-{started}-{}", NEXT.fetch_add(1, Ordering::SeqCst)));
 		let written = (|| {
 			let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
 			file.write_all(bytes)?;
@@ -1082,7 +1356,7 @@ impl Placed<'_> {
 	/// The move is done: the file it replaced is taken off the disk.
 	pub fn keep(self) {
 		if self.replaced.is_some() {
-			take_off(self.aside);
+			take_off(self.aside, None);
 		}
 	}
 
@@ -1106,7 +1380,7 @@ impl Placed<'_> {
 		}
 		drop(names);
 		if self.replaced.is_some() {
-			take_off(self.aside);
+			take_off(self.aside, None);
 		}
 	}
 }
@@ -1170,7 +1444,7 @@ mod tests {
 
 	fn local(tag: &str, view: &str) -> (Local, PathBuf) {
 		let dir = std::env::temp_dir().join(format!("qorpera-local-{tag}-{}", std::process::id()));
-		(Local::open(&dir, view, (1000, 1000), None).unwrap(), dir)
+		(Local::open(&dir, None, view, (1000, 1000), None).unwrap(), dir)
 	}
 
 	/// A sealed file, unsealed when dropped: a check that fails lets the changes waiting on it end, and the test fail.
@@ -1377,8 +1651,8 @@ mod tests {
 			let opened = s.spawn(|| l.open_file(a, libc::O_WRONLY).map(drop));
 			let truncated = s.spawn(|| l.setattr(a, None, Some(0), (None, None)).map(drop));
 			let made = s.spawn(|| l.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).map(drop));
-			let removed = s.spawn(|| l.unlink(&up, "a", Area::Cache));
-			let renamed = s.spawn(|| l.rename((&up, "a"), (&up, "z"), Area::Cache, false, false));
+			let removed = s.spawn(|| l.unlink(&up, "a", Area::Cache).map(drop));
+			let renamed = s.spawn(|| l.rename((&up, "a"), (&up, "z"), Area::Cache, false, false).map(drop));
 			std::thread::sleep(Duration::from_millis(300));
 			let waiting = [&opened, &truncated, &removed, &renamed].iter().all(|t| !t.is_finished());
 			assert!(waiting && !made.is_finished());
@@ -1497,7 +1771,7 @@ mod tests {
 		});
 		assert!(!disk("e.log").exists());
 		// The files kept aside and the temporary ones of the refused places are all taken off the disk.
-		let gone = || fs::read_dir(dir.join(GONE)).unwrap().count() == 0;
+		let gone = || fs::read_dir(&l.gone.dir).unwrap().count() == 0;
 		let started = Instant::now();
 		while !gone() && started.elapsed() < Duration::from_secs(5) {
 			std::thread::sleep(Duration::from_millis(20));
@@ -1513,10 +1787,10 @@ mod tests {
 		l.mark_seeded("code/o/n/repo.git");
 		l.mkdir(Up::Mount("code/o/n/worktrees/w".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
 		drop(l);
-		let again = Local::open(&dir, "v1", (0, 0), None).unwrap();
+		let again = Local::open(&dir, None, "v1", (0, 0), None).unwrap();
 		assert!(again.seeded("code/o/n/repo.git") && dir.join("git/code/o/n/repo.git/config").exists());
 		drop(again);
-		let other = Local::open(&dir, "v2", (0, 0), None).unwrap();
+		let other = Local::open(&dir, None, "v2", (0, 0), None).unwrap();
 		assert!(!other.seeded("code/o/n/repo.git") && !dir.join("git/code/o/n/repo.git/config").exists());
 		assert!(other.disk(Area::Cache, "code/o/n/worktrees/w/node_modules").is_dir());
 		let tops: Vec<String> = other.entries_of("code/o/n/worktrees/w", Area::Cache).into_iter().map(|e| e.2).collect();
@@ -1595,11 +1869,172 @@ mod tests {
 		let dir = std::env::temp_dir().join(format!("qorpera-local-old-cache-{}", std::process::id()));
 		fs::create_dir_all(dir.join("cache/code/o/n/worktrees/w/node_modules")).unwrap();
 		fs::create_dir_all(dir.join("gone/1-0/x")).unwrap();
-		let l = Local::open(&dir, "v1", (0, 0), None).unwrap();
+		let l = Local::open(&dir, None, "v1", (0, 0), None).unwrap();
 		assert!(!dir.join("cache").exists());
 		assert!(l.entries_of("code/o/n/worktrees/w", Area::Cache).is_empty());
 		drop(l);
 		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn programs_given_one_cache_folder_share_its_caches_and_each_keeps_its_own_gone() {
+		let base = std::env::temp_dir().join(format!("qorpera-local-shared-{}", std::process::id()));
+		let shared = base.join("cache");
+		fs::DirBuilder::new().recursive(true).mode(0o700).create(&shared).unwrap();
+		// The caches a program kept in its local folder before go once it has a cache folder.
+		fs::create_dir_all(base.join("a/caches/t/node_modules")).unwrap();
+		// What programs that stopped left to take off: one from before the programs' own folders, and one's own.
+		fs::create_dir_all(shared.join("gone/1-0/x")).unwrap();
+		fs::create_dir_all(shared.join("gone/p-1-1-0/y")).unwrap();
+		let a = Local::open(&base.join("a"), Some(&shared), "v1", (0, 0), None).unwrap();
+		assert!(!base.join("a/caches").exists());
+		a.mkdir(Up::Mount("p".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
+		assert!(shared.join("caches/d/p/t/node_modules").is_dir());
+		assert!(a.gone(Area::Cache).starts_with(&shared) && a.gone(Area::Git).starts_with(base.join("a")));
+		// A second program, for another view, sees the first one's caches, and leaves its own folder in gone/ be.
+		let b = Local::open(&base.join("b"), Some(&shared), "v2", (0, 0), None).unwrap();
+		let tops = |l: &Local| l.entries_of("p", Area::Cache).into_iter().map(|e| e.2).collect::<Vec<_>>();
+		assert_eq!(tops(&b), ["node_modules"]);
+		assert!(a.gone(Area::Cache).is_dir() && b.gone(Area::Cache).is_dir());
+		let left = || shared.join("gone/1-0").exists() || shared.join("gone/p-1-1-0").exists();
+		let started = Instant::now();
+		while left() && started.elapsed() < Duration::from_secs(5) {
+			std::thread::sleep(Duration::from_millis(20));
+		}
+		assert!(!left());
+		// What one takes off goes through its own folder, on the caches' disk.
+		b.gone_top("p", "node_modules");
+		assert!(tops(&a).is_empty() && a.gone(Area::Cache).is_dir());
+		// Started again, a program finds the caches it made.
+		a.mkdir(Up::Mount("p".to_string()), "dist", Area::Cache, 0o755).unwrap();
+		drop(a);
+		let again = Local::open(&base.join("a"), Some(&shared), "v1", (0, 0), None).unwrap();
+		assert_eq!(tops(&again), ["dist"]);
+		// The cache folder is one its starter made, only this account's, a short path, and neither it nor the local folder
+		// is inside the other.
+		let open = |root: &str, caches: &str| Local::open(&base.join(root), Some(&base.join(caches)), "v1", (0, 0), None);
+		let unusable = |r: io::Result<Local>| r.err().is_some_and(|e| e.to_string().starts_with(UNUSABLE));
+		assert!(unusable(open("c", "missing")) && !base.join("missing").exists());
+		fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("c/caches")).unwrap();
+		assert!(unusable(open("c", "c/caches")) && unusable(open("d/local", "d")));
+		fs::DirBuilder::new().mode(0o755).create(base.join("wide")).unwrap();
+		fs::set_permissions(base.join("wide"), fs::Permissions::from_mode(0o755)).unwrap();
+		std::os::unix::fs::symlink(&shared, base.join("link")).unwrap();
+		assert!(unusable(open("e", "wide")) && unusable(open("e", "link")));
+		let long = base.join("l".repeat(CACHE_DIR_MAX));
+		fs::DirBuilder::new().mode(0o700).create(&long).unwrap();
+		assert!(unusable(Local::open(&base.join("e"), Some(&long), "v1", (0, 0), None)));
+		assert!(unusable(Local::open(&base.join("e"), Some(Path::new("cache")), "v1", (0, 0), None)));
+		// Given its local folder, a program keeps its caches there.
+		let same = open("f", "f").unwrap();
+		same.mkdir(Up::Mount(String::new()), ".pnpm-store", Area::Cache, 0o755).unwrap();
+		assert!(base.join("f/caches/t/.pnpm-store").is_dir());
+		drop((b, again, same));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	/// Two programs, for the views v1 and v2, given one cache folder; and the folder they share.
+	fn sharing(tag: &str) -> (Local, Local, PathBuf) {
+		let base = std::env::temp_dir().join(format!("qorpera-local-{tag}-{}", std::process::id()));
+		let shared = base.join("cache");
+		fs::DirBuilder::new().recursive(true).mode(0o700).create(&shared).unwrap();
+		let a = Local::open(&base.join("a"), Some(&shared), "v1", (0, 0), None).unwrap();
+		let b = Local::open(&base.join("b"), Some(&shared), "v2", (0, 0), None).unwrap();
+		(a, b, base)
+	}
+
+	#[test]
+	fn no_program_takes_off_caches_another_shares_for_a_folder_its_own_view_has_not() {
+		let (a, b, base) = sharing("shared-keep");
+		assert!(a.shared() && b.shared());
+		// v2 made a folder p it has not published, with caches in it: v1's view has no p.
+		b.mkdir(Up::Mount("p/q".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
+		a.drop_mirror("p");
+		assert!(a.has_caches("p") && a.is_top("p/q", "node_modules"));
+		// Nor a rename of a folder v1 has no caches in onto p: p's are v2's.
+		a.renamed("r", "p");
+		assert!(b.is_top("p/q", "node_modules"));
+		// One that has, moves them, as a program on its own does.
+		a.mkdir(Up::Mount("s".to_string()), "dist", Area::Cache, 0o755).unwrap();
+		a.renamed("s", "t");
+		assert!(b.is_top("t", "dist") && !b.has_caches("s"));
+		// Not sharing them, a program takes off the caches of a folder gone from its view (`drop_mirror`).
+		let (alone, dir) = local("shared-alone", "v1");
+		alone.mkdir(Up::Mount("p".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
+		assert!(!alone.shared());
+		alone.drop_mirror("p");
+		assert!(!alone.has_caches("p"));
+		drop((a, b, alone));
+		fs::remove_dir_all(&base).unwrap();
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_cache_move_and_another_programs_writes_to_the_file_wait_for_each_other() {
+		use std::io::Read;
+		let (a, b, base) = sharing("shared-seal");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let disk = |name: &str| a.disk(Area::Cache, &format!("code/o/n/worktrees/w/target/{name}"));
+		// v2's program has it open for writing: v1's move is not made, at once.
+		let (attr, fh) = b.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		let ino = attr.ino.0;
+		assert_eq!(a.seal(&disk("a")).map(|(_, ino)| ino), Err(libc::EBUSY));
+		let started = Instant::now();
+		assert_eq!(a.seal_name(&up, "a", Area::Cache, Duration::from_secs(10)).map(|s| s.1), Err(libc::EBUSY));
+		assert!(started.elapsed() < Duration::from_secs(5));
+		assert_eq!(b.write(fh, 0, b"ab").unwrap(), 2);
+		b.release(fh);
+		// Let go of: sealed. v2's changes to its bytes wait for the move, a read does not; a truncate truncates nothing
+		// meanwhile.
+		let (mut file, sealed) = a.seal(&disk("a")).unwrap();
+		assert_eq!(sealed, ino);
+		std::thread::scope(|s| {
+			let sealed = Sealed(&a, ino);
+			let opened = s.spawn(|| b.open_file(ino, libc::O_WRONLY).map(drop));
+			let emptied = s.spawn(|| b.open_file(ino, libc::O_WRONLY | libc::O_TRUNC).map(drop));
+			let truncated = s.spawn(|| b.setattr(ino, None, Some(0), (None, None)).map(drop));
+			let made = s.spawn(|| b.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY | libc::O_TRUNC).map(drop));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!([&opened, &emptied, &truncated, &made].iter().all(|t| !t.is_finished()));
+			let fh = b.open_file(ino, libc::O_RDONLY).unwrap();
+			assert_eq!(b.read(fh, 0, 100).unwrap(), b"ab");
+			b.release(fh);
+			let mut read = Vec::new();
+			file.read_to_end(&mut read).unwrap();
+			assert_eq!(read, b"ab");
+			// In the folder now: stale for v2 too, to be looked up again.
+			a.moved_file_out(&disk("a"), ino).unwrap();
+			drop(sealed);
+			for waited in [opened, emptied, truncated, made] {
+				assert_eq!(waited.join().unwrap(), Err(libc::ESTALE));
+			}
+		});
+		assert!(!disk("a").exists());
+		// A move that did not finish: v2's change goes on, with the file as it was, and holds the next move off.
+		let (attr, fh) = b.create(up.clone(), "b", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		assert_eq!(b.write(fh, 0, b"xy").unwrap(), 2);
+		b.release(fh);
+		let (_, sealed) = a.seal(&disk("b")).unwrap();
+		std::thread::scope(|s| {
+			let unsealed = Sealed(&a, sealed);
+			let opened = s.spawn(|| b.open_file(attr.ino.0, libc::O_WRONLY | libc::O_TRUNC));
+			std::thread::sleep(Duration::from_millis(300));
+			assert!(!opened.is_finished());
+			assert_eq!(fs::read(disk("b")).unwrap(), b"xy");
+			drop(unsealed);
+			let fh = opened.join().unwrap().unwrap();
+			assert!(fs::read(disk("b")).unwrap().is_empty());
+			assert_eq!(a.seal(&disk("b")).map(|(_, ino)| ino), Err(libc::EBUSY));
+			b.release(fh);
+		});
+		let (_, sealed) = a.seal(&disk("b")).unwrap();
+		// Sealed by one program: not by the other.
+		assert_eq!(b.seal(&disk("b")).map(|(_, ino)| ino), Err(libc::EBUSY));
+		a.unseal(sealed);
+		let (_, sealed) = b.seal(&disk("b")).unwrap();
+		b.unseal(sealed);
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
 	}
 
 	#[test]

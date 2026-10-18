@@ -18,6 +18,7 @@ use crate::git::{self, Place};
 use crate::ignore::{self, Patterns};
 use crate::index;
 use crate::local::{self, is_local, Area, Up};
+use crate::peers::{Change, Parent};
 use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
 use std::collections::HashMap;
 use std::fs;
@@ -107,6 +108,19 @@ impl Shared {
 		}
 		let tree = self.tree.lock().unwrap();
 		tree.path(dir).filter(|p| !matches!(git::place(p), Place::Git { .. })).map(str::to_string)
+	}
+
+	/// Before a lookup reads the node's folder `dir`: the cache top it may answer `name` with is chased as the node's
+	/// names are (`answer`), if a change gives the node's entry that name meanwhile (rule 1). Noted under the tree's lock,
+	/// before the listing is read, so that change sees it.
+	pub(super) fn may_answer_top(&self, dir: u64, name: &str) {
+		if self.local.is_none() || self.code_host || !self.kernel.on() {
+			return;
+		}
+		let tree = self.tree.lock().unwrap();
+		if tree.path(dir).is_some_and(|p| !matches!(git::place(p), Place::Git { .. })) {
+			self.answer(dir, name, tree.changes());
+		}
 	}
 
 	/// Where `name` in the folder `parent` is answered by the local files, if it is: as `here`, or one of the folder's
@@ -450,7 +464,15 @@ impl Shared {
 				}
 				list.generation(&worktree)
 			};
-			match self.move_in(local, &mut held, &worktree, &name) {
+			let mut moved = false;
+			let done = self.move_in(local, &mut held, &worktree, &name, &mut moved);
+			if moved {
+				// Caches left the disk behind the kernels' backs. Any name told drops every name a kernel holds, so the
+				// worktree's stands for all the move changed.
+				let (parent, last) = split(&worktree);
+				self.kernel.moved(vec![Change::name(Parent::Dir(parent.to_string()), last)]);
+			}
+			match done {
 				Ok(()) => local.cache.lock().unwrap().moved(&worktree, &name, started),
 				Err(e) => eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder yet (errno {e})"),
 			}
@@ -481,7 +503,15 @@ impl Shared {
 	///
 	/// The move `TRACKED` moves the caches the worktree's index tracks in the same way: a file, or a folder it tracks
 	/// all of (a sparse index's), whole; of a folder it tracks paths in, those paths, the rest staying caches.
-	fn move_in(&self, local: &Local, held: &mut HashMap<String, Writer>, worktree: &str, name: &str) -> Result<(), i32> {
+	/// `moved` is set once a cache may have left the disk.
+	fn move_in(
+		&self,
+		local: &Local,
+		held: &mut HashMap<String, Writer>,
+		worktree: &str,
+		name: &str,
+		moved: &mut bool,
+	) -> Result<(), i32> {
 		let tracked = name == cache::TRACKED;
 		let tracks = |path: &str, folder: bool| local.cache.lock().unwrap().tracks(worktree, within(path, worktree), folder);
 		// The node's folders to look in, and whether all of their caches move (what was in a cache that moves).
@@ -515,6 +545,7 @@ impl Shared {
 				if !whole && !picked {
 					continue;
 				}
+				*moved = true;
 				if meta.is_dir() {
 					let fresh = match self.link.mkdir(&path) {
 						Ok(()) => true,
@@ -745,19 +776,76 @@ fn settled(local: &Local, dir: &str) -> bool {
 	worktree_of(dir).is_none_or(|worktree| local.cache.lock().unwrap().moves(Some(&worktree)).is_empty())
 }
 
+/// The folder a change to a name in `up` is told the other programs by (`peers.rs`).
+fn told_parent(up: &Up) -> Parent {
+	match up {
+		Up::Local(ino) => Parent::Local(*ino),
+		Up::Mount(path) => Parent::Dir(path.clone()),
+	}
+}
+
+/// A kept absent name's entry (inode 0).
+fn nothing() -> FileAttr {
+	FileAttr {
+		ino: INodeNo(0),
+		size: 0,
+		blocks: 0,
+		atime: UNIX_EPOCH,
+		mtime: UNIX_EPOCH,
+		ctime: UNIX_EPOCH,
+		crtime: UNIX_EPOCH,
+		kind: FileType::RegularFile,
+		perm: 0,
+		nlink: 0,
+		uid: 0,
+		gid: 0,
+		rdev: 0,
+		blksize: 0,
+		flags: 0,
+	}
+}
+
 impl FolderFs {
 	fn local(&self) -> Result<&Local, i32> {
 		self.s.local.as_ref().ok_or(libc::ENOENT)
 	}
 
-	/// How long the kernel keeps a new local entry in `up`: one of a node's folder's caches not at all, as the node's
-	/// entry wins once it has one (rule 1, `cache_lookup`).
+	/// How long the kernel keeps a new local entry in `up`. With the kernel cache (`mount/kernel.rs`) a cache's for the
+	/// TTL, a top's while the feed is up: the node's entry wins once it has one (rule 1), and its change drops the top.
+	/// Without it, a top's not at all, nor one in a cache folder other programs share. A git file's for the TTL.
 	fn ttl(&self, up: &Up, area: Area) -> Duration {
-		if area == Area::Cache && matches!(up, Up::Mount(_)) {
-			Duration::ZERO
-		} else {
-			self.s.ttl
+		match (area, up) {
+			(Area::Cache, Up::Mount(_)) if self.s.kernel.on() => self.s.ttl(true),
+			(Area::Cache, Up::Mount(_)) => Duration::ZERO,
+			(Area::Cache, Up::Local(_)) if !self.s.kernel.on() && self.s.local.as_ref().is_some_and(Local::shared) => {
+				Duration::ZERO
+			}
+			_ => self.s.ttl,
 		}
+	}
+
+	/// How long the kernel keeps a local inode's attributes: as its names (`ttl`).
+	fn attr_ttl(&self, ino: u64) -> Duration {
+		let Some(local) = self.s.local.as_ref().filter(|l| l.shared() && !self.s.kernel.on()) else { return self.s.ttl };
+		match local.name(ino) {
+			Some((_, _, Area::Cache)) => Duration::ZERO,
+			_ => self.s.ttl,
+		}
+	}
+
+	/// An entry of a local file to the kernel, counted first (`Kernel::hand`).
+	fn entry(&self, reply: ReplyEntry, ttl: &Duration, attr: &FileAttr) {
+		self.s.kernel.hand(attr.ino.0);
+		reply.entry(ttl, attr, Generation(0))
+	}
+
+	/// Tells the other programs sharing the cache folder about a change made here in `area`, before the reply
+	/// (`mount/kernel.rs`): EIO if one does not answer. Git's session-local files are this mount's alone.
+	fn tell(&self, area: Area, changes: impl FnOnce() -> Vec<Change>) -> Result<(), i32> {
+		if area != Area::Cache {
+			return Ok(());
+		}
+		self.s.kernel.tell(&changes())
 	}
 
 	/// lookup of a local file, before the node's.
@@ -765,10 +853,16 @@ impl FolderFs {
 		let Some(local) = &self.s.local else { return Some(reply) };
 		match self.s.here(local, parent, name) {
 			Ok(None) => return Some(reply),
-			Ok(Some((up, area))) => match local.entry(up, name, area) {
-				Ok(attr) => reply.entry(&self.s.ttl, &attr, Generation(0)),
-				Err(e) => reply.error(Errno::from_i32(e)),
-			},
+			Ok(Some((up, area))) => {
+				let ttl = self.ttl(&up, area);
+				// The kernel cache keeps an absent name in a cache folder too: every change to one is told.
+				let absent = area == Area::Cache && matches!(up, Up::Local(_)) && self.s.kernel.on();
+				match local.entry(up, name, area) {
+					Ok(attr) => self.entry(reply, &ttl, &attr),
+					Err(libc::ENOENT) if absent => reply.entry(&ttl, &nothing(), Generation(0)),
+					Err(e) => reply.error(Errno::from_i32(e)),
+				}
+			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -778,9 +872,12 @@ impl FolderFs {
 	pub(super) fn cache_lookup(&self, parent: u64, name: &str, reply: ReplyEntry) -> Option<ReplyEntry> {
 		let Some(local) = &self.s.local else { return Some(reply) };
 		let Some(dir) = self.s.cache_dir(parent) else { return Some(reply) };
-		match local.entry(Up::Mount(dir), name, Area::Cache) {
-			// The node's entry wins once it has one (rule 1, `move_in`), so the kernel asks again each time.
-			Ok(attr) => reply.entry(&Duration::ZERO, &attr, Generation(0)),
+		let up = Up::Mount(dir);
+		// The node's entry wins once it has one (rule 1, `move_in`): without the kernel cache the kernel asks again each
+		// time; with it, the change that gives the node the name drops it (`may_answer_top`).
+		let ttl = self.ttl(&up, Area::Cache);
+		match local.entry(up, name, Area::Cache) {
+			Ok(attr) => self.entry(reply, &ttl, &attr),
 			Err(_) => return Some(reply),
 		}
 		None
@@ -791,7 +888,7 @@ impl FolderFs {
 			return Some(reply);
 		}
 		match self.local().and_then(|l| l.getattr(ino)) {
-			Ok(attr) => reply.attr(&self.s.ttl, &attr),
+			Ok(attr) => reply.attr(&self.attr_ttl(ino), &attr),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -817,9 +914,11 @@ impl FolderFs {
 
 	/// The local entries of the node's folder `ino` (at `dir`) added to its `entries`: the session-local git files in
 	/// place of the node's, or the folder's caches where the node has nothing. A cache where the node has an entry now
-	/// goes (rule 1), as do the caches of a folder in it the node no longer has (removed or renamed by another view);
-	/// both wait while a worktree's caches move into the folder, whose moves make the node's folders first. A rename
-	/// here since the listing may have given `dir` to another folder: what goes is that of `ino`'s path now.
+	/// goes (rule 1), as do the caches of a folder in it the node no longer has (removed or renamed by another view), but
+	/// not in a cache folder other programs share, where that folder may be another view's not published yet
+	/// (`Local::shared`); both wait while a worktree's caches move into the folder, whose moves make the node's folders
+	/// first. A rename here since the listing may have given `dir` to another folder: what goes is that of `ino`'s path
+	/// now.
 	pub(super) fn merge_local(&self, ino: u64, dir: &str, entries: &mut Vec<(u64, FileType, String)>) -> Result<(), i32> {
 		let Some(local) = &self.s.local else { return Ok(()) };
 		if let Some(seed) = local::seed_of(dir).filter(|_| !self.s.code_host) {
@@ -832,6 +931,9 @@ impl FolderFs {
 			return Ok(());
 		}
 		let gone = |dir: &str| {
+			if local.shared() {
+				return Vec::new();
+			}
 			let no_folder = |child: &String| match self.s.child(ino, child) {
 				Ok(c) => c.attr.kind != EntryKind::Folder,
 				Err(e) => e == libc::ENOENT,
@@ -840,19 +942,27 @@ impl FolderFs {
 		};
 		let listed = |dir: &str| local.entries_of(dir, Area::Cache).iter().any(|c| entries.iter().any(|e| e.2 == c.2));
 		if settled(local, dir) && (listed(dir) || !gone(dir).is_empty()) {
-			// Asked again, for the path `ino` has now, once no rename here is between the node's and its caches'
-			// (`Local::folders`); none moves it while this holds.
-			let _held = local.folders.lock().unwrap();
-			let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
-			if settled(local, &dir) {
-				for child in gone(&dir) {
-					local.drop_mirror(&join(&dir, &child));
-				}
-				for cache in local.entries_of(&dir, Area::Cache) {
-					if self.s.child(ino, &cache.2).is_ok() {
-						local.gone_top(&dir, &cache.2);
+			let mut moved = Vec::new();
+			{
+				// Asked again, for the path `ino` has now, once no rename here is between the node's and its caches'
+				// (`Local::folders`); none moves it while this holds.
+				let _held = local.folders.lock().unwrap();
+				let Ok(dir) = self.s.path_of(ino) else { return Ok(()) };
+				if settled(local, &dir) {
+					for child in gone(&dir) {
+						local.drop_mirror(&join(&dir, &child));
+						moved.push(Change::name(Parent::Dir(dir.clone()), &child));
+					}
+					for cache in local.entries_of(&dir, Area::Cache) {
+						if self.s.child(ino, &cache.2).is_ok() {
+							local.gone_top(&dir, &cache.2);
+							moved.push(Change::name(Parent::Dir(dir.clone()), &cache.2));
+						}
 					}
 				}
+			}
+			if !moved.is_empty() {
+				self.s.kernel.moved(moved);
 			}
 		}
 		// Those of the folder `ino` is now, whose listing this is.
@@ -867,8 +977,8 @@ impl FolderFs {
 
 	pub(super) fn local_open(&self, ino: u64, flags: i32, write: bool, reply: ReplyOpen) -> Option<ReplyOpen> {
 		if is_local(ino) {
-			match self.local().and_then(|l| l.open_file(ino, flags)) {
-				Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
+			match self.local().and_then(|l| self.open_local(l, ino, flags, write)) {
+				Ok((fh, open)) => reply.opened(FileHandle(fh), open),
 				Err(e) => reply.error(Errno::from_i32(e)),
 			}
 			return None;
@@ -878,6 +988,25 @@ impl FolderFs {
 			return None;
 		}
 		Some(reply)
+	}
+
+	/// Opens a local file: its handle, and what the kernel keeps. With the kernel cache, a cache file's read-only open
+	/// keeps the kernel's pages if the file is as this mount last opened it (`Kernel::keep`), and its close needs no
+	/// flush. A truncating open is told the other programs first.
+	fn open_local(&self, local: &Local, ino: u64, flags: i32, write: bool) -> Result<(u64, FopenFlags), i32> {
+		let fh = local.open_file(ino, flags)?;
+		let area = local.name(ino).map_or(Area::Git, |(_, _, area)| area);
+		if flags & libc::O_TRUNC != 0 {
+			if let Err(e) = self.tell(area, || vec![Change::ino(ino)]) {
+				local.release(fh);
+				return Err(e);
+			}
+		}
+		if write || area != Area::Cache || !self.s.kernel.on() {
+			return Ok((fh, FopenFlags::empty()));
+		}
+		let keep = local.stamp(fh).is_ok_and(|stamp| self.s.kernel.keep(ino, stamp));
+		Ok((fh, if keep { FopenFlags::FOPEN_KEEP_CACHE | FopenFlags::FOPEN_NOFLUSH } else { FopenFlags::FOPEN_NOFLUSH }))
 	}
 
 	/// create of a local file: in a local folder, a session-local git file, or a new cache (`target`).
@@ -899,11 +1028,21 @@ impl FolderFs {
 				return Some(reply);
 			}
 			Ok(Some((up, area))) => {
-				let ttl = self.ttl(&up, area);
+				let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
 				match local.create(up, name, area, mode, flags) {
 					Ok((attr, fh)) => {
 						self.s.made(local, parent, name, false);
-						reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
+						let change = Change { ino: Some(attr.ino.0), name: Some((dir, name.to_string())) };
+						match self.tell(area, || vec![change]) {
+							Ok(()) => {
+								self.s.kernel.hand(attr.ino.0);
+								reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
+							}
+							Err(e) => {
+								local.release(fh);
+								reply.error(Errno::from_i32(e))
+							}
+						}
 					}
 					Err(e) => reply.error(Errno::from_i32(e)),
 				}
@@ -924,11 +1063,30 @@ impl FolderFs {
 		None
 	}
 
-	pub(super) fn local_write(&self, fh: u64, offset: u64, data: &[u8], reply: ReplyWrite) -> Option<ReplyWrite> {
+	/// write to a local file's handle. One to a cache file is told the other programs sharing the folder; one from the
+	/// kernel's writeback (`writeback`) without waiting, as its pages wait for this reply.
+	pub(super) fn local_write(
+		&self,
+		fh: u64,
+		offset: u64,
+		data: &[u8],
+		writeback: bool,
+		reply: ReplyWrite,
+	) -> Option<ReplyWrite> {
 		if !is_local(fh) {
 			return Some(reply);
 		}
-		match self.local().and_then(|l| l.write(fh, offset, data)) {
+		let written = self.local().and_then(|l| {
+			let n = l.write(fh, offset, data)?;
+			let cache = |ino: &u64| l.name(*ino).is_some_and(|(_, _, area)| area == Area::Cache);
+			match l.opened(fh).filter(|ino| l.shared() && cache(ino)) {
+				Some(ino) if writeback => self.s.kernel.later(vec![Change::ino(ino)]),
+				Some(ino) => self.tell(Area::Cache, || vec![Change::ino(ino)])?,
+				None => {}
+			}
+			Ok(n)
+		});
+		match written {
 			Ok(n) => reply.written(n),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
@@ -968,8 +1126,13 @@ impl FolderFs {
 		reply: ReplyAttr,
 	) -> Option<ReplyAttr> {
 		if is_local(ino) {
-			match self.local().and_then(|l| l.setattr(ino, mode, size, (when(atime), when(mtime)))) {
-				Ok(attr) => reply.attr(&self.s.ttl, &attr),
+			let set = self.local().and_then(|l| {
+				let attr = l.setattr(ino, mode, size, (when(atime), when(mtime)))?;
+				self.tell(l.name(ino).map_or(Area::Git, |(_, _, area)| area), || vec![Change::ino(ino)])?;
+				Ok(attr)
+			});
+			match set {
+				Ok(attr) => reply.attr(&self.attr_ttl(ino), &attr),
 				Err(e) => reply.error(Errno::from_i32(e)),
 			}
 			return None;
@@ -994,12 +1157,14 @@ impl FolderFs {
 				return None;
 			}
 		};
-		let ttl = self.ttl(&up, area);
-		match local.mkdir(up, name, area, mode) {
-			Ok(attr) => {
-				self.s.made(local, parent, name, true);
-				reply.entry(&ttl, &attr, Generation(0))
-			}
+		let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
+		let made = local.mkdir(up, name, area, mode).and_then(|attr| {
+			self.s.made(local, parent, name, true);
+			self.tell(area, || vec![Change::name(dir, name)])?;
+			Ok(attr)
+		});
+		match made {
+			Ok(attr) => self.entry(reply, &ttl, &attr),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -1016,8 +1181,12 @@ impl FolderFs {
 				}
 			}
 			Ok(None) => return Some(reply),
-			Ok(Some((up, area))) if folder => local.rmdir(&up, name, area),
-			Ok(Some((up, area))) => local.unlink(&up, name, area),
+			Ok(Some((up, area))) => {
+				let removed = if folder { local.rmdir(&up, name, area) } else { local.unlink(&up, name, area) };
+				removed.and_then(|ino| {
+					self.tell(area, || vec![Change { ino: Some(ino), name: Some((told_parent(&up), name.to_string())) }])
+				})
+			}
 			Err(e) => Err(e),
 		};
 		match done {
@@ -1062,10 +1231,18 @@ impl FolderFs {
 						if done.is_ok() {
 							self.s.made(local, to.0, to.1, folder);
 						}
-						done
+						done.and_then(|(moved, replaced)| {
+							self.tell(area, || {
+								vec![
+									Change { ino: moved, name: Some((told_parent(&source), from.1.to_string())) },
+									Change { ino: replaced, name: Some((told_parent(&target), to.1.to_string())) },
+								]
+							})
+						})
 					}
 					Ok(None) if area == Area::Cache && kind == Ok(FileType::RegularFile) => {
 						self.out_of_cache(local, (&source, from.1), to, flags)
+							.and_then(|()| self.tell(area, || vec![Change::name(told_parent(&source), from.1)]))
 					}
 					Ok(_) => Err(libc::EXDEV),
 					Err(e) => Err(e),
@@ -1085,7 +1262,11 @@ impl FolderFs {
 	/// folder with caches in it (ENOTEMPTY).
 	fn node_rename(&self, local: &Local, from: (u64, &str), to: (u64, &str), flags: RenameFlags) -> Result<bool, i32> {
 		match self.s.found(local, to.0, to.1)? {
-			Some((up, Area::Cache)) => return self.into_cache(local, from, to, up, flags).map(|()| false),
+			Some((up, Area::Cache)) => {
+				let dir = told_parent(&up);
+				self.into_cache(local, from, to, up, flags)?;
+				return self.tell(Area::Cache, || vec![Change::name(dir, to.1)]).map(|()| false);
+			}
 			Some(_) => return Err(libc::EXDEV),
 			None => {}
 		}
@@ -1102,7 +1283,9 @@ impl FolderFs {
 					// Its files the folder has (`mv` copies them, so they become the cache's).
 					return Err(libc::EXDEV);
 				}
-				self.into_cache(local, from, to, Up::Mount(dir), flags).map(|()| false)
+				let told = Parent::Dir(dir.clone());
+				self.into_cache(local, from, to, Up::Mount(dir), flags)?;
+				self.tell(Area::Cache, || vec![Change::name(told, to.1)]).map(|()| false)
 			}
 		}
 	}
@@ -1308,12 +1491,14 @@ impl FolderFs {
 		match self.s.target(local, parent, name, Area::Cache, false) {
 			Ok(None) => return Some(reply),
 			Ok(Some((up, area))) => {
-				let ttl = self.ttl(&up, area);
-				match local.symlink(up, name, area, target) {
-					Ok(attr) => {
-						self.s.made(local, parent, name, false);
-						reply.entry(&ttl, &attr, Generation(0))
-					}
+				let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
+				let made = local.symlink(up, name, area, target).and_then(|attr| {
+					self.s.made(local, parent, name, false);
+					self.tell(area, || vec![Change::name(dir, name)])?;
+					Ok(attr)
+				});
+				match made {
+					Ok(attr) => self.entry(reply, &ttl, &attr),
 					Err(e) => reply.error(Errno::from_i32(e)),
 				}
 			}
@@ -1337,15 +1522,18 @@ impl FolderFs {
 			let (_, _, area) = local.name(ino).ok_or(libc::ENOENT)?;
 			match self.s.target(local, to.0, to.1, area, false)? {
 				Some((up, to_area)) if to_area == area => {
-					let (ttl, attr) = (self.ttl(&up, area), local.link(ino, up, to.1, area)?);
+					let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
+					let attr = local.link(ino, up, to.1, area)?;
 					self.s.made(local, to.0, to.1, false);
+					// The file's link count changed, and a name came.
+					self.tell(area, || vec![Change { ino: Some(ino), name: Some((dir, to.1.to_string())) }])?;
 					Ok((ttl, attr))
 				}
 				_ => Err(libc::EXDEV),
 			}
 		});
 		match done {
-			Ok((ttl, attr)) => reply.entry(&ttl, &attr, Generation(0)),
+			Ok((ttl, attr)) => self.entry(reply, &ttl, &attr),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
