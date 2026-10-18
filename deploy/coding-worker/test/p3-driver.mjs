@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { brokerDatabase, custodyForms, databaseHolds, SAVE_REFUSED, value as databaseValue, withhold } from "./p3-custody.mjs";
+import { brokerDatabase, custodyForms, databaseHolds, gitObjectSearch, SAVE_REFUSED, value as databaseValue, withhold } from "./p3-custody.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
 import { postgrestError } from "./p3-postgrest-errors.mjs";
@@ -542,13 +542,46 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	const journalControl = Number(search(JOURNAL, "/root/p3-custody-control"));
 	if (journalForms !== 0) problems.push(`the node's journal holds a form of the value (${journalForms} lines)`);
 	if (!(journalControl >= 1)) problems.push("the node's journal does not hold the control");
+	// The folder's git objects (#1286's "Left open": the save check reads a git object's bytes as they are, compressed):
+	// each object in the store that inflates as one, and each repo.git of the saved folder, rebuilt from its path
+	// versions and read whole by git, packs included. Turn 4's commit and the control it adds show both ways read them.
+	const savedGit = await databaseValue(db, "select coalesce(jsonb_agg(jsonb_build_object('path', path, 'manifest', manifest_sha256, " +
+		"'file', file_sha256)), '[]'::jsonb) from (select distinct path, manifest_sha256, file_sha256 from public.qorpera_folder_path_versions " +
+		`where environment_id = ${database.quote(ids.environmentId)} and kind = 'file' and manifest_sha256 is not null ` +
+		"and path like 'code/%/repo.git/objects/%') as v");
+	pushFile("/root/p3-custody-git.json", JSON.stringify({ store: "/srv/p3-objects/store", saved: savedGit, forms: "/root/p3-custody-forms",
+		control: "/root/p3-custody-control", oids: [head4], scratch: "/root" }));
+	const git = JSON.parse(lxc("exec", vm, "--", "/usr/local/bin/node", "-e", "process.stdout.write(JSON.stringify(" +
+		`(${gitObjectSearch})(require, JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")))))`, "/root/p3-custody-git.json"));
+	// A store object is the folder's once a path version names it, itself or as a chunk of its manifest.
+	const gitNamed = git.store.forms.length ? await databaseValue(db, "select jsonb_object_agg(s, (select coalesce(jsonb_agg(distinct v.path), '[]'::jsonb) " +
+		"from public.qorpera_folder_path_versions v where s in (v.file_sha256, v.manifest_sha256) or exists (select 1 from public.qorpera_folder_file_chunks c " +
+		`where c.manifest_sha256 = v.manifest_sha256 and c.chunk_sha256 = s))) from unnest(${database.quote(`{${git.store.forms.map((found) => found.object).join(",")}}`)}::text[]) as s`) : {};
+	const gitObject = (found) => `${found.type} ${found.oid ?? "(the start of one)"}`;
+	const gitSaved = git.store.forms.filter((found) => gitNamed[found.object]?.length);
+	const gitUnsaved = git.store.forms.filter((found) => !gitNamed[found.object]?.length);
+	console.log(`p3: the folder's git objects: ${git.store.git} of the store's ${git.store.objects} objects inflate as git objects, ` +
+		`${git.store.forms.length} with a form of the value (${gitSaved.length} saved), ${git.store.control.length} with the control; ` +
+		`the saved folder's ${git.saved.files} git files (${git.saved.missing} unread) hold ${git.saved.objects} objects in ` +
+		`${git.saved.repositories} repo.git, ${git.saved.forms.length} with a form of the value, ${git.saved.control.length} with the control`);
+	if (gitSaved.length) problems.push(`the company folder saved git objects that hold a form of the value: ${gitSaved.map((found) =>
+		`${gitObject(found)}, the store object ${found.object}, saved as ${gitNamed[found.object].join(", ")}`).join("; ")}`);
+	if (git.saved.forms.length) problems.push(`the saved folder's repo.git holds git objects with a form of the value: ${git.saved.forms.map((found) =>
+		`${gitObject(found)} at ${found.where.join(", ") || "no loose path or pack"}`).join("; ")}`);
+	if (git.saved.missing) problems.push(`${git.saved.missing} of the folder's saved git files cannot be read back from the store`);
+	for (const [way, found] of [["the store's objects", git.store], ["the saved folder's repo.git", git.saved]])
+		if (!found.seen.includes(head4) || !found.control.length)
+			problems.push(`the search of ${way} does not find turn 4's commit ${head4} (${found.seen.includes(head4) ? "found" : "NOT found"}) ` +
+				`and the control it adds (${found.control.length} objects)`);
 	const withheld = Object.entries(custody.withheld).filter(([, count]) => count > 0);
 	if (withheld.length) problems.push(`lines the driver would have printed carried a form: ${withheld.map(([source, count]) => `${source} ${count}`).join(", ")}`);
 	if (problems.length) fail(`the value was kept: ${problems.join("; ")}`);
 	pass(`the value is kept nowhere it was searched for: no table (the control is in ${controlTables.length}), no file in the node ` +
 		`(the control is in ${controlFiles.length}), no object of the stand-in GitHub (the control is in ${githubControl} lines), not the node's ` +
-		`journal (the control is in ${journalControl} lines), no line the driver printed; ` +
+		`journal (the control is in ${journalControl} lines), no git object of the company folder (${git.store.git} in the store, ` +
+		`${git.saved.objects} in its saved repo.git, turn 4's commit and the control found both ways), no line the driver printed; ` +
 		`${stored.length ? `LIMIT: ${stored.length} unsaved objects in the store hold it until the store's GC; ` : ""}` +
+		`${gitUnsaved.length ? `LIMIT: ${gitUnsaved.length} unsaved git objects in the store hold it until the store's GC; ` : ""}` +
 		`the broker answered ${JSON.stringify(custody.answers)} and audited ${audited} uses (${elapsed()})`);
 	console.log("CUSTODY PROVEN");
 }
