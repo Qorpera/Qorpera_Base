@@ -262,6 +262,58 @@ describe("coding VM command supervisor", () => {
 			`qorpera-coding-${f.request.workerId.replaceAll("-", "")}-${f.request.commandId}.service`,
 		]);
 	});
+	it("says cancelled when the cancel's clean stop lets systemd forget the unit", async () => {
+		const f = await fixture();
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
+		// A clean stop (SIGTERM is clean) lets systemd forget a transient unit at once.
+		f.system.mockImplementation(async (_executable, args) =>
+			args[0] === "stop"
+				? ""
+				: "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nExecMainCode=0\nExecMainStatus=0\n",
+		);
+		expect(await runCodingGuestCommand("cancel", f.request.workerId, f.request.commandId, f.ports)).toMatchObject({
+			state: "cancelled",
+			exitCode: null,
+		});
+		expect((await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports)).state).toBe(
+			"cancelled",
+		);
+	});
+	it("stops a unit made after a cancel that found no unit to stop", async () => {
+		const f = await fixture();
+		const unit = `qorpera-coding-${f.request.workerId.replaceAll("-", "")}-${f.request.commandId}.service`;
+		const gone =
+			"LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nExecMainCode=0\nExecMainStatus=0\n";
+		let stopped = false;
+		f.system.mockImplementation(async (executable, args) => {
+			if (executable === "/usr/bin/systemd-run") {
+				// The cancel comes between the intent and the unit, so it finds no unit to stop.
+				await runCodingGuestCommand("cancel", f.request.workerId, f.request.commandId, {
+					...f.ports,
+					system: async (_executable, cancelArgs) => {
+						if (cancelArgs[0] === "stop") throw new Error("Unit not loaded.");
+						return gone;
+					},
+				});
+				return "";
+			}
+			if (args[0] === "stop") {
+				stopped = true;
+				return "";
+			}
+			return stopped
+				? gone
+				: "LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainCode=0\nExecMainStatus=0\n";
+		});
+		expect(await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).toMatchObject({
+			state: "cancelled",
+			exitCode: null,
+		});
+		expect(f.system).toHaveBeenCalledWith("/usr/bin/systemctl", ["stop", unit]);
+		expect((await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports)).state).toBe(
+			"cancelled",
+		);
+	});
 	it("reports reboot uncertainty without invoking another command", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
