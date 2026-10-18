@@ -18,11 +18,11 @@
 # one level further down, so they need the test machine's nested KVM. With P3_CODE_HOST=1 (phase B), the company's
 # code host image is built and exported first (../../code-host/test/export-code-host-image.sh, which needs the
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
-# the session's repository. With P3_CUSTODY=1 as well, turns 2 to 4 prove a member's vault secret in custody in place
+# the session's repository. With P3_CUSTODY=1 as well, turns 2 to 9 prove a member's vault secret in custody in place
 # of the rest of Order 9 and C2's turns (test/p3-custody.mjs), and the run needs CUSTODY PROVEN.
 # test/prove-coding-session-node.sh sets the node up; then test/p3-driver.mjs runs the test database here and the
 # executor in the node, for four turns of one coding session (six on phase B without custody: C2's two keep a quiet turn
-# awake and kill the folder service inside the node). Before and after, the test machine's links (but Docker's), nft
+# awake and kill the folder service inside the node; nine with custody). Before and after, the test machine's links (but Docker's), nft
 # table names, a few sysctls and the modules a proof could load are compared: one of those changing, or any module going
 # away, fails the run. Everything it made is removed at the end, also on failure. It needs 40 GiB free in /var/tmp.
 # Prints PASS lines, then ALL PASSED.

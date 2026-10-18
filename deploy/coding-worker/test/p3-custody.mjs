@@ -4,9 +4,34 @@
 import { randomBytes } from "node:crypto";
 import { quote } from "./p3-database.mjs";
 
-/** The executor's turn summary for a refused save (coding-executor.ts SAVE_REFUSAL), which names no path. */
+/** The start of the executor's turn summary for a refused save (coding-executor.ts SAVE_REFUSAL), which names no path;
+ * after it, the way out of a git commit that carried the value (#1299). */
 export const SAVE_REFUSED =
 	"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again.";
+
+/** The folder's reason for a path it refused because it carries a value (folder-service/secret-scan.ts CARRIES). */
+export const CARRIES = "it carries a secret value";
+
+/** A pack in which the value is whole only once a delta is resolved, written into the repository of the worktree the
+ * script runs in (bash, the value in P3_PROBE): a base blob holds the value's first half where the target holds it whole,
+ * and is longer, so git stores the base whole and the target as a delta on it that copies the first half from the base
+ * and inserts only the rest. The two loose objects are removed, so the pack alone holds them. It prints the pack's name,
+ * the two ids, the target's line of `git verify-pack -v` as its field count and base, how many lines of each object and
+ * of the pack's bytes hold the value, and how many of the loose objects are left. */
+export const DELTA_PACK = [
+	"lines() { for ((i = $1; i < $2; i++)); do printf '%s_%d = the value of setting number %d\\n' \"$3\" \"$i\" \"$i\"; done; }",
+	"half=$((${#P3_PROBE} / 2))",
+	"base=$({ lines 0 150 setting; printf 'key = %s\\n' \"${P3_PROBE:0:half}\"; lines 150 300 setting; lines 0 40 more; } | git hash-object -w --stdin) || exit 1",
+	"target=$({ lines 0 150 setting; printf 'key = %s\\n' \"$P3_PROBE\"; lines 150 300 setting; } | git hash-object -w --stdin) || exit 1",
+	"objects=$(git rev-parse --git-path objects)",
+	"pack=$(printf '%s p3-settings.conf\\n%s p3-settings.conf\\n' \"$base\" \"$target\" | git pack-objects -q \"$objects/pack/pack\") || exit 1",
+	"rm -f \"$objects/${base:0:2}/${base:2}\" \"$objects/${target:0:2}/${target:2}\"",
+	"echo \"pack=pack-$pack\"; echo \"base=$base\"; echo \"target=$target\"",
+	"set -- $(git verify-pack -v \"$objects/pack/pack-$pack.idx\" | grep \"^$target \"); echo \"delta=$# ${7:-}\"",
+	"echo \"in-base=$(git cat-file blob \"$base\" | grep -cF \"$P3_PROBE\")\"; echo \"in-target=$(git cat-file blob \"$target\" | grep -cF \"$P3_PROBE\")\"",
+	"echo \"in-pack=$(grep -caF \"$P3_PROBE\" \"$objects/pack/pack-$pack.pack\")\"",
+	"echo \"loose=$(ls \"$objects/${base:0:2}/${base:2}\" \"$objects/${target:0:2}/${target:2}\" 2>/dev/null | wc -l)\"",
+].join("\n");
 
 /** The forms a value is searched in: itself, its hex (how a bytea column prints, and `xxd`), the part of its base64 in
  * either alphabet that only it decides at each of the three byte offsets (as the executor's mask has them), and its URL
@@ -118,7 +143,8 @@ end $holds$;`,
 /** The git objects the company folder holds, searched for the forms (one per line of the file `forms`) and for the
  * control (the file `control`), two ways, as git reads them:
  * - `store`: each object in the store that inflates as a git loose object (zlib, "<type> <size>\0"), as a loose object
- *   the folder saved in one chunk sits there;
+ *   the folder saved in one chunk sits there; and each that is a whole pack, read by `git index-pack` into a bare
+ *   repository of its own, deltas resolved (a pack in more than one chunk is counted as unread);
  * - `saved`: the folder's saved files under each `code/<owner>/<name>/repo.git/objects/` (every version the path
  *   versions name: path, manifest and file SHA-256), each read back from the store through its manifest's chunks into a
  *   bare repository, which `git cat-file --batch-all-objects --batch` reads whole, packed and deltified objects too.
@@ -142,45 +168,74 @@ export function gitObjectSearch(require, { store, saved, forms, control, oids, s
 		if (content.includes(marker)) into.control.push(object);
 		if (oids.includes(object.oid)) into.seen.push(object.oid);
 	};
-
-	// The store, every file in it, by its name.
-	const files = [];
-	const walk = (folder) => {
-		for (const entry of fs.readdirSync(folder, { withFileTypes: true }))
-			if (entry.isDirectory()) walk(join(folder, entry.name));
-			else if (entry.isFile()) files.push([join(folder, entry.name), entry.name]);
-	};
-	walk(store);
-	const inStore = result({ objects: files.length, git: 0 });
-	for (const [path, name] of files) {
-		const bytes = fs.readFileSync(path);
-		// A zlib stream's header: deflate, and its first two bytes a multiple of 31.
-		if (bytes.length < 2 || (bytes[0] & 0x0f) !== 8 || (bytes[0] * 256 + bytes[1]) % 31 !== 0) continue;
-		let inflated;
-		try {
-			// A chunk may hold only the start of a stream: what it holds is read.
-			inflated = inflateSync(bytes, { finishFlush: constants.Z_SYNC_FLUSH, maxOutputLength: 2 ** 30 });
-		} catch {
-			continue;
+	// Every object of the bare repository `at`, as git reads it: id, type and content.
+	const everyObject = (at, each) => {
+		const output = git(["--git-dir", at, "cat-file", "--batch-all-objects", "--batch"]);
+		for (let next = 0; next < output.length; ) {
+			const end = output.indexOf(10, next);
+			const [oid, type, size] = output.subarray(next, end).toString().split(" ");
+			each(oid, type, output.subarray(end + 1, end + 1 + Number(size)));
+			next = end + 1 + Number(size) + 1;
 		}
-		const header = HEADER.exec(inflated.subarray(0, 32).toString("latin1"));
-		if (!header) continue;
-		inStore.git += 1;
-		const whole = inflated.length === header[0].length + Number(header[2]);
-		sort({ object: name, oid: whole ? digest("sha1", inflated) : null, type: header[1] }, inflated.subarray(header[0].length), inStore);
-	}
-
-	// The saved folder: each repository's objects, one bare repository for each version of a path (a loose object and a
-	// pack keep their names, so there is one in practice).
-	const byName = new Map(files.map(([path, name]) => [name, path]));
-	const read = (sha256) => {
-		const path = byName.get(sha256);
-		const bytes = path ? fs.readFileSync(path) : null;
-		return bytes && digest("sha256", bytes) === sha256 ? bytes : null;
 	};
-	const inSaved = result({ files: saved.length, missing: 0, repositories: 0, objects: 0 });
 	const directory = fs.mkdtempSync(join(scratch, "p3-git-"));
 	try {
+		// The store, every file in it, by its name.
+		const files = [];
+		const walk = (folder) => {
+			for (const entry of fs.readdirSync(folder, { withFileTypes: true }))
+				if (entry.isDirectory()) walk(join(folder, entry.name));
+				else if (entry.isFile()) files.push([join(folder, entry.name), entry.name]);
+		};
+		walk(store);
+		const inStore = result({ objects: files.length, git: 0, packs: 0, unreadPacks: 0 });
+		for (const [path, name] of files) {
+			const bytes = fs.readFileSync(path);
+			if (bytes.subarray(0, 4).toString("latin1") === "PACK") {
+				// A pack (a refused save's may wait here, unnamed): sha1, else sha256.
+				const at = join(directory, `pack-${inStore.packs + inStore.unreadPacks}`);
+				const indexed = ["sha1", "sha256"].some((format) => {
+					fs.rmSync(at, { recursive: true, force: true });
+					git(["init", "-q", "--bare", `--object-format=${format}`, at]);
+					try {
+						git(["--git-dir", at, "index-pack", "--stdin"], bytes);
+						return true;
+					} catch {
+						return false;
+					}
+				});
+				if (indexed) {
+					inStore.packs += 1;
+					everyObject(at, (oid, type, content) => sort({ object: name, oid, type, pack: true }, content, inStore));
+				} else inStore.unreadPacks += 1;
+				fs.rmSync(at, { recursive: true, force: true });
+				continue;
+			}
+			// A zlib stream's header: deflate, and its first two bytes a multiple of 31.
+			if (bytes.length < 2 || (bytes[0] & 0x0f) !== 8 || (bytes[0] * 256 + bytes[1]) % 31 !== 0) continue;
+			let inflated;
+			try {
+				// A chunk may hold only the start of a stream: what it holds is read.
+				inflated = inflateSync(bytes, { finishFlush: constants.Z_SYNC_FLUSH, maxOutputLength: 2 ** 30 });
+			} catch {
+				continue;
+			}
+			const header = HEADER.exec(inflated.subarray(0, 32).toString("latin1"));
+			if (!header) continue;
+			inStore.git += 1;
+			const whole = inflated.length === header[0].length + Number(header[2]);
+			sort({ object: name, oid: whole ? digest("sha1", inflated) : null, type: header[1] }, inflated.subarray(header[0].length), inStore);
+		}
+
+		// The saved folder: each repository's objects, one bare repository for each version of a path (a loose object and a
+		// pack keep their names, so there is one in practice).
+		const byName = new Map(files.map(([path, name]) => [name, path]));
+		const read = (sha256) => {
+			const path = byName.get(sha256);
+			const bytes = path ? fs.readFileSync(path) : null;
+			return bytes && digest("sha256", bytes) === sha256 ? bytes : null;
+		};
+		const inSaved = result({ files: saved.length, missing: 0, repositories: 0, objects: 0 });
 		const layers = [];
 		for (const { path, manifest, file } of saved) {
 			const [, repository, rest] = /^(code\/[^/]+\/[^/]+\/repo\.git)\/(objects\/.+)$/.exec(path) ?? [];
@@ -218,20 +273,15 @@ export function gitObjectSearch(require, { store, saved, forms, control, oids, s
 					...packs.filter(([, listed]) => listed.has(oid)).map(([pack]) => `pack ${pack}`),
 				];
 			};
-			const output = git(["--git-dir", at, "cat-file", "--batch-all-objects", "--batch"]);
-			for (let next = 0; next < output.length; ) {
-				const end = output.indexOf(10, next);
-				const [oid, type, size] = output.subarray(next, end).toString().split(" ");
-				const content = output.subarray(end + 1, end + 1 + Number(size));
-				next = end + 1 + Number(size) + 1;
+			everyObject(at, (oid, type, content) => {
 				inSaved.objects += 1;
 				sort({ oid, type, where: places(oid) }, content, inSaved);
-			}
+			});
 		}
+		return { store: inStore, saved: inSaved };
 	} finally {
 		fs.rmSync(directory, { recursive: true, force: true });
 	}
-	return { store: inStore, saved: inSaved };
 }
 
 /** One JSON value of `select` as postgres (null when there is no row). */

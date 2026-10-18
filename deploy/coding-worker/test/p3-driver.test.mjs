@@ -4,7 +4,7 @@
 // production's own, as for the folder service. The run-on-node plan's deploy-node step runs it, and
 // prove-coding-session-vm.sh before it builds anything. And for the custody proof (P3_CUSTODY=1): the forms it searches,
 // the guard on the driver's output, the executor's reasons it reads, the executor composition's broker and save check,
-// and its search of the company folder's git objects.
+// its search of the company folder's git objects, and the pack it writes whose value is whole only in a resolved delta.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -14,12 +14,14 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { custodyForms, gitObjectSearch, SAVE_REFUSED, withhold } from "./p3-custody.mjs";
+import { inflateSync } from "node:zlib";
+import { CARRIES, custodyForms, DELTA_PACK, gitObjectSearch, SAVE_REFUSED, withhold } from "./p3-custody.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
 const driver = fileURLToPath(new URL("./p3-driver.mjs", import.meta.url));
 const executor = fileURLToPath(new URL("./p3-executor.ts", import.meta.url));
 const codingExecutor = fileURLToPath(new URL("../../../packages/runner-orchestrator/src/coding-executor.ts", import.meta.url));
+const secretScan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/secret-scan.ts", import.meta.url));
 
 test("the driver's imports link and it stops at its usage line", () => {
 	const run = spawnSync(process.execPath, [driver], { encoding: "utf8" });
@@ -114,12 +116,11 @@ test("the driver's output withholds a line that carries a form, and counts it by
 	assert.deepEqual(counts, { executor: 1, rpc: 1, driver: 1 });
 });
 
-test("the custody proof reads the executor's own reasons for a refused save and a refused push", () => {
-	const source = readFileSync(codingExecutor, "utf8");
-	assert.equal(/const SAVE_REFUSAL =\n\t"([^"]*)";/.exec(source)?.[1], SAVE_REFUSED);
-	assert.match(source, /return `The push was refused: \$\{where\} carries one of the session's secret values\. Remove it from the history and finish again\.`;/);
-	const driven = readFileSync(driver, "utf8");
-	assert.ok(driven.includes(String.raw`/^The push was refused: (.*) carries one of the session's secret values\. Remove it from the history and finish again\.$/`));
+test("the custody proof reads the executor's own reason for a refused save, and the folder's for a path that carries a value", () => {
+	// The refusal, then its way out of a git commit that carried the value.
+	const refusal = /const SAVE_REFUSAL =\n\t"([^"]*)";/.exec(readFileSync(codingExecutor, "utf8"))?.[1];
+	assert.ok(refusal?.startsWith(SAVE_REFUSED), refusal);
+	assert.match(readFileSync(secretScan, "utf8"), new RegExp(`^export const CARRIES = ${JSON.stringify(CARRIES)};$`, "m"));
 });
 
 test("the executor composition asks the broker as production's client, and gives the save check the machine's values", () => {
@@ -200,6 +201,8 @@ test("the custody proof finds a value in the folder's git objects: loose in the 
 		for (const file of at.files())
 			saved.push(save(`code/qorpera/${name}/repo.git/objects/${file}`, readFileSync(join(at.objects, file)),
 				file === `${bigLoose.slice(0, 2)}/${bigLoose.slice(2)}` ? 2 : file.endsWith(".pack") ? 3 : 1));
+	// The pack whole too, unnamed, as a refused save's bytes may wait in the store.
+	put(readFileSync(join(packed.objects, pack)));
 	// Alternates would have git read the packed repository's objects from the disk: not followed.
 	saved.push(save("code/qorpera/loose/repo.git/objects/info/alternates", Buffer.from(`${packed.objects}\n`), 1));
 	// A saved file whose bytes the store lacks is counted.
@@ -213,11 +216,15 @@ test("the custody proof finds a value in the folder's git objects: loose in the 
 	const looseObjects = loose.files().filter((file) => /^[0-9a-f]{2}\//.test(file)).length;
 	const leak = blob(`P3 custody\n${value}\n`);
 	const kept = blob(`${control}\n`);
-	// The store: each loose object inflates; the big one's first chunk holds its start, the value in it, and no id.
+	// The store: each loose object inflates; the big one's first chunk holds its start, the value in it, and no id. The
+	// whole pack is read, deltas resolved; the first of its three chunks starts one, and cannot be read alone.
 	assert.equal(found.store.git, looseObjects);
-	assert.deepEqual(found.store.forms.map(({ oid, type }) => `${oid} ${type}`).sort(), [`${leak} blob`, "null blob"].sort());
-	assert.deepEqual(found.store.control.map(({ oid }) => oid), [kept]);
-	assert.deepEqual(found.store.seen, [headLoose]);
+	assert.equal(found.store.packs, 1);
+	assert.equal(found.store.unreadPacks, 1);
+	const inStore = (list) => list.map(({ oid, type, pack: inPack }) => `${oid} ${type}${inPack ? " pack" : ""}`).sort();
+	assert.deepEqual(inStore(found.store.forms), [`${leak} blob`, "null blob", `${deltified} blob pack`].sort());
+	assert.deepEqual(inStore(found.store.control), [`${kept} blob`, `${kept} blob pack`].sort());
+	assert.deepEqual(found.store.seen.sort(), [headLoose, headPacked].sort());
 	// The saved folder: both repositories whole, where each object is, the alternates not followed, the missing file.
 	const loosePath = (oid) => `loose code/qorpera/loose/repo.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
 	const packPath = `pack code/qorpera/packed/repo.git/objects/${pack}`;
@@ -238,5 +245,42 @@ test("the driver runs the git object search in the node, after the file search, 
 	const objects = driven.indexOf("`(${gitObjectSearch})(require, JSON.parse(require(\"node:fs\").readFileSync(process.argv[1], \"utf8\")))))`");
 	assert.ok(files > 0 && objects > files, "the rebuilt repositories, in the node's /root, come after the file search");
 	assert.ok(driven.includes("and path like 'code/%/repo.git/objects/%') as v\");"));
-	assert.ok(driven.includes('oids: [head4], scratch: "/root" }));'));
+	assert.ok(driven.includes('oids: [head9], scratch: "/root" }));'));
+});
+
+test("the custody proof's delta pack holds the value whole in no object as the pack stores it, only in the resolved delta", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-delta-pack-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	execFileSync("git", ["init", "-q", root], { stdio: "pipe" });
+	const value = `p3probe-${randomBytes(24).toString("base64url")}`;
+	const output = execFileSync("bash", ["--noprofile", "--norc", "-c", DELTA_PACK], { cwd: root, env: { ...process.env, P3_PROBE: value }, encoding: "utf8" });
+	assert.ok(!output.includes(value));
+	const fields = Object.fromEntries(output.trim().split("\n").map((line) => line.split(/=(.*)/s).slice(0, 2)));
+	assert.match(fields.pack, /^pack-[0-9a-f]{40}$/);
+	assert.match(fields.base, /^[0-9a-f]{40}$/);
+	assert.equal(fields.delta, `7 ${fields.base}`, "the target is a delta on the base");
+	assert.deepEqual([fields["in-base"], fields["in-target"], fields["in-pack"], fields.loose], ["0", "1", "0", "0"]);
+	// Each object inflated as the pack stores it (the target as its delta's instructions): none holds the value.
+	const pack = join(root, ".git", "objects", "pack", fields.pack);
+	const bytes = readFileSync(`${pack}.pack`);
+	const entries = execFileSync("git", ["-C", root, "verify-pack", "-v", `${pack}.idx`], { encoding: "utf8" }).split("\n")
+		.map((line) => line.split(/\s+/)).filter((parts) => /^[0-9a-f]{40}$/.test(parts[0]));
+	assert.deepEqual(entries.map((parts) => parts[0]).sort(), [fields.base, fields.target].sort());
+	const types = {};
+	for (const [oid, , , stored, offset] of entries) {
+		const entry = bytes.subarray(Number(offset), Number(offset) + Number(stored));
+		// The entry's header: its type and size, then an offset delta's base offset or a ref delta's base id.
+		let at = 0;
+		while (entry[at] & 0x80) at += 1;
+		at += 1;
+		const type = (entry[0] >> 4) & 7;
+		if (type === 6) {
+			while (entry[at] & 0x80) at += 1;
+			at += 1;
+		} else if (type === 7) at += 20;
+		types[oid] = type;
+		assert.ok(!inflateSync(entry.subarray(at)).includes(value), `the pack's ${oid}`);
+	}
+	// The base whole (a blob, type 3), the target a delta on its id (type 7).
+	assert.deepEqual(types, { [fields.base]: 3, [fields.target]: 7 });
 });
