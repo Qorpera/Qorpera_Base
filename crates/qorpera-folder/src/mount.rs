@@ -22,6 +22,7 @@
 //! on the machine's disk that the node never sees (`local.rs`, `on_disk.rs`); git's shared files are asked for again
 //! each time, and a lock git takes on one is the node's lease on it.
 
+mod kernel;
 mod on_disk;
 
 use crate::link::{Fail, Link};
@@ -54,6 +55,10 @@ const CHASE_WINDOW: Duration = Duration::from_millis(1 << (CHASE_STEPS - 1));
 /// Answers remembered at most: past it, those older than the window go, and then the older half (a burst of lookups
 /// never grows memory without end, and the newest, the ones that may still be in flight, stay).
 const ANSWERED_MAX: usize = 1 << 16;
+/// A create's entry and attributes, at the node or local, are not kept (`Kernel::close`): the kernel makes the inode
+/// when it reads the reply, which may be after the end's drop, so the open's permission check (`DefaultPermissions`)
+/// asks for them again, and after the end is refused: such a create opens nothing.
+const CREATED: Duration = Duration::ZERO;
 
 /// Names a lookup answered with a cacheable entry: the tree's change count it read them at, and when.
 #[derive(Default)]
@@ -108,9 +113,12 @@ pub struct Options {
 	/// The read journal the caller already opened in `state` (the CLI does, to check the view proof). Only a writable
 	/// view logs its reads: a read-only one hands none over, so its journal would never be emptied. None opens it here.
 	pub reads: Option<Arc<ReadLog>>,
-	/// Where a writable view keeps the session's own git files and its caches (`local.rs`); None uses `local/` in
-	/// `state`. It should be on the machine's disk: caches grow large, and outlive the view.
+	/// Where a writable view keeps the session's own git files (`local.rs`), and its caches without `caches`; None uses
+	/// `local/` in `state`. It should be on the machine's disk: caches grow large, and outlive the view.
 	pub local: Option<PathBuf>,
+	/// Where a writable view keeps its caches, on the machine's disk; the programs serving one owner's mounts on the
+	/// machine share it. None keeps them in `local`, for this mount only.
+	pub caches: Option<PathBuf>,
 }
 
 /// Why the program stopped.
@@ -236,6 +244,8 @@ struct Shared {
 	/// target of a rename across the edge between the caches and the folder (`mount/on_disk.rs`).
 	chased: mpsc::Sender<Vec<(u64, String)>>,
 	unpublished: Mutex<Unpublished>,
+	/// The kernel's cache of the caches, and the other programs sharing them (`mount/kernel.rs`).
+	kernel: kernel::Kernel,
 }
 
 impl Shared {
@@ -658,7 +668,41 @@ fn errno(f: Fail) -> Errno {
 	Errno::from_i32(f.errno())
 }
 
+/// A reply refused once the program is ending (`FolderFs::served`).
+trait Refuse {
+	fn refuse(self);
+}
+
+macro_rules! refuse {
+	($($reply:ty),*) => {$(
+		impl Refuse for $reply {
+			fn refuse(self) {
+				self.error(Errno::EIO)
+			}
+		}
+	)*};
+}
+
+refuse!(ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite);
+
 impl FolderFs {
+	/// The reply to answer, or none once the program is ending: then it is refused with EIO here, before the request
+	/// takes any lock, while the kernel drops its pages (`Kernel::close`).
+	fn served<R: Refuse>(&self, reply: R) -> Option<R> {
+		if self.s.kernel.closing() {
+			reply.refuse();
+			return None;
+		}
+		Some(reply)
+	}
+
+	/// `served`, after noting that the kernel may keep `ino`'s pages or attributes from this answer on (an open or a
+	/// create). An answer it lets through was noted before the refusals began, so the end's drop has its inode.
+	fn noted<R: Refuse>(&self, ino: u64, reply: R) -> Option<R> {
+		self.s.kernel.opened(ino);
+		self.served(reply)
+	}
+
 	/// A name this program changes: its folder's path and its own, or EROFS when the view does not write. A local
 	/// folder has no path at the node (its `local_*` hook answers for every name in it).
 	fn place(&self, parent: INodeNo, name: &OsStr) -> Result<(String, String), Errno> {
@@ -710,12 +754,15 @@ impl Filesystem for FolderFs {
 			let _ = config.add_capabilities(InitFlags::FUSE_ATOMIC_O_TRUNC);
 		}
 		eprintln!("qorpera-folder: kernel FUSE ABI {:?}", config.kernel_abi());
+		self.s.kernel.init(config);
 		Ok(())
 	}
 
 	fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+		let Some(reply) = self.served(reply) else { return };
 		let Some(name) = name.to_str().filter(|n| valid_name(n)) else { return reply.error(Errno::ENOENT) };
 		let Some(reply) = self.local_lookup(parent.0, name, reply) else { return };
+		self.s.may_answer_top(parent.0, name);
 		match self.s.children(parent.0, Some(name)) {
 			Ok((children, kept)) => match children.iter().find(|c| c.name == name) {
 				Some(c) => {
@@ -734,15 +781,21 @@ impl Filesystem for FolderFs {
 	}
 
 	fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+		if local::is_local(ino.0) {
+			self.s.kernel.forget(ino.0, nlookup);
+		}
 		self.s.tree.lock().unwrap().forget(ino.0, nlookup);
 	}
 
-	fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-		let Some(reply) = self.local_getattr(ino.0, reply) else { return };
+	fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
+		let Some(reply) = self.served(reply) else { return };
+		let Some(reply) = self.local_getattr(ino.0, fh.map(|fh| fh.0), reply) else { return };
 		self.reply_attr(ino.0, reply);
 	}
 
 	fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+		let Some(reply) = self.served(reply) else { return };
+		let Some(reply) = self.noted(ino.0, reply) else { return };
 		let Some(reply) = self.local_opendir(ino.0, reply) else { return };
 		let (children, _) = match self.s.children(ino.0, None) {
 			Ok(r) => r,
@@ -773,7 +826,8 @@ impl Filesystem for FolderFs {
 		reply.opened(self.s.handle(Handle::Dir(entries)), FopenFlags::empty());
 	}
 
-	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
+		let Some(mut reply) = self.served(reply) else { return };
 		let handles = self.s.handles.lock().unwrap();
 		let Some(Handle::Dir(entries)) = handles.get(&fh.0) else { return reply.error(Errno::EBADF) };
 		for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
@@ -785,11 +839,14 @@ impl Filesystem for FolderFs {
 	}
 
 	fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
+		let Some(reply) = self.served(reply) else { return };
 		self.s.handles.lock().unwrap().remove(&fh.0);
 		reply.ok();
 	}
 
 	fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+		let Some(reply) = self.served(reply) else { return };
+		let Some(reply) = self.noted(ino.0, reply) else { return };
 		// O_RDONLY with O_TRUNC cuts the file too (the kernel leaves the cut to `open` here, FUSE_ATOMIC_O_TRUNC).
 		let write = flags.acc_mode() != OpenAccMode::O_RDONLY || flags.0 & libc::O_TRUNC != 0;
 		if write && !self.s.writable {
@@ -844,6 +901,7 @@ impl Filesystem for FolderFs {
 	}
 
 	fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
+		let Some(reply) = self.served(reply) else { return };
 		let (path, name) = match self.place(parent, name) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
@@ -907,7 +965,10 @@ impl Filesystem for FolderFs {
 			}
 		}
 		let fh = self.s.handle(Handle::Write { ino, open, opener: process_of(req.pid()) });
-		reply.created(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
+		// Refused here, the file stays made with its handle: the program is ending.
+		let Some(reply) = self.noted(ino, reply) else { return };
+		self.s.kernel.late("create", &name);
+		reply.created(&CREATED, &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
 	}
 
 	fn read(
@@ -921,6 +982,7 @@ impl Filesystem for FolderFs {
 		_lock_owner: Option<LockOwner>,
 		reply: ReplyData,
 	) {
+		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_read(fh.0, offset, size, reply) else { return };
 		let (ino, file, written) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::File { ino, path, version, size }) => (*ino, Some((path.clone(), version.clone(), *size)), None),
@@ -990,12 +1052,14 @@ impl Filesystem for FolderFs {
 		fh: FileHandle,
 		offset: u64,
 		data: &[u8],
-		_write_flags: WriteFlags,
+		write_flags: WriteFlags,
 		_flags: OpenFlags,
 		_lock_owner: Option<LockOwner>,
 		reply: ReplyWrite,
 	) {
-		let Some(reply) = self.local_write(fh.0, offset, data, reply) else { return };
+		let Some(reply) = self.served(reply) else { return };
+		let cache = write_flags.contains(WriteFlags::FUSE_WRITE_CACHE);
+		let Some(reply) = self.local_write(fh.0, offset, data, cache, reply) else { return };
 		let (ino, open) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::Write { ino, open, .. }) => (*ino, open.clone()),
 			_ => return reply.error(Errno::EBADF),
@@ -1020,6 +1084,7 @@ impl Filesystem for FolderFs {
 	/// leaves it all to the opener's close, or to the release: children closing one by one would each close the file at
 	/// the node, and stage it there.
 	fn flush(&self, req: &Request, _ino: INodeNo, fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
+		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_handle(fh.0, false, false, reply) else { return };
 		let (ino, open, opener) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::Write { ino, open, opener }) => (*ino, open.clone(), *opener),
@@ -1042,6 +1107,7 @@ impl Filesystem for FolderFs {
 
 	/// What was written goes to the node; the file stays open (nothing is published until a boundary).
 	fn fsync(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_handle(fh.0, true, false, reply) else { return };
 		let open = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::Write { open, .. }) => open.clone(),
@@ -1064,6 +1130,7 @@ impl Filesystem for FolderFs {
 		_flush: bool,
 		reply: ReplyEmpty,
 	) {
+		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_handle(fh.0, false, true, reply) else { return };
 		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
 		if let Some(Handle::Write { ino, open, .. }) = handle {
@@ -1084,13 +1151,14 @@ impl Filesystem for FolderFs {
 		atime: Option<TimeOrNow>,
 		mtime: Option<TimeOrNow>,
 		_ctime: Option<SystemTime>,
-		_fh: Option<FileHandle>,
+		fh: Option<FileHandle>,
 		_crtime: Option<SystemTime>,
 		_chgtime: Option<SystemTime>,
 		_bkuptime: Option<SystemTime>,
 		_flags: Option<fuser::BsdFileFlags>,
 		reply: ReplyAttr,
 	) {
+		let Some(reply) = self.served(reply) else { return };
 		if !self.s.writable && (mode.is_some() || size.is_some() || uid.is_some() || gid.is_some()) {
 			return reply.error(Errno::EROFS);
 		}
@@ -1098,7 +1166,7 @@ impl Filesystem for FolderFs {
 		if uid.is_some_and(|u| u != self.s.owner.0) || gid.is_some_and(|g| g != self.s.owner.1) {
 			return reply.error(Errno::EPERM);
 		}
-		let Some(reply) = self.local_setattr(ino.0, mode, size, atime, mtime, reply) else { return };
+		let Some(reply) = self.local_setattr(ino.0, fh.map(|fh| fh.0), mode, size, (atime, mtime), reply) else { return };
 		let attr = match self.s.attr(ino.0) {
 			Ok((a, _)) => a,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -1139,6 +1207,7 @@ impl Filesystem for FolderFs {
 	}
 
 	fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
+		let Some(reply) = self.served(reply) else { return };
 		let (path, name) = match self.place(parent, name) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
@@ -1171,6 +1240,7 @@ impl Filesystem for FolderFs {
 		flags: RenameFlags,
 		reply: ReplyEmpty,
 	) {
+		let Some(reply) = self.served(reply) else { return };
 		let ((from, from_name), (to, to_name)) = match (self.place(parent, name), self.place(newparent, newname)) {
 			(Ok(a), Ok(b)) => (a, b),
 			(Err(e), _) | (_, Err(e)) => return reply.error(e),
@@ -1218,14 +1288,16 @@ impl Filesystem for FolderFs {
 		self.s.unpublished.lock().unwrap().renamed(&from, &to, folder, stays);
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
 		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
-		if folder {
-			self.caches_renamed(held, &from, &to);
-		}
+		let told = if folder { self.caches_renamed(held, &from, &to) } else { Ok(()) };
 		self.index_after(&to, index);
-		reply.ok();
+		match told {
+			Ok(()) => reply.ok(),
+			Err(e) => reply.error(Errno::from_i32(e)),
+		}
 	}
 
 	fn mknod(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _mode: u32, _umask: u32, _rdev: u32, reply: ReplyEntry) {
+		let Some(reply) = self.served(reply) else { return };
 		// The folder holds files, folders and links only: no device, named pipe or socket.
 		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
 	}
@@ -1233,6 +1305,7 @@ impl Filesystem for FolderFs {
 	/// A link's target, read at the link's version and logged as a read of the link, as an open of a file is. The kernel
 	/// keeps no target (FUSE_CACHE_SYMLINKS stays off), so every readlink comes here and every reader is logged.
 	fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.local_readlink(ino.0, reply) else { return };
 		let (attr, _) = match self.s.attr(ino.0) {
 			Ok(r) => r,
@@ -1267,6 +1340,7 @@ impl Filesystem for FolderFs {
 	/// A new link holding `target` as written (the kernel refuses an empty one and one over 4,095 bytes first). Its
 	/// version is this mount's save, as a close's is.
 	fn symlink(&self, _req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
+		let Some(reply) = self.served(reply) else { return };
 		let (path, name) = match self.place(parent, link_name) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
@@ -1290,6 +1364,7 @@ impl Filesystem for FolderFs {
 	/// through the other. Making it is a read of the source, logged before the node is asked. From or into a git object
 	/// store it is EXDEV, which git and other tools take as "copy instead".
 	fn link(&self, _req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
+		let Some(reply) = self.served(reply) else { return };
 		let (to, name) = match self.place(newparent, newname) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
@@ -1330,6 +1405,7 @@ impl Filesystem for FolderFs {
 	}
 
 	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
+		let Some(reply) = self.served(reply) else { return };
 		let files = self.s.tree.lock().unwrap().known() as u64;
 		// Room is the company's, not this machine's: a writable mount says there is plenty, so programs that check
 		// before they save do save; the node and the core refuse what does not fit.
@@ -1341,6 +1417,7 @@ impl Filesystem for FolderFs {
 impl FolderFs {
 	/// unlink and rmdir: the base is the version the name showed.
 	fn remove(&self, parent: INodeNo, name: &OsStr, folder: bool, reply: ReplyEmpty) {
+		let Some(reply) = self.served(reply) else { return };
 		let (path, name) = match self.place(parent, name) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
@@ -1441,6 +1518,10 @@ fn follow(
 				eprintln!("qorpera-folder: change {} resync {} paths {:?}: {inval:?}", change.seq, change.resync, change.paths);
 			}
 			apply(inval, raced);
+			if change.resync {
+				// The tree's resync drops the node's names; a cache top the node's entry won over goes too.
+				s.kernel.own();
+			}
 			if feed.ack(change.seq).is_err() {
 				break;
 			}
@@ -1454,6 +1535,7 @@ fn follow(
 			(inval, raced)
 		};
 		apply(inval, raced);
+		s.kernel.own();
 		feed = loop {
 			std::thread::sleep(wait);
 			match s.link.open_feed() {
@@ -1471,6 +1553,7 @@ fn follow(
 					*s.unpublished.lock().unwrap() = Unpublished::default();
 					s.feed_up.store(true, Ordering::SeqCst);
 					apply(inval, raced);
+					s.kernel.own();
 					break f;
 				}
 				Err(_) if s.link.closed() => {
@@ -1597,13 +1680,20 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		(0, 0)
 	};
 	let local = match (options.local.take().or_else(|| options.state.as_ref().map(|s| s.join("local"))), writable) {
-		(Some(dir), true) => Some(
-			Local::open(&dir, &ok.view_id, owner, options.state.as_ref().map(|s| s.join(crate::cache::MOVING)))
-				.map_err(|e| Failed::Other(format!("the local folder {}: {e}", dir.display())))?,
-		),
+		(Some(dir), true) => {
+			let marker = options.state.as_ref().map(|s| s.join(crate::cache::MOVING));
+			Some(
+				Local::open(&dir, options.caches.as_deref(), &ok.view_id, owner, marker).map_err(|e| {
+					// Its starter tells an unusable cache folder from another failure by the line's start.
+					let e = e.to_string();
+					Failed::Other(if e.starts_with(crate::local::UNUSABLE) { e } else { format!("the local folder {}: {e}", dir.display()) })
+				})?,
+			)
+		}
 		_ => None,
 	};
 	let (chased, names) = mpsc::channel();
+	let kernel = kernel::Kernel::new(local.as_ref());
 	let shared = Arc::new(Shared {
 		tree: Mutex::new(Tree::new()),
 		link,
@@ -1622,7 +1712,11 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		code_host: ok.code_host,
 		chased: chased.clone(),
 		unpublished: Mutex::new(Unpublished::default()),
+		kernel,
 	});
+	// Other programs on a shared cache folder can tell this one about their changes before it serves anything.
+	kernel::Kernel::start(&shared)
+		.map_err(|e| Failed::Other(format!("listening for the other programs on the cache folder: {e}")))?;
 	let mut config = Config::default();
 	config.mount_options = vec![
 		if writable { MountOption::RW } else { MountOption::RO },
@@ -1639,6 +1733,11 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	let mut session = fuser::Session::new(FolderFs { s: shared.clone() }, &options.mountpoint, &config)
 		.map_err(|e| Failed::Other(format!("mount {}: {e}", options.mountpoint.display())))?;
 	let notifier = session.notifier();
+	{
+		use std::os::fd::AsFd;
+		let fuse = session.as_fd().try_clone_to_owned().map_err(|e| Failed::Other(format!("the mount's /dev/fuse: {e}")))?;
+		shared.kernel.mounted(notifier.clone(), fuse);
+	}
 	let mut unmount = session.unmount_callable();
 	let (stop_tx, stop_rx) = mpsc::channel();
 	{
@@ -1699,6 +1798,10 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	}
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;
+	shared.kernel.stop();
+	// Every request refused, then the kernel's pages dropped, then the unmount and the exit: a fd held past the end reads
+	// nothing more. Also when the kernel ended the session: an abort ends it with its pages still held.
+	shared.kernel.close();
 	if !matches!(why, Stop::Ended(_)) {
 		if let Err(e) = unmount.unmount() {
 			eprintln!("qorpera-folder: unmount {}: {e}", options.mountpoint.display());

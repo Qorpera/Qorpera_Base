@@ -20,7 +20,9 @@
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
 # the session's repository. test/prove-coding-session-node.sh sets the node
 # up; then test/p3-driver.mjs runs the test database here and the executor in the node, for four turns of one coding
-# session (six on phase B: C2's two keep a quiet turn awake and kill the folder service inside the node).
+# session (ten on phase B: C2's six keep a quiet turn awake, kill the folder service inside the node, and narrow a
+# folder a turn read, so its machine gets a new disk from its image; with P3_UNTIL_ARCHIVE=1 it ends after the four,
+# once turn 3's archive is judged).
 # Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a proof
 # could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
 # removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines, then ALL PASSED.
@@ -52,9 +54,14 @@ NODE=$(command -v node || true)
 [[ -n $NODE ]] || NODE=$(ls /usr/local/bin/node /opt/node/bin/node 2>/dev/null | head -1 || true)
 [[ -x $NODE ]] || fail "no node here"
 NODE=$(readlink -f "$NODE")
-# The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first.
-driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" 2>&1 </dev/null) ||
-	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs failed"; }
+# The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first, and
+# C1-V's judgments (test/p3-c1v.mjs, which P3_C1V=1 runs after phase B's last turn).
+[[ ${P3_C1V:-0} != 1 || ${P3_CODE_HOST:-0} == 1 ]] || fail "P3_C1V=1 runs after phase B's last turn: set P3_CODE_HOST=1 too"
+# P3_UNTIL_ARCHIVE=1 ends phase B's session after turn 4, once the archive is judged: a short run, with no C2 turn.
+[[ ${P3_UNTIL_ARCHIVE:-0} != 1 || (${P3_CODE_HOST:-0} == 1 && ${P3_C1V:-0} != 1) ]] ||
+	fail "P3_UNTIL_ARCHIVE=1 ends phase B after turn 4: set P3_CODE_HOST=1, and not P3_C1V=1"
+driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" "$HERE/p3-c1v.test.mjs" 2>&1 </dev/null) ||
+	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs or test/p3-c1v.test.mjs failed"; }
 # The image's build and export, the node's disk and the coding machine in it: before anything is made.
 for place in /var/tmp /var/snap/lxd/common/lxd; do
 	[[ -d $place ]] || continue
@@ -274,14 +281,19 @@ lx exec "$VM" -- env PATH=/snap/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	fail "setting up the coding node failed"
 grep -qx "NODE READY" "$WORK/node.out" || fail "setting up the coding node did not finish"
 
-# --- The coding session: the test database here, the executor in the node, Order 9's four turns and C2's two ----------
+# --- The coding session: the test database here, the executor in the node, Order 9's four turns and C2's six ----------
 # P3_NODE_ONLY=1 stops before it: the node alone, for a tree whose executor cannot run a session on 5f's image yet.
 if [[ ${P3_NODE_ONLY:-0} == 1 ]]; then
 	echo "note: P3_NODE_ONLY=1, so no coding session runs"
 else
 	(cd "$REPO" && "$NODE" deploy/coding-worker/test/p3-driver.mjs "$PROJECT" "$VM" "$CODING_IMAGE" "$WORK/push/package" \
 		"$(sed -n 's/^P3-NODE //p' "$WORK/node.out")") | tee "$WORK/driver.out" || fail "the coding session failed"
-	grep -qx "SESSION PROVEN" "$WORK/driver.out" || fail "the coding session did not finish"
+	if [[ ${P3_UNTIL_ARCHIVE:-0} == 1 ]]; then
+		grep -qx "ARCHIVE PROVEN" "$WORK/driver.out" || fail "the coding session did not finish its archive"
+		echo "note: P3_UNTIL_ARCHIVE=1, so the session ended after turn 4: no C2 turn ran"
+	else
+		grep -qx "SESSION PROVEN" "$WORK/driver.out" || fail "the coding session did not finish"
+	fi
 fi
 
 # --- The test machine is as it was -----------------------------------------------------------------------------------

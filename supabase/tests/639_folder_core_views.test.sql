@@ -329,7 +329,8 @@ begin
 end $$;
 
 -- A coding session: detached as its agent and owner under the coding rule (code/ yes, agents/ no), never reviewed; the
--- attachment's refusal (a disabled executor, a lapsed attachment, an archive) ends it.
+-- attachment's refusal (a disabled executor, a lapsed attachment) ends it, and an archive once its 240 s for the final
+-- boundary have passed (20260930517000; 539).
 do $$
 declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid();
 	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
@@ -361,8 +362,9 @@ begin
 	c := pg_temp.last_commit(r);
 	if c.session_kind <> 'coding' or c.run_id is not null or c.view_kind <> 'coding_session' or c.review_id is not null then
 		raise exception 'Coding view commit: %', to_jsonb(c); end if;
-	-- The attachment's refusal ends the view: a disabled executor, a lapsed attachment, an archive. (The session is put
-	-- back and a new view opened, only to go on testing.)
+	-- The attachment's refusal ends the view: a disabled executor, a lapsed attachment. An archive (as
+	-- qorpera_archive_coding_worker makes it: the attachment ends now) leaves the final boundary's save and ends the view
+	-- 240 s on, which nothing renews. (The session is put back and a new view opened, only to go on testing.)
 	perform pg_temp.fx(format('update public.qorpera_coding_executors set enabled = false where environment_id = %L',
 		'63200000-0000-4000-8000-000000000020'));
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-executor-off', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
@@ -372,9 +374,14 @@ begin
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-lapsed', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
 	perform pg_temp.fx(format('update public.qorpera_coding_sessions set attachment_until = clock_timestamp() + interval ''60 seconds'' where worker_id = %L', w));
 	perform pg_temp.expect(pg_temp.vcommit(cv, 'coding-back', '[{"op":"mkdir","path":"code/back"}]'), 1, 'saved');
-	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = ''member'' where worker_id = %L', w));
-	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
-	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = null, archived_by = null where worker_id = %L', w));
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = clock_timestamp(), archived_by = ''member'',
+		attachment_until = least(attachment_until, clock_timestamp()) where worker_id = %L', w));
+	perform pg_temp.expect(pg_temp.vcommit(cv, 'coding-archived', '[{"op":"mkdir","path":"code/final"}]'), 1, 'saved');
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = archived_at - interval ''241 seconds'',
+		attachment_until = attachment_until - interval ''241 seconds'' where worker_id = %L', w));
+	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-archived-late', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
+	perform pg_temp.fx(format('update public.qorpera_coding_sessions set archived_at = null, archived_by = null,
+		attachment_until = clock_timestamp() + interval ''60 seconds'' where worker_id = %L', w));
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
 	-- During a leased turn, a save records the turn and rechecks what the turn read: after tread/ narrows it refuses.
 	-- Once the turn has ended (the executor saves before it completes a turn) its reads no longer hold the view back.

@@ -28,6 +28,7 @@ import { CloudCodingExecutor } from "../../../packages/runner-orchestrator/src/c
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { codingCommandExecution } from "../../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
 import { CODING_FOLDER_CONTROL_SOCKET, CodingFolderControl } from "../../../packages/runner-orchestrator/src/coding-folder-control.ts";
+import { CodingFolderSecretKey } from "../../../packages/runner-orchestrator/src/coding-folder-secrets.ts";
 import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../../packages/runner-orchestrator/src/coding-storage.ts";
 import { LxdUnixClient } from "../../../packages/runner-orchestrator/src/lxd-client.ts";
@@ -146,14 +147,18 @@ async function main(): Promise<void> {
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
-		const folderControl = new CodingFolderControl(config.folder.controlSocket ? { path: config.folder.controlSocket } : {});
+		// The folder service's save check gets the machine's secret values as keyed hashes, as executor.ts gives them (5j-5
+		// (a)): with no broker here, none.
+		const folderSecretKey = new CodingFolderSecretKey();
+		const secrets = () => folderSecretKey.set([]).set;
 		// The views it holds are recorded beside its journals, on the NAS: a restarted executor still ends them.
 		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		// Each boundary's answer goes to the log, so a CODING_FOLDER_BOUNDARY_HELD shows which view held and why: whole
-		// from the witness socket, and as the host reads it.
-		const witnessed = new CodingFolderControl({ path: await boundaryWitness(config.folder.controlSocket ?? CODING_FOLDER_CONTROL_SOCKET) });
-		const boundaries: Pick<CodingFolderControl, "boundary" | "restarted"> = {
+		// from the witness socket, and as the host reads it. The views ask theirs (a session's final boundary) the same way.
+		const witnessed = new CodingFolderControl({ path: await boundaryWitness(config.folder.controlSocket ?? CODING_FOLDER_CONTROL_SOCKET), secrets });
+		const boundaries: Pick<CodingFolderControl, "boundary" | "restarted" | "secrets"> = {
 			restarted: (machine, signal) => witnessed.restarted(machine, signal),
+			secrets: (machine, signal) => witnessed.secrets(machine, signal),
 			async boundary(machine, final, signal) {
 				try {
 					const answer = await witnessed.boundary(machine, final, signal);
@@ -166,7 +171,7 @@ async function main(): Promise<void> {
 			},
 		};
 		folder = {
-			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: boundaries, client: lxd,
+			views: new CodingFolderViews({ control, folder: boundaries, client: lxd, agent, program, records }), control: boundaries, client: lxd,
 			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs) } : {}),
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
 		};
@@ -280,9 +285,13 @@ async function main(): Promise<void> {
 			while (!stop.signal.aborted) {
 				const started = performance.now();
 				try {
-					for (const outcome of await running.keep(stop.signal))
+					const outcomes = await running.keep(stop.signal);
+					for (const outcome of outcomes)
 						if (outcome.state === "failed") log({ event: "coding-session-error", ...outcome });
 						else if (outcome.step === "detach" || outcome.state === "not-now") log({ event: "coding-session", ...outcome });
+					// And the pass's end, with every outcome, done ones too: the driver judges turn 9's keep by a pass that ended
+					// (c2.judgeKeep), never by SQL's lease alone, which a keep renews before its pass ends.
+					if (outcomes.length) log({ event: "coding-keep-pass", outcomes });
 				} catch (error) {
 					if (!stop.signal.aborted) log({ event: "coding-session-error", code: errorCode(error), causes: causes(error) });
 				}

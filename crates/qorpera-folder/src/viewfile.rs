@@ -146,7 +146,7 @@ impl Drop for DaemonLock {
 	fn drop(&mut self) { let _ = flock(&self.0, libc::LOCK_UN); }
 }
 
-fn flock(file: &File, operation: i32) -> io::Result<()> {
+pub(crate) fn flock(file: &File, operation: i32) -> io::Result<()> {
 	loop {
 		// SAFETY: the descriptor is owned by the caller's live File.
 		if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 { return Ok(()); }
@@ -155,7 +155,7 @@ fn flock(file: &File, operation: i32) -> io::Result<()> {
 	}
 }
 
-fn private(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn private(meta: &std::fs::Metadata) -> bool {
 	// SAFETY: geteuid has no preconditions.
 	meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0
 }
