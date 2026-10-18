@@ -229,6 +229,18 @@ fn fd_path(file: &File) -> PathBuf {
 	PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
+/// The target of the link `place` is, opened itself (`O_PATH | O_NOFOLLOW`).
+fn target_of(place: &File) -> Result<Vec<u8>, i32> {
+	let mut target = vec![0u8; libc::PATH_MAX as usize];
+	// SAFETY: a descriptor, an empty NUL-ended path (the link the descriptor is), and a buffer of its length.
+	let read = unsafe { libc::readlinkat(place.as_raw_fd(), c"".as_ptr(), target.as_mut_ptr().cast(), target.len()) };
+	if read < 0 {
+		return Err(errno(io::Error::last_os_error()));
+	}
+	target.truncate(read as usize);
+	Ok(target)
+}
+
 /// The folder `name` in `dir`, opened as a place to find what is in it (`O_PATH`), never through a link (`ENOTDIR`, or
 /// `ELOOP`). openat, as openat2's `RESOLVE_NO_SYMLINKS` is refused where the program runs (`command.rs`).
 fn open_dir(dir: &File, name: &OsStr) -> Result<File, i32> {
@@ -1355,14 +1367,7 @@ impl Local {
 		let names = self.names();
 		let place = self.place_of(&names, ino)?;
 		drop(names);
-		let mut target = vec![0u8; libc::PATH_MAX as usize];
-		// SAFETY: a descriptor, an empty NUL-ended path (the link the descriptor is), and a buffer of its length.
-		let read = unsafe { libc::readlinkat(place.as_raw_fd(), c"".as_ptr(), target.as_mut_ptr().cast(), target.len()) };
-		if read < 0 {
-			return Err(errno(io::Error::last_os_error()));
-		}
-		target.truncate(read as usize);
-		Ok(target)
+		target_of(&place)
 	}
 
 	/// A second name for a local file, in the same area.
@@ -1862,12 +1867,18 @@ impl Local {
 		OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(disk.path())
 	}
 
-	/// The target of the link at the cache disk path `disk`, as `folder` finds it, and the local inode of the link.
+	/// The target of the link at the cache disk path `disk`, as `folder` finds it, and the local inode of the link: both
+	/// of the one link opened there (`O_PATH`), so another program renaming or exchanging links there meanwhile never
+	/// gives one link's inode with another's target (which a cache move would publish, and then take the link off).
 	pub fn read_link(&self, disk: &Path) -> Result<(PathBuf, u64), i32> {
 		let disk = self.beneath(Area::Cache, disk)?;
-		let meta = fs::symlink_metadata(disk.path()).map_err(errno)?;
-		let ino = self.id(Area::Cache, &meta)?;
-		Ok((fs::read_link(disk.path()).map_err(errno)?, ino))
+		let flags = libc::O_PATH | libc::O_NOFOLLOW;
+		let place = OpenOptions::new().read(true).custom_flags(flags).open(disk.path()).map_err(errno)?;
+		let ino = self.id(Area::Cache, &place.metadata().map_err(errno)?)?;
+		#[cfg(test)]
+		tests::parked("link", &disk.at);
+		let target = target_of(&place)?;
+		Ok((PathBuf::from(OsStr::from_bytes(&target)), ino))
 	}
 }
 
@@ -1999,7 +2010,7 @@ mod tests {
 
 	/// The files a test stops the next change to at a point: `open`, between its open and its lock (`writer_at`);
 	/// `rename`, just before a rename over it; `remove`, just before a cache move takes it off the disk
-	/// (`moved_file_out`). It is told when one stopped there, and tells it to go on (`park`).
+	/// (`moved_file_out`); `link`, between a cache move's read of a link's inode and of its target (`read_link`). It is told when one stopped there, and tells it to go on (`park`).
 	static PARK: Mutex<Vec<Park>> = Mutex::new(Vec::new());
 
 	pub(super) fn parked(point: &str, disk: &Path) {
@@ -2979,6 +2990,29 @@ mod tests {
 		assert_eq!(fs::read(disk("w")).unwrap(), b"a");
 		a.release(fh);
 		a.release(zfh);
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn a_link_a_cache_move_reads_while_another_program_exchanges_it_gives_its_own_target() {
+		let (a, b, base) = sharing("shared-link");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let x = b.symlink(up.clone(), "x", Area::Cache, Path::new("old")).unwrap();
+		b.symlink(up.clone(), "y", Area::Cache, Path::new("new")).unwrap();
+		let disk = a.disk(Area::Cache, "code/o/n/worktrees/w/target/x");
+		std::thread::scope(|s| {
+			// In here, so a check that fails lets the read go on (`Parked`), and the test fail.
+			let mut parked = park("link", &disk);
+			let read = s.spawn(|| a.read_link(&disk));
+			assert!(parked.stopped(Duration::from_secs(10)));
+			// v2 exchanges x and y between v1's read of x's inode and of its target: v1 has the target of the link whose
+			// inode it has, which is the link the move takes off the disk only while it is at x (`moved_file_out`).
+			b.rename((&up, "x"), (&up, "y"), Area::Cache, false, true).unwrap();
+			parked.go();
+			assert_eq!(read.join().unwrap(), Ok((PathBuf::from("old"), x.ino.0)));
+		});
+		assert_eq!(a.read_link(&disk).map(|(target, _)| target), Ok(PathBuf::from("new")));
 		drop((a, b));
 		fs::remove_dir_all(&base).unwrap();
 	}
