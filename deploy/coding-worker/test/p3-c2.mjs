@@ -188,6 +188,31 @@ export function judgeKeep({ lines, machineId, attachment }) {
 	return { failures, before: mounted < 0 ? [] : errors(0, mounted) };
 }
 
+/** The machine's instance as LXD answers it (`/1.0/instances/<name>`): its UUID, its vsock id, the image its disk came
+ * from, and each network card's MAC. The agent plug writes the card's MAC into the card itself (agent-plug.ts), and LXD
+ * then keeps no volatile.<card>.hwaddr for it; a card LXD gave a MAC has it only there. */
+export function identityOf({ config, expanded_devices: devices }) {
+	const cards = Object.entries(devices ?? {}).filter(([, device]) => device.type === "nic").sort(([a], [b]) => (a < b ? -1 : 1));
+	return {
+		uuid: config["volatile.uuid"] ?? null, vsockId: config["volatile.vsock_id"] ?? null, baseImage: config["volatile.base_image"] ?? null,
+		hwaddrs: Object.fromEntries(cards.map(([name, device]) => [name, device.hwaddr ?? config[`volatile.${name}.hwaddr`] ?? null])),
+	};
+}
+
+/** Whether LXD's rebuild gave the instance a new root disk from its image and kept the instance itself, judged from its
+ * identity before the rebuild (`before`, turn 7's) and after it (`after`, turn 9's): the same UUID, vsock id and cards'
+ * MACs, and its disk from `image`. Answers each difference, with both values (none: so it was). */
+export function judgeIdentity({ before, after, image }) {
+	const macs = Object.values(before.hwaddrs);
+	return [
+		(!before.uuid || !before.vsockId || !macs.length || !macs.every(Boolean)) && `LXD showed no full identity before the rebuild (${JSON.stringify(before)})`,
+		after.baseImage !== image && `volatile.base_image is ${after.baseImage}, not the image ${image}`,
+		after.uuid !== before.uuid && `volatile.uuid ${before.uuid} → ${after.uuid}`,
+		after.vsockId !== before.vsockId && `volatile.vsock_id ${before.vsockId} → ${after.vsockId}`,
+		JSON.stringify(after.hwaddrs) !== JSON.stringify(before.hwaddrs) && `MAC addresses ${JSON.stringify(before.hwaddrs)} → ${JSON.stringify(after.hwaddrs)}`,
+	].filter(Boolean);
+}
+
 /** The core's tables with a row that holds `text`, as text or as its UTF-8 bytes in hex (a bytea column), and the
  * tables it could not read. */
 export async function holding(db, text) {

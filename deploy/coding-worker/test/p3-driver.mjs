@@ -617,13 +617,7 @@ try {
 			if (context10.machine?.newDisk !== false) fail(`turn 10's context still says the machine got a new disk: ${JSON.stringify(context10.machine)}`);
 			pass(`turn 10's context no longer says it: ${JSON.stringify(context10.machine)} (${elapsed()})`);
 			// LXD's rebuild gives the instance a new root disk from its image and keeps the instance itself.
-			const differs = [
-				(!identity7.uuid || !identity7.vsockId || !Object.keys(identity7.hwaddrs).length) && `LXD showed no full identity before the rebuild (${JSON.stringify(identity7)})`,
-				identity9.baseImage !== imageFingerprint && `volatile.base_image is ${identity9.baseImage}, not the image ${imageFingerprint}`,
-				identity9.uuid !== identity7.uuid && `volatile.uuid ${identity7.uuid} → ${identity9.uuid}`,
-				identity9.vsockId !== identity7.vsockId && `volatile.vsock_id ${identity7.vsockId} → ${identity9.vsockId}`,
-				JSON.stringify(identity9.hwaddrs) !== JSON.stringify(identity7.hwaddrs) && `MAC addresses ${JSON.stringify(identity7.hwaddrs)} → ${JSON.stringify(identity9.hwaddrs)}`,
-			].filter(Boolean);
+			const differs = c2.judgeIdentity({ before: identity7, after: identity9, image: imageFingerprint });
 			if (differs.length) fail(`the rebuilt machine is not the same instance on a disk from its image: ${differs.join("; ")}`);
 			pass(`the rebuilt machine is the same instance on a disk from its image: ${JSON.stringify(identity9)} (${elapsed()})`);
 			await database.finishTurn(db, turn10, { operationKey: "p3-turn-10", summary: "Carried on after the new disk.", headSha: head });
@@ -762,14 +756,9 @@ function storeObject(profileId, bytes) {
 	}
 }
 
-/** The coding machine's instance as LXD keeps it: its UUID, its vsock id, the image its disk came from, and each
- * network card's MAC. */
+/** The coding machine's instance as LXD keeps it (c2.identityOf). */
 function instanceIdentity(machine) {
-	const { config } = JSON.parse(lxc("exec", vm, "--", "lxc", "query", `/1.0/instances/${machine.name}?project=${machine.project}`));
-	return {
-		uuid: config["volatile.uuid"] ?? null, vsockId: config["volatile.vsock_id"] ?? null, baseImage: config["volatile.base_image"] ?? null,
-		hwaddrs: Object.fromEntries(Object.entries(config).filter(([key]) => /^volatile\.[^.]+\.hwaddr$/.test(key)).sort()),
-	};
+	return c2.identityOf(JSON.parse(lxc("exec", vm, "--", "lxc", "query", `/1.0/instances/${machine.name}?project=${machine.project}`)));
 }
 
 /** The coding machine's journal on the NAS: its directory, its disk record (or null for the disk it was made with), and

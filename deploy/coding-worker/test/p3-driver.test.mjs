@@ -1,15 +1,15 @@
 // What node --check cannot see in the P3 driver: that its imports link, and that no top-level binding is declared below
 // the main flow's start (the flow's callbacks would find it uninitialized: a run's ReferenceError at its first core call,
 // 38 minutes in). And that its stand-in PostgREST fails a call as PostgREST does, for the executor's control, which is
-// production's own, as for the folder service. And that turn 9's judgments of the new disk and of the keep on it pass
-// a real run's records and fail each of them broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
+// production's own, as for the folder service. And that turn 9's judgments of the new disk and of the keep on it, and
+// turn 10's of the rebuilt instance, pass a real run's records and fail each of them broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
 // builds anything.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { judgeKeep, judgeNewDisk } from "./p3-c2.mjs";
+import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk } from "./p3-c2.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
 const driver = fileURLToPath(new URL("./p3-driver.mjs", import.meta.url));
@@ -176,6 +176,62 @@ test("turn 9 fails each broken record of the keep", () => {
 		const run = structuredClone(KEPT9);
 		broken(run);
 		const { failures } = judgeKeep(run);
+		assert.equal(failures.length, expected.length, `${name}: ${JSON.stringify(failures)}`);
+		expected.forEach((pattern, index) => assert.match(failures[index], pattern, name));
+	}
+});
+
+// Run 3's machine as LXD answers it: its real UUID, vsock id and image, and its card as the agent plug makes it
+// (agent-plug.ts, with a made-up MAC: run 3 did not print the card). Run 3 read MACs only from volatile.<card>.hwaddr,
+// which LXD keeps for no card with its own MAC, and failed turn 10 with the identity it read then.
+const IMAGE = "697bc20130208894a5e881a769cc324124e1fe43c290c85bb39d85d39f77e1ab";
+const INSTANCE3 = {
+	config: { "volatile.uuid": "43285b85-d72d-40e4-b42a-3c968852f20e", "volatile.vsock_id": "2837870664", "volatile.base_image": IMAGE, "volatile.eth0.host_name": "tap1a2b3c4d" },
+	expanded_devices: {
+		root: { type: "disk", path: "/", pool: "default" },
+		eth0: { type: "nic", nictype: "bridged", parent: "qagent0", name: "eth0", hwaddr: "0e:51:0a:d2:01:01", "ipv6.address": "none" },
+	},
+};
+const READ3 = { uuid: "43285b85-d72d-40e4-b42a-3c968852f20e", vsockId: "2837870664", baseImage: IMAGE, hwaddrs: {} };
+
+test("turn 10 reads the machine's card's MAC from the card, and finds the rebuilt machine the same instance", () => {
+	const identity = identityOf(INSTANCE3);
+	assert.deepEqual(identity, { ...READ3, hwaddrs: { eth0: "0e:51:0a:d2:01:01" } });
+	assert.deepEqual(judgeIdentity({ before: identity, after: identityOf(structuredClone(INSTANCE3)), image: IMAGE }), []);
+	// A card LXD gave a MAC has it only in volatile.<card>.hwaddr.
+	const given = structuredClone(INSTANCE3);
+	delete given.expanded_devices.eth0.hwaddr;
+	given.config["volatile.eth0.hwaddr"] = "00:16:3e:12:34:56";
+	assert.deepEqual(identityOf(given).hwaddrs, { eth0: "00:16:3e:12:34:56" });
+});
+
+test("turn 10 fails each broken identity of the rebuilt machine", () => {
+	const none = /^LXD showed no full identity before the rebuild /;
+	const image = /^volatile\.base_image is /, uuid = /^volatile\.uuid /, vsock = /^volatile\.vsock_id /, macs = /^MAC addresses /;
+	const card = (instance) => instance.expanded_devices.eth0;
+	const cases = [
+		// Run 3's own failure: the identity it read before the rebuild had no MAC.
+		["run 3's reading, no MAC", (run) => { run.before = READ3; run.after = READ3; }, [none]],
+		["no card", (run) => { delete run.before.expanded_devices.eth0; delete run.after.expanded_devices.eth0; }, [none]],
+		["a card with no MAC anywhere", (run) => { delete card(run.before).hwaddr; delete card(run.after).hwaddr; }, [none]],
+		["no UUID", (run) => { delete run.before.config["volatile.uuid"]; }, [none, uuid]],
+		["no vsock id", (run) => { delete run.before.config["volatile.vsock_id"]; }, [none, vsock]],
+		["the disk from another image", (run) => { run.after.config["volatile.base_image"] = "f".repeat(64); }, [image]],
+		["a new UUID", (run) => { run.after.config["volatile.uuid"] = "43285b85-0000-4000-8000-000000000000"; }, [uuid]],
+		["a new vsock id", (run) => { run.after.config["volatile.vsock_id"] = "2333929551"; }, [vsock]],
+		["plugged in again with another MAC", (run) => { card(run.after).hwaddr = "0e:51:0a:d2:01:02"; }, [macs]],
+		["the card gone after", (run) => { delete run.after.expanded_devices.eth0; }, [macs]],
+		["a second card after", (run) => { run.after.expanded_devices.eth1 = { ...card(run.after), name: "eth1", hwaddr: "0e:51:0a:d2:01:03" }; }, [macs]],
+		["made again: a new UUID, vsock id and MAC", (run) => {
+			Object.assign(run.after.config, { "volatile.uuid": "43285b85-0000-4000-8000-000000000000", "volatile.vsock_id": "2333929551" });
+			card(run.after).hwaddr = "0e:51:0a:d2:01:02";
+		}, [uuid, vsock, macs]],
+	];
+	for (const [name, broken, expected] of cases) {
+		const run = { before: structuredClone(INSTANCE3), after: structuredClone(INSTANCE3) };
+		broken(run);
+		const read = (instance) => (instance.config ? identityOf(instance) : instance);
+		const failures = judgeIdentity({ before: read(run.before), after: read(run.after), image: IMAGE });
 		assert.equal(failures.length, expected.length, `${name}: ${JSON.stringify(failures)}`);
 		expected.forEach((pattern, index) => assert.match(failures[index], pattern, name));
 	}
