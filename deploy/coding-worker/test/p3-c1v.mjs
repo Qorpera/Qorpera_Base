@@ -164,12 +164,16 @@ export function judgeBusy(record) {
 	return failures;
 }
 
-/** Step 4: the question of this quiet day (its key from the backdate's mark, one day) counts the sleeper. */
+/** Step 4: the question of this quiet day (its key from the backdate's mark, one day) waits for the agent and counts the
+ * sleeper. */
 export function judgeAsked(record) {
 	const { expected, wake } = record.asked ?? {};
 	if (!expected || wake?.occurrenceKey !== expected) return [`no question for S's quiet day ${expected}: the newest is ${JSON.stringify(wake)}`];
-	if (!(wake.summary ?? "").includes(QUESTION)) return [`the quiet day's question does not say S has 1 command running: ${JSON.stringify(wake.summary)}`];
-	return [];
+	const failures = [];
+	// Admission may cancel the question as it is inserted (519100), and the mark counts as asked all the same.
+	if (wake.status !== "queued") failures.push(`the quiet day's question is ${wake.status}, not queued for the agent: ${JSON.stringify(wake)}`);
+	if (!(wake.summary ?? "").includes(QUESTION)) failures.push(`the quiet day's question does not say S has 1 command running: ${JSON.stringify(wake.summary)}`);
+	return failures;
 }
 
 /** Step 5's archive: S2's ARCHIVED event names its loop, which stops; S's sleeper runs on, and S stays attached. */

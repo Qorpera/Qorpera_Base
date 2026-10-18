@@ -1,8 +1,8 @@
 // C1-V's judgments (p3-c1v.mjs) pass a whole run's records and fail each of them broken: a busy window that proves
-// nothing, an idle session counted busy, no question or another day's, an archive that leaves the loop or takes the
-// sleeper, a machine that does not sleep once quiet. No run has read them yet, so the records are SQL's shapes with
-// made-up values. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it builds
-// anything.
+// nothing, an idle session counted busy, no question, another day's or a cancelled one, an archive that leaves the
+// loop or takes the sleeper, a machine that does not sleep once quiet. No run has read them yet, so the records are
+// SQL's shapes with made-up values. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh
+// before it builds anything.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { judgeArchived, judgeAsked, judgeBusy, judgeC1V, judgeSlept } from "./p3-c1v.mjs";
@@ -66,6 +66,7 @@ test("C1-V fails each broken record", () => {
 	const looked = /^the executor looked too seldom in 75 s: /;
 	const awake = /^the VM is STOPPED after the busy window, not RUNNING$/;
 	const noQuestion = /^no question for S's quiet day /;
+	const notQueued = /^the quiet day's question is cancelled, not queued for the agent: /;
 	const notCounted = /^the quiet day's question does not say S has 1 command running: /;
 	const archiveNames = /^S2's ARCHIVED event does not name its loop: /;
 	const loopLeft = /^S2's loop still runs after its archive: /;
@@ -118,6 +119,11 @@ test("C1-V fails each broken record", () => {
 		["Order 9's question the newest", (run) => { run.asked.wake.occurrenceKey = `coding-quiet:${S}:1760605903211:1`; }, [noQuestion]],
 		["a second day's question", (run) => { run.asked.wake.occurrenceKey = KEY.replace(/:1$/, ":2"); }, [noQuestion]],
 		["the backdate not made", (run) => { run.asked.expected = null; }, [noQuestion]],
+		["the question cancelled at admission", (run) => { run.asked.wake.status = "cancelled"; }, [notQueued]],
+		["a cancelled question that does not count the sleeper", (run) => {
+			run.asked.wake.status = "cancelled";
+			run.asked.wake.summary = run.asked.wake.summary.replace(", with 1 command still running on its machine", "");
+		}, [notQueued, notCounted]],
 		["the sleeper not counted", (run) => {
 			run.asked.wake.summary = run.asked.wake.summary.replace(", with 1 command still running on its machine", "");
 		}, [notCounted]],
