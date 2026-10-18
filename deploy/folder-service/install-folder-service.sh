@@ -63,6 +63,14 @@ if ! /usr/bin/node -e 'const [a,b]=process.versions.node.split(".").map(Number);
 	echo "Node.js ${node_version} is too old: 22.19.0 or newer is needed." >&2
 	exit 1
 fi
+# The save check reads the git packs coding machines save with the node's git, under prlimit (5j-5).
+for tool in /usr/bin/git /usr/bin/prlimit; do
+	if [[ ! -x ${tool} ]]; then
+		echo "${tool} is missing: the folder service checks the git packs coding machines save with it." >&2
+		exit 1
+	fi
+done
+/usr/bin/git --version
 /usr/bin/node --check "${PACKAGE}/qorpera-folder-service.cjs"
 "${PACKAGE}/qorpera-folder" version
 

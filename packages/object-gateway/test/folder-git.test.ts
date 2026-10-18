@@ -33,6 +33,7 @@ import {
 	FakeUploads,
 	folder,
 	hashOf,
+	looseObject,
 	noSecrets,
 	OFFICE,
 	PASS,
@@ -414,9 +415,9 @@ async function repo(grants = companyGrants(), coding = false, secrets: SecretSet
 
 /** A small file, written as the folder program writes it: opened (exclusively, as git takes a lock), its one chunk,
  * closed. */
-async function write(view: ViewHandle, path: string, text: string, exclusive = false): Promise<void> {
+async function write(view: ViewHandle, path: string, text: string | Buffer, exclusive = false): Promise<void> {
 	const { handle } = await view.open({ path, create: true, exclusive, truncate: true });
-	const data = Buffer.from(text);
+	const data = typeof text === "string" ? Buffer.from(text) : text;
 	if (data.byteLength > 0)
 		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 	await view.close(handle, data.byteLength);
@@ -911,6 +912,27 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitPublishes).toEqual([]);
 		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
 		expect(core.entries.get(MAIN_LOG)?.fileSha256).toBe(hashOf("0000 1111\n"));
+	});
+
+	it("refuses a coding machine's git change whose new object carries a secret value only in what git compressed, and publishes none of it (5j-5)", async () => {
+		const { core, open } = await repo(codingGrants(), true, secretsOf("test-value-0001"));
+		const view = await open("first");
+		const carrying = looseObject("blob", "the key is test-value-0001.\n");
+		const honest = looseObject("blob", "the key is gone.\n");
+		expect(carrying.data.includes("test-value-0001")).toBe(false);
+		for (const object of [carrying, honest]) {
+			const at = object.name.split("/")[1]!;
+			if (!(await names(view, `${R}/objects`)).includes(at)) await view.mkdir(`${R}/objects/${at}`);
+			await write(view, `${R}/${object.name}`, object.data);
+		}
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await write(view, MAIN_LOG, "0000 1111\n1111 3333 commit: change\n");
+		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "NOT_PERMITTED");
+		expect(core.gitPublishes).toEqual([]);
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
+		expect(core.entries.get(MAIN_LOG)?.fileSha256).toBe(hashOf("0000 1111\n"));
+		expect(core.entries.has(`${R}/${carrying.name}`)).toBe(false);
+		expect(core.entries.has(`${R}/${honest.name}`)).toBe(false);
 	});
 
 	it("publishes no git change once the machine lost its read log, but still gives an unused lease back", async () => {

@@ -23,10 +23,10 @@
 # test/prove-coding-session-node.sh sets the node up; then test/p3-driver.mjs runs the test database here and the
 # executor in the node, for four turns of one coding session (ten on phase B without custody: C2's six keep a quiet turn
 # awake, kill the folder service inside the node, and narrow a folder a turn read, so its machine gets a new disk from
-# its image; nine with custody). Before and after, the test machine's links (but Docker's), nft table names, a few
-# sysctls and the modules a proof could load are compared: one of those changing, or any module going away, fails the
-# run. Everything it made is removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines,
-# then ALL PASSED.
+# its image; with P3_UNTIL_ARCHIVE=1 it ends after the four, once turn 3's archive is judged; nine with custody).
+# Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a proof
+# could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
+# removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -49,6 +49,7 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
 [[ ${P3_CUSTODY:-0} == 1 && ${P3_CODE_HOST:-0} != 1 ]] && fail "P3_CUSTODY=1 needs P3_CODE_HOST=1"
 [[ ${P3_CUSTODY:-0} == 1 && ${P3_C1V:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of C1-V: leave P3_C1V unset"
+[[ ${P3_CUSTODY:-0} == 1 && ${P3_UNTIL_ARCHIVE:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of the archive: leave P3_UNTIL_ARCHIVE unset"
 export PATH=$PATH:/snap/bin
 for tool in lxc snap apt-get apt-cache nft jq python3 setpriv setsid docker; do
 	command -v "$tool" >/dev/null || fail "no $tool here"
@@ -60,6 +61,9 @@ NODE=$(readlink -f "$NODE")
 # The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first, and
 # C1-V's judgments (test/p3-c1v.mjs, which P3_C1V=1 runs after phase B's last turn).
 [[ ${P3_C1V:-0} != 1 || ${P3_CODE_HOST:-0} == 1 ]] || fail "P3_C1V=1 runs after phase B's last turn: set P3_CODE_HOST=1 too"
+# P3_UNTIL_ARCHIVE=1 ends phase B's session after turn 4, once the archive is judged: a short run, with no C2 turn.
+[[ ${P3_UNTIL_ARCHIVE:-0} != 1 || (${P3_CODE_HOST:-0} == 1 && ${P3_C1V:-0} != 1) ]] ||
+	fail "P3_UNTIL_ARCHIVE=1 ends phase B after turn 4: set P3_CODE_HOST=1, and not P3_C1V=1"
 driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" "$HERE/p3-c1v.test.mjs" 2>&1 </dev/null) ||
 	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs or test/p3-c1v.test.mjs failed"; }
 # The image's build and export, the node's disk and the coding machine in it: before anything is made.
@@ -288,7 +292,12 @@ if [[ ${P3_NODE_ONLY:-0} == 1 ]]; then
 else
 	(cd "$REPO" && "$NODE" deploy/coding-worker/test/p3-driver.mjs "$PROJECT" "$VM" "$CODING_IMAGE" "$WORK/push/package" \
 		"$(sed -n 's/^P3-NODE //p' "$WORK/node.out")") | tee "$WORK/driver.out" || fail "the coding session failed"
-	grep -qx "SESSION PROVEN" "$WORK/driver.out" || fail "the coding session did not finish"
+	if [[ ${P3_UNTIL_ARCHIVE:-0} == 1 ]]; then
+		grep -qx "ARCHIVE PROVEN" "$WORK/driver.out" || fail "the coding session did not finish its archive"
+		echo "note: P3_UNTIL_ARCHIVE=1, so the session ended after turn 4: no C2 turn ran"
+	else
+		grep -qx "SESSION PROVEN" "$WORK/driver.out" || fail "the coding session did not finish"
+	fi
 	if [[ ${P3_CUSTODY:-0} == 1 ]]; then
 		grep -qx "CUSTODY PROVEN" "$WORK/driver.out" || fail "the custody proof did not finish"
 	fi

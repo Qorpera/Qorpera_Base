@@ -4381,6 +4381,28 @@ describe("a coding session on the folder model", () => {
 		// No broker: nothing to check the push against.
 		expect(mocked.push.mock.calls[0]?.[2]).not.toHaveProperty("secrets");
 	});
+	it("asks the boundary again while a path waits for a save check still running (5j-5), and publishes once it saved", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// Another view's large pack is still being checked: the service answered in time, and goes on checking.
+		f.boundary.mockResolvedValueOnce({
+			machine: f.machine.machineId,
+			reads: "released" as const,
+			views: [
+				{ viewId: randomUUID(), unsaved: 0 },
+				{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "waiting", checking: 1 },
+			],
+		});
+		expect(await f.host.publish(f.claim, f.submission, f.signal)).toEqual({
+			pullRequest: f.pullRequest,
+			noChange: false,
+		});
+		expect(f.boundary.mock.calls).toEqual([
+			[f.machine.machineId, [], f.signal],
+			[f.machine.machineId, [], f.signal],
+		]);
+		expect(f.boundary.mock.invocationCallOrder[1]).toBeLessThan(f.repositories.export.mock.invocationCallOrder[0]!);
+	});
 	it("checks a publication against the session's values and its environment asked again, the pull request first", async () => {
 		const f = await folderFixture();
 		// Made-up values.
@@ -4478,7 +4500,7 @@ describe("a coding session on the folder model", () => {
 			"UNREPORTED",
 			{ reads: "released" as const, views: [{ viewId: randomUUID() }] },
 		],
-		// Refusals that found no secret value (5j-5 a): the core's own, or a file the check could not finish.
+		// Refusals that are not all the save check's (5j-5 a): the core's own beside them.
 		[
 			"refused a view's paths, none for a secret value",
 			"UNSAVED_REFUSED",
@@ -4490,6 +4512,14 @@ describe("a coding session on the folder model", () => {
 			{
 				reads: "released" as const,
 				views: [{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", secretRefused: 1 }],
+			},
+		],
+		[
+			"refused a view's paths, only some the check could not finish",
+			"UNSAVED_REFUSED",
+			{
+				reads: "released" as const,
+				views: [{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", uncheckedRefused: 1 }],
 			},
 		],
 		[
@@ -4513,23 +4543,35 @@ describe("a coding session on the folder model", () => {
 		expect(f.repositories.export).not.toHaveBeenCalled();
 		expect(mocked.push).not.toHaveBeenCalled();
 	});
-	it("throws a save the folder refused for secret values (5j-5 a) as one the turn fails with, naming no path, and publishes nothing", async () => {
-		const f = await folderFixture();
-		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
-		f.boundary.mockResolvedValueOnce({
-			machine: f.machine.machineId,
-			reads: "released" as const,
-			views: [
-				{ viewId: randomUUID(), unsaved: 0 },
-				{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", secretRefused: 2 },
-			],
-		});
-		const error = await f.host.publish(f.claim, f.submission, f.signal).catch((caught: unknown) => caught);
-		expect(error).toBeInstanceOf(CodingSaveRefused);
-		expect((error as CodingSaveRefused).message).toBe("CODING_FOLDER_SAVE_REFUSED");
-		expect(f.repositories.export).not.toHaveBeenCalled();
-		expect(mocked.push).not.toHaveBeenCalled();
-	});
+	it.each([
+		["for secret values", { secretRefused: 2 }, "CODING_FOLDER_SAVE_REFUSED"],
+		[
+			"for a secret value and a check not finished",
+			{ secretRefused: 1, uncheckedRefused: 1 },
+			"CODING_FOLDER_SAVE_REFUSED",
+		],
+		["for checks not finished (5j-5 c)", { uncheckedRefused: 2 }, "CODING_FOLDER_SAVE_UNCHECKED"],
+	])(
+		"throws a save the folder refused %s (5j-5 a) as one the turn fails with, naming no path, and publishes nothing",
+		async (_case, counts, code) => {
+			const f = await folderFixture();
+			await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+			f.boundary.mockResolvedValueOnce({
+				machine: f.machine.machineId,
+				reads: "released" as const,
+				views: [
+					{ viewId: randomUUID(), unsaved: 0 },
+					{ viewId: randomUUID(), unsaved: 2, unsavedOutcome: "refused", ...counts },
+				],
+			});
+			const error = await f.host.publish(f.claim, f.submission, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CodingSaveRefused);
+			expect((error as CodingSaveRefused).message).toBe(code);
+			expect((error as CodingSaveRefused).unchecked).toBe(code === "CODING_FOLDER_SAVE_UNCHECKED");
+			expect(f.repositories.export).not.toHaveBeenCalled();
+			expect(mocked.push).not.toHaveBeenCalled();
+		},
+	);
 	it("starts commands at the company folder and has nothing to publish while there are no repositories", async () => {
 		const f = await folderFixture(false);
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

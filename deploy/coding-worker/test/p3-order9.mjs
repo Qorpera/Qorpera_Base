@@ -6,8 +6,9 @@
 //     change moved back 25 hours, then the folder core's check-ins drain runs as the listener runs it (as service_role,
 //     one company per call);
 //   archiving: what manage_worker's archive does after its run's checks (qorpera_archive_coding_worker, by the agent);
-//     the executor's keeper then releases the session.
-import { randomBytes } from "node:crypto";
+//     the executor's keeper then releases the session, and on phase B the folder keeps what its stopped command wrote
+//     (judgeArchive).
+import { createHash, randomBytes } from "node:crypto";
 import { quote } from "./p3-database.mjs";
 
 /** One JSON value of `select`, as postgres. */
@@ -108,4 +109,40 @@ export async function archive(db, workerId) {
 export function event(db, workerId, key) {
 	return one(db, `select to_jsonb(e) - 'worker_id' from public.qorpera_coding_session_events e
 		where e.worker_id = ${quote(workerId)}::uuid and (e.body -> ${quote(key)}) = 'true'::jsonb order by e.id desc limit 1`);
+}
+
+/** The company folder's file at `path` as the core keeps it (its version, sha256, size and commit), or null. */
+export function savedFile(db, environmentId, path) {
+	return one(db, `select jsonb_build_object('version', e.version, 'fileSha256', e.file_sha256, 'bytes', e.bytes, 'commitId', e.commit_id)
+		from public.qorpera_folder_entries e where e.environment_id = ${quote(environmentId)}::uuid
+			and e.key_text = public.qorpera_folder_key(${quote(path)}) and e.kind = 'file'`);
+}
+
+/** The keeper's report that the session's archive detach is done, in the executor's mount, session-error and keep-pass
+ * lines since the archive (`lines`, in order; a pass reports each take-off that ended before it), or undefined. */
+export function detachDone(lines, workerId) {
+	return lines.flatMap((line) => (line.event === "coding-keep-pass" ? line.outcomes : []))
+		.find((outcome) => outcome.workerId === workerId && outcome.step === "detach" && outcome.state === "done" && outcome.code === "ARCHIVED");
+}
+
+/** Whether the archive kept what the session's command wrote once stopped (49's archive row), judged from the
+ * executor's mount, session-error and keep-pass lines since the archive (`lines`, in order), the core's copy of the file
+ * the command writes (`entry`, savedFile's), the node's store's bytes for it (`stored`, or null) and the line (`text`):
+ * - The archive's take-off stops the session's commands, then saves its view and ends it: no session error for its
+ *   detach, and a pass reports it done. On master the first take-off fails CODING_FOLDER_VIEW_UNSAVED, the view's
+ *   machine-local changes gone with the session's state, and a later one, with nothing left to save, records the detach.
+ * - The folder has the file with the line, and the node's store its bytes.
+ * Answers each failure (none: so it was) and the report. */
+export function judgeArchive({ lines, workerId, entry, stored, text }) {
+	const failures = [];
+	const errors = lines.filter((line) => line.event === "coding-session-error" && line.workerId === workerId && line.step === "detach");
+	const done = detachDone(lines, workerId);
+	if (errors.length) failures.push(`the executor logged session errors for the archive's detach: ${JSON.stringify(errors)}`);
+	if (!done)
+		failures.push(`no keep pass reported the archive's detach done: ${JSON.stringify(lines.flatMap((line) =>
+			(line.event === "coding-keep-pass" ? line.outcomes.filter((outcome) => outcome.workerId === workerId) : [])))}`);
+	if (entry?.fileSha256 !== createHash("sha256").update(text).digest("hex") || entry.bytes !== Buffer.byteLength(text))
+		failures.push(`the folder's copy of the file is not ${JSON.stringify(text)}: ${JSON.stringify(entry)}`);
+	else if (stored !== text) failures.push(`the node's store does not hold the file's bytes: ${JSON.stringify(stored)}`);
+	return { failures, done };
 }

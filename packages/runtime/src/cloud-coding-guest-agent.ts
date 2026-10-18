@@ -49,6 +49,7 @@ import {
 	SHA256_HEX_PATTERN,
 } from "@qorpera/contracts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
+import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts";
 
 // The agent inside a member's coding machine (F3 step 5g-2b; RUNTIME-FOLDER-CODING-MACHINES.md "The guest agent").
 // The executor pushes this file to /opt/qorpera-guest/agent.mjs at each start and runs one verb per LXD exec as root,
@@ -97,6 +98,8 @@ export interface CodingGuestAgentPorts {
 	stateRoot?: string;
 	runtimeRoot?: string;
 	folderRoot?: string;
+	/** The folder programs' cache folder on the machine's disk, which every session's program shares. */
+	folderCache?: string;
 	/** Where the user managers' drop-ins go. */
 	systemdRoot?: string;
 	subidFiles?: { uid: string; gid: string };
@@ -130,6 +133,7 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		stateRoot: ports.stateRoot ?? CODING_GUEST.state,
 		runtimeRoot: ports.runtimeRoot ?? CODING_GUEST.runtime,
 		folderRoot: ports.folderRoot ?? CODING_GUEST.folder,
+		folderCache: ports.folderCache ?? FOLDER_CACHE.machine,
 		systemdRoot: ports.systemdRoot ?? "/run/systemd/system",
 		subidFiles: ports.subidFiles ?? { uid: "/etc/subuid", gid: "/etc/subgid" },
 		resolvConf: ports.resolvConf ?? "/run/systemd/resolve/resolv.conf",
@@ -296,9 +300,12 @@ function places(at: Agent, workerId: string) {
 		lock: join(at.runtimeRoot, "locks", worker),
 		view: join(at.folderRoot, "views", `${worker}.json`),
 		folderState: join(at.folderRoot, "state", worker),
-		/** The program's local folder, on the machine's disk: the session's own git files and its cache folders. It
-		 * outlives a new view (the program keeps what is still the session's) and goes with the session. */
+		/** The program's local folder, on the machine's disk: the session's own git files. It outlives a new view (the
+		 * program keeps what is still the session's) and goes with the session. */
 		folderLocal: join(session, "folder-local"),
+		/** The machine's cache folder: every session's program keeps its caches there, and it outlives them all. Root
+		 * already joins one member's sessions on one machine, so walls between their caches would protect nothing. */
+		folderCache: at.folderCache,
 		mountpoint: join(at.folderRoot, "mounts", worker),
 		folderUnit: `qorpera-folder-${worker}.service`,
 		slice: `qorpera-coding-${worker}.slice`,
@@ -639,6 +646,8 @@ function folderArgs(session: Places, uid: number, gid: number): string[] {
 		session.folderState,
 		"--local-dir",
 		session.folderLocal,
+		"--cache-dir",
+		session.folderCache,
 		"--allow-other",
 		"yes",
 		"--owner-uid",
@@ -673,6 +682,8 @@ async function showView(
 		await writeText(session.view, wanted, 0o600);
 	}
 	await makeDirectory(session.mountpoint, 0o755);
+	// The program refuses a cache folder it does not find root's and closed, and makes none of it itself.
+	await ensureFolderCacheDir(session.folderCache);
 	let state = await unitState(at, session.folderUnit);
 	if (state.active === "failed") {
 		await ignore(at.system(TOOLS.systemctl, ["reset-failed", session.folderUnit]));

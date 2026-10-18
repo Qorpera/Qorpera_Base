@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import {
 	closeCompanyComputerFolderView,
-	openCompanyComputerFolderView,
+	openCompanyComputerCommandFolderView,
 	companyComputerFolderWithin as within,
 } from "./cloud-company-computer-desktop-folder.ts";
 import {
@@ -276,24 +276,24 @@ export class CompanyComputerCommandFolder {
 		this.#screen(this, this.#left);
 		let made = false;
 		try {
-			const view = await openCompanyComputerFolderView(
+			const opened = await openCompanyComputerCommandFolderView(
 				this.#seams.registry,
-				{
-					environmentId: input.environmentId,
-					kind: "computer_shell_command",
-					anchor: { shellCommandId: this.#receipt },
-				},
+				{ environmentId: input.environmentId, shellCommandId: this.#receipt },
 				signal,
 				performance.now() + OPEN_WAIT_MS,
 			);
-			if (!("viewId" in view)) {
+			if (!("view" in opened)) {
 				this.#status = "none";
 				this.#leave();
-				return { note: `The command did not start (${view.message}); start it again.` };
+				return { note: `The command did not start (${opened.message}); start it again.` };
 			}
+			const { view, owner } = opened;
 			this.#view = view;
 			made = true;
-			const mounted = (await this.#helper({ op: "mount", name: this.#name, view }, MOUNT_WAIT_MS, signal))?.answer;
+			// The command's mount uses its owner's cache, never the desktops' (decision 1).
+			const mounted = (
+				await this.#helper({ op: "mount", name: this.#name, view, cache: owner }, MOUNT_WAIT_MS, signal)
+			)?.answer;
 			if (mounted !== "mounted") return this.#none(START_UNMOUNTED);
 			if (signal.aborted || !input.still()) return this.#none(START_FAILED);
 		} catch {

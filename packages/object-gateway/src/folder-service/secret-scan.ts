@@ -30,11 +30,15 @@ const CONFIRM_FACTOR = 4;
 export const CARRIES = "it carries a secret value";
 export const UNCHECKED = "it could not be checked for secret values";
 
-/** A file's bytes carry one of the values, or could not be checked within the bound. No value, tag or offset in it. */
+/** A file's bytes carry one of the values, or could not be checked within the bound. No value, tag or offset in it.
+ * `again`: not checked for the node's load (too many packs waiting their turn), not for the file's bytes, so the file is
+ * checked again at the next boundary; until then it is refused as any file not checked. */
 export class SecretRefusal extends Error {
-	constructor(reason: typeof CARRIES | typeof UNCHECKED) {
+	readonly again: boolean;
+	constructor(reason: typeof CARRIES | typeof UNCHECKED, again = false) {
 		super(reason);
 		this.name = "SecretRefusal";
+		this.again = again;
 	}
 }
 

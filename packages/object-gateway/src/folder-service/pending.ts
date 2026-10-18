@@ -599,10 +599,11 @@ export class PendingView {
 		return { handle, size: 0, version: node.version };
 	}
 
-	/** Whether a change of this view's still takes the live entry at `path` away: a move of it or of a folder above it,
-	 * or a new file or link that replaces it (in any case). */
+	/** Whether a change of this view's still takes the live entry at `path` away: a removal or move of it or of a folder
+	 * above it, or a new file or link that replaces it (in any case). */
 	#takesAway(path: string): boolean {
 		const key = folderKey(path);
+		for (const removed of this.#removed.keys()) if (within(key, folderKey(removed))) return true;
 		for (const [at, node] of this.#nodes) {
 			if (node.kind === "gone") continue;
 			if (node.origin && node.origin.path !== at && within(path, node.origin.path)) return true;
@@ -1346,14 +1347,15 @@ export class PendingView {
 
 	/** After a boundary: the view shows the live folder again, except the nodes the boundary keeps (`keep`: files
 	 * still open, names never published, new bytes the core did not save, and what the save check refused or held back
-	 * with it, 5j-5). Every other removal and move was published (saved, or failed losing nothing), so the gone nodes and
-	 * the removals go too. A kept move still takes the live entry it moves away: it shows only where the move put it, and
-	 * moving it back changes nothing. A kept new file or link that replaces a live one (an editor's save or `ln -sf` the
-	 * core did not take) keeps its base, and replaces the same version again at the next boundary; the live one stays
-	 * hidden where it is spelled otherwise. */
-	settle(keep: ReadonlySet<string>): void {
+	 * with it, 5j-5) and the removals it did not publish (`removals`, `BoundaryPlan.removals`: held back so, 5j-5). Every
+	 * other removal and move was published (saved, or failed losing nothing), so the gone nodes and the removals go too.
+	 * A kept move still takes the live entry it moves away: it shows only where the move put it, and moving it back
+	 * changes nothing. A kept new file or link that replaces a live one (an editor's save or `ln -sf` the core did not
+	 * take) keeps its base, and replaces the same version again at the next boundary; the live one stays hidden where it
+	 * is spelled otherwise. */
+	settle(keep: ReadonlySet<string>, removals: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
-		this.#removed.clear();
+		for (const path of [...this.#removed.keys()]) if (!removals.has(path)) this.#removed.delete(path);
 		for (const [path, node] of [...this.#nodes]) {
 			if (node.kind === "gone") continue;
 			if (node.origin && node.origin.path !== path) {
@@ -1364,8 +1366,8 @@ export class PendingView {
 		}
 		// Where a removal or move of the view's failed, the path shows the file it would have taken away: a draft open
 		// there lands against that file, as one opened over it does (a change another machine makes after is a conflict).
-		// A move the boundary kept (one waiting on another), or a kept new file or link that replaces it, still takes it
-		// away.
+		// A move or removal the boundary kept (one waiting on another), or a kept new file or link that replaces it, still
+		// takes it away.
 		for (const { node, draft } of this.#handles.values()) {
 			if (!draft?.took || this.#takesAway(draft.took.path)) continue;
 			const live = this.#live().get(draft.took.path);

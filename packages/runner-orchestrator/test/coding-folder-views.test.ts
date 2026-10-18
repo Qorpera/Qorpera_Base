@@ -851,6 +851,60 @@ describe("CodingFolderViews", () => {
 			}
 		});
 
+		it("asks the final boundary again while a path of the view waits for a save check still running (5j-5), then closes it", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			const waiting = { unsaved: 1, unsavedOutcome: "waiting", checking: 1 };
+			// Another view of the machine whose check runs does not hold this one's close.
+			const other = { viewId: VIEWS[1], ...waiting };
+			let asked = 0;
+			at.script.boundary = (machine, final) => {
+				asked++;
+				return {
+					machine,
+					reads: "released",
+					views: [...final.map((viewId) => (asked > 2 ? { viewId, unsaved: 0 } : { viewId, ...waiting })), other],
+				};
+			};
+			await expect(at.views.end(WORKER, live())).resolves.toEqual({
+				workerId: WORKER,
+				viewId: VIEWS[0],
+				saved: true,
+				closed: true,
+			});
+			expect(at.events.splice(0)).toEqual(["boundary", "boundary", "boundary", "close"]);
+			expect(at.boundaries.slice(-3)).toEqual(
+				Array.from({ length: 3 }, () => ({ machine: MACHINE, final: [VIEWS[0]] })),
+			);
+		});
+
+		it("asks no more once the caller stopped while a save check runs, and keeps the view's record for a later end", async () => {
+			const reason = new Error("the executor is stopping");
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			const stopping = new AbortController();
+			at.script.boundary = (machine, final) => {
+				stopping.abort(reason);
+				return {
+					machine,
+					reads: "released",
+					views: final.map((viewId) => ({ viewId, unsaved: 1, unsavedOutcome: "waiting", checking: 1 })),
+				};
+			};
+			await expect(at.views.end(WORKER, stopping.signal)).rejects.toBe(reason);
+			expect(at.events.splice(0)).toEqual(["boundary", "close"]);
+			expect(readdirSync(at.root)).toEqual([`${WORKER}.json`]);
+			at.script.boundary = released;
+			await expect(at.views.end(WORKER, live())).resolves.toEqual({
+				workerId: WORKER,
+				viewId: VIEWS[0],
+				saved: true,
+				closed: true,
+			});
+		});
+
 		it("reports whether the core confirmed the close, and forgets the view either way", async () => {
 			const cases: [Scripted<unknown>[], number, boolean][] = [
 				[[new CodingControlBusy()], 2, true],

@@ -12,7 +12,8 @@ export const COMPANY_COMPUTER_FOLDER_HELPER_SOCKET = "/run/qorpera-folder-helper
 export const COMPANY_COMPUTER_FOLDER_ROOT = "/run/qorpera-folder";
 
 /**
- * One mount's files: its view file (root, 0600), its state folder (the program's read log and version map, made
+ * One mount's files: its view file (root, 0600), its unit's environment (root, 0600: which cache folder its program
+ * uses, written at `mount`, kept across `switch`), its state folder (the program's read log and version map, made
  * empty at `mount`, kept across `switch`), and its parent, bound onto itself and shared, with the program's FUSE
  * mount at `company` inside. A desktop's or a command's sandbox binds the parent and finds `/company` in it, so a
  * remount reaches it (Q3); a bind of `company` itself would keep a dead mount.
@@ -21,6 +22,7 @@ export function companyComputerFolderPaths(name: string, root = COMPANY_COMPUTER
 	if (!isCompanyComputerFolderName(name)) throw new Error("INVALID_COMPANY_COMPUTER_FOLDER_NAME");
 	return {
 		view: `${root}/views/${name}.json`,
+		unit: `${root}/units/${name}.env`,
 		state: `${root}/state/${name}`,
 		parent: `${root}/mounts/${name}`,
 		mountpoint: `${root}/mounts/${name}/company`,
@@ -53,7 +55,14 @@ export interface CompanyComputerFolderView {
 }
 
 export type CompanyComputerFolderRequest =
-	| { readonly op: "mount" | "switch"; readonly name: string; readonly view: CompanyComputerFolderView }
+	/** `cache` names the mount's cache folder (`isCompanyComputerFolderCache`); a switch keeps the mount's. */
+	| {
+			readonly op: "mount";
+			readonly name: string;
+			readonly view: CompanyComputerFolderView;
+			readonly cache: string;
+	  }
+	| { readonly op: "switch"; readonly name: string; readonly view: CompanyComputerFolderView }
 	| { readonly op: "boundary" | "unmount"; readonly name: string; readonly final: boolean; readonly timeoutMs: number }
 	| { readonly op: "drop"; readonly name: string }
 	| { readonly op: "ended"; readonly name: string }
@@ -204,6 +213,25 @@ export function isCompanyComputerFolderName(value: unknown): value is string {
 	return isUuid(id);
 }
 
+/** Who a command's view belongs to, as the core answers it: `agent-` or `member-` and a UUID, lower case. */
+export function isCompanyComputerFolderOwner(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const id = value.startsWith("agent-") ? value.slice(6) : value.startsWith("member-") ? value.slice(7) : undefined;
+	return isUuid(id);
+}
+
+/**
+ * The cache a mount's program keeps on the machine's disk, a folder under `/var/lib/qorpera-folder/cache`
+ * (RUNTIME-FOLDER-MACHINE-CACHES.md, decision 1): a cache made in one view never shows in a view of different
+ * authority. Every desktop view has the company-wide authority whoever holds it, so a machine's desktops share
+ * `desktop`; a command's mount uses its owner's. A desktop never gets an owner's cache, and a command never the
+ * desktops'.
+ */
+export function isCompanyComputerFolderCache(name: string, cache: unknown): cache is string {
+	if (!isCompanyComputerFolderName(name)) return false;
+	return name.startsWith("desktop-") ? cache === "desktop" : isCompanyComputerFolderOwner(cache);
+}
+
 /** As the folder program checks a view file: each value printable ASCII without spaces, 1 to 256 bytes. */
 export function isCompanyComputerFolderView(value: unknown): value is CompanyComputerFolderView {
 	if (!isRecord(value) || !exactKeys(value, ["environmentId", "viewId", "pass"])) return false;
@@ -255,12 +283,23 @@ export function parseCompanyComputerFolderRequest(line: string): CompanyComputer
 					}
 				: undefined;
 		case "mount":
+			return exactKeys(value, ["op", "name", "view", "cache"]) &&
+				isCompanyComputerFolderName(value.name) &&
+				isCompanyComputerFolderView(value.view) &&
+				isCompanyComputerFolderCache(value.name, value.cache)
+				? {
+						op: "mount",
+						name: value.name,
+						view: { environmentId: value.view.environmentId, viewId: value.view.viewId, pass: value.view.pass },
+						cache: value.cache,
+					}
+				: undefined;
 		case "switch":
 			return exactKeys(value, ["op", "name", "view"]) &&
 				isCompanyComputerFolderName(value.name) &&
 				isCompanyComputerFolderView(value.view)
 				? {
-						op: value.op,
+						op: "switch",
 						name: value.name,
 						view: { environmentId: value.view.environmentId, viewId: value.view.viewId, pass: value.view.pass },
 					}

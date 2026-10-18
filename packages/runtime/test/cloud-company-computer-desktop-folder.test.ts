@@ -331,7 +331,7 @@ describe("each desktop's mount of the company folder", () => {
 		f.answer("mount", { answer: "mounted" });
 		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 1 });
 		expect(f.opened[0]).toMatchObject({ p_anchor: { screenId: binding.screenId, holderRunId: run.runId } });
-		expect(f.asked).toEqual([{ op: "mount", name, view: f.view(1) }]);
+		expect(f.asked).toEqual([{ op: "mount", name, view: f.view(1), cache: "desktop" }]);
 		expect(f.options[0]).toEqual({ socket: "/run/fixture/helper.sock", timeoutMs: 40000 });
 		expect(f.folders.mounted(binding.screenId)).toEqual({ name, epoch: 1 });
 
@@ -375,14 +375,14 @@ describe("each desktop's mount of the company folder", () => {
 		expect(f.ops()).toEqual(["mount", "list", "unmount", "mount"]);
 		expect(f.asked[2]).toEqual({ op: "unmount", name, final: false, timeoutMs: 30000 });
 		expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
-		expect(f.asked[3]).toEqual({ op: "mount", name, view: f.view(2) });
+		expect(f.asked[3]).toEqual({ op: "mount", name, view: f.view(2), cache: "desktop" });
 
 		// A switch the node refused: the mount goes and comes again with the newer view.
 		f.answer("switch", { answer: "closed" });
 		f.answer("unmount", { answer: "closed", unmounted: true });
 		await expect(f.hold(member)).resolves.toEqual({ name, epoch: 3 });
 		expect(f.ops().slice(4)).toEqual(["switch", "unmount", "mount"]);
-		expect(f.asked[6]).toEqual({ op: "mount", name, view: f.view(3) });
+		expect(f.asked[6]).toEqual({ op: "mount", name, view: f.view(3), cache: "desktop" });
 		// A mount the helper no longer knows of is simply made again.
 		f.answer("list", { answer: "list", mounts: [] });
 		f.answer("unmount", { answer: "unknown" });
@@ -396,7 +396,7 @@ describe("each desktop's mount of the company folder", () => {
 		f.answer("switch", { answer: "pending" });
 		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 1 });
 		expect(f.asked).toEqual([
-			{ op: "mount", name, view: f.view(1) },
+			{ op: "mount", name, view: f.view(1), cache: "desktop" },
 			{ op: "switch", name, view: f.view(1) },
 		]);
 		// Held, but its program's view was closed: it goes and comes again.
@@ -812,7 +812,7 @@ describe("a drain's and a capture's boundary", () => {
 		await expect(capture(f)).resolves.toBe(RESTARTED);
 		f.answer("mount", { answer: "mounted" });
 		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
-		expect(f.asked.at(-1)).toEqual({ op: "mount", name, view: f.view(2) });
+		expect(f.asked.at(-1)).toEqual({ op: "mount", name, view: f.view(2), cache: "desktop" });
 		await expect(capture(f, 1)).resolves.toBe(RESTARTED);
 		f.answer("boundary", { answer: "saved", report });
 		await expect(capture(f, 2)).resolves.toBeUndefined();
@@ -836,7 +836,7 @@ describe("a drain's and a capture's boundary", () => {
 		await expect(f.hold(run)).resolves.toEqual({ name, epoch: 2 });
 		expect(f.ops()).toEqual(["mount", "boundary", "drop", "drop", "drop", "mount"]);
 		expect(f.closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
-		expect(f.asked.at(-1)).toEqual({ op: "mount", name, view: f.view(2) });
+		expect(f.asked.at(-1)).toEqual({ op: "mount", name, view: f.view(2), cache: "desktop" });
 		expect(f.stop).toHaveBeenCalledTimes(1);
 	});
 

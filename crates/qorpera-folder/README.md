@@ -101,6 +101,64 @@ the folders below it, as git then walks the loose refs, which the node read the 
 create, the publish on its rename or removal) is the folder service's
 (`packages/object-gateway/src/folder-service/git.ts`).
 
+The machine's caches (`deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md`) live in `<local-dir>/caches`, or, given
+`--cache-dir <dir>`, in `<dir>/caches`, shared by every mount on the machine given that folder. Its starter makes the
+folder: an absolute path of at most 80 bytes, a folder (not a link) only the mounting account can use, neither inside
+the local folder nor holding it. The program never makes it; a writable mount given one it cannot use exits 1 with a
+line starting `qorpera-folder: FOLDER_CACHE_DIR_UNUSABLE: <dir>:`. Every mount sharing it runs as the same account.
+Each mount takes what it removes off the disk through its own `<dir>/gone/p-…` folder, which it holds locked; one that
+starts takes off those no mount holds. A mount sharing the folder keeps the caches of a folder its own view has not,
+as another view may have made that folder and not published it yet: they go when removing old caches finds the folder
+gone ("Removing old caches"). A cache move seals its file for every mount sharing it: each handle that changes a cache
+file's bytes holds a shared lock on it, which the seal takes exclusively, without waiting; a rename or removal of the
+file in another mount waits for the seal, and so do a placed file and its undo. Every check and change of names in the
+caches (a create, rename or removal, a cache move and the removal after it) holds an exclusive lock on `<dir>/names`,
+so no mount changes a name between another's look and its change. A local file's folder is reached from its area's top
+one folder at a time, never through a link, each checked to be the folder the kernel asked of (`ESTALE` if not), and
+the change is made in that folder. Up to 64 folders reached lately are held open and used again only while the kernel
+names each where the mount's names say (`/proc/self/fd`); one moved, or with a link or another folder in its place,
+is walked to again. A local file's mode, size and times change, and a link's target is read, on
+the file itself: through the handle the change came with, else by its name checked to be the inode the kernel asked of
+(`ESTALE` if not), never through a link (a link's mode is `EOPNOTSUPP`); a create never follows a link (`ELOOP`). A
+file on another disk than its area's (one mounted in the folder) is not shown (`EXDEV`). A node folder's rename moves
+its caches under an exclusive lock on `<dir>/caches`, which a mount takes before it looks again for caches another
+mount may have moved meanwhile, and the mount that moved them tells the others before its reply (`EIO` if one does not
+answer).
+
+Cache files have a kernel cache (`src/mount/kernel.rs`, the plan's "The kernel cache"): names, absent names and
+attributes for `--ttl-seconds` (a cache top's while the feed is up), and the pages of a read-only open of a file as
+this mount last opened it. A mount's own changes the kernel did not see raise its epoch. Every other mount on the
+cache folder listens on `<dir>/programs/<pid>.<nonce>`, and each change is told to all of them before its reply; a
+told mount drops the inode's attributes, raises its epoch for a name its kernel may hold, and answers, then drops the
+pages on another thread. A mount keeps a table of the names in local folders it handed its kernel (lookups found and
+absent, its own renames and removals; a create hands the kernel no name or attributes to keep, so the open asks for
+them again), each from before the disk read until 60 seconds past the time-out it
+handed; a cache top's name always raises the epoch. The table holds at most 100 000 names (about 4.3 MB); full, it
+lets go of the expired ones, or of all of them with an epoch. `QORPERA_FOLDER_TEST_NAMES=<n>` makes it smaller and
+`QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>` holds a lookup of that name for 300 ms after its disk read, in tests. The
+program uses the kernel cache only when the kernel granted `FUSE_AUTO_INVAL_DATA` and has the epoch
+notify (FUSE 7.44), on a writable mount whose cache folder changes a file's times at each write; otherwise, and for
+good after a notify fails, a told change comes late or a mount no longer hears the others, it runs without (zero
+time-outs for cache tops, and for every cache name on a shared cache folder), and drops all it handed the kernel. Its
+log says `qorpera-folder: kernel cache on` or `kernel cache off: <why>`. `QORPERA_FOLDER_TEST_KERNEL_OFF=<why>` turns
+it off in tests. A mapping in another mount sees a change shortly after it (the page drop), not at once.
+
+At its end (the view's close, a SIGTERM, a fall-back that exits, or the kernel ending the session; with or without the
+kernel cache) the program first refuses every request (`EIO`, before any lock), then has the kernel drop the attributes
+and pages of every inode ever opened through the mount (each open, of a file or a folder, and each create notes its
+inode, then checks again before its reply), on a thread of its own while its loops go on answering, for at most 15
+seconds; then it unmounts and exits. Its log says `qorpera-folder: closing: dropped the kernel's pages of <n> files in
+<ms> ms`. A process holding the view then reads, stats and opens nothing more through the fds it holds, and a
+mapping's next touch gets `SIGBUS`. A page a process pinned before the end stays its own, a shared mapping's pages not
+written back are lost (`msync` and `fsync` give `EIO`), and a folder or file held without an open (a working folder,
+an `O_PATH` fd) keeps its attributes until their time-out. A SIGKILL before the drop is done ends the session with the
+pages not yet dropped still held. The end has one owner, its first caller; a second waits for its drop (at most the
+same 15 seconds), so neither unmounts nor exits before it is done. A create answered after the drop opens nothing: its
+open asks for the attributes, and is refused. A hard link of a cache file answered after it hands a fd held on the
+file no attributes either: its next stat asks, and is refused. In tests, `QORPERA_FOLDER_TEST_CLOSE_GATE=<path>` holds
+the drop, once done, until that file exists, and `QORPERA_FOLDER_TEST_LATE_CREATE=<name>` holds a create of that name,
+or a link to it, after its check, until the drop is done.
+
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
 `node scripts/build-folder-program.mjs --out <file>`. Build output never goes in this folder (`CARGO_TARGET_DIR`).
