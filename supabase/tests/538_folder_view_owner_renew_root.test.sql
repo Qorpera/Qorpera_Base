@@ -7,8 +7,9 @@
 --   ever reads less (a shared cache would hand it files it may not read) or more (it would fill the cache with them).
 -- - A command's mount uses its owner's cache, `cache/<owner>`, so a command's view answers its owner; a desktop's does not.
 -- - A company-wide view (a desktop or a command) renews only while its agent and member still read the root, as its
---   open required. The window is one renewal (the folder service renews every 40 s). Closing a view deletes nothing: the
---   cache stays where it is, and removing old caches is the folder program's (MC3b).
+--   open required. The folder service renews every 40 s; from the closure the core refuses every read and publish, a
+--   command's mount ends, and a desktop's ends after its 60 s handoff grace (at most 40 + 60 s; the migration's header).
+--   Closing a view deletes nothing: the cache stays where it is, and removing old caches is the folder program's (MC3b).
 -- The office, screen and helpers are 639's and 981's.
 
 -- Whether a view reads a path (a read the view may not make is not found).

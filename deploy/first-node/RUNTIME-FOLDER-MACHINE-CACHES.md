@@ -160,9 +160,13 @@ is never under `/run`, which empties at every start and is memory.
   - a company-wide view renews only while its agent and member still read the folder's root, as its open required
     (migration 20260930516000), because a cache's files are on the machine and the core never authorizes them again.
     A principal that loses the root read (a member who leaves, an agent whose grant is revoked or lapses) has its views
-    closed at their next renewal, and the office service unmounts them; their caches stay where they are until
-    removal (below). Until then the folder service renews every 40 s, so such a cache is served for up to one renewal
-    interval after the loss, while the core refuses the view's own reads and publishes at once.
+    closed at their next renewal; their caches stay where they are until removal (below). The folder service renews
+    every 40 s and tells the machine of the closure at once. From then on the core refuses every read and publish of
+    the view, and only files already in the machine's cache can still be read, until the mount ends: a command's at
+    the closure (at most 40 s after the loss), a desktop's after its 60 s handoff grace (at most 40 + 60 s), when the
+    folder program exits 3 and its unit unmounts it. The grace is the folder program's
+    (`crates/qorpera-folder/src/link.rs`, `expire` and `note`), and the folder service gives it to desktop views only
+    (`switchable`).
 - **A cache is kept at its path.** A `node_modules` made in one folder serves that folder only. A command on a company
   machine that works in the folder the last one worked in finds it. A new coding session works in a new worktree, so
   it installs again, as a new git worktree on a local disk does; the package managers' own stores in the user's home

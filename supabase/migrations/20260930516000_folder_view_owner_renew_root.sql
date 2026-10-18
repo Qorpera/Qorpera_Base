@@ -11,13 +11,16 @@
 --    still read the root, as its open required (20260928259230:394-399, 20260928539120:274). Before, a renewal checked
 --    only that the agent was employed and the member still a member: an agent whose root grant was revoked kept its
 --    views, and so its caches served, for as long as they were renewed. Now the next renewal closes the view
---    ('ended'): the folder program exits 3, the office service unmounts it, and the next open needs the root read
---    again. A still-entitled view renews as before. A test machine's view already checks this in
---    qorpera_folder_view_valid (20260928549400:84-94); a code host's has no agent or member.
---    The window: the folder service renews every 40 s while a machine is connected (object-gateway
---    folder-service/service.ts:128), so a revoked principal's cache stays served for up to one renewal interval.
---    Each read that reaches the core is refused at once (qorpera_folder_actor_resource_allowed). Nothing is deleted
---    here: the cache stays where it is, and removing old caches is the folder program's (MC3b).
+--    ('ended'), and the next open needs the root read again. A still-entitled view renews as before. A test machine's
+--    view already checks this in qorpera_folder_view_valid (20260928549400:84-94); a code host's has no agent or member.
+--    The window: the folder service renews a view every 40 s while its machine is connected
+--    (packages/object-gateway/src/folder-service/service.ts:128) and tells every connection of it of the closure at
+--    once. From then on every read and publish that reaches the core is refused (qorpera_folder_actor_resource_allowed),
+--    and only files already in the machine's cache can still be read, until the mount ends. A command's mount ends at
+--    the closure: at most 40 s after the loss. A desktop's waits out its 60 s handoff grace first
+--    (crates/qorpera-folder/src/link.rs:168 and :654; the service makes only a desktop's view switchable,
+--    service.ts:1145), then the folder program exits 3 and its unit unmounts it: at most 40 + 60 s. Nothing is
+--    deleted here: the cache stays where it is, and removing old caches is the folder program's (MC3b).
 -- Why a machine's desktops may share one cache (coordinator decision 2, 18 October): every desktop view has the same
 -- company-wide authority whoever holds it (a run, a member's takeover, or no one once the run ended):
 -- - a desktop view opens only while the screen's agent and the view's member (the run's requester or the holder)
