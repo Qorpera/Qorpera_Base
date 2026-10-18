@@ -376,6 +376,10 @@ async function observe(
 					if (state === "cancelled") exitCode = null;
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
+			} else if (fields.LoadState === "not-found" && cancelled) {
+				// A cancel's stop that ends the command cleanly (SIGTERM is clean) lets systemd forget the transient
+				// unit at once, so the cancel finds no unit left to show.
+				state = "cancelled";
 			}
 		} catch {
 			state = "unconfirmed";
@@ -483,6 +487,10 @@ export async function startMachineCommand(
 	} catch {
 		/* An unknown submission stays retained and is observed below. */
 	}
+	// A cancel between the intent and the unit found no unit to stop, and its receipt already said cancelled: the unit
+	// stops now, so a command said cancelled never runs on.
+	if (await missing(() => lstat(paths.cancel)))
+		await (ports.system ?? system)("/usr/bin/systemctl", ["stop", paths.unit]).catch(() => undefined);
 	return receipt(ports, guest, commandId, {});
 }
 

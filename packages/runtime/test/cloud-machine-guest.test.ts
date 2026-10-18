@@ -51,6 +51,8 @@ async function machine() {
 	let now = 1_000_000;
 	/** The machine's busy processor time in USER_HZ ticks (the first line of /proc/stat: user, nice, system, idle, ...). */
 	let busyTicks = 150;
+	/** Whether a stopped command ignores SIGTERM until the stop's timeout kills it. */
+	let stopsOutlived = false;
 	const units = new Map<string, string>([
 		["qorpera-control.slice", "ControlGroup=/qorpera.slice/qorpera-control.slice\n"],
 		["lxd-agent.service", "ControlGroup=/system.slice/lxd-agent.service\n"],
@@ -71,11 +73,16 @@ async function machine() {
 		// Stopping the commands' slice ends every command unit in it, and systemd forgets them.
 		else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && args[1] === "qorpera-machine.slice") {
 			for (const unit of [...units.keys()]) if (unit.startsWith("qorpera-machine-command-")) units.delete(unit);
-		} else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && units.has(args[1]))
-			units.set(
-				args[1],
-				"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
-			);
+		} else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && units.has(args[1])) {
+			// A stop the command ends cleanly (SIGTERM is clean) lets systemd forget the transient unit at once (systemd
+			// 259, as on the nodes). One that outlived the stop's timeout and was killed stays, failed.
+			if (stopsOutlived) {
+				units.set(
+					args[1],
+					"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=timeout\nExecMainCode=2\nExecMainStatus=9\n",
+				);
+			} else units.delete(args[1]);
+		}
 		return "";
 	});
 	const ports: MachineGuestPorts = {
@@ -134,6 +141,10 @@ async function machine() {
 		request,
 		reboot: () => {
 			boot = randomUUID();
+		},
+		/** From now on a stopped command outlives its stop's timeout and is killed. */
+		outliveStops: () => {
+			stopsOutlived = true;
 		},
 		/** The machine used this many more ticks of processor time. */
 		work: (ticks: number) => {
@@ -233,6 +244,40 @@ describe("machine command guest", () => {
 		const commandId = await m.request("sleep 1000");
 		await startMachineCommand(commandId, m.ports);
 		expect(await cancelMachineCommand(commandId, m.ports)).toMatchObject({ state: "cancelled", exitCode: null });
+		// systemd forgot the unit the cancel stopped; the command stays cancelled.
+		expect(m.units.has(`qorpera-machine-command-${commandId}.service`)).toBe(false);
+		expect(await readMachineCommand(commandId, {}, m.ports)).toMatchObject({ state: "cancelled", exitCode: null });
+	});
+
+	it("cancels a command that outlives its stop's timeout and is killed", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		const commandId = await m.request("trap '' TERM; sleep 1000");
+		await startMachineCommand(commandId, m.ports);
+		m.outliveStops();
+		expect(await cancelMachineCommand(commandId, m.ports)).toMatchObject({ state: "cancelled", exitCode: null });
+	});
+
+	it("stops a command cancelled before its unit started, as soon as the unit starts", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		const commandId = await m.request("sleep 1000");
+		const unit = `qorpera-machine-command-${commandId}.service`;
+		const simulated = m.system.getMockImplementation();
+		if (!simulated) throw new Error("no simulated systemd");
+		let cancelled: Awaited<ReturnType<typeof cancelMachineCommand>> | undefined;
+		// The cancel comes after the start retained its intent and before systemd-run made the unit.
+		m.system.mockImplementation(async (executable, args) => {
+			if (executable === "/usr/bin/systemd-run" && !cancelled)
+				cancelled = await cancelMachineCommand(commandId, m.ports);
+			return simulated(executable, args);
+		});
+		expect(await startMachineCommand(commandId, m.ports)).toMatchObject({ state: "cancelled", exitCode: null });
+		expect(cancelled).toMatchObject({ state: "cancelled", exitCode: null });
+		// systemd-run made the unit after the cancel's stop found none, so only the start's own stop removed it.
+		expect(m.units.has(unit)).toBe(false);
 	});
 
 	it("runs the command in a login shell and keeps its output with its exit status", async () => {
