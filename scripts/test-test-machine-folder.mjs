@@ -55,6 +55,9 @@ const MOUNTED = "FOLDER_MOUNTED";
 export const V2 = "qorpera.lxd-company-machine/v2";
 /** The service's quiet period: a change is published this long after the last one (6b). */
 const QUIET_MS = 2000;
+/** The errnos a refused vsock connect ends in: virtio-vsock resets a connect to a port nothing listens on (runs 2 and 3:
+ * ECONNRESET on every port that did not answer); ECONNREFUSED is the same refusal said the other way. */
+const VSOCK_REFUSED = Object.freeze(["ECONNRESET", "ECONNREFUSED"]);
 /** The executor's detail on an open that moves the machine to a new disk (6d-2). */
 export const NEW_DISK = "qorpera.test-machine/new-disk";
 /** The receipts' words (6e-2a), as the host and the contracts say them: kept here so a change of words is seen. */
@@ -68,6 +71,9 @@ export const WORDS = Object.freeze({
 });
 
 const sha256hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
+/** The sha256 of the bytes L leaves in `p4/loop.txt` at tick `n` (`n t`) or on TERM (`n last t`), `t` the guest's ms:
+ * a saved version of the file has it as its file_sha256. */
+export const loopFileSha256 = (n, t, last = false) => sha256hex(`${n}${last ? " last" : ""} ${t}\n`);
 const token = () => randomBytes(32).toString("base64url");
 
 /** A SQL literal for one value. */
@@ -407,17 +413,19 @@ export function judge(evidence, leaks = []) {
 		const f = folderOf(r);
 		return f?.company === "mounted" && f.why == null && f.heldBack === words && f.lost == null;
 	};
-	const unlost = (refused) => Boolean(refused) && refused.lost == null && refused.folderLost == null;
+	// Refused because SQL ended the command, and nothing else: a gateway that timed out or was unavailable is no answer.
+	const endedUnlost = (refused) =>
+		refused?.code === "MACHINE_COMMAND_ENDED" && refused.lost == null && refused.folderLost == null;
 	check(
 		"reportOnReceipts",
 		heldWith(boot.startReceipt, WORDS.heldStart) && plainMounted(boot.receipt) && heldWith(credit.start, WORDS.heldStart) &&
-			heldWith(credit.heldRead, WORDS.heldUnanswered) && plainMounted(credit.released) &&
-			k.resent?.code === "MACHINE_COMMAND_ENDED" && unlost(k.resent) &&
+			heldWith(credit.heldRead, WORDS.heldUnanswered) && plainMounted(credit.released) && endedUnlost(k.resent) &&
 			(k.read?.receipt ? k.read.receipt.companyFolder?.company === "mounted" && k.read.receipt.companyFolder.lost == null
-				: unlost(k.read?.refused)) &&
+				: endedUnlost(k.read?.refused)) &&
 			plainMounted(refusals.stillReads) && plainMounted(wake.receipt),
-		"company mounted on the boot's commands; heldBack on a start and on A's held read, gone once released; no lost on " +
-			"K's refusal or read, which SQL (not the folder) ended",
+		"company mounted on the boot's commands; heldBack on a start and on A's held read, gone once released; K, which SQL " +
+			"(not the folder) ended, refused MACHINE_COMMAND_ENDED on its resend and mounted or refused the same way on its " +
+			"read, never lost",
 	);
 	// A receipt that shows nothing yet: no output, no end and an empty log.
 	const withheld = (r) => r?.state === "running" && r.output === "" && r.exitCode === null && r.totalBytes === 0;
@@ -468,16 +476,25 @@ export function judge(evidence, leaks = []) {
 	const vsock = s.vsockPorts ?? {};
 	const owned = vsockOwnerRule(vsock);
 	const answeredPorts = Array.isArray(vsock.probe?.answered) ? vsock.probe.answered : [];
+	// Every port that did not answer was refused, with the errno a refused vsock connect ends in: an answer, a refusal,
+	// nothing else, and the totals add up to the 65,535 scanned.
+	const errnos = vsock.probe?.errnos;
+	const errnoCounts = errnos && typeof errnos === "object" && !Array.isArray(errnos) ? Object.entries(errnos) : [];
+	const refusedCount = errnoCounts.reduce((sum, [, n]) => sum + (Number.isInteger(n) ? n : Number.NaN), 0);
 	check(
 		"vsockPorts",
 		vsock.receipt?.exitCode === 0 && vsock.probe?.scanned === 65535 && vsock.probe.timeoutCount === 0 &&
+			errnoCounts.length > 0 && errnoCounts.every(([name, n]) => VSOCK_REFUSED.includes(name) && Number.isInteger(n) && n > 0) &&
+			answeredPorts.length + refusedCount === vsock.probe.scanned &&
 			typeof vsock.virt === "string" && new Set(answeredPorts).size === answeredPorts.length &&
 			owned.some((o) => o.port === 5250 && o.owner === "bridge") && owned.every((o) => o.owner !== null) &&
 			sameSet(vsock.ports?.map((p) => p.port), answeredPorts),
 		`from inside the guest, of the host's (CID 2) vsock ports 1 to 65535 every one that answered has an allowed owner ` +
 			`(${owned.map((o) => `${o.port} ${o.owner ?? o.why ?? "not allowed"}`).join(", ")}; systemd-detect-virt ` +
 			`${vsock.virt ?? "unread"}): 5250 is this run's bridge, LXD's own CID-2 listener is one port whatever its number, 22 and 8443 only on ` +
-			"a VM; every other port was refused at once",
+			`a VM; every other port was refused at once (${errnoCounts.map(([name, n]) => `${name} ${n}`).join(", ") || "no errnos"}; ` +
+			`${answeredPorts.length} answered + ${refusedCount} refused of ${vsock.probe?.scanned ?? "none"} scanned; only ` +
+			`${VSOCK_REFUSED.join(" or ")} is a refusal)`,
 	);
 	const detached = s.detached ?? {};
 	const d = unitOf(detached.commits, "p4/detached.txt");
@@ -497,26 +514,41 @@ export function judge(evidence, leaks = []) {
 	const unc = (loop.clock?.uncertaintyMs ?? Number.NaN) + 50;
 	const loopCommits = loop.commits ?? [];
 	const ticks = loop.ticks ?? [];
-	// A tick's change, committed first at `delay` after it was written (the guest's time, on the host's clock).
+	// A save: a commit that took a seq, its loop.txt unit saved as a version. SQL keeps a refused or conflicting attempt
+	// too, with no seq or another outcome; that is no save. A change is saved when a save's version has its own bytes.
+	const saves = loopCommits.filter((c) => c.seq != null && c.outcome === "saved" && typeof c.version === "string" && c.version !== "");
+	const savedAs = (sha) => saves.filter((c) => c.fileSha256 === sha).sort((x, y) => x.createdAtMs - y.createdAtMs)[0] ?? null;
+	// The seqs a boundary or a window's close published: a quiet publish's seq is none of them.
+	const boundarySeqs = new Set(Array.isArray(loop.boundarySeqs) ? loop.boundarySeqs.map(String) : []);
+	// Each tick's own change, saved first at `delay` after it was written (the guest's time, on the host's clock).
 	const ticked = ticks.map((t) => {
-		const first = loopCommits.map((c) => c.createdAtMs).filter((c) => c >= t.at - unc).sort((x, y) => x - y)[0];
-		return { ...t, delay: first - t.at };
+		const save = savedAs(loopFileSha256(t.n, t.t));
+		return { ...t, save, delay: save ? save.createdAtMs - t.at : Number.NaN };
 	});
-	const quietTicks = ticked.filter((t) => t.at >= loop.quiet?.fromAt && t.at <= loop.quiet?.toAt - 4000);
-	const seqs = new Set(loopCommits.map((c) => String(c.seq)));
+	const inQuiet = (t) => t.at >= loop.quiet?.fromAt && t.at <= loop.quiet?.toAt - 4000;
+	const quietTicks = ticked.filter(inQuiet);
 	const readHit = (loop.reads ?? []).find((r) => r.hit)?.hit;
+	const readSave = readHit ? saves.find((c) => String(c.seq) === String(readHit.seq)) : undefined;
+	const lastSave = loop.last?.last === true ? savedAs(loopFileSha256(loop.last.n, loop.last.t, true)) : null;
 	check(
 		"loop",
-		Number.isFinite(unc) && ticks.length >= 4 && ticks.every((t, i) => t.n === i + 1) && ticked.every((t) => t.delay <= 10000) &&
-			quietTicks.length >= 2 &&
-			quietTicks.every((t) => t.delay >= QUIET_MS - 500 - unc && t.delay <= QUIET_MS + 6000 + unc) &&
-			loop.quiet?.boundaries === 0 && loopCommits.length > 0 && loopCommits.every((c) => same(c.credits, [loop.commandId])) &&
-			readHit?.outcome === "saved" && seqs.has(String(readHit.seq)) &&
-			loop.cancel?.report?.outcome === "saved" && seqs.has(String(loop.cancel.report.seq)) &&
-			loop.final?.state === "cancelled" && loop.last?.last === true && loop.last.n === ticks.length + 1,
-		"L wrote under /company every 10 s: with no boundary asked, each change was committed by the quiet publish about 2 s " +
-			"later; a read right after a write published it at the read's boundary; the cancel published L's last change; " +
-			"every change credits L",
+		Number.isFinite(unc) && ticks.length >= 4 && ticks.every((t, i) => t.n === i + 1 && Number.isFinite(t.t)) &&
+			ticked.every((t) => t.save && t.delay >= -unc && t.delay <= 10000) && quietTicks.length >= 2 &&
+			quietTicks.every((t) => !boundarySeqs.has(String(t.save.seq)) && t.delay >= QUIET_MS - 500 - unc &&
+				t.delay <= QUIET_MS + 6000 + unc) &&
+			loop.quiet?.boundaries === 0 && Array.isArray(loop.boundarySeqs) &&
+			loopCommits.length > 0 && loopCommits.every((c) => same(c.credits, [loop.commandId])) &&
+			readHit?.outcome === "saved" && boundarySeqs.has(String(readHit.seq)) && readSave !== undefined &&
+			ticked.some((t) => t.save === readSave) &&
+			loop.cancel?.report?.outcome === "saved" && boundarySeqs.has(String(loop.cancel.report.seq)) && lastSave !== null &&
+			String(lastSave.seq) === String(loop.cancel.report.seq) &&
+			loop.final?.state === "cancelled" && loop.last.n === ticks.length + 1,
+		"L wrote under /company every 10 s, and each tick's own bytes were saved (a commit with a seq, its unit saved as a " +
+			"version with that tick's sha256) within 10 s: with no boundary asked, each quiet tick by the quiet publish (a seq " +
+			"no boundary published) about 2 s later; a read right after a write saved that tick first at the read's boundary; " +
+			"the cancel's boundary saved L's last change; every commit credits L (" +
+			ticked.map((t) => `tick ${t.n} ${t.save ? `seq ${t.save.seq} +${t.delay} ms${inQuiet(t) ? " quiet" : ""}` : "unsaved"}`).join(", ") +
+			`; last ${lastSave ? `seq ${lastSave.seq}` : "unsaved"}; ${loopCommits.length - saves.length} attempts not saved)`,
 	);
 	check(
 		"stopClosed",
@@ -1416,7 +1448,10 @@ async function prove(options, evidence, cleanups, secrets) {
 			'runId', c.run_id, 'turnRunId', c.turn_run_id, 'viewId', c.view_id, 'viewKind', c.view_kind,
 			'createdAtMs', (extract(epoch from c.created_at) * 1000)::bigint,
 			'credits', to_jsonb(c.credits), 'units', (select coalesce(jsonb_agg(jsonb_build_object('op', u ->> 'op', 'path', u ->> 'path',
-				'credits', u -> 'credits')), '[]') from jsonb_array_elements(c.units) u)) order by c.seq), '[]')
+				'credits', u -> 'credits', 'outcome', u ->> 'outcome', 'reason', u ->> 'reason', 'version', u ->> 'version',
+				'fileSha256', (select v.file_sha256 from public.qorpera_folder_path_versions v where v.version = case
+					when u ->> 'version' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (u ->> 'version')::uuid end))), '[]')
+				from jsonb_array_elements(c.units) u)) order by c.seq), '[]')
 			from public.qorpera_folder_commits c where c.environment_id = ${literal(ENV)} and c.view_id is not null`);
 	/** A machine's placements, oldest first: the binding's schema (v2 has no repository worker), its boots and its end. */
 	const placements = (id) =>
@@ -1800,10 +1835,16 @@ async function prove(options, evidence, cleanups, secrets) {
 	await soft(until("L's and the look's windows close", () => closedOn(loopRun.commandId) && closedOn(loopLook.commandId), {
 		timeoutMs: 120_000, signal,
 	}));
+	// Every attempt at loop.txt, saved or not: its seq (none for a commit that saved nothing), the unit's outcome, and the
+	// saved version's bytes as their sha256.
 	loop.commits = commits().flatMap((c) =>
 		c.units.filter((u) => u.path === "p4/loop.txt").map((u) => ({ seq: c.seq, createdAtMs: Number(c.createdAtMs),
-			credits: Array.isArray(u.credits) ? u.credits : c.credits, actorId: c.actorId })),
+			credits: Array.isArray(u.credits) ? u.credits : c.credits, actorId: c.actorId, outcome: u.outcome ?? null,
+			reason: u.reason ?? null, version: u.version ?? null, fileSha256: u.fileSha256 ?? null })),
 	);
+	// The seqs any boundary or window's close published (from their reports): a quiet publish's is none of them.
+	loop.boundarySeqs = [...new Set(ops.filter((o) => (o.op === "boundary" || o.op === "closeWindow") && o.answer?.views)
+		.flatMap((o) => o.answer.views.map((view) => view.report?.seq).filter((seq) => seq != null)))];
 	say(`loop: ${loop.ticks.length} ticks, ${loop.commits.length} commits; reads ${JSON.stringify(loop.reads.map((r) => r.hit?.outcome ?? null))}; cancel ${loop.cancel?.report?.outcome}`);
 
 	// 8. Stop: the final boundary, the view closed in SQL, the VM powered off, `restarted`; then a second boot. S writes

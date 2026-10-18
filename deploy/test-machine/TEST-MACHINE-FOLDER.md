@@ -152,9 +152,14 @@ they end. At most two VMs run at once.
    - Any other port fails. So does an allowed port with a different owner, or a
      port with no owner.
 
-   None may time out. The evidence lists every answering port with its owner,
-   its bound CID, and the `systemd-detect-virt` value. `otherMachineRefused`
-   (step 9) stays the CID check on 5250.
+   None may time out, and every port that did not answer must have been
+   refused: its connect ended in `ECONNRESET` (what virtio-vsock gives a port
+   nothing listens on; runs 2 and 3 had it on all 65,531 others) or
+   `ECONNREFUSED`. Any other errno (`ENOBUFS`, `EAGAIN`, ...) proves nothing
+   about the port and fails, and the answers plus the refusals must add up to
+   the 65,535 scanned. The evidence lists every answering port with its owner,
+   its bound CID, and the `systemd-detect-virt` value, and the errnos with
+   their counts. `otherMachineRefused` (step 9) stays the CID check on 5250.
 6. **`detached`.** A command of Alice's starts a writer with `systemd-run`
    outside its own unit, prints `started` and ends. The writer waits for
    `/run/p4-go`. Once SQL has the command's end and the host's pass has closed
@@ -178,9 +183,19 @@ they end. At most two VMs run at once.
      boundary publishes the last change (a report `by: cancel`, saved).
    - The passes resume, and a look reads `loop.txt`'s last line.
 
-   Every commit of `loop.txt` credits `[L]`. Each tick's change is committed
-   within 10 s, the quiet ones between 1.5 s and 8 s after it was made (the
-   service's 2 s, with room for a loaded box).
+   Every commit of `loop.txt` credits `[L]`. SQL keeps a publish that saved
+   nothing too (no `seq`), and a unit can be refused or conflict in a commit
+   that took one, so a commit is not a save. The record keeps each commit's
+   `seq`, the unit's outcome and version, and that version's `file_sha256`.
+   Each tick's own bytes (`<n> <ms>`, as L printed them) must be saved: a
+   commit with a `seq` whose unit was saved as a version with that sha256,
+   within 10 s of the write and not before it. A later save never stands in
+   for a missing one, since it holds other bytes. The quiet ticks must be saved
+   by the quiet publish, between 1.5 s and 8 s after the write (the service's
+   2 s, with room for a loaded box), by a `seq` no boundary or window close
+   reported. The read's `seq` is a boundary's and is the first save of a
+   tick. The cancel's `seq` is a boundary's and saved L's last bytes
+   (`<n> last <ms>`).
 8. **`stop`.** A command S of Alice's writes `p4/stop-loop.txt` every half
    second; on TERM it writes its last line. 4 s later Alice's run stops `p4`
    (`qorpera_native_machine_manage`, `stop`). The host's stop sends the
@@ -207,9 +222,11 @@ they end. At most two VMs run at once.
      outcome after it counts (run 3 had `waiting` at 464.3 s, then `refused`
      at 466.4 s). K's
      start sent again gets `MACHINE_COMMAND_ENDED` with no `lost` and no folder
-     loss (`resent`), and a read of K is either refused the same way or
-     answered with `company: mounted` and no `lost` (`read`): SQL ended K, not
-     the folder.
+     loss (`resent`), and a read of K is either refused the same way (exactly
+     `MACHINE_COMMAND_ENDED`, with no `lost` and no folder loss) or answered
+     with `company: mounted` and no `lost` (`read`): SQL ended K, not the
+     folder. A read that got any other error (the gateway unavailable or timed
+     out, `code: null`) fails.
    - SQL ends a command, not a run: a run's end alone does not end its commands,
      so their changes are still credited (the commit's run is then null). The
      brief's "a command whose run ended" is shown with the command's own end.
@@ -277,14 +294,14 @@ they end. At most two VMs run at once.
 |---|---|
 | `bootMounted` | the host's pass reported `FOLDER_MOUNTED`; SQL has the boot's `test_machine` view open; the first command succeeded and printed the seed |
 | `v2Binding` | the boot's placement binding is `qorpera.lxd-company-machine/v2` with no repository worker; LXD lists the VM's devices, none named `repository` or at `/mnt/repository`; the machine has no `/mnt/repository` |
-| `reportOnReceipts` | the boot's start and A's start say `company: mounted` with the start's `heldBack`; A's read while held has the unanswered `heldBack`; the boot's read, A's released read, the still-reads command and the second boot's read say `mounted` with no `why`, `heldBack` or `lost`; K's start sent again is refused ended with no `lost` and no folder loss, and a read of K is refused the same way or answered `mounted` without `lost` |
+| `reportOnReceipts` | the boot's start and A's start say `company: mounted` with the start's `heldBack`; A's read while held has the unanswered `heldBack`; the boot's read, A's released read, the still-reads command and the second boot's read say `mounted` with no `why`, `heldBack` or `lost`; K's start sent again is refused `MACHINE_COMMAND_ENDED` with no `lost` and no folder loss, and a read of K is refused exactly the same way or answered `mounted` without `lost`; any other error on that read (the gateway unavailable or timed out) fails |
 | `heldUntilReleased` | while held, A's start and a later gateway read of A both got `running`, empty output, a null exit code and a log of 0 bytes, and boundaries were asked; the read after the hold got A's output, a log with bytes and exit 0, after a boundary answered `released` |
 | `creditedToCommand` | `p4/alice.txt` is committed with credits `[A]`, actor `staff_agent` Alice, run R and requester the owner, from the `test_machine` view |
 | `overlapCredited` | `bob-only.txt` is credited `[B]` with actor Bob, `shared.txt` `[B, C]`, and `carol-after.txt` `[C]` with actor Carol; B and C exited 0 |
 | `readsTakenIn` | the reads are the boot view's; its read set and Alice's run hold `p4/seed.md`; Alice's run's take-in answered for the view; SQL has Bob's run as another agent's (not the view's), with the company audience and its agent and member reading the root; Bob's run held no read before, its take-in answered for the view with reads (not a replay), and its reads after are exactly the view's. A refusal fails the check |
-| `vsockPorts` | the guest's probe exited 0, scanned 65535 ports of CID 2, and none timed out; 5250 answered, held by this run's bridge; every other port that answered has an allowed owner: one LXD port (the lxd daemon, bound to CID 2, any port number), 22 (systemd's `sshd-vsock.socket`) and 8443 (`lxd-agent`) only when `systemd-detect-virt` says VM. Any other port, another owner or no owner fails. The record lists each answering port with its owner, its bound CID and the `systemd-detect-virt` value |
+| `vsockPorts` | the guest's probe exited 0, scanned 65535 ports of CID 2, and none timed out; every port that did not answer ended in `ECONNRESET` or `ECONNREFUSED`, any other errno fails, and the answers plus the refusals are the 65535 scanned; 5250 answered, held by this run's bridge; every other port that answered has an allowed owner: one LXD port (the lxd daemon, bound to CID 2, any port number), 22 (systemd's `sshd-vsock.socket`) and 8443 (`lxd-agent`) only when `systemd-detect-virt` says VM. Any other port, another owner or no owner fails. The record lists each answering port with its owner, its bound CID and the `systemd-detect-virt` value |
 | `detached` | `p4/detached.txt` is committed after SQL had its command's end, after its window closed and after the go, with no command running or with a window open; the commit and its unit credit no command; the actor is Alice's staff agent with the boot view's run (Alice's run) and the owner, from that `test_machine` view |
-| `loop` | the guest's clock was measured; L printed at least four ticks in order and its last change on TERM (one more); with no boundary asked in the quiet window, at least two ticks there were committed 1.5 s to 8 s after they were made; every tick was committed within 10 s; every commit of `loop.txt` credits `[L]`; a read's boundary saved a change and the cancel's saved the last, both in those commits; L ended `cancelled` |
+| `loop` | the guest's clock was measured; L printed at least four ticks in order and its last change on TERM (one more); each tick's own bytes were saved (a commit with a `seq`, its unit saved as a version with that tick's `file_sha256`) within 10 s and not before the write, so a refused or conflicting attempt or a later save never counts for a tick; with no boundary asked in the quiet window, at least two ticks there were saved by the quiet publish (a `seq` no boundary or window close reported) 1.5 s to 8 s after they were made; every commit of `loop.txt` credits `[L]`; the read's boundary `seq` is the first save of a tick, and the cancel's boundary `seq` saved L's last bytes; L ended `cancelled` |
 | `stopClosed` | the stop's outcome is `done`, the final boundary named the view, `restarted` was answered, SQL has the view closed and LXD has the VM stopped |
 | `stopWhileRunning` | S's last line (written on TERM) is read on the second boot; the final boundary's publish saved `stop-loop.txt` within the quiet period (plus the clock's uncertainty) after S wrote it, and answered before the LXD stop request |
 | `secondBoot` | the second start mounted with a new boot id and a new view id, and its command reads the files |

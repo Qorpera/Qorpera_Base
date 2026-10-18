@@ -12,6 +12,7 @@ import {
 	judge,
 	keepHandover,
 	literal,
+	loopFileSha256,
 	NEW_DISK,
 	nicStandIn,
 	parseArgs,
@@ -282,8 +283,10 @@ const held = (heldBack) => ({ company: "mounted", heldBack });
 const authorizeRefused = () => ({ t: 1, message: "Machine command gateway unavailable", code: null, folderLost: null, lost: null });
 const companyWide = () => ({ t: 1, method: "qorpera_authorize_machine_command", code: "42501", details: null,
 	message: "Machine needs the company-wide view" });
-// L's ticks on the host's clock (the guest's offset 0): the quiet window has three, a read takes the fourth.
-const loopCommit = (seq, createdAtMs) => ({ seq, createdAtMs, credits: [ids.l], actorId: STAFF.alice });
+// L's ticks on the host's clock (the guest's offset 0): the quiet window has three, a read takes the fourth. A save of
+// tick `n` (written at `t`) is a commit with a seq whose loop.txt unit was saved as a version with that tick's bytes.
+const loopCommit = (seq, createdAtMs, n, t, last = false) => ({ seq, createdAtMs, credits: [ids.l], actorId: STAFF.alice,
+	outcome: "saved", reason: null, version: `version-${seq}`, fileSha256: loopFileSha256(n, t, last) });
 // The vsock listeners node01's test machine (a KVM guest) showed in run 1, with this run's bridge on 5250.
 const BRIDGE_PID = 2537059;
 const listener = (cid, port, name, pid, exe, unit = null) => ({ cid, port, processes: [{ name, pid, exe }], unit });
@@ -332,7 +335,7 @@ function passing() {
 			},
 			vsockPorts: {
 				receipt: { exitCode: 0 },
-				probe: { scanned: 65535, answered: [22, 5250, 7114, 8443], timeoutCount: 0 },
+				probe: { scanned: 65535, answered: [22, 5250, 7114, 8443], timeoutCount: 0, errnos: { ECONNRESET: 65531 } },
 				bridgePid: BRIDGE_PID,
 				virt: "kvm",
 				listeners: vsockListenersSeen(),
@@ -344,13 +347,14 @@ function passing() {
 			},
 			loop: {
 				commandId: ids.l, clock: { offsetMs: 0, uncertaintyMs: 5 }, quiet: { fromAt: 100000, toAt: 136000, boundaries: 0 },
-				ticks: [110000, 120000, 130000, 140000, 150000].map((at, i) => ({ n: i + 1, at })),
+				ticks: [110000, 120000, 130000, 140000, 150000].map((at, i) => ({ n: i + 1, t: at, at })),
 				commits: [
-					loopCommit(11, 112050), loopCommit(12, 122030), loopCommit(13, 132040), loopCommit(14, 140700), loopCommit(15, 152000),
-					loopCommit(16, 155100),
+					loopCommit(11, 112050, 1, 110000), loopCommit(12, 122030, 2, 120000), loopCommit(13, 132040, 3, 130000),
+					loopCommit(14, 140700, 4, 140000), loopCommit(15, 152000, 5, 150000), loopCommit(16, 155100, 6, 155000, true),
 				],
+				boundarySeqs: [9, 14, 16],
 				reads: [{ at: 140600, hit: { by: "read", byCommand: ids.l, outcome: "saved", seq: 14 } }],
-				cancel: { report: { outcome: "saved", seq: 16 } }, final: { state: "cancelled" }, last: { n: 6, last: true },
+				cancel: { report: { outcome: "saved", seq: 16 } }, final: { state: "cancelled" }, last: { n: 6, t: 155000, last: true },
 			},
 			refusals: {
 				m: { commandId: ids.m, entries: 1 },
@@ -661,6 +665,17 @@ test("the receipts say company mounted, held back with the host's words, and nev
 		"K's read says lost": (e) => Object.assign(e.steps.refusals.k.read.receipt.companyFolder, { lost: "x" }),
 		"K's read refusal says lost": (e) => Object.assign(e.steps.refusals.k, { read: { refused: { code: "MACHINE_COMMAND_ENDED", lost: "x" } } }),
 		"K was not read": (e) => Object.assign(e.steps.refusals.k, { read: {} }),
+		// Only SQL's end is the refusal the check asks for: a gateway that failed says nothing about the folder.
+		"K's read got the gateway unavailable": (e) => Object.assign(e.steps.refusals.k, { read: { refused: authorizeRefused() } }),
+		"K's read timed out": (e) => Object.assign(e.steps.refusals.k, {
+			read: { refused: { t: 1, message: "The operation was aborted due to timeout", code: null, folderLost: null, lost: null } },
+		}),
+		"K's read was refused unavailable": (e) => Object.assign(e.steps.refusals.k, {
+			read: { refused: { t: 1, message: "MACHINE_COMMAND_UNAVAILABLE", code: "MACHINE_COMMAND_UNAVAILABLE", folderLost: null, lost: null } },
+		}),
+		"K's read refusal names a folder loss": (e) => Object.assign(e.steps.refusals.k, {
+			read: { refused: { code: "MACHINE_COMMAND_ENDED", folderLost: "restart_view_closed", lost: null } },
+		}),
 		"the still-reads command is not mounted": (e) => Object.assign(e.steps.refusals.stillReads, { companyFolder: { company: "none" } }),
 		"the wake's command is held back": (e) => Object.assign(e.steps.stop.wake.receipt, { companyFolder: held(WORDS.heldStart) }),
 	});
@@ -719,8 +734,10 @@ test("ss's vsock lines and systemd's socket units are read for their CID, port, 
 
 test("each vsock port the guest reaches on the host has its allowed owner; anything else fails", () => {
 	const v = (e) => e.steps.vsockPorts;
+	// A port that answers is one fewer refused, so the totals still add up and only the owner rule is tested.
 	const answers = (e, port, ...listeners) => {
 		v(e).probe.answered.push(port);
+		v(e).probe.errnos.ECONNRESET -= 1;
 		v(e).ports.push({ port });
 		v(e).listeners.push(...listeners);
 	};
@@ -738,28 +755,45 @@ test("each vsock port the guest reaches on the host has its allowed owner; anyth
 		"the bridge's pid was not recorded": (e) => Object.assign(v(e), { bridgePid: null }),
 		"the bridge did not answer": (e) => {
 			v(e).probe.answered = [22, 7114, 8443];
+			v(e).probe.errnos.ECONNRESET += 1;
 			v(e).ports = v(e).ports.filter((p) => p.port !== 5250);
 		},
 		"a second LXD port": (e) => answers(e, 7115, listener("2", 7115, "lxd", 15088, "/snap/lxd/40424/sbin/lxd")),
 		"LXD's listener is bound to any CID": (e) => Object.assign(on(e, 7114), { cid: "*" }),
 		"LXD's port is another program called lxd": (e) => Object.assign(on(e, 7114).processes[0], { exe: "/tmp/lxd" }),
 		"two listeners on one port": (e) => v(e).listeners.push(listener("2", 22, "systemd", 1, "/usr/lib/systemd/systemd")),
-		"a port answered twice": (e) => v(e).probe.answered.push(5250),
+		"a port answered twice": (e) => {
+			v(e).probe.answered.push(5250);
+			v(e).probe.errnos.ECONNRESET -= 1;
+		},
 		"the evidence leaves an answering port out": (e) => v(e).ports.pop(),
-		"not every port was scanned": (e) => Object.assign(v(e).probe, { scanned: 1024 }),
-		"a port timed out": (e) => Object.assign(v(e).probe, { timeoutCount: 3 }),
+		"not every port was scanned": (e) => Object.assign(v(e).probe, { scanned: 1024, errnos: { ECONNRESET: 1020 } }),
+		"a port timed out": (e) => Object.assign(v(e).probe, { timeoutCount: 3, errnos: { ECONNRESET: 65528 } }),
+		// A connect that failed for want of buffers or a retry proves nothing about the port.
+		"a port ended in ENOBUFS": (e) => Object.assign(v(e).probe, { errnos: { ECONNRESET: 65530, ENOBUFS: 1 } }),
+		"ports ended in EAGAIN": (e) => Object.assign(v(e).probe, { errnos: { ECONNRESET: 65031, EAGAIN: 500 } }),
+		"a port ended in an errno with no name": (e) => Object.assign(v(e).probe, { errnos: { ECONNRESET: 65530, 524: 1 } }),
+		"a refusal count is not a count": (e) => Object.assign(v(e).probe, { errnos: { ECONNRESET: "65531" } }),
+		"the refusals and answers fall short of the ports scanned": (e) => Object.assign(v(e).probe, { errnos: { ECONNRESET: 65530 } }),
+		"the refusals and answers pass the ports scanned": (e) => Object.assign(v(e).probe, { errnos: { ECONNRESET: 65531, ECONNREFUSED: 1 } }),
+		"the errnos were not recorded": (e) => delete v(e).probe.errnos,
+		"the errnos are a list": (e) => Object.assign(v(e).probe, { errnos: [["ECONNRESET", 65531]] }),
 		"the probe failed": (e) => Object.assign(v(e).receipt, { exitCode: 1 }),
 		"the probe said nothing": (e) => delete v(e).probe,
 	});
+	const refusedBothWays = passing();
+	Object.assign(v(refusedBothWays).probe, { errnos: { ECONNRESET: 65000, ECONNREFUSED: 531 } });
+	assert.equal(judge(refusedBothWays).vsockPorts.ok, true, "a refusal reset or refused is a refusal");
 	const bare = passing();
-	Object.assign(v(bare), { virt: "none", probe: { scanned: 65535, answered: [5250, 1497], timeoutCount: 0 } });
+	Object.assign(v(bare), { virt: "none", probe: { scanned: 65535, answered: [5250, 1497], timeoutCount: 0, errnos: { ECONNRESET: 65533 } } });
 	v(bare).listeners = [on(bare, 5250), listener("2", 1497, "lxd", 3300, "/snap/lxd/40100/sbin/lxd")];
 	v(bare).ports = [{ port: 5250 }, { port: 1497 }];
 	assert.equal(judge(bare).vsockPorts.ok, true, "on bare metal: the bridge and LXD's own listener, whatever its port");
 	const bridgeOnly = passing();
-	Object.assign(v(bridgeOnly).probe, { answered: [5250] });
+	Object.assign(v(bridgeOnly).probe, { answered: [5250], errnos: { ECONNRESET: 65534 } });
 	v(bridgeOnly).ports = [{ port: 5250 }];
 	assert.equal(judge(bridgeOnly).vsockPorts.ok, true, "the bridge alone");
+	assert.match(judge(passing()).vsockPorts.why, /refused at once \(ECONNRESET 65531; 4 answered \+ 65531 refused of 65535 scanned;/);
 });
 
 test("a writer left running after its command ended commits as the starter, crediting no command", () => {
@@ -791,6 +825,30 @@ test("a loop's changes are published by the quiet period, a read's boundary and 
 		"a quiet change was committed at once": (e) => Object.assign(l(e).commits[0], { createdAtMs: 110200 }),
 		"a quiet change waited past the quiet period": (e) => Object.assign(l(e).commits[1], { createdAtMs: 129000 }),
 		"a change was never committed": (e) => l(e).commits.splice(0, 1),
+		// SQL keeps an attempt that saved nothing, with no seq: every quiet publish refused is no save, whatever comes later.
+		"every quiet publish was refused": (e) => {
+			for (const c of l(e).commits.slice(0, 3)) Object.assign(c, { seq: null, outcome: "refused", reason: "command_ended", version: null, fileSha256: null });
+		},
+		"a quiet publish was refused, its tick's bytes named": (e) => Object.assign(l(e).commits[1], { seq: null, outcome: "refused", version: null }),
+		"a quiet publish conflicted in a commit that took a seq": (e) => Object.assign(l(e).commits[2], { outcome: "conflict", reason: "version_changed" }),
+		"a quiet save has no version": (e) => Object.assign(l(e).commits[0], { version: null }),
+		"a quiet save holds another tick's bytes": (e) => Object.assign(l(e).commits[1], { fileSha256: loopFileSha256(1, 110000) }),
+		// Matched by time alone, the cancel's save (5.1 s after tick 5) would stand in for tick 5's missing one.
+		"a tick's save is missing and only a later save follows": (e) => l(e).commits.splice(4, 1),
+		"a quiet tick was saved by a read's boundary": (e) => l(e).boundarySeqs.push(13),
+		"the boundaries' seqs were not recorded": (e) => delete l(e).boundarySeqs,
+		"a save is dated before its tick was written": (e) => Object.assign(l(e).commits[3], { createdAtMs: 139900 }),
+		"the read's seq is no boundary's": (e) => Object.assign(l(e), { boundarySeqs: [9, 16] }),
+		"the read's seq saved no tick first": (e) => {
+			l(e).commits.splice(3, 0, loopCommit(10, 140300, 4, 140000));
+			l(e).boundarySeqs.push(10);
+		},
+		"the read's commit saved nothing": (e) => {
+			l(e).commits.splice(3, 1, { ...loopCommit(14, 140700, 4, 140000), seq: null, outcome: "refused", version: null });
+		},
+		"the cancel's save holds a tick's bytes, not L's last": (e) => Object.assign(l(e).commits[5], { fileSha256: loopFileSha256(5, 150000) }),
+		"the cancel's seq is no boundary's": (e) => Object.assign(l(e), { boundarySeqs: [9, 14] }),
+		"L's last change was saved by another commit": (e) => Object.assign(l(e).cancel.report, { seq: 15 }),
 		"a commit credits another command": (e) => Object.assign(l(e).commits[2], { credits: [ids.a] }),
 		"a commit credits nothing": (e) => Object.assign(l(e).commits[2], { credits: [] }),
 		"the read's publish is not a commit": (e) => Object.assign(l(e).reads[0].hit, { seq: 99 }),
@@ -805,6 +863,12 @@ test("a loop's changes are published by the quiet period, a read's boundary and 
 		"only one tick was quiet": (e) => Object.assign(l(e).quiet, { toAt: 115000 }),
 		"the guest's clock is unknown": (e) => delete l(e).clock,
 	});
+	// An attempt that saved nothing does not fail L when its tick is saved after it, in time.
+	const retried = passing();
+	retried.steps.loop.commits.splice(1, 0, { ...loopCommit(null, 121900, 2, 120000), outcome: "refused", reason: "busy", version: null, fileSha256: null });
+	assert.equal(judge(retried).loop.ok, true, "a refused attempt, then its tick's save");
+	assert.match(judge(passing()).loop.why, /\(tick 1 seq 11 \+2050 ms quiet, .*tick 4 seq 14 \+700 ms, tick 5 seq 15 \+2000 ms; last seq 16; 0 attempts not saved\)$/);
+	assert.match(judge(retried).loop.why, /; 1 attempts not saved\)$/);
 });
 
 test("a change made just before a stop is saved by the final boundary before the power-off", () => {
