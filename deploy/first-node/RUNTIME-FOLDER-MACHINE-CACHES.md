@@ -238,7 +238,10 @@ it.
 - Step 4's acceptance (4g) shows item 8 on company machines (amendment item 10), so 4g waits for MC1 and MC3. Step
   6's 6e waits for item 8's caches in the program (RUNTIME-FOLDER-TEST-MACHINES.md, Order). A test machine builds in
   worktrees, where 5d's cache already holds; MC3 makes that cache outlive the machine's mounts.
-- MC3c (the helper and the setups) carries migration 20260930516000 and SQL test 538 (decision 1, amended).
+- MC3c (the helper and the setups) carries migration 20260930516000 and SQL test 538 (decision 1, amended), and the
+  office's node e2e: [`../test-machine/OFFICE-FOLDER-CACHES.md`](../test-machine/OFFICE-FOLDER-CACHES.md) (the caches
+  on the disk, each owner's apart, found after a restart, and a closed view's end within its bound). It passes only
+  with MC3a's program pinned.
 
 **Deploy.** The folder program ships in the coordinator's node release and the images, with a new build record
 (`deploy/folder-service/folder-program-linux-x64.json`) and the installer's pin in MC1, MC2 and MC3. MC3's folder
