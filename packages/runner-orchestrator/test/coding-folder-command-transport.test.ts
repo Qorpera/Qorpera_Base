@@ -25,8 +25,14 @@ import {
 	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	createHttpCloudCodingCommandGateway,
+	HttpCloudCodingCommandService,
+} from "../../runtime/src/cloud-coding-command-http.ts";
 import type { CodingCommandSecrets } from "../src/coding-command-secrets.ts";
 import {
+	CodingCommandHeld,
+	codingCommandExecution,
 	LxdCodingFolderCommandTransport,
 	type LxdCodingFolderCommandTransportOptions,
 } from "../src/coding-folder-command-transport.ts";
@@ -54,7 +60,9 @@ type State = CloudCodingCommandReceipt["state"];
 type Input = { commandId: string; inputSha256: string; command: string; timeoutMs: number | null };
 
 const custodies: string[] = [];
+const services: HttpCloudCodingCommandService[] = [];
 afterEach(async () => {
+	for (const service of services.splice(0)) await service.close();
 	for (const custody of custodies.splice(0)) {
 		await chmod(custody, 0o700).catch(() => undefined);
 		await rm(custody, { recursive: true, force: true });
@@ -332,6 +340,54 @@ async function fixture(
 			};
 		},
 	};
+}
+
+/** The command service and its gateway in front of the transport `transport()` returns for each request, as the
+ * executor serves them (`deploy/coding-worker/executor.ts`, on its peers' listener); the service's authorization
+ * answers the input hash of one of `inputs`. */
+async function served(inputs: readonly Input[], transport: () => LxdCodingFolderCommandTransport) {
+	const token = randomBytes(32).toString("base64url");
+	const service = new HttpCloudCodingCommandService({
+		token,
+		proveBinding: null,
+		async authorize(request) {
+			const input = inputs.find((each) => each.commandId === request.input.commandId);
+			if (!input) throw new Error("FAKE_COMMAND_UNKNOWN");
+			return { inputSha256: input.inputSha256 };
+		},
+		async execute(request, called) {
+			const on = transport();
+			return codingCommandExecution(
+				on,
+				request.input.commandId,
+				request.action === "start"
+					? on.start(request.scope, request.input, called)
+					: request.action === "read"
+						? on.read(request.scope, request.input, called)
+						: on.cancel(request.scope, request.input.commandId, called),
+			);
+		},
+	});
+	services.push(service);
+	return createHttpCloudCodingCommandGateway({
+		url: `http://127.0.0.1:${await service.start()}`,
+		token,
+		binding: {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			model: "gpt-5.4",
+		},
+		holder: null,
+		authorize: async () => undefined,
+		allowLoopback: true,
+	});
 }
 
 describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
@@ -1128,6 +1184,117 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		});
 		// The new disk alone ended it: the boot was asked about only for the start's pull.
 		expect(at.dropped).toHaveBeenCalledTimes(1);
+	});
+
+	it("holds what a call meets past its command's kept start until after its last authorization, and refuses outright before it (F3 5g-5)", async () => {
+		const at = await fixture();
+		const input = at.input();
+		at.guest.print(input.commandId, "ab");
+		at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+		await at.start(input);
+		// A page past the log is held: the call answers its command's identity and limit and nothing else, and is
+		// authorized again before it refuses, as any call is.
+		const asked = at.authorize.mock.calls.length;
+		const held = await at.read(input.commandId, { offset: 3 }).catch((error: unknown) => error);
+		expect(held).toBeInstanceOf(CodingCommandHeld);
+		expect((held as CodingCommandHeld).message).toBe("CODING_LOG_OFFSET_UNAVAILABLE");
+		expect((held as CodingCommandHeld).refusal).toStrictEqual(new Error("CODING_LOG_OFFSET_UNAVAILABLE"));
+		expect((held as CodingCommandHeld).receipt).toStrictEqual(at.receipt(input, { state: "unconfirmed" }));
+		expect(at.authorize.mock.calls.length - asked).toBe(2);
+		// A refusal of the last authorization is its own, and so is one before the command's kept start is read.
+		at.authorize.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("CODING_AUTHORITY_REVOKED"));
+		const revoked = await at.read(input.commandId, { offset: 3 }).catch((error: unknown) => error);
+		expect(revoked).not.toBeInstanceOf(CodingCommandHeld);
+		expect((revoked as Error).message).toBe("CODING_AUTHORITY_REVOKED");
+		const unknown = await at.read(randomUUID()).catch((error: unknown) => error);
+		expect(unknown).not.toBeInstanceOf(CodingCommandHeld);
+		expect((unknown as Error).message).toBe("CODING_COMMAND_UNKNOWN");
+		// The command service takes the held receipt, and the refusal stands once `hidden` shows the command.
+		const shown = await codingCommandExecution(
+			at.transport,
+			input.commandId,
+			at.read(input.commandId, { offset: 3 }),
+		);
+		expect(shown.receipt).toStrictEqual(at.receipt(input, { state: "unconfirmed" }));
+		expect(await rejected(shown.hidden(signal))).toBe("CODING_LOG_OFFSET_UNAVAILABLE");
+		await expect(codingCommandExecution(at.transport, input.commandId, at.read(randomUUID()))).rejects.toThrow(
+			"CODING_COMMAND_UNKNOWN",
+		);
+		// Once a rebuild hides the command, nothing of the refusal stands.
+		const rebuilt = at.rebuild();
+		const hidden = await codingCommandExecution(
+			rebuilt,
+			input.commandId,
+			rebuilt.read(at.scope, { commandId: input.commandId, offset: 3 }, signal),
+		);
+		expect(hidden.receipt).toStrictEqual(at.receipt(input, { state: "unconfirmed" }));
+		expect(await hidden.hidden(signal)).toBe("machine_stopped");
+	});
+
+	it("answers every page of a command a rebuild hid alike through the command service, past its log or inside a character too (F3 5g-5)", async () => {
+		const at = await fixture();
+		const input = at.input("cat notes");
+		// Ten ASCII bytes and a euro sign, which takes three: offsets 11 and 12 are inside it, and 13 is the log's end.
+		at.guest.print(input.commandId, "secret 42\n€");
+		at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+		const running = at.input();
+		at.guest.print(running.commandId, "kept\n");
+		let transport = at.transport;
+		const gateway = await served([input, running], () => transport);
+		const done = { state: "succeeded", exitCode: 0 } as const;
+		expect(await gateway.start(at.scope, input, signal)).toStrictEqual(
+			at.receipt(input, { ...done, output: "secret 42\n€" }),
+		);
+		expect(await gateway.start(at.scope, running, signal)).toStrictEqual(
+			at.receipt(running, { state: "running", output: "kept\n" }),
+		);
+		const pages: Omit<CloudCodingCommandRead, "commandId">[] = [
+			{},
+			{ offset: 7 },
+			{ offset: 13 },
+			{ offset: 14 },
+			{ offset: 1_000_000 },
+			{ offset: 11 },
+			{ offset: 12 },
+			{ tail: true, limit: 4 },
+		];
+		const read = (page: Omit<CloudCodingCommandRead, "commandId">) =>
+			gateway.read(at.scope, { commandId: input.commandId, ...page }, signal);
+		// While the command's disk is the machine's, each page is shown, and one past the log or inside a character is
+		// refused, as before.
+		const shown: unknown[] = [];
+		for (const page of pages) shown.push(await read(page).catch((error: unknown) => (error as Error).message));
+		const refused = "Coding command gateway unavailable";
+		expect(shown).toStrictEqual([
+			at.receipt(input, { ...done, output: "secret 42\n€" }),
+			at.receipt(input, { ...done, output: "42\n€", log: { offset: 7 } }),
+			at.receipt(input, { ...done, log: { offset: 13 } }),
+			refused,
+			refused,
+			refused,
+			refused,
+			at.receipt(input, { ...done, output: "\n€", log: { offset: 9 } }),
+		]);
+		// So is a cancel the guest refuses.
+		const busy = new CodingGuestRefused("CODING_GUEST_SESSION_BUSY");
+		at.guest.client.cancel.mockRejectedValueOnce(busy);
+		expect(await rejected(gateway.cancel(at.scope, running.commandId, signal))).toBe(refused);
+		// The machine is rebuilt on a new disk. Whatever page is asked, and whichever turn's transport answers it, the
+		// answer is the same: nothing of the command, not how much it printed nor where its characters end. Nor is
+		// anything said of what the guest answered a cancel.
+		const nothing = at.receipt(input, { state: "machine_stopped" });
+		for (const turn of [at.rebuild(), at.transport]) {
+			transport = turn;
+			at.guest.client.cancel.mockRejectedValueOnce(busy);
+			expect(await gateway.cancel(at.scope, running.commandId, signal)).toStrictEqual(
+				at.receipt(running, { state: "machine_stopped" }),
+			);
+			for (const page of pages) expect(await read(page)).toStrictEqual(nothing);
+			expect(await gateway.cancel(at.scope, input.commandId, signal)).toStrictEqual(nothing);
+			expect(await gateway.start(at.scope, input, signal)).toStrictEqual(nothing);
+		}
+		expect(at.guest.client.cancel).toHaveBeenCalledTimes(3);
+		expect(at.guest.client.run).toHaveBeenCalledTimes(2);
 	});
 
 	it("tolerates a cancel the guest has no command for, and passes its other refusals on", async () => {

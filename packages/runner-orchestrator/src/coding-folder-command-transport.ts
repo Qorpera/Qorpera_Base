@@ -18,6 +18,7 @@ import {
 	type CodingCommandSecrets,
 	noCodingCommandSecrets,
 } from "./coding-command-secrets.ts";
+import type { LxdCodingCommandTransport } from "./coding-command-transport.ts";
 import type { CodingFolderControl } from "./coding-folder-control.ts";
 import { CodingGuestRefused, type LxdCodingGuestClient } from "./coding-guest-client.ts";
 import { type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-machine.ts";
@@ -524,6 +525,84 @@ export async function codingFolderKeptCommand(
 	return { turn, command };
 }
 
+/** A refusal a call met once it read its command's kept start (F3 5g-5): a page past the log's end or inside a
+ * character, the guest's answer, the host's own files, the call's budget. Each may tell of a command the call's answer
+ * is to show nothing of, which only the command service decides, after its final authorization. So the call answers
+ * `receipt`, which shows nothing of the command, and the refusal stands only once the command is shown
+ * (`codingCommandExecution`). Its message is the refusal's. */
+export class CodingCommandHeld extends Error {
+	readonly refusal: unknown;
+	readonly receipt: CloudCodingCommandReceipt;
+	constructor(refusal: unknown, receipt: CloudCodingCommandReceipt) {
+		super(refusal instanceof Error ? refusal.message : String(refusal));
+		this.name = "CodingCommandHeld";
+		this.refusal = refusal;
+		this.receipt = receipt;
+	}
+}
+
+/** What a held call answers: the command's identity and limit and nothing else, as the command service answers a
+ * command it shows nothing of, whatever page was asked (an empty log at offset 0). */
+function heldReceipt(request: Request): CloudCodingCommandReceipt {
+	return parseCloudCodingCommandReceipt({
+		schema: "qorpera.coding-command-result/v2",
+		workerId: request.workerId,
+		commandId: request.commandId,
+		inputSha256: request.inputSha256,
+		state: "unconfirmed",
+		exitCode: null,
+		output: "",
+		truncated: false,
+		log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: request.limitBytes, limitReached: false },
+	});
+}
+
+/** A call's work once its command's kept start was read, with any refusal held. */
+async function holding(
+	request: Request,
+	work: () => Promise<CloudCodingCommandReceipt>,
+): Promise<CloudCodingCommandReceipt | CodingCommandHeld> {
+	try {
+		return await work();
+	} catch (error) {
+		return new CodingCommandHeld(error, heldReceipt(request));
+	}
+}
+
+/** A call's answer, after its last authorization: a held refusal is thrown only then, so a call takes the same steps
+ * whatever its work met. */
+function answered(receipt: CloudCodingCommandReceipt | CodingCommandHeld): CloudCodingCommandReceipt {
+	if (receipt instanceof CodingCommandHeld) throw receipt;
+	return receipt;
+}
+
+/** A call on a coding machine's command transport as the command service takes it (`@qorpera/runtime`'s
+ * `CloudCodingCommandExecution`): its receipt, and `hidden`, which the service asks once, after its final
+ * authorization. A refusal the folder model's transport held stands there, and only for a command it shows. */
+export async function codingCommandExecution(
+	transport: LxdCodingCommandTransport | LxdCodingFolderCommandTransport,
+	commandId: string,
+	call: Promise<CloudCodingCommandReceipt>,
+): Promise<{
+	receipt: CloudCodingCommandReceipt;
+	hidden(signal: AbortSignal): Promise<"machine_stopped" | "unconfirmed" | undefined>;
+}> {
+	let held: CodingCommandHeld | undefined;
+	const receipt = await call.catch((error: unknown) => {
+		if (!(error instanceof CodingCommandHeld)) throw error;
+		held = error;
+		return error.receipt;
+	});
+	return {
+		receipt,
+		async hidden(signal) {
+			const shown = "hidden" in transport ? await transport.hidden(commandId, signal) : undefined;
+			if (shown === undefined && held) throw held.refusal;
+			return shown;
+		},
+	};
+}
+
 /** The session a turn's commands run in, as the host set it up. */
 export interface LxdCodingFolderCommandSession {
 	/** The session user's ids in the guest. */
@@ -572,7 +651,11 @@ export interface LxdCodingFolderCommandTransportOptions {
 
 /** The folder model's command transport: the same calls and receipts as `LxdCodingCommandTransport`. Only a trusted
  * provider constructs it, with an `authorize` that checks the request's lease and the machine before each effect.
- * Each call takes at most 25 s of its own; a command still running then shows `running`, with what was kept. */
+ * Each call takes at most 25 s of its own; a command still running then shows `running`, with what was kept. A call
+ * refuses outright only for what is the same for every command of the session (its input, its authority, its custody,
+ * the machine's start and disk), for a command with no kept start, or one not the host's own, and for another command
+ * under the call's id; anything it meets after its command's kept start is read is held (`CodingCommandHeld`, F3
+ * 5g-5). */
 export class LxdCodingFolderCommandTransport {
 	readonly #scope: Readonly<CloudCodingCommandScope>;
 	readonly #companyId: string;
@@ -735,50 +818,53 @@ export class LxdCodingFolderCommandTransport {
 			const records = await this.#records(folder, input.commandId);
 			const { request, outcome } = records;
 			let { progress } = records;
-			// The same command again is the same command; another one under its id is refused.
+			// The same command again is the same command; another one under its id is refused. (The input is the call's
+			// own, and its hash is in every receipt of the command.)
 			if (
 				request.inputSha256 !== input.inputSha256 ||
 				request.command !== input.command ||
 				request.timeoutMs !== input.timeoutMs
 			)
 				throw new Error("CODING_COMMAND_CONFLICT");
-			// Only on the machine it was first started on: one that started again since may have run it already.
-			if (!outcome && !progress.acknowledged && !progress.cancelled && request.startOperationId === start) {
-				const secrets = await this.#secrets.resolve(this.#secretRequest(input.commandId), budget);
-				const { uid, gid, cwd, environment } = this.#session;
-				// Nor once it started again while the secrets were read: the command then ended with the boot it was started
-				// under, before it ran.
-				if (request.startOperationId !== this.#currentStart())
-					return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
-				try {
-					await this.#guest.run(
-						{
-							schema: "qorpera.coding-guest-run/v1",
-							workerId: this.#scope.workerId,
-							commandId: input.commandId,
-							uid,
-							gid,
-							command: request.command,
-							cwd,
-							environment: { ...secrets.environment, ...environment, ...sessionEnvironment(uid) },
-							timeoutMs: request.timeoutMs,
-						},
-						budget,
-					);
-					// Only now does this start's environment mask the command's output. A start whose answer was lost, or
-					// that the guest refused, may run with an earlier start's environment.
-					this.#secrets.accepted(this.#secretRequest(input.commandId));
-				} catch (error) {
-					// The guest has the command with another environment, such as a secret's earlier value: it is this one.
-					if (!(error instanceof CodingGuestRefused && error.code === "CODING_GUEST_COMMAND_CONFLICT"))
-						throw error;
+			return holding(request, async () => {
+				// Only on the machine it was first started on: one that started again since may have run it already.
+				if (!outcome && !progress.acknowledged && !progress.cancelled && request.startOperationId === start) {
+					const secrets = await this.#secrets.resolve(this.#secretRequest(input.commandId), budget);
+					const { uid, gid, cwd, environment } = this.#session;
+					// Nor once it started again while the secrets were read: the command then ended with the boot it was
+					// started under, before it ran.
+					if (request.startOperationId !== this.#currentStart())
+						return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+					try {
+						await this.#guest.run(
+							{
+								schema: "qorpera.coding-guest-run/v1",
+								workerId: this.#scope.workerId,
+								commandId: input.commandId,
+								uid,
+								gid,
+								command: request.command,
+								cwd,
+								environment: { ...secrets.environment, ...environment, ...sessionEnvironment(uid) },
+								timeoutMs: request.timeoutMs,
+							},
+							budget,
+						);
+						// Only now does this start's environment mask the command's output. A start whose answer was lost, or
+						// that the guest refused, may run with an earlier start's environment.
+						this.#secrets.accepted(this.#secretRequest(input.commandId));
+					} catch (error) {
+						// The guest has the command with another environment, such as a secret's earlier value: it is this one.
+						if (!(error instanceof CodingGuestRefused && error.code === "CODING_GUEST_COMMAND_CONFLICT"))
+							throw error;
+					}
+					progress = await this.#save(folder, { ...progress, acknowledged: true });
 				}
-				progress = await this.#save(folder, { ...progress, acknowledged: true });
-			}
-			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+				return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+			});
 		});
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		return receipt;
+		return answered(receipt);
 	}
 
 	async read(
@@ -790,10 +876,10 @@ export class LxdCodingFolderCommandTransport {
 		await this.#gate("read", scope, read.commandId, null, signal);
 		const receipt = await this.#within(read.commandId, signal, false, async (folder, budget) => {
 			const { request, progress, outcome } = await this.#records(folder, read.commandId);
-			return this.#settle(folder, request, progress, outcome, budget, signal, read, false);
+			return holding(request, () => this.#settle(folder, request, progress, outcome, budget, signal, read, false));
 		});
 		await this.#gate("read", scope, read.commandId, null, signal);
-		return receipt;
+		return answered(receipt);
 	}
 
 	async cancel(
@@ -805,16 +891,18 @@ export class LxdCodingFolderCommandTransport {
 		const receipt = await this.#within(commandId, signal, false, async (folder, budget) => {
 			const records = await this.#records(folder, commandId);
 			const { request, outcome } = records;
-			let { progress } = records;
-			if (!outcome) {
-				// Kept first, so a start that lands after the cancel is stopped too, when it is next read.
-				if (!progress.cancelled) progress = await this.#save(folder, { ...progress, cancelled: true });
-				await this.#stop(commandId, budget, signal);
-			}
-			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
+			return holding(request, async () => {
+				let { progress } = records;
+				if (!outcome) {
+					// Kept first, so a start that lands after the cancel is stopped too, when it is next read.
+					if (!progress.cancelled) progress = await this.#save(folder, { ...progress, cancelled: true });
+					await this.#stop(commandId, budget, signal);
+				}
+				return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
+			});
 		});
 		await this.#gate("cancel", scope, commandId, null, signal);
-		return receipt;
+		return answered(receipt);
 	}
 
 	/** Whether a call's receipt shows nothing of its command (F3 5g-5), and as what: `machine_stopped` for one started

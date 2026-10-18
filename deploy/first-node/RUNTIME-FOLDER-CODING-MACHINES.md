@@ -461,8 +461,15 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      check is seen. A `disk.json` that can't be read withholds (`unconfirmed`, as empty). A rebuild that ends after that
      check, while the decided answer is on its way, is not caught; that answer was true when it was decided. For a
      forwarded command the check runs on the executor that holds the machine, and the trip back to the ingress is on
-     its way too: the ingress's checks after it can only refuse. A receipt that shows nothing of its command answers
-     any page, so a paged read across a rebuild answers `machine_stopped`. Then the machine starts. Before the rebuild goes out, the executor checks that the image
+     its way too: the ingress's checks after it can only refuse. A receipt that shows nothing of its command is the
+     same for every page asked of it, one past the log's end or inside a character included: its state, no exit code,
+     no output, and an empty log at offset 0 with the command's limit. So a call is refused before that check only for
+     what is the same for every command of the session (its input, its authority, its custody, the machine's start and
+     disk), for a command with no kept start or one not the host's own, and for another command under the call's id.
+     What the call meets once it read its command's kept start (a page past the log or inside a character, the guest's
+     answer, the host's own files, the call's budget) the transport holds: the call is authorized the last time as any
+     other, answers a receipt with nothing of the command, and its refusal stands only once that check shows the command.
+     A paged read across a rebuild answers `machine_stopped`. Then the machine starts. Before the rebuild goes out, the executor checks that the image
      is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
      until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it

@@ -26,6 +26,7 @@ import { CodeHostRepositories } from "../../../packages/runner-orchestrator/src/
 import { CodeHostJobs } from "../../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CloudCodingExecutor } from "../../../packages/runner-orchestrator/src/coding-executor.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { codingCommandExecution } from "../../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
 import { CODING_FOLDER_CONTROL_SOCKET, CodingFolderControl } from "../../../packages/runner-orchestrator/src/coding-folder-control.ts";
 import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../../packages/runner-orchestrator/src/coding-storage.ts";
@@ -200,10 +201,10 @@ async function main(): Promise<void> {
 					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
 				await authorizeCodingCommand(control, request, checked);
 			}, signal);
-			const receipt = await (request.action === "start" ? transport.start(request.scope, request.input, signal) :
+			// F3 5g-5: the command service asks the folder model's transport what the receipt shows, after its final authorization,
+			// and only then answers what the transport held of the call.
+			return codingCommandExecution(transport, request.input.commandId, request.action === "start" ? transport.start(request.scope, request.input, signal) :
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
-			// F3 5g-5: the command service asks the folder model's transport what the receipt shows, after its final authorization.
-			return { receipt, hidden: async (checked) => "hidden" in transport ? transport.hidden(request.input.commandId, checked) : undefined };
 		},
 	});
 	const commands = new HttpCloudCodingCommandService({
