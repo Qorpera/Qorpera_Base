@@ -12,6 +12,35 @@ export const SAVE_REFUSED =
 /** The folder's reason for a path it refused because it carries a value (folder-service/secret-scan.ts CARRIES). */
 export const CARRIES = "it carries a secret value";
 
+/** The folder's reason for a path it holds back with a refused change: the rest of a repo.git with one (#1299; folder-
+ * service/plan.ts WAITS_FOR_REFUSED). */
+export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret value";
+
+/** The way out of a refused git commit, as the save refusal gives it (#1299): each step, in order. */
+export const GIT_WAY_OUT = ["git reflog expire --expire-unreachable=now HEAD", "git repack -a -d --max-pack-size=64m", "git prune --expire=now"];
+
+/** A command that prints which of `oids` the repository has, as the field `name`. */
+const has = (name, oids) => `echo "${name}=$(for oid in ${oids.join(" ")}; do git cat-file -e "$oid" 2>/dev/null && printf '%s ' "$oid"; done)"`;
+
+/** The way out as one command (bash): the value out of the index (`file`: its file was never in the worktree), then each
+ * of GIT_WAY_OUT. It prints which of `oids` the repository has before it (`before`; none if the folder cleared them
+ * itself), then git's status and how many lines git printed (`way-out`; a saved object cannot be deleted, so git warns and
+ * goes on). No step fails when nothing is left. */
+export const wayOutScript = (oids, file) => `${has("before", oids)}; ` +
+	`warned=$({ ${[...(file ? [`git rm -q --cached --ignore-unmatch ${file}`] : []), ...GIT_WAY_OUT].join(" && ")}; } 2>&1); ` +
+	"echo \"way-out=$? $(printf '%s' \"$warned\" | grep -c .)\"";
+
+/** The check after the way out, as a command of its own (bash, the value in P3_PROBE; a boundary comes between). It prints
+ * which of `oids` the repository still has (`kept`), how many lines of the worktree's HEAD log and its branch's log name
+ * one (`logged`), how many objects git reads (`objects`) and how many of their lines hold the value (`readable`; `unread`
+ * if git cannot read them all), and with `pack`, which of that pack's files are left (`left`). */
+export const goneScript = (oids, pack) => `${has("kept", oids)}; ` +
+	"echo \"logged=$(cat \"$(git rev-parse --git-path logs/HEAD)\" \"$(git rev-parse --git-path \"logs/$(git symbolic-ref HEAD)\")\" 2>/dev/null | " +
+	`grep -cE '${oids.join("|")}')"; ` +
+	"echo \"objects=$(git cat-file --batch-all-objects --batch-check | wc -l)\"; " +
+	"readable=$(git cat-file --batch-all-objects --batch | grep -caF \"$P3_PROBE\"; exit \"${PIPESTATUS[0]}\") || readable=unread; echo \"readable=$readable\"" +
+	(pack ? `; echo "left=$(cd "$(git rev-parse --git-path objects)/pack" && ls ${pack}.* 2>/dev/null | tr '\\n' ' ')"` : "");
+
 /** A pack in which the value is whole only once a delta is resolved, written into the repository of the worktree the
  * script runs in (bash, the value in P3_PROBE): a base blob holds the value's first half where the target holds it whole,
  * and is longer, so git stores the base whole and the target as a delta on it that copies the first half from the base
@@ -149,9 +178,11 @@ end $holds$;`,
  *   versions name: path, manifest and file SHA-256), each read back from the store through its manifest's chunks into a
  *   bare repository, which `git cat-file --batch-all-objects --batch` reads whole, packed and deltified objects too.
  * Each object found is named by its git id, its type and where it is: a store object's SHA-256, or the folder path of
- * the loose object or the pack. `oids` are looked for among the objects each way reads. It runs in the node as
- * `node -e` (so `require` is an argument) and returns only counts, ids and paths, never a value or a form. */
-export function gitObjectSearch(require, { store, saved, forms, control, oids, scratch }) {
+ * the loose object or the pack. `oids` are looked for among the objects each way reads. `refused` are objects the
+ * folder refused: the saved folder must keep none of them, so each one's every place there is named (its loose path, a
+ * saved pack that holds it, a saved index that lists it with no pack beside it), whether or not git can read it. It runs
+ * in the node as `node -e` (so `require` is an argument) and returns only counts, ids and paths, never a value or a form. */
+export function gitObjectSearch(require, { store, saved, forms, control, oids, refused, scratch }) {
 	const { createHash } = require("node:crypto");
 	const fs = require("node:fs");
 	const { dirname, join } = require("node:path");
@@ -235,7 +266,7 @@ export function gitObjectSearch(require, { store, saved, forms, control, oids, s
 			const bytes = path ? fs.readFileSync(path) : null;
 			return bytes && digest("sha256", bytes) === sha256 ? bytes : null;
 		};
-		const inSaved = result({ files: saved.length, missing: 0, repositories: 0, objects: 0 });
+		const inSaved = result({ files: saved.length, missing: 0, repositories: 0, objects: 0, refused: [] });
 		const layers = [];
 		for (const { path, manifest, file } of saved) {
 			const [, repository, rest] = /^(code\/[^/]+\/[^/]+\/repo\.git)\/(objects\/.+)$/.exec(path) ?? [];
@@ -261,22 +292,31 @@ export function gitObjectSearch(require, { store, saved, forms, control, oids, s
 		}
 		inSaved.repositories = new Set(layers.map((layer) => layer.repository)).size;
 		for (const { repository, files: saves, directory: at } of layers) {
-			// Where an object is: its loose path, and each pack whose index lists it.
-			const packs = [...saves.keys()].filter((rest) => /^objects\/pack\/pack-[^/]+\.idx$/.test(rest)).map((rest) => {
-				const listed = git(["--git-dir", at, "show-index"], fs.readFileSync(join(at, rest))).toString();
-				return [`${repository}/${rest.replace(/\.idx$/, ".pack")}`, new Set(listed.split("\n").map((line) => line.split(" ")[1]))];
+			// A saved pack without its index is indexed here, as git must before it reads it; one it cannot index is unread.
+			for (const rest of saves.keys())
+				if (/^objects\/pack\/pack-[^/]+\.pack$/.test(rest) && !saves.has(rest.replace(/\.pack$/, ".idx")))
+					try {
+						git(["--git-dir", at, "index-pack", join(at, rest)]);
+					} catch {
+						inSaved.missing += 1;
+					}
+			// Where an object is: its loose path, each saved pack whose index lists it, and each saved index that lists it with
+			// no pack beside it (git reads no object of that index).
+			const packs = fs.readdirSync(join(at, "objects/pack")).filter((name) => /^pack-[^/]+\.idx$/.test(name)).map((name) => {
+				const listed = git(["--git-dir", at, "show-index"], fs.readFileSync(join(at, "objects/pack", name))).toString();
+				const pack = `objects/pack/${name.replace(/\.idx$/, ".pack")}`;
+				return [saves.has(pack) ? `pack ${repository}/${pack}` : `index ${repository}/objects/pack/${name}`,
+					new Set(listed.split("\n").map((line) => line.split(" ")[1]))];
 			});
 			const places = (oid) => {
 				const loose = `objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
-				return [
-					...(saves.has(loose) ? [`loose ${repository}/${loose}`] : []),
-					...packs.filter(([, listed]) => listed.has(oid)).map(([pack]) => `pack ${pack}`),
-				];
+				return [...(saves.has(loose) ? [`loose ${repository}/${loose}`] : []), ...packs.filter(([, listed]) => listed.has(oid)).map(([place]) => place)];
 			};
 			everyObject(at, (oid, type, content) => {
 				inSaved.objects += 1;
 				sort({ oid, type, where: places(oid) }, content, inSaved);
 			});
+			for (const oid of refused) for (const where of places(oid)) inSaved.refused.push({ oid, where });
 		}
 		return { store: inStore, saved: inSaved };
 	} finally {
