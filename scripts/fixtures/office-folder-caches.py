@@ -45,6 +45,8 @@ ROOM = "caches/d/code/d/o/d/n/d/worktrees/d/w/t/node_modules"
 BOUND = {"command": 10, "desktop": 75}
 # Read through a mount at the closure: none of these may reach the node.
 NODE_READS = ("published.txt", "docs/guide.md")
+# Held across the closure by a descriptor that never reads it, while another process on the mount reads it before.
+UNREAD = f"{WORKTREE}/package.json"
 FOLDERS = ("", "code", "code/o", "code/o/n", "code/o/n/repo.git", "code/o/n/worktrees", WORKTREE, "docs")
 FILES = {
     "published.txt": b"published, never read before the close",
@@ -140,8 +142,46 @@ class CacheNode(rm.RemountNode):
 
 # An office process: each request is one JSON line, each answer the result or the errno.
 CLIENT = r'''
-import errno, json, os, sys
-held = {}
+import errno, json, mmap, os, resource, select, signal, sys, time
+held, maps = {}, {}
+def mapread(key):
+    # In a child: a page the kernel can no longer fill raises SIGBUS, which would end this process.
+    if key not in maps:
+        raise OSError(errno.EBADF, "not mapped")
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        try:
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            os.write(w, maps[key][:])
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    os.close(w)
+    chunks, chunk, deadline = [], None, time.monotonic() + 2
+    while time.monotonic() < deadline and select.select([r], [], [], max(0, deadline - time.monotonic()))[0]:
+        chunk = os.read(r, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.close(r)
+    if chunk != b"":
+        os.kill(pid, signal.SIGKILL)
+    done = 0
+    for _ in range(30):
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        time.sleep(0.1)
+    data = b"".join(chunks)
+    if chunk != b"" or not done:
+        return {"ok": False, "hung": 2, "bytes": len(data)}
+    if os.WIFSIGNALED(status):
+        return {"ok": False, "signal": signal.Signals(os.WTERMSIG(status)).name, "bytes": len(data)}
+    if os.WEXITSTATUS(status):
+        return {"ok": False, "exit": os.WEXITSTATUS(status), "bytes": len(data)}
+    return {"text": data.decode(errors="replace")}
 def handle(request):
     op = request["op"]
     if op == "read":
@@ -161,6 +201,15 @@ def handle(request):
         return {}
     if op == "pread":
         return {"text": os.pread(held[request["key"]], 65536, 0).decode(errors="replace")}
+    if op == "map":
+        fd = os.open(request["path"], os.O_RDONLY)
+        try:
+            maps[request["key"]] = mmap.mmap(fd, 0, mmap.MAP_SHARED, mmap.PROT_READ)
+        finally:
+            os.close(fd)
+        return {}
+    if op == "mapread":
+        return mapread(request["key"])
     if op == "openat":
         fd = os.open(request["name"], os.O_RDONLY, dir_fd=held[request["key"]])
         try:
@@ -353,6 +402,12 @@ def failed(reply):
     return reply.get("ok") is False and "errno" in reply
 
 
+def faulted(reply):
+    """A read through a mapping that gave no byte: its page faulted (the child that touched it ended on SIGBUS or
+    SIGSEGV), or the read was refused. A read that hung is neither."""
+    return reply.get("ok") is False and (reply.get("signal") in ("SIGBUS", "SIGSEGV") or "errno" in reply) and not reply.get("bytes")
+
+
 CHECKS = {
     "first": ("cacheFlagPassed", "cacheOnMachineDisk", "ownerIsolation", "sameOwnerFindsCache", "cacheDirsPrivate", "mismatchRefused", "badCacheDirRefused", "directControlMounted", "helperRefusesForeignCacheDir", "closedViewReadsFail", "mountEndsWithinBound", "heldFilesEndWithMount", "boundCatchesLiveMount", "fixtureProtocolClean"),
     "second": ("machineRestarted", "restartFindsCaches", "ownerIsolationAfterRestart", "cacheDirsPrivate", "fixtureProtocolClean"),
@@ -515,20 +570,24 @@ class Proof:
         self.check("mismatchRefused", all(case["answer"] == "invalid" and case["parsed"] == (case["mode"] == "direct") and not case["left"] and case["unit"] == "inactive" for case in cases), {"cases": cases})
 
     def direct(self, tag, make, close=False):
-        """The program as the unit runs it, by hand, with the cache folder `make(work, state)` returns; cwd is `work`.
-        `work`'s name is short: the program refuses a cache folder over 80 bytes before it looks at anything else."""
+        """The program as the unit runs it, by hand, with the cache folder `make(work, state)` returns (or the cache
+        folder and a `--local-dir`); cwd is `work`. `work`'s name is short: the program refuses a cache folder over 80
+        bytes before it looks at anything else. The state folder is left empty: the program refuses one it did not
+        make before it looks at the cache folder."""
         work = self.directory / "d" / str(len(self.directs))
         self.directs.append(tag)
         point, state = work / "company", work / "state"
         for path in (work, point, state):
             path.mkdir(mode=0o700, parents=True)
-        cache_dir = make(work, state)
+        made = make(work, state)
+        cache_dir, local_dir = made if isinstance(made, tuple) else (made, None)
         view = {"environmentId": "synthetic", "viewId": f"direct-{tag}-{uuid.uuid4().hex[:12]}", "pass": "synthetic-pass"}
         (work / "view.json").write_text(json.dumps(view))
         (work / "view.json").chmod(0o600)
         args = [str(self.program), "mount", "--connect", f"unix:{self.directory / 'node.sock'}", "--view-file", str(work / "view.json"), "--mountpoint", str(point), "--state-dir", str(state), "--cache-dir", str(cache_dir), "--allow-other", "yes", "--owner-uid", str(self.office.pw_uid), "--owner-gid", str(self.office.pw_gid)]
+        args += ["--local-dir", str(local_dir)] if local_dir else []
         process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=work)
-        run = {"cacheDir": str(cache_dir), "bytes": len(os.fsencode(str(cache_dir)))}
+        run = {"cacheDir": str(cache_dir), "bytes": len(os.fsencode(str(cache_dir))), "localDir": str(local_dir) if local_dir else None}
         if close:
             try:
                 run["servedAfter"] = base.eventually(lambda: rm.served(str(point)), 20) and True
@@ -566,10 +625,12 @@ class Proof:
             return work / "link"
 
         def inside(work, state):
-            (state / "local" / "inner").mkdir(mode=0o700, parents=True)
-            for path in (state / "local", state / "local" / "inner"):
+            # The local folder is given outside the state folder, which must hold nothing the program did not make.
+            local = work / "local"
+            (local / "inner").mkdir(mode=0o700, parents=True)
+            for path in (local, local / "inner"):
                 path.chmod(0o700)
-            return state / "local" / "inner"
+            return local / "inner", local
 
         absolute = "must be an absolute path of at most 80 bytes"
         alone = "must be a folder (not a link) only this account can use"
@@ -616,12 +677,18 @@ class Proof:
         (CACHE / linked).unlink()
         (CACHE / owned).rmdir()
 
-    def held_reads(self, tag, key):
-        return {
+    def held_reads(self, tag, key, unread=False):
+        """What the holder's descriptors and mapping read now; with `unread`, also the descriptor that read nothing
+        before (only another process read its file)."""
+        reads = {
             "file": self.holder.ask(5, op="pread", key=f"{tag}-file"),
             "node": self.holder.ask(5, op="pread", key=f"{tag}-node"),
             "openat": self.holder.ask(5, op="openat", key=f"{tag}-room", name=key),
+            "map": self.holder.ask(10, op="mapread", key=f"{tag}-map"),
         }
+        if unread:
+            reads["unread"] = self.holder.ask(5, op="pread", key=f"{tag}-unread")
+        return reads
 
     def observe(self, track, entry, now):
         state = rm.show(entry["unit"])
@@ -635,20 +702,25 @@ class Proof:
 
     def revocation(self):
         """R7: from the closure no read reaches the node; by the bound the mount is gone, and the cached files with it;
-        a file held open across the closure reads nothing after the end. The live must-fail is a closure the node
-        never pushes, as if the program had no exit: the bound's check must catch the mount that is still there."""
+        a file held open across the closure reads nothing after the end, from the kernel's cache either: not through
+        a descriptor that read it, one that never read it (another process did), or a mapping. The live must-fail is a
+        closure the node never pushes, as if the program had no exit: the bound's check must catch the mount that is
+        still there."""
         d1, ca2 = self.mounts["d1"], self.mounts["ca2"]
         closing = {"d1": (d1, "x", BOUND["desktop"]), "ca2": (ca2, "a", BOUND["command"])}
         self.holder = Office(self.office)
-        before = {}
+        before, others = {}, {}
         for tag, (entry, key, _) in closing.items():
-            for name, rel, folder in (("file", self.room(key), False), ("node", f"{WORKTREE}/README.md", False), ("room", self.room(), True)):
+            for name, rel, folder in (("file", self.room(key), False), ("node", f"{WORKTREE}/README.md", False), ("room", self.room(), True), ("unread", UNREAD, False)):
                 reply = self.holder.ask(op="hold", key=f"{tag}-{name}", path=f"{entry['point']}/{rel}", folder=folder)
                 if not reply.get("ok"):
                     raise RuntimeError(f"{tag} could not hold {rel}: {reply}")
-            before[tag] = self.held_reads(tag, key)
-            if [before[tag][name].get("text") for name in ("file", "node", "openat")] != [self.texts[key], FILES[f"{WORKTREE}/README.md"].decode(), self.texts[key]]:
-                raise RuntimeError(f"{tag}'s held files did not read: {before[tag]}")
+            # The holder never reads `unread`; another office process reads its file, so the kernel caches it.
+            others[tag] = self.office_does(entry, "read", UNREAD)
+            mapped = self.holder.ask(op="map", key=f"{tag}-map", path=f"{entry['point']}/{self.room(key)}")
+            before[tag] = {**self.held_reads(tag, key), "mapped": mapped}
+            if [before[tag][name].get("text") for name in ("file", "node", "openat")] != [self.texts[key], FILES[f"{WORKTREE}/README.md"].decode(), self.texts[key]] or others[tag].get("text") != FILES[UNREAD].decode():
+                raise RuntimeError(f"{tag}'s held files did not read: {before[tag]}, {others[tag]}")
         cw = self.mount("cw", "command", f"agent-{uuid.uuid4()}")
         self.owners["w"] = cw["cache"]
         start = time.monotonic()
@@ -681,7 +753,7 @@ class Proof:
         finals = {tag: self.final(tracks[tag], entry) for tag, (entry, _, _) in closing.items()}
         through = {tag: self.office_does(entry, "read", self.room(key), seconds=5) for tag, (entry, key, _) in closing.items()}
         kept = {tag: self.on_disk(entry["cache"], key) == self.texts[key] for tag, (entry, key, _) in closing.items()}
-        after = {tag: self.held_reads(tag, key) for tag, (entry, key, _) in closing.items()}
+        after = {tag: self.held_reads(tag, key, unread=True) for tag, (entry, key, _) in closing.items()}
         self.holder.close()
         released = self.final(again, cw)
         refusals = {}
@@ -691,7 +763,9 @@ class Proof:
         self.check("closedViewReadsFail", all(failed(reply) for tag in reads for reply in reads[tag].values()), {"reads": reads, "refusedByNode": {view: "".join(kinds) for view, kinds in refusals.items()}})
         self.check("mountEndsWithinBound", all(ended(finals[tag], bounds[tag]) and failed(through[tag]) and kept[tag] for tag in closing), {"boundsFromClosure": bounds, "tracks": finals, "cachedReadThroughMount": through, "cacheKeptOnDisk": kept})
         self.note("desktopExitSeconds", finals["d1"]["exited"])
-        self.check("heldFilesEndWithMount", all(failed(reply) for tag in after for reply in after[tag].values()), {"before": before, "afterTheEnd": after})
+        # Until the end a held file may read what the kernel cached; after it, nothing does.
+        mapped = {tag: before[tag]["mapped"].get("ok") is True and before[tag]["map"].get("text") == self.texts[key] for tag, (_, key, _) in closing.items()}
+        self.check("heldFilesEndWithMount", all(mapped.values()) and all(faulted(reply) if name == "map" else failed(reply) for tag in after for name, reply in after[tag].items()), {"before": before, "otherProcessRead": others, "mappedBefore": mapped, "afterTheEnd": after})
         self.check("boundCatchesLiveMount", withheld is not None and not ended(withheld, BOUND["command"]) and withheld["served"] and ended(released, BOUND["command"]), {"withheldAtBound": withheld, "afterItsClosure": released})
         for entry in (d1, ca2, cw):
             self.drop(entry)
@@ -819,6 +893,10 @@ def selftest(mount_path):
     assert not ended({**done, "final": {**unit, "NRestarts": 1}}, BOUND["command"]) and not ended({**done, "final": {**unit, "ExecMainStatus": 1}}, BOUND["command"])
     assert failed({"ok": False, "errno": 5}) and not failed({"ok": False, "hung": 5}) and not failed({"ok": False, "ended": True}) and not failed({"ok": True, "text": ""})
     assert failed_with({"ok": False, "errno": errno.ENOENT}, errno.ENOENT) and not failed_with({"ok": False, "errno": errno.EIO}, errno.ENOENT)
+    assert faulted({"ok": False, "signal": "SIGBUS", "bytes": 0}) and faulted({"ok": False, "errno": errno.ENOTCONN})
+    # Must-fail: a mapping that still gave bytes, hung, or ended its child some other way.
+    assert not faulted({"ok": True, "text": "cached"}) and not faulted({"ok": False, "signal": "SIGBUS", "bytes": 6}) and not faulted({"ok": False, "hung": 2, "bytes": 0})
+    assert not faulted({"ok": False, "signal": "SIGKILL", "bytes": 0}) and not faulted({"ok": False, "exit": 1, "bytes": 0}) and not faulted({"ok": False, "ended": True})
     lines = rm.proof_unit(mount_path.read_text(), "/var/lib/qorpera-caches-x/qorpera-folder", "/run/qorpera-caches-x/node.sock", 1000, 1001).splitlines()
     # The helper's env file names the cache folder; the proof's unit keeps both lines as master's has them.
     assert "EnvironmentFile=/run/qorpera-folder/units/%i.env" in lines
@@ -848,6 +926,14 @@ def selftest(mount_path):
             assert client.ask(op="pread", key="file")["text"] == "hello" and client.ask(op="openat", key="room", name="x")["text"] == "cached"
             assert failed_with(client.ask(op="openat", key="room", name="absent"), errno.ENOENT)
             assert failed_with(client.ask(op="hold", key="file", path=path, folder=True), errno.ENOTDIR)
+            mapped = top / "closed" / "m"
+            mapped.write_text("mapped")
+            assert client.ask(op="map", key="m", path=str(mapped))["ok"] and client.ask(op="mapread", key="m")["text"] == "mapped"
+            # Must-fail: a mapped page the kernel can no longer fill ends the child that touches it, not the holder.
+            os.truncate(mapped, 0)
+            reply = client.ask(op="mapread", key="m")
+            assert faulted(reply) and reply["signal"] == "SIGBUS" and client.ask(op="pread", key="file")["text"] == "hello"
+            assert failed_with(client.ask(op="mapread", key="absent"), errno.EBADF)
         finally:
             client.close()
         assert failed_with(once(None, op="read", path=str(top / "absent")), errno.ENOENT)

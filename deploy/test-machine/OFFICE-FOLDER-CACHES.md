@@ -105,7 +105,7 @@ commands of two owners. On the disk it is at
 | `sameOwnerFindsCache` | After a's first command is dropped, a's next command reads `a`, and still not `b` or `x`. |
 | `cacheDirsPrivate` | `/var/lib/qorpera-folder`, `cache`, `cache/desktop` and each owner's folder: real folders, root's, `0700`. |
 | `mismatchRefused` | A desktop given an owner's cache, and a command given `desktop`, `../desktop` or nothing, are `invalid`, through the line and past the parser, and leave no view, env file, mount, state or unit. |
-| `badCacheDirRefused` | The program, run by hand, exits 1 with `FOLDER_CACHE_DIR_UNUSABLE: <dir>: <why>` and mounts nothing, for a cache folder that is `0755`, a link, the office's, relative, missing, over 80 bytes, the state folder (it holds the local folder, `<state>/local`), or inside the local folder; each with the program's reason. |
+| `badCacheDirRefused` | The program, run by hand, exits 1 with `FOLDER_CACHE_DIR_UNUSABLE: <dir>: <why>` and mounts nothing, for a cache folder that is `0755`, a link, the office's, relative, missing, over 80 bytes, the state folder (it holds the local folder, `<state>/local`), or inside a `--local-dir` given outside the state folder (the program refuses a state folder that holds anything it did not make, before it looks at the cache folder); each with the program's reason. |
 | `directControlMounted` | The same run with a good folder mounts, and exits 3 when its view closes. |
 | `helperRefusesForeignCacheDir` | The helper answers `failed` for an owner's cache folder that is a link or the office's, says hello to the node for neither, leaves nothing behind, and changes neither folder. |
 | `closedViewReadsFail` | Row 1 below. |
@@ -136,16 +136,25 @@ command's 40 s.
 
 The synthetic node pushes the closure itself, so the proof measures from the
 push: `BOUND` is 10 s for a command and 75 s for a desktop (the grace plus its
-slack). Before the closure, one long-lived office process opens and holds three
-things in the desktop's mount and in owner a's command's: its cached key, the
-node's `README.md`, and the cache folder `node_modules` itself.
+slack). Before the closure, one long-lived office process opens and holds, in
+the desktop's mount and in owner a's command's: its cached key, the node's
+`README.md`, the cache folder `node_modules` itself, and the node's
+`package.json`, which it never reads (a new office process reads it, so the
+kernel caches it). It also maps its cached key (`mmap`, shared, read-only) and
+reads it once through the mapping. Each read through the mapping runs in a
+child, so a page that faults ends the child (`SIGBUS`), not the holder.
 
 | Row | Check | Passes when |
 |---|---|---|
 | 1 | `closedViewReadsFail` | Right after the closure, a new office process reading `published.txt` (never read before) or `docs/guide.md` through either mount is refused with an errno within 5 s, and the node refused each of the views' requests. |
 | 2 | `mountEndsWithinBound` | Each program exited 3, was not restarted (still so 9 s after its exit, past `RestartSec`), and its mount is gone (no copy in mountinfo, not served), all within its bound; a new read of the cached key through the mountpoint is refused; and the key is still on the disk in its cache. |
 | 3 | `boundCatchesLiveMount` | The must-fail, live: a third command (a fresh owner) whose view the node does **not** close is still mounted and served when its 10 s bound passes, and row 2's test (`ended`) fails it. The node then closes it, and the same test passes it within 10 s of that closure. |
-| 4 | `heldFilesEndWithMount` | After the end, every held descriptor (`pread` on the cached key and on `README.md`, and `openat` of the key in the held `node_modules`) is refused with an errno. |
+| 4 | `heldFilesEndWithMount` | After the end, every held descriptor (`pread` on the cached key and on `README.md`, `openat` of the key in the held `node_modules`, and `pread` on `package.json`, which only another process read) is refused with an errno, and a read through the mapping gives no byte (its page faults, or the read is refused). The mapping must have read the key before the closure. |
+
+Row 4 holds even for what the kernel cached: the kernel keeps a file's cached
+pages per file, not per descriptor, so a holder that never read a file would
+still get the pages another process read. The program must drop them before
+its mount ends. Until the end, a held file may still read cached bytes.
 
 What the grace serves before the end is recorded, not required (below). Row 3's
 other must-fail, a program with a longer grace or no exit, would need a changed
@@ -161,7 +170,8 @@ These are under `notes`; none decides `result`.
 - `kernelCache`: the program's `kernel cache on|off` log line for the desktop
   mount.
 - `duringGrace`: what each mount still serves right after the closure, before
-  its end: the held descriptors, a new open of the cached key, and a new open of
+  its end: the held descriptors (not `package.json`'s, which reads only after
+  the end) and the mapping, a new open of the cached key, and a new open of
   `README.md`, which was read before the closure. A read the node would have to
   answer is refused (row 1); this shows what the machine itself still holds.
 - `desktopExitSeconds`: when the desktop's program exited after the closure.
@@ -196,4 +206,7 @@ the pushed sources exist and parse, that the bundled helper drives only the
 proof's units and never publishes, launches or relays, and the fixture's
 `selftest`: `ended`'s passes and must-fails, the refusal tests, the unit's
 `EnvironmentFile=` and `--cache-dir` lines, the private-folder tests, the office
-client, and the synthetic node's wire with a closed view, without privilege.
+client (with its mapping: a mapped file cut to nothing ends the reading child on
+`SIGBUS`, and the holder goes on; `faulted` refuses a mapping that gave bytes,
+hung, or ended another way), and the synthetic node's wire with a closed view,
+without privilege.

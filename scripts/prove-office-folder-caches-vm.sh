@@ -169,7 +169,8 @@ program=(--folder-binary "$work/qorpera-folder" --folder-sha256 "$folder_sha")
 if ((pinned)); then
 	[[ "$folder_sha" == "$expected_folder_sha" ]] || fail "built folder binary differs from the checked-in artifact record"
 else
-	echo "DRY RUN: folder program $folder_sha from $(git rev-parse HEAD); the checked-in record is $expected_folder_sha"
+	# The tree may be a copy without .git (run-on-node's): the program's own hash names it.
+	echo "DRY RUN: folder program $folder_sha built from this tree; the checked-in record is $expected_folder_sha"
 	program+=(--unpinned-program)
 fi
 echo "Nested office VM: $project/$vm UUID=$uuid image=$fingerprint folder=$folder_sha fuse=$fuse"
