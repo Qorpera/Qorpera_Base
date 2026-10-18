@@ -438,6 +438,14 @@ export async function runCodingGuestCommand(
 		} catch {
 			/* An unknown submission remains retained and is inspected below. */
 		}
+		// A cancel between the intent and the unit found no unit to stop, and its receipt already said cancelled: the
+		// unit stops now, so a command said cancelled never runs on.
+		try {
+			await lstat(join(directory, "cancel.json"));
+			await call("/usr/bin/systemctl", ["stop", unit]).catch(() => undefined);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
 	}
 	if (action === "cancel" && intent && intent.bootId === bootId) {
 		try {
@@ -503,6 +511,10 @@ export async function runCodingGuestCommand(
 					if (state === "cancelled") exitCode = null;
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
+			} else if (fields.LoadState === "not-found" && cancellation) {
+				// A cancel's stop that ends the command cleanly (SIGTERM is clean) lets systemd forget the transient
+				// unit at once, so the cancel finds no unit left to show.
+				state = "cancelled";
 			}
 			captured = await capture(["succeeded", "failed", "cancelled"].includes(state));
 		} catch {
