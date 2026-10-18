@@ -28,6 +28,7 @@ import { CloudCodingExecutor } from "../../../packages/runner-orchestrator/src/c
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { codingCommandExecution } from "../../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
 import { CODING_FOLDER_CONTROL_SOCKET, CodingFolderControl } from "../../../packages/runner-orchestrator/src/coding-folder-control.ts";
+import { CodingFolderSecretKey } from "../../../packages/runner-orchestrator/src/coding-folder-secrets.ts";
 import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/coding-folder-views.ts";
 import { createCodingNasStorage } from "../../../packages/runner-orchestrator/src/coding-storage.ts";
 import { LxdUnixClient } from "../../../packages/runner-orchestrator/src/lxd-client.ts";
@@ -146,14 +147,19 @@ async function main(): Promise<void> {
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
-		const folderControl = new CodingFolderControl(config.folder.controlSocket ? { path: config.folder.controlSocket } : {});
+		// The folder service's save check gets the machine's secret values as keyed hashes, as executor.ts gives them (5j-5
+		// (a)): with no broker here, none.
+		const folderSecretKey = new CodingFolderSecretKey();
+		const secrets = () => folderSecretKey.set([]).set;
+		const folderControl = new CodingFolderControl({ ...(config.folder.controlSocket ? { path: config.folder.controlSocket } : {}), secrets });
 		// The views it holds are recorded beside its journals, on the NAS: a restarted executor still ends them.
 		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		// Each boundary's answer goes to the log, so a CODING_FOLDER_BOUNDARY_HELD shows which view held and why: whole
 		// from the witness socket, and as the host reads it.
-		const witnessed = new CodingFolderControl({ path: await boundaryWitness(config.folder.controlSocket ?? CODING_FOLDER_CONTROL_SOCKET) });
-		const boundaries: Pick<CodingFolderControl, "boundary" | "restarted"> = {
+		const witnessed = new CodingFolderControl({ path: await boundaryWitness(config.folder.controlSocket ?? CODING_FOLDER_CONTROL_SOCKET), secrets });
+		const boundaries: Pick<CodingFolderControl, "boundary" | "restarted" | "secrets"> = {
 			restarted: (machine, signal) => witnessed.restarted(machine, signal),
+			secrets: (machine, signal) => witnessed.secrets(machine, signal),
 			async boundary(machine, final, signal) {
 				try {
 					const answer = await witnessed.boundary(machine, final, signal);
