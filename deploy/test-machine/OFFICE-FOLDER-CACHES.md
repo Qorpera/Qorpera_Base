@@ -43,7 +43,10 @@ tree, and a before/after diff of the test machine. Then it runs
    passed on the same VM, image and program, and the guest booted again. Then
    `cleanup`.
 
-The evidence JSON (the second record, holding the first) is printed between
+Each phase's record is the launcher's (`qorpera.office-folder-caches/v1`: the
+target, the program, the pushed files' digests and the guest's boot) with the
+guest's record beside it (its own schema kept as `guestSchema`). The evidence
+JSON (the second record, holding the first) is printed between
 `OFFICE_FOLDER_CACHES_EVIDENCE_BEGIN` and `OFFICE_FOLDER_CACHES_EVIDENCE_END`.
 
 **The program pin.** The wrapper requires the built program's sha256 to match
@@ -187,7 +190,8 @@ master's unit and this tree's helper and program, and starts no office service.
 
 `scripts/test-office-folder-caches.test.mjs` runs in `run-on-node changed`. It
 checks the launcher's argument and target refusals, that the second phase runs
-only after a first that passed on the same VM and program in a new boot, that
+only after a first that passed on the same VM and program in a new boot (on the
+record the launcher itself composes from a guest record), that
 the pushed sources exist and parse, that the bundled helper drives only the
 proof's units and never publishes, launches or relays, and the fixture's
 `selftest`: `ended`'s passes and must-fails, the refusal tests, the unit's

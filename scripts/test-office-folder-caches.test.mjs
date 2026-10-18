@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertAfterFirst, assertTarget, bundleHelper, PHASE_SECONDS, PUSHED, parseArgs } from "./test-office-folder-caches.mjs";
+import { assertAfterFirst, assertTarget, bundleHelper, evidenceOf, PHASE_SECONDS, PUSHED, parseArgs, recordOf } from "./test-office-folder-caches.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -49,6 +49,32 @@ test("the second phase runs only after a first that passed, on the same VM and p
 	assert.throws(() => assertAfterFirst(first, after, "boot-1"), /did not restart/);
 	assert.throws(() => assertAfterFirst(undefined, after, "boot-2"), /did not pass/);
 	for (const field of [{ schema: "qorpera.office-folder-remount/v1" }, { phase: "second" }, { executed: false }, { result: "failed" }, { project: "qfc-bbbbbbbb" }, { vm: "qorpera-caches-bbbbbbbb" }, { uuid: "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee" }, { image: "b".repeat(64) }, { folderSha256: "b".repeat(64) }, { guestBoot: undefined }]) assert.throws(() => assertAfterFirst({ ...first, ...field }, after, "boot-2"), JSON.stringify(field));
+});
+
+test("the record the launcher composes for a first phase that passed is the one the second phase accepts", () => {
+	// The guest's record carries its own schema and phase; the launcher's evidence keeps its own.
+	const guestSchema = /"schema": "([^"]+)"/.exec(readFileSync(resolve(root, PUSHED["office-folder-caches.py"]), "utf8"))?.[1];
+	assert.equal(guestSchema, "qorpera.office-folder-caches.guest/v1");
+	const guest = (phase, result) => ({ schema: guestSchema, phase, fuse: "present", limitations: [], checks: {}, notes: {}, result });
+	const evidence = (opts, boot) => evidenceOf(opts, { boot, unitSha256: digest }, {});
+	const saved = (record) => JSON.parse(JSON.stringify(record));
+	const after = parseArgs(second);
+	const passed = saved(recordOf(evidence(options, "boot-1"), guest("first", "passed")));
+	assert.equal(passed.schema, "qorpera.office-folder-caches/v1");
+	assert.equal(passed.guestSchema, guestSchema);
+	assert.equal(passed.executed, true);
+	assert.doesNotThrow(() => assertAfterFirst(passed, after, "boot-2"));
+	assert.throws(() => assertAfterFirst(saved(recordOf(evidence(options, "boot-1"), guest("first", "failed"))), after, "boot-2"), /did not pass/);
+	// The composition this replaced: the guest's schema over the launcher's.
+	assert.throws(() => assertAfterFirst({ ...passed, ...guest("first", "passed") }, after, "boot-2"), /did not pass/);
+	const record = recordOf(evidence(after, "boot-2"), guest("second", "passed"), passed);
+	assert.equal(record.schema, "qorpera.office-folder-caches/v1");
+	assert.equal(record.phase, "second");
+	assert.equal(record.result, "passed");
+	assert.equal(recordOf(evidence(after, "boot-2"), guest("second", "failed"), passed).result, "failed");
+	assert.equal(recordOf(evidence(after, "boot-2"), guest("second", "passed"), { ...passed, result: "failed" }).result, "failed");
+	// A harness error has no guest record, and stays one.
+	assert.equal(saved(recordOf(evidence(options, "boot-1"), { result: "harness-error", error: "lxc exec failed" })).result, "harness-error");
 });
 
 test("every pushed source exists and the guest programs parse", () => {

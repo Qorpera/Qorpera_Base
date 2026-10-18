@@ -77,6 +77,36 @@ export async function bundleHelper(outfile) {
 	});
 }
 
+/** What the launcher itself vouches for: the run's target, the program and the pushed files' digests. */
+export function evidenceOf(options, guest, digests) {
+	return {
+		schema: "qorpera.office-folder-caches/v1",
+		scope: "the office folder mounts' caches on the machine's disk through master's folder helper and mount unit, and a closed view's end; synthetic folder node",
+		phase: options.phase,
+		project: options.project,
+		vm: options.vm,
+		uuid: options.uuid,
+		image: options.image,
+		fuse: options.fuse,
+		folderSha256: options["folder-sha256"],
+		// A dry run against a program that is not the checked-in record's is never the proof.
+		programPinned: !options.unpinned,
+		digests,
+		guestBoot: guest.boot,
+		guestOfficeUnitSha256: guest.unitSha256,
+		executed: false,
+	};
+}
+
+/** The phase's record: the launcher's evidence, then the guest's record for every key the evidence does not hold (the
+ * guest's own schema is kept as `guestSchema`), so the second phase finds the first's schema, target and program. A
+ * second phase passes only with its first. */
+export function recordOf(evidence, guest, first) {
+	const { schema: guestSchema, ...rest } = guest;
+	const record = { ...evidence, executed: true, guestSchema, ...Object.fromEntries(Object.entries(rest).filter(([key]) => !Object.hasOwn(evidence, key))) };
+	return first ? { ...record, first, result: guest.result === "passed" && first.result === "passed" ? "passed" : "failed" } : record;
+}
+
 export async function main(args) {
 	const options = parseArgs(args);
 	if (process.platform !== "linux" || !existsSync("/etc/qorpera-test-machine-versions")) throw new Error("Run the launcher through run-on-node on a configured test machine");
@@ -94,30 +124,13 @@ export async function main(args) {
 		await bundleHelper(join(local, "helper.mjs"));
 		const sources = { ...Object.fromEntries(Object.entries(PUSHED).map(([name, path]) => [name, resolve(root, path)])), "helper.mjs": join(local, "helper.mjs"), "qorpera-folder": realpathSync(options["folder-binary"]) };
 		const digests = Object.fromEntries(Object.entries(sources).map(([name, path]) => [name, sha256(readFileSync(path))]));
-		const evidence = {
-			schema: "qorpera.office-folder-caches/v1",
-			scope: "the office folder mounts' caches on the machine's disk through master's folder helper and mount unit, and a closed view's end; synthetic folder node",
-			phase: options.phase,
-			project: options.project,
-			vm: options.vm,
-			uuid: options.uuid,
-			image: options.image,
-			fuse: options.fuse,
-			folderSha256: options["folder-sha256"],
-			// A dry run against a program that is not the checked-in record's is never the proof.
-			programPinned: !options.unpinned,
-			digests,
-			guestBoot: guest.boot,
-			guestOfficeUnitSha256: guest.unitSha256,
-			executed: false,
-		};
+		const evidence = evidenceOf(options, guest, digests);
 		if (!options.execute) {
 			writeFileSync(options.record, `${JSON.stringify({ ...evidence, result: "plan", guestCommand: ["python3", `${dir}/office-folder-caches.py`, "proof", dir, options.fuse, options.phase] }, null, 2)}\n`);
 			console.log("Preflight passed. No guest files or units created.");
 			return;
 		}
-		const result = execute(command, options, dir, sources, digests);
-		const record = first ? { ...evidence, executed: true, ...result, first, result: result.result === "passed" && first.result === "passed" ? "passed" : "failed" } : { ...evidence, executed: true, ...result };
+		const record = recordOf(evidence, execute(command, options, dir, sources, digests), first);
 		const output = `${JSON.stringify(record, null, 2)}\n`;
 		writeFileSync(options.record, output);
 		console.log(output);
