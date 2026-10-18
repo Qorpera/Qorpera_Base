@@ -839,6 +839,9 @@ export class FolderService {
 
 	async #machineBoundary(machine: string, final: readonly string[]): Promise<MachineBoundary> {
 		const restarts = this.#restarts.get(machine);
+		// Each view waits for its checks until the same deadline, however long it waits for its turn first: the executor
+		// hears the answer in time.
+		const deadline = this.#checkDeadline();
 		const views = this.#machineViews(machine).flatMap((view) =>
 			view.lease ? [{ viewId: view.lease.viewId, view }] : [],
 		);
@@ -854,13 +857,13 @@ export class FolderService {
 				const last = final.includes(viewId);
 				try {
 					const report = await this.#inTurn(view, () => {
-						if (!last || !view.access?.testMachine) return this.#boundary(view, false, last);
+						if (!last || !view.access?.testMachine) return this.#boundary(view, false, last, false, deadline);
 						// A test machine's last boundary is final: the core closes its view with it. What the quiet period
 						// would have published goes with it.
 						if (view.quiet) clearTimeout(view.quiet);
 						view.quiet = undefined;
 						this.#windows.clear(machine);
-						return this.#boundary(view, true);
+						return this.#boundary(view, true, true, false, deadline);
 					});
 					return { viewId, report };
 				} catch (error) {
@@ -3076,10 +3079,18 @@ export class FolderService {
 	 * no answer asked again before a change), whose report no machine hears: what came of each change set it asked goes
 	 * to the view's notices (F3 4f-2b-2). */
 	#publish(view: View, final = false, quiet = false, unasked = false): Promise<Report> {
+		const deadline = this.#checkDeadline();
 		return this.#inTurn(view, async () => {
 			if (quiet && view.access?.command && view.connections === 0) return { commitId: null, seq: null, paths: [] };
-			return await this.#boundary(view, final, final, unasked);
+			return await this.#boundary(view, final, final, unasked, deadline);
 		});
+	}
+
+	/** Until when a boundary asked now waits for a coding view's checks (`checkWaitMs`, #planned), on the clock of
+	 * `performance.now()`: from when it was asked, so the time it waits for its view's turn (#inTurn) counts too, and a
+	 * boundary queued behind another waiting for the same check answers in time as well. */
+	#checkDeadline(): number {
+		return performance.now() + this.#checkWaitMs;
 	}
 
 	/** Keeps what came of one change set of a boundary no machine asked for (`unasked`), from its own outcomes only, as
@@ -3094,8 +3105,9 @@ export class FolderService {
 	}
 
 	/** `last`: a coding view's final boundary, which the executor asks before it closes the view (F3 5c): a refusal
-	 * that may not lift is final there, as a command's final's is. `unasked`: as #publish's. */
-	async #boundary(view: View, final: boolean, last = final, unasked = false): Promise<Report> {
+	 * that may not lift is final there, as a command's final's is. `unasked`: as #publish's. `deadline`: until when it
+	 * waits for the view's checks (#checkDeadline), from now if not given. */
+	async #boundary(view: View, final: boolean, last = final, unasked = false, deadline?: number): Promise<Report> {
 		const pending = view.pending;
 		if (final && view.closed) {
 			// A final with no answer may be what closed the view: asked again under its key, as it was (the core answers
@@ -3113,7 +3125,7 @@ export class FolderService {
 		// A view kept for its final takes nothing else.
 		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 		if (!pending) return { commitId: null, seq: null, paths: [] };
-		return await this.#boundaryOf(view, pending, final, last, unasked);
+		return await this.#boundaryOf(view, pending, final, last, unasked, deadline);
 	}
 
 	/** The report of a boundary of a view whose machine cannot show its reads complete: it publishes nothing. */
@@ -3152,6 +3164,7 @@ export class FolderService {
 		final: boolean,
 		last: boolean,
 		unasked: boolean,
+		deadline: number | undefined,
 	): Promise<Report> {
 		if (final) await this.#gitSweep(view);
 		// An answered boundary the feed has not brought back yet settles first; nothing else is decided until it has.
@@ -3205,12 +3218,18 @@ export class FolderService {
 				this.#notice(view, unasked, { ...committed(answer), paths: settled });
 			}
 		}
-		const report = this.#notice(view, unasked, await this.#planned(view, pending, final, last));
+		const report = this.#notice(view, unasked, await this.#planned(view, pending, final, last, deadline));
 		return settled.length === 0 ? report : { ...report, paths: [...settled, ...report.paths] };
 	}
 
 	/** A boundary's own change set, planned from what is pending now, after any asked again (#boundaryOf). */
-	async #planned(view: View, pending: PendingView, final: boolean, last: boolean): Promise<Report> {
+	async #planned(
+		view: View,
+		pending: PendingView,
+		final: boolean,
+		last: boolean,
+		deadline = this.#checkDeadline(),
+	): Promise<Report> {
 		const entries: ReportEntry[] = [];
 		// A coding view's boundary checks against the values its machine's executor sent last when it began (5j-5): values
 		// sent while it runs are the next boundary's. Until the first come, it publishes nothing.
@@ -3219,9 +3238,10 @@ export class FolderService {
 			view.heard = "open";
 			return { commitId: null, seq: null, paths: uncheckedOf(planBoundary(pending, () => undefined)) };
 		}
-		// Its checks it waits for a while: one that runs longer (a large pack's) has its file wait (`CHECK_RUNNING`), so
-		// the executor hears the answer in time, and a later boundary publishes the file.
-		await this.#stageAll(view, secrets, secrets ? { waitMs: this.#checkWaitMs } : {});
+		// Its checks it waits for a while, until its deadline: one that runs longer (a large pack's) has its file wait
+		// (`CHECK_RUNNING`), so the executor hears the answer in time, and a later boundary publishes the file.
+		const waitMs = Math.max(0, deadline - performance.now());
+		await this.#stageAll(view, secrets, secrets ? { waitMs } : {});
 		const plan = planBoundary(pending, (node, path) => this.#stagedFor(node, secrets, path), this.#checkOf(secrets));
 		// A test machine's units are credited from what they publish, as planned (F3 6b). A change undone before it was
 		// published, as a move moved back, leaves nothing to publish: its tags go, even when nothing is published.
@@ -3272,6 +3292,7 @@ export class FolderService {
 				this.#settleNodes(
 					view,
 					plan.keep,
+					plan.removals,
 					plan.dropped.map((d) => d.path),
 				);
 			view.heard = "answered";
@@ -3846,6 +3867,7 @@ export class FolderService {
 		this.#settleNodes(
 			view,
 			settlement.keep,
+			settlement.plan.removals,
 			settlement.plan.units.flatMap((u) => u.paths),
 			settlement.saved,
 		);
@@ -3902,10 +3924,12 @@ export class FolderService {
 		}
 	}
 
-	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. */
+	/** Shows the live folder again but for the nodes and removals kept, and tells the machines the paths that change by
+	 * it. */
 	#settleNodes(
 		view: View,
 		keep: ReadonlySet<string>,
+		removals: ReadonlySet<string>,
 		paths: readonly string[],
 		saved: ReadonlySet<string> = new Set(),
 	): void {
@@ -3920,7 +3944,7 @@ export class FolderService {
 			}
 		const before = [...pending.nodes().keys()];
 		const own = this.#ownFolders(view, before);
-		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
+		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))), removals);
 		this.#liveFolders(view, own);
 		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file or link kept
 		// keeps the removal it holds, and so that one's.

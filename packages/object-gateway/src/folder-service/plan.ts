@@ -58,6 +58,8 @@ export interface BoundaryPlan {
 	readonly dropped: readonly { readonly path: string; readonly reason: string }[];
 	/** The nodes the boundary leaves pending whatever its units' outcomes. */
 	readonly keep: ReadonlySet<string>;
+	/** The removals it leaves pending, held back so: the view keeps them (`PendingView.settle`). */
+	readonly removals: ReadonlySet<string>;
 	/** Paths the secret check refused (`SecretCheck`), and those held back as they wait on a change it refused (one
 	 * they need, or one in their git directory), and why; kept pending, but never waiting: a final does not wait for
 	 * them. A name it refused is shown as the folder above it, whose own name carries no value. */
@@ -71,11 +73,9 @@ export interface BoundaryPlan {
 export interface SecretCheck {
 	/** Whether a name or a link's target carries one of the values. */
 	carries(text: string): boolean;
-	/** Whether a check of a changed file's bytes as they are now, as `path` stores them, is still running: the boundary
-	 * did not wait for it to end (a large git pack's takes minutes), so the file waits for it (`CHECK_RUNNING`). */
+	/** Whether the check of a changed file's bytes as `path` stores them still runs: it waits (`CHECK_RUNNING`). */
 	checking(node: PendingFile, path: string): boolean;
-	/** Why a changed file's bytes, as they are now, are not published (they carry a value, or could not be checked), or
-	 * nothing. */
+	/** Why a changed file's bytes as they are now are not published (they carry a value, or could not be checked). */
 	refused(node: PendingFile): string | undefined;
 	/** The same for the bytes a file moved or renamed to `path` still has from its live source, where `path` gives them
 	 * a git form the source's name did not (`formChanged`): not checked so yet, they are refused as not checked. */
@@ -89,6 +89,9 @@ export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret va
 export const WAITS_FOR_UNCHECKED = "it waits for a change that could not be checked for secret values";
 /** Why a file waits whose check has not ended (`SecretCheck.checking`): a later boundary publishes it. */
 export const CHECK_RUNNING = "its check for secret values has not ended yet";
+/** Why the rest of a code area's git directory waits while a file's check there has not ended: the check may yet refuse
+ * the file, and then nothing else of its git change may be in the folder. */
+export const WAITS_FOR_CHECK = "it waits for a change whose check for secret values has not ended yet";
 
 type Item =
 	| { kind: "write"; path: string; file: FileRef; expected: string; paths: string[] }
@@ -151,7 +154,9 @@ function formBelow(view: PendingView, from: string, to: string): boolean {
  * refused change waits with it: a change into the path it would free or into the folder it would make, and the removal
  * or move of a folder that holds a source it keeps. A refusal in a code area's git directory holds the whole directory
  * back: everything else changed in it waits, so a git change is never published in part (its commit without its
- * file's object, its log or index naming it), and the way out (git's own prune) leaves nothing of it.
+ * file's object, its log or index naming it), and the way out (git's own prune) leaves nothing of it. So does a check
+ * there that has not ended (`SecretCheck.checking`), as waiting: a later boundary publishes the directory, or holds it
+ * for what the check refused.
  */
 export function planBoundary(
 	view: PendingView,
@@ -178,6 +183,8 @@ export function planBoundary(
 		const waits = reason === UNCHECKED ? WAITS_FOR_UNCHECKED : WAITS_FOR_REFUSED;
 		if (gitHeld.get(place.area) !== WAITS_FOR_REFUSED) gitHeld.set(place.area, waits);
 	};
+	// Each code area whose git directory holds a file whose check has not ended: the rest of the directory waits too.
+	const gitChecking = new Set<string>();
 	const writes: (Item & { kind: "write" })[] = [];
 	const creates: (Item & { kind: "create" })[] = [];
 	const moves: (Item & { kind: "move" })[] = [];
@@ -241,6 +248,8 @@ export function planBoundary(
 		if (check?.checking(node, path)) {
 			keep.add(path);
 			waiting.push({ path, reason: CHECK_RUNNING });
+			const place = gitPlace(path);
+			if (place.kind === "git") gitChecking.add(place.area);
 			continue;
 		}
 		const origin = node.origin;
@@ -364,14 +373,18 @@ export function planBoundary(
 		}
 	}
 	// A git directory with a refused change publishes nothing else until the refusal's way out: no object, ref, log or
-	// index of the change, nor any change after it, reaches the folder half made.
+	// index of the change, nor any change after it, reaches the folder half made. One with a check not ended publishes
+	// nothing else until it ends, as the check may yet refuse its file: what waits for it is waiting, not refused.
 	const heldIn = (item: Item): string | undefined => {
+		let waits: string | undefined;
 		for (const path of item.kind === "move" ? [item.from, ...item.paths] : item.paths) {
 			const place = gitPlace(path);
-			const waits = place.kind === "git" ? gitHeld.get(place.area) : undefined;
-			if (waits) return waits;
+			if (place.kind !== "git") continue;
+			const refusal = gitHeld.get(place.area);
+			if (refusal) return refusal;
+			if (gitChecking.has(place.area)) waits = WAITS_FOR_CHECK;
 		}
-		return undefined;
+		return waits;
 	};
 	const held = new Set<Item>();
 	for (const item of items) {
@@ -380,17 +393,20 @@ export function planBoundary(
 		held.add(item);
 		for (const path of item.paths) {
 			keep.add(path);
-			refuse(path, waits);
+			if (waits === WAITS_FOR_CHECK) waiting.push({ path, reason: waits });
+			else refuse(path, waits);
 		}
 	}
-	const units: PlannedUnit[] = [];
-	for (const item of schedule(
+	const order = schedule(
 		items.filter((i) => !held.has(i)),
 		waiting,
 		keep,
-	))
-		units.push(unitOf(item));
-	return { units, waiting, dropped, keep, refused, gitHeld };
+	);
+	const units = order.map(unitOf);
+	// A removal not published here stays the view's, for a later boundary to publish.
+	const published = new Set<Item>(order);
+	const removals = new Set(deletes.filter((d) => !published.has(d)).flatMap((d) => d.paths));
+	return { units, waiting, dropped, keep, removals, refused, gitHeld };
 }
 
 function unitOf(item: Item): PlannedUnit {

@@ -14,6 +14,7 @@ import {
 	type CommitUnit,
 	planBoundary,
 	type SecretCheck,
+	WAITS_FOR_CHECK,
 	WAITS_FOR_REFUSED,
 	WAITS_FOR_UNCHECKED,
 } from "../src/folder-service/plan.ts";
@@ -159,7 +160,7 @@ function setup(paths: Record<string, Content>, codeHost = false) {
 			state = after;
 			tree = treeOf(state);
 			seq++;
-			view.settle(plan.keep);
+			view.settle(plan.keep, plan.removals);
 			const now: Record<string, string> = {};
 			for (const e of state.values())
 				now[e.path] = e.kind === "folder" ? "folder" : e.kind === "symlink" ? `link:${e.target}` : e.manifest!;
@@ -1029,6 +1030,7 @@ describe("a view's pending changes", () => {
 			[pack]: "an older pack",
 			[`${repo}/worktrees`]: null,
 			[own]: null,
+			[`${own}/MERGE_HEAD`]: "a merge's head",
 			"code/acme/app/worktrees": null,
 			[tree]: null,
 			"code/acme/web": null,
@@ -1060,7 +1062,8 @@ describe("a view's pending changes", () => {
 		write(f.view, `${own}/logs/HEAD`, "0000 1111 commit: the change");
 		write(f.view, `${own}/index`, "the index");
 		f.view.unlink(pack);
-		inGit.push(`${own}/logs`, `${own}/logs/HEAD`, `${own}/index`, pack);
+		f.view.unlink(`${own}/MERGE_HEAD`);
+		inGit.push(`${own}/logs`, `${own}/logs/HEAD`, `${own}/index`, pack, `${own}/MERGE_HEAD`);
 		object(web, "another repository's object", outside);
 		write(f.view, `${tree}/a.txt`, "the worktree's file");
 		write(f.view, "docs/plan.md", "a plan");
@@ -1084,7 +1087,8 @@ describe("a view's pending changes", () => {
 		const waits = (reason: string, but: readonly string[]) =>
 			Object.fromEntries(inGit.filter((p) => !but.includes(p)).map((p) => [p, reason]));
 		// One object refused for its bytes: everything else changed in its git directory waits for it, its folder, the
-		// other objects, the worktree's log and index, and the pack's removal; the rest publishes.
+		// other objects, the worktree's log and index, and the removals of the pack and of the worktree's MERGE_HEAD; the
+		// rest publishes.
 		expect(planned(refusing({ "a blob with the value": CARRIES }))).toEqual({
 			units: [...outside].sort(),
 			refused: { ...waits(WAITS_FOR_REFUSED, [carrier]), [carrier]: CARRIES },
@@ -1111,24 +1115,35 @@ describe("a view's pending changes", () => {
 			new Map([["code/acme/app", WAITS_FOR_UNCHECKED]]),
 		);
 		expect(f.plan(refusing({})).gitHeld).toEqual(new Map());
-		// An object whose check has not ended waits for it, kept, and holds nothing else back.
+		// An object whose check has not ended waits for it, kept, and so does the rest of its git directory, as the check
+		// may yet refuse it: waiting, not refused, and no code area held (a later boundary publishes it, or holds it).
 		const running: SecretCheck = { ...refusing({}), checking: (_node, path) => path === unread };
 		const whileChecking = f.plan(running);
-		expect(whileChecking.waiting).toContainEqual({ path: unread, reason: CHECK_RUNNING });
-		expect(whileChecking.keep.has(unread)).toBe(true);
+		expect(Object.fromEntries(whileChecking.waiting.map((w) => [w.path, w.reason]))).toEqual({
+			...waits(WAITS_FOR_CHECK, [unread]),
+			[unread]: CHECK_RUNNING,
+		});
+		for (const path of inGit) expect(whileChecking.keep.has(path)).toBe(true);
 		expect(whileChecking.refused).toEqual([]);
 		expect(whileChecking.gitHeld).toEqual(new Map());
-		expect(whileChecking.units.flatMap((u) => u.paths)).not.toContain(unread);
-		expect(whileChecking.units.flatMap((u) => u.paths)).toContain(carrier);
-		// The way out (git's prune) removes the refused object: the rest is then published, and the folder is what the
-		// view shows.
+		expect(whileChecking.units.flatMap((u) => u.paths).sort()).toEqual([...outside].sort());
+		// An unrelated save while the git directory stays held: what is outside it publishes, and its removals stay the
+		// view's, still not shown and still held back (the pack, the worktree's MERGE_HEAD).
 		const check = refusing({ "a blob with the value": CARRIES });
-		f.view.unlink(carrier);
-		expect(planned(check)).toEqual({
-			units: [...inGit.filter((p) => p !== carrier), ...outside].sort(),
-			refused: {},
-		});
 		f.publish(check);
+		expect([...f.view.removed().keys()].sort()).toEqual([pack, `${own}/MERGE_HEAD`].sort());
+		expect(f.view.get(pack)).toBeUndefined();
+		expect(f.view.get(`${own}/MERGE_HEAD`)).toBeUndefined();
+		expect(planned(check)).toEqual({
+			units: [],
+			refused: { ...waits(WAITS_FOR_REFUSED, [carrier]), [carrier]: CARRIES },
+		});
+		// The way out (git's prune) removes the refused object: the rest is then published, the removals too, and the
+		// folder is what the view shows.
+		f.view.unlink(carrier);
+		expect(planned(check)).toEqual({ units: inGit.filter((p) => p !== carrier).sort(), refused: {} });
+		f.publish(check);
+		expect(f.view.removed().size).toBe(0);
 		expect(f.plan(check).units).toEqual([]);
 	});
 

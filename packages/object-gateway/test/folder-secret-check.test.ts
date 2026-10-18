@@ -11,7 +11,13 @@ import { createControlServer } from "../src/folder-service/control.ts";
 import { SaveChecks } from "../src/folder-service/git-objects.ts";
 import { DESKTOP_QUIET_MS } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
-import { CHECK_RUNNING, NAME_CARRIES, TARGET_CARRIES, WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
+import {
+	CHECK_RUNNING,
+	NAME_CARRIES,
+	TARGET_CARRIES,
+	WAITS_FOR_CHECK,
+	WAITS_FOR_REFUSED,
+} from "../src/folder-service/plan.ts";
 import type { BridgeInfo, Hello } from "../src/folder-service/protocol.ts";
 import { CARRIES, type SecretSet, UNCHECKED } from "../src/folder-service/secret-scan.ts";
 import { FolderService, type MachineBoundary, type ViewHandle } from "../src/folder-service/service.ts";
@@ -577,7 +583,95 @@ describe("the save check of git's own storage (repo.git)", () => {
 		nothingNamed();
 	});
 
-	it("answers the coding executor's control client in its time while a pack's check runs, which a later boundary saves", async () => {
+	it("saves nothing else of a code area's git directory while a pack's check there runs, nor once it refuses the pack", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const carrying = packHolding(scratch, `the key is ${VALUE}.\n`);
+		const honest = packHolding(scratch, "the key is gone.\n");
+		// Another check on the node holds its one turn: the pack's check runs once it ends, past the boundary's wait.
+		const checks = new SaveChecks({ atOnce: 1 });
+		const other = checks.start(secretsOf(VALUE), honest.length, "pack");
+		const started = other.push(honest.subarray(0, 20));
+		const repo = "code/acme/app/repo.git";
+		const own = `${repo}/worktrees/w1`;
+		const { core, service, open, nothingNamed } = await company(
+			secretsOf(VALUE),
+			{
+				code: null,
+				"code/acme": null,
+				"code/acme/app": null,
+				[repo]: null,
+				[`${repo}/objects`]: null,
+				[`${repo}/worktrees`]: null,
+				[own]: null,
+				[`${own}/MERGE_HEAD`]: `${"3".repeat(40)}\n`,
+			},
+			checks,
+			100,
+		);
+		const view = await open();
+		// A fetch's pack holding the value, its index, a commit's honest object, and the worktree's index and finished
+		// merge: all of it one git change, and a file outside it.
+		const pack = `${repo}/objects/pack/pack-${"1".repeat(40)}.pack`;
+		const index = `${repo}/objects/pack/pack-${"1".repeat(40)}.idx`;
+		const object = looseObject("blob", "the key is gone.\n");
+		await put(view, pack, carrying);
+		await put(view, index, Buffer.from("the pack's index"));
+		await put(view, `${repo}/${object.name}`, object.data);
+		await write(view, `${own}/index`, "the worktree's index");
+		await view.unlink(`${own}/MERGE_HEAD`, undefined);
+		await write(view, "docs/fine.txt", "fine");
+		const rest = [
+			`${repo}/objects/pack`,
+			index,
+			`${repo}/${object.name.slice(0, "objects/xx".length)}`,
+			`${repo}/${object.name}`,
+			`${own}/index`,
+			`${own}/MERGE_HEAD`,
+		];
+		const inGit = (answer: MachineBoundary) => pathsOf(answer).filter((entry) => entry.path.startsWith(`${repo}/`));
+		/** Nothing of the git change is in the folder, and the worktree's merge is not finished there. */
+		const noneSaved = async () => {
+			for (const path of [pack, ...rest]) expect(core.entries.has(path)).toBe(path === `${own}/MERGE_HEAD`);
+			// The view still shows the merge finished: its removal stays the view's, for a later boundary.
+			expect(await namesIn(view, own)).toEqual(["index"]);
+		};
+		// While the pack's check runs, the rest waits for it, as the check may yet refuse it; the file outside is saved.
+		for (let i = 0; i < 2; i++) {
+			const answer = await service.boundary(CODING_MACHINE_ID);
+			expect(inGit(answer)).toEqual(
+				[
+					{ path: pack, outcome: "waiting", reason: CHECK_RUNNING, kept: true },
+					...rest.map((path) => ({ path, outcome: "waiting", reason: WAITS_FOR_CHECK, kept: true })),
+				].sort(byPath),
+			);
+			expect(refusedIn(answer)).toEqual([]);
+			expect(core.entries.get("docs/fine.txt")?.fileSha256).toBe(hashOf("fine"));
+			await noneSaved();
+		}
+		await started;
+		await other.push(honest.subarray(20));
+		await other.end();
+		// Once it ends, the pack is refused for its value, and the rest waits for it, refused too.
+		const checking = (answer: MachineBoundary) => pathsOf(answer).some((entry) => entry.reason === CHECK_RUNNING);
+		let boundary = await service.boundary(CODING_MACHINE_ID);
+		for (let i = 0; i < 50 && checking(boundary); i++) boundary = await service.boundary(CODING_MACHINE_ID);
+		expect(refusedIn(boundary)).toEqual(
+			[refused(pack, CARRIES), ...rest.map((path) => refused(path, WAITS_FOR_REFUSED))].sort(byPath),
+		);
+		await noneSaved();
+		// The way out removes the pack: the rest is saved, the merge's end with it.
+		await view.unlink(pack, undefined);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.entries.has(pack)).toBe(false);
+		expect(core.entries.has(`${own}/MERGE_HEAD`)).toBe(false);
+		expect(core.entries.get(index)?.fileSha256).toBe(hashOf("the pack's index"));
+		expect(core.entries.get(`${repo}/${object.name}`)?.fileSha256).toBe(hashOf(object.data));
+		expect(core.entries.get(`${own}/index`)?.fileSha256).toBe(hashOf("the worktree's index"));
+		nothingNamed();
+	});
+
+	it("answers the coding executor's control client in its time while a pack's check runs, asked at once or not, which a later boundary saves", async () => {
 		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
 		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
 		const honest = packHolding(scratch, "the key is gone.\n");
@@ -586,9 +680,9 @@ describe("the save check of git's own storage (repo.git)", () => {
 		const checks = new SaveChecks({ atOnce: 1 });
 		const other = checks.start(secretsOf(VALUE), honest.length, "pack");
 		const started = other.push(honest.subarray(0, 20));
-		const { core, service, open } = await company(secretsOf(VALUE), {}, checks, 200);
+		const { core, service, open } = await company(secretsOf(VALUE), {}, checks, 1_000);
 		// The control socket as its unit makes it, the executor's alone (under /tmp, root's and sticky), and the
-		// executor's own client, with a timeout ten times the boundary's wait.
+		// executor's own client, with a timeout twice the boundary's wait, as by default (20 s and 10 s).
 		const dir = await realpath(await mkdtemp("/tmp/qfs-"));
 		cleanups.push(() => rm(dir, { recursive: true, force: true }));
 		const path = join(dir, "control.sock");
@@ -603,10 +697,14 @@ describe("the save check of git's own storage (repo.git)", () => {
 		const pack = `${MIRROR}/objects/pack/pack-${"2".repeat(40)}.pack`;
 		await put(view, pack, honest);
 		for (let i = 0; i < 2; i++) {
-			const answer = await control.boundary(CODING_MACHINE_ID, [], signal);
-			expect(answer.reads).toBe("released");
-			expect(answer.views).toContainEqual(expect.objectContaining({ viewId: SESSION, checking: 1 }));
-			expect(codingFolderBoundaryChecking(answer)).toBe(true);
+			// Three asked at once: each waits for the view's turn, and still answers in the client's time, as its wait
+			// for the check counts from when it was asked.
+			const answers = await Promise.all([0, 1, 2].map(() => control.boundary(CODING_MACHINE_ID, [], signal)));
+			for (const answer of answers) {
+				expect(answer.reads).toBe("released");
+				expect(answer.views).toContainEqual(expect.objectContaining({ viewId: SESSION, checking: 1 }));
+				expect(codingFolderBoundaryChecking(answer)).toBe(true);
+			}
 			expect(core.entries.has(pack)).toBe(false);
 		}
 		await started;
