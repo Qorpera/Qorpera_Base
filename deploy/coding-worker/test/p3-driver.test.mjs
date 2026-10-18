@@ -10,8 +10,9 @@
 // check after it. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it builds
 // anything.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -21,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
 import {
-	CARRIES, countSearch, custodyForms, DELTA_PACK, fileSearch, GIT_OBJECT_DELETE, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, turnRefusals,
+	CARRIES, countSearch, custodyForms, DELTA_PACK, FILE_SEARCH_WAITS, fileSearch, GIT_OBJECT_DELETE, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, turnRefusals,
 	WAITS_FOR_REFUSED, wayOutScript, withhold,
 } from "./p3-custody.mjs";
 import { detachDone, judgeArchive } from "./p3-order9.mjs";
@@ -534,7 +535,7 @@ test("the custody proof's searches fail when what they read fails, though it pri
 	writeFileSync(join(places, "deep", "holds"), `x ${control} y`);
 	writeFileSync(join(places, "clean"), "nothing");
 	run = bash(fileSearch([places, join(root, "absent"), join(root, "none-*")]));
-	assert.deepEqual([run.status, run.stdout.trim()], [0, join(places, "deep", "holds")], run.stderr);
+	assert.deepEqual([run.status, run.stdout.trim()], [0, `${join(places, "deep", "holds")}\nbusy=0 gone=0`], run.stderr);
 	// A file grep cannot read fails it (root reads every file).
 	if (process.getuid?.() !== 0) {
 		writeFileSync(join(places, "unread"), "anything", { mode: 0o000 });
@@ -545,12 +546,102 @@ test("the custody proof's searches fail when what they read fails, though it pri
 	// No lines to search for, or no place to search: no answer.
 	assert.equal(bash(fileSearch([places]), join(root, "missing")).status, 2);
 	assert.equal(bash(fileSearch([join(root, "absent")])).status, 2);
+
+	// A file grep finds busy (EAGAIN) is read again after each wait, and fails the search if it stays busy; one that went
+	// passes only if it is still gone at the end. A stand-in grep says one of the two of `path` for its first `times` reads;
+	// the real grep it runs is named `grep`, as the search's is, since grep names itself so in its errors.
+	const bin = join(root, "bin");
+	mkdirSync(bin);
+	writeFileSync(join(bin, "grep"), [
+		"#!/bin/bash",
+		"reads=$(($(cat \"$FAKE_READS\" 2>/dev/null || echo 0) + 1)); echo \"$reads\" >\"$FAKE_READS\"",
+		"((reads > FAKE_TIMES)) && exec -a grep \"$REAL_GREP\" \"$@\"",
+		"(exec -a grep \"$REAL_GREP\" --exclude=\"${FAKE_PATH##*/}\" \"$@\")",
+		"echo \"grep: $FAKE_PATH: $FAKE_REASON\" >&2; exit 2",
+	].join("\n"), { mode: 0o755 });
+	const held = join(root, "held");
+	mkdirSync(held);
+	const holds = join(held, "holds"), busy = join(held, "busy");
+	writeFileSync(holds, control);
+	writeFileSync(busy, `${control}\n`);
+	writeFileSync(join(held, "clean"), "nothing");
+	const faked = (path, reason, times, waits = [0.01, 0.01]) => {
+		const reads = join(root, `reads-${randomBytes(4).toString("hex")}`);
+		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_PATH: path, FAKE_REASON: reason, FAKE_TIMES: String(times),
+			FAKE_READS: reads, REAL_GREP: execFileSync("bash", ["-c", "command -v grep"], { encoding: "utf8" }).trim() };
+		const ran = spawnSync("bash", ["--noprofile", "--norc", "-c", fileSearch([held], waits), "p3", needles], { encoding: "utf8", env });
+		return { ...ran, lines: ran.stdout.trim().split("\n").sort(), reads: Number(readFileSync(reads, "utf8")) };
+	};
+	// Busy for its first two reads: the third finds the control in it.
+	let faking = faked(busy, "Resource temporarily unavailable", 2, [0.01, 0.01, 0.01]);
+	assert.deepEqual([faking.status, faking.lines, faking.reads], [0, [busy, holds, "busy=1 gone=0"].sort(), 3], faking.stderr);
+	// Busy at every read: no answer.
+	faking = faked(busy, "Resource temporarily unavailable", 99);
+	assert.deepEqual([faking.status, faking.reads], [2, 3], faking.stdout);
+	assert.match(faking.stderr, /^the file search failed: 1 files stayed busy: grep: .*\/held\/busy: Resource temporarily unavailable$/m);
+	// Gone between the listing and the read, and still gone at the end: not kept.
+	faking = faked(join(held, "went"), "No such file or directory", 1);
+	assert.deepEqual([faking.status, faking.lines, faking.reads], [0, [busy, holds, "busy=0 gone=1"].sort(), 2], faking.stderr);
+	// Gone at the listing, but back at the end: read.
+	faking = faked(busy, "No such file or directory", 1);
+	assert.deepEqual([faking.status, faking.lines, faking.reads], [0, [busy, holds, "busy=0 gone=0"].sort(), 2], faking.stderr);
+	// Any other error fails it at once, without reading again; so does a line that is not grep's own about one path.
+	faking = faked(busy, "Input/output error", 1);
+	assert.deepEqual([faking.status, faking.reads], [2, 1], faking.stdout);
+	assert.match(faking.stderr, /^the file search failed: grep ended 2: grep: .*\/held\/busy: Input\/output error$/m);
+	faking = faked("held/busy", "Resource temporarily unavailable", 1);
+	assert.deepEqual([faking.status, faking.reads], [2, 1], faking.stdout);
+	assert.match(faking.stderr, /^the file search failed: grep ended 2: grep: held\/busy: Resource temporarily unavailable$/m);
+	// The driver waits about 2 minutes in all for a busy file, longer than nfsd's 90 s lease.
+	assert.equal(FILE_SEARCH_WAITS.reduce((sum, wait) => sum + wait, 0), 127.75);
+
 	// The driver's searches are these, and a search that fails fails the run.
 	const driven = readFileSync(driver, "utf8");
 	assert.ok(driven.includes('const PLACES = fileSearch(["/srv/nas", '));
+	assert.equal(driven.split("fileSearchOf(\"/root/p3-custody-").length - 1, 2, "both file searches read the counts");
 	assert.ok(driven.includes('const GITHUB = countSearch("git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch");'));
 	assert.ok(driven.includes('const JOURNAL = countSearch("journalctl --no-pager -o cat");'));
 	assert.match(driven, /const search = \(script, needles\) => \{\n\t*try \{\n\t*return lxc\("exec", vm, "--", "bash", "-c", script, "p3", needles\)\.trim\(\);\n\t*\} catch \(error\) \{\n\t*return fail\(/);
+});
+
+// Why a file can be busy (after-run 4, 20261018T182452-36867-d4041770): grep's non-blocking open of a file under another's
+// write lease (on the node, nfsd's delegation to the NAS's own client) is refused at once, EAGAIN, and asks the holder to
+// give it back. A real lease on a temporary file: the search finds the file busy, then reads it once it is given back.
+test("the custody proof's file search reads a file again once a write lease on it is given back", { skip: process.platform !== "linux" }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-lease-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const control = `p3-control-${randomBytes(16).toString("hex")}`;
+	const needles = join(root, "control");
+	writeFileSync(needles, `${control}\n`);
+	const places = join(root, "places");
+	mkdirSync(places);
+	const leased = join(places, "leased");
+	writeFileSync(leased, `x ${control} y`);
+	// It holds a write lease on the file, and gives it back 0.3 s after the lease's break asks it to.
+	const holder = spawn("python3", ["-c", [
+		"import fcntl, os, signal, sys, time",
+		"signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})",
+		"fd = os.open(sys.argv[1], os.O_RDONLY)",
+		"fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+		"print('held', flush=True)",
+		"if signal.sigtimedwait({signal.SIGIO}, 60) is None: sys.exit(3)",
+		"time.sleep(0.3)",
+		"fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)",
+		"print('given back', flush=True)",
+	].join("\n"), leased], { stdio: ["ignore", "pipe", "inherit"] });
+	holder.stdout.setEncoding("utf8");
+	let said = "";
+	const closed = once(holder, "close");
+	await new Promise((resolve, reject) => {
+		holder.stdout.on("data", (chunk) => {
+			said += chunk;
+			if (said.includes("held\n")) resolve();
+		});
+		closed.then(([code]) => reject(new Error(`the lease holder ended ${code} before it held the lease`)), reject);
+	});
+	const run = spawnSync("bash", ["--noprofile", "--norc", "-c", fileSearch([places]), "p3", needles], { encoding: "utf8" });
+	const [code] = await closed;
+	assert.deepEqual([run.status, run.stdout.trim().split("\n"), code, said], [0, [leased, "busy=1 gone=0"], 0, "held\ngiven back\n"], run.stderr);
 });
 
 test("the executor composition asks the broker as production's client, and gives the save check the machine's values", () => {
@@ -691,7 +782,7 @@ test("the custody proof finds a value in the folder's git objects: loose in the 
 
 test("the driver runs the git object search in the node, after the file search, on the saved folder's git files", () => {
 	const driven = readFileSync(driver, "utf8");
-	const files = driven.indexOf('const fileHits = search(PLACES, "/root/p3-custody-forms")');
+	const files = driven.indexOf('const formFiles = fileSearchOf("/root/p3-custody-forms")');
 	const objects = driven.indexOf("`(${gitObjectSearch})(require, JSON.parse(require(\"node:fs\").readFileSync(process.argv[1], \"utf8\")))))`");
 	assert.ok(files > 0 && objects > files, "the rebuilt repositories, in the node's /root, come after the file search");
 	assert.ok(driven.includes("and path like 'code/%/repo.git/objects/%') as v\");"));

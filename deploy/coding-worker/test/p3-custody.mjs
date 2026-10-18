@@ -67,16 +67,45 @@ export const countSearch = (producer) => [
 	"[[ ${ended[0]} == 0 && ${ended[1]} -le 1 ]] || { echo \"the search failed: its producer and grep ended ${ended[*]}\" >&2; exit 2; }",
 ].join("\n");
 
+/** The waits (seconds) before a file search reads a busy file again: about 2 minutes in all, longer than nfsd's 90 s
+ * lease, after which nfsd takes back a delegation its client did not give back. */
+export const FILE_SEARCH_WAITS = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64];
+
 /** A search (bash) of the files under each of `places` that exists for the lines of the file `$1`: it prints each file
- * that holds one. It fails when grep cannot read a file, as a search that skipped one is no answer; a file that went
- * between grep's listing and its read is not kept, and does not fail it. */
-export const fileSearch = (places) => [
+ * that holds one, then `busy=<n> gone=<n>`. It fails when grep cannot read a file, as a search that skipped one is no
+ * answer. A file may be busy for a moment: grep opens each file non-blocking (`-D skip`, so a FIFO cannot stop it), and
+ * such an open of a file under another's lease is refused at once (EAGAIN) and asks the holder to give it back. On the
+ * node, nfsd holds one for each write delegation it gave the NAS's own client, as for a host command's record the
+ * executor just wrote through it. So each busy file is read again after each of `waits`, and the search fails if one
+ * stays busy; `busy` counts those busy at first. A file that went between grep's listing and its read is not kept, and
+ * does not fail it, but only if it is still gone at the end: each is looked for again with the busy ones; `gone` counts
+ * those. */
+export const fileSearch = (places, waits = FILE_SEARCH_WAITS) => [
 	`places=(); for place in ${places.join(" ")}; do [[ -e $place ]] && places+=("$place"); done`,
 	"[[ -s $1 && ${#places[@]} -gt 0 ]] || { echo 'the file search has no lines to search for or no place to search' >&2; exit 2; }",
+	"needles=$1; transient='^grep: (/.*): (Resource temporarily unavailable|No such file or directory)$'",
 	"exec 3>&1",
-	"errors=$(LC_ALL=C grep -rlF -D skip -f \"$1\" \"${places[@]}\" 2>&1 >&3); ended=$?",
-	"unread=$(printf '%s' \"$errors\" | grep -v ': No such file or directory$' | head -n3)",
-	"[[ $ended -le 1 || ( $ended == 2 && -z $unread ) ]] || { printf 'the file search failed: grep ended %s: %s\\n' \"$ended\" \"$unread\" >&2; exit 2; }",
+	// grep of the paths given, its hits on fd 3: `busy` and `gone` are the files it could not read for those two reasons.
+	"search() {",
+	"\tlocal errors ended line unread=",
+	"\terrors=$(LC_ALL=C grep -rlF -D skip -f \"$needles\" -- \"$@\" 2>&1 >&3); ended=$?",
+	"\tbusy=(); gone=()",
+	"\twhile IFS= read -r line; do",
+	"\t\tif [[ $line =~ $transient ]]; then",
+	"\t\t\tif [[ ${BASH_REMATCH[2]} == No* ]]; then gone+=(\"${BASH_REMATCH[1]}\"); else busy+=(\"${BASH_REMATCH[1]}\"); fi",
+	"\t\telif [[ -n $line ]]; then unread+=$line$'\\n'",
+	"\t\tfi",
+	"\tdone <<<\"$errors\"",
+	"\t[[ $ended -le 1 || ( $ended == 2 && -z $unread ) ]] || { printf 'the file search failed: grep ended %s: %s\\n' \"$ended\" \"$(printf '%s' \"$unread\" | head -n3)\" >&2; exit 2; }",
+	"}",
+	"search \"${places[@]}\"; first=${#busy[@]}",
+	`for wait in ${waits.join(" ")}; do`,
+	"\t[[ ${#busy[@]} -gt 0 || ${#gone[@]} -gt 0 ]] || break",
+	"\tsleep \"$wait\"; search \"${busy[@]}\" \"${gone[@]}\"",
+	"\t[[ ${#busy[@]} -gt 0 ]] || break",
+	"done",
+	"[[ ${#busy[@]} == 0 ]] || { printf 'the file search failed: %s files stayed busy: grep: %s: Resource temporarily unavailable\\n' \"${#busy[@]}\" \"${busy[0]}\" >&2; exit 2; }",
+	"echo \"busy=$first gone=${#gone[@]}\"",
 ].join("\n");
 
 /** A command that prints which of `oids` the repository has, as the field `name`. */
