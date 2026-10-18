@@ -109,14 +109,13 @@ export function link(path: string, target: string, version = 1): CoreEntry {
 /** Why the core refuses a session's write, link or folder under a code area's `repo.git/objects` (446200's
  * `qorpera_folder_git_refusal`), or null where it takes one. */
 function gitObjectRefusal(u: CommitUnit): string | null {
-	if (u.op === "delete" || u.op === "move") return null;
+	if (u.op === "move") return null;
 	const place = gitPlace(u.path);
 	if (place.kind !== "git" || !gitObject(place.rest)) return null;
 	if (/^objects\/pack\/[^/]*\.keep$/.test(place.rest)) return "git_keep_file";
-	const taken =
-		u.op === "write"
-			? gitPublishedObject(u.path)
-			: u.op !== "symlink" && /^objects(\/[0-9a-f]{2}|\/pack)?$/.test(place.rest);
+	const folder = /^objects(\/[0-9a-f]{2}|\/pack)?$/.test(place.rest);
+	if (u.op === "delete") return folder || gitPublishedObject(u.path) ? "git_object_delete" : "git_platform_only";
+	const taken = u.op === "write" ? gitPublishedObject(u.path) : u.op !== "symlink" && folder;
 	return taken ? null : "git_platform_only";
 }
 
@@ -343,8 +342,8 @@ export class FakeCore implements FolderCore {
 	park: (path: string) => boolean = () => false;
 	/** Opt-in: the core's rule for what a view other than the code host's (the platform's) writes under a code area's
 	 * `repo.git/objects` (446200): a pack's `.keep` is refused (`git_keep_file`), and a file there that is no object, a
-	 * link, or a folder but `objects/xx` and `objects/pack` is the platform's (`git_platform_only`). (Its removals there
-	 * stay as above: only an object written over another is refused, `git_object_delete`.) */
+	 * link, or a folder but `objects/xx` and `objects/pack` is the platform's (`git_platform_only`), and an object or
+	 * one of those folders is never removed (`git_object_delete`). */
 	gitObjectRules = false;
 	/** Whether a conflicting write, link or new folder keeps its files and links on the receipt (P17 keeps them only
 	 * when their bytes would have passed); the copies kept, by commit. */
