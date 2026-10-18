@@ -47,8 +47,8 @@ import { pathToFileURL } from "node:url";
 import * as c1v from "./p3-c1v.mjs";
 import * as c2 from "./p3-c2.mjs";
 import {
-	brokerDatabase, CARRIES, countSearch, custodyForms, DELTA_PACK, databaseHolds, fileSearch, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED,
-	turnRefusals, value as databaseValue, WAITS_FOR_REFUSED, wayOutScript, withhold,
+	brokerDatabase, CARRIES, countSearch, custodyForms, DELTA_PACK, databaseHolds, fileSearch, GIT_OBJECT_DELETE, GIT_WAY_OUT, gitObjectSearch, goneScript,
+	SAVE_REFUSED, turnRefusals, value as databaseValue, WAITS_FOR_REFUSED, wayOutScript, withhold,
 } from "./p3-custody.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
@@ -788,8 +788,10 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	};
 	// Ends turn `n`: how it settled, its completion, the folder's refusals in the boundary answers since `mark` (each
 	// command's, then the turn's end, whose last decides its save: p3-custody.mjs turnRefusals), the session's machine and
-	// the published branch. The boundary answers come on the executor's other pipe: a second for the last to arrive.
-	const endTurn = async (turn, n, mark, summary, headSha, expected) => {
+	// the published branch. The boundary answers come on the executor's other pipe: a second for the last to arrive. `out`
+	// is the refusal's way out the turn took (wayOut's), if it took one: only then may its commands' boundaries refuse the
+	// deletes of published objects the way out makes.
+	const endTurn = async (turn, n, mark, summary, headSha, expected, out = null) => {
 		const before = custody.completions.length;
 		const end = executor.boundaries.length;
 		custody.expect = expected === "failed" ? "failed" : null;
@@ -797,11 +799,14 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 		const settled = await executor.turnSettled();
 		custody.expect = null;
 		await new Promise((settle) => setTimeout(settle, 1000));
-		return { n, settled, completed: lastCompletion(before), ...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`),
+		return { n, settled, completed: lastCompletion(before),
+			...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`, out !== null),
 			still: await attachment(), pushed: published(workerId) };
 	};
 	// What every turn's boundaries must show: an answer at its end, each answer read, and no refusal for another reason.
 	const answered = (end) => `${end.ends} boundary answers at its end, ${end.unread} unread; refused for another reason: ${list(end.odd)}`;
+	// What a way out's commands' boundaries refused by design: the deletes of the objects the folder had published.
+	const deleted = (end) => `the way out's command boundaries were refused ${end.deletes} deletes of published objects (${GIT_OBJECT_DELETE}), as designed`;
 	// The turn's end is refused: it ends failed with the save refusal (which names no path) and, for a git change, its way
 	// out (each of GIT_WAY_OUT); the end's last boundary refuses each of `paths` as carrying the value and holds back
 	// nothing but the rest of the repo.git, the session stays attached, and nothing is published.
@@ -880,11 +885,11 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	const mark3 = executor.boundaries.length;
 	const [turn3, gateway3] = await nextTurn(3, "P3 proof: the save was refused; take its way out.");
 	const out3 = await wayOut(turn3, gateway3, 3, wayOutScript([blob2], "p3-leak.txt"), [blob2, made2], [blob2]);
-	const end3 = await endTurn(turn3, 3, mark3, "Took the refusal's way out.", head, "completed");
+	const end3 = await endTurn(turn3, 3, mark3, "Took the refusal's way out.", head, "completed", out3);
 	savedTurn(end3, "the way out", head);
 	pass(`turn 3 takes the way out: git cannot read the blob ${blob2} (${out3.said}), ${out3.kept.includes(made2) ? `the refused commit ${made2} ` +
-		"stays (saved: the folder keeps a saved object; it does not carry the value)" : `the refused commit ${made2} is gone too`}; its end saves, ` +
-		`the folder refuses nothing, and the session stays attached (${elapsed()})`);
+		"stays (saved: the folder keeps a saved object; it does not carry the value)" : `the refused commit ${made2} is gone too`}; ${deleted(end3)}; ` +
+		`its end saves, the folder refuses nothing else, and the session stays attached (${elapsed()})`);
 
 	// --- Turn 4 writes a file with the value: refused; turn 5 removes it and saves ---------------------------------------
 	const mark4 = executor.boundaries.length;
@@ -918,10 +923,11 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	const mark7 = executor.boundaries.length;
 	const [turn7, gateway7] = await nextTurn(7, "P3 proof: the save was refused; take its way out.");
 	const out7 = await wayOut(turn7, gateway7, 7, wayOutScript([left6.blob]), [left6.blob, left6.made], [left6.blob], left6.pack);
-	savedTurn(await endTurn(turn7, 7, mark7, "Took the refusal's way out.", head, "completed"), "the pack's way out", head);
+	const end7 = await endTurn(turn7, 7, mark7, "Took the refusal's way out.", head, "completed", out7);
+	savedTurn(end7, "the pack's way out", head);
 	pass(`turn 7 takes the way out for a pack: git cannot read the blob ${left6.blob} (${out7.said}), ${left6.pack}.pack is gone (left of it: ` +
 		`${out7.left.join(" ") || "nothing"}), ${out7.kept.includes(left6.made) ? `the refused commit ${left6.made} stays` : "the refused commit is gone too"}; ` +
-		`its end saves, the folder refuses nothing, and the session stays attached (${elapsed()})`);
+		`${deleted(end7)}; its end saves, the folder refuses nothing else, and the session stays attached (${elapsed()})`);
 
 	// --- Turn 8 writes a pack in which the value is whole only once a delta is resolved: refused -----------------------
 	const mark8 = executor.boundaries.length;
@@ -947,7 +953,7 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	const head9 = fields(cleaned.output).head;
 	if (!OID.test(head9 ?? "") || head9 === head) fail(`turn 9 cannot commit the control after the way out: HEAD at ${head9}`);
 	// The control in the turn's summary too: the table search must find it.
-	const end9 = await endTurn(turn9, 9, mark9, `Took the way out; committed the control ${control}.`, head9, "completed");
+	const end9 = await endTurn(turn9, 9, mark9, `Took the way out; committed the control ${control}.`, head9, "completed", out9);
 	savedTurn(end9, "the control's commit", null);
 	let pushed9 = end9.pushed;
 	for (let waited = 0; (pushed9.sha !== head9 || !pushed9.pull) && waited < 60000; waited += 2000, pushed9 = published(workerId))
@@ -955,8 +961,8 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 	if (pushed9.sha !== head9 || pushed9.pull?.draft !== true || pushed9.pull.head.sha !== head9)
 		fail(`turn 9's end does not publish: ${JSON.stringify(pushed9)}`);
 	pass(`turn 9 takes the way out: git cannot read the blob ${pack8.target} (${out9.said}), ${pack8.pack}.pack is gone (left of it: ` +
-		`${out9.left.join(" ") || "nothing"}), ${out9.kept.includes(pack8.base) ? `its base ${pack8.base} stays` : "its base is gone too"}; it ` +
-		`commits the control, ${head9}: its commit's ref update passes, its end saves, the folder refuses nothing, and it pushes ` +
+		`${out9.left.join(" ") || "nothing"}), ${out9.kept.includes(pack8.base) ? `its base ${pack8.base} stays` : "its base is gone too"}; ` +
+		`${deleted(end9)}; it commits the control, ${head9}: its commit's ref update passes, its end saves, the folder refuses nothing else, and it pushes ` +
 		`through the repository's credential; the draft pull request ${pushed9.pull.html_url} has it (${elapsed()})`);
 
 	// --- Where the run could have kept the value -----------------------------------------------------------------------

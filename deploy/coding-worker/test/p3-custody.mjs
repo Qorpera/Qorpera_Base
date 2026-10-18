@@ -19,22 +19,40 @@ export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret va
 /** The way out of a refused git commit, as the save refusal gives it (#1299): each step, in order. */
 export const GIT_WAY_OUT = ["git reflog expire --expire-unreachable=now HEAD", "git repack -a -d --max-pack-size=64m", "git prune --expire=now"];
 
+/** The core's reason for a session's delete of a published git object (20260930446200_folder_git_rules.sql): "A session
+ * cannot delete a published path under `repo.git/objects`" (RUNTIME-COMPANY-FOLDER.md §6). */
+export const GIT_OBJECT_DELETE = "git_object_delete";
+
+/** A published git object's path below a repo.git: a loose object (SHA-1 or SHA-256) or a pack's own file, as folder-
+ * service/git.ts gitPublishedObject takes them (never a pack's .keep, which is never published), or a loose object's
+ * folder. */
+const PUBLISHED_OBJECT = /^objects\/([0-9a-f]{2}(\/[0-9a-f]{38}([0-9a-f]{24})?)?|pack\/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor))$/;
+
 /** The folder's refusals in a turn's boundary answers, each the paths one refused (`{ path, reason }`) or null for one
  * that cannot be read: `answers` from the turn's start, of which those from `end` on came at its end (the save its end
  * asks for, asked again while a check runs). The last of those decides the save, so `refused` is its paths and reasons: a
  * command's boundary may refuse a path the command then clears. But every refusal of the turn, a command's or the end's,
  * must say the path carries the value, or is the rest of a repo.git (under `repoGit`) held back with one: any other is
- * `odd` (path and reason), even if a later answer gives that path one of the two. `unread` counts the answers that cannot
- * be read, and `ends` those at the end. */
-export function turnRefusals(answers, end, repoGit) {
+ * `odd` (path and reason), even if a later answer gives that path one of the two. One more is by design, only in a turn
+ * that takes the refusal's way out (`wayOut`) and only at a command's boundary: the way out's repack and prune delete
+ * the objects the folder published, and the core refuses each delete (GIT_OBJECT_DELETE on a PUBLISHED_OBJECT of the
+ * repo.git); `deletes` counts those paths. At the end, or in another turn, that refusal is odd too. `unread` counts the
+ * answers that cannot be read, and `ends` those at the end. */
+export function turnRefusals(answers, end, repoGit, wayOut = false) {
 	const odd = new Map();
-	for (const paths of answers)
-		for (const { path, reason } of paths ?? [])
-			if (reason !== CARRIES && !(reason === WAITS_FOR_REFUSED && path.startsWith(repoGit))) odd.set(`${path}\n${reason}`, [path, reason]);
+	const deletes = new Set();
+	for (const [at, paths] of answers.entries())
+		for (const { path, reason } of paths ?? []) {
+			if (reason === CARRIES || (reason === WAITS_FOR_REFUSED && path.startsWith(repoGit))) continue;
+			if (wayOut && at < end && reason === GIT_OBJECT_DELETE && path.startsWith(repoGit) && PUBLISHED_OBJECT.test(path.slice(repoGit.length)))
+				deletes.add(path);
+			else odd.set(`${path}\n${reason}`, [path, reason]);
+		}
 	const ending = answers.slice(end);
 	return {
 		refused: new Map((ending.at(-1) ?? []).map(({ path, reason }) => [path, reason])),
 		odd: [...odd.values()],
+		deletes: deletes.size,
 		unread: answers.filter((paths) => !paths).length,
 		ends: ending.length,
 	};
