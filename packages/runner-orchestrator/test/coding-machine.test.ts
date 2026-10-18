@@ -175,7 +175,7 @@ async function retainedHistory(
 	f: Awaited<ReturnType<typeof fixture>>,
 	count: 381 | 384,
 	lastState: "succeeded" | "failed" = "succeeded",
-	lastAction?: "start" | "rebuild",
+	lastAction?: "start" | "stop" | "rebuild",
 	trailing = 1,
 ) {
 	await f.reconcile();
@@ -283,6 +283,39 @@ describe("a coding machine's journaled lifecycle", () => {
 			"start",
 			"start",
 		]);
+	});
+	it("counts failed starts and stops in a row across the checkpoint the last of them closed its segment with", async () => {
+		// A disposable VM whose full segment ends with two failed starts (its triplets 125 and 126), the VM stopped.
+		const f = await fixture();
+		const root = await retainedHistory(f, 381, "failed", "start", 2);
+		const plan = { ...f.journal, disposable: true as const, selfStops: undefined };
+		const reconcile = () => reconcileCodingMachine({ ...f.options, plan, desiredState: "running" });
+		f.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+		const states: string[] = [];
+		for (let attempt = 0; attempt < 4; attempt++) states.push((await reconcile()).state);
+		// The rollover, the third start, then its failure: the third in a row, so an operator is waited for.
+		expect(states).toEqual(["pending", "pending", "recovery-required", "recovery-required"]);
+		expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+			segment: 1,
+			previousEventCount: 381,
+		});
+		// The retained history's own create and start, then the third start.
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"start",
+		]);
+		// A member's machine whose full segment ends with three failed stops (its triplets 124 to 126), the VM seen
+		// stopped: the start after them rolls it over. Seen running again, it is not stopped a fourth time.
+		const g = await fixture();
+		await retainedHistory(g, 381, "failed", "stop", 3);
+		expect((await g.reconcile()).state).toBe("pending");
+		const instance = g.instance();
+		if (!instance) throw new Error("missing fixture VM");
+		instance.status = "Running";
+		instance.statusCode = 103;
+		expect((await g.reconcile("stopped")).state).toBe("recovery-required");
+		expect(g.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
 	});
 	it("recovers an empty unpublished rollover directory but never replays an unknown new-segment start", async () => {
 		const f = await fixture();
