@@ -330,12 +330,36 @@ it.
   - when the disk has less than 10% free, the least recently used of those go first, until 15% is free or none is
     left. A writer then gets `ENOSPC`, as on a full local disk;
   - a top entry of either kind whose published parent is gone (rule above) goes at the next pass. So a worktree that
-    is removed takes its ignored files with it.
-- **An open entry is never removed.** Each program holds a shared lock on each top entry it serves; removal takes it
-  exclusively without waiting, and skips the entry when it cannot.
+    is removed takes its ignored files with it. Gone means the node answered "not found" twice, the second time with
+    the removal's locks held; any other answer, or none, keeps the entry.
+- **An open entry is never removed.** Each program holds a shared lock on each top entry it serves (a file or a
+  folder in it the mount has open), until about a minute after the last such handle closes; removal takes it
+  exclusively without waiting, and skips the entry when it cannot. An open that comes while a removal has the lock
+  waits for it.
 - Each top entry has a small record beside the cache and outside every mount: how it was made, when it was last used
   (updated at most once an hour), and its lock. A removed cache is built again by the next install or build, as on a
   fresh machine.
+- The record is written just before its entry is made, so a pass never judges a new entry by a record an earlier
+  entry of that name left, and it is locked until the entry is made, so a removal of an earlier entry never takes it.
+  It is written only where no entry is, with the names held from that check until the entry is made, so it never
+  takes the place of the record of an entry another program made at that name meanwhile. A change the mount began on
+  an entry it found there, gone by the time the names are held while its record is still there, fails as stale
+  (ESTALE): the kernel asks again, and the new entry is judged by the rules, never by the record the gone one left. A
+  record left without its entry goes after an hour.
+- **In a cache folder several programs share** (`--cache-dir`), each record also names the view whose program made
+  the entry. A program removes by age only its own view's entries and those of a view with no program running (each
+  program holds its view's lock while it runs). With a gone parent it removes only its own view's: the folder may be
+  one another view made and has not published yet. When the disk is short, any view's entries made by their name go.
+  An entry without a record (made before records were) counts as kept and of no view.
+- A removal never waits for another program's rename of a folder (it skips the entry until the next pass), nor takes
+  an entry in a worktree where any of the programs still has caches to move into the folder (each holds a shared lock
+  per such worktree). A rename of a cache waits for a removal that has begun at either name, and an exchange of two
+  caches swaps their records, so the locks stay with their entries. The other programs' kernels hear of a removal
+  before the entry leaves the disk.
+- **Limits.** A rename of a folder by none of the programs sharing the caches (the web app, another machine) leaves
+  the folder's caches at its old path, and they go with that "gone" folder at the next pass. A shell whose working
+  folder is in a cache does not hold it: that is not a file the program has open. A rename that moves a folder into
+  another cache, or makes a folder a top entry, leaves a hold on the entry the open began in.
 
 ## What does not change
 

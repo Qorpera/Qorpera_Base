@@ -16,6 +16,7 @@ pub mod mount;
 pub mod peers;
 pub mod proto;
 pub mod reads;
+pub mod records;
 pub mod relay;
 pub mod transport;
 pub mod tree;
