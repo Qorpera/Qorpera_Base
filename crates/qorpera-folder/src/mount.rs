@@ -55,6 +55,10 @@ const CHASE_WINDOW: Duration = Duration::from_millis(1 << (CHASE_STEPS - 1));
 /// Answers remembered at most: past it, those older than the window go, and then the older half (a burst of lookups
 /// never grows memory without end, and the newest, the ones that may still be in flight, stay).
 const ANSWERED_MAX: usize = 1 << 16;
+/// A create's entry and attributes, at the node or local, are not kept (`Kernel::close`): the kernel makes the inode
+/// when it reads the reply, which may be after the end's drop, so the open's permission check (`DefaultPermissions`)
+/// asks for them again, and after the end is refused: such a create opens nothing.
+const CREATED: Duration = Duration::ZERO;
 
 /// Names a lookup answered with a cacheable entry: the tree's change count it read them at, and when.
 #[derive(Default)]
@@ -963,7 +967,8 @@ impl Filesystem for FolderFs {
 		let fh = self.s.handle(Handle::Write { ino, open, opener: process_of(req.pid()) });
 		// Refused here, the file stays made with its handle: the program is ending.
 		let Some(reply) = self.noted(ino, reply) else { return };
-		reply.created(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
+		self.s.kernel.late(&name);
+		reply.created(&CREATED, &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
 	}
 
 	fn read(

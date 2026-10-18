@@ -11,10 +11,11 @@
 //! held fd asks for the attributes again and drops them itself, `FUSE_AUTO_INVAL_DATA`).
 //!
 //! The epoch is for a name the kernel may hold only (`hold`): one in a local folder this program answered a lookup,
-//! create, mkdir, symlink, link, rename or removal of, from before it read or changed the disk until the time-out it
-//! handed has passed; and every cache top's. The kernel takes the epoch before it sends a request, so an answer on its
-//! way when the epoch rises is stale at its first use. A name this program never handed needs no epoch: a lookup of it
-//! reads the disk after the change. Listings hand the kernel no names (the program does not take `READDIRPLUS`).
+//! mkdir, symlink, link, rename or removal of, from before it read or changed the disk until the time-out it handed has
+//! passed; and every cache top's. A create hands no entry to keep (`CREATED`, for the end). The kernel takes the epoch
+//! before it sends a request, so an answer on its way when the epoch rises is stale at its first use. A name this
+//! program never handed needs no epoch: a lookup of it reads the disk after the change. Listings hand the kernel no
+//! names (the program does not take `READDIRPLUS`).
 //!
 //! A notify that fails, a change told late, or a listener that stopped turns the kernel cache off for good: everything
 //! handed to the kernel is dropped, and if that fails too the program exits (its mount closed, never stale).
@@ -38,14 +39,20 @@ const HELD_PAST: Duration = Duration::from_secs(60);
 /// The names held at most (`Names`): 100 000, in 131 072 slots of 33 bytes, about 4.3 MB.
 const NAMES_MAX: usize = 100_000;
 /// Test switches: the kernel cache off with this reason, as a kernel without the epoch would (`QORPERA_FOLDER_TEST_KERNEL_OFF`);
-/// a told change's notify failing (`QORPERA_FOLDER_TEST_NOTIFY_FAILS=1`), not the fallback's; the names held at most
+/// a told change's notify failing (`QORPERA_FOLDER_TEST_NOTIFY_FAILS=1`), not the fallback's, or both
+/// (`QORPERA_FOLDER_TEST_NOTIFY_FAILS=all`: the fallback stops the program); the names held at most
 /// (`QORPERA_FOLDER_TEST_NAMES=<n>`); a name whose lookups in a local folder wait `SLOW_LOOKUP` between reading the disk
 /// and the reply (`QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>`); a fallback waiting `SLOW_FALL_BACK` between turning the
-/// kernel cache off and dropping what the kernel holds (`QORPERA_FOLDER_TEST_SLOW_FALL_BACK=1`).
+/// kernel cache off and dropping what the kernel holds (`QORPERA_FOLDER_TEST_SLOW_FALL_BACK=1`); the end's drop, once
+/// it dropped every inode, not done until a file is there (`QORPERA_FOLDER_TEST_CLOSE_GATE=<path>`); a name whose
+/// creates wait between their check and their reply until the end's drop dropped every inode
+/// (`QORPERA_FOLDER_TEST_LATE_CREATE=<name>`).
 const TEST_OFF: &str = "QORPERA_FOLDER_TEST_KERNEL_OFF";
 const TEST_NOTIFY_FAILS: &str = "QORPERA_FOLDER_TEST_NOTIFY_FAILS";
 const TEST_NAMES: &str = "QORPERA_FOLDER_TEST_NAMES";
 const TEST_SLOW_LOOKUP: &str = "QORPERA_FOLDER_TEST_SLOW_LOOKUP";
+const TEST_CLOSE_GATE: &str = "QORPERA_FOLDER_TEST_CLOSE_GATE";
+const TEST_LATE_CREATE: &str = "QORPERA_FOLDER_TEST_LATE_CREATE";
 const SLOW_LOOKUP: Duration = Duration::from_millis(300);
 const TEST_SLOW_FALL_BACK: &str = "QORPERA_FOLDER_TEST_SLOW_FALL_BACK";
 const SLOW_FALL_BACK: Duration = Duration::from_secs(2);
@@ -81,6 +88,22 @@ pub(super) struct Kernel {
 	/// Every inode opened or created here, never emptied: the kernel may hold pages or attributes of any of them, which a
 	/// fd held past the end would read without asking this program.
 	opened: Mutex<HashSet<u64>>,
+	/// Where the end is (`close`), and its signal when done.
+	ending: Mutex<Ending>,
+	ended: Condvar,
+	/// The end's drop dropped every inode (for the test switches).
+	dropped: Arc<AtomicBool>,
+	/// The test switches' gate file and name (`TEST_CLOSE_GATE`, `TEST_LATE_CREATE`).
+	gate: Option<PathBuf>,
+	late: Option<String>,
+}
+
+/// The end has one owner: the first `close` drops the pages; one that comes while it does waits for it.
+enum Ending {
+	Not,
+	/// Dropping, for at most until then.
+	Dropping(Instant),
+	Done,
 }
 
 /// A name held for a request (`Kernel::hold`): when it drops, after the reply, the name stays held for its time-out.
@@ -200,6 +223,11 @@ impl Kernel {
 			peers: OnceLock::new(),
 			closing: AtomicBool::new(false),
 			opened: Mutex::new(HashSet::new()),
+			ending: Mutex::new(Ending::Not),
+			ended: Condvar::new(),
+			dropped: Arc::new(AtomicBool::new(false)),
+			gate: std::env::var_os(TEST_CLOSE_GATE).map(PathBuf::from),
+			late: std::env::var(TEST_LATE_CREATE).ok(),
 		}
 	}
 
@@ -403,7 +431,7 @@ impl Kernel {
 
 	/// The lock-free part: attributes, the epoch for a name, the stamp; the pages after.
 	fn drop_change(&self, change: &Change) -> std::io::Result<()> {
-		if std::env::var(TEST_NOTIFY_FAILS).as_deref() == Ok("1") {
+		if matches!(std::env::var(TEST_NOTIFY_FAILS).as_deref(), Ok("1" | "all")) {
 			return Err(std::io::Error::other("test switch"));
 		}
 		let told = self.told()?;
@@ -427,6 +455,9 @@ impl Kernel {
 
 	/// Drops every local inode handed to the kernel and every name, as for a change to each.
 	fn drop_all(&self) -> std::io::Result<()> {
+		if std::env::var(TEST_NOTIFY_FAILS).as_deref() == Ok("all") {
+			return Err(std::io::Error::other("test switch"));
+		}
 		let told = self.told()?;
 		let inos: Vec<u64> = self.handed.lock().unwrap().keys().copied().collect();
 		self.stamps.lock().unwrap().clear();
@@ -492,18 +523,45 @@ impl Kernel {
 	/// write-back waits for its answer; the end waits for it at most `CLOSE_WAIT`. No page outlives it: every open and
 	/// create answered noted its inode before a check that found no refusal (`FolderFs::noted`), so before the drop
 	/// takes the set; and a read checked before the refusals began fills a page the kernel holds locked until the
-	/// answer, which the drop waits for.
+	/// answer, which the drop waits for. A create's inode the kernel makes only when it reads the reply, which may be
+	/// after the drop: its reply hands no attributes to keep (`CREATED`), so the open asks for them before it is done,
+	/// and is refused.
+	///
+	/// The end has one owner, the first call (the view's close, a stop, or a fallback that cannot drop what the kernel
+	/// holds). A call during its drop waits for it, until the same `CLOSE_WAIT` has passed: no caller unmounts or exits
+	/// before the drop is done.
 	pub(super) fn close(&self) {
-		if self.closing.swap(true, Ordering::SeqCst) {
-			return;
+		{
+			let mut ending = self.ending.lock().unwrap();
+			let until = match &*ending {
+				Ending::Done => return,
+				Ending::Dropping(until) => Some(*until),
+				Ending::Not => None,
+			};
+			if let Some(until) = until {
+				eprintln!("qorpera-folder: closing: the end already began; waiting for its drop");
+				let left = until.saturating_duration_since(Instant::now());
+				let _ = self.ended.wait_timeout_while(ending, left, |e| !matches!(e, Ending::Done)).unwrap();
+				return;
+			}
+			*ending = Ending::Dropping(Instant::now() + CLOSE_WAIT);
+			self.closing.store(true, Ordering::SeqCst);
 		}
+		self.drop_opened();
+		*self.ending.lock().unwrap() = Ending::Done;
+		self.ended.notify_all();
+	}
+
+	/// `close`'s drop, by its owner.
+	fn drop_opened(&self) {
 		let Some(told) = self.told.get() else { return };
 		let inos: Vec<u64> = self.opened.lock().unwrap().iter().copied().collect();
 		let files = inos.len();
 		let notifier = told.notifier.clone();
+		let (all, gate) = (self.dropped.clone(), self.gate.clone());
 		let (done, dropped) = mpsc::channel();
-		let start = Instant::now();
 		let spawned = std::thread::Builder::new().name("kernel-close".into()).spawn(move || {
+			let start = Instant::now();
 			let mut failed = 0;
 			for ino in inos {
 				// The kernel no longer knowing the inode is not a failure (fuser passes ENOENT as done).
@@ -514,26 +572,46 @@ impl Kernel {
 					failed += 1;
 				}
 			}
-			let _ = done.send(failed);
+			let took = start.elapsed();
+			all.store(true, Ordering::SeqCst);
+			if let Some(gate) = gate {
+				eprintln!("qorpera-folder: test switch: the drop waits for {}", gate.display());
+				while !gate.exists() {
+					std::thread::sleep(Duration::from_millis(10));
+				}
+			}
+			let _ = done.send((failed, took));
 		});
 		if let Err(e) = spawned {
 			eprintln!("qorpera-folder: closing: could not start the page drop: {e}");
 			return;
 		}
 		match dropped.recv_timeout(CLOSE_WAIT) {
-			Ok(0) => eprintln!(
-				"qorpera-folder: closing: dropped the kernel's pages of {files} files in {} ms",
-				start.elapsed().as_millis()
-			),
-			Ok(failed) => eprintln!(
+			Ok((0, took)) => {
+				eprintln!("qorpera-folder: closing: dropped the kernel's pages of {files} files in {} ms", took.as_millis())
+			}
+			Ok((failed, took)) => eprintln!(
 				"qorpera-folder: closing: dropped the kernel's pages of {} of {files} files in {} ms; {failed} failed",
 				files - failed,
-				start.elapsed().as_millis()
+				took.as_millis()
 			),
 			Err(_) => eprintln!(
 				"qorpera-folder: closing: the kernel had not dropped the pages of {files} files after {} s; ending anyway",
 				CLOSE_WAIT.as_secs()
 			),
+		}
+	}
+
+	/// The test switch's wait in a create of its name, after its check and before its reply: until the end's drop
+	/// dropped every inode, at most `CLOSE_WAIT`.
+	pub(super) fn late(&self, name: &str) {
+		if self.late.as_deref() != Some(name) {
+			return;
+		}
+		eprintln!("qorpera-folder: test switch: a create of {name} was let through and waits for the end's drop");
+		let start = Instant::now();
+		while !self.dropped.load(Ordering::SeqCst) && start.elapsed() < CLOSE_WAIT {
+			std::thread::sleep(Duration::from_millis(10));
 		}
 	}
 

@@ -1026,8 +1026,8 @@ impl FolderFs {
 				return Some(reply);
 			}
 			Ok(Some((up, area))) => {
-				let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
-				let _held = self.s.kernel.hold(&up, name, ttl);
+				// No name to hold (`Kernel::hold`): the reply hands the kernel no entry to keep (`CREATED`).
+				let dir = told_parent(&up);
 				match local.create(up, name, area, mode, flags) {
 					Ok((attr, fh)) => {
 						self.s.made(local, parent, name, false);
@@ -1040,7 +1040,8 @@ impl FolderFs {
 									local.release(fh);
 									return None;
 								};
-								reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
+								self.s.kernel.late(name);
+								reply.created(&CREATED, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
 							}
 							Err(e) => {
 								local.release(fh);

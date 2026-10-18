@@ -131,7 +131,8 @@ this mount last opened it. A mount's own changes the kernel did not see raise it
 cache folder listens on `<dir>/programs/<pid>.<nonce>`, and each change is told to all of them before its reply; a
 told mount drops the inode's attributes, raises its epoch for a name its kernel may hold, and answers, then drops the
 pages on another thread. A mount keeps a table of the names in local folders it handed its kernel (lookups found and
-absent, its own creates, renames and removals), each from before the disk read until 60 seconds past the time-out it
+absent, its own renames and removals; a create hands the kernel no name or attributes to keep, so the open asks for
+them again), each from before the disk read until 60 seconds past the time-out it
 handed; a cache top's name always raises the epoch. The table holds at most 100 000 names (about 4.3 MB); full, it
 lets go of the expired ones, or of all of them with an epoch. `QORPERA_FOLDER_TEST_NAMES=<n>` makes it smaller and
 `QORPERA_FOLDER_TEST_SLOW_LOOKUP=<name>` holds a lookup of that name for 300 ms after its disk read, in tests. The
@@ -151,7 +152,11 @@ seconds; then it unmounts and exits. Its log says `qorpera-folder: closing: drop
 mapping's next touch gets `SIGBUS`. A page a process pinned before the end stays its own, a shared mapping's pages not
 written back are lost (`msync` and `fsync` give `EIO`), and a folder or file held without an open (a working folder,
 an `O_PATH` fd) keeps its attributes until their time-out. A SIGKILL before the drop is done ends the session with the
-pages not yet dropped still held.
+pages not yet dropped still held. The end has one owner, its first caller; a second waits for its drop (at most the
+same 15 seconds), so neither unmounts nor exits before it is done. A create answered after the drop opens nothing: its
+open asks for the attributes, and is refused. In tests, `QORPERA_FOLDER_TEST_CLOSE_GATE=<path>` holds the drop, once
+done, until that file exists, and `QORPERA_FOLDER_TEST_LATE_CREATE=<name>` holds a create of that name, after its
+check, until the drop is done.
 
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
