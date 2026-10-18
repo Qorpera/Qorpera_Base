@@ -458,10 +458,11 @@ function trailingFailed(events: readonly Event[], action: Action): number {
 	}
 	return count;
 }
-/** trailingFailed, carried across the checkpoint the segment opens with: a failed rebuild may close a segment, and its
- * failures in a row go on counting in the next. They are read back in the segment before, each record checked against
- * the one after it, as codingMachineLastStart reads it. A segment holds far more than MAX_FAILED_ATTEMPTS effects, so
- * the one before is as far back as it reads. */
+/** trailingFailed, carried across the checkpoint the segment opens with: a failed stop or rebuild, or a disposable VM's
+ * failed start, may close a segment, and its failures in a row go on counting in the next, so no checkpoint gives an
+ * effect its tries again. They are read back in the segment before, each record checked against the one after it, as
+ * codingMachineLastStart reads it. A segment holds far more than MAX_FAILED_ATTEMPTS effects, so the one before is as
+ * far back as it reads. Every bounded retry of a failed effect counts by it. */
 async function failedInARow(
 	base: string,
 	current: Awaited<ReturnType<typeof readEvents>>,
@@ -956,7 +957,7 @@ export async function reconcileCodingMachine(
 			tail.state !== "failed" ||
 			intent !== "delete" ||
 			physical(instance) !== "stopped" ||
-			trailingFailed(current.events, "delete") >= MAX_FAILED_ATTEMPTS
+			(await failedInARow(root, current, "delete")) >= MAX_FAILED_ATTEMPTS
 		)
 			return result("recovery-required");
 		action = "delete";
@@ -970,7 +971,7 @@ export async function reconcileCodingMachine(
 				tail.action !== "create" ||
 				tail.state !== "failed" ||
 				!plan.request ||
-				trailingFailed(current.events, "create") >= MAX_FAILED_ATTEMPTS
+				(await failedInARow(root, current, "create")) >= MAX_FAILED_ATTEMPTS
 			)
 				return result("recovery-required");
 			action = "create";
@@ -984,8 +985,8 @@ export async function reconcileCodingMachine(
 				// its own. A run never reuses a VM whose stop failed without stopping it
 				// first. A disposable VM's failed create or start is settled the same
 				// way, and a run tries the start again a bounded number of times. A
-				// failed rebuild is tried again so too, counted across a checkpoint, and
-				// never followed by a start.
+				// failed rebuild is tried again so too, and never followed by a start.
+				// Each bound counts failures in a row across a checkpoint.
 				if (seen === "stopped") {
 					if (intent === "stop") return result("stopped");
 					if (intent === "delete") action = "delete";
@@ -995,7 +996,7 @@ export async function reconcileCodingMachine(
 						action = "rebuild";
 					} else if (
 						tail.action === "stop" ||
-						trailingFailed(current.events, tail.action as Action) < MAX_FAILED_ATTEMPTS
+						(await failedInARow(root, current, tail.action as Action)) < MAX_FAILED_ATTEMPTS
 					)
 						action = "start";
 					else return result("recovery-required");
@@ -1003,7 +1004,7 @@ export async function reconcileCodingMachine(
 					seen === "running" &&
 					intent === "stop" &&
 					tail.action !== "rebuild" &&
-					trailingFailed(current.events, "stop") < MAX_FAILED_ATTEMPTS
+					(await failedInARow(root, current, "stop")) < MAX_FAILED_ATTEMPTS
 				)
 					action = "stop";
 				else if (seen === "running" && intent === "run" && plan.disposable) return result("running");

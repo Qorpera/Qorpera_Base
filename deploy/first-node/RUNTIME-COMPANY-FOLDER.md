@@ -1013,6 +1013,13 @@ folder only once the mount has it open for writing nowhere, and an open of it
 for writing waits until it is there; until it has moved, the view's boundaries
 wait. A changed `.gitignore` decides only names made after it.
 
+A rename across that edge works as an editor's atomic save needs (MC2). A
+cache file renamed onto a name of the folder becomes the session's save there:
+of the file it replaces, or a new file. A new file of the session's that no
+boundary has published, renamed onto a cache name, moves to the machine's disk
+and leaves the session's changes. Any other rename across the edge answers
+`EXDEV`, so `mv` copies.
+
 Everything else in a worktree, including untracked output that git does not
 ignore, such as reports, is company data that members see.
 
