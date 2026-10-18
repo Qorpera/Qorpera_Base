@@ -648,7 +648,7 @@ values inflates and reads nothing. `install-folder-service.sh` refuses a node wi
 **A refused git change is held whole.** Once the check refuses anything in a code area's `repo.git` (an object, a
 pack, a new name), everything else changed in that `repo.git` waits with it, as "it waits for a change that carries a
 secret value" (or "… that could not be checked for secret values" when that is all it waits for): the change's other
-objects, its refs and logs, the worktree's index, a pack's `.idx` and `.rev`, `objects/info/packs`. So a git change
+objects, its refs and logs, the worktree's index, a pack's `.idx` and `.rev`. So a git change
 is never published in part, and nothing of it reaches the core's copy of `repo.git`, where another session could read
 it. A session that ignores the refusal stays safe: each later boundary refuses the same files and holds the same
 `repo.git`, and each later commit fails at its ref update (which saves the objects waiting in that `repo.git` first), so

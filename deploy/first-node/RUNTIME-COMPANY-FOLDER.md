@@ -933,6 +933,10 @@ version check still refuses the second writer.
   shared repositories. Commit to your branch instead.
 - A session cannot delete a published path under `repo.git/objects` (`EPERM`),
   and `objects/pack/*.keep` is never published.
+- Git's own indexes of the objects (`objects/info/packs`, a commit-graph, a
+  multi-pack index) stay in the view that made them, the code host's too, and
+  are never published: the core takes none from a session, and one lists what
+  its own view's git held.
 - The `files` ref format is pinned; reftable is not used. A fetch that updates
   N refs means N synchronous publishes, which the spike measures.
 

@@ -258,6 +258,7 @@ async function area(files: Readonly<Record<string, string>> = {}, coding = false
 	cleanup.push(() => rm(base, { recursive: true, force: true }));
 	const root = join(base, "share");
 	const core = new FakeCore();
+	core.gitObjectRules = true;
 	const tree = await seedArea(base);
 	for (const [path, content] of Object.entries(files)) {
 		await mkdir(join(tree, dirname(path)), { recursive: true });
@@ -1126,6 +1127,21 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			expect(await eventually(async () => (await second.git("log", "--format=%s", "w1")) === log)).toBe(true);
 			expect(await second.git("show", "w1:notes.md")).toBe("plain notes\n");
 			await readsNoValue(second, oidOf(name));
+
+			// Git's own indexes of the objects stay in the view that made them, the way out's `objects/info/packs` among
+			// them: the core takes none from a session, and another session's git never reads one listing what this
+			// session's git held.
+			await first.git("commit-graph", "write", "--reachable");
+			await first.git("multi-pack-index", "write");
+			const indexes = ["info/commit-graph", "info/packs", "pack/multi-pack-index"].map((i) => `${R}/objects/${i}`);
+			for (const index of indexes) await stat(join(first.company, index));
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			for (const index of indexes) {
+				expect(at.core.entries.has(index)).toBe(false);
+				await expect(stat(join(second.company, index))).rejects.toMatchObject({ code: "ENOENT" });
+			}
+			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+			expect(await second.git("fsck", "--no-progress", "--no-dangling")).toBe("");
 		},
 		TIMEOUT,
 	);

@@ -132,10 +132,30 @@ describe("git paths", () => {
 			"objects/pack/tmp_idx_Ab12",
 			"objects/incoming-Q1/pack/pack-1.pack",
 			"objects/pack/pack-1.keep",
+			// Git's own indexes of the objects, and the names it writes them as.
+			"objects/info/packs",
+			"objects/info/packs_Ab12Cd",
+			"objects/info/commit-graph",
+			"objects/info/commit-graphs",
+			"objects/info/commit-graphs/commit-graph-chain",
+			"objects/info/commit-graphs/graph-0123.graph",
+			"objects/pack/multi-pack-index",
+			"objects/pack/multi-pack-index-0123.bitmap",
+			"objects/pack/multi-pack-index.d/multi-pack-index-0123.midx",
 		])
 			expect(gitUnpublished(`${R}/${rest}`), rest).toBe(true);
-		for (const rest of ["objects/ab/cdef", "objects/pack/pack-1.pack", "refs/heads/main", "worktrees/w1/index"])
+		for (const rest of [
+			"objects/ab/cdef",
+			"objects/pack/pack-1.pack",
+			"objects/info",
+			"objects/info/alternates",
+			"objects/pack",
+			"refs/heads/main",
+			"worktrees/w1/index",
+			"info/packs",
+		])
 			expect(gitUnpublished(`${R}/${rest}`), rest).toBe(false);
+		expect(gitUnpublished("code/acme/app/worktrees/w1/objects/info/packs")).toBe(false);
 		expect(gitUnpublished("code/acme/app/worktrees/w1/yarn.lock")).toBe(false);
 	});
 
@@ -435,7 +455,7 @@ describe("the lock protocol in the folder service", () => {
 		const { core, open } = await repo();
 		const view = await open("first");
 		await write(view, OBJECT, "blob");
-		// Not an object: the core takes none of these in a publish, so it stays for the boundary.
+		// Not an object but git's own index of them: no publish carries it (nor a boundary: it stays in this view).
 		await view.mkdir(`${R}/objects/info`);
 		await write(view, `${R}/objects/info/packs`, "P pack-1.pack\n");
 		await write(view, `${MAIN}.lock`, "3333\n", true);
@@ -767,6 +787,53 @@ describe("the lock protocol in the folder service", () => {
 			OBJECT,
 			`${R}/objects/cd`,
 			OBJECT_CD,
+		]);
+	});
+
+	it("keeps git's own indexes of the objects in the view that made them, the code host's too: no boundary publishes one, and none waits", async () => {
+		const { core, open, openAs } = await repo(codeHostGrants());
+		// The stand-in takes from a session under `objects/` only what the core does (446200).
+		core.gitObjectRules = true;
+		core.seed([folder(`${R}/objects/info`), folder(`${R}/objects/pack`)]);
+		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
+		const views = [await open("first"), await openAs(CODE_HOST)];
+		for (const view of views) {
+			// As `git update-server-info` (which `git repack` and `git gc` run), `git commit-graph write` (split, too) and
+			// `git multi-pack-index write` make them: under a temporary name or a lock, renamed into place.
+			await write(view, `${R}/objects/info/packs_Ab12Cd`, "P pack-1.pack\n", true);
+			await view.rename({ from: `${R}/objects/info/packs_Ab12Cd`, to: `${R}/objects/info/packs`, noReplace: false });
+			await write(view, `${R}/objects/info/commit-graph.lock`, "CGPH", true);
+			await view.rename({
+				from: `${R}/objects/info/commit-graph.lock`,
+				to: `${R}/objects/info/commit-graph`,
+				noReplace: false,
+			});
+			await view.mkdir(`${R}/objects/info/commit-graphs`);
+			await write(view, `${R}/objects/info/commit-graphs/commit-graph-chain`, "0123\n");
+			await write(view, `${R}/objects/pack/multi-pack-index.lock`, "MIDX", true);
+			await view.rename({
+				from: `${R}/objects/pack/multi-pack-index.lock`,
+				to: `${R}/objects/pack/multi-pack-index`,
+				noReplace: false,
+			});
+			const notes = `code/acme/app/${view.codeHost ? "host" : "session"}.txt`;
+			await write(view, notes, "notes\n");
+			const answer = await view.publish();
+			expect(answer.paths.map((p) => `${p.outcome} ${p.path}`)).toEqual([`saved ${notes}`]);
+		}
+		expect([...core.entries.keys()].filter((p) => /\/objects\/(info|pack)\//.test(p))).toEqual([]);
+		for (const view of views) {
+			expect((await view.publish()).paths).toEqual([]);
+			expect(await names(view, `${R}/objects/info`)).toEqual(["commit-graph", "commit-graphs", "packs"]);
+			expect(await names(view, `${R}/objects/pack`)).toEqual(["multi-pack-index"]);
+		}
+		const second = await open("second");
+		expect(await names(second, `${R}/objects/info`)).toEqual([]);
+		expect(await names(second, `${R}/objects/pack`)).toEqual([]);
+		// A file there that is neither an object nor an index still goes to the core, which refuses it from a session.
+		await write(second, `${R}/objects/info/sparse`, "x\n");
+		expect((await second.publish()).paths).toEqual([
+			expect.objectContaining({ path: `${R}/objects/info/sparse`, outcome: "refused", reason: "git_platform_only" }),
 		]);
 	});
 

@@ -59,7 +59,8 @@ export function gitObjectPath(path: string): boolean {
 }
 
 /** A git object a lock's publish carries (5b's `qorpera_folder_git_object`): a loose object (SHA-1 or SHA-256) or a
- * pack's own file. Anything else under `objects/` (`info/packs`, a commit-graph, a multi-pack index) is not one. */
+ * pack's own file. Anything else under `objects/` (`info/packs`, a commit-graph, a multi-pack index: `gitObjectIndex`)
+ * is not one. */
 export function gitPublishedObject(path: string): boolean {
 	const place = gitPlace(path);
 	return (
@@ -200,7 +201,8 @@ export function gitRefused(path: string, codeHost = false): boolean {
 
 /** A file git makes in the git directory that a boundary never publishes: an object or pack it has not finished
  * (`tmp_*`, a push's `incoming-*` quarantine), a pack's `.keep`, and every lock (a shared file's goes with its lease,
- * a worker's own is git's until it renames it). A git killed midway leaves them; they stay this view's. */
+ * a worker's own is git's until it renames it). A git killed midway leaves them; they stay this view's. So do git's
+ * own indexes of the objects (`gitObjectIndex`). */
 export function gitUnpublished(path: string): boolean {
 	const place = gitPlace(path);
 	if (place.kind !== "git") return false;
@@ -211,6 +213,20 @@ export function gitUnpublished(path: string): boolean {
 	return (
 		name.startsWith("tmp_") ||
 		parts.some((part) => part.startsWith("incoming-")) ||
-		(parts[1] === "pack" && name.endsWith(".keep"))
+		(parts[1] === "pack" && name.endsWith(".keep")) ||
+		gitObjectIndex(place.rest)
 	);
+}
+
+/** An index git keeps of the objects, and makes again from them (`rest` is below `repo.git/`): `objects/info/packs`
+ * (and the `packs_*` it is written as, by `git update-server-info`, which `git repack` and `git gc` run), a
+ * commit-graph (`objects/info/commit-graph`, and the split one's `objects/info/commit-graphs/`), and a multi-pack index
+ * (`objects/pack/multi-pack-index*`). The core takes none from a session (446200: `git_platform_only`), and one made in
+ * another view lists what that view's git held, so each view keeps its own, the code host's too: none is published. */
+function gitObjectIndex(rest: string): boolean {
+	const parts = rest.split("/");
+	if (parts[0] !== "objects" || parts.length < 3) return false;
+	const name = parts[2];
+	if (parts[1] === "info") return name === "packs" || name.startsWith("packs_") || name.startsWith("commit-graph");
+	return parts[1] === "pack" && name.startsWith("multi-pack-index");
 }
