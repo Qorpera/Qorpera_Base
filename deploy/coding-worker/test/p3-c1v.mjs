@@ -229,7 +229,7 @@ export async function run(ctx) {
 	if (record.s2MachineId !== machine.machineId) fail(`C1-V step 1: S2 runs on ${record.s2MachineId}, not on S's machine ${machine.machineId}`);
 	const gatewayS2 = gatewayFor(turnS2);
 	const edited = await runToEnd(turnS2, gatewayS2, "p3-c1v-edit", EDIT);
-	const committed = edited.output.trim().split("\n").at(-1);
+	const committed = (edited.output ?? "").trim().split("\n").at(-1);
 	if (edited.state !== "succeeded" || !/^[0-9a-f]{40}$/.test(committed ?? "")) fail(`C1-V step 1: S2's edit and commit: ${JSON.stringify(edited)}`);
 	const loop = await database.beginCommand(db, turnS2, { operationKey: "p3-c1v-loop", command: LOOP, timeoutMs: null });
 	const looping = await gatewayS2.start(turnS2.scope, loop.input, AbortSignal.timeout(60000));
