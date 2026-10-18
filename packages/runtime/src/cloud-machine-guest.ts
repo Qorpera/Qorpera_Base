@@ -355,6 +355,9 @@ async function observe(
 	if (intent.bootId !== bootId) state = "lost";
 	else {
 		try {
+			// Read before systemd is asked: a start that gets past `systemd-run` after systemd answered leaves that
+			// answer's "no such unit" out of date.
+			const launched = !!(await missing(() => lstat(paths.launched)));
 			const fields = Object.fromEntries(
 				(
 					await (ports.system ?? system)("/usr/bin/systemctl", [
@@ -378,7 +381,7 @@ async function observe(
 					if (state === "cancelled") exitCode = null;
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
-			} else if (fields.LoadState === "not-found" && cancelled && (await missing(() => lstat(paths.launched)))) {
+			} else if (fields.LoadState === "not-found" && cancelled && launched) {
 				// A cancel's stop that ends the command cleanly (SIGTERM is clean) lets systemd forget the transient
 				// unit at once, so the cancel finds no unit left to show. Before the start is past `systemd-run`, the
 				// unit may still come: the cancel stays unconfirmed, and the start stops the unit it made.

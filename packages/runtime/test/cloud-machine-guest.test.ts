@@ -301,6 +301,42 @@ describe("machine command guest", () => {
 			exitCode: null,
 		});
 		expect(m.units.has(running.unit)).toBe(false);
+		// The cancel's look at systemd answers "no such unit" before the unit is made, and comes back only once the start
+		// made it, got past systemd-run and failed its own stop: that answer is out of date, and says nothing.
+		const commandId = await m.request("sleep 1000");
+		const unit = `qorpera-machine-command-${commandId}.service`;
+		let looked = () => {};
+		const look = new Promise<void>((resolve) => {
+			looked = () => resolve();
+		});
+		let started = () => {};
+		const done = new Promise<void>((resolve) => {
+			started = () => resolve();
+		});
+		let cancelling: ReturnType<typeof cancelMachineCommand> | undefined;
+		let shown = false;
+		m.system.mockImplementation(async (executable, args) => {
+			if (executable === "/usr/bin/systemd-run" && !cancelling) {
+				cancelling = cancelMachineCommand(commandId, m.ports).finally(looked);
+				await look;
+			} else if (executable === "/usr/bin/systemctl" && args[0] === "show" && args[1] === unit && !shown) {
+				shown = true;
+				const answer = await simulated(executable, args);
+				looked();
+				await done;
+				return answer;
+			} else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && m.units.has(unit))
+				throw new Error("Failed to stop unit");
+			return simulated(executable, args);
+		});
+		expect(await startMachineCommand(commandId, m.ports)).toMatchObject({ state: "running", exitCode: null });
+		started();
+		expect(await cancelling).toMatchObject({ state: "unconfirmed", exitCode: null });
+		m.system.mockImplementation(simulated);
+		expect(m.units.has(unit)).toBe(true);
+		expect(await readMachineCommand(commandId, {}, m.ports)).toMatchObject({ state: "running" });
+		expect(await cancelMachineCommand(commandId, m.ports)).toMatchObject({ state: "cancelled", exitCode: null });
+		expect(m.units.has(unit)).toBe(false);
 	});
 
 	it("runs the command in a login shell and keeps its output with its exit status", async () => {
