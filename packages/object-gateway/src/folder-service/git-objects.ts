@@ -23,12 +23,19 @@ const LOOSE_NAME = /(?:^|\/)objects\/[0-9a-f]{2}\/(?:[0-9a-f]{38}|[0-9a-f]{62})$
 const PACK_NAME = /(?:^|\/)objects\/pack\/pack-([0-9a-f]{40}|[0-9a-f]{64})\.pack$/;
 
 /** A path's form, by its name alone: an object's temporary name (`tmp_obj_*`, `tmp_pack_*`) is plain, and is read again
- * once git moves it to its own. */
+ * once git moves or links it to its own (`formChanged`), even once the temporary name was saved. */
 export function storedForm(path: string): StoredForm {
 	if (LOOSE_NAME.test(path)) return "loose";
 	const pack = PACK_NAME.exec(path);
 	if (pack) return pack[1]?.length === 64 ? "sha256-pack" : "pack";
 	return "plain";
+}
+
+/** Whether bytes saved at `from` are read again when a move, rename or hard link gives them the name `to`: `to` stores
+ * them in a git form `from` did not (a temporary name's object, at its own). */
+export function formChanged(from: string, to: string): boolean {
+	const form = storedForm(to);
+	return form !== "plain" && form !== storedForm(from);
 }
 
 /** One file's check: its stored bytes pushed in order, then `end`. Either rejects with `SecretRefusal` once the file

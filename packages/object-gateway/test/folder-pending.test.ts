@@ -10,6 +10,7 @@ import {
 	PublishFirst,
 } from "../src/folder-service/pending.ts";
 import {
+	CHECK_RUNNING,
 	type CommitUnit,
 	planBoundary,
 	type SecretCheck,
@@ -1069,6 +1070,8 @@ describe("a view's pending changes", () => {
 			carries: () => false,
 			refused: (node) =>
 				Object.entries(reasons).find(([text]) => node.content?.chunks[0]?.sha256 === chunk(text).sha256)?.[1],
+			moved: () => undefined,
+			checking: () => false,
 		});
 		/** The boundary's plan under `check`: the paths it publishes, and why each it refused stays pending. */
 		const planned = (check: SecretCheck) => {
@@ -1100,6 +1103,23 @@ describe("a view's pending changes", () => {
 			units: [...outside].sort(),
 			refused: { ...waits(WAITS_FOR_REFUSED, [carrier, unread]), [carrier]: UNCHECKED, [unread]: CARRIES },
 		});
+		// The plan names the code area held, and what it waits for: a git lease there publishes nothing either.
+		expect(f.plan(refusing({ "a blob with the value": CARRIES })).gitHeld).toEqual(
+			new Map([["code/acme/app", WAITS_FOR_REFUSED]]),
+		);
+		expect(f.plan(refusing({ "an object not read": UNCHECKED })).gitHeld).toEqual(
+			new Map([["code/acme/app", WAITS_FOR_UNCHECKED]]),
+		);
+		expect(f.plan(refusing({})).gitHeld).toEqual(new Map());
+		// An object whose check has not ended waits for it, kept, and holds nothing else back.
+		const running: SecretCheck = { ...refusing({}), checking: (_node, path) => path === unread };
+		const whileChecking = f.plan(running);
+		expect(whileChecking.waiting).toContainEqual({ path: unread, reason: CHECK_RUNNING });
+		expect(whileChecking.keep.has(unread)).toBe(true);
+		expect(whileChecking.refused).toEqual([]);
+		expect(whileChecking.gitHeld).toEqual(new Map());
+		expect(whileChecking.units.flatMap((u) => u.paths)).not.toContain(unread);
+		expect(whileChecking.units.flatMap((u) => u.paths)).toContain(carrier);
 		// The way out (git's prune) removes the refused object: the rest is then published, and the folder is what the
 		// view shows.
 		const check = refusing({ "a blob with the value": CARRIES });
@@ -1110,6 +1130,64 @@ describe("a view's pending changes", () => {
 		});
 		f.publish(check);
 		expect(f.plan(check).units).toEqual([]);
+	});
+
+	it("asks the check about a live file moved to a name that gives its bytes a git form, and refuses a live folder moved so (5j-5)", () => {
+		const repo = "code/acme/app/repo.git";
+		const temporary = `${repo}/objects/11/tmp_obj_a1`;
+		const object = `${repo}/objects/11/${"1".repeat(38)}`;
+		const stashed = `docs/22/${"2".repeat(38)}`;
+		const f = setup({
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			[repo]: null,
+			[`${repo}/objects`]: null,
+			[`${repo}/objects/11`]: null,
+			[temporary]: "an object saved under git's temporary name",
+			docs: null,
+			"docs/a.md": "a plan",
+			"docs/22": null,
+			[stashed]: "an object saved outside a git directory",
+		});
+		const asked: string[] = [];
+		/** A check that refuses each move it is asked about for `reason`, and notes the paths it was asked about. */
+		const moving = (reason: string | undefined): SecretCheck => ({
+			carries: () => false,
+			refused: () => undefined,
+			moved: (_node, path) => {
+				asked.push(path);
+				return reason;
+			},
+			checking: () => false,
+		});
+		f.view.rename(temporary, object);
+		f.view.rename("docs/a.md", "docs/b.md");
+		// The object's move waits for the check of its bytes as an object; the plain rename asks nothing.
+		const refusing = f.plan(moving(CARRIES));
+		expect(asked).toEqual([object]);
+		expect(refusing.refused).toEqual([{ path: object, reason: CARRIES }]);
+		expect(refusing.keep.has(object)).toBe(true);
+		expect(refusing.gitHeld).toEqual(new Map([["code/acme/app", WAITS_FOR_REFUSED]]));
+		expect(refusing.units.flatMap((u) => u.paths)).toEqual(["docs/b.md"]);
+		expect(f.plan(moving(UNCHECKED)).refused).toEqual([{ path: object, reason: UNCHECKED }]);
+		// Checked clean, it publishes as the move it is.
+		const passing = f.plan(moving(undefined));
+		expect(passing.refused).toEqual([]);
+		expect(passing.units.flatMap((u) => u.paths).sort()).toEqual([object, "docs/b.md"]);
+		// A folder moved so that a file it holds gets a git form is not checked file by file: refused as not checked, and
+		// the rest of its git directory waits for it.
+		f.view.rename("docs/22", `${repo}/objects/22`);
+		const folder = f.plan(moving(undefined));
+		expect(Object.fromEntries(folder.refused.map((r) => [r.path, r.reason]))).toEqual({
+			[`${repo}/objects/22`]: UNCHECKED,
+			[object]: WAITS_FOR_UNCHECKED,
+		});
+		expect(folder.keep.has(`${repo}/objects/22`)).toBe(true);
+		expect(folder.gitHeld).toEqual(new Map([["code/acme/app", WAITS_FOR_UNCHECKED]]));
+		expect(folder.units.flatMap((u) => u.paths)).toEqual(["docs/b.md"]);
+		// With no check (an office desktop's view), every move publishes as before.
+		expect(f.plan().refused).toEqual([]);
 	});
 });
 

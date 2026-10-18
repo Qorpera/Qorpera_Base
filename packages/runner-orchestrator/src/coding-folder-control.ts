@@ -55,8 +55,9 @@ export interface CodingFolderBoundary {
  * conflict, parked for review; a final boundary keeps none of them pending), the outcome of the first of them
  * (`unsavedOutcome`, such as `not_applied` or `waiting`), how many of them the save check refused because they carry one
  * of the machine's secret values (`secretRefused`, 5j-5 (a); absent when none), how many it refused because it could
- * not finish checking them (`uncheckedRefused`; absent when none), and why the core refused the change set whole
- * (`refused`). */
+ * not finish checking them (`uncheckedRefused`; absent when none), how many of them wait for a check the boundary did
+ * not wait for to end (`checking`: a large git pack's takes minutes; absent when none), and why the core refused the
+ * change set whole (`refused`). */
 export interface CodingFolderBoundaryView {
 	readonly viewId: string;
 	readonly error?: string;
@@ -64,6 +65,7 @@ export interface CodingFolderBoundaryView {
 	readonly unsavedOutcome?: string;
 	readonly secretRefused?: number;
 	readonly uncheckedRefused?: number;
+	readonly checking?: number;
 	readonly refused?: string;
 }
 
@@ -92,6 +94,15 @@ export function codingFolderSaveRefused(boundary: CodingFolderBoundary): "carrie
 		);
 	if (!checked) return undefined;
 	return unsaved.some((view) => view.secretRefused !== undefined) ? "carries" : "unchecked";
+}
+
+/** Whether a boundary that released its reads left paths waiting for save checks that had not ended (5j-5 (a)) in any
+ * view, or in those of `viewIds` if given: the service goes on checking them, and asking again soon saves them, or
+ * refuses them for what the check found. */
+export function codingFolderBoundaryChecking(boundary: CodingFolderBoundary, viewIds?: readonly string[]): boolean {
+	if (boundary.reads !== "released") return false;
+	const named = (view: CodingFolderBoundaryView) => viewIds === undefined || viewIds.includes(view.viewId);
+	return boundary.views.some((view) => named(view) && (view.checking ?? 0) > 0);
 }
 
 /** Why a boundary holds the machine's output back, as a code's reason (`[A-Z][A-Z0-9_]{0,63}`), or undefined when it
@@ -155,6 +166,8 @@ const SECRET_UNCHECKED: readonly string[] = [
 	"it could not be checked for secret values",
 	"it waits for a change that could not be checked for secret values",
 ];
+/** Why a path waits for its save check (the service's plan.ts `CHECK_RUNNING`): the check has not ended yet. */
+const CHECK_RUNNING = "its check for secret values has not ended yet";
 
 const INVALID = "CODING_FOLDER_CONTROL_ANSWER_INVALID";
 /** Views one boundary may name final, as the service takes them. */
@@ -416,13 +429,14 @@ function errorCode(value: unknown): string {
 }
 
 /** What a view's report (the service's Report) says of the save: how many paths are not saved, the outcome of the first
- * of them, how many of them carry a secret value, how many could not be checked for one, and a whole refusal. Its
- * paths, reasons and receipts are checked for shape and not kept. */
+ * of them, how many of them carry a secret value, how many could not be checked for one, how many wait for a check
+ * still running, and a whole refusal. Its paths, reasons and receipts are checked for shape and not kept. */
 function reportOf(value: unknown): {
 	unsaved: number;
 	unsavedOutcome?: string;
 	secretRefused?: number;
 	uncheckedRefused?: number;
+	checking?: number;
 	refused?: string;
 } {
 	const report = objectOf(value);
@@ -440,6 +454,7 @@ function reportOf(value: unknown): {
 	let unsavedOutcome: string | undefined;
 	let secretRefused = 0;
 	let uncheckedRefused = 0;
+	let checking = 0;
 	for (const value of report.paths) {
 		const entry = objectOf(value);
 		if (
@@ -458,12 +473,14 @@ function reportOf(value: unknown): {
 		unsavedOutcome ??= entry.outcome as string;
 		if (entry.outcome === "refused" && SECRET_CARRIED.includes(entry.reason as string)) secretRefused++;
 		if (entry.outcome === "refused" && SECRET_UNCHECKED.includes(entry.reason as string)) uncheckedRefused++;
+		if (entry.outcome === "waiting" && entry.reason === CHECK_RUNNING) checking++;
 	}
 	return {
 		unsaved,
 		...(unsavedOutcome === undefined ? {} : { unsavedOutcome }),
 		...(secretRefused === 0 ? {} : { secretRefused }),
 		...(uncheckedRefused === 0 ? {} : { uncheckedRefused }),
+		...(checking === 0 ? {} : { checking }),
 		...(report.refused === undefined ? {} : { refused: report.refused as string }),
 	};
 }

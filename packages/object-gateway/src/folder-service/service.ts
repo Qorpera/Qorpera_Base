@@ -26,12 +26,13 @@ import {
 	gitGuarded,
 	gitLockTarget,
 	gitPackedRefsTarget,
+	gitPlace,
 	gitPublishedObject,
 	gitReflog,
 	gitRefused,
 	gitSharedPath,
 } from "./git.ts";
-import { type StoredForm, storedForm } from "./git-objects.ts";
+import { formChanged, type StoredForm, storedForm } from "./git-objects.ts";
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
 import { NOTICES_KEPT, noticeOf, pageOfNotices } from "./notices.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
@@ -44,7 +45,7 @@ import {
 	PendingView,
 	PublishFirst,
 } from "./pending.ts";
-import { type BoundaryPlan, type CommitUnit, planBoundary, type SecretCheck } from "./plan.ts";
+import { type BoundaryPlan, type CommitUnit, planBoundary, type SecretCheck, WAITS_FOR_UNCHECKED } from "./plan.ts";
 import {
 	type BridgeInfo,
 	type ChunkPart,
@@ -67,7 +68,7 @@ import {
 	type WireEntry,
 } from "./protocol.ts";
 import { type SearchAnswer, searchView } from "./search.ts";
-import { CARRIES, SecretRefusal, type SecretSet } from "./secret-scan.ts";
+import { CARRIES, SecretRefusal, type SecretSet, UNCHECKED } from "./secret-scan.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
 import {
@@ -104,6 +105,9 @@ export interface FolderServiceOptions {
 	readonly reloadMs?: number;
 	/** How long a view with no connection is kept before its tree is dropped. */
 	readonly idleMs?: number;
+	/** How long a coding view's boundary waits for the secret checks it starts or finds running (5j-5) before it answers
+	 * with the files whose checks have not ended waiting (`CHECK_RUNNING`): a large git pack's takes minutes. */
+	readonly checkWaitMs?: number;
 	readonly now?: () => number;
 	readonly log?: (line: string) => void;
 	/** The machines the run before this one vouched for when it stopped cleanly (its note, `clean-stop.ts`): none of
@@ -137,6 +141,9 @@ const VIEW_ENDED = "Folder view has ended";
 const INTENT_RENEW_MS = 10 * 60_000;
 /** Files staged at once at a boundary (step 0: 12 small files a second to the NAS one at a time, 67 with eight). */
 const STAGING_PARALLEL = 8;
+/** A coding view's boundary waits this long for its secret checks at most (`checkWaitMs`): well inside the 20 s the
+ * executor's control client waits for a boundary's answer (coding-folder-control.ts), which then asks again. */
+const CHECK_WAIT_MS = 10_000;
 /** Reads in one release: the core's bound (core §6). */
 const RELEASE_READS = 10_000;
 /** The receipt of a read logged with none: it names no resource, so the core checks the path again and files the
@@ -291,6 +298,14 @@ interface GitLock {
 	readonly deleted: Set<string>;
 	readonly replaced: Set<string>;
 	ended: boolean;
+}
+
+/** A file's staging and checks running (`#stageAll`): for its version at `path`, under `secrets`; `done` never fails. */
+interface Running {
+	readonly version: string;
+	readonly path: string;
+	readonly secrets: SecretSet | undefined;
+	readonly done: Promise<void>;
 }
 
 /** Rounds of the feed a view reads for a git lease's versions before the machine hears EEXIST (git tries again). */
@@ -638,6 +653,7 @@ export class FolderService {
 	readonly #pollMs: number;
 	readonly #reloadMs: number;
 	readonly #idleMs: number;
+	readonly #checkWaitMs: number;
 	readonly #now: () => number;
 	readonly #log: (line: string) => void;
 	readonly #views = new Map<string, View>();
@@ -678,6 +694,22 @@ export class FolderService {
 		PendingFile,
 		{ readonly version: string; readonly secrets: SecretSet; readonly reason: string; readonly again: boolean }
 	>();
+	/** Each file moved or renamed to a name that gives its live source's bytes a git form (`formChanged`), as checked
+	 * so: at which version, under which values, as which form, and why the check refused them, if it did (`again` as
+	 * `#refusals`'). */
+	readonly #movedChecks = new WeakMap<
+		PendingFile,
+		{
+			readonly version: string;
+			readonly secrets: SecretSet;
+			readonly form: StoredForm;
+			readonly reason: string | undefined;
+			readonly again: boolean;
+		}
+	>();
+	/** Each file's staging and checks a boundary or a close started and that have not ended (`#stageAll`): for which
+	 * version, at which path, under which values, and when they end. Another boundary joins them, and starts none again. */
+	readonly #running = new WeakMap<PendingFile, Running>();
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -687,6 +719,7 @@ export class FolderService {
 		this.#pollMs = options.pollMs ?? 500;
 		this.#reloadMs = options.reloadMs ?? 10 * 60_000;
 		this.#idleMs = options.idleMs ?? 60_000;
+		this.#checkWaitMs = options.checkWaitMs ?? CHECK_WAIT_MS;
 		this.#now = options.now ?? Date.now;
 		this.#log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
 		this.#vouching = options.vouched !== undefined;
@@ -1254,7 +1287,12 @@ export class FolderService {
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
-				if (path !== undefined) await this.#stage(view, node, path).catch(() => undefined);
+				// Staged as a boundary stages it, so a boundary meanwhile joins it rather than checking the bytes again. A
+				// coding view's close waits for its check as long as a boundary does at most: a large pack's goes on.
+				const secrets = this.#secretsOf(view);
+				const file = path === undefined ? undefined : { path, node };
+				if (file && secrets !== null)
+					await this.#stageAll(view, secrets, secrets ? { file, waitMs: this.#checkWaitMs } : { file });
 				return { version: node.version };
 			},
 			discard: async (handle) => {
@@ -2188,11 +2226,13 @@ export class FolderService {
 	 * appended for it and every object the view wrote in that git directory (a ref names only objects published with
 	 * it or before), in one change set, which ends the lease. A version changed since fails the rename (BUSY) and keeps
 	 * the lease: git then removes its lock (#gitUnlock). `packed-refs.new` renamed onto `packed-refs` under its lock
-	 * publishes the same way, so a `git pack-refs` that cannot publish stops before it prunes a loose ref. */
+	 * publishes the same way, so a `git pack-refs` that cannot publish stops before it prunes a loose ref. A coding
+	 * view's publishes nothing while its git directory holds a change the check refused (`#gitHold`). */
 	async #gitPublish(view: View, from: string, target: string, lock: GitLock): Promise<void> {
 		await this.#quiet(view);
 		const pending = view.pending;
 		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
+		await this.#gitChecked(view, target);
 		await this.#inTurn(view, async () => {
 			const answer = await this.#gitPublishNow(view, pending, from, target, lock);
 			return { commitId: answer.commitId, seq: answer.seq, paths: [] };
@@ -2239,6 +2279,7 @@ export class FolderService {
 			);
 			made.push({ path: file.path, at: file.at, version });
 		}
+		await this.#gitHold(view, pending, target);
 		await this.#gitReadGate(view);
 		// What a change set saved: the live versions of the files made, which show again once the feed has it.
 		const saved = (outcomes: CommitAnswer["units"], files: typeof made): Map<string, string> => {
@@ -2350,7 +2391,9 @@ export class FolderService {
 	/** Removes a git lock (§6): the lease ends, publishing the guarded files git removed under it (`git branch -D`) and
 	 * the log it replaced (`git reflog expire`), or nothing (an update git rolled back, whose line in the log goes too, or
 	 * a lock a killed git left; `packed-refs.lock` after its publish ended the lease). A change that no longer matches
-	 * the versions the lease found is not published: the machine hears BUSY, and shows the live files again. */
+	 * the versions the lease found is not published: the machine hears BUSY, and shows the live files again. A coding
+	 * view's publishes nothing while its git directory holds a change the check refused (`#gitHold`): the lock and the
+	 * lease stay, and removing the lock again after the way out publishes the change. */
 	async #gitUnlock(view: View, path: string, target: string, lock: GitLock): Promise<void> {
 		await this.#quiet(view);
 		const pending = view.pending;
@@ -2358,6 +2401,7 @@ export class FolderService {
 		const node = pending.nodes().get(path);
 		if (node?.kind === "file" && node.open > 0)
 			throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
+		if (lock.deleted.size > 0 || lock.replaced.size > 0) await this.#gitChecked(view, target);
 		let published = true;
 		await this.#inTurn(view, async () => {
 			const guarded = gitGuarded(target);
@@ -2390,7 +2434,10 @@ export class FolderService {
 				if (!staged) throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
 				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
 			}
-			if (units.length > 0) await this.#gitReadGate(view);
+			if (units.length > 0) {
+				await this.#gitHold(view, pending, target);
+				await this.#gitReadGate(view);
+			}
 			let answer: GitPublish | null = null;
 			try {
 				answer = await this.#core.gitLeaseRelease(
@@ -2788,7 +2835,7 @@ export class FolderService {
 		const staging = this.#staging;
 		const changed = node.content !== undefined || !node.origin || node.executable !== node.origin.entry?.executable;
 		if (!staging || node.open > 0 || !changed || secrets === null) return undefined;
-		const check = node.content === undefined ? undefined : secrets;
+		const check = this.#checksBytes(node, path) ? secrets : undefined;
 		if (check && this.#refusalOf(node, check, true)) return undefined;
 		const version = node.version;
 		const form = storedForm(path);
@@ -2893,8 +2940,55 @@ export class FolderService {
 	 * against `secrets` as `path` stores them. */
 	#stagedFor(node: PendingFile, secrets: SecretSet | undefined, path: string): FileRef | undefined {
 		const file = node.staged?.version === node.version ? node.staged.file : undefined;
-		if (!file || !secrets || node.content === undefined) return file;
+		if (!file || !secrets || !this.#checksBytes(node, path)) return file;
 		return this.#uncheckedOf(file, secrets, storedForm(path)) ? undefined : file;
+	}
+
+	/** Whether a coding view's boundary checks a file's bytes at `path`: its own, and a hard link's where `path` gives
+	 * them a git form its source's name did not (`formChanged`). Any other's are in the folder already as `path`
+	 * stores them; a move's are checked by `#checkMoved`. */
+	#checksBytes(node: PendingFile, path: string): boolean {
+		return node.content !== undefined || (node.copyOf !== undefined && formChanged(node.copyOf.path, path));
+	}
+
+	/** Checks the bytes a file moved or renamed to `path` still has from its live source, where `path` gives them a git
+	 * form the source's name did not, against `secrets` as that form, and keeps what it found (`#movedRefusal`). */
+	async #checkMoved(view: View, node: PendingFile, path: string, secrets: SecretSet): Promise<void> {
+		const source = node.origin?.entry;
+		const staging = this.#staging;
+		if (!staging || !source || node.open > 0 || !node.origin || !formChanged(node.origin.path, path)) return;
+		const version = node.version;
+		const form = storedForm(path);
+		const had = this.#movedChecks.get(node);
+		const same = had?.version === version && had.form === form;
+		if (same && had.secrets === secrets && !had.again) return;
+		// Passed under older values, they are checked for the newer alone.
+		const left = same && had.reason === undefined ? secrets.since(had.secrets) : secrets;
+		let refusal: SecretRefusal | undefined;
+		try {
+			const profile = await this.#profile(view, source);
+			const chunks = await this.#objects.manifestChunks(profile, source);
+			await staging.check(profile, { chunks, size: source.bytes }, left, form);
+		} catch (error) {
+			if (!(error instanceof SecretRefusal)) throw error;
+			refusal = error;
+		}
+		if (node.version === version)
+			this.#movedChecks.set(node, {
+				version,
+				secrets,
+				form,
+				reason: refusal?.message,
+				again: refusal?.again ?? false,
+			});
+	}
+
+	/** Why a boundary does not publish the move of a file to `path` that gives its bytes a git form (`#checkMoved`): they
+	 * carry one of `secrets`, or were not checked as that form against them (any other error, or not yet). */
+	#movedRefusal(node: PendingFile, secrets: SecretSet, path: string): string | undefined {
+		const had = this.#movedChecks.get(node);
+		if (had?.version !== node.version || had.secrets !== secrets || had.form !== storedForm(path)) return UNCHECKED;
+		return had.reason;
 	}
 
 	/** The values of `secrets` a staged file's bytes still need checking for, as `form`: none (`undefined`) if they
@@ -2913,6 +3007,8 @@ export class FolderService {
 			secrets && {
 				carries: (text) => secrets.carries(text),
 				refused: (node) => this.#refusalOf(node, secrets),
+				moved: (node, path) => this.#movedRefusal(node, secrets, path),
+				checking: (node, path) => this.#runningFor(node, path, secrets) !== undefined,
 			}
 		);
 	}
@@ -2925,8 +3021,10 @@ export class FolderService {
 			throw new ProtocolError(ErrorCode.busy, "The git change waits for the machine's secret check");
 		if (secrets?.carries(path))
 			throw new ProtocolError(ErrorCode.notPermitted, "The git change carries a secret value");
+		// A check running for it already (`#stageAll`) is joined, not started again.
+		await this.#runningFor(node, path, secrets)?.done;
 		const staged = await this.#stage(view, node, path, secrets);
-		const refusal = secrets && node.content !== undefined ? this.#refusalOf(node, secrets) : undefined;
+		const refusal = secrets && this.#checksBytes(node, path) ? this.#refusalOf(node, secrets) : undefined;
 		if (refusal)
 			throw new ProtocolError(
 				ErrorCode.notPermitted,
@@ -2935,6 +3033,34 @@ export class FolderService {
 					: "The git change could not be checked for secret values",
 			);
 		return staged;
+	}
+
+	/** Stages and checks every file a coding view has pending in the git directory of `target`'s code area (5j-5), as a
+	 * boundary would, however long a pack's check takes: before a git lease's turn, so a boundary meanwhile does not
+	 * wait for them in the queue of turns (`#inTurn`), but joins them for a while (`#stageAll`). */
+	async #gitChecked(view: View, target: string): Promise<void> {
+		const secrets = this.#secretsOf(view);
+		const place = gitPlace(target);
+		if (secrets && place.kind === "git") await this.#stageAll(view, secrets, { under: `${place.area}/repo.git/` });
+	}
+
+	/** A coding view's git lease publishes or releases nothing while its code area's git directory holds a change the
+	 * check refused (5j-5): the repository is held whole, as a boundary holds it (`BoundaryPlan.gitHeld`), until the
+	 * way out the turn summary gives clears it. A lease that publishes nothing still ends. */
+	async #gitHold(view: View, pending: PendingView, target: string): Promise<void> {
+		const secrets = this.#secretsOf(view);
+		const place = gitPlace(target);
+		if (!secrets || place.kind !== "git") return;
+		await this.#gitChecked(view, target);
+		const plan = planBoundary(pending, (node, path) => this.#stagedFor(node, secrets, path), this.#checkOf(secrets));
+		const waits = plan.gitHeld.get(place.area);
+		if (waits !== undefined)
+			throw new ProtocolError(
+				ErrorCode.notPermitted,
+				waits === WAITS_FOR_UNCHECKED
+					? "The git change waits for a change that could not be checked for secret values"
+					: "The git change waits for a change that carries a secret value",
+			);
 	}
 
 	/** The path a node is shown at now. */
@@ -3093,7 +3219,9 @@ export class FolderService {
 			view.heard = "open";
 			return { commitId: null, seq: null, paths: uncheckedOf(planBoundary(pending, () => undefined)) };
 		}
-		await this.#stageAll(view, secrets);
+		// Its checks it waits for a while: one that runs longer (a large pack's) has its file wait (`CHECK_RUNNING`), so
+		// the executor hears the answer in time, and a later boundary publishes the file.
+		await this.#stageAll(view, secrets, secrets ? { waitMs: this.#checkWaitMs } : {});
 		const plan = planBoundary(pending, (node, path) => this.#stagedFor(node, secrets, path), this.#checkOf(secrets));
 		// A test machine's units are credited from what they publish, as planned (F3 6b). A change undone before it was
 		// published, as a move moved back, leaves nothing to publish: its tags go, even when nothing is published.
@@ -3373,24 +3501,90 @@ export class FolderService {
 		return { commitId: answer.commitId, seq: answer.seq, paths: [...entries, ...outcomes], closed: true };
 	}
 
-	/** Stages every closed, changed file not staged yet (or, in a coding view, not checked against `secrets` yet), a few
-	 * at a time. */
-	async #stageAll(view: View, secrets: SecretSet | undefined): Promise<void> {
-		const nodes = [...(view.pending?.nodes() ?? [])].filter(
-			(entry): entry is [string, PendingFile] =>
-				entry[1].kind === "file" &&
-				entry[1].open === 0 &&
-				!(this.#stagedNow(view, entry[1], entry[0]) && this.#stagedFor(entry[1], secrets, entry[0])) &&
-				!(secrets && this.#refusalOf(entry[1], secrets, true)),
-		);
-		for (let i = 0; i < nodes.length; i += STAGING_PARALLEL)
-			await Promise.all(
-				nodes.slice(i, i + STAGING_PARALLEL).map(([path, node]) =>
-					this.#stage(view, node, path, secrets).catch((error: unknown) => {
-						this.#log(`folder-service: ${view.key}: a file could not be staged: ${(error as Error).message}`);
-					}),
-				),
+	/** The staging and checks running for a file's version at `path` under `secrets` (`#stageAll`), if any. */
+	#runningFor(node: PendingFile, path: string, secrets: SecretSet | undefined): Running | undefined {
+		const running = this.#running.get(node);
+		return running?.version === node.version && running.path === path && running.secrets === secrets
+			? running
+			: undefined;
+	}
+
+	/** Stages every closed, changed file not staged yet (or, in a coding view, not checked against `secrets` yet), and
+	 * in a coding view checks each move that gives a file's bytes a git form (`#checkMoved`), a few files at a time:
+	 * only one `file`, or only those under `under`, if given. A file's staging and checks running already (`#running`)
+	 * are joined, not started again. With `waitMs`, this waits that long at most: what has not ended goes on, and a
+	 * boundary has the file wait for it (`SecretCheck.checking`). */
+	async #stageAll(
+		view: View,
+		secrets: SecretSet | undefined,
+		only: {
+			readonly file?: { readonly path: string; readonly node: PendingFile };
+			readonly under?: string;
+			readonly waitMs?: number;
+		} = {},
+	): Promise<void> {
+		const ends: Promise<void>[] = [];
+		const jobs: { node: PendingFile; path: string; steps: (() => Promise<unknown>)[] }[] = [];
+		const files: ReturnType<PendingView["nodes"]> = only.file
+			? new Map([[only.file.path, only.file.node]])
+			: (view.pending?.nodes() ?? new Map());
+		for (const [path, node] of files) {
+			if (node.kind !== "file" || node.open > 0) continue;
+			if (only.under !== undefined && !path.startsWith(only.under)) continue;
+			const running = this.#runningFor(node, path, secrets);
+			if (running) {
+				ends.push(running.done);
+				continue;
+			}
+			const steps: (() => Promise<unknown>)[] = [];
+			if (secrets && node.origin && formChanged(node.origin.path, path))
+				steps.push(() => this.#checkMoved(view, node, path, secrets));
+			if (
+				!(this.#stagedNow(view, node, path) && this.#stagedFor(node, secrets, path)) &&
+				!(secrets && this.#refusalOf(node, secrets, true))
+			)
+				steps.push(() => this.#stage(view, node, path, secrets));
+			if (steps.length > 0) jobs.push({ node, path, steps });
+		}
+		const logged = (step: () => Promise<unknown>): Promise<void> =>
+			step().then(
+				() => undefined,
+				(error: unknown) => {
+					this.#log(`folder-service: ${view.key}: a file could not be staged: ${(error as Error).message}`);
+				},
 			);
+		// A few files at a time, each few after the last: each file's entry is there from now until its steps end.
+		let before: Promise<unknown> = Promise.resolve();
+		for (let i = 0; i < jobs.length; i += STAGING_PARALLEL) {
+			const start = before;
+			const these = jobs.slice(i, i + STAGING_PARALLEL).map((job) => {
+				const running: Running = {
+					version: job.node.version,
+					path: job.path,
+					secrets,
+					done: start
+						.then(() => Promise.all(job.steps.map(logged)))
+						.then(() => {
+							if (this.#running.get(job.node) === running) this.#running.delete(job.node);
+						}),
+				};
+				this.#running.set(job.node, running);
+				return running.done;
+			});
+			ends.push(...these);
+			before = Promise.all(these);
+		}
+		const all = Promise.all(ends);
+		if (only.waitMs === undefined) {
+			await all;
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const bound = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, only.waitMs);
+		});
+		await Promise.race([all, bound]);
+		clearTimeout(timer);
 	}
 
 	/** A structured file's parse goes with its unit (core §3 "Before the transaction"), from its staged bytes. */

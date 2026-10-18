@@ -1131,6 +1131,55 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	);
 
 	it(
+		"holds a clean commit and a branch's delete while the worktree's git files hold a refused change, and publishes after the way out (5j-5 (a))",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const topic = `${R}/refs/heads/topic`;
+			const topicLog = `${R}/logs/refs/heads/topic`;
+			await first.git("branch", "topic", "main");
+			expect(held(at.core, topic)).toEqual([topic]);
+			const logged = held(at.core, topicLog);
+			const published = at.core.gitPublishes.length;
+			const tip = (await first.git("rev-parse", "HEAD")).trim();
+			// A file among the worktree's own git files carries the value: the repository is held whole.
+			const notes = `${R}/worktrees/w1/NOTES`;
+			await writeFile(join(first.company, notes), `the key is ${VALUE}\n`);
+
+			// A commit that holds none of it is refused at its ref update; git rolls it back, and its lease ends.
+			await writeFile(join(first.worktree, "notes.md"), "plain notes\n");
+			await first.git("add", "notes.md");
+			const commit = await first.gitRun("commit", "-q", "-m", "notes");
+			expect(commit.code, commit.out).not.toBe(0);
+			expect((await first.git("rev-parse", "HEAD")).trim()).toBe(tip);
+			expect(at.core.gitPublishes).toHaveLength(published);
+			expect(at.core.gitLeases.size).toBe(0);
+			// A branch's delete publishes nothing either: its lock stays, with its lease, and the core keeps the ref and its
+			// log.
+			await first.gitRun("branch", "-D", "topic");
+			expect(at.core.gitLeases.has(topic)).toBe(true);
+			expect(held(at.core, topic)).toEqual([topic]);
+			expect(held(at.core, topicLog)).toEqual(logged);
+			expect(at.core.gitPublishes).toHaveLength(published);
+			expect(refusedIn(await at.service.boundary(CODING_MACHINE_ID)).carries).toEqual([notes]);
+
+			// The way out: the file goes, and removing the lock again publishes the delete; then the commit is saved.
+			await rm(join(first.company, notes));
+			await rm(join(first.company, `${topic}.lock`));
+			expect(at.core.gitLeases.size).toBe(0);
+			expect(held(at.core, topic)).toEqual([]);
+			expect(held(at.core, topicLog)).toEqual([]);
+			await first.git("commit", "-q", "-m", "notes");
+			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
+			expect(await first.git("log", "--format=%s")).toBe("notes\nfirst\n");
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(at.core.entries.has(notes)).toBe(false);
+		},
+		TIMEOUT,
+	);
+
+	it(
 		"refuses a pack that holds a secret value, holds its .idx and .rev back with it, and saves after the way out (5j-5 (b))",
 		async () => {
 			const at = await area({}, true);

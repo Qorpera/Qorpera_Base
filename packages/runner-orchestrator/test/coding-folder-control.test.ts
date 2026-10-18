@@ -10,12 +10,15 @@ import {
 	CodingFolderControl,
 	CodingFolderControlRefused,
 	type CodingFolderReads,
+	codingFolderBoundaryChecking,
 	codingFolderBoundaryHeld,
 	codingFolderSaveRefused,
 	codingFolderViewSaved,
 } from "../src/coding-folder-control.ts";
 import { CodingFolderSecretKey, type CodingFolderSecretSet } from "../src/coding-folder-secrets.ts";
 
+/** Why a path waits for its save check (object-gateway's plan.ts `CHECK_RUNNING`). */
+const CHECK_RUNNING = "its check for secret values has not ended yet";
 const MACHINE = "12345678-1234-4234-8234-000000000001";
 const VIEW = "12345678-1234-4234-8234-000000000002";
 const FINAL = "12345678-1234-4234-8234-000000000003";
@@ -194,6 +197,17 @@ describe("the folder service's control socket", () => {
 					{ path: CANARY, outcome: "refused", reason: "it could not be checked for secret values", kept: true },
 				],
 			},
+			// A path whose save check had not ended when the boundary answered (5j-5): it waits, and is counted; nothing
+			// else is, not even a path not applied for that reason.
+			{
+				commitId: null,
+				seq: null,
+				paths: [
+					{ path: CANARY, outcome: "waiting", reason: CHECK_RUNNING, kept: true },
+					{ path: CANARY, outcome: "waiting", reason: CANARY, kept: true },
+					{ path: CANARY, outcome: "not_applied", reason: CHECK_RUNNING },
+				],
+			},
 		].map((report) => ({ viewId: randomUUID(), report }));
 		const f = await control(reply(boundary({ views })));
 		const answer = await f.client.boundary(MACHINE, [], signal());
@@ -207,10 +221,12 @@ describe("the folder service's control socket", () => {
 			{ viewId: views[6].viewId, unsaved: 1, unsavedOutcome: "refused", secretRefused: 1 },
 			{ viewId: views[7].viewId, unsaved: 2, unsavedOutcome: "refused", uncheckedRefused: 2 },
 			{ viewId: views[8].viewId, unsaved: 2, unsavedOutcome: "refused", secretRefused: 1, uncheckedRefused: 1 },
+			{ viewId: views[9].viewId, unsaved: 3, unsavedOutcome: "waiting", checking: 1 },
 		]);
 		expect(JSON.stringify(answer)).not.toContain(CANARY);
 		expect(answer.views.map((view) => codingFolderViewSaved(view))).toEqual([
 			true,
+			false,
 			false,
 			false,
 			false,
@@ -233,6 +249,7 @@ describe("the folder service's control socket", () => {
 			"UNSAVED_REFUSED",
 			"UNSAVED_REFUSED",
 			"UNSAVED_REFUSED",
+			"UNSAVED_WAITING",
 		]);
 		expect(answer.views.map((view) => codingFolderSaveRefused(one(view)))).toEqual([
 			undefined,
@@ -244,7 +261,36 @@ describe("the folder service's control socket", () => {
 			"carries",
 			"unchecked",
 			"carries",
+			undefined,
 		]);
+		expect(answer.views.map((view) => codingFolderBoundaryChecking(one(view)))).toEqual([
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+			true,
+		]);
+	});
+
+	it("tells a boundary that left paths waiting for save checks still running (5j-5), in any view or those named", () => {
+		const checking = { viewId: FINAL, unsaved: 2, unsavedOutcome: "waiting", checking: 1 };
+		const other = { viewId: OTHER, unsaved: 1, unsavedOutcome: "waiting" };
+		const saved = { viewId: VIEW, unsaved: 0 };
+		const asked = (reads: CodingFolderReads, viewIds?: readonly string[]) =>
+			codingFolderBoundaryChecking({ machine: MACHINE, reads, views: [saved, other, checking] }, viewIds);
+		expect(asked("released")).toBe(true);
+		expect(asked("released", [FINAL])).toBe(true);
+		expect(asked("released", [VIEW, OTHER])).toBe(false);
+		expect(asked("released", [])).toBe(false);
+		// Reads not released hold the output for that, whatever the checks do.
+		expect(asked("unproven")).toBe(false);
+		expect(asked("unanswered", [FINAL])).toBe(false);
+		expect(codingFolderBoundaryChecking({ machine: MACHINE, reads: "released", views: [saved, other] })).toBe(false);
 	});
 
 	it("tells a save held back only by the save check's refusals (5j-5 (a), (c)) from any other, and which", () => {

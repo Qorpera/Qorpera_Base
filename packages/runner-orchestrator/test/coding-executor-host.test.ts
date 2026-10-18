@@ -4381,6 +4381,28 @@ describe("a coding session on the folder model", () => {
 		// No broker: nothing to check the push against.
 		expect(mocked.push.mock.calls[0]?.[2]).not.toHaveProperty("secrets");
 	});
+	it("asks the boundary again while a path waits for a save check still running (5j-5), and publishes once it saved", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// Another view's large pack is still being checked: the service answered in time, and goes on checking.
+		f.boundary.mockResolvedValueOnce({
+			machine: f.machine.machineId,
+			reads: "released" as const,
+			views: [
+				{ viewId: randomUUID(), unsaved: 0 },
+				{ viewId: randomUUID(), unsaved: 1, unsavedOutcome: "waiting", checking: 1 },
+			],
+		});
+		expect(await f.host.publish(f.claim, f.submission, f.signal)).toEqual({
+			pullRequest: f.pullRequest,
+			noChange: false,
+		});
+		expect(f.boundary.mock.calls).toEqual([
+			[f.machine.machineId, [], f.signal],
+			[f.machine.machineId, [], f.signal],
+		]);
+		expect(f.boundary.mock.invocationCallOrder[1]).toBeLessThan(f.repositories.export.mock.invocationCallOrder[0]!);
+	});
 	it("checks a publication against the session's values and its environment asked again, the pull request first", async () => {
 		const f = await folderFixture();
 		// Made-up values.

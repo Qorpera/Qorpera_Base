@@ -1,12 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+	CodingFolderControl,
+	codingFolderBoundaryChecking,
+} from "../../runner-orchestrator/src/coding-folder-control.ts";
+import { createControlServer } from "../src/folder-service/control.ts";
 import { SaveChecks } from "../src/folder-service/git-objects.ts";
 import { DESKTOP_QUIET_MS } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
-import { NAME_CARRIES, TARGET_CARRIES, WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
+import { CHECK_RUNNING, NAME_CARRIES, TARGET_CARRIES, WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
 import type { BridgeInfo, Hello } from "../src/folder-service/protocol.ts";
 import { CARRIES, type SecretSet, UNCHECKED } from "../src/folder-service/secret-scan.ts";
 import { FolderService, type MachineBoundary, type ViewHandle } from "../src/folder-service/service.ts";
@@ -56,8 +61,13 @@ const SECRETS_WAIT = "waiting for the machine's secret check";
 /** A company folder with two files, a coding session's view on a coding machine, a desktop's on the office machine,
  * and the node's service, whose log lines `logs` keeps. `secrets`: the coding machine's values its executor sent, or
  * none yet; `more`: further entries by path, each a file's text or `null` for a folder; `checks`: the node's checks of
- * git's storage. */
-async function company(secrets?: SecretSet, more: Record<string, string | null> = {}, checks?: SaveChecks) {
+ * git's storage; `checkWaitMs`: how long a boundary waits for its checks. */
+async function company(
+	secrets?: SecretSet,
+	more: Record<string, string | null> = {},
+	checks?: SaveChecks,
+	checkWaitMs?: number,
+) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-secrets-"));
 	const core = new FakeCore();
 	core.seed([
@@ -91,6 +101,7 @@ async function company(secrets?: SecretSet, more: Record<string, string | null> 
 		grants: codingGrants(),
 		staging,
 		log: (line) => logs.push(line),
+		...(checkWaitMs === undefined ? {} : { checkWaitMs }),
 	});
 	if (secrets) service.secrets(CODING_MACHINE_ID, secrets);
 	const handles: ViewHandle[] = [];
@@ -407,6 +418,42 @@ describe("the save check of git's own storage (repo.git)", () => {
 		nothingNamed();
 	});
 
+	it("checks an object saved under git's temporary name again as the object's name it is moved or linked to later", async () => {
+		const { core, service, open, nothingNamed } = await company(secretsOf(VALUE));
+		const view = await open();
+		/** A loose object of `text` and git's temporary name `n` for it. */
+		const objectOf = (text: string, n: number) => {
+			const object = looseObject("blob", text);
+			const temporary = `${MIRROR}/${object.name.slice(0, "objects/xx/".length)}tmp_obj_${n}`;
+			return { ...object, temporary, final: `${MIRROR}/${object.name}` };
+		};
+		const moved = objectOf(`moved: ${VALUE}\n`, 0);
+		const linked = objectOf(`linked: ${VALUE}\n`, 1);
+		const honest = objectOf("honest\n", 2);
+		for (const object of [moved, linked, honest]) {
+			expect(object.data.includes(VALUE)).toBe(false);
+			await put(view, object.temporary, object.data);
+		}
+		// Under a temporary name the bytes are saved as they are, which hold no value as they are.
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		for (const object of [moved, linked, honest])
+			expect(core.entries.get(object.temporary)?.fileSha256).toBe(hashOf(object.data));
+		await view.rename({ from: moved.temporary, to: moved.final, noReplace: true });
+		await view.link({ from: linked.temporary, to: linked.final });
+		await view.rename({ from: honest.temporary, to: honest.final, noReplace: true });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual(
+			[moved, linked].map((object) => refused(object.final, CARRIES)).sort(byPath),
+		);
+		// What is refused stays on the machine: the folder keeps the temporary names it had, and no object's name.
+		for (const object of [moved, linked]) {
+			expect(core.entries.has(object.final)).toBe(false);
+			expect(core.entries.get(object.temporary)?.fileSha256).toBe(hashOf(object.data));
+		}
+		expect(core.entries.get(honest.final)?.fileSha256).toBe(hashOf(honest.data));
+		expect(core.entries.has(honest.temporary)).toBe(false);
+		nothingNamed();
+	});
+
 	it("refuses a pack holding a value as git reads it, moved from git's temporary name, and saves an honest pack", async () => {
 		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
 		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
@@ -424,6 +471,24 @@ describe("the save check of git's own storage (repo.git)", () => {
 		]);
 		expect(core.entries.get(`${packs}/pack-${"2".repeat(40)}.pack`)?.fileSha256).toBe(hashOf(honest));
 		expect(core.entries.has(`${packs}/tmp_pack_a1`)).toBe(false);
+		nothingNamed();
+	});
+
+	it("refuses a pack saved under git's temporary name once it is moved to a pack's name, at a later boundary", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const carrying = packHolding(scratch, `the key is ${VALUE}.\n`);
+		const { core, service, open, nothingNamed } = await company(secretsOf(VALUE));
+		const view = await open();
+		const temporary = `${MIRROR}/objects/pack/tmp_pack_a1`;
+		const pack = `${MIRROR}/objects/pack/pack-${"1".repeat(40)}.pack`;
+		await put(view, temporary, carrying);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.entries.get(temporary)?.fileSha256).toBe(hashOf(carrying));
+		await view.rename({ from: temporary, to: pack, noReplace: true });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([refused(pack, CARRIES)]);
+		expect(core.entries.has(pack)).toBe(false);
+		expect(core.entries.get(temporary)?.fileSha256).toBe(hashOf(carrying));
 		nothingNamed();
 	});
 
@@ -468,5 +533,90 @@ describe("the save check of git's own storage (repo.git)", () => {
 		expect(staged()).toBe(after);
 		expect(core.entries.has(a)).toBe(false);
 		nothingNamed();
+	});
+
+	it("answers in time while a pack's check runs, has the pack wait for it, and saves or refuses it once it ends", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const carrying = packHolding(scratch, `the key is ${VALUE}.\n`);
+		const honest = packHolding(scratch, "the key is gone.\n");
+		// Another check on the node holds its one turn: the packs' checks run once it ends, past the boundary's wait.
+		const checks = new SaveChecks({ atOnce: 1 });
+		const other = checks.start(secretsOf(VALUE), honest.length, "pack");
+		const started = other.push(honest.subarray(0, 20));
+		const { core, service, open, staged, nothingNamed } = await company(secretsOf(VALUE), {}, checks, 100);
+		const view = await open();
+		const [a, b] = [
+			`${MIRROR}/objects/pack/pack-${"1".repeat(40)}.pack`,
+			`${MIRROR}/objects/pack/pack-${"2".repeat(40)}.pack`,
+		];
+		// Each close waits for its pack's check a while, as a boundary does, and leaves it running.
+		const before = staged();
+		await put(view, a, carrying);
+		await put(view, b, honest);
+		for (let i = 0; i < 2; i++) {
+			const answer = await service.boundary(CODING_MACHINE_ID);
+			// Neither is refused, nor saved: each waits for its check, which a later boundary joins, not starts again.
+			for (const path of [a, b])
+				expect(pathsOf(answer)).toContainEqual({ path, outcome: "waiting", reason: CHECK_RUNNING, kept: true });
+			expect(refusedIn(answer)).toEqual([]);
+			expect(staged()).toBe(before + 2);
+			expect(core.entries.has(a) || core.entries.has(b)).toBe(false);
+		}
+		await started;
+		await other.push(honest.subarray(20));
+		await other.end();
+		// Once it ends, theirs run: a later boundary saves the honest pack and refuses the other, starting neither again.
+		const checking = (answer: MachineBoundary) => pathsOf(answer).some((entry) => entry.reason === CHECK_RUNNING);
+		let boundary = await service.boundary(CODING_MACHINE_ID);
+		for (let i = 0; i < 50 && checking(boundary); i++) boundary = await service.boundary(CODING_MACHINE_ID);
+		expect(refusedIn(boundary)).toEqual([refused(a, CARRIES)]);
+		expect(core.entries.get(b)?.fileSha256).toBe(hashOf(honest));
+		expect(core.entries.has(a)).toBe(false);
+		expect(staged()).toBe(before + 2);
+		nothingNamed();
+	});
+
+	it("answers the coding executor's control client in its time while a pack's check runs, which a later boundary saves", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const honest = packHolding(scratch, "the key is gone.\n");
+		// Another check on the node holds its one turn until the test lets it end: the pack's check runs past the
+		// client's timeout.
+		const checks = new SaveChecks({ atOnce: 1 });
+		const other = checks.start(secretsOf(VALUE), honest.length, "pack");
+		const started = other.push(honest.subarray(0, 20));
+		const { core, service, open } = await company(secretsOf(VALUE), {}, checks, 200);
+		// The control socket as its unit makes it, the executor's alone (under /tmp, root's and sticky), and the
+		// executor's own client, with a timeout ten times the boundary's wait.
+		const dir = await realpath(await mkdtemp("/tmp/qfs-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		const path = join(dir, "control.sock");
+		const executorUid = process.getuid?.();
+		const server = createControlServer({ target: service, path, executorUid, log: () => undefined });
+		await new Promise<void>((resolve) => server.listen(path, resolve));
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await chmod(path, 0o600);
+		const control = new CodingFolderControl({ path, timeoutMs: 2_000 });
+		const signal = new AbortController().signal;
+		const view = await open();
+		const pack = `${MIRROR}/objects/pack/pack-${"2".repeat(40)}.pack`;
+		await put(view, pack, honest);
+		for (let i = 0; i < 2; i++) {
+			const answer = await control.boundary(CODING_MACHINE_ID, [], signal);
+			expect(answer.reads).toBe("released");
+			expect(answer.views).toContainEqual(expect.objectContaining({ viewId: SESSION, checking: 1 }));
+			expect(codingFolderBoundaryChecking(answer)).toBe(true);
+			expect(core.entries.has(pack)).toBe(false);
+		}
+		await started;
+		await other.push(honest.subarray(20));
+		await other.end();
+		// Asked again, as the executor asks while a check runs: once it has ended, the pack is saved.
+		let answer = await control.boundary(CODING_MACHINE_ID, [], signal);
+		for (let i = 0; i < 50 && codingFolderBoundaryChecking(answer); i++)
+			answer = await control.boundary(CODING_MACHINE_ID, [], signal);
+		expect(codingFolderBoundaryChecking(answer)).toBe(false);
+		expect(core.entries.get(pack)?.fileSha256).toBe(hashOf(honest));
 	});
 });
