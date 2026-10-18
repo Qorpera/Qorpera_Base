@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	CODING_GUEST,
+	type CodingGuestCommandState,
 	type CodingGuestUsage,
 	cloudCodingSessionLayout,
 	parseCloudCodingNasPolicy,
+	parseCodingGuestAnswer,
+	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -27,6 +30,7 @@ import {
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
+import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
 import type { CodingFolderControl } from "../src/coding-folder-control.ts";
 import type { CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
 import {
@@ -35,6 +39,7 @@ import {
 	type CodingFolderViewHeld,
 	CodingFolderViews,
 } from "../src/coding-folder-views.ts";
+import type { LxdCodingGuestClient } from "../src/coding-guest-client.ts";
 import { CodingHostLeases, judgeCodingHostLease } from "../src/coding-host-lease.ts";
 import {
 	type CodingMachineReconcileOptions,
@@ -65,6 +70,8 @@ const mocked = vi.hoisted(() => ({
 	dropStart: vi.fn(),
 	undropStart: vi.fn(),
 	startDropped: vi.fn(),
+	recordDisk: vi.fn(),
+	disk: vi.fn(),
 	keptCommand: vi.fn(),
 	guestCancel: vi.fn(),
 	guestQuiesce: vi.fn(),
@@ -126,6 +133,8 @@ vi.mock("../src/coding-machine.ts", async (original) => ({
 	dropCodingMachineStart: mocked.dropStart,
 	undropCodingMachineStart: mocked.undropStart,
 	codingMachineStartDropped: mocked.startDropped,
+	recordCodingMachineDisk: mocked.recordDisk,
+	codingMachineDisk: mocked.disk,
 }));
 vi.mock("../src/coding-git-seed.ts", () => ({
 	resolveCloudCodingBase: mocked.resolveBase,
@@ -318,8 +327,16 @@ async function fixture() {
 		startOperationId: "",
 		/** SQL marked the machine to restart for the company folder: its next start's record clears it. */
 		folderRestart: false,
-		/** The LXD operations of the machine's create, starts and stops, in order: a start follows the last. */
+		/** SQL marked the machine for a new disk (F3 5g-5), which marks it to restart too: its rebuild's record clears both. */
+		newDisk: false,
+		/** The machine's image is no longer in the node's store: a rebuild from it fails before anything goes out. */
+		imageGone: false,
+		/** The LXD operations of the machine's create, starts, stops and rebuilds, in order: a start follows the last. */
 		effects: [] as string[],
+		/** What each of those operations was. */
+		kinds: new Map<string, "create" | "start" | "stop" | "rebuild">(),
+		/** The rebuild that gave the machine the disk it has, as written down next to its journal: none for its first. */
+		disk: null as string | null,
 	};
 	// The watchdog: a generation's lease renews while live and never again once run out.
 	mocked.refresh.mockImplementation(async (scope: { workerId: string }, tokenSha256: string, ttlMs: number) => {
@@ -334,6 +351,8 @@ async function fixture() {
 	const outsideStops = new Map<string, { workerId: string; attachmentToken: string }[]>();
 	// Folder restarts' records as SQL keeps them: the effect each start followed -> what its record answered.
 	const folderRestarts = new Map<string, Record<string, unknown>>();
+	// New disks' records as SQL keeps them: the rebuild -> what its record answered.
+	const newDisks = new Map<string, Record<string, unknown>>();
 	const receipt = (intent: string, workerId: string | null, guestUid: number | null) => ({
 		schema: "qorpera.coding-machine-admission/v1",
 		machineId: machine.machineId,
@@ -367,6 +386,9 @@ async function fixture() {
 			case "qorpera_authorize_coding_machine_custody": {
 				if (args.p_owner !== "coding-host") throw new Error("Coding machine custody differs");
 				if (state.custodyRefusal) return { state: "refused", reason: state.custodyRefusal };
+				// Only a machine marked for a new disk is rebuilt.
+				if (args.p_intent === "rebuild" && !state.newDisk)
+					return { state: "refused", reason: "MACHINE_NO_NEW_DISK" };
 				const listed = state.listed.find((entry) => entry.machineId === args.p_machine_id);
 				return {
 					...receipt(String(args.p_intent), (args.p_worker_id as string | null) ?? null, null),
@@ -465,8 +487,11 @@ async function fixture() {
 				};
 			}
 			case "qorpera_mark_coding_machine_folder_restart":
+			case "qorpera_mark_coding_machine_new_disk":
 				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
 					throw new Error("Coding machine custody differs");
+				// A mark for a new disk marks the machine to restart too.
+				if (method === "qorpera_mark_coding_machine_new_disk") state.newDisk = true;
 				state.folderRestart = true;
 				return {
 					schema: "qorpera.coding-machine-folder-restart/v1",
@@ -482,20 +507,43 @@ async function fixture() {
 				const recorded = folderRestarts.get(args.p_operation_id);
 				if (recorded) return recorded;
 				// A marked machine's restart ends every attachment on it as FOLDER_RESTART and clears the mark; an
-				// unmarked one's changes nothing.
+				// unmarked one's changes nothing. One marked for a new disk ends them as MACHINE_NEW_DISK and keeps both
+				// marks: it is rebuilt before it starts.
 				const detached = state.folderRestart
 					? [...attachments].map(([workerId, attachmentToken]) => ({ workerId, attachmentToken }))
 					: [];
 				if (state.folderRestart) attachments.clear();
 				const restarted = state.folderRestart;
-				state.folderRestart = false;
+				if (!state.newDisk) state.folderRestart = false;
 				const answer = {
 					schema: "qorpera.coding-machine-folder-restart/v1",
 					machineId: args.p_machine_id,
-					state: restarted ? "restarted" : "unmarked",
+					state: state.newDisk ? "new-disk" : restarted ? "restarted" : "unmarked",
 					detached,
 				};
 				folderRestarts.set(args.p_operation_id, answer);
+				return answer;
+			}
+			case "qorpera_record_coding_machine_new_disk": {
+				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
+					throw new Error("Coding machine custody differs");
+				if (typeof args.p_operation_id !== "string" || !args.p_operation_id)
+					throw new Error("Coding machine input invalid");
+				// A second record of the same rebuild answers what the first did.
+				const recorded = newDisks.get(args.p_operation_id);
+				if (recorded) return recorded;
+				if (!state.newDisk) throw new Error("Coding machine is not marked for a new disk");
+				// Every attachment still on it ends as MACHINE_NEW_DISK, and both marks are cleared.
+				const answer = {
+					schema: "qorpera.coding-machine-folder-restart/v1",
+					machineId: args.p_machine_id,
+					state: "replaced",
+					detached: [...attachments].map(([workerId, attachmentToken]) => ({ workerId, attachmentToken })),
+				};
+				attachments.clear();
+				state.newDisk = false;
+				state.folderRestart = false;
+				newDisks.set(args.p_operation_id, answer);
 				return answer;
 			}
 			case "qorpera_archive_quiet_coding_sessions":
@@ -522,6 +570,7 @@ async function fixture() {
 		getInstance: vi.fn(async () => instance()),
 		submitInstanceOperation: vi.fn(),
 		inspectInstanceOperation: vi.fn(),
+		hasImage: vi.fn(async () => !state.imageGone),
 		replaceInstanceDevices: vi.fn(async (_project, _name, devices) => {
 			if (state.applyDevices) lxd.devices = structuredClone(devices) as Devices;
 		}),
@@ -609,6 +658,13 @@ async function fixture() {
 			}
 		}),
 	};
+	/** A new LXD operation on the machine, of `kind`. */
+	const effect = (kind: "create" | "start" | "stop" | "rebuild") => {
+		const operationId = randomUUID();
+		state.effects.push(operationId);
+		state.kinds.set(operationId, kind);
+		return operationId;
+	};
 	mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
 		const intent = input.desiredState === "running" ? "run" : input.desiredState === "stopped" ? "stop" : "delete";
 		await input.authorize(intent, input.signal);
@@ -617,18 +673,28 @@ async function fixture() {
 			await input.stoppedFromOutside?.(state.startOperationId, input.signal);
 		if (input.desiredState === "running") {
 			// Starting a stopped machine is a new LXD operation, which the executor hears of first, named by the effect
-			// it follows (its create, the first time).
+			// it follows (its create, the first time). If the executor answers that the machine gets a new disk first, its
+			// image must still be on the node, a rebuild goes out under custody's authority, and the start after it is
+			// heard of again, named by the rebuild.
 			if (!lxd.running) {
-				if (!state.effects.length) state.effects.push(randomUUID());
-				await input.starting?.(state.effects.at(-1) as string, input.signal);
-				state.startOperationId = randomUUID();
-				state.effects.push(state.startOperationId);
+				if (!state.effects.length) effect("create");
+				const after = state.effects.at(-1) as string;
+				if ((await input.starting?.(after, input.signal, state.kinds.get(after) ?? "create")) === "rebuild") {
+					const fingerprint = input.plan.request?.source.fingerprint as string;
+					if (!(await input.client.hasImage?.(input.plan.project, fingerprint, input.signal)))
+						throw new Error("CODING_MACHINE_IMAGE_GONE");
+					await input.authorize("rebuild", input.signal);
+					const rebuilt = effect("rebuild");
+					await input.authorize(intent, input.signal);
+					await input.starting?.(rebuilt, input.signal, "rebuild");
+				}
+				state.startOperationId = effect("start");
 			}
 			lxd.exists = true;
 			lxd.running = true;
 			state.stoppedFromOutside = false;
 		} else if (input.desiredState === "stopped") {
-			if (lxd.running) state.effects.push(randomUUID());
+			if (lxd.running) effect("stop");
 			lxd.running = false;
 		} else lxd.exists = false;
 		return { state: input.desiredState };
@@ -639,6 +705,10 @@ async function fixture() {
 	mocked.dropStart.mockResolvedValue(true);
 	mocked.undropStart.mockResolvedValue(undefined);
 	mocked.startDropped.mockResolvedValue(false);
+	mocked.recordDisk.mockImplementation(async (_root: string, _plan: unknown, operationId: string) => {
+		state.disk = operationId;
+	});
+	mocked.disk.mockImplementation(async () => state.disk);
 	mocked.resolveBase.mockResolvedValue(baseSha);
 	mocked.seedFetch.mockResolvedValue({ headSha: baseSha, bundle: Buffer.from("seed"), bundleSha256: hash("seed") });
 	mocked.seedTransfer.mockResolvedValue({});
@@ -3351,6 +3421,26 @@ describe("a coding session on the folder model", () => {
 				? [f.call.mock.invocationCallOrder[index]!]
 				: [],
 		);
+	/** What SQL answered each control call of `method`, in order ("lost" for one that failed). */
+	const answersOf = async (f: Fixture, method: string) =>
+		(await Promise.all(
+			f.call.mock.results.flatMap((result, index) =>
+				f.call.mock.calls[index]?.[0] === method ? [Promise.resolve(result.value).catch(() => "lost")] : [],
+			),
+		)) as { state: string; detached: unknown }[];
+	/** Each custody SQL granted, as its intent and the order of its call. Before each view opens and each command starts
+	 * or is read, the executor asks for rebuild custody to learn whether the machine is marked for a new disk: one SQL
+	 * refused, the machine not so marked, is left out. */
+	const granted = async (f: Fixture) => {
+		const custody = "qorpera_authorize_coding_machine_custody";
+		const answers = await answersOf(f, custody),
+			asked = f.calls(custody);
+		return callOrder(f, custody).flatMap((order, index) =>
+			answers[index]?.state === "refused" ? [] : [{ intent: asked[index]?.p_intent, order }],
+		);
+	};
+	/** The intents custody was granted for, in order. */
+	const custodyIntents = async (f: Fixture) => (await granted(f)).map((custody) => custody.intent);
 	/** Each start boots the machine anew: its boot_id file names a new boot once the folder service hears it restarted. */
 	const bootsAnew = (f: Awaited<ReturnType<typeof folderFixture>>) =>
 		f.restarted.mockImplementation(async () => {
@@ -3424,9 +3514,7 @@ describe("a coding session on the folder model", () => {
 		await expect(failed).rejects.toBeInstanceOf(CodingFolderRestartRequired);
 		await expect(failed).rejects.toMatchObject({ code: "MACHINE_RESTART_REQUIRED" });
 		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
-		expect(f.calls("qorpera_authorize_coding_machine_custody")).toEqual([
-			expect.objectContaining({ p_intent: "stop" }),
-		]);
+		expect(await custodyIntents(f)).toEqual(["stop"]);
 		expect(f.views.attach).toHaveBeenCalledTimes(2);
 	});
 	it.each([
@@ -3451,7 +3539,7 @@ describe("a coding session on the folder model", () => {
 		);
 		// Not marked, the machine is not stopped; stopped but its restart not recorded, it does not start.
 		expect(f.lxd.running).toBe(running);
-		expect(f.calls("qorpera_authorize_coding_machine_custody")).toHaveLength(running ? 0 : 1);
+		expect(await custodyIntents(f)).toHaveLength(running ? 0 : 1);
 		expect(f.views.attach).toHaveBeenCalledTimes(2);
 	});
 	it("records a restart whose answer was lost again under the same start, and goes on with what SQL answered first", async () => {
@@ -3561,12 +3649,675 @@ describe("a coding session on the folder model", () => {
 		await expect(published).rejects.toThrow(new Error("CODING_FOLDER_BOUNDARY_HELD:READS_UNPROVEN"));
 		// One restart, the publication's: the second session attached after it, on the machine it left running.
 		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
-		expect(f.calls("qorpera_authorize_coding_machine_custody")).toEqual([
-			expect.objectContaining({ p_intent: "stop" }),
-		]);
+		expect(await custodyIntents(f)).toEqual(["stop"]);
 		expect(f.restarted).toHaveBeenCalledTimes(2);
 		expect(f.restarted.mock.invocationCallOrder[1]).toBeLessThan(f.views.attach.mock.invocationCallOrder.at(-1)!);
 		expect(f.lxd.running).toBe(true);
+		expect([...f.attachments.keys()]).toEqual([second.workerId]);
+		expect(f.views.attach.mock.calls.at(-1)?.[0].attachmentToken).toBe(f.attachments.get(second.workerId));
+	});
+	/** The session's turn `sequence`, under a renewed lease. */
+	const turnAt = (f: Awaited<ReturnType<typeof folderFixture>>, sequence: number) => {
+		f.renew(f.claim);
+		f.claim.sequence = sequence;
+		f.sequences.set(f.claim.workerId, sequence);
+		return f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+	};
+	it("gives the machine a new disk from its image when its view is refused for a read no longer readable, and attaches the session again (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		bootsAnew(f);
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("READS_UNREADABLE"));
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// SQL marks it for a new disk, which marks it to restart too, its views end, and it stops under its custody. Before
+		// it starts again, the folder service hears it restarted and SQL records the restart, which ends the refused view's
+		// attachment and keeps both marks: it is rebuilt from its image, still on the node, under custody's rebuild. Before
+		// the start after the rebuild, the folder service hears it restarted again and SQL records the new disk, which
+		// clears both marks. Before each attach, SQL refuses the rebuild custody asked for: the machine is not marked then.
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toEqual([]);
+		expect(await custodyIntents(f)).toEqual(["stop", "rebuild"]);
+		// Rebuild custody three times: the rebuild's, between the two asked before each attach.
+		const rebuilds = callOrder(f, "qorpera_authorize_coding_machine_custody", "rebuild");
+		const marks = callOrder(f, "qorpera_mark_coding_machine_new_disk");
+		const records = callOrder(f, "qorpera_record_coding_machine_folder_restart");
+		const replaced = callOrder(f, "qorpera_record_coding_machine_new_disk");
+		expect(rebuilds).toHaveLength(3);
+		expect(marks).toHaveLength(1);
+		expect(records).toHaveLength(2);
+		expect(replaced).toHaveLength(1);
+		expect(f.views.endMachine).toHaveBeenCalledTimes(1);
+		expect(f.restarted).toHaveBeenCalledTimes(3);
+		const order = [
+			rebuilds[0],
+			f.views.attach.mock.invocationCallOrder[0],
+			marks[0],
+			f.views.endMachine.mock.invocationCallOrder[0],
+			callOrder(f, "qorpera_authorize_coding_machine_custody", "stop")[0],
+			f.restarted.mock.invocationCallOrder[1],
+			records[1],
+			vi.mocked(f.client.hasImage).mock.invocationCallOrder[0],
+			rebuilds[1],
+			f.restarted.mock.invocationCallOrder[2],
+			replaced[0],
+			rebuilds[2],
+			f.views.attach.mock.invocationCallOrder[1],
+		];
+		expect(order).not.toContain(undefined);
+		expect(order).toEqual([...order].sort((a, b) => (a as number) - (b as number)));
+		expect(f.client.hasImage).toHaveBeenCalledWith(
+			f.machine.project,
+			f.machine.imageFingerprint,
+			expect.any(AbortSignal),
+		);
+		const refused = f.views.attach.mock.calls[0]![0],
+			attached = f.views.attach.mock.calls[1]![0];
+		const restarts = await answersOf(f, "qorpera_record_coding_machine_folder_restart"),
+			disks = await answersOf(f, "qorpera_record_coding_machine_new_disk");
+		expect([...restarts, ...disks].map((answer) => answer.state)).toEqual(["unmarked", "new-disk", "replaced"]);
+		// The restart's record ended the refused view's attachment; the new disk's found none left.
+		expect(restarts[1]?.detached).toEqual([{ workerId: f.claim.workerId, attachmentToken: refused.attachmentToken }]);
+		expect(disks[0]?.detached).toEqual([]);
+		// Each record names its start by the effect that start follows: the create, the restart's stop, then the rebuild.
+		expect(f.state.effects.map((operationId) => f.state.kinds.get(operationId))).toEqual([
+			"create",
+			"start",
+			"stop",
+			"rebuild",
+			"start",
+		]);
+		expect(f.calls("qorpera_record_coding_machine_folder_restart").map((args) => args.p_operation_id)).toEqual([
+			f.state.effects[0],
+			f.state.effects[2],
+		]);
+		expect(f.calls("qorpera_record_coding_machine_new_disk").map((args) => args.p_operation_id)).toEqual([
+			f.state.effects[3],
+		]);
+		// The error an image gone from the node would have left is cleared.
+		expect(f.calls("qorpera_record_coding_machine_error")).toEqual([
+			expect.objectContaining({ p_machine_id: f.machine.machineId, p_stage: "wake", p_code: null }),
+		]);
+		// The session attached anew, its view under the new attachment on the new boot.
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(false);
+		expect(f.state.folderRestart).toBe(false);
+		expect(f.attachments.get(f.claim.workerId)).toBe(attached.attachmentToken);
+		expect(attached.attachmentToken).not.toBe(refused.attachmentToken);
+		expect(attached.bootId).not.toBe(refused.bootId);
+		expect(f.onMount).toHaveBeenCalledTimes(1);
+	});
+	it("gives a machine SQL marked at a turn's take-in its new disk before that turn's view opens, though the session's view of a turn before still answers mounted (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		const real = await realViews();
+		bootsAnew(f);
+		const host = f.executor(real);
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		host.endTurn(f.claim);
+		const token = f.attachments.get(f.claim.workerId)!;
+		// The next turn's take-in, at its first run, finds a read on the machine that turn can no longer place, and marks
+		// the machine for a new disk (20260930505000). The session's view, held since the turn before, still answers
+		// mounted: it hears of the mark only at its next renewal.
+		const answer = f.call.getMockImplementation()!;
+		let takenIn = false;
+		f.call.mockImplementation(async (called, args, signal) => {
+			if (called === "qorpera_authorize_coding_machine_run" && !takenIn) {
+				takenIn = true;
+				f.state.newDisk = true;
+				f.state.folderRestart = true;
+			}
+			return answer(called, args, signal);
+		});
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// SQL grants rebuild custody, so the machine is marked: the held view is not mounted again. The machine is marked
+		// for its new disk all the same, its views end (the held one's final boundary and close), it stops, is rebuilt and
+		// starts on its new disk, and the session attaches anew, its new view mounted under the new attachment.
+		expect(await custodyIntents(f)).toEqual(["rebuild", "stop", "rebuild"]);
+		const [asked, stop, rebuild] = (await granted(f)).map((custody) => custody.order);
+		const [mark] = callOrder(f, "qorpera_mark_coding_machine_new_disk");
+		const [replaced] = callOrder(f, "qorpera_record_coding_machine_new_disk");
+		const order = [asked, mark, stop, rebuild, replaced, mocked.guestMount.mock.invocationCallOrder.at(-1)];
+		expect(order).not.toContain(undefined);
+		expect(order).toEqual([...order].sort((a, b) => (a as number) - (b as number)));
+		expect(mocked.guestMount).toHaveBeenCalledTimes(2);
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toEqual([]);
+		expect(
+			[
+				...(await answersOf(f, "qorpera_record_coding_machine_folder_restart")),
+				...(await answersOf(f, "qorpera_record_coding_machine_new_disk")),
+			].map((answer) => answer.state),
+		).toEqual(["unmarked", "new-disk", "replaced"]);
+		expect(f.state.effects.map((operationId) => f.state.kinds.get(operationId))).toEqual([
+			"create",
+			"start",
+			"stop",
+			"rebuild",
+			"start",
+		]);
+		expect(real.closes).toEqual([{ p_view_id: real.viewId, p_pass: real.pass }]);
+		const renewed = f.attachments.get(f.claim.workerId);
+		expect(renewed).not.toBe(token);
+		expect(real.opens).toHaveLength(2);
+		expect(real.opens[1]).toMatchObject({ p_anchor: { workerId: f.claim.workerId, attachmentToken: renewed } });
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(false);
+		expect(f.state.folderRestart).toBe(false);
+	});
+	it.each<[string, Record<string, unknown>]>([
+		["another schema", { schema: "qorpera.coding-machine-new-disk/v1" }],
+		["another machine", { machineId: randomUUID() }],
+		["another state", { state: "new-disk" }],
+		["no sessions it detached", { detached: undefined }],
+	])(
+		"does not start a rebuilt machine while SQL's record of its new disk is not confirmed: %s (F3 5g-5)",
+		async (_case, differs) => {
+			const f = await folderFixture();
+			bootsAnew(f);
+			await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+			f.host.endTurn(f.claim);
+			// SQL records the new disk, and its first answer is not one.
+			const answer = f.call.getMockImplementation()!;
+			let answered = false;
+			f.call.mockImplementation(async (called, args, signal) => {
+				const value = await answer(called, args, signal);
+				if (called !== "qorpera_record_coding_machine_new_disk" || answered) return value;
+				answered = true;
+				return { ...(value as Record<string, unknown>), ...differs };
+			});
+			f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("READS_UNREADABLE"));
+			await expect(turnAt(f, 2)).rejects.toThrow("CODING_HOST_NEW_DISK_UNCONFIRMED");
+			// Rebuilt, it does not start, and no view opens on it.
+			expect(f.state.effects.map((operationId) => f.state.kinds.get(operationId))).toEqual([
+				"create",
+				"start",
+				"stop",
+				"rebuild",
+			]);
+			expect(f.lxd.running).toBe(false);
+			expect(f.views.attach).toHaveBeenCalledTimes(2);
+			// The next turn records the same rebuild again: SQL answers what it did, and the machine starts on its new disk.
+			await turnAt(f, 3);
+			expect(f.calls("qorpera_record_coding_machine_new_disk").map((args) => args.p_operation_id)).toEqual([
+				f.state.effects[3],
+				f.state.effects[3],
+			]);
+			expect(f.state.effects).toHaveLength(5);
+			expect(f.state.kinds.get(f.state.effects[4]!)).toBe("start");
+			expect(f.lxd.running).toBe(true);
+			expect(f.state.newDisk).toBe(false);
+			expect(f.attachments.get(f.claim.workerId)).toBe(f.views.attach.mock.calls.at(-1)![0].attachmentToken);
+		},
+	);
+	it("leaves the machine stopped and marked, with its own error, while its image is gone from the node, and rebuilds it once the image is back (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		bootsAnew(f);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.imageGone = true;
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("READS_UNREADABLE"));
+		await expect(turnAt(f, 2)).rejects.toThrow("CODING_MACHINE_IMAGE_GONE");
+		// No rebuild was asked for: the machine stays stopped, both marks on it, with the error recorded for it.
+		expect(await custodyIntents(f)).toEqual(["stop"]);
+		expect(f.lxd.running).toBe(false);
+		expect(f.state.newDisk).toBe(true);
+		expect(f.state.folderRestart).toBe(true);
+		const errors = () => f.calls("qorpera_record_coding_machine_error").map((args) => [args.p_stage, args.p_code]);
+		expect(f.calls("qorpera_record_coding_machine_error")).toEqual([
+			expect.objectContaining({
+				p_machine_id: f.machine.machineId,
+				p_stage: "wake",
+				p_code: "CODING_MACHINE_IMAGE_GONE",
+			}),
+		]);
+		// Its next turn fails so too, before any rebuild: the restart's record answers what it did.
+		await expect(turnAt(f, 3)).rejects.toThrow("CODING_MACHINE_IMAGE_GONE");
+		expect(await custodyIntents(f)).toEqual(["stop"]);
+		expect(f.lxd.running).toBe(false);
+		expect(errors()).toEqual([
+			["wake", "CODING_MACHINE_IMAGE_GONE"],
+			["wake", "CODING_MACHINE_IMAGE_GONE"],
+		]);
+		// The image back, the next turn rebuilds the machine, the error is cleared, and the session attaches.
+		f.state.imageGone = false;
+		await turnAt(f, 4);
+		expect(await custodyIntents(f)).toEqual(["stop", "rebuild"]);
+		expect(f.client.hasImage).toHaveBeenCalledTimes(3);
+		expect(f.calls("qorpera_record_coding_machine_folder_restart").map((args) => args.p_operation_id)).toEqual([
+			f.state.effects[0],
+			f.state.effects[2],
+			f.state.effects[2],
+			f.state.effects[2],
+		]);
+		expect(f.calls("qorpera_record_coding_machine_new_disk").map((args) => args.p_operation_id)).toEqual([
+			f.state.effects[3],
+		]);
+		expect(errors()).toEqual([
+			["wake", "CODING_MACHINE_IMAGE_GONE"],
+			["wake", "CODING_MACHINE_IMAGE_GONE"],
+			["wake", null],
+		]);
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(false);
+		expect(f.attachments.get(f.claim.workerId)).toBe(f.views.attach.mock.calls.at(-1)![0].attachmentToken);
+	});
+	it("gives the machine a new disk when the boundary before a publication says it holds a read no longer readable, and publishes nothing (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.boundary.mockResolvedValueOnce({ machine: f.machine.machineId, reads: "unreadable", views: [] });
+		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow(
+			new Error("CODING_FOLDER_BOUNDARY_HELD:READS_UNREADABLE"),
+		);
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toEqual([]);
+		expect(f.calls("qorpera_mark_coding_machine_new_disk")).toHaveLength(1);
+		expect(await custodyIntents(f)).toEqual(["stop", "rebuild"]);
+		expect(
+			[
+				...(await answersOf(f, "qorpera_record_coding_machine_folder_restart")),
+				...(await answersOf(f, "qorpera_record_coding_machine_new_disk")),
+			].map((answer) => answer.state),
+		).toEqual(["unmarked", "new-disk", "replaced"]);
+		// It runs again on its new disk, the session no longer attached to it: its next turn attaches anew.
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(false);
+		expect(f.state.folderRestart).toBe(false);
+		expect(f.attachments.has(f.claim.workerId)).toBe(false);
+		expect(f.repositories.export).not.toHaveBeenCalled();
+		expect(mocked.push).not.toHaveBeenCalled();
+	});
+	it("marks the machine for a new disk all the same when another turn restarted it since the publication's boundary was asked (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// While the publication's boundary is asked, the second session's view is refused and it restarts the machine; the
+		// boundary then says a view's change set was refused whole for a read no longer readable.
+		f.boundary.mockImplementationOnce(async (machine) => {
+			f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("VIEW_CLOSED"));
+			await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+			return { machine, reads: "released", views: [{ viewId: f.viewId, unsaved: 0, refused: "unreadable" }] };
+		});
+		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow(
+			new Error("CODING_FOLDER_BOUNDARY_HELD:REFUSED_UNREADABLE"),
+		);
+		// One restart, the second session's, which gave the machine no new disk: the publication marks it for one, after
+		// that restart's record, so its next start is a rebuild.
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
+		expect(await custodyIntents(f)).toEqual(["stop"]);
+		const [mark] = callOrder(f, "qorpera_mark_coding_machine_new_disk");
+		expect(callOrder(f, "qorpera_mark_coding_machine_new_disk")).toHaveLength(1);
+		expect(callOrder(f, "qorpera_record_coding_machine_folder_restart")[1]).toBeLessThan(mark!);
+		expect(f.state.newDisk).toBe(true);
+		expect(f.state.folderRestart).toBe(true);
+		expect(f.lxd.running).toBe(true);
+		expect([...f.attachments.keys()]).toEqual([second.workerId]);
+		expect(f.repositories.export).not.toHaveBeenCalled();
+	});
+	it("marks the machine for a new disk once when a command's boundary says it holds a read no longer readable (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const transport = mocked.folderTransports.at(-1) as { control: Pick<CodingFolderControl, "boundary"> };
+		// A released boundary marks nothing.
+		await transport.control.boundary(f.machine.machineId, [], f.signal);
+		expect(f.calls("qorpera_mark_coding_machine_new_disk")).toEqual([]);
+		// The first mark is not confirmed.
+		const answer = f.call.getMockImplementation()!;
+		let lost = false;
+		f.call.mockImplementation(async (called, args, signal) => {
+			if (called === "qorpera_mark_coding_machine_new_disk" && !lost) {
+				lost = true;
+				throw new Error("CODING_HOST_CONTROL_TIMEOUT");
+			}
+			return answer(called, args, signal);
+		});
+		const unreadable = { machine: f.machine.machineId, reads: "unreadable" as const, views: [] };
+		f.boundary.mockResolvedValue(unreadable);
+		// Each boundary's answer goes to the command as it was. The mark lost with the first is made by the second, and
+		// the third makes none.
+		for (let each = 0; each < 3; each++)
+			expect(await transport.control.boundary(f.machine.machineId, [], f.signal)).toEqual(unreadable);
+		expect(f.calls("qorpera_mark_coding_machine_new_disk")).toHaveLength(2);
+		expect(f.state.newDisk).toBe(true);
+		// Marked, it is not stopped here: no command of the turn starts or is read on it now, and its next turn gives it
+		// its new disk before that turn's view opens.
+		expect(f.lxd.running).toBe(true);
+		expect(await custodyIntents(f)).toEqual([]);
+	});
+	it("starts and reads no command on a machine SQL marked for a new disk during the turn, and still cancels one (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const authorize = vi.fn(async (_action: string) => undefined);
+		await f.host.commandTransport(f.scope(), authorize, f.signal);
+		const transport = mocked.folderTransports.at(-1) as { authorize: (...args: unknown[]) => Promise<void> };
+		const step = (action: string) => transport.authorize(action, f.scope(), randomUUID(), "a".repeat(64), f.signal);
+		await step("start");
+		// The turn's take-in at its next run finds a read on the machine it can no longer place, and marks the machine for
+		// a new disk (20260930505000): its disk may hold what it read, so no command starts on it or is read from it now.
+		const answer = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (called, args, signal) => {
+			if (called === "qorpera_authorize_coding_machine_run") {
+				f.state.newDisk = true;
+				f.state.folderRestart = true;
+			}
+			return answer(called, args, signal);
+		});
+		for (const action of ["start", "read"])
+			await expect(step(action)).rejects.toThrow("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+		await step("cancel");
+		expect(authorize.mock.calls.map(([action]) => action)).toEqual(["start", "cancel"]);
+		// Asking changed nothing: the machine still runs, marked, and the turn's next view gets it a new disk first.
+		expect(await custodyIntents(f)).toEqual(["rebuild", "rebuild"]);
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(true);
+	});
+	it("keeps and shows none of what a command printed on a machine its cancel's last authorization marked for a new disk, and still cancels it, through the folder model's own command transport (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const options = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		const { LxdCodingFolderCommandTransport } = await vi.importActual<
+			typeof import("../src/coding-folder-command-transport.ts")
+		>("../src/coding-folder-command-transport.ts");
+		await mkdir(options.custody, { recursive: true, mode: 0o700 });
+		await chmod(options.custody, 0o700);
+		// The guest agent's one command, answering as the real agent does.
+		const { workerId } = f.scope();
+		const command = { state: "running" as CodingGuestCommandState, printed: Buffer.from("before\n") };
+		const stateOf = (commandId: string) => ({
+			commandId,
+			state: command.state,
+			exit: null,
+			end: command.printed.length,
+		});
+		const guest = {
+			run: vi.fn<LxdCodingGuestClient["run"]>(async (request) => ({
+				schema: "qorpera.coding-guest-command/v1",
+				workerId,
+				...stateOf(parseCodingGuestRequest("run", request).commandId),
+			})),
+			output: vi.fn<LxdCodingGuestClient["output"]>(async (request) => {
+				const asked = parseCodingGuestRequest("output", request);
+				const bytes = Buffer.from(command.printed.subarray(asked.offset, asked.offset + asked.maxBytes));
+				const answer = parseCodingGuestAnswer("output", asked, {
+					schema: "qorpera.coding-guest-output/v1",
+					workerId,
+					...stateOf(asked.commandId),
+					offset: asked.offset,
+					bytes: bytes.length,
+					gap: 0,
+				});
+				return { answer, bytes };
+			}),
+			cancel: vi.fn<LxdCodingGuestClient["cancel"]>(async (request) => {
+				command.state = "cancelled";
+				return {
+					schema: "qorpera.coding-guest-command/v1",
+					workerId,
+					...stateOf(parseCodingGuestRequest("cancel", request).commandId),
+				};
+			}),
+		};
+		const transport = new LxdCodingFolderCommandTransport({ ...options, guest });
+		const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "make", timeoutMs: null };
+		expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "running", output: "before\n" });
+		// The command prints more, and the turn cancels it. The take-in at the cancel's last authorization (its run) marks
+		// the machine for a new disk without placing the read on it that the turn can no longer read (20260930505000),
+		// after what the command printed was kept and while the guest still stops it; the machine's boundary still
+		// releases every read it was served.
+		const answer = f.call.getMockImplementation()!;
+		let runs = 0;
+		f.call.mockImplementation(async (called, args, signal) => {
+			if (called === "qorpera_authorize_coding_machine_run" && ++runs === 2) {
+				f.state.newDisk = true;
+				f.state.folderRestart = true;
+			}
+			return answer(called, args, signal);
+		});
+		command.printed = Buffer.concat([command.printed, Buffer.from("old disk\n")]);
+		guest.cancel.mockImplementationOnce(async (request) => ({
+			schema: "qorpera.coding-guest-command/v1",
+			workerId,
+			...stateOf(parseCodingGuestRequest("cancel", request).commandId),
+		}));
+		const answered = (output: string) => ({
+			schema: "qorpera.coding-command-result/v2",
+			workerId,
+			commandId: input.commandId,
+			inputSha256: input.inputSha256,
+			state: "running",
+			exitCode: null,
+			output,
+			truncated: false,
+			log: {
+				offset: 0,
+				nextOffset: Buffer.byteLength(output),
+				totalBytes: Buffer.byteLength(output),
+				limitBytes: options.limitBytes,
+				limitReached: false,
+			},
+		});
+		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(
+			answered("before\nold disk\n"),
+		);
+		expect(runs).toBe(2);
+		// The command service asks what is shown after that authorization: not what the command printed, nor how much,
+		// nor how it ended.
+		await expect(transport.hidden(input.commandId, f.signal)).resolves.toBe("unconfirmed");
+		// It prints more on the disk it is to lose, and the guest stops it: the next cancel still goes, and keeps nothing
+		// more of it, nor how it ended.
+		command.printed = Buffer.concat([command.printed, Buffer.from("after\n")]);
+		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(
+			answered("before\nold disk\n"),
+		);
+		await expect(transport.hidden(input.commandId, f.signal)).resolves.toBe("unconfirmed");
+		expect(guest.cancel).toHaveBeenCalledTimes(2);
+		const kept = join(options.custody, "host-commands", input.commandId.replaceAll("-", ""));
+		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\nold disk\n");
+		await expect(readFile(join(kept, "outcome.json"))).rejects.toMatchObject({ code: "ENOENT" });
+		// Nor is the command read, until the machine has its new disk.
+		await expect(transport.read(f.scope(), { commandId: input.commandId }, f.signal)).rejects.toThrow(
+			"CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK",
+		);
+		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\nold disk\n");
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(true);
+	});
+	it("has none of what a command printed on the disk a rebuild replaced shown, read or cancelled in a later turn, though it ended, through the folder model's own command transport (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		// The machine's journal names the start it last ran under.
+		mocked.startOperation.mockImplementation(async () => f.state.startOperationId);
+		bootsAnew(f);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const options = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		const { LxdCodingFolderCommandTransport } = await vi.importActual<
+			typeof import("../src/coding-folder-command-transport.ts")
+		>("../src/coding-folder-command-transport.ts");
+		await mkdir(options.custody, { recursive: true, mode: 0o700 });
+		await chmod(options.custody, 0o700);
+		// The guest agent's commands on the machine's disk, answering as the real agent does.
+		const { workerId } = f.scope();
+		const commands = new Map<
+			string,
+			{
+				state: CodingGuestCommandState;
+				exit: { code: number | null; signal: string | null } | null;
+				printed: Buffer;
+			}
+		>();
+		const stateOf = (commandId: string) => {
+			const found = commands.get(commandId);
+			if (!found) throw new Error("FAKE_GUEST_COMMAND_UNKNOWN");
+			return { commandId, state: found.state, exit: found.exit, end: found.printed.length };
+		};
+		const guest = {
+			run: vi.fn<LxdCodingGuestClient["run"]>(async (request) => ({
+				schema: "qorpera.coding-guest-command/v1",
+				workerId,
+				...stateOf(parseCodingGuestRequest("run", request).commandId),
+			})),
+			output: vi.fn<LxdCodingGuestClient["output"]>(async (request) => {
+				const asked = parseCodingGuestRequest("output", request);
+				const at = stateOf(asked.commandId);
+				const bytes = Buffer.from(
+					commands.get(asked.commandId)!.printed.subarray(asked.offset, asked.offset + asked.maxBytes),
+				);
+				const answer = parseCodingGuestAnswer("output", asked, {
+					schema: "qorpera.coding-guest-output/v1",
+					workerId,
+					...at,
+					offset: asked.offset,
+					bytes: bytes.length,
+					gap: 0,
+				});
+				return { answer, bytes };
+			}),
+			cancel: vi.fn<LxdCodingGuestClient["cancel"]>(async (request) => ({
+				schema: "qorpera.coding-guest-command/v1",
+				workerId,
+				...stateOf(parseCodingGuestRequest("cancel", request).commandId),
+			})),
+		};
+		const first = new LxdCodingFolderCommandTransport({ ...options, guest });
+		const done = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "cat notes", timeoutMs: null };
+		const running = { commandId: randomUUID(), inputSha256: "b".repeat(64), command: "make", timeoutMs: null };
+		commands.set(done.commandId, {
+			state: "exited",
+			exit: { code: 0, signal: null },
+			printed: Buffer.from("secret\n"),
+		});
+		commands.set(running.commandId, { state: "running", exit: null, printed: Buffer.from("before\n") });
+		expect(await first.start(f.scope(), done, f.signal)).toMatchObject({ state: "succeeded", output: "secret\n" });
+		expect(await first.start(f.scope(), running, f.signal)).toMatchObject({ state: "running", output: "before\n" });
+		f.host.endTurn(f.claim);
+		// The session's next view is refused for a read no longer readable: the machine is rebuilt, its commands going with
+		// its old disk, and starts on its new disk, which is written down next to its journal before SQL records it and
+		// clears the marks that withheld the old disk's commands until then.
+		f.views.attach.mockRejectedValueOnce(new CodingFolderRestartRequired("READS_UNREADABLE"));
+		await turnAt(f, 2);
+		commands.clear();
+		const outputs = guest.output.mock.calls.length;
+		expect(f.state.kinds.get(f.state.effects[3]!)).toBe("rebuild");
+		const { plan, journalRoot } = mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions;
+		expect(mocked.recordDisk.mock.calls).toEqual([
+			[
+				journalRoot,
+				expect.objectContaining({ machineId: plan.machineId, journalName: plan.journalName }),
+				f.state.effects[3],
+			],
+		]);
+		const [replaced] = callOrder(f, "qorpera_record_coding_machine_new_disk");
+		expect(mocked.recordDisk.mock.invocationCallOrder[0]).toBeLessThan(replaced!);
+		expect(f.state.newDisk).toBe(false);
+		expect(f.state.folderRestart).toBe(false);
+		// The later turn reads and cancels both commands of the old disk: SQL lets it, every read is released and nothing
+		// withholds, but nothing the custody kept of them is shown, and the guest is not asked.
+		await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const later = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		expect(later.custody).toBe(options.custody);
+		const second = new LxdCodingFolderCommandTransport({ ...later, guest });
+		// Each call answers what the custody kept, and the command service then shows neither what each printed, nor how
+		// much, nor how it ended: both ended with the old disk.
+		for (const [input, state, exitCode, output] of [
+			[done, "succeeded", 0, "secret\n"],
+			[running, "machine_stopped", null, "before\n"],
+		] as const) {
+			const answered = {
+				schema: "qorpera.coding-command-result/v2",
+				workerId,
+				commandId: input.commandId,
+				inputSha256: input.inputSha256,
+				state,
+				exitCode,
+				output,
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: output.length,
+					totalBytes: output.length,
+					limitBytes: later.limitBytes,
+					limitReached: false,
+				},
+			};
+			expect(await second.read(f.scope(), { commandId: input.commandId }, f.signal)).toStrictEqual(answered);
+			expect(await second.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(answered);
+			await expect(second.hidden(input.commandId, f.signal)).resolves.toBe("machine_stopped");
+		}
+		expect(guest.output).toHaveBeenCalledTimes(outputs);
+		expect(guest.cancel).not.toHaveBeenCalled();
+		const kept = (commandId: string) => join(options.custody, "host-commands", commandId.replaceAll("-", ""));
+		expect(await readFile(join(kept(done.commandId), "output.log"), "utf8")).toBe("secret\n");
+		// A command on the new disk is shown.
+		const fresh = { commandId: randomUUID(), inputSha256: "c".repeat(64), command: "echo new", timeoutMs: null };
+		commands.set(fresh.commandId, {
+			state: "exited",
+			exit: { code: 0, signal: null },
+			printed: Buffer.from("new\n"),
+		});
+		expect(await second.start(f.scope(), fresh, f.signal)).toMatchObject({ state: "succeeded", output: "new\n" });
+		expect(await second.read(f.scope(), { commandId: fresh.commandId }, f.signal)).toMatchObject({ output: "new\n" });
+		expect(JSON.parse(await readFile(join(kept(fresh.commandId), "request.json"), "utf8"))).toMatchObject({
+			turn: 2,
+			machineId: options.machine.machineId,
+			startOperationId: f.state.startOperationId,
+			diskOperationId: f.state.effects[3],
+		});
+	});
+	it("gives the machine its new disk in the same turn when a view is refused for a read no longer readable after another turn started it since (F3 5g-5)", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// The second session's view is refused for a read no longer readable while the first one's publication restarts
+		// the machine for its reads unproven: the second session's restart then finds it started since.
+		let heard!: () => void;
+		const asked = new Promise<void>((resolve) => {
+			heard = resolve;
+		});
+		f.boundary.mockImplementationOnce(async (machine) => {
+			heard();
+			return { machine, reads: "unproven", views: [] };
+		});
+		let published: Promise<unknown> | undefined;
+		f.views.attach.mockImplementationOnce(async () => {
+			published = f.host.publish(f.claim, f.submission, f.signal);
+			published.catch(() => undefined);
+			await asked;
+			await new Promise((resolve) => setImmediate(resolve));
+			throw new CodingFolderRestartRequired("READS_UNREADABLE");
+		});
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		await expect(published).rejects.toThrow(new Error("CODING_FOLDER_BOUNDARY_HELD:READS_UNPROVEN"));
+		// That start gave it no new disk: it is marked for one, stops all the same and is rebuilt, and the second session
+		// attaches on its new disk.
+		expect(f.calls("qorpera_mark_coding_machine_folder_restart")).toHaveLength(1);
+		expect(f.calls("qorpera_mark_coding_machine_new_disk")).toHaveLength(1);
+		expect(await custodyIntents(f)).toEqual(["stop", "stop", "rebuild"]);
+		expect(f.state.effects.map((operationId) => f.state.kinds.get(operationId))).toEqual([
+			"create",
+			"start",
+			"stop",
+			"start",
+			"stop",
+			"rebuild",
+			"start",
+		]);
+		expect(f.lxd.running).toBe(true);
+		expect(f.state.newDisk).toBe(false);
 		expect([...f.attachments.keys()]).toEqual([second.workerId]);
 		expect(f.views.attach.mock.calls.at(-1)?.[0].attachmentToken).toBe(f.attachments.get(second.workerId));
 	});

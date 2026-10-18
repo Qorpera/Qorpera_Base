@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { createHttpCloudCodingCommandGateway, type CloudCodingCommandHttpRequest } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import { createHttpCloudCodingCommandGateway, type CloudCodingCommandExecution, type CloudCodingCommandHttpRequest } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
 
 export interface CodingCommandPeer {
@@ -17,7 +17,7 @@ interface CodingCommandRouterOptions {
 	peers: readonly CodingCommandPeer[];
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
 	credential(name: string): Promise<string>;
-	executeLocal(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<unknown>;
+	executeLocal(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
 	fetch?: typeof fetch;
 }
 export class CodingCommandRouter {
@@ -25,7 +25,7 @@ export class CodingCommandRouter {
 	constructor(options: CodingCommandRouterOptions) {
 		this.#options = { ...options, peers: options.peers.map((peer) => Object.freeze({ ...peer })) };
 	}
-	async execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<unknown> {
+	async execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudCodingCommandExecution> {
 		await authorizeCodingCommand(this.#options.control, request, signal);
 		const value = await this.#options.control.call("qorpera_route_coding_command", {
 			p_binding: request.binding, p_scope: request.scope, p_action: request.action,
@@ -55,8 +55,11 @@ export class CodingCommandRouter {
 		});
 		// No retry: an uncertain start remains uncertain. The receiving peer has
 		// its own credential, rechecks SQL and may only execute locally.
-		return request.action === "start" ? gateway.start(request.scope, request.input, signal) :
+		const receipt = await (request.action === "start" ? gateway.start(request.scope, request.input, signal) :
 			request.action === "read" ? gateway.read(request.scope, request.input, signal) :
-			gateway.cancel(request.scope, request.input.commandId, signal);
+			gateway.cancel(request.scope, request.input.commandId, signal));
+		// F3 5g-5: the peer's own service decided what of the command its receipt shows, after its final authorization, on
+		// the node that holds the machine and its disk. This executor's checks after it can only refuse the receipt.
+		return { receipt, hidden: async () => undefined };
 	}
 }

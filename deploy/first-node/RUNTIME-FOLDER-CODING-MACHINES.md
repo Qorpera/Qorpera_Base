@@ -425,14 +425,54 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      machine id: only `/company` is kept. SQL built (5g-5 part 3, migration `20260930505000`): a take-in refused with
      "A released read is no longer readable" (a turn's wake read, or run authority moving a session onto the machine)
      marks the machine for a new disk (`new_disk_at`, always with `folder_restart_at`) and goes on without the
-     machine's reads; every other refusal still raises. The executor marks it with
-     `qorpera_mark_coding_machine_new_disk`. A machine so marked restarts as above, but the restart's record answers
-     `new-disk`: it detaches the sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants
-     `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the executor rebuilds the instance
-     from its binding's image (`imageFingerprint`), and `qorpera_record_coding_machine_new_disk`, named by the
-     rebuild's LXD operation and replayed like the restart's record, detaches any session attached since, empties the
-     machine's read set, clears both marks and answers `replaced`. It refuses a machine not marked for a new disk, so a
-     record with no rebuild behind it never drops reads the old disk still holds. Then the machine starts. A model hears of it only
+     machine's reads; every other refusal still raises. The executor (5g-5 part 3) marks it with
+     `qorpera_mark_coding_machine_new_disk` whenever a boundary says the machine holds a read no longer readable (its
+     release refused `unreadable`, or a view's change set refused whole for it): the final boundary of the machine's
+     last view, before a turn's view opens (`READS_UNREADABLE`); the boundary before a publication, which then fails
+     and publishes nothing (`CODING_FOLDER_BOUNDARY_HELD:READS_UNREADABLE` or `:REFUSED_UNREADABLE`); and a command's
+     boundary, marked once per transport, which leaves the machine running for the next turn to stop. The turn then
+     stops the machine as for a restart, even when it started since, since that start may not have given it a new disk;
+     a publication that finds it started since only marks it. A machine SQL marked itself (a take-in above) is found
+     so before each session's view is attached, a view held since an earlier turn and still mounted included: the
+     executor asks for custody `rebuild`, which SQL grants only to a machine so marked and which changes nothing, and
+     gives the machine its new disk before the view opens. Each command's start and read asks so too and is refused on
+     a marked machine (`CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK`). A cancel still goes, but keeps and shows
+     nothing of the command: the command transport asks so too once the machine's boundary releases (no answer is
+     marked) and keeps nothing more of the command's output, and the command service answers the cancel with none of
+     it, what was kept before included, nor how much it printed or lost, nor how it ended (`unconfirmed`, no exit code,
+     an empty log). A machine
+     so marked restarts as above, but the restart's record answers `new-disk`: it detaches the
+     sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
+     executor rebuilds the instance from its binding's image (`imageFingerprint`), and
+     `qorpera_record_coding_machine_new_disk`, named by the rebuild's LXD operation and replayed like the restart's
+     record, detaches any session attached since, empties the machine's read set, clears both marks and answers
+     `replaced`. It refuses a machine not marked for a new disk, so a record with no rebuild behind it never drops reads
+     the old disk still holds. Right before that record, the executor writes the rebuild down in `disk.json` next to
+     the machine's journal, and each command's kept start names the machine and the disk it started on (`machineId`,
+     and `diskOperationId`, null for the machine's first disk): once the marks are cleared, a command from a disk the
+     machine no longer has still shows nothing of itself, read or cancelled in any later turn, ended or not: not its
+     output, nor how much it printed or lost, nor how it ended (`machine_stopped`, no exit code, an empty log). The
+     same holds for a command from another machine the session ran on before, as its custody goes with it. The
+     command logs on the host outlive the disk, but nothing of them is shown, since the reads that output came from
+     left with the disk. Whether a call's answer shows its command is decided in one place: the command service on the
+     executor that holds the machine asks the transport once, after the call's final authorization (which can mark the
+     machine) and right before it answers, and only then builds the answer. The transport asks the marks first and
+     `disk.json` after: the marks are cleared only after `disk.json` is written, so a rebuild that ends before that
+     check is seen. A `disk.json` that can't be read withholds (`unconfirmed`, as empty). A rebuild that ends after that
+     check, while the decided answer is on its way, is not caught; that answer was true when it was decided. For a
+     forwarded command the check runs on the executor that holds the machine, and the trip back to the ingress is on
+     its way too: the ingress's checks after it can only refuse. A receipt that shows nothing of its command is the
+     same for every page asked of it, one past the log's end or inside a character included: its state, no exit code,
+     no output, and an empty log at offset 0 with the command's limit. So a call is refused before that check only for
+     what is the same for every command of the session (its input, its authority, its custody, the machine's start and
+     disk), for a command with no kept start or one not the host's own, and for another command under the call's id.
+     What the call meets once it read its command's kept start (a page past the log or inside a character, the guest's
+     answer, the host's own files, the call's budget) the transport holds: the call is authorized the last time as any
+     other, answers a receipt with nothing of the command, and its refusal stands only once that check shows the command.
+     A paged read across a rebuild answers `machine_stopped`. Then the machine starts. Before the rebuild goes out, the executor checks that the image
+     is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
+     with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
+     until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it
      through a stopped command's entry: a session that was not attached gets no event.
      Since 5g-5 part 3 PR C (migration `20260930515000`) that is not the only way: every session on the machine (its
      `vm_allocation_id`, which the detach leaves) is also told in its next turn's context, `machine: {newDisk: true}`:

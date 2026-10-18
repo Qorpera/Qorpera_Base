@@ -20,8 +20,9 @@
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
 # the session's repository. test/prove-coding-session-node.sh sets the node
 # up; then test/p3-driver.mjs runs the test database here and the executor in the node, for four turns of one coding
-# session. Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a
-# proof could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
+# session (six on phase B: C2's two keep a quiet turn awake and kill the folder service inside the node).
+# Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a proof
+# could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
 # removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
@@ -273,7 +274,7 @@ lx exec "$VM" -- env PATH=/snap/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	fail "setting up the coding node failed"
 grep -qx "NODE READY" "$WORK/node.out" || fail "setting up the coding node did not finish"
 
-# --- The coding session: the test database here, the executor in the node, Order 9's four turns ----------------------
+# --- The coding session: the test database here, the executor in the node, Order 9's four turns and C2's two ----------
 # P3_NODE_ONLY=1 stops before it: the node alone, for a tree whose executor cannot run a session on 5f's image yet.
 if [[ ${P3_NODE_ONLY:-0} == 1 ]]; then
 	echo "note: P3_NODE_ONLY=1, so no coding session runs"
