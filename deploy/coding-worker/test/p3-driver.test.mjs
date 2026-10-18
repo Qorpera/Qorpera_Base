@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
 import {
-	CARRIES, custodyForms, DELTA_PACK, gitObjectSearch, goneScript, SAVE_REFUSED, WAITS_FOR_REFUSED, wayOutScript, withhold,
+	CARRIES, custodyForms, DELTA_PACK, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, WAITS_FOR_REFUSED, wayOutScript, withhold,
 } from "./p3-custody.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
@@ -328,9 +328,20 @@ test("the driver's output withholds a line that carries a form, and counts it by
 });
 
 test("the custody proof reads the executor's own reason for a refused save, and the folder's for a path that carries a value or waits for one", () => {
-	// The refusal, then its way out of a git commit that carried the value.
-	const refusal = /const SAVE_REFUSAL =\n\t"([^"]*)";/.exec(readFileSync(codingExecutor, "utf8"))?.[1];
+	// The refusal, then its way out of a git commit that carried the value: a string on master, and with #1299 a
+	// template that gives GIT_WAY_OUT's text.
+	const source = readFileSync(codingExecutor, "utf8");
+	const wayOutText = /const GIT_WAY_OUT =\n\t"([^"]*)";/.exec(source)?.[1];
+	const template = /^const SAVE_REFUSAL = `((?:[^`\\]|\\.)*)`;$/m.exec(source)?.[1]?.replace(/\\(.)/g, "$1");
+	const refusal = template?.replaceAll("${GIT_WAY_OUT}", wayOutText ?? "(no GIT_WAY_OUT)") ??
+		/const SAVE_REFUSAL =\n\t"([^"]*)";/.exec(source)?.[1];
 	assert.ok(refusal?.startsWith(SAVE_REFUSED), refusal);
+	assert.doesNotMatch(refusal, /\$\{/);
+	// Past its start, the refusal gives each step of the way out in backticks, in order, as the driver checks.
+	if (refusal.length > SAVE_REFUSED.length) {
+		const at = GIT_WAY_OUT.map((step) => refusal.indexOf(`\`${step}\``, SAVE_REFUSED.length));
+		assert.ok(at.every((index, n) => index > (at[n - 1] ?? 0)), refusal);
+	}
 	assert.match(readFileSync(secretScan, "utf8"), new RegExp(`^export const CARRIES = ${JSON.stringify(CARRIES)};$`, "m"));
 	assert.match(readFileSync(plan, "utf8"), new RegExp(`^export const WAITS_FOR_REFUSED = ${JSON.stringify(WAITS_FOR_REFUSED)};$`, "m"));
 });
