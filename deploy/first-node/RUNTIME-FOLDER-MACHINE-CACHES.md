@@ -134,6 +134,12 @@ is never under `/run`, which empties at every start and is memory.
 - A new flag, `--cache-dir <dir>`, names it. 5d's `--local-dir` keeps the session's own git files (§6: they are seeded
   again when another view finds them). The cache moves out of it, because a cache is shared by several mounts and a
   session's git files are not.
+  - The folder must exist, by an absolute path of at most 80 bytes (its sockets' names must fit), as a real folder
+    (not a link) of the program's account, closed to every other (mode `0700` or narrower), neither inside
+    `--local-dir` nor holding it. Otherwise the program does not start: `FOLDER_CACHE_DIR_UNUSABLE: <dir>: <why>`.
+  - It holds `caches/` (the cache files, under their folder's path), `programs/` (a socket for each running program,
+    "The kernel cache") and `gone/` (what is being taken off the disk). Given the flag, a program lets go of an old
+    `caches` folder under `--local-dir`.
 - **Who passes it** is the trusted side that starts the program: on company machines the folder helper
   (`cloud-company-computer-folder-helper.ts`, step 4), on coding machines the guest agent (step 5's 5f and 5g), on test
   machines 6d's guest. Without the flag, the program keeps its cache under `--local-dir`, for that mount only (5d's
@@ -159,20 +165,97 @@ is never under `/run`, which empties at every start and is memory.
   one per cache, so pnpm's sessions share it. A cache kept by content (a lockfile's hash, say) to carry
   `node_modules` from one worktree to the next is not in this plan.
 - **Several mounts at once.** Several folder programs can serve one cache folder at a time (a desktop and two commands
-  of one agent). So a cache file has no kernel cache of its own (time-outs of zero for its names and attributes, and
-  no kept pages), and every request reaches the program, which asks the disk. A process sees what another mount wrote
-  at once, as on one disk. What two programs run at once in one project (two `npm install`s) is the user's business,
-  as on any disk.
-- **Speed.** With no kernel cache, every `stat` and `open` in a `node_modules` goes through the program, which can
-  make `tsc`, `npm test` or a large `require` tree much slower than a local disk. "At the speed of a local disk" is
-  the point of item 8, so MC3 measures it:
-  - its tests time the same project on a mount's cache and on the plain disk under it: `tsc --noEmit` on a project
-    with its dependencies installed, and loading a few thousand small files;
-  - the PR body gives the numbers;
-  - if the cache is more than about twice as slow, this plan names the fix before it is built. The two candidates are
-    a kernel cache for cache files that the program clears when another mount writes (FUSE's notify calls, with the
-    cache's writes told to every program serving it), and FUSE passthrough, where the machine's kernel has it. A fix
-    may not load kernel modules or change sysctls on the test machines.
+  of one agent), all as one account. A process sees what another mount wrote at once, as on one disk; "The kernel
+  cache" below keeps that true. What two programs run at once in one project (two `npm install`s) is the user's
+  business, as on any disk. No program takes caches another one may be using:
+  - a listing that lacks a cache top never drops it; only an event does (the node's entry at its name, the move of its
+    folder, the folder gone from the view). A mount keeps the caches of a folder its own view does not have, as
+    another view may have made that folder and not published it yet. They go when removing old caches finds the
+    folder gone;
+  - the node's rename of a folder whose caches another program already moved does nothing;
+  - MC2a's seal sees the other programs' write handles: each handle that changes a cache file's bytes holds a shared
+    lock on the file, which the seal takes exclusively, without waiting;
+  - each program takes what it removes off the disk through its own folder in `gone/`, which it holds locked; a
+    program that starts takes off only what no running program holds.
+- **Speed.** "At the speed of a local disk" is the point of item 8. With no kernel cache, every `stat` and `open` in a
+  `node_modules` goes through the program: a load of 3000 small modules took 12.7 times as long as on the plain disk,
+  and 5.1 times with MC2b's caches (names inside a cache kept, tops not). So MC3 gives cache files a kernel cache
+  (below; the coordinator's pick, 18 October). The speed test
+  (`packages/object-gateway/test/folder-cache-speed-e2e.test.ts`, run by hand on a node) times the same project on the
+  plain disk and on mounts: `tsc --noEmit` on a project with its dependencies installed, a load of 3000 small modules,
+  alone and while another mount on the cache folder makes and removes names in it, and stats and reads of 2000
+  published files; and each program's CPU over a minute idle. The target is about twice the plain disk at most. MC3a's
+  PR body gives the numbers.
+
+## The kernel cache
+
+For cache files only (local files in the caches, and cache tops), the kernel keeps:
+- names and attributes for `--ttl-seconds`; a cache top's while the program hears the node's changes, as the node's
+  entry may win its name (rule 1), else not at all;
+- absent names in a cache folder, for the same time;
+- the pages of a read-only open, when the file is as this mount last opened it (the same ctime, mtime, size and inode
+  generation; so a disk inode number used again, or a change nobody told, drops them). Such an open sends no FLUSH at
+  its close.
+
+Company-folder files and session-local git files keep their answers as before. Opens, releases and writes of cache
+files still reach the program, so it sees every handle (the seal, the removal locks) and every change.
+
+**What changes behind the kernel's back.**
+- In the program's own mount: the node's entry winning a top's name, caches moving with their folder or into the
+  folder, caches going with their folder, the node's changes heard again after the feed was lost. After the change the
+  program raises its mount's epoch (`FUSE_NOTIFY_INC_EPOCH`), so every name made before it is looked up again at its
+  next use.
+- In the other programs on one cache folder: each one, before it serves anything, listens on a socket in
+  `<cache-dir>/programs/`. Every change a program makes in the cache folder (a write, a truncate or other attribute
+  change, create, mknod, mkdir, symlink, link, unlink, rmdir, rename, the moves above) is told to every other one
+  listening there before its own reply: a local inode (the disk's number, the same in every program) and the name it
+  changed, if any, in its folder (a local folder by its inode, a node folder by its path). The order is the change on
+  disk, the list of listeners, the telling, the reply, so a program that starts after the list was taken read the disk
+  after the change.
+
+**The answer to a told change takes no lock** (the coordinator's point (A), 18 October). A told program only drops
+the inode's attributes (`inval_inode` with offset -1), raises its epoch for a name its kernel may hold (below), and
+forgets the inode's open stamp; then it answers. Its pages drop afterwards on a thread of their own, for memory. A read
+through an fd held open asks for the attributes again (`FUSE_AUTO_INVAL_DATA`) and drops the pages itself when the
+size or mtime changed. Dropping pages or an entry before the answer could wait for a page lock or a folder lock that
+one of the told program's own requests holds while it waits for the teller: a cycle. A write from the kernel's
+writeback (a shared mapping) tells without waiting, so no page under writeback waits for another program. No program
+tells while it holds a lock of its own.
+
+**Which names raise the epoch** (the coordinator's name filter, 18 October). The epoch is for the whole mount, so a
+program that raised it for every told name made a busy neighbor's churn cost it every name it held (a load of 3000
+modules took 10 times the plain disk next to a mount making and removing names). A told program raises it only for a
+name its kernel may hold:
+- Each program keeps a table of the names in local folders it handed its kernel: the answers to its lookups, found
+  and absent, and to its own create, mkdir, symlink, link, rename (both names) and removals. A name goes in before the
+  program reads or changes the disk, and stays until the time-out that answer handed has passed after the answer, plus
+  60 seconds. So a name missing from the table is one the kernel cannot hold: a lookup of it reads the disk after the
+  change. The kernel takes the epoch before it sends a request, so an answer on its way when the epoch rises is stale
+  at its first use.
+- A name in a node folder (a cache top) always raises it.
+- Listings hand the kernel no names: the program does not take `READDIRPLUS` (and a test fails if it ever does).
+- The table holds at most 100 000 names (131 072 slots of 33 bytes, about 4.3 MB). When it is full, the program first
+  lets go of the names whose time passed; if more than half are still held, it lets go of all of them and raises its
+  epoch at once, before the table takes a new name. If that epoch fails, the kernel cache goes off (below). It never
+  skips the raise.
+
+**When the kernel cache is off.** The program uses it only if the kernel granted `FUSE_AUTO_INVAL_DATA` and has the
+epoch notify (FUSE 7.44 or later), and a write in the cache folder changes the file's times every time (checked at the
+start). Otherwise it runs without it and logs why: a cache top's names then have a time-out of zero, and on a shared
+cache folder so does every cache name, with no kept pages. It turns the kernel cache off for good, and drops all it
+handed the kernel, when a notify fails (other than "not cached"), when it hears a change later than the teller waits,
+or when it no longer hears the others. If that drop fails too, the program exits, and its mount answers `ENOTCONN`:
+closed, never stale. Its log says `kernel cache on` or `kernel cache off: <why>`.
+- A listener that does not answer within 10 seconds fails the teller's request with `EIO`; a dead one (its connection
+  refused) has its socket removed.
+- A told message can only drop something. A malformed or unknown one is logged, and as the change it meant is unknown,
+  the listener drops all it handed out.
+
+**A known limit: mappings.** A read, a `stat`, an open and an fd held open see another mount's change at once. A
+mapping (`mmap`) made before another mount's write sees the change after the page drop on the other thread, shortly
+after the write (the test allows 10 seconds). Writes through a shared mapping reach the other mounts after writeback,
+not ordered with `msync` or `fsync`. Before MC3 (MC2b) the case did not arise: each mount had caches of its own, and
+another mount never saw the file at all. Within one mount a mapping sees a write at once, before MC3 and with it.
 
 ## Removing old caches
 
@@ -211,21 +294,23 @@ it.
 |---|---|---|
 | MC1 | Folder program: rules 1, 2, 3, 5 and 6 everywhere, on 5d's local layer and cache list (one table of names, shared with rule 4's worktree list); listings; the edge (`EXDEV`, `rmdir`, a published folder's rename moving its cache, a gone parent dropping it); boundaries not waiting for cache files. A new build record and the installer pins | FUSE tests with the stand-in service: `npm install` (from a local registry folder, no network) in a project folder outside `code/` making `node_modules` that the service never sees, a second view listing nothing there; `pip install` into `.venv`; `.pnpm-store` at the top; `build` made in a project (cache) and in a plain folder (published); a file named `build` published; `Build` published; a name where the node has an entry not cache, and the node's later entry winning; `rmdir` `ENOTEMPTY` with a cache inside, `rm -r` removing it; `mv` of the parent moving the cache; the parent removed by another view dropping it; a folder renamed across the edge `EXDEV` and `mv` copying; a hard link across `EXDEV`; links and hard links inside the cache; a boundary while a cache file is open |
 | MC2 | Folder program: rule 4's ignore rules (every `.gitignore` and `info/exclude`, with negation, folder patterns and `**`, from a pinned crate that follows git's rules, or a small matcher if the build's dependency review prefers it), on 5d's index reader for what is tracked; a file renamed across the edge (published from the cache, moved into it while pending); `git add -f` of an ignored path moving it into the folder | FUSE tests with real git (the pinned version): a file and a folder ignored by the top `.gitignore`, by one in a subfolder, and by `info/exclude`, never published; a negated pattern published; a tracked path under an ignored pattern published; `git add -f` of an ignored file and folder published at the next boundary; an editor's atomic save over a published file from an ignored temporary name, and over an ignored file from a plain one; a changed `.gitignore` deciding only new names; the cases checked against `git check-ignore` |
-| MC3 | Where the cache lives: `--cache-dir`; no kernel cache for cache files; the per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it, if they are on master by then, else they take the flag in their own slice); removing old caches by top entry, with their records and locks; the speed measure (above). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM" | FUSE tests: `tsc --noEmit` and a load of a few thousand small files timed on the cache and on the plain disk, the numbers in the PR body; two mounts on one cache folder, a write in one read at once in the other; a mount started again finding its cache; two owners' mounts not seeing each other's cache; removal of an unused cache folder, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open folder or an open top cache file, and of one whose parent is gone; an ignored file and an ignored folder at a worktree's top (each its own top entry) kept past 14 days and when the disk is short, the writer then getting `ENOSPC`, and removed with their worktree; the helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view |
+| MC3a | Folder program: `--cache-dir` (its checks, its layout, an old cache under `--local-dir` let go), several programs on one cache folder (above), and the kernel cache with its start-up check, its telling and its fall-back; the speed test; a new build record and the installer pins | FUSE tests: a cache folder another account could use refused; the kernel cache on only where the start-up check allows it (a test switch stands for the kernel's answer); two programs on one cache folder, each change of one (write, truncate, create, rename, unlink, rmdir, a file crossing the edge) shown by the other at once, through a held fd too; an open keeping pages only of a file as it was; a notify that fails, a program that does not answer (in time, with `EIO`) and a message that is no change each turning the kernel cache off or dropping all; node files still handed over; a shared mapping showing a change within 10 s; a cache top the node took unheard gone from every program at the resync; a held folder's names gone with its cache top; the name filter: a name looked up absent, a listed name removed, a lookup that read the disk just before another program's create or removal, a full table (a test switch makes it small), a folder renamed under a walked path and a rename onto a name seen absent, each shown at once, and names the kernel never held changed without an epoch; two programs changing one file and one folder 500 times at once, in bounded time, with mutants (an answer that drops pages or an entry first) caught; unit tests for the shared cache folder (each program's own `gone/`, no program taking another's caches, the seal and another program's write handle). The speed test by hand on a node, its table in the PR body |
+| MC3b | Folder program: removing old caches by top entry, with their records and locks (below) | FUSE tests: removal of an unused cache folder, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open folder or an open top cache file, and of one whose parent is gone; an ignored file and an ignored folder at a worktree's top (each its own top entry) kept past 14 days and when the disk is short, the writer then getting `ENOSPC`, and removed with their worktree; a mount started again finding its cache |
+| MC3c | The per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM". Session 39's | The helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view; two owners' mounts not seeing each other's cache |
 
 **Order.**
 - MC1 builds on 5d's local layer, so it starts once #1096 has merged. It changes the same program files as LK4 (links),
   so it comes after LK4 too.
-- MC2 needs MC1's table and 5d's index reader. MC3 needs MC1, and its helper part changes step 4's folder helper
-  (its owner, qorpera-80, is told before MC3 changes it).
+- MC2 needs MC1's table and 5d's index reader. MC3a needs MC2 (merged), MC3b needs MC3a, and MC3c (the helper and
+  the setups) takes the flag MC3a adds, so it merges after MC3a.
 - Step 4's acceptance (4g) shows item 8 on company machines (amendment item 10), so 4g waits for MC1 and MC3. Step
   6's 6e waits for item 8's caches in the program (RUNTIME-FOLDER-TEST-MACHINES.md, Order). A test machine builds in
   worktrees, where 5d's cache already holds; MC3 makes that cache outlive the machine's mounts.
 - No migration slot and no SQL test are needed.
 
 **Deploy.** The folder program ships in the coordinator's node release and the images, with a new build record
-(`deploy/folder-service/folder-program-linux-x64.json`) and the installer's pin in MC1, MC2 and MC3. MC3's folder
-helper ships with the runtime.
+(`deploy/folder-service/folder-program-linux-x64.json`) and the installer's pin in MC1, MC2, MC3a and MC3b. MC3c's
+folder helper ships with the runtime.
 
 **Deferred (needs Codex).** None of these slices needs a model. Each step's acceptance run (4g, 5's and 6f) shows a
 real install on a live machine.
@@ -246,3 +331,8 @@ The coordinator chose the first option of each question on 15 October. The plan 
    one machine.
 4. **Ignored files and folders: both are cache in a worktree.** That is the amendment's words ("what its `.gitignore`
    leaves out"), and it keeps a `.env` or a `*.log` on the machine. Not chosen: only ignored folders as cache.
+5. **The speed fix: a kernel cache for cache files** (the coordinator, 18 October; "The kernel cache"). On a node
+   (kernel 7.0, FUSE 7.45) a load of 3000 small modules took 181 ms on the plain disk, 930 ms with MC2b's caches, 928
+   ms with FUSE passthrough and 310 ms with a kernel cache. Not chosen: passthrough, which saves little here (each
+   `stat` and `open` still reaches the program), fails a plain open with `EIO` while a passthrough open of the file is
+   held, and sends writes past the program, so a seal or a removal no longer sees them.
