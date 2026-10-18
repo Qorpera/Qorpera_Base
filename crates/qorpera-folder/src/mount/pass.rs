@@ -25,7 +25,7 @@
 use super::on_disk::{no_moves, settled};
 use super::Shared;
 use crate::link::Fail;
-use crate::local::{Local, Recorded};
+use crate::local::{Local, Recorded, Removal};
 use crate::peers::{Change, Parent};
 use crate::records::{self, Kind, Record};
 use std::collections::BTreeMap;
@@ -99,7 +99,7 @@ impl Shared {
 		let left = |record: &Record| {
 			shared.is_some_and(|dir| record.view.as_deref().is_some_and(|view| !records::running(dir, view)))
 		};
-		// A record is written before its top entry is made (`on_disk.rs`), so a new one is left alone a while.
+		// A record is written before its top entry is made (`Local::record_new`), so a new one is left alone a while.
 		let left_alone = |record: &Record, there: bool| !there && unused(record, now, records::TOUCH_AFTER);
 		for entry in found.iter().filter(|e| !e.top && e.record.as_ref().is_some_and(|r| left_alone(r, false))) {
 			if self.remove(local, entry, false, left_alone) {
@@ -170,8 +170,8 @@ impl Shared {
 	}
 
 	/// Removes the cache (or the record) `entry`, if `old` still picks it by its record and nothing keeps it (the
-	/// module's doc); `listed` when its folder was found gone, which no rename may have moved since. Whether a cache
-	/// went.
+	/// module's doc); `listed` when its folder was found gone, which no rename may have moved since. Whether it
+	/// went (the cache, or its record alone).
 	fn remove(&self, local: &Local, entry: &Recorded, listed: bool, old: impl Fn(&Record, bool) -> bool) -> bool {
 		let (dir, name) = (entry.dir.as_str(), entry.name.as_str());
 		let gone = {
@@ -205,14 +205,15 @@ impl Shared {
 				return false;
 			}
 			match local.remove_old(dir, name, old) {
-				Ok(gone) => gone,
+				Ok(Removal::Nothing) => return false,
+				Ok(Removal::Record) => return true,
+				Ok(Removal::Cache(gone)) => gone,
 				Err(e) => {
 					eprintln!("qorpera-folder: removing old caches: the cache {name} in {dir:?} ({e})");
 					return false;
 				}
 			}
 		};
-		let Some(gone) = gone else { return false };
 		let changes = vec![Change::name(Parent::Dir(dir.to_string()), name)];
 		// Refused, the other programs' kernels forget it as they fall back.
 		let _ = self.kernel.tell(&changes);

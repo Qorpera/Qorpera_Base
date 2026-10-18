@@ -3,7 +3,7 @@
 //! beside its `t/<name>` (`Local::record`), so the caches of a folder and their records move or go together. A record
 //! says how its top entry was made (`Kind`) and for which view (`view_hash`); its mtime is when the entry was last used.
 //! Each program serving a top entry holds a shared lock on its record (`Local::hold_top`), as one making it does until
-//! it is made (`Local::write_record`), and a removal takes it exclusively without waiting. A record is written in
+//! it is made (`Local::record_new`), and a removal takes it exclusively without waiting. A record is written in
 //! place, never replaced while its top entry is there: a rename moves it with its entry, and an exchange swaps two with
 //! theirs (`exchange`), so a record and the locks on it stay with its top entry for the entry's life. A top entry
 //! without a record (made before records were) counts as kept, and so does a record that is not one `write` wrote.

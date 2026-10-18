@@ -1415,6 +1415,30 @@ fn a_cache_made_by_its_name_goes_once_unused_for_fourteen_days() {
 	closed(&node, vec![a]);
 }
 
+/// A record left without its cache for an hour goes, and the pass counts it; a newer one stays, as a new cache's record
+/// is written before the cache is made.
+#[test]
+fn a_record_left_without_its_cache_goes_and_the_pass_counts_it() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let a = Program::start(&node, "a", &[(PASS_MS, "100")]);
+	made(&a, "notes", "node_modules", 1);
+	for name in ["dist", "out"] {
+		std::fs::write(record(&node, "notes", name), written("name", "view")).unwrap();
+	}
+	used_ago(&record(&node, "notes", "dist"), 2 * HOUR);
+	let counted = || a.logged().lines().any(|l| l.starts_with(PASSED) && l.contains(", 1 records left without one;"));
+	let gone = || !record(&node, "notes", "dist").exists() && counted();
+	assert!(eventually(Duration::from_secs(10), gone), "{}", a.logged());
+	a.passed();
+	assert!(record(&node, "notes", "out").exists() && record(&node, "notes", "node_modules").exists());
+	assert!(on_disk(&node, "notes", "node_modules"));
+	closed(&node, vec![a]);
+}
+
 /// With less than a tenth of the caches' disk free, the caches made by their names go, the least recently used first,
 /// until 15% is.
 #[test]

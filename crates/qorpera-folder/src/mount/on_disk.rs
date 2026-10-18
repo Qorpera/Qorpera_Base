@@ -797,17 +797,6 @@ pub(super) fn no_moves(local: &Local, dir: &str) -> std::io::Result<Option<fs::F
 	worktree_of(dir).map_or(Ok(None), |worktree| local.no_moves(&worktree))
 }
 
-/// The record of a new cache `name` in `up`, made as `kind` (`target`): written before the cache is, so removing old
-/// caches never judges a new one by a record an earlier one of that name left (`mount/pass.rs`), and kept locked until
-/// the cache is made, so no removal of an earlier one takes it (`Local::write_record`).
-#[must_use]
-fn made_as(local: &Local, up: &Up, name: &str, kind: Option<Kind>) -> Option<fs::File> {
-	match (up, kind) {
-		(Up::Mount(dir), Some(kind)) => local.write_record(dir, name, kind),
-		_ => None,
-	}
-}
-
 /// The folder a change to a name in `up` is told the other programs by (`peers.rs`).
 fn told_parent(up: &Up) -> Parent {
 	match up {
@@ -1075,8 +1064,7 @@ impl FolderFs {
 			Ok(Some((up, area, kind))) => {
 				// No name to hold (`Kernel::hold`): the reply hands the kernel no entry to keep (`CREATED`).
 				let dir = told_parent(&up);
-				let _record = made_as(local, &up, name, kind);
-				match local.create(up, name, area, mode, flags) {
+				match local.create(up, name, area, mode, flags, kind) {
 					Ok((attr, fh)) => {
 						self.s.made(local, parent, name, false);
 						let change = Change { ino: Some(attr.ino.0), name: Some((dir, name.to_string())) };
@@ -1213,8 +1201,7 @@ impl FolderFs {
 		};
 		let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
 		let _held = self.s.kernel.hold(&up, name, ttl);
-		let _record = made_as(local, &up, name, kind);
-		let made = local.mkdir(up, name, area, mode).and_then(|attr| {
+		let made = local.mkdir(up, name, area, mode, kind).and_then(|attr| {
 			self.s.made(local, parent, name, true);
 			self.tell(area, || vec![Change::name(dir, name)])?;
 			Ok(attr)
@@ -1489,7 +1476,6 @@ impl FolderFs {
 		let no_replace = flags.contains(RenameFlags::RENAME_NOREPLACE);
 		// No rename of the node's moves `from` meanwhile, and no cache move seals what the file goes over.
 		let _held = local.folders.lock().unwrap();
-		let _record = made_as(local, &up, to.1, kind);
 		let known = self.s.unwritten(source.ino, || {
 			let (dir, name) = split(&path);
 			let listed = self.s.link.list(dir).map_err(|f| f.errno())?;
@@ -1499,7 +1485,7 @@ impl FolderFs {
 				return Err(libc::EXDEV);
 			}
 			let bytes = self.s.read_all(&path, &entry.version, entry.size)?;
-			let placed = local.place(&up, to.1, Area::Cache, &bytes, entry.executable, no_replace)?;
+			let placed = local.place(&up, to.1, Area::Cache, &bytes, entry.executable, no_replace, kind)?;
 			match self.removed(&path, &entry.version) {
 				Ok(known) => {
 					placed.keep();
@@ -1572,8 +1558,7 @@ impl FolderFs {
 			Ok(Some((up, area, kind))) => {
 				let (ttl, dir) = (self.ttl(&up, area), told_parent(&up));
 				let _held = self.s.kernel.hold(&up, name, ttl);
-				let _record = made_as(local, &up, name, kind);
-				let made = local.symlink(up, name, area, target).and_then(|attr| {
+				let made = local.symlink(up, name, area, target, kind).and_then(|attr| {
 					self.s.made(local, parent, name, false);
 					self.tell(area, || vec![Change::name(dir, name)])?;
 					Ok(attr)
@@ -1608,8 +1593,7 @@ impl FolderFs {
 				Some((up, to_area, kind)) if to_area == area => {
 					// No name to hold (`Kernel::hold`): the reply hands the kernel no entry to keep (`CREATED`).
 					let dir = told_parent(&up);
-					let _record = made_as(local, &up, to.1, kind);
-					let attr = local.link(ino, up, to.1, area)?;
+					let attr = local.link(ino, up, to.1, area, kind)?;
 					self.s.made(local, to.0, to.1, false);
 					// The file's link count changed, and a name came.
 					self.tell(area, || vec![Change { ino: Some(ino), name: Some((dir, to.1.to_string())) }])?;
