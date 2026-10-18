@@ -204,7 +204,16 @@ export type LxdTrackedInstanceAction =
 	/** `force` powers the VM off instead of asking the guest to shut down. Only
 	 * for machines whose state lives outside the VM (coding VMs keep all work on
 	 * the NAS); offices and login machines keep the graceful stop. */
-	| { action: "stop"; name: string; force?: true };
+	| { action: "stop"; name: string; force?: true }
+	/** Gives a stopped VM a new root disk from a local image. The instance keeps
+	 * its name, configuration and devices (F3 5g-5: a coding machine's new disk). */
+	| { action: "rebuild"; name: string; fingerprint: string };
+
+/** Whether an image is still in the node's image store. Old images get cleaned
+ * up, and a coding machine rebuilds only from a local image. */
+export interface LxdImageClient {
+	hasImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean>;
+}
 
 export interface LxdOperationReference {
 	project: string;
@@ -1474,6 +1483,7 @@ export class LxdUnixClient
 		LxdInstanceProgramClient,
 		LxdInstanceDeviceClient,
 		LxdInstanceDeviceUpdateClient,
+		LxdImageClient,
 		LxdOfficeConfigurationClient,
 		LxdOfficeServiceStartClient,
 		LxdOfficeBootServiceStartClient,
@@ -1684,6 +1694,36 @@ export class LxdUnixClient
 			return { fingerprint, architecture: value.architecture, size: value.size as number };
 		} catch {
 			throw new Error("LXD_OFFICE_IMAGE_UNCONFIRMED");
+		}
+	}
+
+	async hasImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean> {
+		try {
+			if (!/^[a-z][a-z0-9-]{0,62}$/.test(project) || !/^[0-9a-f]{64}$/.test(fingerprint))
+				throw new Error("invalid image identity");
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+			checked.throwIfAborted();
+			const result = await this.#requestPayload(
+				"GET",
+				projectPath(`/1.0/images/${fingerprint}`, project),
+				undefined,
+				undefined,
+				checked,
+				65536,
+			);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "image");
+			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return false;
+			if (
+				result.status !== 200 ||
+				envelope.type !== "sync" ||
+				envelope.status_code !== 200 ||
+				record(envelope.metadata, "image").fingerprint !== fingerprint
+			)
+				throw new Error("image not confirmed");
+			return true;
+		} catch {
+			throw new Error("LXD_IMAGE_UNCONFIRMED");
 		}
 	}
 
@@ -1958,6 +1998,14 @@ export class LxdUnixClient
 						force: action.action === "stop" && action.force === true,
 						stateful: false,
 					},
+					checked,
+				);
+			} else if (action.action === "rebuild") {
+				if (!/^[0-9a-f]{64}$/.test(action.fingerprint)) throw new Error("invalid image");
+				result = await this.#request(
+					"POST",
+					projectPath(`/1.0/instances/${name}/rebuild`, project),
+					{ source: { type: "image", fingerprint: action.fingerprint } },
 					checked,
 				);
 			} else throw new Error("invalid action");

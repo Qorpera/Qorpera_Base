@@ -485,6 +485,46 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
 		});
 
+		it.each<[string, Boundary]>([
+			["its reads unreadable", (machine, final) => ({ ...released(machine, final), reads: "unreadable" })],
+			[
+				"the replaced view's change set refused whole for a read no longer readable",
+				(machine, final) => ({
+					machine,
+					reads: "released",
+					views: final.map((viewId) => ({ viewId, unsaved: 0, refused: "unreadable" })),
+				}),
+			],
+		])(
+			"refuses READS_UNREADABLE, and opens no view, when the boundary before a new view says %s (F3 5g-5)",
+			async (_case, boundary) => {
+				const at = fixture();
+				await at.views.attach(session(), later(), live());
+				at.events.splice(0);
+				at.script.boundary = boundary;
+				const error = await rejection(at.views.attach(session({ attachmentToken: TOKEN_2 }), later(), live()));
+				expect(error).toBeInstanceOf(CodingFolderRestartRequired);
+				expect((error as CodingFolderRestartRequired).code).toBe("READS_UNREADABLE");
+				expect(at.events).toEqual(["sha256sum", "boundary", "close"]);
+				expect(at.opens).toHaveLength(1);
+				await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
+			},
+		);
+
+		it("opens a moved session's view though its old machine holds a read no longer readable", async () => {
+			const at = fixture();
+			await at.views.attach(session(), later(), live());
+			at.events.splice(0);
+			at.script.boundary = (machine, final) => ({
+				...released(machine, final),
+				reads: machine === MACHINE ? "unreadable" : "released",
+			});
+			await expect(at.views.attach(session({ machine: OTHER_MACHINE_BINDING }), later(), live())).resolves.toEqual({
+				viewId: VIEWS[1],
+				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: false, closed: true },
+			});
+		});
+
 		it("opens a moved session's view though its old machine's reads are unproven", async () => {
 			const at = fixture();
 			await at.views.attach(session(), later(), live());

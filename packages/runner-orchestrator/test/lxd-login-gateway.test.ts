@@ -86,6 +86,7 @@ class FakeLxd implements LxdClient {
 		signal.throwIfAborted();
 		if (action.action === "create") await this.createInstance(project, action.request);
 		else if (action.action === "delete") await this.deleteInstance(project, action.name);
+		else if (action.action === "rebuild") throw new Error("a login machine is never rebuilt");
 		else await this.setInstancePower(project, action.name, action.action);
 		this.onSubmit?.(action);
 		if (this.lostSubmission === action.action) throw new Error("lost accepted submission reply");

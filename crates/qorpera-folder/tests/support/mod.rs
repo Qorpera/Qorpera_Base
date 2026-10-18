@@ -3,13 +3,13 @@
 
 use qorpera_folder::frame::{kind, read_frame, write_frame};
 use qorpera_folder::proto::{
-	code, Change, ChunkHeader, CloseRequest, Entry, EntryKind, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
+	code, Ack, Authority, Change, ChunkHeader, CloseRequest, Entry, EntryKind, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
 	LinkRequest, ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, ReadsRequest, ReadsAnswer, RemoveRequest, RenameRequest, Report, Role,
 	SymlinkRequest, CHUNK,
 };
 use sha2::{Digest, Sha256};
 use qorpera_folder::transport::Stream;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,10 @@ struct State {
 	old: std::collections::HashMap<(String, String), Vec<u8>>,
 	seq: u64,
 	feeds: Vec<Stream>,
+	/// The last change a feed acknowledged: the machine has taken it in.
+	acked: u64,
+	/// Files listed with an authority of their own, as a boundary's publish gives them.
+	authorized: BTreeSet<String>,
 	reads: usize,
 	closed: bool,
 	/// The view takes writes (protocol 2). Writes change the tree at once; a publish only counts.
@@ -55,11 +59,14 @@ struct State {
 	publishes: usize,
 	/// Chunks asked back.
 	gets: usize,
-	/// How many of the next chunks, closes, discards and links to answer BUSY (a boundary settling).
+	/// How many of the next chunks, closes, discards, links and removes to answer BUSY (a boundary settling).
 	busy_chunks: usize,
 	busy_closes: usize,
 	busy_discards: usize,
 	busy_links: usize,
+	busy_removes: usize,
+	/// How many of the next removes of a file to make, then drop the connection with no answer.
+	lost_removes: usize,
 	/// How many of the next renames to answer only a while after they changed the tree and the feeds heard of it.
 	slow_renames: usize,
 	/// How many of the next renames to make (and answer) only a while after they came.
@@ -155,12 +162,52 @@ impl FakeNode {
 		notify(&mut s, vec![path.to_string()], false);
 	}
 
+	/// Sets a file's executable bit (a new version) without telling anyone (as if the feed had missed it).
+	pub fn chmod_quietly(&self, path: &str, executable: bool) {
+		let mut s = self.state.lock().unwrap();
+		let n = s.entries.get_mut(path).expect("the file");
+		assert_ne!(n.executable, executable);
+		n.executable = executable;
+		n.version += 1;
+		s.seq += 1;
+	}
+
 	/// Changes the tree without telling anyone (as if the feed had missed it).
 	pub fn put_quietly(&self, path: &str, content: &str) {
 		let mut s = self.state.lock().unwrap();
 		let version = s.entries.get(path).map_or(1, |n| n.version + 1);
 		s.entries.insert(path.to_string(), Node { folder: false, link: false, version, content: content.as_bytes().to_vec(), executable: false });
 		s.seq += 1;
+	}
+
+	/// The feeds hear that `paths` changed, as when a boundary publishes this view's own writes there, and the machine
+	/// takes it in.
+	pub fn tell(&self, paths: &[&str]) {
+		self.told(paths.iter().map(|p| p.to_string()).collect(), false);
+	}
+
+	/// The feeds hear that anything may have changed, and the machine takes it in.
+	pub fn resync(&self) {
+		self.told(Vec::new(), true);
+	}
+
+	fn told(&self, paths: Vec<String>, resync: bool) {
+		let seq = {
+			let mut s = self.state.lock().unwrap();
+			notify(&mut s, paths, resync);
+			s.seq
+		};
+		let started = std::time::Instant::now();
+		while self.state.lock().unwrap().acked < seq {
+			assert!(started.elapsed() < std::time::Duration::from_secs(10), "the machine did not take change {seq} in");
+			std::thread::sleep(std::time::Duration::from_millis(20));
+		}
+	}
+
+	/// The file `path` is listed with an authority of its own from now on, without the feeds hearing of it (a boundary
+	/// that published it, whose change has not come yet).
+	pub fn publish_quietly(&self, path: &str) {
+		self.state.lock().unwrap().authorized.insert(path.to_string());
 	}
 
 	pub fn drop_feeds(&self) {
@@ -271,6 +318,17 @@ impl FakeNode {
 		self.state.lock().unwrap().busy_links = links;
 	}
 
+	/// The next `removes` removes of a file or folder are answered BUSY.
+	pub fn busy_removes(&self, removes: usize) {
+		self.state.lock().unwrap().busy_removes = removes;
+	}
+
+	/// The next `removes` removes of a file are made, and then the connection is dropped with no answer (before the
+	/// removes `busy_removes` asks for).
+	pub fn lost_removes(&self, removes: usize) {
+		self.state.lock().unwrap().lost_removes = removes;
+	}
+
 	/// The next `renames` renames are answered three seconds after they changed the tree and the feeds heard of it.
 	pub fn slow_renames(&self, renames: usize) {
 		self.state.lock().unwrap().slow_renames = renames;
@@ -346,7 +404,12 @@ fn listing(st: &State, path: &str) -> Option<Vec<Entry>> {
 			mtime_ms: 1_700_000_000_000,
 			executable: n.executable,
 			version: format!("v{}", n.version),
-			authority: None,
+			authority: st.authorized.contains(p).then(|| Authority {
+				resource_id: "resource".into(),
+				resource_revision: 1,
+				grant_id: None,
+				grant_revision: None,
+			}),
 		})
 		.collect();
 	Some(entries)
@@ -370,7 +433,13 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 	if hello.role == Role::Feed {
 		state.lock().unwrap().feeds.push(s.try_clone().unwrap());
 		// Acknowledgements until the machine goes.
-		while read_frame(&mut s).is_ok() {}
+		while let Ok((k, body)) = read_frame(&mut s) {
+			if k == kind::ACK {
+				let ack: Ack = serde_json::from_slice(&body).unwrap();
+				let mut st = state.lock().unwrap();
+				st.acked = st.acked.max(ack.seq);
+			}
+		}
 		return;
 	}
 	loop {
@@ -636,6 +705,15 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::UNLINK | kind::RMDIR => {
 			let req: RemoveRequest = serde_json::from_slice(body).unwrap();
+			if k == kind::UNLINK && st.lost_removes > 0 && st.entries.get(&req.path).is_some_and(|n| !n.folder) {
+				st.lost_removes -= 1;
+				st.entries.remove(&req.path);
+				return Err(std::io::Error::other("the answer is lost"));
+			}
+			if st.busy_removes > 0 {
+				st.busy_removes -= 1;
+				return error(s, code::BUSY);
+			}
 			let Some(n) = st.entries.get(&req.path).cloned() else { return error(s, code::NOT_FOUND) };
 			if n.folder != (k == kind::RMDIR) {
 				return error(s, if n.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });

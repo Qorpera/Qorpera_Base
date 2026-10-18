@@ -31,6 +31,7 @@ import { CodeHostJobs } from "../../../packages/runner-orchestrator/src/code-hos
 import { CodingMachineCommandSecrets } from "../../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { CloudCodingExecutor } from "../../../packages/runner-orchestrator/src/coding-executor.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { codingCommandExecution } from "../../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
 import { CODING_FOLDER_CONTROL_SOCKET, CodingFolderControl } from "../../../packages/runner-orchestrator/src/coding-folder-control.ts";
 import { CodingFolderSecretKey } from "../../../packages/runner-orchestrator/src/coding-folder-secrets.ts";
 import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/coding-folder-views.ts";
@@ -258,8 +259,10 @@ async function main(): Promise<void> {
 					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
 				await authorizeCodingCommand(control, request, checked);
 			}, signal);
-			return request.action === "start" ? transport.start(request.scope, request.input, signal) :
-				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal);
+			// F3 5g-5: the command service asks the folder model's transport what the receipt shows, after its final authorization,
+			// and only then answers what the transport held of the call.
+			return codingCommandExecution(transport, request.input.commandId, request.action === "start" ? transport.start(request.scope, request.input, signal) :
+				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
 	const commands = new HttpCloudCodingCommandService({

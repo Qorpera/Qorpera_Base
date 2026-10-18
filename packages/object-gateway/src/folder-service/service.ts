@@ -127,7 +127,8 @@ const HEARTBEAT_MS = 15_000;
 /** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
 const RENEW_MS = 40_000;
 const LEASE_MS = 120_000;
-/** A closed desktop keeps its pending state for a successor hello, never for serving the old holder. */
+/** A closed desktop keeps its pending state for a successor hello, never for serving the old holder. A test machine's
+ * view closed other than by its final stays as long, with nothing, so its machine's boundaries list it closed. */
 const CLOSED_GRACE_MS = 60_000;
 const VIEW_ENDED = "Folder view has ended";
 /** A chunk's own intent lasts 15 minutes and a file's sealed one an hour; each is renewed after 10 while its file is
@@ -713,7 +714,7 @@ export class FolderService {
 	 * `final`: the views whose last boundary this is, before the executor closes them; a refusal that may not lift is
 	 * final there (rule 4). A view of the machine this service does not hold open has no report, but an error. A test
 	 * machine's the same (F3 6b), by its placement's id, but its view's last boundary is a final: the core closes the
-	 * view with it. */
+	 * view with it. One the core closed otherwise is listed closed while it stays (#close). */
 	async boundary(machine: string, final: readonly string[] = []): Promise<MachineBoundary> {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
 		return this.#machineBoundary(machine, final);
@@ -734,6 +735,19 @@ export class FolderService {
 		this.#restarts.set(machine, (this.#restarts.get(machine) ?? 0) + 1);
 		// A test machine's commands ended with it (F3 6b).
 		this.#windows.clear(machine);
+		// A view of the boot before that the core closed is listed closed no more (#close): an executor that restarted
+		// itself meanwhile would take it for the next boot's own (company-machine-host.ts #settle), and restart again.
+		for (const view of this.#views.values())
+			if (
+				view.closed &&
+				view.closedAt !== undefined &&
+				!view.movedTo &&
+				view.access?.testMachine &&
+				view.access.machine === machine
+			) {
+				view.closedAt = undefined;
+				this.#forgetClosed(view);
+			}
 		if (unreleased) {
 			this.#log(`folder-service: machine ${machine} restarted with reads unreleased; its views are unproven`);
 			for (const view of views) {
@@ -826,6 +840,20 @@ export class FolderService {
 				}
 			}),
 		);
+		// A test machine's view the core closed otherwise than by its final is listed closed while it stays (#close), once:
+		// one this boundary closed has its report in it already, and is listed closed from the next.
+		for (const view of this.#views.values()) {
+			const viewId = view.key.slice("view:".length);
+			if (
+				view.closed &&
+				this.#retained(view) &&
+				!view.movedTo &&
+				view.access?.testMachine &&
+				view.access.machine === machine &&
+				!reports.some((report) => report.viewId === viewId)
+			)
+				reports.push({ viewId, error: { code: ErrorCode.viewClosed, message: view.closed } });
+		}
 		for (const viewId of final)
 			if (!reports.some((report) => report.viewId === viewId))
 				reports.push({
@@ -1581,10 +1609,16 @@ export class FolderService {
 		view.lastError = message;
 	}
 
-	#close(view: View, reason: string): void {
+	/** `byFinal`: the view's own final closed it, and its machine heard so in that boundary's report. */
+	#close(view: View, reason: string, byFinal = false): void {
 		view.closed = reason;
 		if (view.identity?.kind === "computer_desktop" && view.admitted) view.closedAt ??= this.#now();
-		else this.#discard(view);
+		else {
+			this.#discard(view);
+			// A test machine's view the core closed otherwise (a narrowing, a refusal) stays a while, so its machine's next
+			// boundary lists it closed (VIEW_CLOSED) and the executor restarts the machine then, not once it seems gone.
+			if (view.access?.testMachine && view.admitted && !byFinal && !view.finalOut) view.closedAt ??= this.#now();
+		}
 		if (view.quiet) clearTimeout(view.quiet);
 		view.quiet = undefined;
 		// The pass goes with it: a closed view makes no more calls, but a final with no answer asked again as it was.
@@ -3301,7 +3335,7 @@ export class FolderService {
 	/** A command's final, answered: the core closed its view with it, so nothing stays pending and nothing settles. */
 	async #closedBy(view: View, plan: BoundaryPlan, answer: CommitAnswer, entries: ReportEntry[]): Promise<Report> {
 		const { entries: outcomes } = await this.#outcomes(view, plan, answer, true);
-		this.#close(view, "The command's final change set was published");
+		this.#close(view, "The command's final change set was published", true);
 		return { commitId: answer.commitId, seq: answer.seq, paths: [...entries, ...outcomes], closed: true };
 	}
 

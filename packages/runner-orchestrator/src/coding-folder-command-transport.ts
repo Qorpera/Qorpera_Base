@@ -18,6 +18,7 @@ import {
 	type CodingCommandSecrets,
 	noCodingCommandSecrets,
 } from "./coding-command-secrets.ts";
+import type { LxdCodingCommandTransport } from "./coding-command-transport.ts";
 import type { CodingFolderControl } from "./coding-folder-control.ts";
 import { CodingGuestRefused, type LxdCodingGuestClient } from "./coding-guest-client.ts";
 import { type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-machine.ts";
@@ -77,8 +78,12 @@ interface Request {
 	readonly timeoutMs: number | null;
 	readonly limitBytes: number;
 	readonly turn: number;
+	/** The machine the command was started on: the session's custody stays with it when it moves to another. */
+	readonly machineId: string;
 	/** The machine's LXD start the command was started under. */
 	readonly startOperationId: string;
+	/** The rebuild that gave the machine the disk the command was started on, null for the disk it was made with. */
+	readonly diskOperationId: string | null;
 }
 const REQUEST_KEYS = [
 	"schema",
@@ -89,7 +94,9 @@ const REQUEST_KEYS = [
 	"timeoutMs",
 	"limitBytes",
 	"turn",
+	"machineId",
 	"startOperationId",
+	"diskOperationId",
 ];
 
 /** `progress.json`: how far the host kept the command's output. Replaced whole. */
@@ -186,7 +193,9 @@ const requestOf = (bytes: Buffer, limit: { workerId: string; commandId: string }
 			(value.limitBytes as number) >= 1_048_576 &&
 			(value.limitBytes as number) <= 1_073_741_824 &&
 			count(value.turn) &&
-			isUuid(value.startOperationId),
+			isUuid(value.machineId) &&
+			isUuid(value.startOperationId) &&
+			(value.diskOperationId === null || isUuid(value.diskOperationId)),
 	);
 const progressOf = (bytes: Buffer, limitBytes: number) =>
 	custodyRecord<Progress>(
@@ -516,6 +525,84 @@ export async function codingFolderKeptCommand(
 	return { turn, command };
 }
 
+/** A refusal a call met once it read its command's kept start (F3 5g-5): a page past the log's end or inside a
+ * character, the guest's answer, the host's own files, the call's budget. Each may tell of a command the call's answer
+ * is to show nothing of, which only the command service decides, after its final authorization. So the call answers
+ * `receipt`, which shows nothing of the command, and the refusal stands only once the command is shown
+ * (`codingCommandExecution`). Its message is the refusal's. */
+export class CodingCommandHeld extends Error {
+	readonly refusal: unknown;
+	readonly receipt: CloudCodingCommandReceipt;
+	constructor(refusal: unknown, receipt: CloudCodingCommandReceipt) {
+		super(refusal instanceof Error ? refusal.message : String(refusal));
+		this.name = "CodingCommandHeld";
+		this.refusal = refusal;
+		this.receipt = receipt;
+	}
+}
+
+/** What a held call answers: the command's identity and limit and nothing else, as the command service answers a
+ * command it shows nothing of, whatever page was asked (an empty log at offset 0). */
+function heldReceipt(request: Request): CloudCodingCommandReceipt {
+	return parseCloudCodingCommandReceipt({
+		schema: "qorpera.coding-command-result/v2",
+		workerId: request.workerId,
+		commandId: request.commandId,
+		inputSha256: request.inputSha256,
+		state: "unconfirmed",
+		exitCode: null,
+		output: "",
+		truncated: false,
+		log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: request.limitBytes, limitReached: false },
+	});
+}
+
+/** A call's work once its command's kept start was read, with any refusal held. */
+async function holding(
+	request: Request,
+	work: () => Promise<CloudCodingCommandReceipt>,
+): Promise<CloudCodingCommandReceipt | CodingCommandHeld> {
+	try {
+		return await work();
+	} catch (error) {
+		return new CodingCommandHeld(error, heldReceipt(request));
+	}
+}
+
+/** A call's answer, after its last authorization: a held refusal is thrown only then, so a call takes the same steps
+ * whatever its work met. */
+function answered(receipt: CloudCodingCommandReceipt | CodingCommandHeld): CloudCodingCommandReceipt {
+	if (receipt instanceof CodingCommandHeld) throw receipt;
+	return receipt;
+}
+
+/** A call on a coding machine's command transport as the command service takes it (`@qorpera/runtime`'s
+ * `CloudCodingCommandExecution`): its receipt, and `hidden`, which the service asks once, after its final
+ * authorization. A refusal the folder model's transport held stands there, and only for a command it shows. */
+export async function codingCommandExecution(
+	transport: LxdCodingCommandTransport | LxdCodingFolderCommandTransport,
+	commandId: string,
+	call: Promise<CloudCodingCommandReceipt>,
+): Promise<{
+	receipt: CloudCodingCommandReceipt;
+	hidden(signal: AbortSignal): Promise<"machine_stopped" | "unconfirmed" | undefined>;
+}> {
+	let held: CodingCommandHeld | undefined;
+	const receipt = await call.catch((error: unknown) => {
+		if (!(error instanceof CodingCommandHeld)) throw error;
+		held = error;
+		return error.receipt;
+	});
+	return {
+		receipt,
+		async hidden(signal) {
+			const shown = "hidden" in transport ? await transport.hidden(commandId, signal) : undefined;
+			if (shown === undefined && held) throw held.refusal;
+			return shown;
+		},
+	};
+}
+
 /** The session a turn's commands run in, as the host set it up. */
 export interface LxdCodingFolderCommandSession {
 	/** The session user's ids in the guest. */
@@ -545,6 +632,17 @@ export interface LxdCodingFolderCommandTransportOptions {
 	 * started was released (F3 5g-5, from the machine's journal): a command of that boot keeps nothing more of what it
 	 * left on the machine's disk. Asked of the command's own start each time its output is about to be kept. */
 	readonly dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
+	/** Whether the machine shows nothing of its commands (F3 5g-5: SQL holds it marked for a new disk, so its disk may
+	 * hold a read the turn can no longer read): nothing more of a command's output is kept (asked after the machine's
+	 * boundary releases), and `hidden` answers nothing of the command, how it ended included. No answer withholds.
+	 * Never by default. */
+	readonly withheld?: (signal: AbortSignal) => Promise<boolean>;
+	/** The rebuild that gave the machine the disk it has now (F3 5g-5, from next to its journal), or null for the disk
+	 * it was made with. A command starts on it, and nothing of one started on a disk the machine no longer has, or on
+	 * another machine the session ran on before, is kept or shown (`hidden`: not what it printed, nor how much, nor how
+	 * it ended), whatever the folder service and SQL say now: the reads that disk may have held stayed with it, not with
+	 * the command's custody. No answer shows nothing. Never replaced by default. */
+	readonly disk?: (signal: AbortSignal) => Promise<string | null>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
 	/** As the NAS transport's: checks the request's authority before each call's work and again before its answer. */
@@ -553,7 +651,11 @@ export interface LxdCodingFolderCommandTransportOptions {
 
 /** The folder model's command transport: the same calls and receipts as `LxdCodingCommandTransport`. Only a trusted
  * provider constructs it, with an `authorize` that checks the request's lease and the machine before each effect.
- * Each call takes at most 25 s of its own; a command still running then shows `running`, with what was kept. */
+ * Each call takes at most 25 s of its own; a command still running then shows `running`, with what was kept. A call
+ * refuses outright only for what is the same for every command of the session (its input, its authority, its custody,
+ * the machine's start and disk), for a command with no kept start, or one not the host's own, and for another command
+ * under the call's id; anything it meets after its command's kept start is read is held (`CodingCommandHeld`, F3
+ * 5g-5). */
 export class LxdCodingFolderCommandTransport {
 	readonly #scope: Readonly<CloudCodingCommandScope>;
 	readonly #companyId: string;
@@ -564,6 +666,8 @@ export class LxdCodingFolderCommandTransport {
 	readonly #guest: LxdCodingFolderCommandTransportOptions["guest"];
 	readonly #control: LxdCodingFolderCommandTransportOptions["control"];
 	readonly #dropped: LxdCodingFolderCommandTransportOptions["dropped"];
+	readonly #withheld: NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>;
+	readonly #disk: NonNullable<LxdCodingFolderCommandTransportOptions["disk"]>;
 	readonly #currentStart: LxdCodingFolderCommandTransportOptions["currentStart"];
 	readonly #secrets: CodingCommandSecrets;
 	readonly #authorize: Authorize;
@@ -601,6 +705,8 @@ export class LxdCodingFolderCommandTransport {
 		this.#guest = options.guest;
 		this.#control = options.control;
 		this.#dropped = options.dropped;
+		this.#withheld = options.withheld ?? (async () => false);
+		this.#disk = options.disk ?? (async () => null);
 		this.#currentStart = options.currentStart;
 		this.#secrets = options.secrets ?? noCodingCommandSecrets;
 		this.#authorize = options.authorize;
@@ -692,6 +798,10 @@ export class LxdCodingFolderCommandTransport {
 			// again.
 			const start = this.#currentStart();
 			if (start === undefined || !isUuid(start)) throw new Error("CODING_MACHINE_START_UNCONFIRMED");
+			// ...and on the disk the machine has now. A rebuild in between changed the start first: the command does not
+			// run under the one read here (below).
+			const disk = await this.#disk(budget);
+			if (disk !== null && !isUuid(disk)) throw new Error("CODING_MACHINE_DISK_UNCONFIRMED");
 			await linkOnce(folder, "request.json", {
 				schema: "qorpera.coding-host-command/v1",
 				workerId: this.#scope.workerId,
@@ -701,55 +811,60 @@ export class LxdCodingFolderCommandTransport {
 				timeoutMs: input.timeoutMs,
 				limitBytes: this.#limitBytes,
 				turn: this.#scope.turn,
+				machineId: this.#machineId,
 				startOperationId: start,
+				diskOperationId: disk,
 			} satisfies Request);
 			const records = await this.#records(folder, input.commandId);
 			const { request, outcome } = records;
 			let { progress } = records;
-			// The same command again is the same command; another one under its id is refused.
+			// The same command again is the same command; another one under its id is refused. (The input is the call's
+			// own, and its hash is in every receipt of the command.)
 			if (
 				request.inputSha256 !== input.inputSha256 ||
 				request.command !== input.command ||
 				request.timeoutMs !== input.timeoutMs
 			)
 				throw new Error("CODING_COMMAND_CONFLICT");
-			// Only on the machine it was first started on: one that started again since may have run it already.
-			if (!outcome && !progress.acknowledged && !progress.cancelled && request.startOperationId === start) {
-				const secrets = await this.#secrets.resolve(this.#secretRequest(input.commandId), budget);
-				const { uid, gid, cwd, environment } = this.#session;
-				// Nor once it started again while the secrets were read: the command then ended with the boot it was started
-				// under, before it ran.
-				if (request.startOperationId !== this.#currentStart())
-					return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
-				try {
-					await this.#guest.run(
-						{
-							schema: "qorpera.coding-guest-run/v1",
-							workerId: this.#scope.workerId,
-							commandId: input.commandId,
-							uid,
-							gid,
-							command: request.command,
-							cwd,
-							environment: { ...secrets.environment, ...environment, ...sessionEnvironment(uid) },
-							timeoutMs: request.timeoutMs,
-						},
-						budget,
-					);
-					// Only now does this start's environment mask the command's output. A start whose answer was lost, or
-					// that the guest refused, may run with an earlier start's environment.
-					this.#secrets.accepted(this.#secretRequest(input.commandId));
-				} catch (error) {
-					// The guest has the command with another environment, such as a secret's earlier value: it is this one.
-					if (!(error instanceof CodingGuestRefused && error.code === "CODING_GUEST_COMMAND_CONFLICT"))
-						throw error;
+			return holding(request, async () => {
+				// Only on the machine it was first started on: one that started again since may have run it already.
+				if (!outcome && !progress.acknowledged && !progress.cancelled && request.startOperationId === start) {
+					const secrets = await this.#secrets.resolve(this.#secretRequest(input.commandId), budget);
+					const { uid, gid, cwd, environment } = this.#session;
+					// Nor once it started again while the secrets were read: the command then ended with the boot it was
+					// started under, before it ran.
+					if (request.startOperationId !== this.#currentStart())
+						return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+					try {
+						await this.#guest.run(
+							{
+								schema: "qorpera.coding-guest-run/v1",
+								workerId: this.#scope.workerId,
+								commandId: input.commandId,
+								uid,
+								gid,
+								command: request.command,
+								cwd,
+								environment: { ...secrets.environment, ...environment, ...sessionEnvironment(uid) },
+								timeoutMs: request.timeoutMs,
+							},
+							budget,
+						);
+						// Only now does this start's environment mask the command's output. A start whose answer was lost, or
+						// that the guest refused, may run with an earlier start's environment.
+						this.#secrets.accepted(this.#secretRequest(input.commandId));
+					} catch (error) {
+						// The guest has the command with another environment, such as a secret's earlier value: it is this one.
+						if (!(error instanceof CodingGuestRefused && error.code === "CODING_GUEST_COMMAND_CONFLICT"))
+							throw error;
+					}
+					progress = await this.#save(folder, { ...progress, acknowledged: true });
 				}
-				progress = await this.#save(folder, { ...progress, acknowledged: true });
-			}
-			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+				return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+			});
 		});
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		return receipt;
+		return answered(receipt);
 	}
 
 	async read(
@@ -761,10 +876,10 @@ export class LxdCodingFolderCommandTransport {
 		await this.#gate("read", scope, read.commandId, null, signal);
 		const receipt = await this.#within(read.commandId, signal, false, async (folder, budget) => {
 			const { request, progress, outcome } = await this.#records(folder, read.commandId);
-			return this.#settle(folder, request, progress, outcome, budget, signal, read, false);
+			return holding(request, () => this.#settle(folder, request, progress, outcome, budget, signal, read, false));
 		});
 		await this.#gate("read", scope, read.commandId, null, signal);
-		return receipt;
+		return answered(receipt);
 	}
 
 	async cancel(
@@ -776,16 +891,33 @@ export class LxdCodingFolderCommandTransport {
 		const receipt = await this.#within(commandId, signal, false, async (folder, budget) => {
 			const records = await this.#records(folder, commandId);
 			const { request, outcome } = records;
-			let { progress } = records;
-			if (!outcome) {
-				// Kept first, so a start that lands after the cancel is stopped too, when it is next read.
-				if (!progress.cancelled) progress = await this.#save(folder, { ...progress, cancelled: true });
-				await this.#stop(commandId, budget, signal);
-			}
-			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
+			return holding(request, async () => {
+				let { progress } = records;
+				if (!outcome) {
+					// Kept first, so a start that lands after the cancel is stopped too, when it is next read.
+					if (!progress.cancelled) progress = await this.#save(folder, { ...progress, cancelled: true });
+					await this.#stop(commandId, budget, signal);
+				}
+				return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
+			});
 		});
 		await this.#gate("cancel", scope, commandId, null, signal);
-		return receipt;
+		return answered(receipt);
+	}
+
+	/** Whether a call's receipt shows nothing of its command (F3 5g-5), and as what: `machine_stopped` for one started
+	 * on a disk the machine no longer has, or on another machine, though it ended and nothing asks the machine about it
+	 * any more, as the reads it may hold were cleared with that disk or never were this machine's; `unconfirmed` while
+	 * the machine shows nothing of its commands (`withheld`), or its disk is not known. The command service asks it once,
+	 * after its final authorization, right before it sends the answer. The marks are asked first: a rebuild writes its
+	 * new disk down before SQL clears them, so a call that finds the machine no longer marked finds its new disk after. */
+	async hidden(commandId: string, signal: AbortSignal): Promise<"machine_stopped" | "unconfirmed" | undefined> {
+		if (!isUuid(commandId)) throw new Error("CODING_COMMAND_SCOPE_DIFFERS");
+		return this.#within(commandId, signal, false, async (folder, budget) => {
+			const { request } = await this.#records(folder, commandId);
+			const withheld = await this.#withholds(budget, signal);
+			return (await this.#replaced(request, budget, signal)) ?? (withheld ? "unconfirmed" : undefined);
+		});
 	}
 
 	/** Brings the kept output up to date unless the command ended, and answers a page of it. */
@@ -831,9 +963,10 @@ export class LxdCodingFolderCommandTransport {
 			commandId = request.commandId;
 		// The machine started again since the command did, or starts again now.
 		const moved = request.startOperationId !== this.#currentStart();
-		// ...and the folder service could not say every read the machine was served before then was released (F3 5g-5):
-		// what the command left on the machine's disk is not kept, and it ended with the machine.
-		if (moved && (await this.#dropped(request.startOperationId, budget)))
+		// ...and the machine has had a new disk since (or the command ran on another machine), or the folder service could
+		// not say every read the machine was served before then was released (F3 5g-5): what the command left on the
+		// machine's disk is not kept, and it ended with the machine.
+		if (moved && (!(await this.#hasDisk(request, budget)) || (await this.#dropped(request.startOperationId, budget))))
 			return this.#unknown(folder, progress, moved, budget, signal);
 		// Past the limit nothing more is kept: only where the command is.
 		const skip = progress.limitReached;
@@ -930,10 +1063,10 @@ export class LxdCodingFolderCommandTransport {
 		const bytes = Buffer.concat(kept),
 			room = request.limitBytes - progress.logBytes,
 			full = bytes.length > room;
-		// A restart writes the command's boot down as dropped before the machine's boundary answers released again, and
-		// this call may have begun before that restart: the mark is read again now. A boot written down keeps nothing of
-		// what was pulled, which is counted lost.
-		if (await this.#dropped(request.startOperationId, budget))
+		// A restart writes the command's boot down as dropped before the machine's boundary answers released again, and a
+		// rebuild its new disk, and this call may have begun before either: both are read again now. Either keeps nothing
+		// of what was pulled, which is counted lost.
+		if (!(await this.#hasDisk(request, budget)) || (await this.#dropped(request.startOperationId, budget)))
 			return this.#unknown(
 				folder,
 				await this.#note(folder, progress, { acknowledged: true, end }),
@@ -989,13 +1122,50 @@ export class LxdCodingFolderCommandTransport {
 		return { progress: next, outcome, shown: state };
 	}
 
-	/** Whether the machine's boundary released every read the machine was served until now. No answer is no release. */
+	/** Whether the machine's boundary released every read the machine was served until now, and the machine shows its
+	 * commands. No answer is no release. */
 	async #released(budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
 		try {
-			return (await this.#control.boundary(this.#machineId, [], budget)).reads === "released";
+			if ((await this.#control.boundary(this.#machineId, [], budget)).reads !== "released") return false;
 		} catch {
 			signal.throwIfAborted();
 			return false;
+		}
+		return !(await this.#withholds(budget, signal));
+	}
+
+	/** Whether the command was started on a disk the machine no longer has, or on another machine's (`machine_stopped`),
+	 * or the disk it has is not known (`unconfirmed`: no answer, or one that names no rebuild); undefined while it has
+	 * the command's. */
+	async #replaced(
+		request: Request,
+		budget: AbortSignal,
+		signal: AbortSignal,
+	): Promise<"machine_stopped" | "unconfirmed" | undefined> {
+		if (request.machineId !== this.#machineId) return "machine_stopped";
+		let disk: string | null;
+		try {
+			disk = await this.#disk(budget);
+		} catch {
+			signal.throwIfAborted();
+			return "unconfirmed";
+		}
+		if (disk !== null && !isUuid(disk)) return "unconfirmed";
+		return disk === request.diskOperationId ? undefined : "machine_stopped";
+	}
+
+	/** Whether the machine has the disk the command was started on: it is the same machine, and not rebuilt since. */
+	async #hasDisk(request: Request, budget: AbortSignal): Promise<boolean> {
+		return request.machineId === this.#machineId && (await this.#disk(budget)) === request.diskOperationId;
+	}
+
+	/** Whether the machine shows nothing of its commands now. No answer withholds. */
+	async #withholds(budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
+		try {
+			return await this.#withheld(budget);
+		} catch {
+			signal.throwIfAborted();
+			return true;
 		}
 	}
 

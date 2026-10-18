@@ -44,6 +44,9 @@ afterEach(async () => {
 
 const TEST_VIEW = "7e57f1e0-0001-4a00-8b00-000000000001";
 const PASS = "testpass_0123456789-abcdefghijklmnopqrstuvw";
+/** The view the machine's next boot mounts. */
+const NEXT_VIEW = "7e57f1e0-0002-4a00-8b00-000000000002";
+const NEXT_PASS = "testpass_9876543210-zyxwvutsrqponmlkjihgfed";
 const AT_TEST: BridgeInfo = { cid: 95, lookup: "found", machine: TEST_MACHINE };
 const FIRST = "c0aa0001-0000-4a00-8b00-000000000001";
 const SECOND = "c0aa0002-0000-4a00-8b00-000000000002";
@@ -60,10 +63,11 @@ const windowOf = (commandId: string): CommandWindow => ({
 });
 
 /** A company folder with one file, a test machine's view, and the node's service with its test machine project
- * configured. */
-async function company() {
+ * configured, on `now`'s clock when given. */
+async function company(now?: () => number) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-test-machine-"));
 	const core = new FakeCore();
+	if (now) core.now = now;
 	core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
 	core.openView(TEST_VIEW, PASS, { kind: "test_machine", machineId: PLACEMENT });
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
@@ -73,6 +77,7 @@ async function company() {
 		grants: testGrants(),
 		staging: new FolderStaging(core, new FakeUploads(root, core), objects),
 		log: () => undefined,
+		...(now ? { now } : {}),
 	});
 	const handles: ViewHandle[] = [];
 	cleanups.push(async () => {
@@ -379,8 +384,79 @@ describe("test machine views", () => {
 		expect(core.commits.map((c) => c.final)).toEqual([true]);
 		expect(creditsOf(core.commits[0])).toEqual([["docs/last.txt", [FIRST]]]);
 		expect(core.views.get(TEST_VIEW)?.state).toBe("closed");
+		// Its machine heard it closed in that report: no later boundary lists it.
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([]);
 		await wait(DESKTOP_QUIET_MS + 500);
 		expect(core.commits).toHaveLength(1);
+	});
+
+	it("lists a view the core closed otherwise closed at its machine's next boundary, as long as a closed desktop stays", async () => {
+		const clock = { now: Date.parse("2026-10-18T12:00:00.000Z") };
+		const { core, service, open } = await company(() => clock.now);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		// A narrowing: the core closes the view, and the next renewal hears so.
+		const held = core.views.get(TEST_VIEW);
+		if (held) held.state = "closed";
+		await service.renewLeases();
+		await expect(view.list("", undefined)).rejects.toMatchObject({ code: "VIEW_CLOSED" });
+		// The executor's next pass and its window's close hear it closed (it restarts the machine), not gone a while later.
+		const closed = { viewId: TEST_VIEW, error: { code: "VIEW_CLOSED", message: "The view was ended" } };
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([closed]);
+		expect((await service.closeWindow(PLACEMENT, FIRST)).views).toEqual([closed]);
+		// Named final, it is the same view, closed, listed once.
+		expect((await service.boundary(PLACEMENT, [TEST_VIEW])).views).toEqual([closed]);
+		// The machine's folder program connecting again hears it closed too.
+		await expect(open()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
+		expect(core.commits).toEqual([]);
+		clock.now += 59_000;
+		await service.poll();
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([closed]);
+		clock.now += 1_000;
+		await service.poll();
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([]);
+	});
+
+	it("lists a closed view no more once its machine restarted: the next boot's boundaries list its own view alone", async () => {
+		const { core, service, open } = await company();
+		await open();
+		const held = core.views.get(TEST_VIEW);
+		if (held) held.state = "closed";
+		await service.renewLeases();
+		const closed = { viewId: TEST_VIEW, error: { code: "VIEW_CLOSED", message: "The view was ended" } };
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([closed]);
+		// The executor restarts the machine, whose next boot mounts its own view. An executor that restarted itself then
+		// takes every view the machine's boundaries list for that boot's own (company-machine-host.ts #settle).
+		service.restarted(PLACEMENT);
+		core.openView(NEXT_VIEW, NEXT_PASS, { kind: "test_machine", machineId: PLACEMENT });
+		const next = await service.open(
+			{ protocol: 3, environmentId: ENV, viewId: NEXT_VIEW, pass: NEXT_PASS, role: "io" },
+			AT_TEST,
+		);
+		cleanups.push(async () => next.release());
+		expect((await service.boundary(PLACEMENT, [])).views.map((view) => view.viewId)).toEqual([NEXT_VIEW]);
+		expect((await service.boundary(PLACEMENT, [TEST_VIEW])).views).toContainEqual({
+			viewId: TEST_VIEW,
+			error: { code: "VIEW_CLOSED", message: "This service holds no open view of the machine by that id" },
+		});
+	});
+
+	it("lists a view the core ended during a boundary once in it, and closed from its machine's next boundary", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
+		const view = await open();
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await view.unlink("docs/a.md", undefined);
+		// The core ended the view before a renewal heard so: the window's change set is refused for it, which closes it.
+		const held = core.views.get(TEST_VIEW);
+		if (held) held.state = "closed";
+		expect((await service.closeWindow(PLACEMENT, FIRST)).views).toMatchObject([
+			{ viewId: TEST_VIEW, report: { refused: "denied" } },
+		]);
+		expect((await service.boundary(PLACEMENT, [])).views).toEqual([
+			{ viewId: TEST_VIEW, error: { code: "VIEW_CLOSED", message: "Folder view has ended" } },
+		]);
+		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("a"));
 	});
 
 	it("credits a moved file's removal to its command when a new file made at its origin replaces it", async () => {
