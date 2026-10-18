@@ -353,6 +353,20 @@ function errorCode(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	return /^[A-Z][A-Z0-9_]{2,80}(:[A-Z][A-Z0-9_]{0,63})?$/.test(message) ? message : "UNCLASSIFIED";
 }
+/** The helper's answer in its reply file; its refusal throws its code. */
+function guestAnswer(content: Buffer): Record<string, unknown> {
+	const value = record(
+		JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(content)),
+		"COMPANY_MACHINE_GUEST_REPLY_INVALID",
+	);
+	if (value.schema === "qorpera.machine-guest-refusal/v1")
+		throw new Error(
+			typeof value.code === "string" && /^[A-Z][A-Z0-9_:]{2,120}$/.test(value.code)
+				? value.code
+				: "MACHINE_GUEST_REFUSED",
+		);
+	return value;
+}
 function entry(value: unknown): CompanyMachineEntry {
 	const e = record(value, "COMPANY_MACHINE_LIST_INVALID");
 	if (
@@ -547,6 +561,11 @@ export class LxdCompanyMachineHost {
 		args: readonly string[],
 		signal: AbortSignal,
 	): Promise<Record<string, unknown>> {
+		return guestAnswer(await this.#ask(e, args, signal));
+	}
+	/** Runs the helper as root with a fresh reply file and reads that file, unchecked. It throws only when no answer came
+	 * back (LXD's exec failed, the helper could not write its reply, or the file could not be read). */
+	async #ask(e: CompanyMachineEntry, args: readonly string[], signal: AbortSignal): Promise<Buffer> {
 		const plan = this.#plan(e);
 		const nonce = randomUUID();
 		await this.#options.client.execInstance(
@@ -557,12 +576,8 @@ export class LxdCompanyMachineHost {
 		);
 		return this.#reply(plan, nonce, signal);
 	}
-	/** The helper's answer in its reply file; its refusal throws its code. */
-	async #reply(
-		plan: { project: string; name: string },
-		nonce: string,
-		signal: AbortSignal,
-	): Promise<Record<string, unknown>> {
+	/** The helper's reply file. */
+	async #reply(plan: { project: string; name: string }, nonce: string, signal: AbortSignal): Promise<Buffer> {
 		const file = await this.#options.client.readInstanceFile(
 			plan.project,
 			plan.name,
@@ -570,17 +585,7 @@ export class LxdCompanyMachineHost {
 			65536,
 			signal,
 		);
-		const value = record(
-			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)),
-			"COMPANY_MACHINE_GUEST_REPLY_INVALID",
-		);
-		if (value.schema === "qorpera.machine-guest-refusal/v1")
-			throw new Error(
-				typeof value.code === "string" && /^[A-Z][A-Z0-9_:]{2,120}$/.test(value.code)
-					? value.code
-					: "MACHINE_GUEST_REFUSED",
-			);
-		return value;
+		return file.content;
 	}
 	/** Until the guest agent answers both the boot's claim and its lease, the machine is still starting: early in a boot,
 	 * or on a boot going down, LXD's agent may answer one and drop at the next (LXD ends the exec without a code). For
@@ -640,13 +645,16 @@ export class LxdCompanyMachineHost {
 			}
 			return { placementId: e.placementId, step: "commands", state: "done", folder: over.code };
 		}
-		let lease: Record<string, unknown>;
+		// Only a lease ask that got no answer is still starting; what the helper answered is checked at once, as on any
+		// pass (an invalid reply or a refusal fails the pass).
+		let leased: Buffer;
 		try {
-			lease = await this.#helper(e, ["refresh-lease", String(COMPANY_MACHINE_LEASE_MS)], signal);
+			leased = await this.#ask(e, ["refresh-lease", String(COMPANY_MACHINE_LEASE_MS)], signal);
 		} catch (error) {
 			return this.#unready(e, error);
 		}
 		this.#starting.delete(e.placementId);
+		const lease = guestAnswer(leased);
 		if (lease.schema !== "qorpera.machine-guest-lease-receipt/v1" || lease.bootId !== bootId)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		const folder = this.#options.folder;
@@ -1020,7 +1028,7 @@ export class LxdCompanyMachineHost {
 			},
 			signal,
 		);
-		const answer = await this.#reply(plan, nonce, signal);
+		const answer = guestAnswer(await this.#reply(plan, nonce, signal));
 		if (
 			answer.schema !== "qorpera.machine-guest-folder/v1" ||
 			answer.viewId !== view.viewId ||

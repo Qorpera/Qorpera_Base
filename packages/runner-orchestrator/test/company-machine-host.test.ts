@@ -1006,6 +1006,29 @@ describe("company machine host", () => {
 		}
 	});
 
+	it("fails at once, with no grace, on a lease its helper answered wrong or refused", async () => {
+		// The agent answered, so the boot is not still starting: null, a list, a reply that is not JSON, the helper's
+		// refusal, or another boot's receipt each fail the first pass and are recorded.
+		const receipt = { schema: "qorpera.machine-guest-lease-receipt/v1", machineId: id(2), validForMs: 900000 };
+		const replies: [string, string][] = [
+			["null", "COMPANY_MACHINE_GUEST_REPLY_INVALID"],
+			["[]", "COMPANY_MACHINE_GUEST_REPLY_INVALID"],
+			["{", "UNCLASSIFIED"],
+			[
+				JSON.stringify({ schema: "qorpera.machine-guest-refusal/v1", code: "MACHINE_GUEST_LEASE_INVALID" }),
+				"MACHINE_GUEST_LEASE_INVALID",
+			],
+			[JSON.stringify({ ...receipt, bootId: randomUUID() }), "COMPANY_MACHINE_GUEST_REPLY_INVALID"],
+		];
+		for (const [reply, code] of replies) {
+			const f = await fixture();
+			answering(f, "refresh-lease", reply);
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "failed", code }]);
+			expect(failures(f)).toEqual([code]);
+			expect(f.methods()).not.toContain("qorpera_mark_company_machine_running");
+		}
+	});
+
 	it("refuses a listed binding that is not the one SQL hashed", async () => {
 		const f = await fixture();
 		f.entry.bindingText = f.entry.bindingText.replace('"cpus":4', '"cpus":8');
@@ -1098,6 +1121,22 @@ function dropping(f: Fixture, drops: (asked: readonly string[]) => boolean) {
 		if (drops(asked)) throw new Error("LXD operation failed");
 		return answer(project, name, asked);
 	});
+}
+/** The guest's helper writes `reply` as its answer to each `action` it is asked. */
+function answering(f: Fixture, action: string, reply: string) {
+	const exec = f.client.execInstance.getMockImplementation();
+	const read = f.client.readInstanceFile.getMockImplementation();
+	if (!exec || !read) throw new Error("no simulated guest");
+	const nonces = new Set<string>();
+	f.client.execInstance.mockImplementation(async (project, name, asked) => {
+		if (asked[3] === action) nonces.add(asked[2]);
+		return exec(project, name, asked);
+	});
+	f.client.readInstanceFile.mockImplementation(async (project, name, path) =>
+		nonces.has(/\/replies\/([0-9a-f-]{36})\.json$/.exec(path)?.[1] ?? "")
+			? { content: Buffer.from(reply), uid: 0, gid: 0, mode: 0o600 }
+			: read(project, name, path),
+	);
 }
 const failures = (f: Fixture) =>
 	f.calls
