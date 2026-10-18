@@ -15,6 +15,7 @@ use std::os::unix::fs::{DirBuilderExt, FileExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Barrier};
 use std::time::{Duration, Instant};
 use support::{FakeNode, PASS};
@@ -25,6 +26,10 @@ const NOTIFY_FAILS: &str = "QORPERA_FOLDER_TEST_NOTIFY_FAILS";
 const NAMES: &str = "QORPERA_FOLDER_TEST_NAMES";
 const SLOW_LOOKUP: &str = "QORPERA_FOLDER_TEST_SLOW_LOOKUP";
 const SLOW_FALL_BACK: &str = "QORPERA_FOLDER_TEST_SLOW_FALL_BACK";
+const CLOSE_GATE: &str = "QORPERA_FOLDER_TEST_CLOSE_GATE";
+const LATE_CREATE: &str = "QORPERA_FOLDER_TEST_LATE_CREATE";
+/// The end's drop, its gate closed (`CLOSE_GATE`).
+const DROP_WAITS: &str = "qorpera-folder: test switch: the drop waits for";
 /// A cache top in a node folder (a dependency folder is a cache anywhere, `cache.rs`), and files in it.
 const TOP: &str = "notes/node_modules";
 const X: &str = "notes/node_modules/x.js";
@@ -103,6 +108,7 @@ impl Program {
 			.arg("--connect").arg(&node.addr).arg("--state-dir").arg(node.dir.join(format!("{name}.state")))
 			.arg("--cache-dir").arg(caches(node))
 			.env_remove(KERNEL_OFF).env_remove(NOTIFY_FAILS).env_remove(NAMES).env_remove(SLOW_LOOKUP).env_remove(SLOW_FALL_BACK)
+			.env_remove(CLOSE_GATE).env_remove(LATE_CREATE)
 			.envs(env.iter().copied())
 			.stdout(Stdio::null()).stderr(File::create(&log).unwrap())
 			.spawn().unwrap();
@@ -852,8 +858,35 @@ impl Mapping {
 	}
 
 	fn sync(&self) {
+		assert_eq!(self.synced(), Ok(()));
+	}
+
+	/// `msync` of the whole mapping, or the errno it fails with.
+	fn synced(&self) -> Result<(), i32> {
 		// SAFETY: the mapping is live.
-		assert_eq!(unsafe { libc::msync(self.at.cast(), self.len, libc::MS_SYNC) }, 0, "{}", std::io::Error::last_os_error());
+		match unsafe { libc::msync(self.at.cast(), self.len, libc::MS_SYNC) } {
+			0 => Ok(()),
+			_ => Err(std::io::Error::last_os_error().raw_os_error().unwrap()),
+		}
+	}
+
+	/// What reading the mapping's first byte does in a child process: the byte, or the signal that ended the child.
+	fn touched(&self) -> Result<u8, i32> {
+		// SAFETY: the child only reads the mapping and exits, both async-signal-safe; the parent reaps it.
+		let pid = unsafe { libc::fork() };
+		assert!(pid >= 0, "{}", std::io::Error::last_os_error());
+		if pid == 0 {
+			// SAFETY: the mapping is live in the child too.
+			unsafe { libc::_exit(i32::from(std::ptr::read_volatile(self.at))) }
+		}
+		let mut status = 0;
+		// SAFETY: waits for the child forked above.
+		assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+		if libc::WIFSIGNALED(status) {
+			Err(libc::WTERMSIG(status))
+		} else {
+			Ok(libc::WEXITSTATUS(status) as u8)
+		}
 	}
 }
 
@@ -861,6 +894,271 @@ impl Drop for Mapping {
 	fn drop(&mut self) {
 		// SAFETY: unmaps what `new` mapped.
 		unsafe { libc::munmap(self.at.cast(), self.len) };
+	}
+}
+
+/// A process holding the view at its end reads nothing more of it (`Kernel::close`), the view closed.
+#[test]
+fn a_process_holding_the_view_at_its_close_reads_nothing_more() {
+	if !wanted() {
+		return;
+	}
+	held_past_the_end(false, 0);
+}
+
+/// The same at a SIGTERM, as a helper's stop sends 20 s before its SIGKILL (`TimeoutStopSec=20s`), with many files
+/// opened before: the drop is done well inside that.
+#[test]
+fn a_process_holding_the_view_at_a_sigterm_reads_nothing_more_and_the_drop_is_quick() {
+	if !wanted() {
+		return;
+	}
+	held_past_the_end(true, CLOSE_FILES);
+}
+
+/// Cache files opened and read before a SIGTERM, for the drop's time.
+const CLOSE_FILES: usize = 3000;
+
+/// A program ends while a process holds: read fds on a node file and a cache file, a fd on a file it never read while
+/// another process read it, a fd on a node file and one on a cache file it made and wrote, a folder's fd it opens names
+/// through, a shared mapping read once, and a shared writable mapping written and not written back. The program refuses
+/// every request from the end on, has the kernel drop the pages of every file opened through it (each pinned page a
+/// process already took stays its own), then unmounts and exits. After it, every read, stat and open through what the
+/// process holds fails, the mapping's next touch gets SIGBUS, and the written page is lost: its msync gives EIO and the
+/// disk never has it. During the drop (held at its gate, `CLOSE_GATE`), the program answers each request (a statfs,
+/// asked over and over from before the end) with a refusal, and after the end the session is gone. The end is the
+/// view's close (`sigterm` false) or a SIGTERM, after `files` more cache files were opened and read.
+fn held_past_the_end(sigterm: bool, files: usize) {
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	node.put("notes/package.json", "{\"name\":\"notes\"}", false);
+	let gate = node.dir.join("gate");
+	let mut a = Program::start(&node, "a", &[(CLOSE_GATE, gate.to_str().unwrap())]);
+	assert!(a.logged().contains("qorpera-folder: kernel cache on"), "{}", a.logged());
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), [b'x'; 8192]).unwrap();
+	std::fs::write(a.at(Y), [b'y'; 4096]).unwrap();
+	for i in 0..files {
+		let name = format!("{TOP}/f{i}.js");
+		std::fs::write(a.at(&name), [b'f'; 4096]).unwrap();
+		assert_eq!(std::fs::read(a.at(&name)).unwrap().len(), 4096);
+	}
+	let readme = File::open(a.at("notes/readme")).unwrap();
+	assert_eq!(read_at(&readme), "readme");
+	let x = File::open(a.at(X)).unwrap();
+	assert_eq!(read_at(&x), "x".repeat(64));
+	let package = File::open(a.at("notes/package.json")).unwrap();
+	let other = Command::new("cat").arg(a.at("notes/package.json")).output().unwrap();
+	assert_eq!(other.stdout, b"{\"name\":\"notes\"}");
+	// Made and written through the fd it holds, then read through it (the kernel asks for the attributes once).
+	let z = format!("{TOP}/z.js");
+	let made: Vec<File> = ["notes/made.md", z.as_str()]
+		.iter()
+		.map(|path| {
+			let file = OpenOptions::new().read(true).write(true).create_new(true).open(a.at(path)).unwrap();
+			file.write_all_at(&[b'm'; 4096], 0).unwrap();
+			assert_eq!(read_at(&file), "m".repeat(64));
+			file
+		})
+		.collect();
+	let top = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(a.at(TOP)).unwrap();
+	assert!(opened_in(&top, "x.js").is_ok());
+	let mapped = Mapping::new(&x, false);
+	assert_eq!(mapped.start(), *b"xxxx");
+	assert_eq!(mapped.touched(), Ok(b'x'));
+	let y = OpenOptions::new().read(true).write(true).open(a.at(Y)).unwrap();
+	let written = Mapping::new(&y, true);
+	written.write(b"lost");
+	// Until the session is gone, a process asks for the view's statfs, which the kernel never keeps: through the drop,
+	// the program's loops answer each with a refusal. It is answered once before the end.
+	let refused = Arc::new(AtomicUsize::new(0));
+	let (started, start) = mpsc::channel();
+	let asking = {
+		let (asked, refused) = (top.try_clone().unwrap(), refused.clone());
+		std::thread::spawn(move || {
+			let (mut started, deadline) = (Some(started), Instant::now() + Duration::from_secs(60));
+			while Instant::now() < deadline {
+				// SAFETY: all zeros is a statfs; an open fd and a statfs to fill.
+				let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+				if unsafe { libc::fstatfs(asked.as_raw_fd(), &mut stats) } == 0 {
+					if let Some(started) = started.take() {
+						started.send(()).unwrap();
+					}
+					continue;
+				}
+				match std::io::Error::last_os_error().raw_os_error() {
+					Some(libc::EIO) => refused.fetch_add(1, Ordering::SeqCst),
+					errno => return errno,
+				};
+			}
+			None
+		})
+	};
+	start.recv_timeout(Duration::from_secs(10)).expect("a statfs answered before the end");
+	let code = if sigterm {
+		a.signal(libc::SIGTERM);
+		0
+	} else {
+		node.close_view();
+		3
+	};
+	// The drop dropped every inode and waits: the program is still ending, and refuses each statfs.
+	assert!(eventually(Duration::from_secs(10), || a.logged().contains(DROP_WAITS)), "{}", a.logged());
+	assert!(eventually(Duration::from_secs(10), || refused.load(Ordering::SeqCst) > 0), "no statfs refused during the drop");
+	assert!(a.child.try_wait().unwrap().is_none(), "the program ended during the drop: {}", a.logged());
+	std::fs::write(&gate, "").unwrap();
+	let ended = eventually(Duration::from_secs(20), || a.child.try_wait().unwrap().is_some());
+	assert!(ended, "the program did not stop: {}", a.logged());
+	assert_eq!(a.child.wait().unwrap().code(), Some(code), "{}", a.logged());
+	let mut buf = [0; 16];
+	for (what, file) in [("readme", &readme), ("x.js", &x), ("package.json", &package), ("made.md", &made[0]), ("z.js", &made[1])] {
+		let read = file.read_at(&mut buf, 0);
+		assert!(read.is_err(), "a read of {what} through its held fd after the end gave {read:?}");
+		assert!(file.metadata().is_err(), "a stat of {what} through its held fd after the end");
+	}
+	let opened = opened_in(&top, "x.js");
+	assert!(opened.is_err(), "an open through the held folder after the end gave {opened:?}");
+	assert!(top.metadata().is_err(), "a stat of the held folder after the end");
+	assert_eq!(mapped.touched(), Err(libc::SIGBUS));
+	assert_eq!(written.synced(), Err(libc::EIO));
+	assert_eq!(std::fs::read(disk(&node, "y.js")).unwrap(), [b'y'; 4096]);
+	// The statfs asked while the connection ended gets ECONNABORTED, a later one ENOTCONN.
+	let last = asking.join().unwrap();
+	println!("statfs refused {} times through the end, then {last:?}", refused.load(Ordering::SeqCst));
+	assert!(matches!(last, Some(libc::ECONNABORTED | libc::ENOTCONN)), "the session outlived the program: {last:?}");
+	// Every file and folder opened through the program: x, y, readme, package.json, the two made, the top, and the
+	// `files`.
+	let log = a.logged();
+	let all = |l: &&str| l.starts_with("qorpera-folder: closing: dropped the kernel's pages of ") && l.ends_with(" ms");
+	let line = log.lines().find(all).unwrap_or_else(|| panic!("{log}"));
+	let words: Vec<&str> = line.split(' ').collect();
+	let (dropped, ms): (usize, u64) = (words[7].parse().unwrap(), words[10].parse().unwrap());
+	assert_eq!(dropped, files + 7, "{line}");
+	assert!(ms < 10_000, "{line}");
+	println!("{line}");
+}
+
+/// A create let through before the end whose reply goes out only after the end's drop (`LATE_CREATE`), at the node
+/// and in a cache: the drop came before the kernel had the inode, which it makes from the reply after. The reply hands
+/// no attributes to keep, so the open's permission check asks for them, is refused, and the create opens nothing.
+#[test]
+fn a_create_answered_after_the_ends_drop_opens_nothing() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let gate = node.dir.join("gate");
+	let mut a = Program::start(&node, "a", &[(CLOSE_GATE, gate.to_str().unwrap()), (LATE_CREATE, "late.md")]);
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	let (made, creates) = mpsc::channel();
+	for path in ["notes/late.md".to_string(), format!("{TOP}/late.md")] {
+		let (path, made) = (a.at(&path), made.clone());
+		std::thread::spawn(move || made.send(OpenOptions::new().read(true).write(true).create_new(true).open(path)).unwrap());
+	}
+	let waits = "qorpera-folder: test switch: a create of late.md was let through and waits for the end's drop";
+	assert!(eventually(Duration::from_secs(10), || a.logged().matches(waits).count() == 2), "{}", a.logged());
+	a.signal(libc::SIGTERM);
+	// Both inodes were in the drop; the replies go out after it, during the end.
+	for _ in 0..2 {
+		let created = creates.recv_timeout(Duration::from_secs(20)).unwrap();
+		assert_eq!(created.as_ref().map_err(|e| e.raw_os_error()).err(), Some(Some(libc::EIO)), "{created:?}");
+	}
+	assert!(a.logged().contains(DROP_WAITS), "{}", a.logged());
+	assert!(a.child.try_wait().unwrap().is_none(), "the program ended during the drop: {}", a.logged());
+	std::fs::write(&gate, "").unwrap();
+	let ended = eventually(Duration::from_secs(20), || a.child.try_wait().unwrap().is_some());
+	assert!(ended, "the program did not stop: {}", a.logged());
+	assert_eq!(a.child.wait().unwrap().code(), Some(0), "{}", a.logged());
+}
+
+/// A hard link of a cache file a process holds open, let through before the end, whose reply goes out only after the
+/// end's drop (`LATE_CREATE`): the kernel takes a link's attributes for the inode it has without asking whether it
+/// dropped newer ones. The reply hands none to keep, so a stat through the held fd asks for them, during the end and
+/// after it, and fails.
+#[test]
+fn a_link_answered_after_the_ends_drop_gives_a_held_fd_nothing() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let gate = node.dir.join("gate");
+	let mut a = Program::start(&node, "a", &[(CLOSE_GATE, gate.to_str().unwrap()), (LATE_CREATE, "late.js")]);
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), "one").unwrap();
+	let x = File::open(a.at(X)).unwrap();
+	assert_eq!(read_at(&x), "one");
+	let linked = {
+		let (from, to) = (a.at(X), a.at(&format!("{TOP}/late.js")));
+		std::thread::spawn(move || std::fs::hard_link(from, to))
+	};
+	let waits = "qorpera-folder: test switch: a link of late.js was let through and waits for the end's drop";
+	assert!(eventually(Duration::from_secs(10), || a.logged().contains(waits)), "{}", a.logged());
+	a.signal(libc::SIGTERM);
+	// The file's inode was in the drop; the reply goes out after it, during the end.
+	linked.join().unwrap().unwrap();
+	assert!(a.logged().contains(DROP_WAITS), "{}", a.logged());
+	assert!(a.child.try_wait().unwrap().is_none(), "the program ended during the drop: {}", a.logged());
+	let stat = x.metadata();
+	assert!(stat.is_err(), "a stat through the held fd during the end gave {stat:?}");
+	std::fs::write(&gate, "").unwrap();
+	let ended = eventually(Duration::from_secs(20), || a.child.try_wait().unwrap().is_some());
+	assert!(ended, "the program did not stop: {}", a.logged());
+	assert_eq!(a.child.wait().unwrap().code(), Some(0), "{}", a.logged());
+	let stat = x.metadata();
+	assert!(stat.is_err(), "a stat through the held fd after the end gave {stat:?}");
+}
+
+/// A fallback that cannot drop what the kernel holds ends the program (exit 1) through the same end as a stop. A
+/// SIGTERM during that end's drop waits for it (`Kernel::close`): the program neither unmounts nor exits before the
+/// drop is done, and a fd held past the end reads nothing more.
+#[test]
+fn a_stop_during_a_fallbacks_end_waits_for_its_drop() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let gate = node.dir.join("gate");
+	let mut a = Program::start(&node, "a", &[(NOTIFY_FAILS, "all"), (CLOSE_GATE, gate.to_str().unwrap())]);
+	assert!(a.logged().contains("qorpera-folder: kernel cache on"), "{}", a.logged());
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), "one").unwrap();
+	let x = File::open(a.at(X)).unwrap();
+	assert_eq!(read_at(&x), "one");
+	// Not a change: a drops all its kernel holds, which fails, so it falls back, cannot drop either, and ends.
+	let mut stream = UnixStream::connect(a.socket(&node)).unwrap();
+	stream.write_all(b"no change\n").unwrap();
+	assert!(eventually(Duration::from_secs(10), || a.logged().contains(DROP_WAITS)), "{}", a.logged());
+	let log = a.logged();
+	assert!(log.contains("qorpera-folder: kernel cache: could not drop what the kernel holds (test switch); stopping"), "{log}");
+	// The stop's end comes second, and waits.
+	a.signal(libc::SIGTERM);
+	let second = "qorpera-folder: closing: the end already began; waiting for its drop";
+	assert!(eventually(Duration::from_secs(10), || a.logged().contains(second)), "{}", a.logged());
+	std::thread::sleep(Duration::from_millis(500));
+	assert!(a.child.try_wait().unwrap().is_none(), "the program ended during the drop: {}", a.logged());
+	assert!(mounted(&a.mountpoint), "the program unmounted during the drop: {}", a.logged());
+	std::fs::write(&gate, "").unwrap();
+	let ended = eventually(Duration::from_secs(20), || a.child.try_wait().unwrap().is_some());
+	assert!(ended, "the program did not stop: {}", a.logged());
+	// Whichever caller exits first: the fallback's 1 or the stop's 0.
+	let code = a.child.wait().unwrap().code();
+	assert!(matches!(code, Some(0 | 1)), "{code:?}: {}", a.logged());
+	assert!(x.read_at(&mut [0; 4], 0).is_err(), "a read through a held fd after the end");
+	assert!(x.metadata().is_err(), "a stat through a held fd after the end");
+	assert_eq!(a.logged().matches("qorpera-folder: closing: dropped the kernel's pages of ").count(), 1, "{}", a.logged());
+}
+
+/// `openat` of `name` in the folder `dir` holds open.
+fn opened_in(dir: &File, name: &str) -> std::io::Result<File> {
+	use std::os::fd::FromRawFd;
+	let name = CString::new(name).unwrap();
+	// SAFETY: an open fd and a C string; a new fd is owned by the File.
+	match unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) } {
+		fd if fd >= 0 => Ok(unsafe { File::from_raw_fd(fd) }),
+		_ => Err(std::io::Error::last_os_error()),
 	}
 }
 

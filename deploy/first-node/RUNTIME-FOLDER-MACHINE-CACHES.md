@@ -264,6 +264,43 @@ after the write (the test allows 10 seconds). Writes through a shared mapping re
 not ordered with `msync` or `fsync`. Before MC3 (MC2b) the case did not arise: each mount had caches of its own, and
 another mount never saw the file at all. Within one mount a mapping sees a write at once, before MC3 and with it.
 
+**At the end** (the coordinator's closure fix, 18 October; session 39's row 4). A process may hold the view past its
+end: an fd, a folder's fd it opens names through, a mapping. Its kernel keeps the pages it read (`FOPEN_KEEP_CACHE`,
+before MC3 too), so without more it would read them after the end. So at the end (the view's close, a stop's SIGTERM,
+a fall-back that exits, or the kernel ending the session), in this order:
+1. The program refuses every request with `EIO`. The check is one flag, read before any lock.
+2. It has the kernel drop the attributes and pages of every inode ever opened through the mount
+   (`inval_inode(ino, 0, 0)`; mapped pages are unmapped). Every open (of a file or a folder) and create notes its
+   inode in a set never emptied, then checks the flag again before its reply. A thread of its own drops them, while the program's loops go on answering (each request with the
+   refusal), so a page lock the kernel holds for a request in flight is let go. It waits at most 15 seconds, then goes
+   on, so the exit stays inside a stop's 20 seconds before its SIGKILL (`TimeoutStopSec=20s`, `KillMode=mixed`).
+3. It unmounts and exits.
+
+The end has one owner, its first caller. A second (a SIGTERM during a fall-back's end, or the other way round) waits
+for the first one's drop, up to the same 15 seconds, so no caller unmounts or exits before the drop is done.
+
+An open or a create answered noted its inode before a check that found the flag unset, and the drop takes the set
+after setting it: so the set has every inode a process holds open. A read that passed its check before the flag fills
+a page the kernel holds locked until the answer, and the drop waits for that lock: so no page filled through the mount
+outlives the drop. A create's inode the kernel makes only when it reads the reply, which can come after the drop; so a
+create's reply hands the kernel no entry and no attributes to keep, and the open's permission check asks for them at
+once (`default_permissions`). After the end that ask is refused, and such a create opens nothing (one more `getattr`
+per create the rest of the time). A hard link of a cache file hands no attributes either: the kernel takes a link's
+attributes for the inode it holds without asking whether it dropped newer ones since, so a reply after the drop would
+give a fd held on the file its attributes back. Instead that fd's next `stat` asks, and is refused. After the drop, a
+read, a `stat` and an open through a held fd, of a file or a folder, fail (`EIO` while the program runs, `ENOTCONN`
+after), and a mapping's next touch gets `SIGBUS`. Three limits:
+- A page a process pinned before the end (`O_DIRECT` into a mapping, `vmsplice`, a registered buffer) stays the
+  pinner's: it keeps only what it took before the end.
+- The dirty pages of a shared writable mapping not written back by the end are lost: their writeback is refused, and
+  the next `msync` or `fsync` gives `EIO`.
+- A folder or file held without an open (a working folder, an `O_PATH` fd) is not in the set: the kernel keeps its
+  attributes until their time-out (`--ttl-seconds`). Its contents need a read or a listing, which fail.
+
+A SIGKILL before the drop is done ends the session (the kernel aborts the connection when the process dies), and the
+pages not yet dropped stay held: a held fd reads them until their attributes' time-out (`--ttl-seconds`) passes, a
+mapping until it is unmapped. The drop is far inside the 15 seconds (the PR body has the times).
+
 ## Removing old caches
 
 A cache is removed by its **top entries**: a cache folder or a cache file whose parent is published (each
@@ -302,6 +339,7 @@ it.
 | MC1 | Folder program: rules 1, 2, 3, 5 and 6 everywhere, on 5d's local layer and cache list (one table of names, shared with rule 4's worktree list); listings; the edge (`EXDEV`, `rmdir`, a published folder's rename moving its cache, a gone parent dropping it); boundaries not waiting for cache files. A new build record and the installer pins | FUSE tests with the stand-in service: `npm install` (from a local registry folder, no network) in a project folder outside `code/` making `node_modules` that the service never sees, a second view listing nothing there; `pip install` into `.venv`; `.pnpm-store` at the top; `build` made in a project (cache) and in a plain folder (published); a file named `build` published; `Build` published; a name where the node has an entry not cache, and the node's later entry winning; `rmdir` `ENOTEMPTY` with a cache inside, `rm -r` removing it; `mv` of the parent moving the cache; the parent removed by another view dropping it; a folder renamed across the edge `EXDEV` and `mv` copying; a hard link across `EXDEV`; links and hard links inside the cache; a boundary while a cache file is open |
 | MC2 | Folder program: rule 4's ignore rules (every `.gitignore` and `info/exclude`, with negation, folder patterns and `**`, from a pinned crate that follows git's rules, or a small matcher if the build's dependency review prefers it), on 5d's index reader for what is tracked; a file renamed across the edge (published from the cache, moved into it while pending); `git add -f` of an ignored path moving it into the folder | FUSE tests with real git (the pinned version): a file and a folder ignored by the top `.gitignore`, by one in a subfolder, and by `info/exclude`, never published; a negated pattern published; a tracked path under an ignored pattern published; `git add -f` of an ignored file and folder published at the next boundary; an editor's atomic save over a published file from an ignored temporary name, and over an ignored file from a plain one; a changed `.gitignore` deciding only new names; the cases checked against `git check-ignore` |
 | MC3a | Folder program: `--cache-dir` (its checks, its layout, an old cache under `--local-dir` let go), several programs on one cache folder (above), and the kernel cache with its start-up check, its telling and its fall-back; the speed test; a new build record and the installer pins | FUSE tests: a cache folder another account could use refused; the kernel cache on only where the start-up check allows it (a test switch stands for the kernel's answer); two programs on one cache folder, each change of one (write, truncate, create, rename, unlink, rmdir, a file crossing the edge) shown by the other at once, through a held fd too; an open keeping pages only of a file as it was; a notify that fails, a program that does not answer (in time, with `EIO`) and a message that is no change each turning the kernel cache off or dropping all; node files still handed over; a shared mapping showing a change within 10 s; a cache top the node took unheard gone from every program at the resync; a held folder's names gone with its cache top; the name filter: a name looked up absent, a listed name removed, a lookup that read the disk just before another program's create or removal, a full table (a test switch makes it small), a folder renamed under a walked path and a rename onto a name seen absent, each shown at once, and names the kernel never held changed without an epoch; two programs changing one file and one folder 500 times at once, in bounded time, with mutants (an answer that drops pages or an entry first) caught; unit tests for the shared cache folder (each program's own `gone/`, no program taking another's caches, the seal and another program's write handle). The speed test by hand on a node, its table in the PR body |
+| MC3a end | Folder program: at its end, every request refused, then the kernel's pages of every inode ever opened dropped, then the unmount and the exit ("At the end"); a new build record and the installer pins | FUSE tests: at the view's close, and at a SIGTERM after 3000 more cache files were opened, a process holding read fds on a node file and a cache file, a never-read fd on a file another process read, fds on a node file and a cache file it made and wrote, a folder's fd it opens names through, a shared mapping read once and a shared writable mapping written: after the end every read, `stat` and `openat` fails, the mapping's next touch (in a child) gets `SIGBUS`, the written page's `msync` gives `EIO` and the disk never has it; a `statfs` asked over and over gets the refusal through the end, then `ENOTCONN` or `ECONNABORTED`; the drop's time in the log, under 10 seconds. A SIGTERM during a fall-back's end (its drop held at a test gate) neither unmounts nor exits before the drop is done; a create at the node and one in a cache, let through before the end and answered after its drop, open nothing (`EIO`); a hard link to a cache file a process holds open, answered after the drop, gives that fd no attributes (its `stat` fails during the end and after it). Mutants (no drop, attributes only, no refusal, an open or a create not noted, a second end that does not wait, a create's attributes kept, a link's attributes kept) caught |
 | MC3b | Folder program: removing old caches by top entry, with their records and locks (below) | FUSE tests: removal of an unused cache folder, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open folder or an open top cache file, and of one whose parent is gone; an ignored file and an ignored folder at a worktree's top (each its own top entry) kept past 14 days and when the disk is short, the writer then getting `ENOSPC`, and removed with their worktree; a mount started again finding its cache |
 | MC3c | The per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM". Session 39's | The helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view; two owners' mounts not seeing each other's cache |
 
@@ -310,13 +348,14 @@ it.
   so it comes after LK4 too.
 - MC2 needs MC1's table and 5d's index reader. MC3a needs MC2 (merged), MC3b needs MC3a, and MC3c (the helper and
   the setups) takes the flag MC3a adds, so it merges after MC3a.
+- MC3a end is stacked on MC3a and merges after it, before the v183 cut; MC3a does not wait for it.
 - Step 4's acceptance (4g) shows item 8 on company machines (amendment item 10), so 4g waits for MC1 and MC3. Step
   6's 6e waits for item 8's caches in the program (RUNTIME-FOLDER-TEST-MACHINES.md, Order). A test machine builds in
   worktrees, where 5d's cache already holds; MC3 makes that cache outlive the machine's mounts.
 - No migration slot and no SQL test are needed.
 
 **Deploy.** The folder program ships in the coordinator's node release and the images, with a new build record
-(`deploy/folder-service/folder-program-linux-x64.json`) and the installer's pin in MC1, MC2, MC3a and MC3b. MC3c's
+(`deploy/folder-service/folder-program-linux-x64.json`) and the installer's pin in MC1, MC2, MC3a, MC3a end and MC3b. MC3c's
 folder helper ships with the runtime.
 
 **Deferred (needs Codex).** None of these slices needs a model. Each step's acceptance run (4g, 5's and 6f) shows a
