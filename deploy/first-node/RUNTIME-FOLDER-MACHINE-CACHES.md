@@ -149,15 +149,30 @@ is never under `/run`, which empties at every start and is memory.
   `/var/lib/qorpera-folder/local/<worker>`. A member's parallel sessions run their programs at once on the one
   machine. They share the machine's `--cache-dir`.
 - **The key.** Company machines carry many owners: desktop holders change, and every offline command gets a view and
-  a mount of its own (4b). A cache made from one owner's files must not show in a view of another owner with a
-  narrower authority. So:
-  - **company machines:** one cache per owner on the machine: `/var/lib/qorpera-folder/cache/<owner>`, where the
-    owner is the agent of an agent's view, or the member of a member's view. A desktop's mount and all of one agent's
-    commands share it, so `npm install` in one command and `npm test` in the next work as on one disk;
+  a mount of its own (4b). A cache made in one view must not show in a view of a different authority. So:
+  - **company machines, desktops:** one cache for all the machine's desktops, `/var/lib/qorpera-folder/cache/desktop`.
+    Every desktop view has the same company-wide authority, whoever holds it (decision 1 gives the proof), so a
+    takeover or a new run keeps the desktop's mount and its cache;
+  - **company machines, commands:** one cache per owner on the machine: `/var/lib/qorpera-folder/cache/<owner>`, where
+    the owner is the command's agent, `agent-<uuid>`, from the core's answer to the view's open (`owner`). The helper
+    also takes `member-<uuid>`, for a member's view of that kind; the core opens none today. All of one agent's
+    commands share it, so `npm install` in one command and `npm test` in the next work as on one disk. A command never
+    sees the desktops' cache, so an install made on the desktop is made again by a command: that costs speed only;
   - **coding and test machines:** one cache per machine, `/var/lib/qorpera-folder/cache/machine`. Root inside the
     machine already joins its sessions (contract item 11, "Root makes one member's sessions on one machine no walls
     between each other"), so walls between their caches would protect nothing;
-  - decision 1 below keeps company machines on one cache per owner.
+  - the folder helper refuses a mismatch: a desktop with an owner's cache, a command with the desktops' cache, or an
+    owner of another shape;
+  - a company-wide view renews only while its agent and member still read the folder's root, as its open required
+    (migration 20260930516000), because a cache's files are on the machine and the core never authorizes them again.
+    A principal that loses the root read (a member who leaves, an agent whose grant is revoked or lapses) has its views
+    closed at their next renewal; their caches stay where they are until removal (below). The folder service renews
+    every 40 s and tells the machine of the closure at once. From then on the core refuses every read and publish of
+    the view, and only files already in the machine's cache can still be read, until the mount ends: a command's at
+    the closure (at most 40 s after the loss), a desktop's after its 60 s handoff grace (at most 40 + 60 s), when the
+    folder program exits 3 and its unit unmounts it. The grace is the folder program's
+    (`crates/qorpera-folder/src/link.rs`, `expire` and `note`), and the folder service gives it to desktop views only
+    (`switchable`).
 - **A cache is kept at its path.** A `node_modules` made in one folder serves that folder only. A command on a company
   machine that works in the folder the last one worked in finds it. A new coding session works in a new worktree, so
   it installs again, as a new git worktree on a local disk does; the package managers' own stores in the user's home
@@ -324,8 +339,9 @@ it.
 
 ## What does not change
 
-- **The core and SQL.** Nothing: a cache never reaches the core. The core's refusal of `node_modules` outside `code/`
-  stays as the last check. No migration and no SQL test.
+- **The core and SQL.** A cache never reaches the core. The core's refusal of `node_modules` outside `code/` stays as
+  the last check. MC3c's migration 20260930516000 (SQL test 538) only names a command view's owner in the open answer
+  and makes a company-wide view's renewal check the root read again ("The key", above).
 - **The folder service.** Nothing for caches: a cache path never reaches it. Its `checkNewPath` refusal of
   `node_modules` stays for a program without these slices.
 - **The server-side tools and the web app.** Nothing: they never see a cache.
@@ -341,18 +357,22 @@ it.
 | MC3a | Folder program: `--cache-dir` (its checks, its layout, an old cache under `--local-dir` let go), several programs on one cache folder (above), and the kernel cache with its start-up check, its telling and its fall-back; the speed test; a new build record and the installer pins | FUSE tests: a cache folder another account could use refused; the kernel cache on only where the start-up check allows it (a test switch stands for the kernel's answer); two programs on one cache folder, each change of one (write, truncate, create, rename, unlink, rmdir, a file crossing the edge) shown by the other at once, through a held fd too; an open keeping pages only of a file as it was; a notify that fails, a program that does not answer (in time, with `EIO`) and a message that is no change each turning the kernel cache off or dropping all; node files still handed over; a shared mapping showing a change within 10 s; a cache top the node took unheard gone from every program at the resync; a held folder's names gone with its cache top; the name filter: a name looked up absent, a listed name removed, a lookup that read the disk just before another program's create or removal, a full table (a test switch makes it small), a folder renamed under a walked path and a rename onto a name seen absent, each shown at once, and names the kernel never held changed without an epoch; two programs changing one file and one folder 500 times at once, in bounded time, with mutants (an answer that drops pages or an entry first) caught; unit tests for the shared cache folder (each program's own `gone/`, no program taking another's caches, the seal and another program's write handle). The speed test by hand on a node, its table in the PR body |
 | MC3a end | Folder program: at its end, every request refused, then the kernel's pages of every inode ever opened dropped, then the unmount and the exit ("At the end"); a new build record and the installer pins | FUSE tests: at the view's close, and at a SIGTERM after 3000 more cache files were opened, a process holding read fds on a node file and a cache file, a never-read fd on a file another process read, fds on a node file and a cache file it made and wrote, a folder's fd it opens names through, a shared mapping read once and a shared writable mapping written: after the end every read, `stat` and `openat` fails, the mapping's next touch (in a child) gets `SIGBUS`, the written page's `msync` gives `EIO` and the disk never has it; a `statfs` asked over and over gets the refusal through the end, then `ENOTCONN` or `ECONNABORTED`; the drop's time in the log, under 10 seconds. A SIGTERM during a fall-back's end (its drop held at a test gate) neither unmounts nor exits before the drop is done; a create at the node and one in a cache, let through before the end and answered after its drop, open nothing (`EIO`); a hard link to a cache file a process holds open, answered after the drop, gives that fd no attributes (its `stat` fails during the end and after it). Mutants (no drop, attributes only, no refusal, an open or a create not noted, a second end that does not wait, a create's attributes kept, a link's attributes kept) caught |
 | MC3b | Folder program: removing old caches by top entry, with their records and locks (below) | FUSE tests: removal of an unused cache folder, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open folder or an open top cache file, and of one whose parent is gone; an ignored file and an ignored folder at a worktree's top (each its own top entry) kept past 14 days and when the disk is short, the writer then getting `ENOSPC`, and removed with their worktree; a mount started again finding its cache |
-| MC3c | The per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM". Session 39's | The helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view; two owners' mounts not seeing each other's cache |
+| MC3c | The key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/desktop` for a desktop and `cache/<owner>` for a command; decision 1, with migration 20260930516000), and per machine on coding and test machines (their setups pass it); the office's node e2e. Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM". Session 39's | The helper's tests: `mount` passing `cache/desktop` for every desktop of the machine, a command's owner's cache folder, one for one owner's commands and another for another owner's, a desktop and a command each refused the other's cache, and the cache kept past the mount and the helper; SQL test 538: a desktop view's authority the same for each kind of holder, and a company-wide view whose agent or member lost the root read not renewed; the office's node e2e ([`../test-machine/OFFICE-FOLDER-CACHES.md`](../test-machine/OFFICE-FOLDER-CACHES.md)) |
 
 **Order.**
 - MC1 builds on 5d's local layer, so it starts once #1096 has merged. It changes the same program files as LK4 (links),
   so it comes after LK4 too.
 - MC2 needs MC1's table and 5d's index reader. MC3a needs MC2 (merged), MC3b needs MC3a, and MC3c (the helper and
-  the setups) takes the flag MC3a adds, so it merges after MC3a.
+  the setups) takes the flag MC3a adds, so it merges after MC3a. MC3c changes step 4's folder helper (its owner,
+  qorpera-80, is gone; the coordinator took the notice on 18 October).
 - MC3a end is stacked on MC3a and merges after it, before the v183 cut; MC3a does not wait for it.
 - Step 4's acceptance (4g) shows item 8 on company machines (amendment item 10), so 4g waits for MC1 and MC3. Step
   6's 6e waits for item 8's caches in the program (RUNTIME-FOLDER-TEST-MACHINES.md, Order). A test machine builds in
   worktrees, where 5d's cache already holds; MC3 makes that cache outlive the machine's mounts.
-- No migration slot and no SQL test are needed.
+- MC3c (the helper and the setups) carries migration 20260930516000 and SQL test 538 (decision 1, amended), and the
+  office's node e2e: [`../test-machine/OFFICE-FOLDER-CACHES.md`](../test-machine/OFFICE-FOLDER-CACHES.md) (the caches
+  on the disk, each owner's apart, found after a restart, and a closed view's end within its bound). It passes only
+  with MC3a's program pinned.
 
 **Deploy.** The folder program ships in the coordinator's node release and the images, with a new build record
 (`deploy/folder-service/folder-program-linux-x64.json`) and the installer's pin in MC1, MC2, MC3a, MC3a end and MC3b. MC3c's
@@ -365,10 +385,24 @@ real install on a live machine.
 
 The coordinator chose the first option of each question on 15 October. The plan above builds them.
 
-1. **The key on company machines: one cache per owner on the machine** (above). Views can differ in authority, and a
-   build's output can hold the text of the files it read, so a cache made from one agent's files never shows in
-   another agent's or a member's view. A takeover by a member starts with an empty cache, and its first install is
-   slower; that is accepted. Not chosen: one cache per machine, as on coding machines.
+1. **The key on company machines** (above), amended by the coordinator on 18 October (MC3c): a cache made in one view
+   never shows in a view of different authority. Desktop views share one authority, so a machine's desktops share
+   `cache/desktop`. Commands and member views are one cache per owner. A build's output can hold the text of the files
+   it read, so a cache made in one authority's view must not reach another's. Not chosen: one cache per machine for
+   everything, as on coding machines; nor one per desktop holder, which a takeover would empty.
+   Why every desktop view has the same authority, on master's code:
+   - a desktop view opens only while the screen's agent and the view's member both read the root resource:
+     `20260928259230_folder_core_views.sql` lines 335-399, the refusal at 394-399; the root read is
+     `qorpera_folder_reads_root`, `20260928549400_folder_test_machine_views.sql` lines 40-49;
+   - its actor's view is company-wide: 20260928259230 line 206 (later kinds: 20260928539120 lines 215-218,
+     20260928549400 lines 110-111, 20260928559230 line 150);
+   - a company-wide actor reads only paths whose covering resource is the shared root, or `rules/`, on top of its own
+     authority: 20260928259230 lines 258-288, the check at 264-266 (20260928469130 line 738 only adds a worker
+     report's write after it);
+   - and since 20260930516000 it renews only while both still read the root. A member loses the root read only by
+     leaving the company; an agent, when its grant is revoked or lapses, or the root's version changes.
+   SQL test 538 pins the set for each kind of holder (a run, no one once the run let go, a read-only worker's run, a
+   member's takeover, a viewer's takeover) and fails if a desktop view could ever read less or more.
 2. **The name lists: rules 2 and 3 as written.** `vendor` and `.yarn` stay out, because projects often commit them. A
    name added later is a one-line change in the program; a name dropped would leave existing caches where they are
    (rule 6).

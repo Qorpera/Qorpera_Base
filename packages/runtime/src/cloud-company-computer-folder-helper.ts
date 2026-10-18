@@ -23,6 +23,7 @@ import {
 	type CompanyComputerFolderView,
 	companyComputerFolderAnswerLogged,
 	companyComputerFolderPaths,
+	isCompanyComputerFolderCache,
 	isCompanyComputerFolderName,
 	isCompanyComputerFolderNotices,
 	isCompanyComputerFolderReport,
@@ -32,6 +33,7 @@ import {
 } from "./cloud-company-computer-folder-helper-client.ts";
 import { readCompanyComputerLinuxMetadata } from "./cloud-company-computer-linux-host.ts";
 import { integer, properties, systemctl } from "./cloud-company-computer-systemd.ts";
+import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts";
 
 /**
  * The office's folder helper (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Mounts in the VM"): the one root piece that mounts
@@ -409,6 +411,8 @@ function below(entries: readonly CompanyComputerMountEntry[], path: string): str
 
 export interface CompanyComputerFolderHelperOptions {
 	readonly root?: string;
+	/** Where the mounts' cache folders are, on the machine's disk. */
+	readonly cacheRoot?: string;
 	readonly mountMs?: number;
 	readonly switchMs?: number;
 	readonly settleMs?: number;
@@ -423,6 +427,7 @@ export interface CompanyComputerFolderHelperOptions {
 export class CompanyComputerFolderHelper {
 	readonly #system: CompanyComputerFolderHelperSystem;
 	readonly #root: string;
+	readonly #cacheRoot: string;
 	readonly #mountMs: number;
 	readonly #switchMs: number;
 	readonly #settleMs: number;
@@ -442,6 +447,7 @@ export class CompanyComputerFolderHelper {
 	constructor(system: CompanyComputerFolderHelperSystem, options: CompanyComputerFolderHelperOptions = {}) {
 		this.#system = system;
 		this.#root = options.root ?? COMPANY_COMPUTER_FOLDER_ROOT;
+		this.#cacheRoot = options.cacheRoot ?? FOLDER_CACHE.root;
 		this.#mountMs = options.mountMs ?? MOUNT_MS;
 		this.#switchMs = options.switchMs ?? SWITCH_MS;
 		this.#settleMs = options.settleMs ?? SETTLE_MS;
@@ -459,6 +465,7 @@ export class CompanyComputerFolderHelper {
 		for (const [path, mode] of [
 			[this.#root, 0o755],
 			[`${this.#root}/views`, 0o700],
+			[`${this.#root}/units`, 0o700],
 			[`${this.#root}/state`, 0o700],
 			[`${this.#root}/mounts`, 0o755],
 			[`${this.#root}/relay`, 0o700],
@@ -669,9 +676,11 @@ export class CompanyComputerFolderHelper {
 	): Promise<CompanyComputerFolderAnswer> {
 		switch (request.op) {
 			case "mount":
-				return this.#mount(request.name, request.view).catch((): CompanyComputerFolderAnswers["mount"] => ({
-					answer: "failed",
-				}));
+				// A desktop with an owner's cache, or a command with the desktops' or none, is refused before anything.
+				if (!isCompanyComputerFolderCache(request.name, request.cache)) return { answer: "invalid" };
+				return this.#mount(request.name, request.view, request.cache).catch(
+					(): CompanyComputerFolderAnswers["mount"] => ({ answer: "failed" }),
+				);
 			case "switch":
 				return this.#switch(request.name, request.view).catch((): CompanyComputerFolderAnswers["switch"] => ({
 					answer: "failed",
@@ -687,12 +696,16 @@ export class CompanyComputerFolderHelper {
 		}
 	}
 
-	async #mount(name: string, view: CompanyComputerFolderView): Promise<CompanyComputerFolderAnswers["mount"]> {
+	async #mount(
+		name: string,
+		view: CompanyComputerFolderView,
+		cache: string,
+	): Promise<CompanyComputerFolderAnswers["mount"]> {
 		if (await this.#held(name)) return { answer: "held" };
 		await this.#writeView(name, view, false);
 		let answer: CompanyComputerFolderAnswers["mount"]["answer"];
 		try {
-			answer = await this.#start(name);
+			answer = await this.#start(name, cache);
 		} catch {
 			answer = "failed";
 		}
@@ -701,11 +714,16 @@ export class CompanyComputerFolderHelper {
 		return { answer };
 	}
 
-	async #start(name: string): Promise<"mounted" | "closed" | "unanswered" | "failed"> {
+	async #start(name: string, cache: string): Promise<"mounted" | "closed" | "unanswered" | "failed"> {
 		const paths = companyComputerFolderPaths(name, this.#root),
 			unit = companyComputerFolderUnit(name);
 		// Whatever a helper that stopped half way left for this name.
 		if (!(await this.#clear(name))) return "failed";
+		// The cache stays on the machine's disk across mounts and starts; the program takes it only as root's and closed
+		// (RUNTIME-FOLDER-MACHINE-CACHES.md, "Where the cache lives"), and the unit reads which from its environment.
+		const folder = `${this.#cacheRoot}/${cache}`;
+		await ensureFolderCacheDir(folder);
+		await writeFile(paths.unit, `QORPERA_FOLDER_CACHE_DIR=${folder}\n`, { mode: 0o600, flag: "wx" });
 		// The program's read log starts only in an empty state folder.
 		await mkdir(paths.state, { mode: 0o700 });
 		await chmod(paths.state, 0o700);
@@ -824,7 +842,8 @@ export class CompanyComputerFolderHelper {
 		return !(await this.#held(name));
 	}
 
-	/** Stops the mount's program and removes its mounts, folders and state; the view file stays. */
+	/** Stops the mount's program and removes its mounts, folders, state and unit environment; the view file stays, and
+	 * the cache, which outlives every mount. */
 	async #clear(name: string): Promise<boolean> {
 		const paths = companyComputerFolderPaths(name, this.#root),
 			unit = companyComputerFolderUnit(name);
@@ -832,6 +851,7 @@ export class CompanyComputerFolderHelper {
 		const state = await this.#system.inspect(unit);
 		if (state.active === "failed") await this.#system.resetFailed(unit);
 		else if (state.active !== "inactive") return false;
+		await rm(paths.unit, { force: true });
 		// The program's own ExecStopPost detaches a mount it left; then the parent's bind goes.
 		for (let round = 0; round < 16; round++) {
 			const [top] = below(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.parent);

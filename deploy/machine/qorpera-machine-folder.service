@@ -14,8 +14,11 @@ Group=root
 # busy, and stopping the commands never stops it.
 Slice=qorpera-control.slice
 # One mount for the whole machine, in PID 1's namespace: every command, what a command leaves running and every
-# container sees the same /company. Commands run as root (allow_other). The helper made the state folder empty.
-ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --allow-other yes
+# container sees the same /company. Commands run as root (allow_other). The helper made the state folder empty. The
+# caches (node_modules, build output) are on the machine's disk, root's and closed (the image and the helper make the
+# folder; the program makes none of it), so they outlive the program's starts and the machine's boots: one for the
+# machine, as its commands all run as root (deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md).
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --cache-dir /var/lib/qorpera-folder/cache/machine --allow-other yes
 # A program killed hard leaves its mount behind; take it away.
 ExecStopPost=-/usr/bin/umount -l /company
 # Any exit (a crash, a kill, root's unmount) starts it again, with the version map and read log its state folder

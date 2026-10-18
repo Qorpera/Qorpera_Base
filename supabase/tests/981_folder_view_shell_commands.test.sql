@@ -160,8 +160,10 @@ begin
 		if (select x.network from public.qorpera_runtime_office_shell_commands x where x.id = c) is distinct from n then
 			raise exception 'The command''s network is not %', n; end if;
 		s := pg_temp.open_command(c);
-		if (select count(*) from jsonb_object_keys(s)) <> 4 or s ->> 'schema' is distinct from 'qorpera.folder-view/v1'
-			or length(s ->> 'pass') is distinct from 43 or s ->> 'leaseUntil' is null then
+		-- 20260930516000 (538): and its owner, for its cache.
+		if (select count(*) from jsonb_object_keys(s)) <> 5 or s ->> 'schema' is distinct from 'qorpera.folder-view/v1'
+			or length(s ->> 'pass') is distinct from 43 or s ->> 'leaseUntil' is null
+			or s ->> 'owner' is distinct from 'agent-63200000-0000-4000-8000-0000000000a1' then
 			raise exception 'Command view open (network %): %', n, s; end if;
 		w := pg_temp.view_row(s);
 		if w.kind is distinct from 'computer_shell_command' or w.shell_command_id is distinct from c or w.screen_id is not null

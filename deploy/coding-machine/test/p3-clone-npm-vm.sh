@@ -99,7 +99,7 @@ step() {
 }
 skip() { jq -cn --arg step "$1" --arg why "$2" '{step: $step, ok: true, skipped: $why}' >>"$steps"; }
 
-# The mount the worktree is on, and its program's view file, state folder and local folder.
+# The mount the worktree is on, and its program's view file, state folder, local folder and cache folder.
 find_mount() {
 	local tool
 	for tool in git node npm jq setpriv stat find findmnt; do
@@ -108,10 +108,10 @@ find_mount() {
 	[[ -d $worktree ]] || fail "no folder $worktree"
 	[[ $worktree =~ (^|/)(code/[^/]+/[^/]+/worktrees/[^/]+)$ ]] ||
 		fail "$worktree is not a worker's worktree (.../code/<owner>/<name>/worktrees/<worker>): 5d keeps caches on the disk only there"
-	local rel=${BASH_REMATCH[2]} dev p i m v s l c found=0
+	local rel=${BASH_REMATCH[2]} dev p i m v s l k c found=0
 	local -a argv
 	local mountpoint="" view_file=${P3_VIEW_FILE:-} state_dir=${P3_STATE_DIR:-} local_dir=${P3_LOCAL_DIR:-} connect=""
-	local program=${P3_PROGRAM:-}
+	local cache_dir=${P3_CACHE_DIR:-} program=${P3_PROGRAM:-}
 	[[ $(findmnt -n -o FSTYPE --target "$worktree") == fuse* ]] || fail "$worktree is not on a FUSE mount"
 	dev=$(stat -c %d "$worktree")
 	# The mount program whose mountpoint is the same file system as the worktree (the session may see it elsewhere
@@ -119,13 +119,14 @@ find_mount() {
 	for p in /proc/[0-9]*; do
 		mapfile -d '' -t argv <"$p/cmdline" 2>/dev/null || continue
 		[[ ${argv[0]:-} == *qorpera-folder && ${argv[1]:-} == mount ]] || continue
-		m="" v="" s="" l="" c=""
+		m="" v="" s="" l="" k="" c=""
 		for ((i = 2; i + 1 < ${#argv[@]}; i++)); do
 			case ${argv[i]} in
 			--mountpoint) m=${argv[i + 1]} ;;
 			--view-file) v=${argv[i + 1]} ;;
 			--state-dir) s=${argv[i + 1]} ;;
 			--local-dir) l=${argv[i + 1]} ;;
+			--cache-dir) k=${argv[i + 1]} ;;
 			--connect) c=${argv[i + 1]} ;;
 			esac
 		done
@@ -133,6 +134,7 @@ find_mount() {
 		found=$((found + 1))
 		mountpoint=$m connect=$c
 		view_file=${P3_VIEW_FILE:-$v} state_dir=${P3_STATE_DIR:-$s} local_dir=${P3_LOCAL_DIR:-$l}
+		cache_dir=${P3_CACHE_DIR:-$k}
 		[[ -n $program ]] || program=$(readlink -f "$p/exe")
 	done
 	((found <= 1)) || fail "$found qorpera-folder mounts serve $worktree"
@@ -144,11 +146,27 @@ find_mount() {
 	local_dir=${local_dir:-$state_dir/local}
 	program=${program:-/opt/qorpera-folder/qorpera-folder}
 	[[ -d $local_dir ]] || fail "no local folder $local_dir (the mount's --local-dir)"
-	printf 'mountpoint=%q\nview_file=%q\nstate_dir=%q\nlocal_dir=%q\nconnect=%q\nprogram=%q\nfolder=%q\n' \
-		"$mountpoint" "$view_file" "$state_dir" "$local_dir" "$connect" "$program" "$rel/$id" >"$work/found"
+	# The caches are in the cache folder (--cache-dir, MC3), or in the local folder without one.
+	local caches=${cache_dir:-$local_dir}/caches
+	[[ -d $caches ]] || fail "no caches folder $caches (in the mount's --cache-dir, or its --local-dir without one)"
+	printf 'mountpoint=%q\nview_file=%q\nstate_dir=%q\nlocal_dir=%q\ncaches=%q\nconnect=%q\nprogram=%q\nfolder=%q\n' \
+		"$mountpoint" "$view_file" "$state_dir" "$local_dir" "$caches" "$connect" "$program" "$rel/$id" >"$work/found"
 	fact mountpoint "$mountpoint"
 	fact stateDir "$state_dir"
 	fact localDir "$local_dir"
+	fact caches "$caches"
+}
+
+# Where the mount keeps the caches made in the node's folder <path> (crates/qorpera-folder/src/local.rs, `Local::room`):
+# <caches>/d/<name>/d/<name>/…/t, one d/<name> for each name in the path.
+cache_room() {
+	local room=$caches name
+	local -a names
+	IFS=/ read -ra names <<<"$1"
+	for name in "${names[@]}"; do
+		if [[ -n $name ]]; then room=$room/d/$name; fi
+	done
+	printf '%s/t\n' "$room"
 }
 
 # Two packages packed on the VM's disk: p3-dep has a bin and bundles p3-leaf (a nested node_modules).
@@ -270,17 +288,17 @@ npm_ci() {
 	[[ -z $changes ]] || fail "npm ci left changes git sees: $changes"
 }
 
-# node_modules is on the VM's disk: the local folder holds what the mount shows there, and the mount serves every
+# node_modules is on the VM's disk: the caches folder holds what the mount shows there, and the mount serves every
 # entry under it from the disk (a local inode), while the app's own files are the folder's.
 on_disk() {
-	local app=$scratch/again/p3-app through on n ino bad=0
-	local disk=$local_dir/cache/$folder/again/p3-app/node_modules
+	local app=$scratch/again/p3-app through on n ino bad=0 disk
+	disk=$(cache_room "$folder/again/p3-app")/node_modules
 	[[ -d $app/node_modules ]] || fail "no $app/node_modules"
-	[[ -d $disk ]] || fail "node_modules is not in the local folder: no $disk"
+	[[ -d $disk ]] || fail "node_modules is not in the caches folder: no $disk"
 	through=$(cd "$app/node_modules" && find . -printf '%P %y\n' | sort)
 	on=$(cd "$disk" && find . -printf '%P %y\n' | sort)
 	[[ $through == "$on" ]] ||
-		fail "the mount's node_modules and the local folder's differ: $(diff <(echo "$through") <(echo "$on") | head -20)"
+		fail "the mount's node_modules and the caches folder's differ: $(diff <(echo "$through") <(echo "$on") | head -20)"
 	n=$(grep -c . <<<"$through")
 	((n >= 10)) || fail "only $n entries in node_modules"
 	while read -r ino; do
@@ -339,16 +357,16 @@ publish() {
 	fact publishCommit "$(jq -r '.commitId // ""' "$report")"
 }
 
-# The scratch folder removed through the mount (its node_modules leaves the local folder with it), and the removal
+# The scratch folder removed through the mount (its node_modules leaves the caches folder with it), and the removal
 # published unless P3_PUBLISH=0, wherever run stopped: the mount may have published some of the scratch folder on its
 # own, or run's publish saved it and then failed a check.
 cleanup() {
-	local report=$work/publish-cleanup.json
+	local report=$work/publish-cleanup.json disk
 	if [[ -e $scratch ]]; then as rm -rf "$scratch"; fi
 	[[ ! -e $scratch ]] || fail "$scratch is still there"
-	if [[ -n ${local_dir:-} && -n ${folder:-} ]]; then
-		[[ ! -e $local_dir/cache/$folder/again/p3-app/node_modules ]] ||
-			fail "the local folder still holds $local_dir/cache/$folder/again/p3-app/node_modules"
+	if [[ -n ${caches:-} && -n ${folder:-} ]]; then
+		disk=$(cache_room "$folder/again/p3-app")/node_modules
+		[[ ! -e $disk ]] || fail "the caches folder still holds $disk"
 	fi
 	# folder is set once preflight found the mount; without it there is nothing to publish with.
 	if [[ ${P3_PUBLISH:-1} != 0 && -n ${folder:-} ]]; then

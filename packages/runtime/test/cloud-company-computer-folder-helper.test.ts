@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -327,11 +327,13 @@ async function setup(options: CompanyComputerFolderHelperOptions = {}) {
 	const base = await mkdtemp(join(await realpath(tmpdir()), "fh-"));
 	cleanups.push(() => rm(base, { recursive: true, force: true }));
 	const root = join(base, "folder");
+	const cacheRoot = join(base, "qorpera-folder", "cache");
 	const system = new FakeSystem(root);
 	cleanups.push(() => Promise.all(system.relays.map((server) => new Promise((resolve) => server.close(resolve)))));
 	const logs: string[] = [];
 	const helper = new CompanyComputerFolderHelper(system, {
 		root,
+		cacheRoot,
 		mountMs: 300,
 		switchMs: 300,
 		settleMs: 100,
@@ -340,7 +342,15 @@ async function setup(options: CompanyComputerFolderHelperOptions = {}) {
 		...options,
 	});
 	await helper.prepare();
-	return { base, root, system, helper, logs, paths: (name: string) => companyComputerFolderPaths(name, root) };
+	return {
+		base,
+		root,
+		cacheRoot,
+		system,
+		helper,
+		logs,
+		paths: (name: string) => companyComputerFolderPaths(name, root),
+	};
 }
 
 const mode = async (path: string) => (await stat(path)).mode & 0o777;
@@ -362,12 +372,24 @@ const unmount = (name: string, final = false): Boundary => ({
 	final,
 	timeoutMs: 30000,
 });
+const OWNER = "agent-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+const MEMBER = "member-12121212-3434-4565-9787-989898989898";
+/** A mount as the office service asks for one: a desktop with the desktops' cache, a command with its owner's. */
+const mount = (name: string, view = VIEW, cache = name.startsWith("desktop-") ? "desktop" : OWNER) =>
+	({ op: "mount", name, view, cache }) as const;
+/** The cache folder a mount's program was started with, from its unit's environment. */
+const cacheOf = async (unit: string) => {
+	const text = await readFile(unit, "utf8");
+	expect(text).toMatch(/^QORPERA_FOLDER_CACHE_DIR=\S+\n$/);
+	return text.slice("QORPERA_FOLDER_CACHE_DIR=".length, -1);
+};
 
 describe("the folder helper's mounts", () => {
 	it("prepares root's folders and refuses a root that is not a directory of its own", async () => {
 		const { base, root } = await setup();
 		expect(await mode(root)).toBe(0o755);
 		expect(await mode(join(root, "views"))).toBe(0o700);
+		expect(await mode(join(root, "units"))).toBe(0o700);
 		expect(await mode(join(root, "state"))).toBe(0o700);
 		expect(await mode(join(root, "mounts"))).toBe(0o755);
 		expect(await mode(join(root, "relay"))).toBe(0o700);
@@ -385,14 +407,19 @@ describe("the folder helper's mounts", () => {
 	});
 
 	it("mounts a view in an empty state folder, under a shared parent, and holds the name", async () => {
-		const { helper, system, paths, logs } = await setup();
+		const { helper, system, paths, logs, cacheRoot } = await setup();
 		const at = paths(DESKTOP);
 		// What a mount of the same name left before the helper stopped.
 		await mkdir(at.state, { recursive: true });
 		await writeFile(join(at.state, "reads.log"), "old");
-		expect(await helper.answer({ op: "mount", name: DESKTOP, view: VIEW })).toEqual({ answer: "mounted" });
+		await writeFile(at.unit, "QORPERA_FOLDER_CACHE_DIR=/old\n");
+		expect(await helper.answer(mount(DESKTOP))).toEqual({ answer: "mounted" });
 		expect(JSON.parse(await readFile(at.view, "utf8"))).toEqual(VIEW);
 		expect(await mode(at.view)).toBe(0o600);
+		expect(await cacheOf(at.unit)).toBe(join(cacheRoot, "desktop"));
+		expect(await mode(at.unit)).toBe(0o600);
+		for (const folder of [join(cacheRoot, ".."), cacheRoot, join(cacheRoot, "desktop")])
+			expect(await mode(folder)).toBe(0o700);
 		expect(await mode(at.state)).toBe(0o700);
 		expect(await gone(join(at.state, "reads.log"))).toBe(true);
 		expect(await mode(at.parent)).toBe(0o755);
@@ -400,7 +427,7 @@ describe("the folder helper's mounts", () => {
 		const unit = companyComputerFolderUnit(DESKTOP);
 		expect(unit).toBe(`qorpera-office-folder-mount@${DESKTOP}.service`);
 		expect(system.calls).toEqual([`stop ${unit}`, `share ${at.parent}`, `start ${unit}`]);
-		expect(await helper.answer({ op: "mount", name: DESKTOP, view: NEWER })).toEqual({ answer: "held" });
+		expect(await helper.answer(mount(DESKTOP, NEWER))).toEqual({ answer: "held" });
 		expect(JSON.parse(await readFile(at.view, "utf8"))).toEqual(VIEW);
 		expect(await helper.answer({ op: "list" })).toEqual({
 			answer: "list",
@@ -414,21 +441,21 @@ describe("the folder helper's mounts", () => {
 		const at = paths(COMMAND),
 			unit = companyComputerFolderUnit(COMMAND);
 		const clean = async () => {
-			for (const path of [at.view, at.state, at.parent]) expect(await gone(path)).toBe(true);
+			for (const path of [at.view, at.unit, at.state, at.parent]) expect(await gone(path)).toBe(true);
 			expect(system.entries).toEqual([]);
 			expect(await helper.answer({ op: "list" })).toEqual({ answer: "list", mounts: [] });
 		};
 		system.program = "closes";
-		expect(await helper.answer({ op: "mount", name: COMMAND, view: VIEW })).toEqual({ answer: "closed" });
+		expect(await helper.answer(mount(COMMAND))).toEqual({ answer: "closed" });
 		expect(system.calls.slice(-3)).toEqual([`stop ${unit}`, `reset-failed ${unit}`, `detach ${at.parent}`]);
 		await clean();
 		system.program = "hangs";
-		expect(await helper.answer({ op: "mount", name: COMMAND, view: VIEW })).toEqual({ answer: "unanswered" });
+		expect(await helper.answer(mount(COMMAND))).toEqual({ answer: "unanswered" });
 		expect(system.calls.slice(-3)).toEqual([`start ${unit}`, `stop ${unit}`, `detach ${at.parent}`]);
 		await clean();
 		system.program = "mounts";
 		system.shares = false;
-		expect(await helper.answer({ op: "mount", name: COMMAND, view: VIEW })).toEqual({ answer: "failed" });
+		expect(await helper.answer(mount(COMMAND))).toEqual({ answer: "failed" });
 		expect(system.calls.slice(-4)).toEqual([
 			`stop ${unit}`,
 			`share ${at.parent}`,
@@ -443,7 +470,7 @@ describe("the folder helper's mounts", () => {
 		const at = paths(DESKTOP);
 		system.program = "hangs";
 		system.detaches = false;
-		expect(await helper.answer({ op: "mount", name: DESKTOP, view: VIEW })).toEqual({ answer: "failed" });
+		expect(await helper.answer(mount(DESKTOP))).toEqual({ answer: "failed" });
 		expect(await gone(at.view)).toBe(false);
 		expect(await helper.answer({ op: "list" })).toEqual({
 			answer: "list",
@@ -452,19 +479,92 @@ describe("the folder helper's mounts", () => {
 		expect(await helper.answer({ op: "drop", name: DESKTOP })).toEqual({ answer: "failed" });
 		system.detaches = true;
 		expect(await helper.answer({ op: "drop", name: DESKTOP })).toEqual({ answer: "dropped" });
-		for (const path of [at.view, at.state, at.parent]) expect(await gone(path)).toBe(true);
+		for (const path of [at.view, at.unit, at.state, at.parent]) expect(await gone(path)).toBe(true);
 		expect(await helper.answer({ op: "drop", name: DESKTOP })).toEqual({ answer: "unknown" });
 	});
 
 	it("runs one name's requests one after another", async () => {
 		const { helper, system } = await setup();
 		const [mounted, unmounted] = await Promise.all([
-			helper.answer({ op: "mount", name: COMMAND, view: VIEW }),
+			helper.answer(mount(COMMAND)),
 			helper.answer(unmount(COMMAND, true)),
 		]);
 		expect(mounted).toEqual({ answer: "mounted" });
 		expect(unmounted).toEqual({ answer: "saved", report: report(), unmounted: true });
 		expect(system.publishes).toHaveLength(1);
+	});
+});
+
+// RUNTIME-FOLDER-MACHINE-CACHES.md, decision 1 and "Where the cache lives".
+describe("the folder helper's caches", () => {
+	const SECOND_DESKTOP = companyComputerFolderName("desktop", "bbbbbbbb-2222-4333-8444-555555555555");
+	const OTHER_COMMAND = companyComputerFolderName("command", "66666666-7777-4888-9999-dddddddddddd");
+
+	it("keeps a cache past its mount and the helper: a mount started again finds it", async () => {
+		const { helper, system, root, cacheRoot, paths } = await setup();
+		expect(await helper.answer(mount(DESKTOP))).toEqual({ answer: "mounted" });
+		// What the program kept in the desktops' cache.
+		await writeFile(join(cacheRoot, "desktop", "kept"), "installed");
+		expect(await helper.answer({ op: "drop", name: DESKTOP })).toEqual({ answer: "dropped" });
+		expect(await gone(paths(DESKTOP).unit)).toBe(true);
+		const again = new CompanyComputerFolderHelper(system, { root, cacheRoot, mountMs: 300, pollMs: 5 });
+		await again.prepare();
+		expect(await again.answer(mount(DESKTOP))).toEqual({ answer: "mounted" });
+		expect(await cacheOf(paths(DESKTOP).unit)).toBe(join(cacheRoot, "desktop"));
+		expect(await readFile(join(cacheRoot, "desktop", "kept"), "utf8")).toBe("installed");
+	});
+
+	it("gives the machine's desktops one cache, and each owner's commands one of their own", async () => {
+		const { helper, cacheRoot, paths } = await setup();
+		for (const request of [mount(DESKTOP), mount(SECOND_DESKTOP), mount(COMMAND), mount(OTHER_COMMAND, VIEW, MEMBER)])
+			expect(await helper.answer(request)).toEqual({ answer: "mounted" });
+		for (const name of [DESKTOP, SECOND_DESKTOP])
+			expect(await cacheOf(paths(name).unit)).toBe(join(cacheRoot, "desktop"));
+		expect(await cacheOf(paths(COMMAND).unit)).toBe(join(cacheRoot, OWNER));
+		expect(await cacheOf(paths(OTHER_COMMAND).unit)).toBe(join(cacheRoot, MEMBER));
+		expect((await readdir(cacheRoot)).sort()).toEqual(["desktop", MEMBER, OWNER].sort());
+		for (const folder of await readdir(cacheRoot)) expect(await mode(join(cacheRoot, folder))).toBe(0o700);
+		// A desktop's move to a newer view keeps its cache.
+		expect(await helper.answer({ op: "switch", name: DESKTOP, view: NEWER })).toEqual({ answer: "switched" });
+		expect(await cacheOf(paths(DESKTOP).unit)).toBe(join(cacheRoot, "desktop"));
+	});
+
+	it("refuses a desktop with an owner's cache, and a command with the desktops', another shape or none", async () => {
+		const { helper, system, cacheRoot, paths } = await setup();
+		for (const request of [
+			mount(DESKTOP, VIEW, OWNER),
+			mount(DESKTOP, VIEW, MEMBER),
+			mount(COMMAND, VIEW, "desktop"),
+			mount(COMMAND, VIEW, "machine"),
+			mount(COMMAND, VIEW, `agent-${OWNER.slice("agent-".length).toUpperCase()}`),
+			mount(COMMAND, VIEW, `agent-../${OWNER}`),
+			mount(COMMAND, VIEW, "user-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"),
+		]) {
+			expect(await helper.answer(request)).toEqual({ answer: "invalid" });
+			expect(parseCompanyComputerFolderRequest(JSON.stringify(request))).toBe(undefined);
+		}
+		expect(parseCompanyComputerFolderRequest(JSON.stringify({ op: "mount", name: COMMAND, view: VIEW }))).toBe(
+			undefined,
+		);
+		expect(system.calls).toEqual([]);
+		for (const name of [DESKTOP, COMMAND]) expect(await gone(paths(name).view)).toBe(true);
+		expect(await gone(cacheRoot)).toBe(true);
+		for (const request of [mount(DESKTOP), mount(COMMAND), mount(COMMAND, VIEW, MEMBER)])
+			expect(parseCompanyComputerFolderRequest(JSON.stringify(request))).toEqual(request);
+	});
+
+	it("fails a mount whose cache is not a folder of root's own, and closes one open to others", async () => {
+		const { helper, system, base, cacheRoot, paths } = await setup();
+		await mkdir(join(base, "elsewhere"));
+		await mkdir(cacheRoot, { recursive: true });
+		await symlink(join(base, "elsewhere"), join(cacheRoot, "desktop"));
+		expect(await helper.answer(mount(DESKTOP))).toEqual({ answer: "failed" });
+		for (const path of [paths(DESKTOP).view, paths(DESKTOP).unit, paths(DESKTOP).state])
+			expect(await gone(path)).toBe(true);
+		expect(system.calls).not.toContain(`start ${companyComputerFolderUnit(DESKTOP)}`);
+		await mkdir(join(cacheRoot, OWNER), { mode: 0o755 });
+		expect(await helper.answer(mount(COMMAND))).toEqual({ answer: "mounted" });
+		expect(await mode(join(cacheRoot, OWNER))).toBe(0o700);
 	});
 });
 
@@ -474,7 +574,7 @@ describe("the folder helper's boundaries", () => {
 		const at = paths(COMMAND);
 		expect(await helper.answer(boundary(COMMAND))).toEqual({ answer: "unknown" });
 		expect(system.publishes).toEqual([]);
-		await helper.answer({ op: "mount", name: COMMAND, view: VIEW });
+		await helper.answer(mount(COMMAND));
 		expect(await helper.answer({ ...boundary(COMMAND), timeoutMs: 45000 })).toEqual({
 			answer: "saved",
 			report: report(),
@@ -541,7 +641,7 @@ describe("the folder helper's boundaries", () => {
 	it("unmounts only after a boundary that ends the mount", async () => {
 		const { helper, system, paths } = await setup();
 		const at = paths(COMMAND);
-		await helper.answer({ op: "mount", name: COMMAND, view: VIEW });
+		await helper.answer(mount(COMMAND));
 		const refused = report([{ path: "a", outcome: "refused", reason: "denied" }]);
 		system.published = { code: 4, stdout: printed(refused) };
 		expect(await helper.answer(unmount(COMMAND, true))).toEqual({
@@ -563,7 +663,7 @@ describe("the folder helper's boundaries", () => {
 		expect(system.entries).toEqual([]);
 		expect(await helper.answer(unmount(COMMAND))).toEqual({ answer: "unknown" });
 		// A program that exited 3: closed at once, then taken away.
-		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		await helper.answer(mount(DESKTOP));
 		system.units.set(companyComputerFolderUnit(DESKTOP), CLOSED);
 		expect(await helper.answer(unmount(DESKTOP))).toEqual({ answer: "closed", unmounted: true });
 		const unit = companyComputerFolderUnit(DESKTOP);
@@ -578,8 +678,8 @@ describe("the folder helper's boundaries", () => {
 
 	it("logs each boundary's report, a stop's refusal included, without a path or a reason", async () => {
 		const { helper, system, logs } = await setup();
-		await helper.answer({ op: "mount", name: COMMAND, view: VIEW });
-		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		await helper.answer(mount(COMMAND));
+		await helper.answer(mount(DESKTOP));
 		// The stop's final boundary of a command: refused, so the stop control drops the mount; only this log keeps why.
 		const stopped = report(
 			[
@@ -617,7 +717,7 @@ describe("moving a desktop's mount to a newer view", () => {
 	it("switches once the program has said hello with the newer view", async () => {
 		const { helper, paths } = await setup();
 		const at = paths(DESKTOP);
-		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		await helper.answer(mount(DESKTOP));
 		expect(await helper.answer({ op: "switch", name: DESKTOP, view: NEWER })).toEqual({ answer: "switched" });
 		expect(JSON.parse(await readFile(at.view, "utf8"))).toEqual(NEWER);
 		expect(JSON.parse(await readFile(join(at.state, "view.json"), "utf8")).view).toEqual(NEWER);
@@ -626,8 +726,8 @@ describe("moving a desktop's mount to a newer view", () => {
 
 	it("refuses another company, another pass for the same view, and a command, and leaves the view file", async () => {
 		const { helper, paths } = await setup();
-		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
-		await helper.answer({ op: "mount", name: COMMAND, view: VIEW });
+		await helper.answer(mount(DESKTOP));
+		await helper.answer(mount(COMMAND));
 		for (const view of [
 			{ ...NEWER, environmentId: "env-2" },
 			{ ...VIEW, pass: "another-pass" },
@@ -642,7 +742,7 @@ describe("moving a desktop's mount to a newer view", () => {
 	it("is pending until the program takes the view, closed after exit 3, and failed on a malformed record", async () => {
 		const { helper, system, paths } = await setup();
 		const at = paths(DESKTOP);
-		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		await helper.answer(mount(DESKTOP));
 		system.follows = false;
 		expect(await helper.answer({ op: "switch", name: DESKTOP, view: NEWER })).toEqual({ answer: "pending" });
 		expect(JSON.parse(await readFile(at.view, "utf8"))).toEqual(NEWER);
@@ -663,7 +763,7 @@ describe("moving a desktop's mount to a newer view", () => {
 		const { helper, system, paths } = await setup();
 		const at = paths(DESKTOP),
 			unit = companyComputerFolderUnit(DESKTOP);
-		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		await helper.answer(mount(DESKTOP));
 		system.follows = false;
 		expect(await helper.answer({ op: "switch", name: DESKTOP, view: NEWER })).toEqual({ answer: "pending" });
 		// Killed before its hello: systemd starts it again, and the restarted program reads the view file.
@@ -768,7 +868,7 @@ describe("the folder helper's socket", () => {
 
 	it("answers each request line, and invalid for anything else", async () => {
 		const { socket } = await serve();
-		expect(await askCompanyComputerFolderHelper({ op: "mount", name: DESKTOP, view: VIEW }, { socket })).toEqual({
+		expect(await askCompanyComputerFolderHelper(mount(DESKTOP), { socket })).toEqual({
 			answer: "mounted",
 		});
 		expect(await askCompanyComputerFolderHelper(boundary(DESKTOP), { socket })).toEqual({
@@ -783,7 +883,8 @@ describe("the folder helper's socket", () => {
 			"not json",
 			JSON.stringify({ op: "list", extra: 1 }),
 			JSON.stringify({ ...boundary(DESKTOP), final: true }),
-			JSON.stringify({ op: "mount", name: DESKTOP, view: { ...VIEW, pass: "has space" } }),
+			JSON.stringify(mount(DESKTOP, { ...VIEW, pass: "has space" })),
+			JSON.stringify(mount(DESKTOP, VIEW, OWNER)),
 			JSON.stringify({ op: "drop", name: "desktop-1" }),
 		])
 			expect(await raw(socket, `${line}\n`)).toBe('{"answer":"invalid"}\n');
@@ -901,8 +1002,7 @@ describe("the folder helper's runs", () => {
 					server.close(resolve);
 				}),
 		);
-		for (const name of names)
-			expect(await context.helper.answer({ op: "mount", name, view: VIEW })).toEqual({ answer: "mounted" });
+		for (const name of names) expect(await context.helper.answer(mount(name))).toEqual({ answer: "mounted" });
 		const ended = (name: string) => askCompanyComputerFolderHelper({ op: "ended", name }, { socket });
 		const commandState = async (name: string) =>
 			JSON.parse(await readFile(join(context.paths(name).state, "command.json"), "utf8"));
@@ -1628,8 +1728,10 @@ describe("the folder helper's machine", () => {
 		const mount = await guest("qorpera-office-folder-mount@.service.in");
 		const lines = mount.split("\n");
 		expect(lines).toContain(`ConditionPathExists=${template(at.view)}`);
+		// The cache folder the helper wrote for the mount; a unit without one does not start.
+		expect(lines).toContain(`EnvironmentFile=${template(at.unit)}`);
 		expect(lines).toContain(
-			`ExecStart=${COMPANY_COMPUTER_FOLDER_PROGRAM} mount --view-file ${template(at.view)} --mountpoint ${template(at.mountpoint)} --state-dir ${template(at.state)} --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@`,
+			`ExecStart=${COMPANY_COMPUTER_FOLDER_PROGRAM} mount --view-file ${template(at.view)} --mountpoint ${template(at.mountpoint)} --state-dir ${template(at.state)} --cache-dir \${QORPERA_FOLDER_CACHE_DIR} --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@`,
 		);
 		// Before each start too: a kill of the whole cgroup kills the stop-post umount with it (Q3, #1084).
 		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeGreaterThan(-1);

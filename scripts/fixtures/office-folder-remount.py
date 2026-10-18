@@ -50,8 +50,8 @@ CONFINEMENT = {"User", "Group", "UMask", "LimitCORE", "PrivateTmp", "PrivateDevi
 # What the office service needs to run the application, not to confine it: recorded as left out.
 OPERATIONAL = {"Type", "StateDirectory", "StateDirectoryMode", "WorkingDirectory", "Environment", "LoadCredential", "ExecStart", "Restart", "RestartSec", "KillMode", "KillSignal", "SendSIGKILL", "TimeoutStopSec", "ReadWritePaths"}
 # Master's office mount unit's ExecStart, rendered, and what it becomes: the proof's program and the synthetic node.
-MOUNT_START = "ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid {uid} --owner-gid {gid}"
-PROOF_START = "ExecStart={program} mount --connect unix:{socket} --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid {uid} --owner-gid {gid}"
+MOUNT_START = "ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --cache-dir ${{QORPERA_FOLDER_CACHE_DIR}} --allow-other yes --owner-uid {uid} --owner-gid {gid}"
+PROOF_START = "ExecStart={program} mount --connect unix:{socket} --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --cache-dir ${{QORPERA_FOLDER_CACHE_DIR}} --allow-other yes --owner-uid {uid} --owner-gid {gid}"
 SHOWN = ("MainPID", "NRestarts", "ExecMainStatus", "ExecMainCode", "ActiveState", "SubState", "Result")
 
 
@@ -362,8 +362,10 @@ def quiet(*args, seconds=30, keep=2000):
 
 
 def make_root():
-    """#1047's layout root: views and state for root only, mounts for anyone to reach."""
-    for path, mode in ((ROOT, 0o755), (ROOT / "views", 0o700), (ROOT / "state", 0o700), (ROOT / "mounts", 0o755)):
+    """#1047's layout root: views and state for root only, mounts for anyone to reach. With MC3c's units (each mount's
+    cache folder, read by the unit) and, here only, the caches themselves: the helper keeps them on the disk, but this
+    proof claims nothing outside its root and the program's home."""
+    for path, mode in ((ROOT, 0o755), (ROOT / "views", 0o700), (ROOT / "state", 0o700), (ROOT / "units", 0o700), (ROOT / "cache", 0o700), (ROOT / "mounts", 0o755)):
         path.mkdir(mode=mode)
         path.chmod(mode)
 
@@ -382,6 +384,12 @@ def lay_out(view, mode):
     descriptor = os.open(ROOT / "views" / f"{view}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "w") as file:
         json.dump({"environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass"}, file)
+    cache = ROOT / "cache" / view
+    cache.mkdir(mode=0o700)
+    cache.chmod(0o700)
+    descriptor = os.open(ROOT / "units" / f"{view}.env", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as file:
+        file.write(f"QORPERA_FOLDER_CACHE_DIR={cache}\n")
     base.run("mount", "--bind", str(parent), str(parent))
     base.run("mount", "--make-rshared", str(parent))
     if not shared(parent):
@@ -404,6 +412,8 @@ def tear_view(view):
             path.rmdir()
     shutil.rmtree(ROOT / "state" / view, ignore_errors=True)
     (ROOT / "views" / f"{view}.json").unlink(missing_ok=True)
+    (ROOT / "units" / f"{view}.env").unlink(missing_ok=True)
+    shutil.rmtree(ROOT / "cache" / view, ignore_errors=True)
     return steps
 
 
@@ -1067,7 +1077,7 @@ def selftest(office_path, mount_path):
     rendered = rendered_unit(mount_text, 1000, 1001)
     assert "@OFFICE_" not in rendered and "--owner-uid 1000 --owner-gid 1001" in rendered
     lines = proof_unit(mount_text, "/var/lib/qorpera-remount-x/qorpera-folder", "/run/qorpera-remount-x/node.sock", 1000, 1001).splitlines()
-    assert "ExecStart=/var/lib/qorpera-remount-x/qorpera-folder mount --connect unix:/run/qorpera-remount-x/node.sock --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid 1000 --owner-gid 1001" in lines
+    assert "ExecStart=/var/lib/qorpera-remount-x/qorpera-folder mount --connect unix:/run/qorpera-remount-x/node.sock --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --cache-dir ${QORPERA_FOLDER_CACHE_DIR} --allow-other yes --owner-uid 1000 --owner-gid 1001" in lines
     # #1085's line: a dead mount is taken away before each start.
     assert "ExecStartPre=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company" in lines and "ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company" in lines
     # Every other line of the rendered unit is kept as it is.

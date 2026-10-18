@@ -9,11 +9,12 @@ import {
 	realpath,
 	rm,
 	stat,
+	symlink,
 	utimes,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { idleRuleBusy, parseCloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -649,6 +650,9 @@ async function folderMachine() {
 	const m = await machine();
 	const folderRoot = join(m.root, "run", "qorpera-folder");
 	const mountpoint = join(m.root, "company");
+	// The machine's disk: /var/lib/qorpera-folder/cache/machine.
+	const folderCache = join(m.root, "var", "lib", "qorpera-folder", "cache", "machine");
+	await mkdir(join(m.root, "var", "lib"), { recursive: true });
 	const mounts = [
 		"22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
 		`25 22 0:24 / ${join(m.root, "run")} rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,size=1638400k,mode=755`,
@@ -699,6 +703,7 @@ async function folderMachine() {
 		system,
 		folderRoot,
 		folderMountpoint: mountpoint,
+		folderCache,
 		readMountinfo: async () => `${mounts.join("\n")}\n`,
 		sleep: async () => {},
 	});
@@ -708,7 +713,7 @@ async function folderMachine() {
 		mounts.splice(mounts.findIndex((line) => line.includes(" qorpera-company ")));
 		program.state = "ActiveState=activating\nResult=exit-code\nExecMainCode=2\nExecMainStatus=9\n";
 	};
-	return { ...m, system, folderRoot, mountpoint, mounts, program, seen, exited };
+	return { ...m, system, folderRoot, folderCache, mountpoint, mounts, program, seen, exited };
 }
 function aView() {
 	return { environmentId: randomUUID(), viewId: randomUUID(), pass: `qfp_${randomUUID().replaceAll("-", "")}` };
@@ -821,9 +826,35 @@ describe("company folder on the machine", () => {
 		const unit = await readFile(FOLDER_UNIT, "utf8");
 		expect(unit).not.toMatch(/^(Environment|EnvironmentFile|PassEnvironment|SetCredential|LoadCredential)\w*=/m);
 		expect(unit).toContain(
-			`\nExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file ${MACHINE_FOLDER.root}/view.json --mountpoint ${MACHINE_FOLDER.mountpoint} --state-dir ${MACHINE_FOLDER.root}/state --allow-other yes\n`,
+			`\nExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file ${MACHINE_FOLDER.root}/view.json --mountpoint ${MACHINE_FOLDER.mountpoint} --state-dir ${MACHINE_FOLDER.root}/state --cache-dir ${MACHINE_FOLDER.cache} --allow-other yes\n`,
 		);
+		expect(MACHINE_FOLDER.cache).toBe("/var/lib/qorpera-folder/cache/machine");
+		// The cache folder and the two above it, made before the start: root's (this process's user here), real folders
+		// and closed to every other user, as the program takes them (it makes none of them). It is on the machine's disk.
+		for (const folder of [dirname(dirname(m.folderCache)), dirname(m.folderCache), m.folderCache]) {
+			expect((await lstat(folder)).isDirectory()).toBe(true);
+			expect((await lstat(folder)).uid).toBe(process.geteuid?.());
+			expect((await stat(folder)).mode & 0o777).toBe(0o700);
+		}
 		expect(unit).toContain(`\nConditionPathExists=${MACHINE_FOLDER.root}/view.json\n`);
+	});
+
+	it("keeps the cache folder across views, and refuses a link or a file in its place before any start", async () => {
+		const m = await folderMachine();
+		const input = () => Buffer.from(JSON.stringify(aView()));
+		expect(await mountMachineFolder(input(), m.ports)).toMatchObject({ mount: "mounted" });
+		await writeFile(join(m.folderCache, "built"), "kept");
+		// Another view stops the program and empties its state folder; the caches on the machine's disk stay.
+		expect(await mountMachineFolder(input(), m.ports)).toMatchObject({ mount: "mounted" });
+		expect(m.program.starts).toBe(2);
+		expect(await readFile(join(m.folderCache, "built"), "utf8")).toBe("kept");
+		for (const make of [(path: string) => symlink(m.root, path), (path: string) => writeFile(path, "")]) {
+			const other = await folderMachine();
+			await mkdir(dirname(other.folderCache), { recursive: true });
+			await make(other.folderCache);
+			await expect(mountMachineFolder(input(), other.ports)).rejects.toThrow("FOLDER_CACHE_DIR_UNCONFIRMED");
+			expect(other.program.starts).toBe(0);
+		}
 	});
 
 	it("starts the program again after it exits while the view is open, and not after the node closed the view", async () => {
