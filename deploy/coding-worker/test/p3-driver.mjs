@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import * as c1v from "./p3-c1v.mjs";
 import * as c2 from "./p3-c2.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
@@ -457,6 +458,10 @@ try {
 			console.error(JSON.stringify(await database.describe(db, ids)));
 			pass(`turn 6 ended (${elapsed()})`);
 		}
+		// C1-V (p3-c1v.mjs), with P3_C1V=1: a second session busy beside this one keeps the machine awake, not this session.
+		if (node.codeHost && process.env.P3_C1V === "1")
+			await c1v.run({ db, ids, executor, calls, workerId, machine, head, machineIdSha256, gatewayFor, startSleeper, runToEnd,
+				guestState, guestProcesses, pass, note, fail, elapsed });
 		if (node.folder) pass(`the session's folder view mounts, worker and view: ${mounted().join(" ")}`);
 	} finally {
 		clearInterval(refreshing);
