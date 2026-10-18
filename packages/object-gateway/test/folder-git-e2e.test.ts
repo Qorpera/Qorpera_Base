@@ -104,7 +104,7 @@ interface Ran {
 	readonly out: string;
 }
 
-/** Runs `command`, with `input` on its standard input if given. */
+/** Runs `command`, with `input` on its standard input (empty if not given). */
 function run(
 	command: string,
 	args: readonly string[],
@@ -112,11 +112,9 @@ function run(
 ) {
 	return new Promise<Ran>((resolve, reject) => {
 		const { input, ...spawned } = options;
-		const child = spawn(command, args, {
-			...spawned,
-			stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-		});
-		child.stdin?.end(input);
+		const child = spawn(command, args, { ...spawned, stdio: ["pipe", "pipe", "pipe"] });
+		child.stdin.on("error", () => {});
+		child.stdin.end(input);
 		let out = "";
 		child.stdout.on("data", (data: Buffer) => {
 			out += data.toString();
