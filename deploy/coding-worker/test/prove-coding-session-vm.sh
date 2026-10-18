@@ -19,13 +19,14 @@
 # code host image is built and exported first (../../code-host/test/export-code-host-image.sh, which needs the
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
 # the session's repository. With P3_CUSTODY=1 as well, turns 2 to 9 prove a member's vault secret in custody in place
-# of the rest of Order 9 and C2's turns (test/p3-custody.mjs), and the run needs CUSTODY PROVEN.
+# of the rest of Order 9, C2's turns and C1-V (test/p3-custody.mjs), and the run needs CUSTODY PROVEN.
 # test/prove-coding-session-node.sh sets the node up; then test/p3-driver.mjs runs the test database here and the
-# executor in the node, for four turns of one coding session (six on phase B without custody: C2's two keep a quiet turn
-# awake and kill the folder service inside the node; nine with custody). Before and after, the test machine's links (but Docker's), nft
-# table names, a few sysctls and the modules a proof could load are compared: one of those changing, or any module going
-# away, fails the run. Everything it made is removed at the end, also on failure. It needs 40 GiB free in /var/tmp.
-# Prints PASS lines, then ALL PASSED.
+# executor in the node, for four turns of one coding session (ten on phase B without custody: C2's six keep a quiet turn
+# awake, kill the folder service inside the node, and narrow a folder a turn read, so its machine gets a new disk from
+# its image; nine with custody). Before and after, the test machine's links (but Docker's), nft table names, a few
+# sysctls and the modules a proof could load are compared: one of those changing, or any module going away, fails the
+# run. Everything it made is removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines,
+# then ALL PASSED.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -47,6 +48,7 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
 [[ ${P3_CUSTODY:-0} == 1 && ${P3_CODE_HOST:-0} != 1 ]] && fail "P3_CUSTODY=1 needs P3_CODE_HOST=1"
+[[ ${P3_CUSTODY:-0} == 1 && ${P3_C1V:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of C1-V: leave P3_C1V unset"
 export PATH=$PATH:/snap/bin
 for tool in lxc snap apt-get apt-cache nft jq python3 setpriv setsid docker; do
 	command -v "$tool" >/dev/null || fail "no $tool here"
@@ -55,9 +57,11 @@ NODE=$(command -v node || true)
 [[ -n $NODE ]] || NODE=$(ls /usr/local/bin/node /opt/node/bin/node 2>/dev/null | head -1 || true)
 [[ -x $NODE ]] || fail "no node here"
 NODE=$(readlink -f "$NODE")
-# The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first.
-driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" 2>&1 </dev/null) ||
-	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs failed"; }
+# The driver runs last, after about 40 minutes of builds: what node --check cannot see in it is checked first, and
+# C1-V's judgments (test/p3-c1v.mjs, which P3_C1V=1 runs after phase B's last turn).
+[[ ${P3_C1V:-0} != 1 || ${P3_CODE_HOST:-0} == 1 ]] || fail "P3_C1V=1 runs after phase B's last turn: set P3_CODE_HOST=1 too"
+driver_check=$("$NODE" --test "$HERE/p3-driver.test.mjs" "$HERE/p3-c1v.test.mjs" 2>&1 </dev/null) ||
+	{ printf '%s\n' "$driver_check" | tail -n 40; fail "test/p3-driver.test.mjs or test/p3-c1v.test.mjs failed"; }
 # The image's build and export, the node's disk and the coding machine in it: before anything is made.
 for place in /var/tmp /var/snap/lxd/common/lxd; do
 	[[ -d $place ]] || continue
@@ -277,7 +281,7 @@ lx exec "$VM" -- env PATH=/snap/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	fail "setting up the coding node failed"
 grep -qx "NODE READY" "$WORK/node.out" || fail "setting up the coding node did not finish"
 
-# --- The coding session: the test database here, the executor in the node, Order 9's four turns and C2's two ----------
+# --- The coding session: the test database here, the executor in the node, Order 9's four turns and C2's six ----------
 # P3_NODE_ONLY=1 stops before it: the node alone, for a tree whose executor cannot run a session on 5f's image yet.
 if [[ ${P3_NODE_ONLY:-0} == 1 ]]; then
 	echo "note: P3_NODE_ONLY=1, so no coding session runs"

@@ -200,6 +200,15 @@ cloud-init or a file the host keeps.
   closes the view with `ended` or `expired` once the session is no longer valid (the session row taken FOR SHARE, the
   token current, `qorpera_coding_attachment_refusal` null). The executor closes the view after the final boundary at
   detach, sleep or archive.
+- **An archive keeps the view for the final boundary** (20260930517000). The archive ends the attachment and the refusal
+  answers `ARCHIVED`, but a session whose attachment was still live at the archive (`attachment_until >= archived_at`)
+  stays valid as if the archive were taken away and the attachment ended 240 s after it; nothing renews that, and every
+  other refusal, the detach (the token cleared) and an archived agent still end the view at once. The open and the keep
+  are unchanged: the view never opens again, and the keep answers release. 240 s covers the take-off's own bounds
+  before its boundary saves (about 190 s: the next keep pass, the commands' cancel 20 s, the guest's quiesce 120 s, the
+  boundary's ask 20 s, the 2 s quiet period) with a quarter more. Saves end at the archive + 240 s; the service's
+  reads end at its next renewal, at most 40 s later (or at the view's 120 s lease when the core is unreachable). A
+  take-off slower than that ends unsaved, and its retry detaches the session.
 
 **Serving.** As step 4's 4a, the view's first renewal says its kind and machine, and the service checks the calling
 VM's CID (`{project, name, physicalId}` from LXD):
@@ -512,7 +521,7 @@ for it over a host-local Unix control socket of the folder service (5c), not thr
 | git renames over or removes a shared lock | a synchronous publish (§6), after the machine's recorded reads are released (rule 1) |
 | A browser screenshot reaches the model | a boundary first |
 | A turn completes | a boundary, then the turn completes (the executor flushes releases and saves before completion, C1b-3 §6) |
-| Detach, sleep or archive of a session | a final boundary for its view, then close and unmount |
+| Detach, sleep or archive of a session | a final boundary for its view, then close and unmount; after an archive the view saves until 240 s after it at most ("An archive keeps the view for the final boundary") |
 | The machine sleeps | a final boundary for every view, then LXD stop |
 | An attachment ends beside a live one, and the machine restarts ("When an attachment ends") | a final boundary for every view, then the restart; an unanswered boundary does not hold the restart past the minute, and its output stays held back |
 | The service stops cleanly | it releases everything, publishes everything and clears `served_by` |

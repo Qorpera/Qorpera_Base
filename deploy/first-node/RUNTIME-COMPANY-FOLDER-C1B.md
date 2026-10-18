@@ -1045,7 +1045,7 @@ legacy holder-changing paths needs a patch (the only legacy change is
 | --- | --- | --- |
 | `run_box` | the job, `KEY SHARE`, taken at step 3 as for a run | the run actor checks pass, and the job still carries the view's `runner_id` and `client_lease_id` |
 | `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; either the screen's drain is still pending (the old holder's final publish, whatever the privacy state), or the screen is held by the view's holder or by nobody and privacy is shared or this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
-| `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled) |
+| `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled). An archive of a live attachment (`attachment_until >= archived_at`) keeps the view for the final boundary (20260930517000): the refusal is asked as if the archive were taken away and the attachment ended 240 s after it, which nothing renews |
 | `computer_shell_command` (C1b-3b, 20260930183000) | the command row, `FOR SHARE` (every end of the command waits for it: §8) | the screen's `generation` is the one the command started in, the office's current activation is the view's, and the agent's `qorpera_runtime_office_access` is active. Not the command's end: an ended command's view still renews, refuses every save but the final one, and the final publish closes it (§8) |
 | `test_machine` (C1b-3b) | the machine row and its current placement, `FOR SHARE` | the placement and `boot_id` are the view's |
 
@@ -1429,14 +1429,16 @@ by a machine.
 - **Validity:** another run's acquire, a takeover after its ack, a private
   sign-in, a seat changing agent, an office restart, and revoked computer
   access each end a desktop view. No old view comes back after a later
-  holder leaves. A coding archive and a lapsed attachment end a coding
-  view. A re-claimed lease ends a run box view.
+  holder leaves. A lapsed attachment ends a coding view, and so does a
+  coding archive once its 240 s for the final boundary have passed
+  (20260930517000; 539). A re-claimed lease ends a run box view.
 - **The anchor step:**
   - a holder change that commits between resolve and the anchor step
     refuses the save;
   - a dblink race shows each plain UPDATE (the office lifecycle, privacy,
-    the coding archive) waiting for a save in flight, and the save after it
-    refused.
+    a coding session's) waiting for a save in flight, and the save after a
+    holder change or a coding detach refused; after a coding archive the
+    save lands (its final boundary, 20260930517000).
 - **The end boundary:** during a takeover's pending drain, the run's view
   makes its final save, credited to the agent. After the ack it refuses, and
   the member's view opens. Another run's acquire and a private sign-in
