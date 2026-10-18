@@ -129,13 +129,24 @@ if ! lx start "$vm"; then
 	fail "nested VM did not start"
 fi
 
-# After each boot: the agent answers, no NIC, FUSE, and no office in its restart loop. Prints present or loaded.
+# After each boot: the agent answers, the boot finished, no NIC, FUSE, and no office in its restart loop. Prints
+# present or loaded.
 guest_ready() {
 	for _attempt in $(seq 1 150); do
 		if lx exec "$vm" -- true >/dev/null 2>&1; then break; fi
 		sleep 2
 	done
 	lx exec "$vm" -- true
+	# The guest's lxd-agent drops calls while the guest still boots (`Failed connecting channel 1: context deadline
+	# exceeded` right after the restart), as prove-office-command-namespaces-vm.sh found: let the boot finish first. A
+	# dropped call answers nothing and is asked again. With no NIC the boot can end degraded, which is fine here.
+	local boot=
+	for _attempt in $(seq 1 10); do
+		boot=$(lx exec "$vm" -- timeout 240 systemctl is-system-running --wait 2>/dev/null) || true
+		[[ -n "$boot" ]] && break
+		sleep 2
+	done
+	[[ "$boot" == running || "$boot" == degraded ]] || fail "the nested VM's boot did not finish: ${boot:-no answer}"
 	[[ -z $(lx exec "$vm" -- ip -br link | awk '$1 != "lo" {print $1}') ]] || fail "nested VM unexpectedly has a NIC"
 	# Nothing is installed in the image under test. FUSE is loaded only inside the nested VM, only if it is missing.
 	local fuse

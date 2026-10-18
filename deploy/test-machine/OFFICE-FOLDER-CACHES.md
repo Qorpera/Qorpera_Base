@@ -29,7 +29,9 @@ Not `--no-install`: the launcher bundles the helper with the repo's esbuild.
 The wrapper works as the remount proof's does
 ([`OFFICE-FOLDER-REMOUNT.md`](OFFICE-FOLDER-REMOUNT.md), "Run"): its own LXD
 project and pool, the staged image imported there only, a VM with no profile and
-no NIC, FUSE loaded only inside the nested VM and only if `/dev/fuse` is missing,
+no NIC, each boot waited out (`systemctl is-system-running --wait`: the guest's
+agent drops calls while it boots, as the command-namespaces proof found), FUSE
+loaded only inside the nested VM and only if `/dev/fuse` is missing,
 the office's boot-time restart loop stopped, the folder program built from this
 tree, and a before/after diff of the test machine. Then it runs
 `scripts/test-office-folder-caches.mjs` twice:
