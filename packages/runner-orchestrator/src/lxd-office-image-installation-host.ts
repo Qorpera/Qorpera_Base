@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -295,6 +295,9 @@ async function cleanImage(uid: number, gid: number): Promise<void> {
 			throw new Error("OFFICE_IMAGE_EXISTING_STATE");
 	}
 	await empty("/var/lib/qorpera-office");
+	// The image carries no folder cache: each machine's starts empty.
+	await empty("/var/lib/qorpera-folder", ["cache"]);
+	await empty("/var/lib/qorpera-folder/cache");
 	await empty("/etc/qorpera-office", ["credentials", "boots"]);
 	await empty("/etc/qorpera-office/credentials");
 	await empty("/etc/qorpera-office/boots");
@@ -499,6 +502,15 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 			)
 		)
 			optionalUnits.push(`/etc/systemd/system/${name}`);
+	// The folder program's caches stay on the disk under these, root's and closed; the helper makes each mount's
+	// (deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md "Where the cache lives").
+	if (optionalUnits.includes(`/etc/systemd/system/${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}`))
+		for (const path of ["/var/lib/qorpera-folder", "/var/lib/qorpera-folder/cache"]) {
+			await mkdir(path, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "EEXIST") throw error;
+			});
+			await chmod(path, 0o700);
+		}
 	command("/usr/bin/systemd-analyze", ["verify", ...units.map((n) => `/etc/systemd/system/${n}`), ...optionalUnits]);
 	command("/usr/bin/systemd-tmpfiles", [
 		"--create",

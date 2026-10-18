@@ -1695,6 +1695,7 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 				op: "mount",
 				name,
 				view: { environmentId: f.binding.environmentId, viewId: computerId(201), pass: "fixture-pass-1" },
+				cache: "desktop",
 			},
 		]);
 		expect(physical.launch).toHaveBeenCalledOnce();
