@@ -1,12 +1,15 @@
 //! Folder programs sharing one `--cache-dir`, with the kernel cache (MC3a, `deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md`
-//! "The kernel cache"): what one program changes in the shared caches, every other one's kernel shows at once. Each
-//! program is the CLI in a process of its own, as on a machine: the test switches are its environment, and it can be
-//! stopped. Needs root and /dev/fuse, so it runs only when QORPERA_FOLDER_FUSE_TESTS=1, as `tests/mount.rs`.
+//! "The kernel cache"): what one program changes in the shared caches, every other one's kernel shows at once; and
+//! removing old caches from them (MC3b, "Removing old caches"). Each program is the CLI in a process of its own, as on
+//! a machine: the test switches are its environment, and it can be stopped. Needs root and /dev/fuse, so it runs only
+//! when QORPERA_FOLDER_FUSE_TESTS=1, as `tests/mount.rs`.
 
 #[allow(dead_code)]
 mod support;
 
 use qorpera_folder::peers::WAIT;
+use qorpera_folder::proto::code;
+use qorpera_folder::records::{hold_view, view_hash};
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -17,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Barrier};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use support::{FakeNode, PASS};
 
 /// The test switches (`mount/kernel.rs`).
@@ -28,6 +31,12 @@ const SLOW_LOOKUP: &str = "QORPERA_FOLDER_TEST_SLOW_LOOKUP";
 const SLOW_FALL_BACK: &str = "QORPERA_FOLDER_TEST_SLOW_FALL_BACK";
 const CLOSE_GATE: &str = "QORPERA_FOLDER_TEST_CLOSE_GATE";
 const LATE_CREATE: &str = "QORPERA_FOLDER_TEST_LATE_CREATE";
+/// The test switches of removing old caches (`mount/pass.rs`, `records.rs`), and its line in the log at each pass.
+const PASS_MS: &str = "QORPERA_FOLDER_TEST_PASS_MS";
+const DISK_BYTES: &str = "QORPERA_FOLDER_TEST_DISK_BYTES";
+const PASSED: &str = "qorpera-folder: removing old caches:";
+const HOUR: Duration = Duration::from_secs(3600);
+const DAY: Duration = Duration::from_secs(24 * 3600);
 /// The end's drop, its gate closed (`CLOSE_GATE`).
 const DROP_WAITS: &str = "qorpera-folder: test switch: the drop waits for";
 /// A cache top in a node folder (a dependency folder is a cache anywhere, `cache.rs`), and files in it.
@@ -80,6 +89,31 @@ fn disk(node: &FakeNode, name: &str) -> PathBuf {
 	caches(node).join("caches/d/notes/t/node_modules").join(name)
 }
 
+/// Where the caches of the node's folder `dir` are on the machine's disk (`local.rs`).
+fn mirror(node: &FakeNode, dir: &str) -> PathBuf {
+	dir.split('/').fold(caches(node).join("caches"), |path, name| path.join("d").join(name))
+}
+
+/// The record of the cache `name` in the node's folder `dir` (`records.rs`).
+fn record(node: &FakeNode, dir: &str, name: &str) -> PathBuf {
+	mirror(node, dir).join("r").join(name)
+}
+
+/// A record as a program of the view `view` writes it for a cache made as `kind` ("name" or "kept").
+fn written(kind: &str, view: &str) -> String {
+	format!("{kind}\n{}\n", view_hash(view))
+}
+
+/// The last use of the cache whose record is `path`.
+fn used(path: &Path) -> SystemTime {
+	std::fs::metadata(path).unwrap().modified().unwrap()
+}
+
+/// Sets the last use of the cache whose record is `path` back `ago`.
+fn used_ago(path: &Path, ago: Duration) {
+	OpenOptions::new().write(true).open(path).unwrap().set_modified(SystemTime::now() - ago).unwrap();
+}
+
 fn view(node: &FakeNode) -> PathBuf {
 	let view = node.dir.join("view.json");
 	if !view.exists() {
@@ -108,7 +142,7 @@ impl Program {
 			.arg("--connect").arg(&node.addr).arg("--state-dir").arg(node.dir.join(format!("{name}.state")))
 			.arg("--cache-dir").arg(caches(node))
 			.env_remove(KERNEL_OFF).env_remove(NOTIFY_FAILS).env_remove(NAMES).env_remove(SLOW_LOOKUP).env_remove(SLOW_FALL_BACK)
-			.env_remove(CLOSE_GATE).env_remove(LATE_CREATE)
+			.env_remove(CLOSE_GATE).env_remove(LATE_CREATE).env_remove(PASS_MS).env_remove(DISK_BYTES)
 			.envs(env.iter().copied())
 			.stdout(Stdio::null()).stderr(File::create(&log).unwrap())
 			.spawn().unwrap();
@@ -148,6 +182,23 @@ impl Program {
 
 	fn read(&self, path: &str) -> String {
 		std::fs::read_to_string(self.at(path)).unwrap()
+	}
+
+	/// The passes removing old caches it made.
+	fn passes(&self) -> usize {
+		self.logged().matches(PASSED).count()
+	}
+
+	/// Waits for two more passes: a whole one started after this was called.
+	fn passed(&self) {
+		let before = self.passes();
+		assert!(eventually(Duration::from_secs(10), || self.passes() >= before + 2), "{}", self.logged());
+	}
+
+	/// Whether none of its passes removed a cache.
+	fn removed_none(&self) -> bool {
+		let none = format!("{PASSED} 0 with their folder gone, 0 unused, 0 for room,");
+		self.logged().lines().filter(|l| l.contains(PASSED)).all(|l| l.starts_with(&none))
 	}
 }
 
@@ -1302,4 +1353,282 @@ fn two_programs_changing_one_file_and_one_folder_at_once_never_wait_on_each_othe
 		assert!(!p.logged().contains("kernel cache off"), "{}", p.logged());
 	}
 	closed(&node, vec![a, b]);
+}
+
+/// A worktree on the node whose git leaves out `*.log` and `scratch/`.
+const W: &str = "code/o/n/worktrees/w";
+
+fn worktree(node: &FakeNode) {
+	node.put(&format!("{W}/README"), "readme", false);
+	node.put(&format!("{W}/.gitignore"), "*.log\nscratch/\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+}
+
+/// Makes the cache folder `name` in the folder `dir` through `p`, with the file `x.js` of `bytes` bytes in it.
+fn made(p: &Program, dir: &str, name: &str, bytes: usize) {
+	std::fs::create_dir(p.at(&format!("{dir}/{name}"))).unwrap();
+	std::fs::write(p.at(&format!("{dir}/{name}/x.js")), vec![b'x'; bytes]).unwrap();
+}
+
+/// Whether the cache `name` of the node's folder `dir` is on the machine's disk.
+fn on_disk(node: &FakeNode, dir: &str, name: &str) -> bool {
+	std::fs::symlink_metadata(mirror(node, dir).join("t").join(name)).is_ok()
+}
+
+/// A cache made by its name goes once unused for 14 days: this view's, or another view's with no program running (none
+/// holds its lock), but not one whose program runs; and with it its record, and its name from the kernel.
+#[test]
+fn a_cache_made_by_its_name_goes_once_unused_for_fourteen_days() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let dirs = ["notes", "docs", "logs", "misc"];
+	for dir in dirs {
+		node.put(&format!("{dir}/readme"), "readme", false);
+	}
+	let a = Program::start(&node, "a", &[(PASS_MS, "100")]);
+	for dir in dirs {
+		made(&a, dir, "node_modules", 1);
+		assert_eq!(std::fs::read_to_string(record(&node, dir, "node_modules")).unwrap(), written("name", "view"));
+	}
+	// As other views' programs wrote them: docs's runs, logs's does not.
+	let runs = hold_view(&caches(&node), &view_hash("runs")).unwrap();
+	std::fs::write(record(&node, "docs", "node_modules"), written("name", "runs")).unwrap();
+	std::fs::write(record(&node, "logs", "node_modules"), written("name", "stopped")).unwrap();
+	for dir in ["notes", "docs", "logs"] {
+		used_ago(&record(&node, dir, "node_modules"), 14 * DAY + HOUR);
+	}
+	used_ago(&record(&node, "misc", "node_modules"), 13 * DAY);
+	let gone = |dir: &str| !on_disk(&node, dir, "node_modules") && !record(&node, dir, "node_modules").exists();
+	assert!(eventually(Duration::from_secs(10), || gone("notes") && gone("logs")), "{}", a.logged());
+	assert!(!a.at("notes/node_modules").exists() && !a.at("logs/node_modules").exists());
+	assert_eq!(names(&a.at("notes")), ["readme"]);
+	a.passed();
+	// Not read: a read would write its last use.
+	assert!(a.at("docs/node_modules/x.js").exists() && on_disk(&node, "docs", "node_modules"));
+	assert_eq!(a.read("misc/node_modules/x.js"), "x");
+	// Its program stopped, docs's goes.
+	drop(runs);
+	assert!(eventually(Duration::from_secs(10), || gone("docs")), "{}", a.logged());
+	assert!(on_disk(&node, "misc", "node_modules"));
+	closed(&node, vec![a]);
+}
+
+/// With less than a tenth of the caches' disk free, the caches made by their names go, the least recently used first,
+/// until 15% is.
+#[test]
+fn with_the_disk_short_the_least_recently_used_caches_made_by_their_names_go_until_fifteen_percent_is_free() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let sizes = [("a", 10_000), ("b", 10_000), ("c", 10_000), ("d", 65_000)];
+	for (dir, _) in sizes {
+		node.put(&format!("{dir}/readme"), "readme", false);
+	}
+	let first = Program::start(&node, "first", &[]);
+	for (dir, bytes) in sizes {
+		made(&first, dir, "node_modules", bytes);
+	}
+	for (dir, hours) in [("a", 4), ("b", 3), ("c", 2)] {
+		used_ago(&record(&node, dir, "node_modules"), hours * HOUR);
+	}
+	closed(&node, vec![first]);
+	node.reopen_view();
+	// 95 000 bytes and the records of 100 000: under 5% free. Without a, under 15%; without b too, over.
+	let second = Program::start(&node, "second", &[(PASS_MS, "100"), (DISK_BYTES, "100000")]);
+	let gone = |dir: &str| !on_disk(&node, dir, "node_modules");
+	assert!(eventually(Duration::from_secs(10), || gone("a") && gone("b")), "{}", second.logged());
+	second.passed();
+	assert!(!gone("c") && !gone("d"));
+	assert!(!second.at("a/node_modules").exists() && !second.at("b/node_modules").exists());
+	assert_eq!(second.read("c/node_modules/x.js").len(), 10_000);
+	closed(&node, vec![second]);
+}
+
+/// The caches of a folder gone from the node go, both kinds, but not another view's (the folder may be one that view
+/// has not published yet), nor those of a folder still there.
+#[test]
+fn the_caches_of_a_folder_gone_from_the_node_go_both_kinds() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	worktree(&node);
+	node.put("notes/readme", "readme", false);
+	let a = Program::start(&node, "a", &[(PASS_MS, "100")]);
+	made(&a, W, "node_modules", 1);
+	made(&a, W, "scratch", 1);
+	std::fs::write(a.at(&format!("{W}/out.log")), "log").unwrap();
+	made(&a, "notes", "node_modules", 1);
+	assert_eq!(std::fs::read_to_string(record(&node, W, "node_modules")).unwrap(), written("name", "view"));
+	for name in ["scratch", "out.log"] {
+		assert_eq!(std::fs::read_to_string(record(&node, W, name)).unwrap(), written("kept", "view"));
+	}
+	// Another view's, with its program running.
+	let other = hold_view(&caches(&node), &view_hash("other")).unwrap();
+	std::fs::create_dir(mirror(&node, W).join("t/other")).unwrap();
+	std::fs::write(record(&node, W, "other"), written("name", "other")).unwrap();
+	a.passed();
+	assert!(["node_modules", "scratch", "out.log"].iter().all(|name| on_disk(&node, W, name)));
+	node.remove(W);
+	let gone = || ["node_modules", "scratch", "out.log"].iter().all(|n| !on_disk(&node, W, n) && !record(&node, W, n).exists());
+	assert!(eventually(Duration::from_secs(10), gone), "{}", a.logged());
+	a.passed();
+	assert!(on_disk(&node, W, "other") && on_disk(&node, "notes", "node_modules"));
+	drop(other);
+	closed(&node, vec![a]);
+}
+
+/// A folder found gone keeps its caches when the node's answer to the listing again under the removal's locks does not
+/// say it is gone too (here BUSY).
+#[test]
+fn a_folder_found_gone_that_the_second_listing_does_not_find_gone_keeps_its_caches() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	let a = Program::start(&node, "a", &[(PASS_MS, "100")]);
+	made(&a, "notes", "node_modules", 1);
+	a.passed();
+	node.fail_lists("notes", &[code::NOT_FOUND, code::BUSY]);
+	assert!(eventually(Duration::from_secs(10), || node.failed_lists_left() == 0), "{}", a.logged());
+	a.passed();
+	assert!(on_disk(&node, "notes", "node_modules") && record(&node, "notes", "node_modules").exists());
+	assert!(a.removed_none(), "{}", a.logged());
+	assert_eq!(a.read(X), "x");
+	closed(&node, vec![a]);
+}
+
+/// A cache in a worktree where a program sharing the caches still has caches to move into the folder (it holds the
+/// worktree's moves' lock shared, `Local::hold_moves`) is not removed, however old, until they moved.
+#[test]
+fn a_cache_in_a_worktree_another_program_has_caches_to_move_in_is_kept_until_they_moved() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	worktree(&node);
+	node.put("notes/readme", "readme", false);
+	let a = Program::start(&node, "a", &[(PASS_MS, "100")]);
+	made(&a, "notes", "node_modules", 1);
+	// This view's, in the worktree, as a program of it made it before it stopped.
+	std::fs::create_dir_all(mirror(&node, W).join("t/node_modules")).unwrap();
+	std::fs::create_dir_all(mirror(&node, W).join("r")).unwrap();
+	std::fs::write(record(&node, W, "node_modules"), written("name", "view")).unwrap();
+	// Another program's moves in the worktree.
+	let moves = caches(&node).join("moves");
+	std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&moves).unwrap();
+	let moving = File::create(moves.join(view_hash(W))).unwrap();
+	// SAFETY: flock on a descriptor `moving` owns.
+	assert_eq!(unsafe { libc::flock(moving.as_raw_fd(), libc::LOCK_SH) }, 0);
+	for dir in ["notes", W] {
+		used_ago(&record(&node, dir, "node_modules"), 15 * DAY);
+	}
+	assert!(eventually(Duration::from_secs(10), || !on_disk(&node, "notes", "node_modules")), "{}", a.logged());
+	a.passed();
+	assert!(on_disk(&node, W, "node_modules") && record(&node, W, "node_modules").exists());
+	// Moved: it goes.
+	drop(moving);
+	let gone = || !on_disk(&node, W, "node_modules") && !record(&node, W, "node_modules").exists();
+	assert!(eventually(Duration::from_secs(10), gone), "{}", a.logged());
+	closed(&node, vec![a]);
+}
+
+/// What git leaves out at a worktree's top is kept past 14 days unused and with the disk short (a writer past the disk
+/// gets ENOSPC), and goes with its worktree.
+#[test]
+fn what_git_leaves_out_in_a_worktree_is_kept_until_its_worktree_goes() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	worktree(&node);
+	// 40 000 bytes and the records of 44 000: under 10% free.
+	let a = Program::start(&node, "a", &[(PASS_MS, "100"), (DISK_BYTES, "44000")]);
+	let log = format!("{W}/out.log");
+	std::fs::write(a.at(&log), vec![b'l'; 20_000]).unwrap();
+	made(&a, W, "scratch", 20_000);
+	for name in ["scratch", "out.log"] {
+		assert_eq!(std::fs::read_to_string(record(&node, W, name)).unwrap(), written("kept", "view"));
+		used_ago(&record(&node, W, name), 30 * DAY);
+	}
+	let mut writer = OpenOptions::new().append(true).open(a.at(&log)).unwrap();
+	assert_eq!(writer.write_all(&[b'l'; 20_000]).unwrap_err().raw_os_error(), Some(libc::ENOSPC));
+	drop(writer);
+	// The kernel writes by pages, so the first of them may land.
+	let len = a.len(&log);
+	assert!((20_000..40_000).contains(&len), "{len}");
+	a.passed();
+	assert_eq!(a.len(&log), len);
+	assert_eq!(a.read(&format!("{W}/scratch/x.js")).len(), 20_000);
+	assert!(a.removed_none(), "{}", a.logged());
+	node.remove(W);
+	let gone = || ["scratch", "out.log"].iter().all(|n| !on_disk(&node, W, n) && !record(&node, W, n).exists());
+	assert!(eventually(Duration::from_secs(10), gone), "{}", a.logged());
+	closed(&node, vec![a]);
+}
+
+/// A program started again on the cache folder finds the caches and their records as they were: the last use the
+/// records keep is what it judges them by, and a read writes it.
+#[test]
+fn a_program_started_again_finds_its_caches_and_their_records() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	for dir in ["notes", "docs"] {
+		node.put(&format!("{dir}/readme"), "readme", false);
+	}
+	let first = Program::start(&node, "first", &[]);
+	made(&first, "notes", "node_modules", 1);
+	made(&first, "docs", "node_modules", 1);
+	used_ago(&record(&node, "notes", "node_modules"), 2 * DAY);
+	used_ago(&record(&node, "docs", "node_modules"), 15 * DAY);
+	let before = used(&record(&node, "notes", "node_modules"));
+	closed(&node, vec![first]);
+	node.reopen_view();
+	let second = Program::start(&node, "second", &[(PASS_MS, "100")]);
+	assert!(eventually(Duration::from_secs(10), || !on_disk(&node, "docs", "node_modules")), "{}", second.logged());
+	second.passed();
+	assert_eq!(std::fs::read_to_string(record(&node, "notes", "node_modules")).unwrap(), written("name", "view"));
+	assert_eq!(used(&record(&node, "notes", "node_modules")), before);
+	assert_eq!(second.read(X), "x");
+	assert!(used(&record(&node, "notes", "node_modules")) > before);
+	assert_eq!(names(&second.at("docs")), ["readme"]);
+	closed(&node, vec![second]);
+}
+
+/// A cache's top entry the mount has open, or a file or folder in it, never goes: not with its folder gone, nor
+/// unused; it goes once let go of.
+#[test]
+fn a_cache_open_through_the_mount_never_goes() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	worktree(&node);
+	node.put("notes/readme", "readme", false);
+	let a = Program::start(&node, "a", &[(PASS_MS, "100")]);
+	let log = format!("{W}/out.log");
+	std::fs::write(a.at(&log), "log").unwrap();
+	let log = File::open(a.at(&log)).unwrap();
+	made(&a, W, "node_modules", 1);
+	let listing = std::fs::read_dir(a.at(&format!("{W}/node_modules"))).unwrap();
+	made(&a, "notes", "node_modules", 1);
+	let x = File::open(a.at(X)).unwrap();
+	used_ago(&record(&node, "notes", "node_modules"), 15 * DAY);
+	node.remove(W);
+	a.passed();
+	assert!(on_disk(&node, W, "out.log") && on_disk(&node, W, "node_modules") && on_disk(&node, "notes", "node_modules"));
+	assert!(a.removed_none(), "{}", a.logged());
+	assert_eq!((read_at(&log), read_at(&x)), ("log".to_string(), "x".to_string()));
+	drop((log, listing, x));
+	let gone = |dir: &str, name: &str| !on_disk(&node, dir, name) && !record(&node, dir, name).exists();
+	let all = || gone(W, "out.log") && gone(W, "node_modules") && gone("notes", "node_modules");
+	assert!(eventually(Duration::from_secs(10), all), "{}", a.logged());
+	assert!(!a.at(X).exists());
+	closed(&node, vec![a]);
 }

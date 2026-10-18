@@ -24,6 +24,7 @@
 
 mod kernel;
 mod on_disk;
+mod pass;
 
 use crate::link::{Fail, Link};
 use crate::local::{self, Local};
@@ -133,7 +134,8 @@ pub enum Stop {
 }
 
 enum Handle {
-	Dir(Vec<(u64, FileType, String)>),
+	/// A folder's listing, and the cache's top entry a local folder holds (`Local::hold_dir`).
+	Dir(Vec<(u64, FileType, String)>, Option<u64>),
 	File { ino: u64, path: String, version: String, size: u64 },
 	/// Open for writing: the file's writer, which every handle writing it shares, and the process that opened the
 	/// handle.
@@ -823,13 +825,13 @@ impl Filesystem for FolderFs {
 		}
 		// No kernel listing cache (FOPEN_CACHE_DIR): the kernel keeps it while the folder's time is unchanged, and a
 		// folder's time does not change when a file inside it does. The listing is in this program's memory anyway.
-		reply.opened(self.s.handle(Handle::Dir(entries)), FopenFlags::empty());
+		reply.opened(self.s.handle(Handle::Dir(entries, None)), FopenFlags::empty());
 	}
 
 	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
 		let Some(mut reply) = self.served(reply) else { return };
 		let handles = self.s.handles.lock().unwrap();
-		let Some(Handle::Dir(entries)) = handles.get(&fh.0) else { return reply.error(Errno::EBADF) };
+		let Some(Handle::Dir(entries, _)) = handles.get(&fh.0) else { return reply.error(Errno::EBADF) };
 		for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
 			if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
 				break;
@@ -840,7 +842,10 @@ impl Filesystem for FolderFs {
 
 	fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
 		let Some(reply) = self.served(reply) else { return };
-		self.s.handles.lock().unwrap().remove(&fh.0);
+		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
+		if let (Some(Handle::Dir(_, Some(key))), Some(local)) = (handle, &self.s.local) {
+			local.let_go_top(key);
+		}
 		reply.ok();
 	}
 
@@ -1784,6 +1789,7 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		})
 	};
 	if shared.local.is_some() {
+		pass::start(shared.clone(), watching.clone());
 		// Cache folders git came to track whose move into the folder did not finish (`mount/on_disk.rs`).
 		let shared = shared.clone();
 		let watching = watching.clone();
@@ -1792,6 +1798,7 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 				std::thread::sleep(Duration::from_secs(5));
 				if let Some(local) = shared.local.as_ref() {
 					shared.move_caches(local, None);
+					local.let_go_idle_tops(crate::local::IDLE_HOLD);
 				}
 			}
 		});

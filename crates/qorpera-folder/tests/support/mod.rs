@@ -74,6 +74,8 @@ struct State {
 	/// The next lists of a folder, each with the seconds it is answered after it was made and the feeds heard of a
 	/// change there.
 	slow_lists: Vec<(String, u64)>,
+	/// The next lists of a folder to answer with an error, each with its code.
+	failed_lists: Vec<(String, &'static str)>,
 	/// Files whose reads are answered UNAVAILABLE.
 	failing_reads: Vec<String>,
 	/// The reads not answered so, by file.
@@ -350,6 +352,18 @@ impl FakeNode {
 		self.state.lock().unwrap().slow_lists.extend(secs.iter().map(|s| (path.to_string(), *s)));
 	}
 
+	/// The next lists of the folder `path` are answered with the errors `codes`, one each, in turn, whatever is there.
+	#[allow(dead_code)] // `tests/kernel.rs` only.
+	pub fn fail_lists(&self, path: &str, codes: &[&'static str]) {
+		self.state.lock().unwrap().failed_lists.extend(codes.iter().map(|c| (path.to_string(), *c)));
+	}
+
+	/// How many of the lists `fail_lists` asked for were not answered yet.
+	#[allow(dead_code)] // `tests/kernel.rs` only.
+	pub fn failed_lists_left(&self) -> usize {
+		self.state.lock().unwrap().failed_lists.len()
+	}
+
 	/// The reads of the file `path` are answered UNAVAILABLE (`fail`), or again as they come (not `fail`).
 	pub fn fail_reads(&self, path: &str, fail: bool) {
 		let mut s = self.state.lock().unwrap();
@@ -472,8 +486,16 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			}
 			continue;
 		}
-		let slow = (k == kind::LIST).then(|| serde_json::from_slice::<ListRequest>(&body).unwrap().path);
-		if let Some(i) = slow.and_then(|path| st.slow_lists.iter().position(|(p, _)| *p == path)) {
+		let listed = (k == kind::LIST).then(|| serde_json::from_slice::<ListRequest>(&body).unwrap().path);
+		if let Some(i) = listed.as_ref().and_then(|path| st.failed_lists.iter().position(|(p, _)| p == path)) {
+			let (_, c) = st.failed_lists.remove(i);
+			drop(st);
+			if error(&mut s, c).is_err() {
+				return;
+			}
+			continue;
+		}
+		if let Some(i) = listed.and_then(|path| st.slow_lists.iter().position(|(p, _)| *p == path)) {
 			// The entries are those of now, and the answer comes later, after the feeds heard of a change there.
 			let (path, secs) = st.slow_lists.remove(i);
 			let entries = listing(&st, &path);
