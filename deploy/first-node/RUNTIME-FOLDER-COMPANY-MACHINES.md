@@ -145,7 +145,8 @@ desktops and shells run under bwrap with every capability dropped. That stays. M
 `AF_VSOCK`, so it moves to one small root helper, shaped like the network plumb (`qorpera-computer-plumb@.service`):
 - a socket `/run/qorpera-folder-helper/helper.sock`, mode 0600, owned by the office service's user, one connection per
   request (the stop control, root, uses it too; below);
-- requests: `mount <name>` with the view (`{environmentId, viewId, pass}`); `switch <name>` with the newer view;
+- requests: `mount <name>` with the view (`{environmentId, viewId, pass}`) and its cache (MC3c, below); `switch
+  <name>` with the newer view;
   `boundary <name>` (the mount's reads are released, then its pending changes published; it answers the report);
   `unmount <name>` (a boundary first); `drop <name>` (unmounts with no boundary, only for a mount whose view has
   ended: below); and `list` (the mounts it holds, from its view files). `<name>` is `desktop-<screen id>` or
@@ -174,6 +175,16 @@ desktops and shells run under bwrap with every capability dropped. That stays. M
   the helper holds. A `switch` gives the mount the newer view and keeps the state folder, and the old view stays
   movable until the program's hello with the newer one (above). `unmount` and `drop` remove the view file and the
   state folder with the mount, so a mount made again for the same screen starts with neither (review round 7);
+- the folder program's cache (MC3c, [RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md) "Where the
+  cache lives") is on the disk, not under `/run`, so it outlives the mount, the helper and the VM's restarts. Each
+  `mount` names its cache: `desktop` for a desktop, the one cache every desktop of the machine shares, and the
+  command's owner (`agent-<uuid>`, from the core's open answer; the helper also takes `member-<uuid>`) for a command.
+  An open answer with no owner of that shape closes the view, and the command does not start. The helper refuses any other
+  pairing or shape (`invalid`), makes `/var/lib/qorpera-folder/cache/<cache>` (root, 0700; a folder that is not a
+  real folder of root's fails the mount), and writes `/run/qorpera-folder/units/<name>.env` (root, 0600) with
+  `QORPERA_FOLDER_CACHE_DIR`, which the unit reads (`EnvironmentFile=`) and passes as `--cache-dir`. A `switch` keeps
+  it; `unmount` and `drop` remove the env file and keep the cache. The office image's installer makes
+  `/var/lib/qorpera-folder` and its `cache/` (root, 0700) and refuses an image that carries any cache;
 - the office service unmounts a mount once its users are gone: a command's once its final boundary has a final answer
   (its view is then closed: by the final publish, or by the office service when that publish was refused; the answer
   covers the command's later output reads, below), and a desktop's whenever its
@@ -185,7 +196,7 @@ desktops and shells run under bwrap with every capability dropped. That stays. M
   whether or not a run reads the output again. The view stays valid meanwhile: an ended command's view renews until
   its final publish (4b), and renewal does not check the pause. If the office stops first, its stop asks the
   boundary, and that answer is final (rule 3, below; review rounds 10 and 13);
-- the helper refuses names it did not mount and paths outside `/run/qorpera-folder/`. The pass never reaches a
+- the helper refuses names it did not mount and paths outside `/run/qorpera-folder/` and the cache root above. The pass never reaches a
   desktop or a command: only the office service and the helper see it.
 
 **A restarted program must reach its users.** The execution host's unit restarts a program that fails. But `/company` in

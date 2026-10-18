@@ -108,8 +108,8 @@ export interface CodingFolderViewsOptions {
 		boundary(machine: string, final: readonly string[], signal: AbortSignal): Promise<CodingFolderBoundary>;
 	};
 	readonly client: LxdInstanceExecStreamClient & LxdInstanceProgramClient;
-	/** The guest agent (scripts/package-coding-guest-agent.mjs) and the folder program (5d's build or later: the agent
-	 * gives it --local-dir), as the executor checked them against its pins. */
+	/** The guest agent (scripts/package-coding-guest-agent.mjs) and the folder program (MC3a's build or later: the agent
+	 * gives it --local-dir and --cache-dir), as the executor checked them against its pins. */
 	readonly agent: Buffer;
 	readonly program: Buffer;
 	/** Where the views it holds are recorded: a folder of this process's user (made with mode 0700 in its parent, which

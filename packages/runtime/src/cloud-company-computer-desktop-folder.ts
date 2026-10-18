@@ -17,6 +17,7 @@ import {
 	companyComputerFolderAnswerLogged,
 	companyComputerFolderName,
 	companyComputerFolderPaths,
+	isCompanyComputerFolderOwner,
 	isCompanyComputerFolderView,
 } from "./cloud-company-computer-folder-helper-client.ts";
 import { readCompanyComputerLinuxMetadata } from "./cloud-company-computer-linux-host.ts";
@@ -114,8 +115,8 @@ const CAPTURE_REFUSED = "the company folder refused the screen's view";
 export const COMPANY_COMPUTER_CAPTURE_RESTARTED =
 	"the company folder was restarted on this screen; take the screenshot again";
 
-/** Open a desktop's view for whoever now holds its screen, as `openCompanyComputerFolderView` opens one. */
-export function openCompanyComputerDesktopFolderView(
+/** Open a desktop's view for whoever now holds its screen, as `openFolderView` opens one. */
+export async function openCompanyComputerDesktopFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	request: { environmentId: string; screenId: string; holder: CompanyComputerScreenHolder },
 	signal: AbortSignal,
@@ -125,20 +126,50 @@ export function openCompanyComputerDesktopFolderView(
 		request.holder.kind === "run"
 			? { screenId: request.screenId, holderRunId: request.holder.runId }
 			: { screenId: request.screenId, holderUserId: request.holder.userId };
-	return openCompanyComputerFolderView(
+	const opened = await openFolderView(
 		registry,
 		{ environmentId: request.environmentId, kind: "computer_desktop", anchor },
 		signal,
 		until,
 	);
+	return "view" in opened ? opened.view : opened;
 }
 
 /**
- * Open a desktop's or a shell command's view (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines"). A core that
- * does not answer is asked again until `until` (performance.now()); then the folder is unavailable. A refusal is
- * final, with the core's reason when it is one the registry passes on. The pass is never logged.
+ * Open a shell command's view, as `openFolderView` opens one, with the owner whose cache its mount uses
+ * (`isCompanyComputerFolderCache`): the core answers it, the command's agent's. An answer without one is no answer.
  */
-export async function openCompanyComputerFolderView(
+export async function openCompanyComputerCommandFolderView(
+	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
+	request: { environmentId: string; shellCommandId: string },
+	signal: AbortSignal,
+	until: number,
+): Promise<{ view: CompanyComputerFolderView; owner: string } | CompanyComputerFolderRefusal> {
+	const opened = await openFolderView(
+		registry,
+		{
+			environmentId: request.environmentId,
+			kind: "computer_shell_command",
+			anchor: { shellCommandId: request.shellCommandId },
+		},
+		signal,
+		until,
+	);
+	if (!("view" in opened)) return opened;
+	const { owner } = opened.answer;
+	if (isCompanyComputerFolderOwner(owner)) return { view: opened.view, owner };
+	// Without its owner the mount would have no cache of its own: the view goes unmounted.
+	await closeCompanyComputerFolderView(registry, opened.view);
+	return UNAVAILABLE;
+}
+
+/**
+ * Open a desktop's or a shell command's view (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines"), with the
+ * core's whole answer. A core that does not answer is asked again until `until` (performance.now()); then the folder
+ * is unavailable. A refusal is final, with the core's reason when it is one the registry passes on. The pass is never
+ * logged.
+ */
+async function openFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	request: {
 		environmentId: string;
@@ -147,7 +178,9 @@ export async function openCompanyComputerFolderView(
 	},
 	signal: AbortSignal,
 	until: number,
-): Promise<CompanyComputerFolderView | CompanyComputerFolderRefusal> {
+): Promise<
+	{ view: CompanyComputerFolderView; answer: Readonly<Record<string, unknown>> } | CompanyComputerFolderRefusal
+> {
 	for (;;) {
 		signal.throwIfAborted();
 		const remaining = Math.floor(until - performance.now());
@@ -180,7 +213,7 @@ export async function openCompanyComputerFolderView(
 		const view = { environmentId: request.environmentId, viewId, pass };
 		if (schema !== "qorpera.folder-view/v1" || !isUuid(viewId) || !isCompanyComputerFolderView(view))
 			return UNAVAILABLE;
-		return view;
+		return { view, answer: answer as Record<string, unknown> };
 	}
 }
 
@@ -501,7 +534,10 @@ export class CompanyComputerDesktopFolders {
 				mounted = false;
 				continue;
 			}
-			const answer = (await this.#helper({ op: "mount", name: folder.name, view }, MOUNT_WAIT_MS))?.answer;
+			// Every desktop view has one authority, whoever holds it, so the machine's desktops share one cache (decision 1);
+			// a switch keeps the mount's.
+			const answer = (await this.#helper({ op: "mount", name: folder.name, view, cache: "desktop" }, MOUNT_WAIT_MS))
+				?.answer;
 			if (answer === "mounted") {
 				folder.epoch++;
 				Object.assign(folder, { mounted: true, view, holder });

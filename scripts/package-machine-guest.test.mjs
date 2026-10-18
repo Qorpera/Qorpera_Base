@@ -75,7 +75,7 @@ test("the image installs the toolbox every Qorpera machine has, and its checks a
 	);
 });
 
-test("the image carries the pinned folder program, every unit the guest package has, and an empty /company", () => {
+test("the image carries the pinned folder program, every unit the guest package has, and empty /company and caches", () => {
 	const packager = read("scripts/package-machine-guest.mjs");
 	const units = [...packager.match(/const units = \[([^\]]+)\]/)[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
 	assert.ok(units.includes("qorpera-machine-folder.service"));
@@ -94,6 +94,15 @@ test("the image carries the pinned folder program, every unit the guest package 
 	assert.match(imageScript, /\[\[ \$\(systemctl is-enabled qorpera-machine-folder\.service \|\| true\) == static \]\]/);
 	assert.match(imageScript, /install -d -o root -g root -m 0755 \/company\n/);
 	assert.match(imageScript, /systemd-analyze verify [^\n]*\\\n\t\t\/etc\/systemd\/system\/qorpera-machine-folder\.service\n/);
+	// The program's cache folder, which its unit names: on the machine's disk, root's, closed and empty in the image.
+	const unit = read("deploy/machine/qorpera-machine-folder.service");
+	assert.match(unit, /\nExecStart=[^\n]* --cache-dir \/var\/lib\/qorpera-folder\/cache\/machine /);
+	assert.match(
+		imageScript,
+		/\n\tinstall -d -o root -g root -m 0700 \/var\/lib\/qorpera-folder \/var\/lib\/qorpera-folder\/cache \\\n\t\t\/var\/lib\/qorpera-folder\/cache\/machine\n/,
+	);
+	assert.match(imageScript, /\[\[ \$\(stat -c "%U:%G %a %F" "\$folder"\) == "root:root 700 directory" \]\]/);
+	assert.match(imageScript, /\[\[ -z \$\(ls -A \/var\/lib\/qorpera-folder\/cache\/machine\) \]\]/);
 });
 
 test("the guest package takes only the recorded folder program", async () => {

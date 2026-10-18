@@ -11,8 +11,8 @@
 # branch p3-<time>-<n>; clone that branch again (the same commit, the link checked out as a link); clone the first clone
 # by its path (git hard-links objects, the mount answers EXDEV in an object store and git copies); npm ci, offline, from
 # tarballs packed on the VM's disk (a dependency with a bin and a bundled dependency of its own, and a postinstall
-# script). Then node_modules must be on the VM's disk: in the mount program's local folder, with every entry under it a
-# local inode, git seeing no change. If the worktree is a git worktree, one file is committed there too and pushed as
+# script). Then node_modules must be on the VM's disk: in the mount program's caches (in its --cache-dir, or its local
+# folder without one), with every entry under it a local inode, git seeing no change. If the worktree is a git worktree, one file is committed there too and pushed as
 # p3-<time>-<n>-session (the shared repo.git's objects and ref locks). Last, the mount's pending changes are published,
 # as a turn's end does: the boundary must not be refused, and of this run's paths in its report every one must be saved
 # and none under node_modules. The mount also publishes on its own (about 2 s after the last change), so that report
@@ -29,7 +29,7 @@
 #                    run here after the publish with the scratch folder's path in the folder as $1; it prints the
 #                    node's paths under it, one per line. Fails on any node_modules, or without the clone's package.json
 #                    (in both modes). Without it, nothing checks that the node holds the clone.
-#   P3_STATE_DIR, P3_VIEW_FILE, P3_LOCAL_DIR, P3_PROGRAM
+#   P3_STATE_DIR, P3_VIEW_FILE, P3_LOCAL_DIR, P3_CACHE_DIR, P3_PROGRAM
 #                    the mount program's, when they can't be read from its command line in the VM.
 #
 # Prints one JSON object on stdout (each check with its seconds; folderPath is the scratch folder's path in the folder,
@@ -78,7 +78,8 @@ vm() {
 	lx exec "$P3_VM" --env P3_ID="$id" --env P3_WORKTREE="${P3_WORKTREE:-}" --env P3_REMOTE="${P3_REMOTE:-}" \
 		--env P3_CHECK="${P3_CHECK:-}" --env P3_USER="${P3_USER:-}" --env P3_PUBLISH="${P3_PUBLISH:-1}" \
 		--env P3_KEEP="${P3_KEEP:-0}" --env P3_STATE_DIR="${P3_STATE_DIR:-}" --env P3_VIEW_FILE="${P3_VIEW_FILE:-}" \
-		--env P3_LOCAL_DIR="${P3_LOCAL_DIR:-}" --env P3_PROGRAM="${P3_PROGRAM:-}" "$@" -- bash "$work/vm.sh" "$phase"
+		--env P3_LOCAL_DIR="${P3_LOCAL_DIR:-}" --env P3_CACHE_DIR="${P3_CACHE_DIR:-}" --env P3_PROGRAM="${P3_PROGRAM:-}" \
+		"$@" -- bash "$work/vm.sh" "$phase"
 }
 
 # The node's paths under the scratch folder, from P3_NODE_LIST: none under node_modules, the clone's app among them.

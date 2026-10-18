@@ -72,7 +72,11 @@ starts a folder program or folder unit the image carries:
   unit of that name in `/run`. It runs as root with
   `CapabilityBoundingSet=CAP_SYS_ADMIN`, `Restart=on-failure`, `RestartSec=5s`,
   `RestartPreventExitStatus=3`, and #1085's `ExecStartPre` lazy umount of a dead
-  mount;
+  mount. Since MC3c it reads each view's `/run/qorpera-folder/units/<view>.env`
+  (`EnvironmentFile=`) and passes its `--cache-dir`: the proof writes that file
+  as the office helper does, naming a cache folder in its own root
+  (`/run/qorpera-folder/cache/<view>`, root, 0700), and removes both with the
+  view. A program built before MC3a refuses the flag;
 - if the image carries `/etc/systemd/system/qorpera-office-folder-mount@.service`
   (a 4e image does), the preflight requires it to be byte for byte that rendering
   and records its sha256 (`imageMountUnitSha256`). The unit the proof runs is

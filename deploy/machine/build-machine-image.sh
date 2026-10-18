@@ -125,6 +125,9 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder
 	# Where the company folder is mounted; until then an empty folder.
 	install -d -o root -g root -m 0755 /company
+	# Where the folder program keeps its caches, on the machine disk: root only (the program makes none of it).
+	install -d -o root -g root -m 0700 /var/lib/qorpera-folder /var/lib/qorpera-folder/cache \
+		/var/lib/qorpera-folder/cache/machine
 	# No self-update: the image stays what was reviewed; agents update what they need inside their own machine.
 	systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service
 '
@@ -153,6 +156,10 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	/usr/bin/flock --version >/dev/null
 	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]
 	[[ -d /company && -z $(ls -A /company) ]]
+	for folder in /var/lib/qorpera-folder /var/lib/qorpera-folder/cache /var/lib/qorpera-folder/cache/machine; do
+		[[ $(stat -c "%U:%G %a %F" "$folder") == "root:root 700 directory" ]]
+	done
+	[[ -z $(ls -A /var/lib/qorpera-folder/cache/machine) ]]
 	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]]
 	done

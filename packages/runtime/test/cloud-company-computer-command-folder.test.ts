@@ -18,6 +18,8 @@ const { environmentId } = computerScope();
 const receipt = computerId(40);
 const name = `command-${receipt}`;
 const screenId = computerId(50);
+/** The command's agent, as the core answers its view's owner: its mount uses this owner's cache. */
+const owner = "agent-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 const report = { commitId: "commit-1", seq: 7, paths: [] };
 const refusal = (refused: string) => ({
 	answer: "refused",
@@ -76,6 +78,7 @@ function core() {
 				schema: "qorpera.folder-view/v1",
 				viewId: computerId(100 + opened.length),
 				pass: `pass-${opened.length}`,
+				owner,
 			};
 		}
 		if (method === "qorpera_folder_view_close") {
@@ -193,7 +196,7 @@ describe("a shell command's folder", () => {
 				p_anchor: { shellCommandId: receipt },
 			},
 		]);
-		expect(f.asked).toEqual([{ op: "mount", name, view: f.view(1) }]);
+		expect(f.asked).toEqual([{ op: "mount", name, view: f.view(1), cache: owner }]);
 		expect(f.options).toEqual([
 			{ socket: "/run/qorpera-folder/helper.sock", timeoutMs: 40000, signal: expect.any(AbortSignal) },
 		]);
@@ -246,6 +249,33 @@ describe("a shell command's folder", () => {
 		expect(f.run).not.toHaveBeenCalled();
 		expect(f.folder.status).toBe("none");
 		await expect(f.release()).resolves.toEqual({ released: true, final: true });
+	});
+
+	it.each([
+		["no owner", undefined],
+		["the desktops' cache", "desktop"],
+		["an owner of another shape", "agent-not-a-uuid"],
+		["an owner in capitals", owner.toUpperCase()],
+	])("closes a view the core answered with %s, and asks the helper nothing", async (_case, given) => {
+		const closed: unknown[] = [];
+		const f = fixture({
+			registry: {
+				call: async (method: string, args: Record<string, unknown>) => {
+					if (method === "qorpera_folder_view_close") {
+						closed.push(args);
+						return {};
+					}
+					return { schema: "qorpera.folder-view/v1", viewId: computerId(101), pass: "pass-1", owner: given };
+				},
+			},
+		});
+		await expect(f.start()).resolves.toEqual({
+			note: "The command did not start (company folder is unavailable); start it again.",
+		});
+		expect(closed).toEqual([{ p_view_id: computerId(101), p_pass: "pass-1" }]);
+		expect(f.asked).toEqual([]);
+		expect(f.run).not.toHaveBeenCalled();
+		expect(f.folder.status).toBe("none");
 	});
 
 	it.each(["failed", "closed", "held", undefined])(
@@ -568,7 +598,7 @@ describe("a command's output for a run that did not start it", () => {
 	])("is held back when the core refuses it for %s", async (_, code, message, heldBack) => {
 		const fetcher = vi.fn<typeof fetch>(async (url) =>
 			String(url).endsWith("/rpc/qorpera_folder_view_open")
-				? Response.json({ schema: "qorpera.folder-view/v1", viewId: computerId(101), pass: "pass-1" })
+				? Response.json({ schema: "qorpera.folder-view/v1", viewId: computerId(101), pass: "pass-1", owner })
 				: Response.json({ message, code, details: "secret" }, { status: 403 }),
 		);
 		const f = await running({
