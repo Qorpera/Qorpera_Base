@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { SaveChecks } from "../src/folder-service/git-objects.ts";
 import { DESKTOP_QUIET_MS } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { NAME_CARRIES, TARGET_CARRIES, WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
@@ -54,8 +55,9 @@ const SECRETS_WAIT = "waiting for the machine's secret check";
 
 /** A company folder with two files, a coding session's view on a coding machine, a desktop's on the office machine,
  * and the node's service, whose log lines `logs` keeps. `secrets`: the coding machine's values its executor sent, or
- * none yet; `more`: further entries by path, each a file's text or `null` for a folder. */
-async function company(secrets?: SecretSet, more: Record<string, string | null> = {}) {
+ * none yet; `more`: further entries by path, each a file's text or `null` for a folder; `checks`: the node's checks of
+ * git's storage. */
+async function company(secrets?: SecretSet, more: Record<string, string | null> = {}, checks?: SaveChecks) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-secrets-"));
 	const core = new FakeCore();
 	core.seed([
@@ -69,7 +71,7 @@ async function company(secrets?: SecretSet, more: Record<string, string | null> 
 	core.openView(SESSION, PASS, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
 	core.openView(DESK, DESK_PASS, { kind: "computer_desktop", machineId: ALLOCATION });
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
-	const staging = new FolderStaging(core, new FakeUploads(root, core), objects);
+	const staging = new FolderStaging(core, new FakeUploads(root, core), objects, checks);
 	// Each file the service staged or checked again.
 	let staged = 0;
 	const stageFile = staging.stageFile.bind(staging);
@@ -422,6 +424,49 @@ describe("the save check of git's own storage (repo.git)", () => {
 		]);
 		expect(core.entries.get(`${packs}/pack-${"2".repeat(40)}.pack`)?.fileSha256).toBe(hashOf(honest));
 		expect(core.entries.has(`${packs}/tmp_pack_a1`)).toBe(false);
+		nothingNamed();
+	});
+
+	it("refuses as not checked a pack past the node's waiting bound, and checks it again at the next boundary (d)", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const carrying = packHolding(scratch, `the key is ${VALUE}.\n`);
+		const honest = packHolding(scratch, "the key is gone.\n");
+		// Other checks on the node hold its one turn and its one place to wait.
+		const checks = new SaveChecks({ atOnce: 1, waitingMax: 1 });
+		const others = [0, 1].map(() => checks.start(secretsOf(VALUE), honest.length, "pack"));
+		const started = others.map((check) => check.push(honest.subarray(0, 20)));
+		await started[0];
+		const { core, service, open, staged, nothingNamed } = await company(secretsOf(VALUE), {}, checks);
+		const view = await open();
+		const [a, b] = [
+			`${MIRROR}/objects/pack/pack-${"1".repeat(40)}.pack`,
+			`${MIRROR}/objects/pack/pack-${"2".repeat(40)}.pack`,
+		];
+		await put(view, a, carrying);
+		await put(view, b, honest);
+		for (let i = 0; i < 2; i++) {
+			const before = staged();
+			expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([
+				refused(a, UNCHECKED),
+				refused(b, UNCHECKED),
+			]);
+			expect(staged()).toBe(before + 2);
+			expect(core.entries.has(a) || core.entries.has(b)).toBe(false);
+		}
+		// Once the others are done, the next boundary checks both: the honest pack is saved, the other refused for its
+		// value, which no later boundary checks again.
+		for (const [n, check] of others.entries()) {
+			await started[n];
+			await check.push(honest.subarray(20));
+			await check.end();
+		}
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([refused(a, CARRIES)]);
+		expect(core.entries.get(b)?.fileSha256).toBe(hashOf(honest));
+		const after = staged();
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([refused(a, CARRIES)]);
+		expect(staged()).toBe(after);
+		expect(core.entries.has(a)).toBe(false);
 		nothingNamed();
 	});
 });

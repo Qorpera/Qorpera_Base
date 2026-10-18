@@ -1753,10 +1753,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					await this.#stopForFolder(folder, machine, journal, signal, unreadable);
 					await this.#runFolder(folder, claim, machine, storage, journal, signal);
 				});
-			// Paths the folder refused because they carry a secret value (5j-5 a) stay refused until the session changes
-			// them, so its turn fails with what to do and the session stays attached. Any other refusal, or one the check
-			// could not finish, holds the publication as before.
-			if (codingFolderSaveRefused(boundary)) throw new CodingSaveRefused();
+			// Paths the folder's save check refused (5j-5 a), because they carry a secret value or it could not finish
+			// checking them, stay refused until the session changes them (or, for a check the node was too busy for, until
+			// the next boundary), so its turn fails with what to do and the session stays attached. Any other refusal holds
+			// the publication as before.
+			const refusal = codingFolderSaveRefused(boundary);
+			if (refusal) throw new CodingSaveRefused(refusal === "unchecked");
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(

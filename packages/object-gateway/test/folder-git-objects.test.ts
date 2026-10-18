@@ -298,6 +298,61 @@ describe("a pack's check", () => {
 		await scratchIsEmpty();
 	});
 
+	it("refuses as not checked now a pack's check past the waiting bound, by count or by bytes (d)", async () => {
+		const pack = packOf(honest);
+		const secrets = secretsOf(VALUE);
+		for (const bound of [
+			{ waitingMax: 2, waitingBytes: 1024 ** 3 },
+			{ waitingMax: 100, waitingBytes: 2 * pack.length + 1 },
+		]) {
+			const checks = new SaveChecks({ ...reading, atOnce: 1, ...bound });
+			const holding = checks.start(secrets, pack.length, "pack");
+			await holding.push(pack.subarray(0, 20));
+			// Two wait their turn; the third is refused at once, for the node's load, not for its bytes.
+			const waiting = [checks.start(secrets, pack.length, "pack"), checks.start(secrets, pack.length, "pack")];
+			const pushed = waiting.map((check) => check.push(pack.subarray(0, 20)));
+			const third = checks.start(secrets, pack.length, "pack");
+			const refusal = await Promise.race([
+				third.push(pack.subarray(0, 20)).then(
+					() => "given a turn",
+					(error: unknown) => error,
+				),
+				new Promise((resolve) => setTimeout(resolve, 300, "waiting")),
+			]);
+			expect(refusal, JSON.stringify(bound)).toBeInstanceOf(SecretRefusal);
+			await third.abort();
+			expect((refusal as SecretRefusal).message).toBe(UNCHECKED);
+			expect((refusal as SecretRefusal).again).toBe(true);
+			// The ones waiting are checked in their turn, and the bound is free again.
+			await holding.push(pack.subarray(20));
+			await holding.end();
+			for (const [n, check] of waiting.entries()) {
+				await pushed[n];
+				await check.push(pack.subarray(20));
+				await check.end();
+			}
+			expect(await outcome(checks, pack, "pack")).toBe(CHECKED);
+			await scratchIsEmpty();
+		}
+		// The bound is on checks waiting, not on one that has a turn; a refusal for a pack's bytes is not for the load.
+		expect(await outcome(new SaveChecks({ ...reading, waitingMax: 0, waitingBytes: 0 }), pack, "pack")).toBe(CHECKED);
+		for (const [checks, bytes] of [
+			[new SaveChecks(reading), packOf(settings)],
+			[new SaveChecks({ ...reading, packMax: 10 }), pack],
+			[new SaveChecks(reading), pack.subarray(0, 12)],
+		] as const) {
+			const check = checks.start(secrets, bytes.length, "pack");
+			const error = await (async () => {
+				await check.push(bytes);
+				await check.end();
+			})().catch((e: unknown) => e);
+			await check.abort();
+			expect(error).toBeInstanceOf(SecretRefusal);
+			expect((error as SecretRefusal).again).toBe(false);
+		}
+		await scratchIsEmpty();
+	});
+
 	it("gives its turn back and removes its scratch repository when aborted, or when git cannot start", async () => {
 		const pack = packOf(honest);
 		const checks = new SaveChecks({ ...reading, atOnce: 1 });

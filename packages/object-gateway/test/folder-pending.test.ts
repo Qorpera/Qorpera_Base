@@ -9,8 +9,15 @@ import {
 	PendingView,
 	PublishFirst,
 } from "../src/folder-service/pending.ts";
-import { type CommitUnit, planBoundary } from "../src/folder-service/plan.ts";
+import {
+	type CommitUnit,
+	planBoundary,
+	type SecretCheck,
+	WAITS_FOR_REFUSED,
+	WAITS_FOR_UNCHECKED,
+} from "../src/folder-service/plan.ts";
 import { ProtocolError } from "../src/folder-service/protocol.ts";
+import { CARRIES, UNCHECKED } from "../src/folder-service/secret-scan.ts";
 import { ViewTree } from "../src/folder-service/view-tree.ts";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -142,9 +149,9 @@ function setup(paths: Record<string, Content>, codeHost = false) {
 		},
 		/** Publishes the boundary: every unit must save, and the folder must then be what the view showed (but what the
 		 * boundary keeps pending). */
-		publish(): CommitUnit[] {
+		publish(check?: SecretCheck): CommitUnit[] {
 			const before = shown(view);
-			const plan = planBoundary(view, staged);
+			const plan = planBoundary(view, staged, check);
 			const units = plan.units.map((u) => u.unit);
 			const { outcomes, state: after } = commit(state, units);
 			expect(outcomes, JSON.stringify(units, null, 1)).toEqual(units.map(() => "saved"));
@@ -160,7 +167,7 @@ function setup(paths: Record<string, Content>, codeHost = false) {
 			expect(now).toEqual(expected);
 			return units;
 		},
-		plan: () => planBoundary(view, staged),
+		plan: (check?: SecretCheck) => planBoundary(view, staged, check),
 		commit: (units: readonly CommitUnit[]) => commit(state, units).outcomes,
 	};
 }
@@ -1003,6 +1010,106 @@ describe("a view's pending changes", () => {
 				contents: [{ path: "HEAD", kind: "file", file: expect.any(Object) }],
 			},
 		]);
+	});
+
+	it("holds back the rest of a git directory with a refused change, and nothing outside it, until the way out (5j-5 (a))", () => {
+		const repo = "code/acme/app/repo.git";
+		const web = "code/acme/web/repo.git";
+		const own = `${repo}/worktrees/w1`;
+		const tree = "code/acme/app/worktrees/w1";
+		const pack = `${repo}/objects/pack/pack-1.pack`;
+		const f = setup({
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			[repo]: null,
+			[`${repo}/objects`]: null,
+			[`${repo}/objects/pack`]: null,
+			[pack]: "an older pack",
+			[`${repo}/worktrees`]: null,
+			[own]: null,
+			"code/acme/app/worktrees": null,
+			[tree]: null,
+			"code/acme/web": null,
+			[web]: null,
+			[`${web}/objects`]: null,
+			docs: null,
+		});
+		// What the session changes in the git directory, and outside it.
+		const inGit: string[] = [];
+		const outside: string[] = [];
+		/** Writes a loose object of `text` in a git directory, as git does: its folder first. */
+		const object = (area: string, text: string, into: string[]): string => {
+			const name = hash(text).slice(0, 40);
+			const folder = `${area}/objects/${name.slice(0, 2)}`;
+			if (!f.view.get(folder)) {
+				f.view.mkdir(folder);
+				into.push(folder);
+			}
+			const path = `${folder}/${name.slice(2)}`;
+			write(f.view, path, text);
+			into.push(path);
+			return path;
+		};
+		const carrier = object(repo, "a blob with the value", inGit);
+		const unread = object(repo, "an object not read", inGit);
+		object(repo, "its tree", inGit);
+		object(repo, "its commit", inGit);
+		f.view.mkdir(`${own}/logs`);
+		write(f.view, `${own}/logs/HEAD`, "0000 1111 commit: the change");
+		write(f.view, `${own}/index`, "the index");
+		f.view.unlink(pack);
+		inGit.push(`${own}/logs`, `${own}/logs/HEAD`, `${own}/index`, pack);
+		object(web, "another repository's object", outside);
+		write(f.view, `${tree}/a.txt`, "the worktree's file");
+		write(f.view, "docs/plan.md", "a plan");
+		outside.push(`${tree}/a.txt`, "docs/plan.md");
+		/** A check that refuses the bytes of each text, for its reason. */
+		const refusing = (reasons: Record<string, string>): SecretCheck => ({
+			carries: () => false,
+			refused: (node) =>
+				Object.entries(reasons).find(([text]) => node.content?.chunks[0]?.sha256 === chunk(text).sha256)?.[1],
+		});
+		/** The boundary's plan under `check`: the paths it publishes, and why each it refused stays pending. */
+		const planned = (check: SecretCheck) => {
+			const plan = f.plan(check);
+			const refused = Object.fromEntries(plan.refused.map((r) => [r.path, r.reason]));
+			expect(Object.keys(refused)).toHaveLength(plan.refused.length);
+			for (const path of Object.keys(refused)) expect(plan.keep.has(path)).toBe(true);
+			return { units: plan.units.flatMap((u) => u.paths).sort(), refused };
+		};
+		const waits = (reason: string, but: readonly string[]) =>
+			Object.fromEntries(inGit.filter((p) => !but.includes(p)).map((p) => [p, reason]));
+		// One object refused for its bytes: everything else changed in its git directory waits for it, its folder, the
+		// other objects, the worktree's log and index, and the pack's removal; the rest publishes.
+		expect(planned(refusing({ "a blob with the value": CARRIES }))).toEqual({
+			units: [...outside].sort(),
+			refused: { ...waits(WAITS_FOR_REFUSED, [carrier]), [carrier]: CARRIES },
+		});
+		// One not checked: the rest waits for that, and says so.
+		expect(planned(refusing({ "an object not read": UNCHECKED }))).toEqual({
+			units: [...outside].sort(),
+			refused: { ...waits(WAITS_FOR_UNCHECKED, [unread]), [unread]: UNCHECKED },
+		});
+		// Both, in either order: the rest waits for a value.
+		expect(planned(refusing({ "a blob with the value": CARRIES, "an object not read": UNCHECKED }))).toEqual({
+			units: [...outside].sort(),
+			refused: { ...waits(WAITS_FOR_REFUSED, [carrier, unread]), [carrier]: CARRIES, [unread]: UNCHECKED },
+		});
+		expect(planned(refusing({ "a blob with the value": UNCHECKED, "an object not read": CARRIES }))).toEqual({
+			units: [...outside].sort(),
+			refused: { ...waits(WAITS_FOR_REFUSED, [carrier, unread]), [carrier]: UNCHECKED, [unread]: CARRIES },
+		});
+		// The way out (git's prune) removes the refused object: the rest is then published, and the folder is what the
+		// view shows.
+		const check = refusing({ "a blob with the value": CARRIES });
+		f.view.unlink(carrier);
+		expect(planned(check)).toEqual({
+			units: [...inGit.filter((p) => p !== carrier), ...outside].sort(),
+			refused: {},
+		});
+		f.publish(check);
+		expect(f.plan(check).units).toEqual([]);
 	});
 });
 

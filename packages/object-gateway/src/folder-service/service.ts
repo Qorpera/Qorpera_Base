@@ -672,10 +672,11 @@ export class FolderService {
 	/** The values each staged file's bytes were checked against, and as which stored form (git-objects.ts): checked
 	 * again as a form that one covers, they are checked for the other values alone. */
 	readonly #checked = new WeakMap<FileRef, { readonly secrets: SecretSet; readonly form: StoredForm }>();
-	/** Each file the check refused: at which version, under which values, and why. */
+	/** Each file the check refused: at which version, under which values, and why; `again` if for the node's load, not
+	 * the file's bytes (`SecretRefusal.again`), so the next staging checks it again. */
 	readonly #refusals = new WeakMap<
 		PendingFile,
-		{ readonly version: string; readonly secrets: SecretSet; readonly reason: string }
+		{ readonly version: string; readonly secrets: SecretSet; readonly reason: string; readonly again: boolean }
 	>();
 
 	constructor(options: FolderServiceOptions) {
@@ -2774,8 +2775,10 @@ export class FolderService {
 	 * view's bytes (5j-5) are checked against its machine's secret values first, and staged only if they carry none: a
 	 * staging checked against older values is checked again for the new ones. They are checked as `path` stores them: a
 	 * git object's inflated, a pack's as git reads it (git-objects.ts), and a staging checked under another name (git's
-	 * temporary one) is checked again as its new name's form. Nothing is staged while the machine's values have not
-	 * come. Only the machine's own bytes are checked: a live file's are in the folder already. */
+	 * temporary one) is checked again as its new name's form. A file refused stays refused at its version, but one
+	 * refused only for the node's load (too many packs waiting) is checked again at the next staging. Nothing is staged
+	 * while the machine's values have not come. Only the machine's own bytes are checked: a live file's are in the
+	 * folder already. */
 	async #stage(
 		view: View,
 		node: PendingFile,
@@ -2786,7 +2789,7 @@ export class FolderService {
 		const changed = node.content !== undefined || !node.origin || node.executable !== node.origin.entry?.executable;
 		if (!staging || node.open > 0 || !changed || secrets === null) return undefined;
 		const check = node.content === undefined ? undefined : secrets;
-		if (check && this.#refusalOf(node, check)) return undefined;
+		if (check && this.#refusalOf(node, check, true)) return undefined;
 		const version = node.version;
 		const form = storedForm(path);
 		if (this.#stagedNow(view, node, path)) {
@@ -2799,12 +2802,13 @@ export class FolderService {
 			} catch (error) {
 				if (!(error instanceof SecretRefusal)) throw error;
 				if (node.version === version) {
-					this.#refusals.set(node, { version, secrets: check, reason: error.message });
+					this.#refusals.set(node, { version, secrets: check, reason: error.message, again: error.again });
 					node.staged = undefined;
 				}
 				return undefined;
 			}
 			this.#checked.set(file, { secrets: check, form });
+			this.#passed(node, version, check);
 			return file;
 		}
 		// A staging for another version or media type is never used again.
@@ -2826,10 +2830,14 @@ export class FolderService {
 			);
 		} catch (error) {
 			if (!(error instanceof SecretRefusal) || !check) throw error;
-			if (node.version === version) this.#refusals.set(node, { version, secrets: check, reason: error.message });
+			if (node.version === version)
+				this.#refusals.set(node, { version, secrets: check, reason: error.message, again: error.again });
 			return undefined;
 		}
-		if (check) this.#checked.set(staged.file, { secrets: check, form });
+		if (check) {
+			this.#checked.set(staged.file, { secrets: check, form });
+			this.#passed(node, version, check);
+		}
 		if (node.version === version) {
 			node.staged = { version, file: staged.file };
 			view.intents.set(staged.intentId, { renewed: this.#now(), node, staged: staged.file });
@@ -2866,10 +2874,19 @@ export class FolderService {
 		return machine === undefined ? null : (this.#secrets.get(machine) ?? null);
 	}
 
-	/** Why the check refused a file's bytes as they are now, under `secrets`, if it did. */
-	#refusalOf(node: PendingFile, secrets: SecretSet): string | undefined {
+	/** Why the check refused a file's bytes as they are now, under `secrets`, if it did; with `settled`, only if for the
+	 * bytes, not for the node's load. */
+	#refusalOf(node: PendingFile, secrets: SecretSet, settled = false): string | undefined {
 		const refusal = this.#refusals.get(node);
-		return refusal?.version === node.version && refusal.secrets === secrets ? refusal.reason : undefined;
+		if (refusal?.version !== node.version || refusal.secrets !== secrets || (settled && refusal.again))
+			return undefined;
+		return refusal.reason;
+	}
+
+	/** A check of a node's bytes at `version` against `secrets` passed: a refusal of them for the node's load is over. */
+	#passed(node: PendingFile, version: string, secrets: SecretSet): void {
+		const refusal = this.#refusals.get(node);
+		if (refusal?.version === version && refusal.secrets === secrets) this.#refusals.delete(node);
 	}
 
 	/** A node's staged file at `path`, if it is for the node's version and, where its bytes are checked, checked
@@ -3364,7 +3381,7 @@ export class FolderService {
 				entry[1].kind === "file" &&
 				entry[1].open === 0 &&
 				!(this.#stagedNow(view, entry[1], entry[0]) && this.#stagedFor(entry[1], secrets, entry[0])) &&
-				!(secrets && this.#refusalOf(entry[1], secrets)),
+				!(secrets && this.#refusalOf(entry[1], secrets, true)),
 		);
 		for (let i = 0; i < nodes.length; i += STAGING_PARALLEL)
 			await Promise.all(

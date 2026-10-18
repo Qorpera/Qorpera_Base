@@ -62,6 +62,10 @@ export interface PackReading {
 	readonly memoryBytes?: number;
 	/** Checks of packs at once on the node; the others wait their turn. */
 	readonly atOnce?: number;
+	/** Checks of packs that may wait for a turn at once, and the bytes of their packs together. A check past either is
+	 * refused as not checked now (`SecretRefusal.again`), and its file is checked again at the next boundary. */
+	readonly waitingMax?: number;
+	readonly waitingBytes?: number;
 	/** The largest pack read: its copy in the scratch repository is in memory. */
 	readonly packMax?: number;
 	/** What one pack's objects may come to rebuilt: this many times the pack's size, or `rebuiltFloor`, whichever is
@@ -80,6 +84,8 @@ const READING: Required<PackReading> = {
 	timeoutMs: 30 * 60 * 1000,
 	memoryBytes: 1024 ** 3,
 	atOnce: 1,
+	waitingMax: 8,
+	waitingBytes: 2 * 1024 ** 3,
 	packMax: 512 * 1024 ** 2,
 	rebuiltFactor: 64,
 	rebuiltFloor: 256 * 1024 ** 2,
@@ -93,7 +99,7 @@ export class SaveChecks {
 
 	constructor(reading: PackReading = {}) {
 		this.#reading = { ...READING, ...reading };
-		this.#turns = new Turns(this.#reading.atOnce);
+		this.#turns = new Turns(this.#reading.atOnce, this.#reading.waitingMax, this.#reading.waitingBytes);
 	}
 
 	/** The check of a file of `size` bytes stored in `form`, for `secrets`. With no values there is nothing to look for,
@@ -230,25 +236,39 @@ class LooseCheck implements ContentCheck {
 	}
 }
 
-/** Turns for the node's pack checks: at most `atOnce` at a time, the rest in order. */
+/** Turns for the node's pack checks: at most `atOnce` at a time, the rest in order, at most `waitingMax` of them with
+ * at most `waitingBytes` of packs together; one past either is refused as not checked now. */
 class Turns {
 	#free: number;
-	readonly #waiting: (() => void)[] = [];
+	readonly #waitingMax: number;
+	readonly #waitingBytes: number;
+	readonly #waiting: { readonly bytes: number; readonly go: () => void }[] = [];
+	#waitingFor = 0;
 
-	constructor(atOnce: number) {
+	constructor(atOnce: number, waitingMax: number, waitingBytes: number) {
 		this.#free = atOnce;
+		this.#waitingMax = waitingMax;
+		this.#waitingBytes = waitingBytes;
 	}
 
-	async take(): Promise<() => void> {
+	/** A turn for the check of a pack of `bytes`. */
+	async take(bytes: number): Promise<() => void> {
 		if (this.#free > 0) this.#free--;
-		else await new Promise<void>((resolve) => this.#waiting.push(resolve));
+		else if (this.#waiting.length >= this.#waitingMax || this.#waitingFor + bytes > this.#waitingBytes)
+			throw new SecretRefusal(UNCHECKED, true);
+		else {
+			this.#waitingFor += bytes;
+			await new Promise<void>((go) => this.#waiting.push({ bytes, go }));
+		}
 		let given = false;
 		return () => {
 			if (given) return;
 			given = true;
 			const next = this.#waiting.shift();
-			if (next) next();
-			else this.#free++;
+			if (next) {
+				this.#waitingFor -= next.bytes;
+				next.go();
+			} else this.#free++;
 		};
 	}
 }
@@ -300,7 +320,13 @@ class PackCheck implements ContentCheck {
 		if (this.#size > this.#reading.packMax) return Promise.reject(new SecretRefusal(UNCHECKED));
 		const { rebuiltFactor, rebuiltFloor, rebuiltMax } = this.#reading;
 		const rebuilt = Math.min(rebuiltMax, Math.max(rebuiltFloor, rebuiltFactor * this.#size));
-		this.#run ??= PackRun.start(this.#reading, this.#turns, this.#sha256, this.#secrets.scan(rebuilt), rebuilt);
+		this.#run ??= PackRun.start(
+			this.#reading,
+			this.#turns.take(this.#size),
+			this.#sha256,
+			this.#secrets.scan(rebuilt),
+			rebuilt,
+		);
 		return this.#run;
 	}
 }
@@ -359,16 +385,16 @@ class PackRun {
 		}, reading.timeoutMs);
 	}
 
-	/** Takes a turn and makes the scratch repository. A failure to do so is not the pack's: it rejects with a plain
-	 * error, and the file waits. */
+	/** Waits for its turn and makes the scratch repository. A failure to make it is not the pack's: it rejects with a
+	 * plain error, and the file waits. No turn while too many wait rejects as not checked now. */
 	static async start(
 		reading: Required<PackReading>,
-		turns: Turns,
+		turn: Promise<() => void>,
 		sha256: boolean,
 		scan: SecretScan,
 		rebuilt: number,
 	): Promise<PackRun> {
-		const release = await turns.take();
+		const release = await turn;
 		let dir: string | undefined;
 		try {
 			await access(reading.git, constants.X_OK);

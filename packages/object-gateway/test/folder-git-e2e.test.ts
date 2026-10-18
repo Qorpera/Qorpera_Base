@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
+import { WAITS_FOR_REFUSED } from "../src/folder-service/plan.ts";
 import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
 import { CARRIES } from "../src/folder-service/secret-scan.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
@@ -103,9 +104,19 @@ interface Ran {
 	readonly out: string;
 }
 
-function run(command: string, args: readonly string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+/** Runs `command`, with `input` on its standard input if given. */
+function run(
+	command: string,
+	args: readonly string[],
+	options: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {},
+) {
 	return new Promise<Ran>((resolve, reject) => {
-		const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+		const { input, ...spawned } = options;
+		const child = spawn(command, args, {
+			...spawned,
+			stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+		});
+		child.stdin?.end(input);
 		let out = "";
 		child.stdout.on("data", (data: Buffer) => {
 			out += data.toString();
@@ -400,6 +411,48 @@ function refusedAt(boundary: MachineBoundary): string[] {
 /** The paths the core holds under `prefix`. */
 function held(core: FakeCore, prefix: string): string[] {
 	return [...core.entries.keys()].filter((path) => path.startsWith(prefix)).sort();
+}
+
+/** The paths the core holds under `prefix`, each with its version: what a refused change leaves as it was. */
+function versions(core: FakeCore, prefix: string): string[] {
+	return held(core, prefix).map((path) => `${path} ${core.entries.get(path)?.version}`);
+}
+
+/** What a coding machine's boundary refused in the first worker's view (5j-5 (a)): the paths that carry a secret
+ * value, and those held back with them, each in order. Every one held back is in the repository, and nothing is
+ * refused for another reason. */
+function refusedIn(boundary: MachineBoundary): { carries: string[]; waiting: string[] } {
+	const lines = refusedAt(boundary);
+	const of = (reason: string) =>
+		lines.filter((line) => line.endsWith(`: ${reason}`)).map((line) => line.slice(0, -`: ${reason}`.length));
+	const carries = of(CARRIES);
+	const waiting = of(WAITS_FOR_REFUSED);
+	expect(lines.filter((line) => ![CARRIES, WAITS_FOR_REFUSED].some((why) => line.endsWith(`: ${why}`)))).toEqual([]);
+	expect(waiting.filter((path) => !path.startsWith(`${R}/`))).toEqual([]);
+	return { carries, waiting };
+}
+
+/** The test value the coding sessions' secret check looks for (not a secret). */
+const VALUE = "test-value-0001";
+
+/** A loose object's id, from its path under the repository (`objects/xx/<38 hex>`). */
+function oidOf(name: string): string {
+	return name.slice("objects/".length).replace("/", "");
+}
+
+/** What another session's git reads of the repository's objects: none holds the value, and the store is whole. */
+async function readsNoValue(session: Session, oid: string): Promise<void> {
+	expect((await session.gitRun("cat-file", "-e", oid)).code).not.toBe(0);
+	expect((await session.git("cat-file", "--batch-all-objects", "--batch")).includes(VALUE)).toBe(false);
+	expect(await session.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+}
+
+/** The refusal's way out for a git commit, as the executor words it (`coding-executor.ts`), the value already taken out
+ * of the files: then a commit is saved. */
+async function wayOut(session: Session): Promise<void> {
+	await session.git("reflog", "expire", "--expire-unreachable=now", "HEAD");
+	await session.git("repack", "-a", "-d", "--max-pack-size=64m");
+	await session.git("prune", "--expire=now");
 }
 
 describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", () => {
@@ -976,14 +1029,14 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 	it(
 		"refuses a coding session's commit of a file carrying a secret value at its ref update, and saves it after the refusal's way out (5j-5)",
 		async () => {
-			const value = "test-value-0001";
 			const at = await area({}, true);
-			at.service.secrets(CODING_MACHINE_ID, secretsOf(value));
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
 			const first = await mountSession(at, "first");
 			const tip = (await first.git("rev-parse", "HEAD")).trim();
+			const before = versions(at.core, `${R}/`);
 			const env = `${AREA}/worktrees/w1/.env`;
-			const blob = `${R}/${looseObject("blob", `KEY=${value}\n`).name}`;
-			await writeFile(join(first.worktree, ".env"), `KEY=${value}\n`);
+			const blob = `${R}/${looseObject("blob", `KEY=${VALUE}\n`).name}`;
+			await writeFile(join(first.worktree, ".env"), `KEY=${VALUE}\n`);
 			await first.git("add", ".env");
 			const refused = await first.gitRun("commit", "-q", "-m", "settings");
 			expect(refused.code, refused.out).not.toBe(0);
@@ -994,18 +1047,19 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			const made = (await readFile(join(first.company, headLog), "utf8")).trim().split("\n").at(-1)?.split(" ")[1];
 			expect(made).toMatch(/^[0-9a-f]{40}$/);
 			expect(made).not.toBe(tip);
-			// The turn's boundary: the file and its object are refused and kept on the machine.
-			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([
-				`${blob}: ${CARRIES}`,
-				`${env}: ${CARRIES}`,
-			]);
-			expect(at.core.entries.has(blob)).toBe(false);
+			const tree = (await first.git("rev-parse", `${made}^{tree}`)).trim();
+			// The turn's boundary: the file and its object are refused and kept on the machine, and the rest of the
+			// repository's change is held back with them (5j-5 (a)): the commit, its tree, the log and the index.
+			const refusal = refusedIn(await at.service.boundary(CODING_MACHINE_ID));
+			expect(refusal.carries).toEqual([blob, env]);
+			const objects = [made!, tree].map((oid) => `${R}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`);
+			expect(refusal.waiting).toEqual(expect.arrayContaining([...objects, headLog, `${R}/worktrees/w1/index`]));
+			expect(versions(at.core, `${R}/`)).toEqual(before);
 
 			// The refusal's way out, as the executor words it.
 			await writeFile(join(first.worktree, ".env"), "KEY=from-the-vault\n");
 			await first.git("add", ".env");
-			await first.git("reflog", "expire", "--expire-unreachable=now", "HEAD");
-			await first.git("prune", "--expire=now");
+			await wayOut(first);
 			await first.git("commit", "-q", "-m", "settings");
 			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
 			expect(await first.git("log", "--format=%s")).toBe("settings\nfirst\n");
@@ -1020,6 +1074,174 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 				expect(bytes.toString()).not.toContain(made);
 				expect(at.core.entries.get(log)?.fileSha256).toBe(hashOf(bytes));
 			}
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"keeps a refused git change safe when the session ignores the refusal, and saves it after the way out (5j-5 (a))",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			const tip = (await first.git("rev-parse", "HEAD")).trim();
+			const before = versions(at.core, `${R}/`);
+			const env = `${AREA}/worktrees/w1/.env`;
+			const name = looseObject("blob", `KEY=${VALUE}\n`).name;
+			const blob = `${R}/${name}`;
+			await writeFile(join(first.worktree, ".env"), `KEY=${VALUE}\n`);
+			await first.git("add", ".env");
+			expect((await first.gitRun("commit", "-q", "-m", "settings")).code).not.toBe(0);
+
+			// The session goes on as if it had not been refused: it leaves the file out of its next commit, and its turns
+			// end. Each boundary refuses the same, each commit is refused though it holds none of the value, and nothing of
+			// the repository is published or changed in the core.
+			await first.git("reset", "-q", "--", ".env");
+			await writeFile(join(first.worktree, "notes.md"), "plain notes\n");
+			await first.git("add", "notes.md");
+			for (const n of [1, 2]) {
+				expect(refusedIn(await at.service.boundary(CODING_MACHINE_ID)).carries).toEqual([blob, env]);
+				expect(versions(at.core, `${R}/`)).toEqual(before);
+				const later = await first.gitRun("commit", "-q", "-m", `notes ${n}`);
+				expect(later.code, later.out).not.toBe(0);
+				expect((await first.git("rev-parse", "HEAD")).trim()).toBe(tip);
+			}
+			expect(at.core.gitPublishes).toEqual([]);
+			// Nothing refused can be read outside the session, by another session's git in the core's copy, and that copy
+			// is whole, at its tip.
+			expect((await second.git("rev-parse", "w1")).trim()).toBe(tip);
+			await readsNoValue(second, oidOf(name));
+
+			// The way out: the commit is saved, and nothing refused is left, on the machine or in the core.
+			await writeFile(join(first.worktree, ".env"), "KEY=from-the-vault\n");
+			await first.git("add", ".env");
+			await wayOut(first);
+			await first.git("commit", "-q", "-m", "settings");
+			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
+			await expect(stat(join(first.company, blob))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(at.core.entries.has(blob)).toBe(false);
+			await readsNoValue(first, oidOf(name));
+			await at.service.poll();
+			const log = "settings\nfirst\n";
+			expect(await eventually(async () => (await second.git("log", "--format=%s", "w1")) === log)).toBe(true);
+			expect(await second.git("show", "w1:notes.md")).toBe("plain notes\n");
+			await readsNoValue(second, oidOf(name));
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"refuses a pack that holds a secret value, holds its .idx and .rev back with it, and saves after the way out (5j-5 (b))",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			const before = versions(at.core, `${R}/`);
+			const env = `${AREA}/worktrees/w1/.env`;
+			const name = looseObject("blob", `KEY=${VALUE}\n`).name;
+			await writeFile(join(first.worktree, ".env"), `KEY=${VALUE}\n`);
+			await first.git("add", ".env");
+			expect((await first.gitRun("commit", "-q", "-m", "settings")).code).not.toBe(0);
+			// The session packs what it has not saved: the value is then only in a pack, compressed.
+			await first.git("repack", "-d", "-q");
+			await expect(stat(join(first.company, R, name))).rejects.toMatchObject({ code: "ENOENT" });
+			const packs = join(first.company, R, "objects", "pack");
+			const files = (await readdir(packs)).sort();
+			const pack = files.find((file) => file.endsWith(".pack"))?.slice(0, -".pack".length);
+			expect(files).toEqual(["idx", "pack", "rev"].map((end) => `${pack}.${end}`));
+			const P = `${R}/objects/pack/${pack}`;
+
+			// The boundary refuses the pack, and holds back its index and reverse index with the rest of the repository's
+			// change; a commit is refused too.
+			const refusal = refusedIn(await at.service.boundary(CODING_MACHINE_ID));
+			expect(refusal.carries).toEqual([`${P}.pack`, env]);
+			expect(refusal.waiting).toEqual(expect.arrayContaining([`${P}.idx`, `${P}.rev`]));
+			expect(versions(at.core, `${R}/`)).toEqual(before);
+			expect((await first.gitRun("commit", "-q", "-m", "settings")).code).not.toBe(0);
+			await readsNoValue(second, oidOf(name));
+
+			// The way out clears the pack: the commit is saved, and no file of the pack is left, on the machine or in the
+			// core.
+			await writeFile(join(first.worktree, ".env"), "KEY=from-the-vault\n");
+			await first.git("add", ".env");
+			await wayOut(first);
+			await first.git("commit", "-q", "-m", "settings");
+			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
+			expect((await readdir(packs)).filter((file) => file.startsWith(`${pack}.`))).toEqual([]);
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(held(at.core, `${P}.`)).toEqual([]);
+			await readsNoValue(first, oidOf(name));
+			await at.service.poll();
+			const log = "settings\nfirst\n";
+			expect(await eventually(async () => (await second.git("log", "--format=%s", "w1")) === log)).toBe(true);
+			await readsNoValue(second, oidOf(name));
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"refuses a pack whose secret value is whole only once a delta is resolved, and saves after the way out (5j-5 (b))",
+		async () => {
+			const at = await area({}, true);
+			at.service.secrets(CODING_MACHINE_ID, secretsOf(VALUE));
+			const first = await mountSession(at, "first");
+			const before = versions(at.core, `${R}/`);
+			// Two settings files: `v1` holds the value; `v2`, git's base for it, is longer and has the value's ninth byte
+			// changed, so the value is whole only in `v1` rebuilt (its delta copies around the one byte it inserts).
+			const lines = Array.from({ length: 300 }, (_, i) => `setting_${i} = the value of setting number ${i}\n`);
+			const changed = `${VALUE.slice(0, 8)}X${VALUE.slice(9)}`;
+			const v1 = [...lines.slice(0, 150), `key = ${VALUE}\n`, ...lines.slice(150)].join("");
+			const v2 = [...lines.slice(0, 150), `key = ${changed}\n`, ...lines.slice(150), ...lines.slice(0, 20)].join("");
+			const off = join(at.base, "settings");
+			await mkdir(off);
+			await writeFile(join(off, "v1"), v1);
+			await writeFile(join(off, "v2"), v2);
+			const [o1, o2] = (await first.git("hash-object", "-w", join(off, "v1"), join(off, "v2"))).trim().split("\n");
+			// The session packs the two, uncompressed, and removes their loose copies: the pack holds `v2` as it is and
+			// `v1` as a delta against it, and so not the value.
+			const into = join(first.company, R, "objects/pack/pack");
+			const packed = await run(
+				gitBin!,
+				["-C", first.worktree, "-c", "pack.compression=0", "pack-objects", "-q", into],
+				{
+					env: gitEnv(first.home),
+					input: `${o1}\n${o2}\n`,
+				},
+			);
+			expect(packed.code, packed.out).toBe(0);
+			await first.git("prune-packed");
+			for (const oid of [o1, o2])
+				await expect(stat(join(first.company, R, "objects", oid.slice(0, 2), oid.slice(2)))).rejects.toMatchObject({
+					code: "ENOENT",
+				});
+			const P = `${R}/objects/pack/pack-${packed.out.trim()}`;
+			const bytes = await readFile(join(first.company, `${P}.pack`));
+			expect(bytes.indexOf(lines[0])).not.toBe(-1);
+			expect(bytes.indexOf(VALUE)).toBe(-1);
+			const stored = (await first.git("verify-pack", "-v", join(first.company, `${P}.idx`)))
+				.split("\n")
+				.find((line) => line.startsWith(o1));
+			expect(stored?.trim().split(/\s+/).at(-1)).toBe(o2);
+
+			// The boundary refuses the pack, rebuilt, and holds back its index and reverse index.
+			const refusal = refusedIn(await at.service.boundary(CODING_MACHINE_ID));
+			expect(refusal.carries).toEqual([`${P}.pack`]);
+			expect(refusal.waiting).toEqual(expect.arrayContaining([`${P}.idx`, `${P}.rev`]));
+			expect(versions(at.core, `${R}/`)).toEqual(before);
+
+			// The way out clears the pack, and a commit is saved.
+			await wayOut(first);
+			await writeFile(join(first.worktree, "notes.md"), "plain notes\n");
+			await first.git("add", "notes.md");
+			await first.git("commit", "-q", "-m", "notes");
+			expect(at.core.gitPublishes.at(-1)?.published).toBe(true);
+			await expect(stat(join(first.company, `${P}.pack`))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
+			expect(held(at.core, `${P}.`)).toEqual([]);
+			await readsNoValue(first, o1);
 		},
 		TIMEOUT,
 	);

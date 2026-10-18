@@ -301,29 +301,44 @@ describe("the coding executor over a session turn", () => {
 	});
 
 	it("a publication held by a refused save fails the turn with what to change, and leaves the session attached", async () => {
-		const w = world();
-		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingSaveRefused());
-		const finish = {
-			schema: "qorpera.coding-submission/v1",
-			workerId: w.world.claim.workerId,
-			sequence: 1,
-			kind: "finish",
-			state: "submitted",
-			summary: "Tests passed",
-			headSha,
-			operationKey: "done",
-		};
-		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
-		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
-		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
-		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
-		expect(completion.p_outcome).toBe("failed");
-		expect(completion.p_summary).toBe(
-			"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and `git add` them) or the message, run `git reflog expire --expire-unreachable=now HEAD` and `git prune --expire=now`, then commit again.",
-		);
-		expect(completion.p_pull_request).toBeNull();
-		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
-		expect(w.host.detachSession).not.toHaveBeenCalled();
+		const reasons: [CodingSaveRefused, string][] = [
+			[
+				new CodingSaveRefused(),
+				"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and `git add` them) or the message, run `git reflog expire --expire-unreachable=now HEAD`, `git repack -a -d --max-pack-size=64m` and `git prune --expire=now`, then commit again.",
+			],
+			// One the check could not finish (5j-5 (c)): the same way out for git's storage, and another for a file.
+			[
+				new CodingSaveRefused(true),
+				"The save was refused: a file this session wrote in the company folder could not be checked for the session's secret values. It was not saved, and nothing was published. If it is in a git repository's storage, run `git reflog expire --expire-unreachable=now HEAD`, `git repack -a -d --max-pack-size=64m` and `git prune --expire=now`, then commit and finish again. Otherwise remove the file or make it smaller, and finish again. If nothing needs changing, finish again: the check may have been busy.",
+			],
+		];
+		expect(reasons.map(([error]) => error.message)).toEqual([
+			"CODING_FOLDER_SAVE_REFUSED",
+			"CODING_FOLDER_SAVE_UNCHECKED",
+		]);
+		for (const [error, reason] of reasons) {
+			const w = world();
+			vi.mocked(w.host.publish).mockRejectedValueOnce(error);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			expect(completion.p_outcome).toBe("failed");
+			expect(completion.p_summary).toBe(reason);
+			expect(completion.p_pull_request).toBeNull();
+			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+			expect(w.host.detachSession).not.toHaveBeenCalled();
+		}
 	});
 
 	it("a question blocks the session with its choices and leaves it standing by", async () => {

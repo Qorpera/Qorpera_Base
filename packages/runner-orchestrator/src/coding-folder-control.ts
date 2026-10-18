@@ -54,14 +54,16 @@ export interface CodingFolderBoundary {
  * changed paths are not saved (`unsaved`: a commit with no answer yet, waiting on an open file, refused, denied, a
  * conflict, parked for review; a final boundary keeps none of them pending), the outcome of the first of them
  * (`unsavedOutcome`, such as `not_applied` or `waiting`), how many of them the save check refused because they carry one
- * of the machine's secret values (`secretRefused`, 5j-5 (a); absent when none), and why the core refused the change set
- * whole (`refused`). */
+ * of the machine's secret values (`secretRefused`, 5j-5 (a); absent when none), how many it refused because it could
+ * not finish checking them (`uncheckedRefused`; absent when none), and why the core refused the change set whole
+ * (`refused`). */
 export interface CodingFolderBoundaryView {
 	readonly viewId: string;
 	readonly error?: string;
 	readonly unsaved?: number;
 	readonly unsavedOutcome?: string;
 	readonly secretRefused?: number;
+	readonly uncheckedRefused?: number;
 	readonly refused?: string;
 }
 
@@ -70,13 +72,14 @@ export function codingFolderViewSaved(view: CodingFolderBoundaryView | undefined
 	return view !== undefined && view.error === undefined && view.unsaved === 0 && view.refused === undefined;
 }
 
-/** Whether a boundary that released its reads holds the output back only because the save check refused paths that carry
- * one of the machine's secret values (5j-5 (a)): every path any view left unsaved is one, and no view had an error or a
- * change set refused whole. A path the check could not finish checking, or one the core refused for another reason, is
- * not: no value was found in it. */
-export function codingFolderSaveRefused(boundary: CodingFolderBoundary): boolean {
+/** Whether a boundary that released its reads holds the output back only because the save check refused paths (5j-5
+ * (a)): every path any view left unsaved is one, and no view had an error or a change set refused whole. `carries` when
+ * any of them carries one of the machine's secret values; `unchecked` when the check only could not finish checking
+ * them (git's storage too big or broken, or the node's checks too busy), so no value was found; undefined when the
+ * output is held for anything else, such as a path the core refused for another reason. */
+export function codingFolderSaveRefused(boundary: CodingFolderBoundary): "carries" | "unchecked" | undefined {
 	const unsaved = boundary.views.filter((view) => !codingFolderViewSaved(view));
-	return (
+	const checked =
 		boundary.reads === "released" &&
 		unsaved.length > 0 &&
 		unsaved.every(
@@ -85,9 +88,10 @@ export function codingFolderSaveRefused(boundary: CodingFolderBoundary): boolean
 				view.refused === undefined &&
 				view.unsaved !== undefined &&
 				view.unsaved > 0 &&
-				view.secretRefused === view.unsaved,
-		)
-	);
+				(view.secretRefused ?? 0) + (view.uncheckedRefused ?? 0) === view.unsaved,
+		);
+	if (!checked) return undefined;
+	return unsaved.some((view) => view.secretRefused !== undefined) ? "carries" : "unchecked";
 }
 
 /** Why a boundary holds the machine's output back, as a code's reason (`[A-Z][A-Z0-9_]{0,63}`), or undefined when it
@@ -137,13 +141,19 @@ const REPORT_KEYS: readonly string[] = ["closed", "commitId", "paths", "refused"
 /** `target`: a conflicting link's target (the service's protocol 4), not kept like the rest of the entry. */
 const ENTRY_KEYS: readonly string[] = ["kept", "outcome", "path", "reason", "receipt", "target"];
 /** Why the service's save check refuses a path (object-gateway's folder-service secret-scan.ts and plan.ts): its
- * contents, its name or its link's target carry one of the machine's secret values, or it waits for a change whose name
- * does. Its refusal of a file it could not finish checking ("it could not be checked for secret values") is not one. */
+ * contents, its name or its link's target carry one of the machine's secret values, or it waits for a change that does
+ * (one it needs, or one in its git directory). */
 const SECRET_CARRIED: readonly string[] = [
 	"it carries a secret value",
 	"a name in this folder carries a secret value",
 	"its link's target carries a secret value",
 	"it waits for a change that carries a secret value",
+];
+/** Why it refuses a path it found no value in: it could not finish checking the path's bytes, or those of a change the
+ * path waits for. */
+const SECRET_UNCHECKED: readonly string[] = [
+	"it could not be checked for secret values",
+	"it waits for a change that could not be checked for secret values",
 ];
 
 const INVALID = "CODING_FOLDER_CONTROL_ANSWER_INVALID";
@@ -406,12 +416,13 @@ function errorCode(value: unknown): string {
 }
 
 /** What a view's report (the service's Report) says of the save: how many paths are not saved, the outcome of the first
- * of them, how many of them carry a secret value, and a whole refusal. Its paths, reasons and receipts are checked for
- * shape and not kept. */
+ * of them, how many of them carry a secret value, how many could not be checked for one, and a whole refusal. Its
+ * paths, reasons and receipts are checked for shape and not kept. */
 function reportOf(value: unknown): {
 	unsaved: number;
 	unsavedOutcome?: string;
 	secretRefused?: number;
+	uncheckedRefused?: number;
 	refused?: string;
 } {
 	const report = objectOf(value);
@@ -428,6 +439,7 @@ function reportOf(value: unknown): {
 	let unsaved = 0;
 	let unsavedOutcome: string | undefined;
 	let secretRefused = 0;
+	let uncheckedRefused = 0;
 	for (const value of report.paths) {
 		const entry = objectOf(value);
 		if (
@@ -445,11 +457,13 @@ function reportOf(value: unknown): {
 		unsaved++;
 		unsavedOutcome ??= entry.outcome as string;
 		if (entry.outcome === "refused" && SECRET_CARRIED.includes(entry.reason as string)) secretRefused++;
+		if (entry.outcome === "refused" && SECRET_UNCHECKED.includes(entry.reason as string)) uncheckedRefused++;
 	}
 	return {
 		unsaved,
 		...(unsavedOutcome === undefined ? {} : { unsavedOutcome }),
 		...(secretRefused === 0 ? {} : { secretRefused }),
+		...(uncheckedRefused === 0 ? {} : { uncheckedRefused }),
 		...(report.refused === undefined ? {} : { refused: report.refused as string }),
 	};
 }

@@ -1,6 +1,7 @@
 import { folderKey } from "@qorpera/contracts";
 import { gitObjectPath, gitPlace, gitSharedPath } from "./git.ts";
 import { type FileRef, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
+import { UNCHECKED } from "./secret-scan.ts";
 import { parentOf } from "./view-tree.ts";
 
 /** A structured file's parse for the commit's hook (`memberFolderStructured`, core §3 "Before the transaction"). */
@@ -56,9 +57,9 @@ export interface BoundaryPlan {
 	readonly dropped: readonly { readonly path: string; readonly reason: string }[];
 	/** The nodes the boundary leaves pending whatever its units' outcomes. */
 	readonly keep: ReadonlySet<string>;
-	/** Paths the secret check refused (`SecretCheck`), and those held back as they wait on a change it refused, and
-	 * why; kept pending, but never waiting: a final does not wait for them. A name it refused is shown as the folder
-	 * above it, whose own name carries no value. */
+	/** Paths the secret check refused (`SecretCheck`), and those held back as they wait on a change it refused (one
+	 * they need, or one in their git directory), and why; kept pending, but never waiting: a final does not wait for
+	 * them. A name it refused is shown as the folder above it, whose own name carries no value. */
 	readonly refused: readonly { readonly path: string; readonly reason: string }[];
 }
 
@@ -75,6 +76,7 @@ export interface SecretCheck {
 export const NAME_CARRIES = "a name in this folder carries a secret value";
 export const TARGET_CARRIES = "its link's target carries a secret value";
 export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret value";
+export const WAITS_FOR_UNCHECKED = "it waits for a change that could not be checked for secret values";
 
 type Item =
 	| { kind: "write"; path: string; file: FileRef; expected: string; paths: string[] }
@@ -126,7 +128,9 @@ function carrierBelow(view: PendingView, from: string, to: string, check: Secret
  * the names before anything else, so no list holds one. A folder's move gives what it holds new names too, and each is
  * checked. A refused move keeps its source where it is (`PendingView.settle`), so what needs a
  * refused change waits with it: a change into the path it would free or into the folder it would make, and the removal
- * or move of a folder that holds a source it keeps.
+ * or move of a folder that holds a source it keeps. A refusal in a code area's git directory holds the whole directory
+ * back: everything else changed in it waits, so a git change is never published in part (its commit without its
+ * file's object, its log or index naming it), and the way out (git's own prune) leaves nothing of it.
  */
 export function planBoundary(
 	view: PendingView,
@@ -145,6 +149,14 @@ export function planBoundary(
 	};
 	// The refused moves and new folders, which what needs them waits on.
 	const refusedItems: Item[] = [];
+	// Each code area whose git directory holds a refused change, and what the rest of that directory waits for.
+	const gitHeld = new Map<string, string>();
+	const holdGit = (path: string, reason: string): void => {
+		const place = gitPlace(path);
+		if (place.kind !== "git") return;
+		const waits = reason === UNCHECKED ? WAITS_FOR_UNCHECKED : WAITS_FOR_REFUSED;
+		if (gitHeld.get(place.area) !== WAITS_FOR_REFUSED) gitHeld.set(place.area, waits);
+	};
 	const writes: (Item & { kind: "write" })[] = [];
 	const creates: (Item & { kind: "create" })[] = [];
 	const moves: (Item & { kind: "move" })[] = [];
@@ -169,6 +181,7 @@ export function planBoundary(
 		if (carrier !== undefined) {
 			keep.add(path);
 			refuse(carrier, NAME_CARRIES);
+			holdGit(path, NAME_CARRIES);
 			if (node.origin)
 				refusedItems.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
 			else if (node.kind === "folder") refusedItems.push({ kind: "create", path, contents: null, paths: [path] });
@@ -185,6 +198,7 @@ export function planBoundary(
 			if (!node.origin && check?.carries(node.target)) {
 				keep.add(path);
 				refuse(path, TARGET_CARRIES);
+				holdGit(path, TARGET_CARRIES);
 			} else if (!node.origin)
 				links.push({ kind: "link", path, target: node.target, expected: node.replaces?.version, paths: [path] });
 			else if (node.origin.path !== path)
@@ -208,6 +222,7 @@ export function planBoundary(
 		if (refusal) {
 			keep.add(path);
 			refuse(path, refusal);
+			holdGit(path, refusal);
 			continue;
 		}
 		const file = staged(node, path);
@@ -308,15 +323,29 @@ export function planBoundary(
 			}
 		}
 	}
-	for (const item of items)
-		if (blocked.has(item))
-			for (const path of item.paths) {
-				keep.add(path);
-				refuse(path, WAITS_FOR_REFUSED);
-			}
+	// A git directory with a refused change publishes nothing else until the refusal's way out: no object, ref, log or
+	// index of the change, nor any change after it, reaches the folder half made.
+	const heldIn = (item: Item): string | undefined => {
+		for (const path of item.kind === "move" ? [item.from, ...item.paths] : item.paths) {
+			const place = gitPlace(path);
+			const waits = place.kind === "git" ? gitHeld.get(place.area) : undefined;
+			if (waits) return waits;
+		}
+		return undefined;
+	};
+	const held = new Set<Item>();
+	for (const item of items) {
+		const waits = blocked.has(item) ? WAITS_FOR_REFUSED : heldIn(item);
+		if (!waits) continue;
+		held.add(item);
+		for (const path of item.paths) {
+			keep.add(path);
+			refuse(path, waits);
+		}
+	}
 	const units: PlannedUnit[] = [];
 	for (const item of schedule(
-		items.filter((i) => !blocked.has(i)),
+		items.filter((i) => !held.has(i)),
 		waiting,
 		keep,
 	))

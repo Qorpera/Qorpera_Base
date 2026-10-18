@@ -627,20 +627,38 @@ not inflate, has bytes after it, has no header or more than its header's size, o
 under `prlimit --as` (1 GiB), with the system's and the user's config ignored (`GIT_CONFIG_NOSYSTEM`,
 `GIT_CONFIG_GLOBAL=/dev/null`, `HOME` the scratch directory), no hooks and no remotes, for at most 30 minutes, and one
 pack at a time on a node, so a burst of packs waits its turn and starves nothing else; the scratch directory is
-removed however the check ends. A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at
+removed however the check ends. At most 8 checks wait for a turn on a node, with at most 2 GiB of packs together; a
+pack past either is refused as "could not be checked" for now, and checked again at the next boundary (one session's
+boundary checks at most 8 files at once, so this is several sessions at once). A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at
 least 256 MiB, at most 4 GiB), is "could not be checked" too. Packs of code rebuild 14 to 26 times their size (express
 16, Qorpera_Base 14, git/git 26), and the scan runs at about 6 MiB a second on the node, so a pack the size of
 Qorpera_Base's (183 MiB, 2.6 GiB rebuilt) takes about 7.5 minutes and its boundary waits for it. A machine with no
 values inflates and reads nothing. `install-folder-service.sh` refuses a node without `/usr/bin/git` and
 `/usr/bin/prlimit`.
 
+**A refused git change is held whole.** Once the check refuses anything in a code area's `repo.git` (an object, a
+pack, a new name), everything else changed in that `repo.git` waits with it, as "it waits for a change that carries a
+secret value" (or "… that could not be checked for secret values" when that is all it waits for): the change's other
+objects, its refs and logs, the worktree's index, a pack's `.idx` and `.rev`, `objects/info/packs`. So a git change
+is never published in part, and nothing of it reaches the core's copy of `repo.git`, where another session could read
+it. A session that ignores the refusal stays safe: each later boundary refuses the same files and holds the same
+`repo.git`, and each later commit fails at its ref update (which saves the objects waiting in that `repo.git` first), so
+its turn fails again. Files outside `repo.git`
+(the worktree's checkout, other areas) are not held.
+
 **The way out** is the session's: the refusal tells it to take the value out of the files (and `git add` them) or the
-message, run `git reflog expire --expire-unreachable=now HEAD` and `git prune --expire=now`, then commit again. The
-reflog step drops the worktree's own HEAD log line that still names the refused commit (that log is a plain file
-the refused ref update leaves); `HEAD`, not `--all`, so a session never rewrites another worktree's log. Prune
-removes only what the session's own view holds unsaved: another session's unsaved objects are not in it, and a saved
-object can't be deleted (EPERM, which prune reports and passes). The folder service never drops a refused object
-itself. A change refused as "could not be checked" fails the turn without this text.
+message, run `git reflog expire --expire-unreachable=now HEAD`, `git repack -a -d --max-pack-size=64m` and
+`git prune --expire=now`, then commit again. The reflog step drops the worktree's own HEAD log line that still names
+the refused commit (that log is a plain file the refused ref update leaves); `HEAD`, not `--all`, so a session never
+rewrites another worktree's log. Repack writes what is still reachable into new packs and deletes the packs it
+replaced, so a refused pack goes with its `.idx` and `.rev`; packs of at most 64 MiB stay well inside the bounds above.
+Prune removes the loose objects left. Both delete only what the session's own view holds unsaved: another session's
+unsaved objects are not in it, and a saved object or pack can't be deleted (EPERM, which git reports and passes). The
+folder service never drops a refused object itself.
+
+A change refused as "could not be checked" fails the turn with the same way out for git's storage; for any other file,
+remove it or make it smaller; and if nothing needs changing, finish again, as the check may only have been busy. It
+still fails closed: nothing of the change is saved until a check passes.
 
 The limits:
 
@@ -650,7 +668,11 @@ The limits:
 - objects saved before 5j-5's git reading are not scanned again;
 - a pack too big for the bounds above is refused as "could not be checked" on a machine with values: a clone the size
   of git/git (a 309 MiB pack rebuilding 7.8 GiB) can't be saved as one pack there;
-- a file at an object's name whose bytes are not git's is refused as "could not be checked", wherever it is.
+- a file at an object's name whose bytes are not git's is refused as "could not be checked", wherever it is;
+- the way out's repack copies objects already saved into its new packs, as a saved pack can't be deleted, so each way
+  out grows `repo.git` by what is reachable;
+- a file too big to check (over 1 GiB inflated, or alone in a pack over 512 MiB) can't be saved in git on a machine with
+  values: the way out drops it only from a refused commit, and a commit that carries it again is refused again.
 
 Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
 starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
