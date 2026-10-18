@@ -559,7 +559,7 @@ impl Shared {
 				} else if meta.is_file() {
 					self.write_in(local, held, &path, &disk)?;
 				} else if meta.file_type().is_symlink() {
-					if let Some(ino) = self.link_in(local, &path, &disk)? {
+					if let Some((ino, _link)) = self.link_in(local, &path, &disk)? {
 						local.moved_file_out(&disk, ino)?;
 					}
 				} else {
@@ -604,7 +604,7 @@ impl Shared {
 			} else if meta.is_file() {
 				self.write_in(local, held, &to, &disk.join(rel))?;
 			} else if meta.file_type().is_symlink() {
-				if let Some(ino) = self.link_in(local, &to, &disk.join(rel))? {
+				if let Some((ino, _link)) = self.link_in(local, &to, &disk.join(rel))? {
 					local.moved_file_out(&disk.join(rel), ino)?;
 				}
 			} else {
@@ -620,11 +620,12 @@ impl Shared {
 	}
 
 	/// Makes the disk's link `disk` the folder's link at `path`, to the same target (protocol 4): the local inode of the
-	/// link it made it from, which leaves the disk only while that link is there (`Local::moved_file_out`). One the
+	/// link it made it from, which leaves the disk only while that link is there (`Local::moved_file_out`), and that link
+	/// opened, which the move holds until then, so no other link there has its inode (`Local::read_link`). One the
 	/// folder cannot keep (a target that is not UTF-8, a name it has already, one it refuses) is not made, and stays on
 	/// the disk; one the node did not take now (`again`) is a failure, so the move stays to be made.
-	fn link_in(&self, local: &Local, path: &str, disk: &Path) -> Result<Option<u64>, i32> {
-		let (target, ino) = local.read_link(disk)?;
+	fn link_in(&self, local: &Local, path: &str, disk: &Path) -> Result<Option<(u64, fs::File)>, i32> {
+		let (target, ino, link) = local.read_link(disk)?;
 		let Some(target) = target.to_str() else {
 			eprintln!("qorpera-folder: the link {path} stays out of the folder: its target is not UTF-8");
 			return Ok(None);
@@ -632,7 +633,7 @@ impl Shared {
 		match self.link.symlink(path, target) {
 			Ok(version) => {
 				self.versions.lock().unwrap().saved(path, &version);
-				Ok(Some(ino))
+				Ok(Some((ino, link)))
 			}
 			Err(f) if again(&f) => Err(f.errno()),
 			Err(f) => {

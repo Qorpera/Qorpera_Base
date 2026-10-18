@@ -1867,10 +1867,12 @@ impl Local {
 		OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(disk.path())
 	}
 
-	/// The target of the link at the cache disk path `disk`, as `folder` finds it, and the local inode of the link: both
-	/// of the one link opened there (`O_PATH`), so another program renaming or exchanging links there meanwhile never
-	/// gives one link's inode with another's target (which a cache move would publish, and then take the link off).
-	pub fn read_link(&self, disk: &Path) -> Result<(PathBuf, u64), i32> {
+	/// The target of the link at the cache disk path `disk`, as `folder` finds it, the local inode of the link, and the
+	/// link: all of the one link opened there (`O_PATH`), so another program renaming or exchanging links there meanwhile
+	/// never gives one link's inode with another's target (which a cache move would publish, and then take the link off).
+	/// The move keeps the link open until it is off the disk (`moved_file_out`): while it is, a link another program
+	/// makes there after removing this one never has its inode.
+	pub fn read_link(&self, disk: &Path) -> Result<(PathBuf, u64, File), i32> {
 		let disk = self.beneath(Area::Cache, disk)?;
 		let flags = libc::O_PATH | libc::O_NOFOLLOW;
 		let place = OpenOptions::new().read(true).custom_flags(flags).open(disk.path()).map_err(errno)?;
@@ -1878,7 +1880,7 @@ impl Local {
 		#[cfg(test)]
 		tests::parked("link", &disk.at);
 		let target = target_of(&place)?;
-		Ok((PathBuf::from(OsStr::from_bytes(&target)), ino))
+		Ok((PathBuf::from(OsStr::from_bytes(&target)), ino, place))
 	}
 }
 
@@ -3010,9 +3012,34 @@ mod tests {
 			// inode it has, which is the link the move takes off the disk only while it is at x (`moved_file_out`).
 			b.rename((&up, "x"), (&up, "y"), Area::Cache, false, true).unwrap();
 			parked.go();
-			assert_eq!(read.join().unwrap(), Ok((PathBuf::from("old"), x.ino.0)));
+			assert_eq!(read.join().unwrap().map(|(target, ino, _)| (target, ino)), Ok((PathBuf::from("old"), x.ino.0)));
 		});
-		assert_eq!(a.read_link(&disk).map(|(target, _)| target), Ok(PathBuf::from("new")));
+		assert_eq!(a.read_link(&disk).map(|(target, ..)| target), Ok(PathBuf::from("new")));
+		drop((a, b));
+		fs::remove_dir_all(&base).unwrap();
+	}
+
+	#[test]
+	fn a_link_a_cache_move_read_keeps_its_inode_from_one_another_program_makes_in_its_place() {
+		let (a, b, base) = sharing("shared-link-again");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		b.symlink(up.clone(), "x", Area::Cache, Path::new("old")).unwrap();
+		let disk = a.disk(Area::Cache, "code/o/n/worktrees/w/target/x");
+		let (target, ino, link) = a.read_link(&disk).unwrap();
+		assert_eq!(target, PathBuf::from("old"));
+		// While v1's move publishes `old`, v2 removes x and makes it again, over and over. The link v1 holds open is still
+		// the one it read, off the disk but not freed, so no other file has its inode: none of v2's links, which the move
+		// takes none of off the disk.
+		for _ in 0..20 {
+			b.unlink(&up, "x", Area::Cache).unwrap();
+			let held = link.metadata().unwrap();
+			assert_eq!((a.id(Area::Cache, &held), held.nlink()), (Ok(ino), 0));
+			let made = b.symlink(up.clone(), "x", Area::Cache, Path::new("new")).unwrap();
+			assert_ne!(made.ino.0, ino);
+		}
+		assert_eq!(a.moved_file_out(&disk, ino), Err(libc::EBUSY));
+		drop(link);
+		assert_eq!(a.read_link(&disk).map(|(target, ..)| target), Ok(PathBuf::from("new")));
 		drop((a, b));
 		fs::remove_dir_all(&base).unwrap();
 	}
