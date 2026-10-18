@@ -9,6 +9,7 @@ import {
 	type CodingMachineAdmissionReceipt,
 	type CodingMachineIntent,
 	type CodingMachineJournalPlan,
+	codingMachineDisk,
 	codingMachineLastStart,
 	codingMachineStartDropped,
 	codingMachineStartOperation,
@@ -19,6 +20,7 @@ import {
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
 	reconcileCodingMachine,
+	recordCodingMachineDisk,
 	undropCodingMachineStart,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "../src/coding-vm.ts";
@@ -100,6 +102,7 @@ function lxd(project: string, name: string, request: () => LxdInstanceRecord) {
 			}
 			return "succeeded";
 		}),
+		hasImage: vi.fn(async (_project: string, _fingerprint: string, _signal: AbortSignal) => true),
 	};
 	return {
 		client,
@@ -166,11 +169,14 @@ async function outsideStops(f: Awaited<ReturnType<typeof fixture>>) {
 	return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(root, name), "utf8"))));
 }
 
+/** A full segment of stops and starts after a create. Its last `trailing` effects are `lastAction` (when given), each
+ * settled `lastState`; only the very last one is when `trailing` is 1. */
 async function retainedHistory(
 	f: Awaited<ReturnType<typeof fixture>>,
 	count: 381 | 384,
 	lastState: "succeeded" | "failed" = "succeeded",
-	lastAction?: "start",
+	lastAction?: "start" | "rebuild",
+	trailing = 1,
 ) {
 	await f.reconcile();
 	await f.reconcile();
@@ -188,14 +194,14 @@ async function retainedHistory(
 				action:
 					sequence < 3
 						? "create"
-						: lastAction && sequence >= count - 3
+						: lastAction && sequence >= count - 3 * trailing
 							? lastAction
 							: Math.floor(sequence / 3) % 2
 								? "start"
 								: "stop",
 				kind: ["dispatch", "accepted", "settled"][phase],
 				operationId: phase === 0 ? null : id(1000 + Math.floor(sequence / 3)),
-				state: phase === 2 ? (sequence === count - 1 ? lastState : "succeeded") : null,
+				state: phase === 2 ? (sequence >= count - 3 * trailing ? lastState : "succeeded") : null,
 			})}\n`,
 		);
 		await writeFile(join(root, `${String(sequence).padStart(6, "0")}.json`), bytes, { mode: 0o600 });
@@ -522,6 +528,7 @@ describe("a coding machine's journaled lifecycle", () => {
 				fail = false;
 				throw new Error("CODING_FOLDER_CONTROL_UNAVAILABLE");
 			}
+			return undefined;
 		});
 		const submit = f.client.submitInstanceOperation.getMockImplementation()!;
 		f.client.submitInstanceOperation.mockImplementation(async (project, action, signal) => {
@@ -627,6 +634,7 @@ describe("a coding machine's journaled lifecycle", () => {
 		const lastStarts: (string | null)[] = [];
 		const starting = vi.fn(async () => {
 			lastStarts.push(await codingMachineLastStart(f.journalRoot, f.journal));
+			return undefined;
 		});
 		const reconcile = (desiredState: "running" | "stopped") =>
 			reconcileCodingMachine({ ...f.options, desiredState, starting });
@@ -654,6 +662,7 @@ describe("a coding machine's journaled lifecycle", () => {
 		const lastStarts: (string | null)[] = [];
 		const starting = vi.fn(async () => {
 			lastStarts.push(await codingMachineLastStart(f.journalRoot, f.journal));
+			return undefined;
 		});
 		const reconcile = (desiredState: "running" | "stopped" = "running") =>
 			reconcileCodingMachine({ ...f.options, desiredState, starting });
@@ -715,6 +724,214 @@ describe("a coding machine's journaled lifecycle", () => {
 		await expect(dropCodingMachineStart(f.journalRoot, f.journal, "../start")).rejects.toThrow(
 			"CODING_MACHINE_JOURNAL_INVALID",
 		);
+	});
+	it("writes down next to the machine's journal the rebuild that gave it its disk, and reads it (F3 5g-5)", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		// The disk it was made with.
+		expect(await codingMachineDisk(f.journalRoot, f.journal)).toBeNull();
+		await recordCodingMachineDisk(f.journalRoot, f.journal, id(20));
+		expect(await codingMachineDisk(f.journalRoot, f.journal)).toBe(id(20));
+		// The next rebuild's disk takes its place, written whole.
+		await recordCodingMachineDisk(f.journalRoot, f.journal, id(21));
+		expect(await codingMachineDisk(f.journalRoot, f.journal)).toBe(id(21));
+		const root = join(f.journalRoot, f.value.machineId);
+		expect(JSON.parse(await readFile(join(root, "disk.json"), "utf8"))).toEqual({
+			schema: "qorpera.coding-machine-disk/v1",
+			operationId: id(21),
+		});
+		expect((await readdir(root)).filter((name) => name.startsWith("."))).toEqual([]);
+		// The journal reads past it.
+		expect((await f.reconcile()).state).toBe("running");
+		// A record that is not one, or a rebuild that is not an operation id, is refused.
+		for (const value of [
+			{ schema: "qorpera.coding-machine-disk/v1", operationId: "rebuild" },
+			{ schema: "qorpera.coding-machine-disk/v1", operationId: id(21), extra: 1 },
+			{ schema: "qorpera.coding-machine-dropped-start/v1", operationId: id(21) },
+		]) {
+			await writeFile(join(root, "disk.json"), `${JSON.stringify(value)}\n`, { mode: 0o600 });
+			await expect(codingMachineDisk(f.journalRoot, f.journal)).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+		}
+		await expect(recordCodingMachineDisk(f.journalRoot, f.journal, "../rebuild")).rejects.toThrow(
+			"CODING_MACHINE_JOURNAL_INVALID",
+		);
+	});
+	describe("a new disk from the machine's image (F3 5g-5)", () => {
+		type After = "create" | "start" | "stop" | "rebuild";
+		const actions = (f: Awaited<ReturnType<typeof fixture>>) =>
+			f.client.submitInstanceOperation.mock.calls.map((call) => call[1]);
+		const rebuild = (f: Awaited<ReturnType<typeof fixture>>) => ({
+			action: "rebuild",
+			name: f.plan.request.name,
+			fingerprint: "b".repeat(64),
+		});
+		/** A stopped machine whose executor asks for a new disk right before the start after its stop. */
+		async function stopped() {
+			const f = await fixture();
+			// Each authority, each call and each dispatch, in order.
+			const order: string[] = [];
+			const authorize = async (intent: CodingMachineIntent) => {
+				order.push(`authorize:${intent}`);
+				return receipt(f.journal, intent);
+			};
+			const starting = vi.fn(async (_afterOperationId: string, _signal: AbortSignal, after: After) => {
+				order.push(`starting:${after}`);
+				return after === "stop" ? ("rebuild" as const) : undefined;
+			});
+			const submit = f.client.submitInstanceOperation.getMockImplementation()!;
+			f.client.submitInstanceOperation.mockImplementation(async (project, action, signal) => {
+				order.push(action.action);
+				return submit(project, action, signal);
+			});
+			const reconcile = (desiredState: "running" | "stopped" | "deleted" = "running") =>
+				reconcileCodingMachine({ ...f.options, desiredState, authorize, starting });
+			for (const expected of ["pending", "pending", "running"]) expect((await reconcile()).state).toBe(expected);
+			for (const expected of ["pending", "stopped"]) expect((await reconcile("stopped")).state).toBe(expected);
+			order.length = 0;
+			return { f, order, starting, reconcile };
+		}
+		it("is a rebuild in place of the start, under its own authority, and the start after it is named by the rebuild", async () => {
+			const { f, order, starting, reconcile } = await stopped();
+			expect((await reconcile()).state).toBe("pending");
+			expect(f.client.hasImage).toHaveBeenCalledWith(f.value.project, "b".repeat(64), f.controller.signal);
+			// The machine never ran on the new disk yet: the start it last ran under is still the one before the stop.
+			expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(id(12));
+			for (const expected of ["pending", "running"]) expect((await reconcile()).state).toBe(expected);
+			expect(order).toEqual([
+				...["authorize:run", "starting:stop", "authorize:rebuild", "rebuild"],
+				...["authorize:run", "starting:rebuild", "authorize:run", "start"],
+				"authorize:run",
+			]);
+			// The fake LXD numbers each operation by its submission: the create 11, the start 12, the stop 13, the rebuild
+			// 14 (from the machine's own image), the start 15.
+			expect(actions(f)).toEqual([
+				expect.objectContaining({ action: "create" }),
+				{ action: "start", name: f.plan.request.name },
+				{ action: "stop", name: f.plan.request.name, force: true },
+				rebuild(f),
+				{ action: "start", name: f.plan.request.name },
+			]);
+			expect(starting.mock.calls.map((call) => [call[0], call[2]])).toEqual([
+				[id(11), "create"],
+				[id(13), "stop"],
+				[id(14), "rebuild"],
+			]);
+			expect(await codingMachineLastStart(f.journalRoot, f.journal)).toBe(id(15));
+		});
+		it("re-issues a failed rebuild without the executor, never starts on what it left, and waits for an operator after the third", async () => {
+			const { f, order, starting, reconcile } = await stopped();
+			for (let attempt = 0; attempt < 3; attempt++)
+				f.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+			const states: string[] = [];
+			for (let attempt = 0; attempt < 5; attempt++) states.push((await reconcile()).state);
+			expect(states).toEqual(["pending", "pending", "pending", "recovery-required", "recovery-required"]);
+			expect(order.filter((step) => step.startsWith("starting:"))).toEqual(["starting:stop"]);
+			expect(order.filter((step) => step === "authorize:rebuild")).toHaveLength(3);
+			expect(actions(f).slice(3)).toEqual([rebuild(f), rebuild(f), rebuild(f)]);
+			expect(starting).toHaveBeenCalledTimes(2);
+			// The machine is stopped: a stop is done, and a delete still goes.
+			expect((await reconcile("stopped")).state).toBe("stopped");
+			for (const expected of ["pending", "deleted"]) expect((await reconcile("deleted")).state).toBe(expected);
+			expect(actions(f).at(-1)).toEqual({ action: "delete", name: f.plan.request.name });
+		});
+		it("settles a rebuild LXD no longer knows as failed on the stopped VM, and rebuilds again", async () => {
+			const { f, starting, reconcile } = await stopped();
+			expect((await reconcile()).state).toBe("pending");
+			f.client.inspectInstanceOperation.mockRejectedValueOnce(new Error("LXD_OPERATION_UNKNOWN"));
+			expect((await reconcile()).state).toBe("pending");
+			const root = join(f.journalRoot, f.value.machineId);
+			const names = (await readdir(root)).filter((name) => /^\d{6}\.json$/.test(name)).sort();
+			const events = await Promise.all(
+				names.map(async (name) => JSON.parse(await readFile(join(root, name), "utf8"))),
+			);
+			expect(events.slice(9).map((event) => [event.action, event.kind, event.state])).toEqual([
+				["rebuild", "dispatch", null],
+				["rebuild", "accepted", null],
+				["rebuild", "settled", "failed"],
+				["rebuild", "dispatch", null],
+				["rebuild", "accepted", null],
+			]);
+			for (const expected of ["pending", "running"]) expect((await reconcile()).state).toBe(expected);
+			// The start is named by the rebuild that succeeded (15), not the one LXD forgot (14).
+			expect(starting.mock.calls.map((call) => [call[0], call[2]]).at(-1)).toEqual([id(15), "rebuild"]);
+		});
+		it("fails before its authority and its dispatch when the node no longer has the image, and the machine stays stopped", async () => {
+			const { f, order, reconcile } = await stopped();
+			f.client.hasImage.mockResolvedValueOnce(false);
+			await expect(reconcile()).rejects.toThrow("CODING_MACHINE_IMAGE_GONE");
+			expect(order).toEqual(["authorize:run", "starting:stop"]);
+			expect(actions(f).map((action) => action.action)).toEqual(["create", "start", "stop"]);
+			expect(f.instance()).toMatchObject({ status: "Stopped", statusCode: 102 });
+			// Each turn fails so until the image is back; then the next one rebuilds.
+			f.client.hasImage.mockResolvedValueOnce(false);
+			await expect(reconcile()).rejects.toThrow("CODING_MACHINE_IMAGE_GONE");
+			expect((await reconcile()).state).toBe("pending");
+			expect(actions(f).at(-1)).toEqual(rebuild(f));
+			// A client that can't look up images never rebuilds.
+			const g = await stopped();
+			const client = {
+				getInstance: g.f.client.getInstance,
+				submitInstanceOperation: g.f.client.submitInstanceOperation,
+				inspectInstanceOperation: g.f.client.inspectInstanceOperation,
+			};
+			expect(
+				(await reconcileCodingMachine({ ...g.f.options, client, desiredState: "running", starting: g.starting }))
+					.state,
+			).toBe("recovery-required");
+			expect(actions(g.f).map((action) => action.action)).toEqual(["create", "start", "stop"]);
+		});
+		it("rolls over a full journal that ends with a rebuild before the start after it, or rebuilds again after a failed one", async () => {
+			const f = await fixture();
+			const root = await retainedHistory(f, 381, "succeeded", "rebuild");
+			const starting = vi.fn(async (_afterOperationId: string, _signal: AbortSignal, _after: After) => undefined);
+			const reconcile = (machine: typeof f) =>
+				reconcileCodingMachine({ ...machine.options, desiredState: "running", starting });
+			expect((await reconcile(f)).state).toBe("pending");
+			expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+				segment: 1,
+				previousEventCount: 381,
+			});
+			for (const expected of ["pending", "running"]) expect((await reconcile(f)).state).toBe(expected);
+			// The start after the rollover is named by the old segment's last rebuild (its triplet 126).
+			expect(starting.mock.calls.map((call) => [call[0], call[2]])).toEqual([[id(1126), "rebuild"]]);
+			const g = await fixture();
+			await retainedHistory(g, 381, "failed", "rebuild");
+			for (const expected of ["pending", "pending", "pending", "running"])
+				expect((await reconcile(g)).state).toBe(expected);
+			// The retained history's own create and start, then the rebuild again (13) and the start after it.
+			expect(actions(g).map((action) => action.action)).toEqual(["create", "start", "rebuild", "start"]);
+			expect(starting.mock.calls.map((call) => [call[0], call[2]]).at(-1)).toEqual([id(13), "rebuild"]);
+		});
+		it("counts failed rebuilds in a row across the checkpoint a failed one closed its segment with", async () => {
+			const f = await fixture();
+			// The segment ends with two failed rebuilds (its triplets 125 and 126), after a stop.
+			const root = await retainedHistory(f, 381, "failed", "rebuild", 2);
+			const starting = vi.fn(async (_afterOperationId: string, _signal: AbortSignal, _after: After) => undefined);
+			const reconcile = (desiredState: "running" | "deleted" = "running") =>
+				reconcileCodingMachine({ ...f.options, desiredState, starting });
+			f.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+			const states: string[] = [];
+			for (let attempt = 0; attempt < 4; attempt++) states.push((await reconcile()).state);
+			// The rollover, the third rebuild, then its failure: the third in a row, so an operator is waited for.
+			expect(states).toEqual(["pending", "pending", "recovery-required", "recovery-required"]);
+			expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+				segment: 1,
+				previousEventCount: 381,
+			});
+			expect(actions(f).map((action) => action.action)).toEqual(["create", "start", "rebuild"]);
+			expect(starting).not.toHaveBeenCalled();
+			// A record of the segment before that no longer matches the one after it is never counted.
+			const g = await fixture();
+			const gRoot = await retainedHistory(g, 381, "failed", "rebuild", 2);
+			const reconcileG = () => reconcileCodingMachine({ ...g.options, desiredState: "running", starting });
+			expect((await reconcileG()).state).toBe("pending");
+			const record = JSON.parse(await readFile(join(gRoot, "000378.json"), "utf8"));
+			await writeFile(join(gRoot, "000378.json"), `${JSON.stringify({ ...record, operationId: id(999) })}\n`);
+			await expect(reconcileG()).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+			expect(actions(g).map((action) => action.action)).toEqual(["create", "start"]);
+			// The machine is still stopped: a delete still goes.
+			for (const expected of ["pending", "deleted"]) expect((await reconcile("deleted")).state).toBe(expected);
+		});
 	});
 	it("never takes a member's VM that LXD shows in any other state for stopped", async () => {
 		const f = await fixture();

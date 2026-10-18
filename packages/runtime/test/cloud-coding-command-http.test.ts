@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CloudCodingCommandServiceOptions } from "../src/cloud-coding-command-http.ts";
+import type {
+	CloudCodingCommandExecution,
+	CloudCodingCommandServiceOptions,
+} from "../src/cloud-coding-command-http.ts";
 import {
 	createHttpCloudCodingCommandGateway,
 	HttpCloudCodingCommandService,
@@ -44,7 +47,8 @@ async function fixture(changes: Partial<CloudCodingCommandServiceOptions> = {}) 
 		expect(request.scope).toEqual(scope);
 		return { inputSha256: input.inputSha256 };
 	});
-	const execute = vi.fn<CloudCodingCommandServiceOptions["execute"]>(async () => receipt);
+	const hidden = vi.fn<CloudCodingCommandExecution["hidden"]>(async () => undefined);
+	const execute = vi.fn<CloudCodingCommandServiceOptions["execute"]>(async () => ({ receipt, hidden }));
 	// G2-6b: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
 	// `job.<the binding's job>.<lease token>`, proves a request's binding.
 	const lease = randomBytes(32).toString("base64url");
@@ -76,6 +80,7 @@ async function fixture(changes: Partial<CloudCodingCommandServiceOptions> = {}) 
 		input,
 		receipt,
 		authorize,
+		hidden,
 		execute,
 		service,
 		url,
@@ -243,10 +248,116 @@ describe("isolated coding command HTTP gateway", () => {
 			.mockRejectedValueOnce(new Error("revoked after"));
 		await expect(f.client.start(f.scope, f.input, new AbortController().signal)).rejects.toThrow("unavailable");
 		expect(f.execute).toHaveBeenCalledTimes(1);
+		expect(f.hidden).not.toHaveBeenCalled();
+	});
+	// F3 5g-5: what of the command the receipt shows is decided once, after the call's final authorization.
+	const shown = {
+		state: "succeeded",
+		exitCode: 0,
+		output: "secret",
+		truncated: false,
+		log: { offset: 0, nextOffset: 6, totalBytes: 6, limitBytes: 67108864, limitReached: false },
+	};
+	const nothing = (state: string) => ({
+		state,
+		exitCode: null,
+		output: "",
+		truncated: false,
+		log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false },
+	});
+	it("shows nothing of a command whose machine was rebuilt during the call's final authorization (F3 5g-5)", async () => {
+		const f = await fixture();
+		f.execute.mockResolvedValue({ receipt: { ...f.receipt, ...shown }, hidden: f.hidden });
+		let rebuilt = false;
+		f.authorize.mockResolvedValueOnce({ inputSha256: f.input.inputSha256 }).mockImplementationOnce(async () => {
+			rebuilt = true;
+			return { inputSha256: f.input.inputSha256 };
+		});
+		f.hidden.mockImplementation(async () => (rebuilt ? "machine_stopped" : undefined));
+		for (const action of ["read", "cancel"] as const)
+			expect(
+				await (action === "read"
+					? f.client.read(f.scope, { commandId: f.input.commandId }, new AbortController().signal)
+					: f.client.cancel(f.scope, f.input.commandId, new AbortController().signal)),
+			).toStrictEqual({ ...f.receipt, ...nothing("machine_stopped") });
+		expect(f.hidden).toHaveBeenCalledTimes(2);
+		expect(f.hidden.mock.invocationCallOrder[0]).toBeGreaterThan(f.authorize.mock.invocationCallOrder[1] ?? 0);
+		// The machine's own word for one it can say nothing of now; a shown command is answered as it is.
+		f.hidden.mockResolvedValueOnce("unconfirmed").mockResolvedValueOnce(undefined);
+		expect(await f.client.start(f.scope, f.input, new AbortController().signal)).toStrictEqual({
+			...f.receipt,
+			...nothing("unconfirmed"),
+		});
+		expect(await f.client.start(f.scope, f.input, new AbortController().signal)).toStrictEqual({
+			...f.receipt,
+			...shown,
+		});
+		// Any other answer is refused, one the receipt could carry included.
+		f.hidden.mockResolvedValueOnce("running" as never);
+		await expect(f.client.start(f.scope, f.input, new AbortController().signal)).rejects.toThrow("unavailable");
+		f.hidden.mockRejectedValueOnce(new Error("disk unknown"));
+		await expect(f.client.start(f.scope, f.input, new AbortController().signal)).rejects.toThrow("unavailable");
+	});
+	it("answers a paged read across a rebuild as machine_stopped, not unavailable (F3 5g-5)", async () => {
+		const f = await fixture();
+		f.execute.mockResolvedValueOnce({
+			receipt: {
+				...f.receipt,
+				output: "first",
+				truncated: true,
+				log: { offset: 0, nextOffset: 5, totalBytes: 13, limitBytes: 67108864, limitReached: false },
+			},
+			hidden: f.hidden,
+		});
+		const first = await f.client.read(
+			f.scope,
+			{ commandId: f.input.commandId, limit: 5 },
+			new AbortController().signal,
+		);
+		expect(first).toMatchObject({ output: "first", log: { nextOffset: 5 } });
+		// The machine is rebuilt before the next page: its executor reads it at the page asked, and the service shows
+		// nothing of it, whatever page that was.
+		f.execute.mockResolvedValueOnce({
+			receipt: {
+				...f.receipt,
+				output: "still",
+				truncated: true,
+				log: { offset: 5, nextOffset: 10, totalBytes: 13, limitBytes: 67108864, limitReached: false },
+			},
+			hidden: async () => "machine_stopped",
+		});
+		expect(
+			await f.client.read(
+				f.scope,
+				{ commandId: f.input.commandId, offset: 5, limit: 5 },
+				new AbortController().signal,
+			),
+		).toStrictEqual({ ...f.receipt, ...nothing("machine_stopped") });
+		expect(f.execute.mock.calls[1]?.[0]).toMatchObject({ input: { offset: 5, limit: 5 } });
+	});
+	it("still refuses a receipt for another page unless it shows nothing at all (F3 5g-5)", async () => {
+		const f = await fixture();
+		const page = { commandId: f.input.commandId, offset: 5, limit: 64 };
+		for (const receipt of [
+			{ ...f.receipt, log: { ...f.receipt.log, offset: 0 } },
+			// Shows no output, but how much it printed.
+			{
+				...f.receipt,
+				...nothing("machine_stopped"),
+				log: { ...nothing("").log, offset: 13, nextOffset: 13, totalBytes: 13 },
+			},
+			// Shows nothing but how it ended.
+			{ ...f.receipt, ...nothing("unconfirmed"), state: "failed", exitCode: 1 },
+		]) {
+			f.execute.mockResolvedValueOnce({ receipt, hidden: f.hidden });
+			await expect(f.client.read(f.scope, page, new AbortController().signal)).rejects.toThrow("unavailable");
+		}
+		f.execute.mockResolvedValueOnce({ receipt: { ...f.receipt, ...nothing("unconfirmed") }, hidden: f.hidden });
+		expect(await f.client.read(f.scope, page, new AbortController().signal)).toMatchObject({ state: "unconfirmed" });
 	});
 	it("rejects a protected receipt for another worker", async () => {
 		const f = await fixture();
-		f.execute.mockResolvedValue({ ...f.receipt, workerId: randomUUID() });
+		f.execute.mockResolvedValue({ receipt: { ...f.receipt, workerId: randomUUID() }, hidden: f.hidden });
 		await expect(f.client.start(f.scope, f.input, new AbortController().signal)).rejects.toThrow("unavailable");
 		expect(f.execute).toHaveBeenCalledTimes(1);
 	});
@@ -267,7 +378,7 @@ describe("isolated coding command HTTP gateway", () => {
 					token: "z".repeat(43),
 					proveBinding: null,
 					authorize: async () => ({ inputSha256: "a".repeat(64) }),
-					execute: async () => null,
+					execute: async () => ({ receipt: null, hidden: async () => undefined }),
 				}),
 		).toThrow();
 	});

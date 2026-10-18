@@ -20,7 +20,8 @@ import { assertLxdOfficeVmLineageCommands, type LxdOfficeVmLineageCommand } from
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_EVENTS = 384;
-type Action = LxdTrackedInstanceAction["action"];
+/** An office is never rebuilt: only a coding machine gets a new disk. */
+type Action = Exclude<LxdTrackedInstanceAction["action"], "rebuild">;
 
 interface EventFields {
 	sequence: number;

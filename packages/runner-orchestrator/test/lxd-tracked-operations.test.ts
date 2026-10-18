@@ -107,6 +107,71 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 			{ action: "stop", timeout: 30, force: false, stateful: false },
 		]);
 	});
+	it("rebuilds a VM from a local image and tracks the rebuild like any other operation", async () => {
+		const calls: Array<{ method: string; url: string; body: unknown }> = [];
+		const client = await fixture((request, response, body) => {
+			calls.push({ method: request.method ?? "", url: request.url ?? "", body });
+			send(response, request.method === "GET" ? envelope() : accepted(), request.method === "GET" ? 200 : 202);
+		});
+		const fingerprint = "b".repeat(64);
+		await expect(
+			client.submitInstanceOperation("offices", { action: "rebuild", name: "office-test", fingerprint }, signal()),
+		).resolves.toEqual(reference);
+		await expect(client.inspectInstanceOperation(reference, signal())).resolves.toBe("pending");
+		expect(calls[0]).toEqual({
+			method: "POST",
+			url: "/1.0/instances/office-test/rebuild?project=offices",
+			body: { source: { type: "image", fingerprint } },
+		});
+		for (const bad of ["B".repeat(64), "b".repeat(63), `${"b".repeat(64)}?project=other`]) {
+			await expect(
+				client.submitInstanceOperation(
+					"offices",
+					{ action: "rebuild", name: "office-test", fingerprint: bad },
+					signal(),
+				),
+			).rejects.toThrow(/^LXD_OPERATION_SUBMISSION_UNCONFIRMED$/);
+		}
+		expect(calls).toHaveLength(2);
+	});
+	it("tells a present image from one LXD no longer has, and nothing else", async () => {
+		const fingerprint = "c".repeat(64);
+		const urls: string[] = [];
+		const answers: Array<[unknown, number]> = [
+			[{ type: "sync", status_code: 200, metadata: { fingerprint, type: "virtual-machine" } }, 200],
+			[{ type: "error", status_code: 0, error_code: 404, error: "Image not found" }, 404],
+		];
+		const client = await fixture((request, response) => {
+			urls.push(request.url ?? "");
+			const [body, status] = answers.shift() ?? [{}, 500];
+			send(response, body, status);
+		});
+		await expect(client.hasImage("offices", fingerprint, signal())).resolves.toBe(true);
+		await expect(client.hasImage("offices", fingerprint, signal())).resolves.toBe(false);
+		expect(urls).toEqual([
+			`/1.0/images/${fingerprint}?project=offices`,
+			`/1.0/images/${fingerprint}?project=offices`,
+		]);
+		for (const [body, status] of [
+			[{ type: "sync", status_code: 200, metadata: { fingerprint: "d".repeat(64) } }, 200],
+			[{ type: "sync", status_code: 200, metadata: null }, 200],
+			[{ type: "error", status_code: 0, error_code: 404 }, 500],
+			[{ type: "error", status_code: 0, error_code: 500 }, 404],
+			[{ type: "sync", status_code: 200, metadata: { fingerprint } }, 404],
+			[{ type: "error", status_code: 0, error_code: 403 }, 403],
+		] as const) {
+			const other = await fixture((_request, response) => send(response, body, status));
+			await expect(other.hasImage("offices", fingerprint, signal())).rejects.toThrow(/^LXD_IMAGE_UNCONFIRMED$/);
+		}
+		let calls = 0;
+		const unused = await fixture((_request, response) => {
+			calls++;
+			send(response, {}, 500);
+		});
+		await expect(unused.hasImage("offices", "C".repeat(64), signal())).rejects.toThrow(/^LXD_IMAGE_UNCONFIRMED$/);
+		await expect(unused.hasImage("bad?project=x", fingerprint, signal())).rejects.toThrow(/^LXD_IMAGE_UNCONFIRMED$/);
+		expect(calls).toBe(0);
+	});
 	it.each([
 		[100, "Operation created", "pending"],
 		[103, "Running", "pending"],
@@ -192,7 +257,7 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 		);
 		await expect(client.inspectInstanceOperation(reference, signal())).resolves.toBe("pending");
 	});
-	it.each(["create", "start", "stop", "delete"] as const)(
+	it.each(["create", "start", "stop", "delete", "rebuild"] as const)(
 		"supports LXD 6.9 entity metadata for %s submission and observation",
 		async (action) => {
 			const client = await fixture((request, response) => {
@@ -217,7 +282,11 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 			await expect(
 				client.submitInstanceOperation(
 					"offices",
-					action === "create" ? { action, request: create } : { action, name: "office-test" },
+					action === "create"
+						? { action, request: create }
+						: action === "rebuild"
+							? { action, name: "office-test", fingerprint: "a".repeat(64) }
+							: { action, name: "office-test" },
 					signal(),
 				),
 			).resolves.toEqual(reference);

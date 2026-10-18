@@ -1,8 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
 	type CloudCodingCommandRead,
+	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
@@ -117,6 +119,25 @@ function validToken(value: string): boolean {
 	);
 }
 
+/** The receipt with nothing of its command (F3 5g-5): none of its output, nor how much it printed or lost, nor whether
+ * or how it ended, whatever page was asked. */
+function hiddenReceipt(receipt: CloudCodingCommandReceipt, state: CloudCodingCommandHidden): CloudCodingCommandReceipt {
+	return parseCloudCodingCommandReceipt({
+		...receipt,
+		state,
+		exitCode: null,
+		output: "",
+		truncated: false,
+		log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: receipt.log.limitBytes, limitReached: false },
+	});
+}
+function isHidden(receipt: CloudCodingCommandReceipt): boolean {
+	return (
+		(receipt.state === "machine_stopped" || receipt.state === "unconfirmed") &&
+		isDeepStrictEqual(receipt, hiddenReceipt(receipt, receipt.state))
+	);
+}
+
 /** Credential and binding are host-only; no model argument chooses a host,
  * route, VM or cloud authority. There are no automatic effect retries. */
 export function createHttpCloudCodingCommandGateway(options: {
@@ -176,8 +197,10 @@ export function createHttpCloudCodingCommandGateway(options: {
 						(admitted.action === "start" && receipt.inputSha256 !== admitted.input.inputSha256)
 					)
 						throw new Error(ERROR);
+					// A receipt that shows nothing of its command answers any page (F3 5g-5).
 					if (
 						admitted.action === "read" &&
+						!isHidden(receipt) &&
 						((!admitted.input.tail && receipt.log.offset !== (admitted.input.offset ?? 0)) ||
 							Buffer.byteLength(receipt.output) > (admitted.input.limit ?? 4096))
 					)
@@ -199,6 +222,17 @@ export function createHttpCloudCodingCommandGateway(options: {
 	});
 }
 
+/** How a command's receipt shows nothing of the command (F3 5g-5): `machine_stopped` for one started on a disk its
+ * machine no longer has, or on another machine; `unconfirmed` for one the host can say nothing of now. */
+export type CloudCodingCommandHidden = "machine_stopped" | "unconfirmed";
+/** A call's work on the executor that holds the command's machine. */
+export interface CloudCodingCommandExecution {
+	readonly receipt: unknown;
+	/** Whether the receipt shows nothing of its command, and as what; undefined when it shows it. The service asks it
+	 * once, after its final authorization and right before it sends the answer: the one check that decides it. */
+	hidden(signal: AbortSignal): Promise<CloudCodingCommandHidden | undefined>;
+}
+
 export interface CloudCodingCommandServiceOptions {
 	token: string;
 	/** G2-6b: whether the request's holder credential (x-qorpera-identity) holds its binding's run lease
@@ -212,7 +246,7 @@ export interface CloudCodingCommandServiceOptions {
 	authorize(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
 	/** Trusted host composition constructs the fixed LXD guest transport after
 	 * SQL authority checks; never execute a shell on the host. */
-	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<unknown>;
+	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
 	/** Company machines' commands on the same ingress (/v1/machine-commands/*),
 	 * when this executor routes them. */
 	machines?: CloudMachineCommandServiceOptions;
@@ -382,7 +416,8 @@ export class HttpCloudCodingCommandService {
 			)
 				throw new Error(ERROR);
 			controller.signal.throwIfAborted();
-			const receipt = parseCloudCodingCommandReceipt(await this.#options.execute(admitted, controller.signal));
+			const executed = await this.#options.execute(admitted, controller.signal);
+			const receipt = parseCloudCodingCommandReceipt(executed.receipt);
 			const after = await this.#options.authorize(admitted, controller.signal);
 			controller.signal.throwIfAborted();
 			if (
@@ -392,7 +427,13 @@ export class HttpCloudCodingCommandService {
 				receipt.commandId !== admitted.input.commandId
 			)
 				throw new Error(ERROR);
-			replyJson(reply, 200, receipt);
+			// F3 5g-5: whether anything of the command is shown is decided here, once, after every authorization of the call
+			// (the executor's last one may have marked the machine for a new disk, and another turn may have rebuilt it
+			// meanwhile); only then is the answer built.
+			const hidden = await executed.hidden(controller.signal);
+			if (hidden !== undefined && hidden !== "machine_stopped" && hidden !== "unconfirmed") throw new Error(ERROR);
+			controller.signal.throwIfAborted();
+			replyJson(reply, 200, hidden ? hiddenReceipt(receipt, hidden) : receipt);
 		} catch {
 			if (!reply.headersSent && !reply.destroyed) replyJson(reply, 403, { error: "coding_command_unavailable" });
 			else reply.destroy();
