@@ -39,7 +39,7 @@ use fuser::{
 	ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, SessionACL,
 	TimeOrNow, WriteFlags,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -158,6 +158,57 @@ impl Open {
 	}
 }
 
+/// The files this view made that no boundary has published, by path: one renamed into a cache moves there and leaves
+/// the view's changes (`mount/on_disk.rs`), as it takes nothing from the folder. A file is noted before the node makes
+/// it (`create`, a cache's file renamed onto a new name), so a change the feed tells of its path after (a boundary
+/// that published it, another view's change) always takes it off again. It moves with the node's renames of it, but
+/// not with its folder's (the version map forgets what a folder's move takes along, `VersionMap::renamed`), and a lost
+/// feed takes all off.
+#[derive(Default)]
+struct Unpublished(BTreeSet<String>);
+
+impl Unpublished {
+	/// Notes `path`: whether it was not noted.
+	fn note(&mut self, path: &str) -> bool {
+		self.0.insert(path.to_string())
+	}
+
+	/// Takes `path`, and all noted below it, off.
+	fn forget(&mut self, path: &str) {
+		self.0.remove(path);
+		for p in self.below(path) {
+			self.0.remove(&p);
+		}
+	}
+
+	/// The paths noted below the folder `path`.
+	fn below(&self, path: &str) -> Vec<String> {
+		let prefix = format!("{path}/");
+		self.0.range(prefix.clone()..).take_while(|p| p.starts_with(&prefix)).cloned().collect()
+	}
+
+	/// Before the node renames `from` to `to` (a folder when `folder`; `fresh` when the node has nothing at `to`): a
+	/// noted file is noted at `to` too. Whether `to` stays noted (`renamed`), and whether it is noted now, which a rename
+	/// the node refuses takes off again.
+	fn renaming(&mut self, from: &str, to: &str, folder: bool, fresh: bool) -> (bool, bool) {
+		// Over a file the folder has, it is a save of that file.
+		let stays = !folder && self.0.contains(from) && (fresh || self.0.contains(to));
+		(stays, stays && self.note(to))
+	}
+
+	/// The node renamed `from` to `to` (`renaming`).
+	fn renamed(&mut self, from: &str, to: &str, folder: bool, stays: bool) {
+		if folder {
+			self.forget(from);
+			self.forget(to);
+		}
+		self.0.remove(from);
+		if !stays {
+			self.0.remove(to);
+		}
+	}
+}
+
 struct Shared {
 	tree: Mutex<Tree>,
 	link: Link,
@@ -181,6 +232,10 @@ struct Shared {
 	local: Option<Local>,
 	/// The company's code host (`HelloOk::code_host`): git's session-local files are the node's, published like any.
 	code_host: bool,
+	/// Names the kernel took from a request answered here, dropped again as a change's raced names are (`chase`): the
+	/// target of a rename across the edge between the caches and the folder (`mount/on_disk.rs`).
+	chased: mpsc::Sender<Vec<(u64, String)>>,
+	unpublished: Mutex<Unpublished>,
 }
 
 impl Shared {
@@ -495,6 +550,49 @@ impl Shared {
 		self.let_go(ino, open);
 		Ok(())
 	}
+
+	/// `f`, run while the node's file `ino` is not open for writing here, and no open of it for writing starts (its lock
+	/// held, as `open_write` takes it): EXDEV while it is. A handle whose close the node has taken (the opener's close
+	/// before the kernel's release) writes no more unless a write comes on it after all, which then finds what `f` left.
+	fn unwritten<T>(&self, ino: u64, f: impl FnOnce() -> Result<T, i32>) -> Result<T, i32> {
+		loop {
+			let open = self.writing.lock().unwrap().entry(ino).or_insert_with(Open::new).clone();
+			let o = open.lock().unwrap();
+			if !self.writes(ino, &open) {
+				continue;
+			}
+			// Open for writing, or a close the node has not taken yet (`leave`).
+			if o.writer.is_some() {
+				return Err(libc::EXDEV);
+			}
+			let done = f();
+			if o.handles == 0 {
+				self.let_go(ino, &open);
+			}
+			return done;
+		}
+	}
+
+	/// Gives up the node's handle of a draft not written whole: it leaves nothing in the view. Tried again while the
+	/// node does not take it now (`again`), as a close is (`leave`).
+	fn give_up(self: &Arc<Self>, handle: u32) {
+		let Err(f) = self.link.discard_write(handle) else { return };
+		if !again(&f) {
+			return;
+		}
+		eprintln!("qorpera-folder: the node did not take a draft's discard now ({f}); trying again");
+		let s = self.clone();
+		std::thread::spawn(move || {
+			let mut wait = Duration::from_millis(100);
+			loop {
+				std::thread::sleep(wait);
+				match s.link.discard_write(handle) {
+					Err(f) if again(&f) => wait = (wait * 2).min(Duration::from_secs(10)),
+					_ => return,
+				}
+			}
+		});
+	}
 }
 
 /// A failure the node may get past: a request it could not take now.
@@ -698,6 +796,11 @@ impl Filesystem for FolderFs {
 			return reply.error(Errno::EROFS);
 		}
 		let Some(reply) = self.local_open(ino.0, flags.0, write, reply) else { return };
+		// One this program moved into a cache, by the name the kernel moved it to: the kernel looks that up again, and
+		// finds the cache's file (the chase has it drop the name soon after).
+		if self.s.tree.lock().unwrap().in_cache(ino.0) {
+			return reply.error(Errno::ESTALE);
+		}
 		let (attr, kept) = match self.s.attr(ino.0) {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -755,9 +858,20 @@ impl Filesystem for FolderFs {
 			truncate: flags & libc::O_TRUNC != 0,
 			draft: false,
 		};
+		// A new file, where the folder's listing has none: this view's own until a boundary publishes it (`Unpublished`).
+		let fresh = request.exclusive || {
+			let tree = self.s.tree.lock().unwrap();
+			tree.listing(parent.0).is_some_and(|l| !l.iter().any(|c| c.name == name))
+		};
+		let noted = fresh && self.s.unpublished.lock().unwrap().note(&path);
 		let opened = match self.s.link.open_write(&request) {
 			Ok(o) => o,
-			Err(f) => return reply.error(errno(f)),
+			Err(f) => {
+				if noted {
+					self.s.unpublished.lock().unwrap().forget(&path);
+				}
+				return reply.error(errno(f));
+			}
 		};
 		let mut attr =
 			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version, authority: None };
@@ -1090,9 +1204,18 @@ impl Filesystem for FolderFs {
 			no_replace: flags.contains(RenameFlags::RENAME_NOREPLACE),
 		};
 		let index = self.index_before(&from, &to, &source);
+		let fresh = {
+			let tree = self.s.tree.lock().unwrap();
+			tree.listing(newparent.0).is_some_and(|l| !l.iter().any(|c| c.name == to_name))
+		};
+		let (stays, noted) = self.s.unpublished.lock().unwrap().renaming(&from, &to, folder, fresh);
 		if let Err(f) = self.s.link.rename(&request) {
+			if noted {
+				self.s.unpublished.lock().unwrap().0.remove(&to);
+			}
 			return reply.error(errno(f));
 		}
+		self.s.unpublished.lock().unwrap().renamed(&from, &to, folder, stays);
 		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
 		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
 		if folder {
@@ -1234,6 +1357,7 @@ impl FolderFs {
 			return reply.error(errno(f));
 		}
 		self.s.versions.lock().unwrap().removed(&path);
+		self.s.unpublished.lock().unwrap().forget(&path);
 		self.s.tree.lock().unwrap().removed_local(&path);
 		if folder {
 			self.caches_gone(&path);
@@ -1289,6 +1413,17 @@ fn follow(
 				}
 			};
 			if !s.link.feed_current(&feed) { break; }
+			{
+				let mut unpublished = s.unpublished.lock().unwrap();
+				if change.resync {
+					*unpublished = Unpublished::default();
+				}
+				for path in change.paths.iter().filter(|p| valid_path(p)) {
+					// A view's own new folder gone live is told by a name no folder has below it (the folder service's
+					// `LISTING_ONLY`): what it holds may have gone live with it.
+					unpublished.forget(path.strip_suffix("/\u{1}").unwrap_or(path));
+				}
+			}
 			let (inval, raced) = {
 				let mut tree = s.tree.lock().unwrap();
 				let inval = if change.resync {
@@ -1332,6 +1467,8 @@ fn follow(
 						let raced = s.raced(&inval, tree.changes());
 						(inval, raced)
 					};
+					// What a boundary published while the feed was down was never told.
+					*s.unpublished.lock().unwrap() = Unpublished::default();
 					s.feed_up.store(true, Ordering::SeqCst);
 					apply(inval, raced);
 					break f;
@@ -1466,6 +1603,7 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		),
 		_ => None,
 	};
+	let (chased, names) = mpsc::channel();
 	let shared = Arc::new(Shared {
 		tree: Mutex::new(Tree::new()),
 		link,
@@ -1482,6 +1620,8 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		writing: Mutex::new(HashMap::new()),
 		local,
 		code_host: ok.code_host,
+		chased: chased.clone(),
+		unpublished: Mutex::new(Unpublished::default()),
 	});
 	let mut config = Config::default();
 	config.mount_options = vec![
@@ -1526,7 +1666,6 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	}
 	{
 		let shared = shared.clone();
-		let (chased, names) = mpsc::channel();
 		let chaser = notifier.clone();
 		std::thread::spawn(move || chase(chaser, names));
 		std::thread::spawn(move || follow(shared, notifier, feed, stop_tx, chased));
@@ -1573,6 +1712,36 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn what_this_view_made_moves_with_its_renames_onto_a_name_of_its_own_or_none_and_not_with_its_folder() {
+		let mut unpublished = Unpublished::default();
+		for path in ["a", "d/x", "d/e/y", "dd/z", "k"] {
+			assert!(unpublished.note(path));
+		}
+		assert!(!unpublished.note("a"));
+		let noted = |u: &Unpublished| u.0.iter().cloned().collect::<Vec<_>>();
+		// A file onto a new name, or one of its own, stays this view's; onto a file the folder has, it is a save of that.
+		assert_eq!(unpublished.renaming("a", "b", false, true), (true, true));
+		unpublished.renamed("a", "b", false, true);
+		assert_eq!(unpublished.renaming("b", "k", false, false), (true, false));
+		unpublished.renamed("b", "k", false, true);
+		assert_eq!(noted(&unpublished), ["d/e/y", "d/x", "dd/z", "k"]);
+		unpublished.note("c");
+		assert_eq!(unpublished.renaming("c", "readme", false, false), (false, false));
+		unpublished.renamed("c", "readme", false, false);
+		assert_eq!(noted(&unpublished), ["d/e/y", "d/x", "dd/z", "k"]);
+		// A rename the node refuses takes back what it noted.
+		assert_eq!(unpublished.renaming("k", "m", false, true), (true, true));
+		unpublished.0.remove("m");
+		assert_eq!(noted(&unpublished), ["d/e/y", "d/x", "dd/z", "k"]);
+		// A folder's files are this view's no longer, at either name, but for those of a folder whose name only starts
+		// the same.
+		assert_eq!(unpublished.renaming("d", "f", true, true), (false, false));
+		unpublished.note("f/w");
+		unpublished.renamed("d", "f", true, false);
+		assert_eq!(noted(&unpublished), ["dd/z", "k"]);
+	}
 
 	#[test]
 	fn a_change_races_only_the_names_answered_before_it_and_lately() {

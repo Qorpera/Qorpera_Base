@@ -914,6 +914,42 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 		},
 		TIMEOUT,
 	);
+
+	it(
+		"an editor's atomic save goes over a published file from a name git leaves out, and over one git leaves out from a plain name",
+		async () => {
+			const w1 = `${AREA}/worktrees/w1`;
+			const at = await area({ [`${w1}/.gitignore`]: "*.tmp\n.env\n", [`${w1}/notes.md`]: "old\n" });
+			const first = await mountSession(at, "first");
+			const second = await mountSession(at, "second");
+			// The editor writes the new content beside the file and renames it over the file.
+			await writeFile(join(first.worktree, "notes.md.tmp"), "new\n");
+			await rename(join(first.worktree, "notes.md.tmp"), join(first.worktree, "notes.md"));
+			await writeFile(join(first.worktree, ".env"), "A=1\n");
+			await writeFile(join(first.worktree, ".env.new"), "A=2\n");
+			await rename(join(first.worktree, ".env.new"), join(first.worktree, ".env"));
+			expect(await readFile(join(first.worktree, "notes.md"), "utf8")).toBe("new\n");
+			expect(await readFile(join(first.worktree, ".env"), "utf8")).toBe("A=2\n");
+			const names = [".env", ".git", ".gitignore", "README.md", "notes.md", "src"];
+			expect((await readdir(first.worktree)).sort()).toEqual(names);
+			expect((await first.gitRun("check-ignore", "-q", ".env")).code).toBe(0);
+			expect((await first.gitRun("check-ignore", "-q", "notes.md")).code).toBe(1);
+
+			// The boundary publishes the save of the folder's file, and nothing of the other.
+			const published = await first.publish();
+			expect(published.code, published.out).toBe(0);
+			const files = ["notes.md", "notes.md.tmp", ".env", ".env.new"].filter((f) =>
+				at.core.entries.has(`${w1}/${f}`),
+			);
+			expect(files).toEqual(["notes.md"]);
+			await at.service.poll();
+			const there = join(second.company, w1);
+			expect(await eventually(async () => (await readFile(join(there, "notes.md"), "utf8")) === "new\n")).toBe(true);
+			expect((await readdir(there)).sort()).toEqual(names.filter((name) => name !== ".env"));
+			expect(await readFile(join(first.worktree, ".env"), "utf8")).toBe("A=2\n");
+		},
+		TIMEOUT,
+	);
 });
 
 /** The environment npm runs with in a session: the session's home, a cache off the mount, and no network. */
@@ -1065,7 +1101,7 @@ describe.skipIf(!program || !gitBin)("the machine's caches, out of the code area
 	);
 
 	it(
-		"nothing crosses between a cache and the folder but as a copy, and links inside a cache work",
+		"a cache's file renamed into the folder is a save there, a file the session made renames into a cache, and links inside a cache work",
 		async () => {
 			const at = await area({ "notes/readme.md": "read me\n", "notes/lib/a.py": "A = 1\n" });
 			const first = await mountSession(at, "first");
@@ -1073,21 +1109,29 @@ describe.skipIf(!program || !gitBin)("the machine's caches, out of the code area
 			const pkg = join(notes, "node_modules/pkg");
 			await mkdir(pkg, { recursive: true });
 			await writeFile(join(pkg, "index.js"), "cached\n");
+			await rename(join(pkg, "index.js"), join(notes, "index.js"));
+			// A build writes its output beside its place and renames it in.
+			await writeFile(join(notes, "out.js"), "built\n");
+			await rename(join(notes, "out.js"), join(pkg, "out.js"));
+			expect((await readdir(notes)).sort()).toEqual(["index.js", "lib", "node_modules", "readme.md"]);
+			expect(await readdir(pkg)).toEqual(["out.js"]);
+			expect(await readFile(join(notes, "index.js"), "utf8")).toBe("cached\n");
+
+			// Anything else crosses only as a copy: the folder's file, a folder, a hard link either way.
 			const exdev = { code: "EXDEV" };
-			await expect(rename(join(pkg, "index.js"), join(notes, "index.js"))).rejects.toMatchObject(exdev);
 			await expect(rename(join(notes, "readme.md"), join(pkg, "readme.md"))).rejects.toMatchObject(exdev);
 			await expect(rename(join(notes, "lib"), join(notes, ".venv"))).rejects.toMatchObject(exdev);
-			await expect(link(join(pkg, "index.js"), join(notes, "index.js"))).rejects.toMatchObject(exdev);
+			await expect(link(join(pkg, "out.js"), join(notes, "out.js"))).rejects.toMatchObject(exdev);
 			await expect(link(join(notes, "readme.md"), join(pkg, "readme.md"))).rejects.toMatchObject(exdev);
-			await link(join(pkg, "index.js"), join(pkg, "same.js"));
-			await symlink("pkg/index.js", join(notes, "node_modules/main.js"));
+			await link(join(pkg, "out.js"), join(pkg, "same.js"));
+			await symlink("pkg/out.js", join(notes, "node_modules/main.js"));
 			for (const path of [join(pkg, "same.js"), join(notes, "node_modules/main.js")])
-				expect(await readFile(path, "utf8")).toBe("cached\n");
+				expect(await readFile(path, "utf8")).toBe("built\n");
 
 			// mv copies what it cannot rename.
 			const moves = [
 				[join(notes, "lib"), join(notes, ".venv")],
-				[join(pkg, "index.js"), join(notes, "index.js")],
+				[join(notes, "readme.md"), join(pkg, "readme.md")],
 			];
 			for (const [from, to] of moves) {
 				const moved = await run("mv", [from!, to!]);
@@ -1095,10 +1139,11 @@ describe.skipIf(!program || !gitBin)("the machine's caches, out of the code area
 			}
 			const published = await first.publish();
 			expect(published.code, published.out).toBe(0);
-			expect(held(at.core, "notes")).toEqual(["notes", "notes/index.js", "notes/readme.md"]);
+			expect(held(at.core, "notes")).toEqual(["notes", "notes/index.js"]);
 			expect(await readFile(join(notes, ".venv/a.py"), "utf8")).toBe("A = 1\n");
 			expect(await readFile(join(notes, "index.js"), "utf8")).toBe("cached\n");
-			expect(await readFile(join(pkg, "same.js"), "utf8")).toBe("cached\n");
+			expect(await readFile(join(pkg, "readme.md"), "utf8")).toBe("read me\n");
+			expect((await readdir(pkg)).sort()).toEqual(["out.js", "readme.md", "same.js"]);
 		},
 		TIMEOUT,
 	);
