@@ -36,6 +36,7 @@ import { CodingMachineUnavailable, CodingPushRefused, CodingSaveRefused } from "
 import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
 import {
 	type CodingFolderControl,
+	codingFolderBoundaryChecking,
 	codingFolderBoundaryHeld,
 	codingFolderBoundaryUnreadable,
 	codingFolderSaveRefused,
@@ -361,6 +362,9 @@ const CODING_BOOT_SETTLE_MS = 180_000;
 /** On the folder model, how long a turn waits by default for a started machine's LXD agent: in a loaded nested VM a
  * fresh machine took 2 min 40 s from running to its agent answering. */
 const CODING_FOLDER_GUEST_READY_MS = 300_000;
+/** How long a publication waits before it asks for a boundary again while one left paths waiting for save checks that
+ * had not ended (the service answers within the control's timeout, and goes on checking). */
+const CODING_FOLDER_CHECK_RETRY_MS = 1_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, the machine's plan followed a new policy after this turn
@@ -1735,7 +1739,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// a path any view left unsaved holds the publication. The error's reason says why, without a path.
 			const { machine, storage } = ready;
 			const starts = this.#folderStarts.get(machine.machineId) ?? 0;
-			const boundary = await folder.control.boundary(machine.machineId, [], signal);
+			let boundary = await folder.control.boundary(machine.machineId, [], signal);
+			// A save check the boundary did not wait for to end (a large git pack's, 5j-5 a) goes on in the service: the
+			// publication asks again until each has saved its path or refused it.
+			while (codingFolderBoundaryChecking(boundary)) {
+				await setTimeout(CODING_FOLDER_CHECK_RETRY_MS, undefined, { signal });
+				boundary = await folder.control.boundary(machine.machineId, [], signal);
+			}
 			const held = codingFolderBoundaryHeld(boundary),
 				unreadable = codingFolderBoundaryUnreadable(boundary);
 			if (held === "READS_UNPROVEN" || unreadable)
@@ -1753,10 +1763,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					await this.#stopForFolder(folder, machine, journal, signal, unreadable);
 					await this.#runFolder(folder, claim, machine, storage, journal, signal);
 				});
-			// Paths the folder refused because they carry a secret value (5j-5 a) stay refused until the session changes
-			// them, so its turn fails with what to do and the session stays attached. Any other refusal, or one the check
-			// could not finish, holds the publication as before.
-			if (codingFolderSaveRefused(boundary)) throw new CodingSaveRefused();
+			// Paths the folder's save check refused (5j-5 a), because they carry a secret value or it could not finish
+			// checking them, stay refused until the session changes them (or, for a check the node was too busy for, until
+			// the next boundary), so its turn fails with what to do and the session stays attached. Any other refusal holds
+			// the publication as before.
+			const refusal = codingFolderSaveRefused(boundary);
+			if (refusal) throw new CodingSaveRefused(refusal === "unchecked");
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(

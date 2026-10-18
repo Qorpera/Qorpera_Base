@@ -95,16 +95,23 @@ function pushRefusal(refused: CodingPushRefused): string {
 	return `The push was refused: ${where} carries one of the session's secret values. Remove it from the history and finish again.`;
 }
 /** The company folder refused a path the session's machine wrote (F3 5j-5 a): its contents or its name carry one of the
- * machine's secret values. It is not saved and stays on the machine, nothing was published, and the error names no
- * path. */
+ * machine's secret values, or (`unchecked`) its save check could not finish checking it, so it found none. It is not
+ * saved and stays on the machine, nothing was published, and the error names no path. */
 export class CodingSaveRefused extends Error {
-	constructor() {
-		super("CODING_FOLDER_SAVE_REFUSED");
+	readonly unchecked: boolean;
+	constructor(unchecked = false) {
+		super(unchecked ? "CODING_FOLDER_SAVE_UNCHECKED" : "CODING_FOLDER_SAVE_REFUSED");
+		this.unchecked = unchecked;
 	}
 }
-/** The reason a publication held by a refused save fails its turn with: what to change, never the value or the path. */
-const SAVE_REFUSAL =
-	"The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again.";
+/** The git commands that take a refused change out of a repository's storage (RUNTIME-FOLDER-CODING-MACHINES.md, "The
+ * way out"): the worktree's log line of the refused commit, then every pack and loose object only it reached. Packs of
+ * at most 64 MiB stay within what the check rebuilds (64 times a pack's size, at most 4 GiB). */
+const GIT_WAY_OUT =
+	"run `git reflog expire --expire-unreachable=now HEAD`, `git repack -a -d --max-pack-size=64m` and `git prune --expire=now`";
+/** The reasons a publication held by a refused save fails its turn with: what to change, never the value or the path. */
+const SAVE_REFUSAL = `The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and \`git add\` them) or the message, ${GIT_WAY_OUT}, then commit again.`;
+const SAVE_UNCHECKED = `The save was refused: a file this session wrote in the company folder could not be checked for the session's secret values. It was not saved, and nothing was published. If it is in a git repository's storage, ${GIT_WAY_OUT}, then commit and finish again. Otherwise remove the file or make it smaller, and finish again. If nothing needs changing, finish again: the check may have been busy.`;
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -583,10 +590,17 @@ export class CloudCodingExecutor {
 				} catch (error) {
 					if (!(error instanceof CodingPushRefused || error instanceof CodingSaveRefused) || active.aborted)
 						throw error;
-					// Nothing went out, and the same work would be refused again: the turn fails with what to change, and the
-					// session's next turn can finish again.
+					// Nothing went out, and the same work would be refused again (but for a check the node was too busy for):
+					// the turn fails with what to change, and the session's next turn can finish again.
 					end();
-					await complete("failed", error instanceof CodingSaveRefused ? SAVE_REFUSAL : pushRefusal(error));
+					await complete(
+						"failed",
+						error instanceof CodingSaveRefused
+							? error.unchecked
+								? SAVE_UNCHECKED
+								: SAVE_REFUSAL
+							: pushRefusal(error),
+					);
 					return "failed";
 				}
 				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");

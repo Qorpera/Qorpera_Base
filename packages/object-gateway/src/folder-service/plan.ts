@@ -1,6 +1,8 @@
 import { folderKey } from "@qorpera/contracts";
 import { gitObjectPath, gitPlace, gitSharedPath } from "./git.ts";
+import { formChanged } from "./git-objects.ts";
 import { type FileRef, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
+import { UNCHECKED } from "./secret-scan.ts";
 import { parentOf } from "./view-tree.ts";
 
 /** A structured file's parse for the commit's hook (`memberFolderStructured`, core §3 "Before the transaction"). */
@@ -56,25 +58,40 @@ export interface BoundaryPlan {
 	readonly dropped: readonly { readonly path: string; readonly reason: string }[];
 	/** The nodes the boundary leaves pending whatever its units' outcomes. */
 	readonly keep: ReadonlySet<string>;
-	/** Paths the secret check refused (`SecretCheck`), and those held back as they wait on a change it refused, and
-	 * why; kept pending, but never waiting: a final does not wait for them. A name it refused is shown as the folder
-	 * above it, whose own name carries no value. */
+	/** The removals it leaves pending, held back so: the view keeps them (`PendingView.settle`). */
+	readonly removals: ReadonlySet<string>;
+	/** Paths the secret check refused (`SecretCheck`), and those held back as they wait on a change it refused (one
+	 * they need, or one in their git directory), and why; kept pending, but never waiting: a final does not wait for
+	 * them. A name it refused is shown as the folder above it, whose own name carries no value. */
 	readonly refused: readonly { readonly path: string; readonly reason: string }[];
+	/** Each code area whose git directory holds a change the check refused, and what the rest of the directory waits
+	 * for (`WAITS_FOR_REFUSED` or `WAITS_FOR_UNCHECKED`): a git lease publishes and releases nothing there either. */
+	readonly gitHeld: ReadonlyMap<string, string>;
 }
 
 /** What a coding machine's boundary is checked against (5j-5): its secret values (secret-scan.ts). */
 export interface SecretCheck {
 	/** Whether a name or a link's target carries one of the values. */
 	carries(text: string): boolean;
-	/** Why a changed file's bytes, as they are now, are not published (they carry a value, or could not be checked), or
-	 * nothing. */
+	/** Whether the check of a changed file's bytes as `path` stores them still runs: it waits (`CHECK_RUNNING`). */
+	checking(node: PendingFile, path: string): boolean;
+	/** Why a changed file's bytes as they are now are not published (they carry a value, or could not be checked). */
 	refused(node: PendingFile): string | undefined;
+	/** The same for the bytes a file moved or renamed to `path` still has from its live source, where `path` gives them
+	 * a git form the source's name did not (`formChanged`): not checked so yet, they are refused as not checked. */
+	moved(node: PendingFile, path: string): string | undefined;
 }
 
 /** What a refusal of the check says: never the name or the value, nor where in it the value is. */
 export const NAME_CARRIES = "a name in this folder carries a secret value";
 export const TARGET_CARRIES = "its link's target carries a secret value";
 export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret value";
+export const WAITS_FOR_UNCHECKED = "it waits for a change that could not be checked for secret values";
+/** Why a file waits whose check has not ended (`SecretCheck.checking`): a later boundary publishes it. */
+export const CHECK_RUNNING = "its check for secret values has not ended yet";
+/** Why the rest of a code area's git directory waits while a file's check there has not ended: the check may yet refuse
+ * the file, and then nothing else of its git change may be in the folder. */
+export const WAITS_FOR_CHECK = "it waits for a change whose check for secret values has not ended yet";
 
 type Item =
 	| { kind: "write"; path: string; file: FileRef; expected: string; paths: string[] }
@@ -112,6 +129,13 @@ function carrierBelow(view: PendingView, from: string, to: string, check: Secret
 	return undefined;
 }
 
+/** For a live folder moved from `from` to `to`: whether the move gives a file it holds a git form its name did not
+ * (`formChanged`). Such a file's bytes are checked as that form only when it is moved by itself. */
+function formBelow(view: PendingView, from: string, to: string): boolean {
+	for (const live of view.liveBelow(from)) if (formChanged(live, to + live.slice(from.length))) return true;
+	return false;
+}
+
 /**
  * The units of one boundary (RUNTIME-FOLDER-WRITES.md, "A boundary"): everything pending but files still open for
  * writing, bytes not staged yet, and names never published, as one change set. `PendingView` keeps every pending
@@ -124,13 +148,19 @@ function carrierBelow(view: PendingView, from: string, to: string, check: Secret
  * With `check` (a coding machine's view, 5j-5), a name new in the view that carries one of the machine's secret
  * values, a new link's target that does, and a file whose bytes do are not published but refused, and kept pending:
  * the names before anything else, so no list holds one. A folder's move gives what it holds new names too, and each is
- * checked. A refused move keeps its source where it is (`PendingView.settle`), so what needs a
+ * checked. A file moved to a name that stores its bytes in a git form its old name did not has them checked as that
+ * form (`SecretCheck.moved`); a folder moved so is refused as not checked. A refused move keeps its source where it is
+ * (`PendingView.settle`), so what needs a
  * refused change waits with it: a change into the path it would free or into the folder it would make, and the removal
- * or move of a folder that holds a source it keeps.
+ * or move of a folder that holds a source it keeps. A refusal in a code area's git directory holds the whole directory
+ * back: everything else changed in it waits, so a git change is never published in part (its commit without its
+ * file's object, its log or index naming it), and the way out (git's own prune) leaves nothing of it. So does a check
+ * there that has not ended (`SecretCheck.checking`), as waiting: a later boundary publishes the directory, or holds it
+ * for what the check refused.
  */
 export function planBoundary(
 	view: PendingView,
-	staged: (node: PendingFile) => FileRef | undefined,
+	staged: (node: PendingFile, path: string) => FileRef | undefined,
 	check?: SecretCheck,
 ): BoundaryPlan {
 	const keep = new Set<string>();
@@ -145,6 +175,16 @@ export function planBoundary(
 	};
 	// The refused moves and new folders, which what needs them waits on.
 	const refusedItems: Item[] = [];
+	// Each code area whose git directory holds a refused change, and what the rest of that directory waits for.
+	const gitHeld = new Map<string, string>();
+	const holdGit = (path: string, reason: string): void => {
+		const place = gitPlace(path);
+		if (place.kind !== "git") return;
+		const waits = reason === UNCHECKED ? WAITS_FOR_UNCHECKED : WAITS_FOR_REFUSED;
+		if (gitHeld.get(place.area) !== WAITS_FOR_REFUSED) gitHeld.set(place.area, waits);
+	};
+	// Each code area whose git directory holds a file whose check has not ended: the rest of the directory waits too.
+	const gitChecking = new Set<string>();
 	const writes: (Item & { kind: "write" })[] = [];
 	const creates: (Item & { kind: "create" })[] = [];
 	const moves: (Item & { kind: "move" })[] = [];
@@ -169,6 +209,7 @@ export function planBoundary(
 		if (carrier !== undefined) {
 			keep.add(path);
 			refuse(carrier, NAME_CARRIES);
+			holdGit(path, NAME_CARRIES);
 			if (node.origin)
 				refusedItems.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
 			else if (node.kind === "folder") refusedItems.push({ kind: "create", path, contents: null, paths: [path] });
@@ -176,8 +217,15 @@ export function planBoundary(
 		}
 		if (node.kind === "folder") {
 			if (!node.origin) creates.push({ kind: "create", path, contents: null, paths: [path] });
-			else if (node.origin.path !== path)
-				moves.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
+			else if (from !== undefined) {
+				const move = { kind: "move" as const, from, to: path, ref: node.origin, paths: [path] };
+				if (check && formBelow(view, from, path)) {
+					keep.add(path);
+					refuse(path, UNCHECKED);
+					holdGit(path, UNCHECKED);
+					refusedItems.push(move);
+				} else moves.push(move);
+			}
 			continue;
 		}
 		if (node.kind === "symlink") {
@@ -185,6 +233,7 @@ export function planBoundary(
 			if (!node.origin && check?.carries(node.target)) {
 				keep.add(path);
 				refuse(path, TARGET_CARRIES);
+				holdGit(path, TARGET_CARRIES);
 			} else if (!node.origin)
 				links.push({ kind: "link", path, target: node.target, expected: node.replaces?.version, paths: [path] });
 			else if (node.origin.path !== path)
@@ -196,9 +245,23 @@ export function planBoundary(
 			waiting.push({ path, reason: "still open for writing" });
 			continue;
 		}
+		if (check?.checking(node, path)) {
+			keep.add(path);
+			waiting.push({ path, reason: CHECK_RUNNING });
+			const place = gitPlace(path);
+			if (place.kind === "git") gitChecking.add(place.area);
+			continue;
+		}
 		const origin = node.origin;
 		if (origin && origin.path !== path) {
-			moves.push({ kind: "move", from: origin.path, to: path, ref: origin, paths: [path] });
+			const move = { kind: "move" as const, from: origin.path, to: path, ref: origin, paths: [path] };
+			const refusal = check && formChanged(origin.path, path) ? check.moved(node, path) : undefined;
+			if (refusal) {
+				keep.add(path);
+				refuse(path, refusal);
+				holdGit(path, refusal);
+				refusedItems.push(move);
+			} else moves.push(move);
 			continue;
 		}
 		const changed =
@@ -208,9 +271,10 @@ export function planBoundary(
 		if (refusal) {
 			keep.add(path);
 			refuse(path, refusal);
+			holdGit(path, refusal);
 			continue;
 		}
-		const file = staged(node);
+		const file = staged(node, path);
 		if (!file) {
 			keep.add(path);
 			waiting.push({ path, reason: "its bytes are not saved yet" });
@@ -308,20 +372,41 @@ export function planBoundary(
 			}
 		}
 	}
-	for (const item of items)
-		if (blocked.has(item))
-			for (const path of item.paths) {
-				keep.add(path);
-				refuse(path, WAITS_FOR_REFUSED);
-			}
-	const units: PlannedUnit[] = [];
-	for (const item of schedule(
-		items.filter((i) => !blocked.has(i)),
+	// A git directory with a refused change publishes nothing else until the refusal's way out: no object, ref, log or
+	// index of the change, nor any change after it, reaches the folder half made. One with a check not ended publishes
+	// nothing else until it ends, as the check may yet refuse its file: what waits for it is waiting, not refused.
+	const heldIn = (item: Item): string | undefined => {
+		let waits: string | undefined;
+		for (const path of item.kind === "move" ? [item.from, ...item.paths] : item.paths) {
+			const place = gitPlace(path);
+			if (place.kind !== "git") continue;
+			const refusal = gitHeld.get(place.area);
+			if (refusal) return refusal;
+			if (gitChecking.has(place.area)) waits = WAITS_FOR_CHECK;
+		}
+		return waits;
+	};
+	const held = new Set<Item>();
+	for (const item of items) {
+		const waits = blocked.has(item) ? WAITS_FOR_REFUSED : heldIn(item);
+		if (!waits) continue;
+		held.add(item);
+		for (const path of item.paths) {
+			keep.add(path);
+			if (waits === WAITS_FOR_CHECK) waiting.push({ path, reason: waits });
+			else refuse(path, waits);
+		}
+	}
+	const order = schedule(
+		items.filter((i) => !held.has(i)),
 		waiting,
 		keep,
-	))
-		units.push(unitOf(item));
-	return { units, waiting, dropped, keep, refused };
+	);
+	const units = order.map(unitOf);
+	// A removal not published here stays the view's, for a later boundary to publish.
+	const published = new Set<Item>(order);
+	const removals = new Set(deletes.filter((d) => !published.has(d)).flatMap((d) => d.paths));
+	return { units, waiting, dropped, keep, removals, refused, gitHeld };
 }
 
 function unitOf(item: Item): PlannedUnit {

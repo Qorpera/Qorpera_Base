@@ -7,6 +7,7 @@ import { CodingControlRefused } from "./coding-executor.ts";
 import {
 	type CodingFolderBoundary,
 	type CodingFolderReads,
+	codingFolderBoundaryChecking,
 	codingFolderBoundaryUnreadable,
 	codingFolderViewSaved,
 } from "./coding-folder-control.ts";
@@ -357,21 +358,25 @@ export class CodingFolderViews {
 		}
 	}
 
-	/** The views' final boundary, then their closes, and then their records go; a boundary with no views only saves what
-	 * the machine's views have pending. Resolves with how each view ended and the boundary's reads, and whether it said
-	 * the machine holds a read no longer readable (none when it had no answer). Rejects when a record stays. */
+	/** The views' final boundary, asked again while one of their paths waits for a save check still running, then their
+	 * closes, and then their records go; a boundary with no views only saves what the machine's views have pending.
+	 * Resolves with how each view ended and the boundary's reads, and whether it said the machine holds a read no longer
+	 * readable (none when it had no answer). Rejects when a record stays. */
 	async #finish(
 		machineId: string,
 		views: readonly HeldView[],
 		signal: AbortSignal,
 	): Promise<{ reads?: CodingFolderReads; unreadable?: boolean; ends: CodingFolderViewEnd[] }> {
 		let boundary: CodingFolderBoundary | undefined;
+		const ids = views.map((view) => view.viewId);
 		try {
-			boundary = await this.#folder.boundary(
-				machineId,
-				views.map((view) => view.viewId),
-				signal,
-			);
+			boundary = await this.#folder.boundary(machineId, ids, signal);
+			// A save check the boundary did not wait for to end (a large git pack's, 5j-5 a) goes on in the service: the
+			// views close once each such path is saved or refused, or when the caller gives up.
+			while (ids.length > 0 && boundary.machine === machineId && codingFolderBoundaryChecking(boundary, ids)) {
+				await delay(this.#retryMs, undefined, { signal });
+				boundary = await this.#folder.boundary(machineId, ids, signal);
+			}
 		} catch {
 			// Unsaved: the view still closes.
 		}

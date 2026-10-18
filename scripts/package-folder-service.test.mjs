@@ -87,6 +87,9 @@ test("packages the folder service, the folder program, the units and the install
 			}
 			assert.equal(spawnSync("bash", ["-n", join(destination, installer)]).status, 0, installer);
 		}
+		// The save check reads coding machines' git packs with the node's git under prlimit (F3 5j-5): no git, no install.
+		const installer = await readFile(join(destination, "install-folder-service.sh"), "utf8");
+		assert.match(installer, /^for tool in \/usr\/bin\/git \/usr\/bin\/prlimit; do$/m);
 
 		const service = await readFile(join(destination, "qorpera-folder-service.service"), "utf8");
 		for (const line of ["ProtectSystem=strict", "NoNewPrivileges=yes", "LimitCORE=0", "CapabilityBoundingSet=", "MemoryDenyWriteExecute=yes"])
