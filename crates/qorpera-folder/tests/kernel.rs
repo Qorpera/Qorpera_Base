@@ -852,8 +852,35 @@ impl Mapping {
 	}
 
 	fn sync(&self) {
+		assert_eq!(self.synced(), Ok(()));
+	}
+
+	/// `msync` of the whole mapping, or the errno it fails with.
+	fn synced(&self) -> Result<(), i32> {
 		// SAFETY: the mapping is live.
-		assert_eq!(unsafe { libc::msync(self.at.cast(), self.len, libc::MS_SYNC) }, 0, "{}", std::io::Error::last_os_error());
+		match unsafe { libc::msync(self.at.cast(), self.len, libc::MS_SYNC) } {
+			0 => Ok(()),
+			_ => Err(std::io::Error::last_os_error().raw_os_error().unwrap()),
+		}
+	}
+
+	/// What reading the mapping's first byte does in a child process: the byte, or the signal that ended the child.
+	fn touched(&self) -> Result<u8, i32> {
+		// SAFETY: the child only reads the mapping and exits, both async-signal-safe; the parent reaps it.
+		let pid = unsafe { libc::fork() };
+		assert!(pid >= 0, "{}", std::io::Error::last_os_error());
+		if pid == 0 {
+			// SAFETY: the mapping is live in the child too.
+			unsafe { libc::_exit(i32::from(std::ptr::read_volatile(self.at))) }
+		}
+		let mut status = 0;
+		// SAFETY: waits for the child forked above.
+		assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+		if libc::WIFSIGNALED(status) {
+			Err(libc::WTERMSIG(status))
+		} else {
+			Ok(libc::WEXITSTATUS(status) as u8)
+		}
 	}
 }
 
@@ -861,6 +888,147 @@ impl Drop for Mapping {
 	fn drop(&mut self) {
 		// SAFETY: unmaps what `new` mapped.
 		unsafe { libc::munmap(self.at.cast(), self.len) };
+	}
+}
+
+/// A process holding the view at its end reads nothing more of it (`Kernel::close`), the view closed.
+#[test]
+fn a_process_holding_the_view_at_its_close_reads_nothing_more() {
+	if !wanted() {
+		return;
+	}
+	held_past_the_end(false, 0);
+}
+
+/// The same at a SIGTERM, as a helper's stop sends 20 s before its SIGKILL (`TimeoutStopSec=20s`), with many files
+/// opened before: the drop is done well inside that.
+#[test]
+fn a_process_holding_the_view_at_a_sigterm_reads_nothing_more_and_the_drop_is_quick() {
+	if !wanted() {
+		return;
+	}
+	held_past_the_end(true, CLOSE_FILES);
+}
+
+/// Cache files opened and read before a SIGTERM, for the drop's time.
+const CLOSE_FILES: usize = 3000;
+
+/// A program ends while a process holds: read fds on a node file and a cache file, a fd on a file it never read while
+/// another process read it, a fd on a node file and one on a cache file it made and wrote, a folder's fd it opens names
+/// through, a shared mapping read once, and a shared writable mapping written and not written back. The program refuses
+/// every request from the end on, has the kernel drop the pages of every file opened through it (each pinned page a
+/// process already took stays its own), then unmounts and exits. After it, every read, stat and open through what the
+/// process holds fails, the mapping's next touch gets SIGBUS, and the written page is lost: its msync gives EIO and the
+/// disk never has it. Through the end, the program answers each request (a statfs, asked over and over) with a refusal,
+/// and after it the session is gone. The end is the view's close (`sigterm` false) or a SIGTERM, after `files` more
+/// cache files were opened and read.
+fn held_past_the_end(sigterm: bool, files: usize) {
+	let node = FakeNode::writable();
+	node.put("notes/readme", "readme", false);
+	node.put("notes/package.json", "{\"name\":\"notes\"}", false);
+	let mut a = Program::start(&node, "a", &[]);
+	assert!(a.logged().contains("qorpera-folder: kernel cache on"), "{}", a.logged());
+	std::fs::create_dir(a.at(TOP)).unwrap();
+	std::fs::write(a.at(X), [b'x'; 8192]).unwrap();
+	std::fs::write(a.at(Y), [b'y'; 4096]).unwrap();
+	for i in 0..files {
+		let name = format!("{TOP}/f{i}.js");
+		std::fs::write(a.at(&name), [b'f'; 4096]).unwrap();
+		assert_eq!(std::fs::read(a.at(&name)).unwrap().len(), 4096);
+	}
+	let readme = File::open(a.at("notes/readme")).unwrap();
+	assert_eq!(read_at(&readme), "readme");
+	let x = File::open(a.at(X)).unwrap();
+	assert_eq!(read_at(&x), "x".repeat(64));
+	let package = File::open(a.at("notes/package.json")).unwrap();
+	let other = Command::new("cat").arg(a.at("notes/package.json")).output().unwrap();
+	assert_eq!(other.stdout, b"{\"name\":\"notes\"}");
+	// Made and written through the fd it holds, then read through it (the kernel asks for the attributes once).
+	let z = format!("{TOP}/z.js");
+	let made: Vec<File> = ["notes/made.md", z.as_str()]
+		.iter()
+		.map(|path| {
+			let file = OpenOptions::new().read(true).write(true).create_new(true).open(a.at(path)).unwrap();
+			file.write_all_at(&[b'm'; 4096], 0).unwrap();
+			assert_eq!(read_at(&file), "m".repeat(64));
+			file
+		})
+		.collect();
+	let top = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(a.at(TOP)).unwrap();
+	assert!(opened_in(&top, "x.js").is_ok());
+	let mapped = Mapping::new(&x, false);
+	assert_eq!(mapped.start(), *b"xxxx");
+	assert_eq!(mapped.touched(), Ok(b'x'));
+	let y = OpenOptions::new().read(true).write(true).open(a.at(Y)).unwrap();
+	let written = Mapping::new(&y, true);
+	written.write(b"lost");
+	// Until the session is gone, a process asks for the view's statfs, which the kernel never keeps: through the drop,
+	// the program's loops answer each with a refusal.
+	let asked = top.try_clone().unwrap();
+	let asking = std::thread::spawn(move || {
+		let (mut refused, deadline) = (0, Instant::now() + Duration::from_secs(30));
+		while Instant::now() < deadline {
+			// SAFETY: all zeros is a statfs; an open fd and a statfs to fill.
+			let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+			if unsafe { libc::fstatfs(asked.as_raw_fd(), &mut stats) } == 0 {
+				continue;
+			}
+			match std::io::Error::last_os_error().raw_os_error() {
+				Some(libc::EIO) => refused += 1,
+				errno => return (refused, errno),
+			}
+		}
+		(refused, None)
+	});
+	let code = if sigterm {
+		a.signal(libc::SIGTERM);
+		0
+	} else {
+		node.close_view();
+		3
+	};
+	let ended = eventually(Duration::from_secs(20), || a.child.try_wait().unwrap().is_some());
+	assert!(ended, "the program did not stop: {}", a.logged());
+	assert_eq!(a.child.wait().unwrap().code(), Some(code), "{}", a.logged());
+	let mut buf = [0; 16];
+	for (what, file) in [("readme", &readme), ("x.js", &x), ("package.json", &package), ("made.md", &made[0]), ("z.js", &made[1])] {
+		let read = file.read_at(&mut buf, 0);
+		assert!(read.is_err(), "a read of {what} through its held fd after the end gave {read:?}");
+		assert!(file.metadata().is_err(), "a stat of {what} through its held fd after the end");
+	}
+	let opened = opened_in(&top, "x.js");
+	assert!(opened.is_err(), "an open through the held folder after the end gave {opened:?}");
+	assert!(top.metadata().is_err(), "a stat of the held folder after the end");
+	assert_eq!(mapped.touched(), Err(libc::SIGBUS));
+	assert_eq!(written.synced(), Err(libc::EIO));
+	assert_eq!(std::fs::read(disk(&node, "y.js")).unwrap(), [b'y'; 4096]);
+	// The statfs asked while the connection ended gets ECONNABORTED, a later one ENOTCONN.
+	let (refused, last) = asking.join().unwrap();
+	println!("statfs refused {refused} times through the end, then {last:?}");
+	assert!(matches!(last, Some(libc::ECONNABORTED | libc::ENOTCONN)), "the session outlived the program: {last:?}");
+	// Every file and folder opened through the program: x, y, readme, package.json, the two made, the top, and the
+	// `files`.
+	let log = a.logged();
+	let all = |l: &&str| l.starts_with("qorpera-folder: closing: dropped the kernel's pages of ") && l.ends_with(" ms");
+	let line = log.lines().find(all).unwrap_or_else(|| panic!("{log}"));
+	let words: Vec<&str> = line.split(' ').collect();
+	let (dropped, ms): (usize, u64) = (words[7].parse().unwrap(), words[10].parse().unwrap());
+	assert_eq!(dropped, files + 7, "{line}");
+	assert!(ms < 10_000, "{line}");
+	println!("{line}");
+	if files > 0 {
+		assert!(refused > 0, "no statfs was answered with a refusal through a drop of {line}");
+	}
+}
+
+/// `openat` of `name` in the folder `dir` holds open.
+fn opened_in(dir: &File, name: &str) -> std::io::Result<File> {
+	use std::os::fd::FromRawFd;
+	let name = CString::new(name).unwrap();
+	// SAFETY: an open fd and a C string; a new fd is owned by the File.
+	match unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) } {
+		fd if fd >= 0 => Ok(unsafe { File::from_raw_fd(fd) }),
+		_ => Err(std::io::Error::last_os_error()),
 	}
 }
 

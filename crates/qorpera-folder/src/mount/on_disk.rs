@@ -1035,6 +1035,11 @@ impl FolderFs {
 						match self.tell(area, || vec![change]) {
 							Ok(()) => {
 								self.s.kernel.hand(attr.ino.0);
+								// Refused here, the file stays made: the program is ending.
+								let Some(reply) = self.noted(attr.ino.0, reply) else {
+									local.release(fh);
+									return None;
+								};
 								reply.created(&ttl, &attr, Generation(0), FileHandle(fh), FopenFlags::empty())
 							}
 							Err(e) => {

@@ -142,6 +142,17 @@ time-outs for cache tops, and for every cache name on a shared cache folder), an
 log says `qorpera-folder: kernel cache on` or `kernel cache off: <why>`. `QORPERA_FOLDER_TEST_KERNEL_OFF=<why>` turns
 it off in tests. A mapping in another mount sees a change shortly after it (the page drop), not at once.
 
+At its end (the view's close, a SIGTERM, a fall-back that exits, or the kernel ending the session; with or without the
+kernel cache) the program first refuses every request (`EIO`, before any lock), then has the kernel drop the attributes
+and pages of every inode ever opened through the mount (each open, of a file or a folder, and each create notes its
+inode, then checks again before its reply), on a thread of its own while its loops go on answering, for at most 15
+seconds; then it unmounts and exits. Its log says `qorpera-folder: closing: dropped the kernel's pages of <n> files in
+<ms> ms`. A process holding the view then reads, stats and opens nothing more through the fds it holds, and a
+mapping's next touch gets `SIGBUS`. A page a process pinned before the end stays its own, a shared mapping's pages not
+written back are lost (`msync` and `fsync` give `EIO`), and a folder or file held without an open (a working folder,
+an `O_PATH` fd) keeps its attributes until their time-out. A SIGKILL before the drop is done ends the session with the
+pages not yet dropped still held.
+
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
 `node scripts/build-folder-program.mjs --out <file>`. Build output never goes in this folder (`CARGO_TARGET_DIR`).

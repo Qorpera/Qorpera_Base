@@ -18,6 +18,9 @@
 //!
 //! A notify that fails, a change told late, or a listener that stopped turns the kernel cache off for good: everything
 //! handed to the kernel is dropped, and if that fails too the program exits (its mount closed, never stale).
+//!
+//! At its end (`close`; any view, with or without caches) the program first refuses every request, then has the kernel
+//! drop the pages of every inode ever opened here, so a fd held past the end reads nothing more of the view.
 
 use super::*;
 use crate::local::{Stamp, Up};
@@ -46,6 +49,9 @@ const TEST_SLOW_LOOKUP: &str = "QORPERA_FOLDER_TEST_SLOW_LOOKUP";
 const SLOW_LOOKUP: Duration = Duration::from_millis(300);
 const TEST_SLOW_FALL_BACK: &str = "QORPERA_FOLDER_TEST_SLOW_FALL_BACK";
 const SLOW_FALL_BACK: Duration = Duration::from_secs(2);
+/// How long the end waits for the kernel to drop the pages (`close`): well inside the 20 s a stop gives between its
+/// SIGTERM and SIGKILL (`TimeoutStopSec=20s`).
+const CLOSE_WAIT: Duration = Duration::from_secs(15);
 
 pub(super) struct Kernel {
 	/// A writable view, which has caches.
@@ -70,6 +76,11 @@ pub(super) struct Kernel {
 	/// The test switch's name, whose lookups wait between the disk and the reply.
 	slow: Option<String>,
 	peers: OnceLock<Peers>,
+	/// The program is ending: every request is refused, from before the kernel's pages drop (`close`).
+	closing: AtomicBool,
+	/// Every inode opened or created here, never emptied: the kernel may hold pages or attributes of any of them, which a
+	/// fd held past the end would read without asking this program.
+	opened: Mutex<HashSet<u64>>,
 }
 
 /// A name held for a request (`Kernel::hold`): when it drops, after the reply, the name stays held for its time-out.
@@ -187,6 +198,8 @@ impl Kernel {
 			names: Mutex::new(Names::new(std::env::var(TEST_NAMES).ok().and_then(|n| n.parse().ok()).unwrap_or(NAMES_MAX))),
 			slow: std::env::var(TEST_SLOW_LOOKUP).ok(),
 			peers: OnceLock::new(),
+			closing: AtomicBool::new(false),
+			opened: Mutex::new(HashSet::new()),
 		}
 	}
 
@@ -444,6 +457,7 @@ impl Kernel {
 		if let Err(e) = dropped {
 			eprintln!("qorpera-folder: kernel cache: could not drop what the kernel holds ({e}); stopping");
 			self.stop();
+			self.close();
 			std::process::exit(1);
 		}
 		eprintln!("qorpera-folder: kernel cache: dropped what the kernel held");
@@ -453,6 +467,73 @@ impl Kernel {
 	pub(super) fn stop(&self) {
 		if let Some(peers) = self.peers.get() {
 			peers.listener.remove();
+		}
+	}
+
+	/// The kernel may hold pages or attributes of `ino` from now on: an open of a file or a folder, or a create, about to
+	/// be answered.
+	pub(super) fn opened(&self, ino: u64) {
+		self.opened.lock().unwrap().insert(ino);
+	}
+
+	/// Whether the program is ending: then every request is refused, before it takes any lock.
+	pub(super) fn closing(&self) -> bool {
+		self.closing.load(Ordering::SeqCst)
+	}
+
+	/// The program ends, before its unmount: every request from now on is refused with EIO, then the kernel drops the
+	/// attributes and pages of every inode ever opened here (`inval_inode` over the whole file), so a fd held past the
+	/// end asks again at its next read or stat, and is refused; after the exit, ENOTCONN. A page another program has
+	/// mapped leaves its mapping too (its next touch faults, and gets SIGBUS); one pinned for I/O it already took stays
+	/// that program's. A dirty page of a shared writable mapping is written back first, refused, and lost: its msync or
+	/// fsync gives EIO.
+	///
+	/// The drop runs on a thread of its own while the request loops keep answering (refusing), since a dirty page's
+	/// write-back waits for its answer; the end waits for it at most `CLOSE_WAIT`. No page outlives it: every open and
+	/// create answered noted its inode before a check that found no refusal (`FolderFs::noted`), so before the drop
+	/// takes the set; and a read checked before the refusals began fills a page the kernel holds locked until the
+	/// answer, which the drop waits for.
+	pub(super) fn close(&self) {
+		if self.closing.swap(true, Ordering::SeqCst) {
+			return;
+		}
+		let Some(told) = self.told.get() else { return };
+		let inos: Vec<u64> = self.opened.lock().unwrap().iter().copied().collect();
+		let files = inos.len();
+		let notifier = told.notifier.clone();
+		let (done, dropped) = mpsc::channel();
+		let start = Instant::now();
+		let spawned = std::thread::Builder::new().name("kernel-close".into()).spawn(move || {
+			let mut failed = 0;
+			for ino in inos {
+				// The kernel no longer knowing the inode is not a failure (fuser passes ENOENT as done).
+				if let Err(e) = notifier.inval_inode(INodeNo(ino), 0, 0) {
+					if failed == 0 {
+						eprintln!("qorpera-folder: closing: dropping the kernel's pages of {ino:#x}: {e}");
+					}
+					failed += 1;
+				}
+			}
+			let _ = done.send(failed);
+		});
+		if let Err(e) = spawned {
+			eprintln!("qorpera-folder: closing: could not start the page drop: {e}");
+			return;
+		}
+		match dropped.recv_timeout(CLOSE_WAIT) {
+			Ok(0) => eprintln!(
+				"qorpera-folder: closing: dropped the kernel's pages of {files} files in {} ms",
+				start.elapsed().as_millis()
+			),
+			Ok(failed) => eprintln!(
+				"qorpera-folder: closing: dropped the kernel's pages of {} of {files} files in {} ms; {failed} failed",
+				files - failed,
+				start.elapsed().as_millis()
+			),
+			Err(_) => eprintln!(
+				"qorpera-folder: closing: the kernel had not dropped the pages of {files} files after {} s; ending anyway",
+				CLOSE_WAIT.as_secs()
+			),
 		}
 	}
 
