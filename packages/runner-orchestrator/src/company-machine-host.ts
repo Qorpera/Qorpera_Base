@@ -582,6 +582,19 @@ export class LxdCompanyMachineHost {
 			);
 		return value;
 	}
+	/** Until the guest agent answers both the boot's claim and its lease, the machine is still starting: early in a boot,
+	 * or on a boot going down, LXD's agent may answer one and drop at the next (LXD ends the exec without a code). For
+	 * `guestReadyTimeoutMs` at most from the first pass it did not answer; then the pass fails with the error. */
+	#unready(e: CompanyMachineEntry, error: unknown): CompanyMachineOutcome {
+		const since = this.#starting.get(e.placementId) ?? Date.now();
+		this.#starting.set(e.placementId, since);
+		if (
+			Date.now() - since < (this.#options.guestReadyTimeoutMs ?? 180000) &&
+			errorCode(error) !== "COMPANY_MACHINE_HELPER_DIFFERS"
+		)
+			return { placementId: e.placementId, step: "guest", state: "pending" };
+		throw error;
+	}
 	/** A started guest: its helper is the packaged one, this boot is claimed
 	 * for the machine, SQL knows it runs, and its lease is renewed. */
 	async #guest(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
@@ -604,17 +617,8 @@ export class LxdCompanyMachineHost {
 				throw new Error("COMPANY_MACHINE_HELPER_DIFFERS");
 			prepared = await this.#helper(e, ["prepare", e.machineId, String(this.#generation)], signal);
 		} catch (error) {
-			// Until the guest agent answers, the machine is still starting.
-			const since = this.#starting.get(e.placementId) ?? Date.now();
-			this.#starting.set(e.placementId, since);
-			if (
-				Date.now() - since < (this.#options.guestReadyTimeoutMs ?? 180000) &&
-				errorCode(error) !== "COMPANY_MACHINE_HELPER_DIFFERS"
-			)
-				return { placementId: e.placementId, step: "guest", state: "pending" };
-			throw error;
+			return this.#unready(e, error);
 		}
-		this.#starting.delete(e.placementId);
 		if (
 			prepared.schema !== "qorpera.machine-guest/v1" ||
 			prepared.machineId !== e.machineId ||
@@ -623,21 +627,29 @@ export class LxdCompanyMachineHost {
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		const bootId = prepared.bootId;
-		const lease = await this.#helper(e, ["refresh-lease", String(COMPANY_MACHINE_LEASE_MS)], signal);
-		if (lease.schema !== "qorpera.machine-guest-lease-receipt/v1" || lease.bootId !== bootId)
-			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
-		const folder = this.#options.folder;
 		// A guest whose boot's folder ended (6d-2), whatever came of that folder: nothing of the boot is looked at,
-		// recorded or marked running. A guest that restarts is asked again until its next boot comes, and a retired
-		// placement waits for its stop.
+		// recorded or marked running, nor is its lease renewed (its commands are lost, and its watchdog stops any still
+		// running once the last lease runs out). The boot is the one the guest says it runs, so a guest that restarts is
+		// asked again, its agent going down or not, until its next boot comes, and a retired placement waits for its stop.
 		const over = this.#endings.get(`${e.placementId}/${bootId}`);
 		if (over) {
+			this.#starting.delete(e.placementId);
 			if (over.by === "restart") {
 				await this.#mark(e, bootId, over.cause, signal);
 				await this.#reboot(e, signal);
 			}
 			return { placementId: e.placementId, step: "commands", state: "done", folder: over.code };
 		}
+		let lease: Record<string, unknown>;
+		try {
+			lease = await this.#helper(e, ["refresh-lease", String(COMPANY_MACHINE_LEASE_MS)], signal);
+		} catch (error) {
+			return this.#unready(e, error);
+		}
+		this.#starting.delete(e.placementId);
+		if (lease.schema !== "qorpera.machine-guest-lease-receipt/v1" || lease.bootId !== bootId)
+			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
+		const folder = this.#options.folder;
 		if (e.bootId !== bootId) {
 			// The boot before ends first: its views' final boundary, before the new boot is recorded.
 			if (folder && e.runningAt !== null && e.bootId !== null) await this.#endFolder(e, e.bootId, signal, true);

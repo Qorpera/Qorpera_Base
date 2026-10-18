@@ -952,6 +952,60 @@ describe("company machine host", () => {
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 	});
 
+	it("treats a fresh boot whose agent drops between the boot's claim and its lease as starting", async () => {
+		const f = await fixture();
+		// Early in a boot the agent answers the claim, then drops before the lease (6f's live proof, a nested boot at 707 s).
+		let drops = 1;
+		dropping(f, (asked) => asked[3] === "refresh-lease" && drops-- > 0);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+		expect(f.methods()).not.toContain("qorpera_mark_company_machine_running");
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.client.execInstance.mock.calls.map((call) => call[2][3])).toEqual([
+			"prepare",
+			"refresh-lease",
+			"prepare",
+			"refresh-lease",
+		]);
+		expect(failures(f)).toEqual([]);
+	});
+
+	it("records a guest whose agent stays away past its grace, though the boot's claim still answers", async () => {
+		const pending = [{ placementId: id(6), step: "guest", state: "pending" }];
+		const failed = [{ placementId: id(6), step: "start", state: "failed", code: "UNCLASSIFIED" }];
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			// A running machine whose lease is never renewed again: each pass's claim answers, its lease drops.
+			const f = await fixture();
+			await f.host.pass(f.signal);
+			f.running();
+			dropping(f, (asked) => asked[3] === "refresh-lease");
+			expect(await f.host.pass(f.signal)).toEqual(pending);
+			clock.mockReturnValue(now + 179999);
+			expect(await f.host.pass(f.signal)).toEqual(pending);
+			clock.mockReturnValue(now + 180000);
+			expect(await f.host.pass(f.signal)).toEqual(failed);
+			expect(failures(f)).toEqual(["UNCLASSIFIED"]);
+			// A fresh boot whose agent drops at its lease and never comes back fails the same way.
+			clock.mockReturnValue(now);
+			const g = await fixture();
+			let gone = false;
+			dropping(g, (asked) => {
+				gone ||= asked[3] === "refresh-lease";
+				return gone;
+			});
+			expect(await g.host.pass(g.signal)).toEqual(pending);
+			clock.mockReturnValue(now + 179999);
+			expect(await g.host.pass(g.signal)).toEqual(pending);
+			clock.mockReturnValue(now + 180000);
+			expect(await g.host.pass(g.signal)).toEqual(failed);
+			expect(failures(g)).toEqual(["UNCLASSIFIED"]);
+			expect(g.methods()).not.toContain("qorpera_mark_company_machine_running");
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("refuses a listed binding that is not the one SQL hashed", async () => {
 		const f = await fixture();
 		f.entry.bindingText = f.entry.bindingText.replace('"cpus":4', '"cpus":8');
@@ -1035,6 +1089,20 @@ function cancel(f: Fixture, commandId: string, who: Credit = credit()) {
 		f.signal,
 	);
 }
+/** The guest's LXD agent drops on the asks `drops` picks: LXD ends their exec `Disconnected`, which its client throws
+ * without a code. */
+function dropping(f: Fixture, drops: (asked: readonly string[]) => boolean) {
+	const answer = f.client.execInstance.getMockImplementation();
+	if (!answer) throw new Error("no simulated guest");
+	f.client.execInstance.mockImplementation(async (project, name, asked) => {
+		if (drops(asked)) throw new Error("LXD operation failed");
+		return answer(project, name, asked);
+	});
+}
+const failures = (f: Fixture) =>
+	f.calls
+		.filter((call) => call.method === "qorpera_record_company_machine_error" && call.args.p_code !== null)
+		.map((call) => call.args.p_code);
 /** A command that printed one line and exited. */
 const finished = {
 	state: "succeeded",
@@ -1989,6 +2057,38 @@ describe("company machine host when a test machine's folder can never be proven 
 			late.mockRestore();
 		}
 		expect(reboots(h)).toBe(0);
+	});
+
+	it("asks a guest it restarted again, without its lease, while the boot that ended still answers its claim", async () => {
+		const restart = { ...quiet, folder: "FOLDER_RESTART:VIEW_CLOSED" };
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const [view] = f.views.opened;
+		f.service.held = [];
+		f.service.closed = [view.viewId];
+		expect(await f.host.pass(f.signal)).toEqual([restart]);
+		// The reboot is not waited for: the next pass finds the boot that ended still answering its claim, and its agent
+		// going down drops the lease (6f's live proof, the pass right after a restart at 1454.6 s).
+		let down: "lease" | "all" | undefined = "lease";
+		dropping(f, (asked) => down === "all" || (down === "lease" && asked[3] === "refresh-lease"));
+		const from = f.order.length;
+		expect(await f.host.pass(f.signal)).toEqual([restart]);
+		expect(f.order.slice(from).filter((step) => step.startsWith("exec:") || step === "reboot")).toEqual([
+			"exec:prepare",
+			"reboot",
+		]);
+		expect(reboots(f)).toBe(2);
+		// Then it is gone, and comes back as the next boot.
+		down = "all";
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+		down = undefined;
+		f.reboot();
+		f.service.closed = [];
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(failures(f)).toEqual([]);
 	});
 
 	it("opens a running command's window again each pass, until its command ends or SQL no longer lists it", async () => {
