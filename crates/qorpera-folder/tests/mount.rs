@@ -642,10 +642,12 @@ fn a_cache_move_whose_link_the_node_does_not_take_at_once_is_made_again() {
 	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js", "node_modules/y.js"])).unwrap();
 	node.busy_links(1);
 	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
-	// The move is not done while the link is not in the folder: it is tried again, and the link moves in.
-	let moved = || node.target("code/o/n/worktrees/w/node_modules/y.js").as_deref() == Some("x.js");
-	assert!(eventually(Duration::from_secs(20), moved), "the link did not move into the folder");
-	assert_eq!(node.content("code/o/n/worktrees/w/node_modules/x.js").unwrap(), b"cached");
+	// The move is not done while the link is not in the folder: it is tried again, and the link moves in. (The disk
+	// lists the file and the link in no set order, so either can reach the node first.)
+	let content = || node.content("code/o/n/worktrees/w/node_modules/x.js");
+	let moved = || node.target("code/o/n/worktrees/w/node_modules/y.js").as_deref() == Some("x.js") && content().is_some();
+	assert!(eventually(Duration::from_secs(20), moved), "the cache did not move into the folder");
+	assert_eq!(content().unwrap(), b"cached");
 	assert_eq!(std::fs::read_link(modules.join("y.js")).unwrap(), Path::new("x.js"));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
@@ -890,6 +892,355 @@ fn a_folder_with_caches_still_to_move_stays_in_its_worktree() {
 	let done = || ["a", "b", "c", "d"].into_iter().all(|d| d == left[0] || moved(d)) && node.open_handles() == 0 && !marker.exists();
 	assert!(eventually(Duration::from_secs(20), done), "handles open at the node: {}, marker: {}", node.open_handles(), marker.exists());
 	assert!(!node.exists(&format!("code/o/n/worktrees/v/{}", left[0])) && !node.exists(&format!("code/o/n/worktrees/w/{}", left[0])));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn in_a_worktree_what_git_leaves_out_is_a_cache_and_what_it_tracks_is_published() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	// The worktree's ignore rules: the .gitignore at its top and in a folder, and the repository's info/exclude.
+	node.put(&format!("{at}/.gitignore"), "*.log\n!keep.log\n/out/\nlogs/\nign/.gitignore\n", false);
+	node.put(&format!("{at}/sub/.gitignore"), "*.tmp\n", false);
+	node.put("code/o/n/repo.git/info/exclude", "secret.txt\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join(at);
+	// Git tracks tracked.log all the same (`git add -f`), and was.log, a file, where a folder is now.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["README", "tracked.log", "was.log"])).unwrap();
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	for dir in ["out", "logs", "was.log", "ign", "sub/out", "sub/deep", "sub/.git"] {
+		std::fs::create_dir(w.join(dir)).unwrap();
+	}
+	// Caches: what the rules leave out, and what is in a folder they leave out. Published: what they keep (a negation,
+	// a pattern anchored elsewhere, a folder's pattern on a file), what git tracks, and anything in a .git, which git
+	// never takes.
+	let cached = ["debug.log", "secret.txt", "sub/a.tmp", "sub/deep/b.log", "out/x", "logs/y", "was.log/z"];
+	let published = ["keep.log", "tracked.log", "sub/out/z", "sub/logs", "sub/c.txt", "sub/.git/d.log"];
+	for path in cached.into_iter().chain(published) {
+		std::fs::write(w.join(path), path).unwrap();
+	}
+	for path in cached {
+		assert!(!node.exists(&format!("{at}/{path}")), "{path} is in the folder");
+		assert_eq!(std::fs::read_to_string(w.join(path)).unwrap(), path);
+	}
+	assert!(!node.exists(&format!("{at}/out")) && !node.exists(&format!("{at}/logs")) && !node.exists(&format!("{at}/was.log")));
+	for path in published {
+		assert_eq!(node.content(&format!("{at}/{path}")).as_deref(), Some(path.as_bytes()), "{path} is not in the folder");
+	}
+	assert!(node.exists(&format!("{at}/sub/deep")) && node.exists(&format!("{at}/sub/.git")));
+	// A .gitignore git leaves out is read all the same: a cache, it decides what is in its folder, and as it changes.
+	let ign = |path: &str| node.exists(&format!("{at}/ign/{path}"));
+	std::fs::write(w.join("ign/.gitignore"), "local.txt\n").unwrap();
+	for path in ["local.txt", "plain.txt", "more.txt"] {
+		std::fs::write(w.join("ign").join(path), path).unwrap();
+	}
+	assert!(!ign(".gitignore") && !ign("local.txt") && ign("plain.txt") && ign("more.txt"));
+	std::fs::write(w.join("ign/.gitignore"), "*.txt\n").unwrap();
+	std::fs::write(w.join("ign/last.txt"), "last").unwrap();
+	assert!(!ign("last.txt") && std::fs::read_to_string(w.join("ign/last.txt")).unwrap() == "last");
+	let top = [".gitignore", "README", "debug.log", "ign", "keep.log", "logs", "out", "secret.txt", "sub", "tracked.log", "was.log"];
+	assert_eq!(names(&w), top);
+	let caches = node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w");
+	assert_eq!(std::fs::read_to_string(caches.join("d/sub/d/deep/t/b.log")).unwrap(), "sub/deep/b.log");
+	assert!(caches.join("d/ign/t/.gitignore").is_file() && caches.join("t/was.log/z").is_file());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_changed_gitignore_decides_only_new_names_and_nothing_published_renames_into_a_cache() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join(at);
+	std::fs::write(w.join("a.log"), "cached").unwrap();
+	std::fs::write(w.join("a.txt"), "published").unwrap();
+	assert!(!node.exists(&format!("{at}/a.log")) && node.exists(&format!("{at}/a.txt")));
+	// Another view changes the rules: they decide each new name, and what is on either side stays there.
+	node.put(&format!("{at}/.gitignore"), "*.txt\n", false);
+	assert!(eventually(Duration::from_secs(10), || std::fs::read_to_string(w.join(".gitignore")).unwrap() == "*.txt\n"));
+	std::fs::write(w.join("b.log"), "published").unwrap();
+	std::fs::write(w.join("b.txt"), "cached").unwrap();
+	assert!(node.exists(&format!("{at}/b.log")) && !node.exists(&format!("{at}/b.txt")));
+	assert!(!node.exists(&format!("{at}/a.log")) && node.content(&format!("{at}/a.txt")).unwrap() == b"published");
+	assert_eq!(std::fs::read_to_string(w.join("a.log")).unwrap(), "cached");
+	// A published file renamed to a name the rules leave out would leave the folder: EXDEV (`mv` copies). To a name
+	// they keep, it is the node's rename.
+	let exdev = |r: std::io::Result<()>| r.unwrap_err().raw_os_error() == Some(libc::EXDEV);
+	assert!(exdev(std::fs::rename(w.join("a.txt"), w.join("c.txt"))));
+	assert!(exdev(std::fs::hard_link(w.join("a.txt"), w.join("c.txt"))));
+	std::fs::rename(w.join("a.txt"), w.join("c.log")).unwrap();
+	assert!(node.content(&format!("{at}/c.log")).unwrap() == b"published" && !node.exists(&format!("{at}/a.txt")));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn what_git_comes_to_track_in_the_caches_moves_into_the_folder_and_the_rest_stays() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\nlogs/\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join(at);
+	std::fs::create_dir_all(w.join("logs/old")).unwrap();
+	let files = ["x.log", "y.log", "logs/a.txt", "logs/b.txt", "logs/old/c.txt"];
+	for path in files {
+		std::fs::write(w.join(path), path).unwrap();
+	}
+	assert!(!node.exists(&format!("{at}/x.log")) && !node.exists(&format!("{at}/logs")));
+	// `git add -f x.log logs/a.txt` while a boundary settles: the move of what the index tracks is kept on the disk,
+	// and the node answers BUSY to its first chunk.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["README", "logs/a.txt", "x.log"])).unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
+	let (marker, list) = (node.dir.join("state/caches.moving"), node.dir.join("state/local/cache-left.jsonl"));
+	assert!(marker.exists());
+	assert!(std::fs::read_to_string(&list).unwrap().contains(r#"{"w":"code/o/n/worktrees/w","n":"/"}"#));
+	node.busy(0, 0);
+	let content = |path: &str| node.content(&format!("{at}/{path}"));
+	let moved = || content("x.log").as_deref() == Some(b"x.log") && content("logs/a.txt").as_deref() == Some(b"logs/a.txt");
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0 && !marker.exists());
+	assert!(done, "moved: {}, handles open at the node: {}, marker: {}", moved(), node.open_handles(), marker.exists());
+	// What it does not track stays a cache, in the node's folder logs now, and so does a new file there.
+	for path in ["y.log", "logs/b.txt", "logs/old"] {
+		assert!(!node.exists(&format!("{at}/{path}")), "{path} is in the folder");
+	}
+	for path in files {
+		assert_eq!(std::fs::read_to_string(w.join(path)).unwrap(), path);
+	}
+	std::fs::write(w.join("logs/d.txt"), "new").unwrap();
+	assert!(node.exists(&format!("{at}/logs")) && !node.exists(&format!("{at}/logs/d.txt")));
+	assert_eq!(names(&w.join("logs")), ["a.txt", "b.txt", "d.txt", "old"]);
+	let caches = node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w");
+	assert!(caches.join("d/logs/t/b.txt").exists() && caches.join("d/logs/t/old/c.txt").exists());
+	assert!(!caches.join("t/x.log").exists() && !caches.join("d/logs/t/a.txt").exists());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_tracked_cache_folder_made_in_the_node_again_takes_none_of_the_caches_of_the_one_another_view_removed() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "logs/\n", false);
+	node.put(&format!("{at}/logs/keep.txt"), "kept", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join(at);
+	std::fs::write(w.join("logs/a.txt"), "old").unwrap();
+	assert!(!node.exists(&format!("{at}/logs/a.txt")));
+	let caches = node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w");
+	assert!(caches.join("d/logs/t/a.txt").is_file());
+	// Another view removes the node's folder, and this one makes a cache folder of that name without listing the
+	// worktree (which would drop the caches of the folder gone).
+	node.remove(&format!("{at}/logs/keep.txt"));
+	node.remove(&format!("{at}/logs"));
+	assert!(eventually(Duration::from_secs(10), || !w.join("logs").exists()));
+	std::fs::create_dir(w.join("logs")).unwrap();
+	for path in ["logs/b.txt", "logs/c.txt"] {
+		std::fs::write(w.join(path), path).unwrap();
+	}
+	// `git add -f logs/b.txt`: the node's folder is made again, with b.txt in it, and c.txt stays a cache there.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["README", "logs/b.txt"])).unwrap();
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	let marker = node.dir.join("state/caches.moving");
+	let moved = || node.content(&format!("{at}/logs/b.txt")).as_deref() == Some(b"logs/b.txt");
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0 && !marker.exists());
+	assert!(done, "moved: {}, handles open at the node: {}, marker: {}", moved(), node.open_handles(), marker.exists());
+	assert!(!node.exists(&format!("{at}/logs/c.txt")) && !node.exists(&format!("{at}/logs/a.txt")));
+	assert_eq!(std::fs::read_to_string(w.join("logs/c.txt")).unwrap(), "logs/c.txt");
+	assert_eq!(names(&w.join("logs")), ["b.txt", "c.txt"]);
+	assert!(caches.join("d/logs/t/c.txt").is_file() && !caches.join("d/logs/t/a.txt").exists());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_read_of_the_index_overtaken_by_one_found_stale_is_made_again() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	assert!(git.join("HEAD").is_file());
+	// A new c.log reads the index first, which the node has none of yet, and the list waits for the node. Meanwhile git
+	// puts an index that tracks c.log in place while the worktree has no caches: found stale, not read.
+	node.slow_lists("code/o/n/repo.git/worktrees/w", &[3]);
+	let made = w.join("c.log");
+	let making = std::thread::spawn(move || std::fs::write(made, "c.log").unwrap());
+	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log"])).unwrap();
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(!making.is_finished(), "the read of the index was not overtaken");
+	making.join().unwrap();
+	// What the older read gave is not taken: the index is read again, and c.log, which it tracks, is published.
+	assert_eq!(node.content(&format!("{at}/c.log")).as_deref(), Some(b"c.log".as_slice()));
+	std::fs::write(w.join("d.log"), "d.log").unwrap();
+	assert!(!node.exists(&format!("{at}/d.log")));
+	assert_eq!(std::fs::read_to_string(w.join("d.log")).unwrap(), "d.log");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_read_of_the_index_overtaken_by_a_newer_one_leaves_the_move_of_what_that_one_tracks() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	for path in ["a.log", "b.log"] {
+		std::fs::write(w.join(path), path).unwrap();
+	}
+	assert!(!node.exists(&format!("{at}/a.log")) && !node.exists(&format!("{at}/b.log")));
+	// The program starts again, with the same state: the index is read again before the next new cache.
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+	unmounted(&company);
+	node.reopen_view();
+	let (_, runner) = start(&node);
+	assert!(git.join("HEAD").is_file());
+	// A new c.log reads the index, which the node has none of, and the list waits for the node. Meanwhile `git add -f
+	// b.log` while a boundary settles: that index is taken in, and the move of b.log waits for the node.
+	node.slow_lists("code/o/n/repo.git/worktrees/w", &[3]);
+	let made = w.join("c.log");
+	let making = std::thread::spawn(move || std::fs::write(made, "c.log").unwrap());
+	assert!(eventually(Duration::from_secs(10), || node.slow_lists_left() == 0));
+	std::fs::write(git.join("index.lock"), git_index(&["README", "b.log"])).unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
+	assert!(!making.is_finished(), "the read of the index was not overtaken");
+	making.join().unwrap();
+	// The older read, done after it, is not taken: the move of b.log is still on, and it lands.
+	let marker = node.dir.join("state/caches.moving");
+	assert!(marker.exists());
+	node.busy(0, 0);
+	let moved = || node.content(&format!("{at}/b.log")).as_deref() == Some(b"b.log".as_slice());
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0 && !marker.exists());
+	assert!(done, "moved: {}, handles open at the node: {}, marker: {}", moved(), node.open_handles(), marker.exists());
+	for path in ["a.log", "c.log"] {
+		assert!(!node.exists(&format!("{at}/{path}")), "{path} is in the folder");
+		assert_eq!(std::fs::read_to_string(w.join(path)).unwrap(), path);
+	}
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn an_index_is_found_stale_only_once_the_node_has_it() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	assert!(git.join("HEAD").is_file());
+	// Git puts an index that tracks c.log and d.log in place while the worktree has no caches, and the node makes the
+	// rename only a while later. Meanwhile a new c.log reads the index the node still has, none: a cache.
+	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log", "d.log"])).unwrap();
+	node.late_renames(1);
+	let (from, to) = (git.join("index.lock"), git.join("index"));
+	let renaming = std::thread::spawn(move || std::fs::rename(from, to).unwrap());
+	assert!(eventually(Duration::from_secs(10), || node.late_renames_left() == 0));
+	std::fs::write(w.join("c.log"), "c.log").unwrap();
+	assert!(!renaming.is_finished(), "the rename landed before c.log was made");
+	assert!(!node.exists(&format!("{at}/c.log")));
+	renaming.join().unwrap();
+	// Found stale beside a cache once the node has it, the index is read again and c.log, which it tracks, moves into
+	// the folder, with no other name made.
+	let marker = node.dir.join("state/caches.moving");
+	let moved = || node.content(&format!("{at}/c.log")).as_deref() == Some(b"c.log".as_slice());
+	assert!(eventually(Duration::from_secs(20), || moved() && !marker.exists()), "moved: {}, marker: {}", moved(), marker.exists());
+	// Not before: d.log, which the new index tracks, is published.
+	std::fs::write(w.join("d.log"), "d.log").unwrap();
+	assert_eq!(node.content(&format!("{at}/d.log")).as_deref(), Some(b"d.log".as_slice()));
+	assert_eq!(std::fs::read_to_string(w.join("c.log")).unwrap(), "c.log");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_cache_made_while_the_index_cannot_be_read_moves_in_once_it_is_read_and_tracks_it() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let (w, git) = (company.join(at), company.join("code/o/n/repo.git/worktrees/w"));
+	assert!(git.join("HEAD").is_file());
+	// Git puts an index that tracks c.log in place while the worktree has no caches: found stale. A new c.log reads it,
+	// and the node cannot give it: a cache, whose making asks for the move of what the index tracks. Its writer keeps it
+	// open.
+	std::fs::write(git.join("index.lock"), git_index(&["README", "c.log"])).unwrap();
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	let index = "code/o/n/repo.git/worktrees/w/index";
+	node.fail_reads(index, true);
+	let mut c = std::fs::File::create(w.join("c.log")).unwrap();
+	c.write_all(b"c.").unwrap();
+	assert!(!node.exists(&format!("{at}/c.log")));
+	let (marker, list) = (node.dir.join("state/caches.moving"), node.dir.join("state/local/cache-left.jsonl"));
+	assert!(eventually(Duration::from_secs(10), || marker.exists()));
+	assert!(std::fs::read_to_string(&list).unwrap().contains(r#"{"w":"code/o/n/worktrees/w","n":"/"}"#));
+	// Once the node gives it, the mover reads it; c.log moves in only once its writer is done with it, with all it
+	// wrote, and with no other name made.
+	let read = node.reads_of(index);
+	node.fail_reads(index, false);
+	assert!(eventually(Duration::from_secs(10), || node.reads_of(index) > read));
+	std::thread::sleep(Duration::from_secs(1));
+	assert!(!node.exists(&format!("{at}/c.log")) && marker.exists());
+	c.write_all(b"log").unwrap();
+	drop(c);
+	let moved = || node.content(&format!("{at}/c.log")).as_deref() == Some(b"c.log".as_slice());
+	assert!(eventually(Duration::from_secs(20), || moved() && !marker.exists()), "moved: {}, marker: {}", moved(), marker.exists());
+	// What it does not track stays a cache.
+	std::fs::write(w.join("d.log"), "d.log").unwrap();
+	assert!(!node.exists(&format!("{at}/d.log")));
+	assert_eq!(std::fs::read_to_string(w.join("d.log")).unwrap(), "d.log");
+	assert_eq!(std::fs::read_to_string(w.join("c.log")).unwrap(), "c.log");
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

@@ -1002,6 +1002,17 @@ that git ignores, lives on the machine's disk:
 - Other views and machines see nothing at that path.
 - It can be rebuilt at any time.
 
+What git ignores is read from every `.gitignore` from the worktree's top down
+to the path and from the repository's `info/exclude` (MC2). As in git, a
+`.gitignore` that git ignores still counts; it stays on the machine too. A
+path the index tracks is never a cache, and a folder made where the index
+tracks a file of that name is not tracked. When git starts to track one (`git add -f`), it moves
+into the folder and is published at the next boundary; the rest of its
+folder's untracked content stays on the machine. A cache file moves into the
+folder only once the mount has it open for writing nowhere, and an open of it
+for writing waits until it is there; until it has moved, the view's boundaries
+wait. A changed `.gitignore` decides only names made after it.
+
 Everything else in a worktree, including untracked output that git does not
 ignore, such as reports, is company data that members see.
 
