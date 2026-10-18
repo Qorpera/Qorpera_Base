@@ -94,10 +94,24 @@ cache too.
     removes. So does a hard link across the edge, and a published file renamed into a cache path;
   - a file renamed from the cache onto a published path is published there: the program writes it into the view as a
     new pending file and removes the local one. This keeps atomic saves working where the temporary name is ignored
-    (an editor writing `notes.md.tmp`, then renaming it over `notes.md`, in a repository that ignores `*.tmp`);
+    (an editor writing `notes.md.tmp`, then renaming it over `notes.md`, in a repository that ignores `*.tmp`). Over a
+    file of the folder's it is the session's save of that file, and it keeps the cache file's executable bit. A cache
+    file still open for writing (here, or in another mount that shares the cache) is waited for up to a second. One
+    still open then answers `EXDEV`, and so does a rename onto a file of the view's that is open for writing, or onto
+    anything but a file;
   - a new pending file (made in this view and never published) renamed onto a cache path moves into the cache, and
     leaves the view's pending changes. The same atomic save works the other way round (`.env.tmp` over `.env`, which
-    git ignores).
+    git ignores). The program knows such a file this way:
+    - it notes the path when it makes the file where the folder's listing has none, or when a cache file is renamed
+      onto a new name (above). The note follows a rename of the file itself;
+    - it drops the note at any change the feed tells of at or above the path (a boundary published it, or another view
+      changed it), when the view lists again, when the feed comes back after a loss (while it is lost, such a rename
+      answers `EXDEV`), and when a folder's rename takes the file along (the folder service gives the moved files new
+      versions);
+    - at the rename, the folder service must list the file as this mount's own save (the version the mount wrote, with
+      no authority of its own), and nothing may have it open for writing.
+    Anything else answers `EXDEV`, so `mv` copies: the cache gets the machine's copy, and the folder keeps its file
+    until `mv` removes it, which is a pending change like any removal.
 - **A published folder holding a cache:**
   - `rmdir` sees the cache entries, so it answers `ENOTEMPTY` until they are gone; `rm -r` removes them first;
   - renaming the folder moves its cache with it, once the folder service has taken the rename;

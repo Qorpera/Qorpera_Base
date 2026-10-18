@@ -518,6 +518,14 @@ fn last_errno() -> Option<i32> {
 	std::io::Error::last_os_error().raw_os_error()
 }
 
+/// A rename with RENAME_NOREPLACE: the errno it failed with, if it did.
+fn rename_no_replace(from: &Path, to: &Path) -> Option<i32> {
+	let (from, to) = (c_path(from), c_path(to));
+	// SAFETY: two paths from CString, and the renameat2 flags.
+	let renamed = unsafe { libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+	if renamed == 0 { None } else { last_errno() }
+}
+
 #[test]
 fn a_close_the_node_does_not_take_at_once_is_tried_again_until_it_does() {
 	if !wanted() {
@@ -722,7 +730,7 @@ fn caches_outside_the_code_areas_follow_the_rules_and_stay_on_the_machine() {
 }
 
 #[test]
-fn nothing_crosses_the_edge_between_the_caches_and_the_folder() {
+fn nothing_but_a_file_crosses_the_edge_between_the_caches_and_the_folder() {
 	if !wanted() {
 		return;
 	}
@@ -739,10 +747,10 @@ fn nothing_crosses_the_edge_between_the_caches_and_the_folder() {
 	let m = notes.join("moved");
 	assert_eq!(std::fs::read_to_string(m.join("node_modules/pkg/x.js")).unwrap(), "cached");
 	assert!(caches.join("d/moved/t/node_modules/pkg/x.js").exists() && !caches.join("d/sub").exists());
-	// A rename or a hard link across the edge is EXDEV (`mv` copies): a cache's file or folder out of it, a cache to a
-	// name that is none, a file of the folder's into a cache, and a folder of the node's onto a new cache's place.
+	// A rename or a hard link across the edge is EXDEV (`mv` copies), but for a file's (the tests after this one): a
+	// cache's folder out of it, a cache to a name that is none, a file of the folder's into a cache, and a folder of the
+	// node's onto a new cache's place.
 	let exdev = |r: std::io::Result<()>| r.unwrap_err().raw_os_error() == Some(libc::EXDEV);
-	assert!(exdev(std::fs::rename(m.join("node_modules/pkg/x.js"), m.join("x.js"))));
 	assert!(exdev(std::fs::rename(m.join("node_modules/pkg"), m.join("pkg"))));
 	assert!(exdev(std::fs::rename(m.join("node_modules"), m.join("modules"))));
 	assert!(exdev(std::fs::rename(notes.join("readme"), m.join("node_modules/readme"))));
@@ -762,6 +770,149 @@ fn nothing_crosses_the_edge_between_the_caches_and_the_folder() {
 	assert!(!node.exists("notes/moved") && !caches.join("d/moved").exists());
 	std::fs::create_dir(&m).unwrap();
 	assert!(names(&m).is_empty());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_caches_file_renamed_into_the_folder_is_the_sessions_save_there() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes/run.sh", "old", true);
+	node.put("notes/plain", "plain", false);
+	let (company, runner) = start(&node);
+	let notes = company.join("notes");
+	let (modules, caches) = (notes.join("node_modules"), node.dir.join("state/local/caches/d/notes/t/node_modules"));
+	std::fs::create_dir(&modules).unwrap();
+	let write = |name: &str, content: &str, mode: u32| {
+		std::fs::write(modules.join(name), content).unwrap();
+		std::fs::set_permissions(modules.join(name), std::fs::Permissions::from_mode(mode)).unwrap();
+	};
+	let exdev = |r: std::io::Result<()>| r.unwrap_err().raw_os_error() == Some(libc::EXDEV);
+	// An editor saves through a temporary file the folder leaves out: over the folder's file, it is the session's save
+	// of it, with the executable bit the disk's file had, and the cache's file leaves the disk.
+	write("run.sh.tmp", "saved", 0o644);
+	std::fs::rename(modules.join("run.sh.tmp"), notes.join("run.sh")).unwrap();
+	assert!(node.content("notes/run.sh").is_some_and(|c| c == b"saved") && !node.executable("notes/run.sh"));
+	assert!(!caches.join("run.sh.tmp").exists() && !modules.join("run.sh.tmp").exists());
+	assert_eq!(std::fs::read_to_string(notes.join("run.sh")).unwrap(), "saved");
+	assert_eq!(std::fs::metadata(notes.join("run.sh")).unwrap().permissions().mode() & 0o111, 0);
+	// Onto a new name, the session's new file, which it can rename back into a cache until a boundary publishes it.
+	write("new.sh", "new", 0o755);
+	assert_eq!(rename_no_replace(&modules.join("new.sh"), &notes.join("new.sh")), None);
+	assert!(node.content("notes/new.sh").is_some_and(|c| c == b"new") && node.executable("notes/new.sh"));
+	std::fs::rename(notes.join("new.sh"), modules.join("new.sh")).unwrap();
+	assert!(!node.exists("notes/new.sh") && std::fs::read_to_string(caches.join("new.sh")).unwrap() == "new");
+	// The folder's file it saved stays in the folder (EXDEV), and RENAME_NOREPLACE onto it is EEXIST.
+	assert!(exdev(std::fs::rename(notes.join("run.sh"), modules.join("run.sh"))));
+	assert_eq!(rename_no_replace(&modules.join("new.sh"), &notes.join("run.sh")), Some(libc::EEXIST));
+	// Onto a file open for writing here, EXDEV (`mv` copies); once its writer has closed it, the rename is the save.
+	let mut writing = std::fs::OpenOptions::new().write(true).open(notes.join("plain")).unwrap();
+	writing.write_all(b"typed").unwrap();
+	assert!(exdev(std::fs::rename(modules.join("new.sh"), notes.join("plain"))));
+	drop(writing);
+	assert_eq!(node.content("notes/plain").unwrap(), b"typed");
+	std::fs::rename(modules.join("new.sh"), notes.join("plain")).unwrap();
+	assert!(node.content("notes/plain").is_some_and(|c| c == b"new") && node.executable("notes/plain"));
+	// A cache's file still open for writing here is waited for a moment: closed meanwhile, it moves; else EXDEV.
+	let mut held = std::fs::File::create(modules.join("held")).unwrap();
+	held.write_all(b"held").unwrap();
+	let started = Instant::now();
+	assert!(exdev(std::fs::rename(modules.join("held"), notes.join("held"))));
+	assert!(started.elapsed() >= Duration::from_millis(900));
+	let renaming = std::thread::spawn({
+		let (from, to) = (modules.join("held"), notes.join("held"));
+		move || std::fs::rename(from, to)
+	});
+	std::thread::sleep(Duration::from_millis(300));
+	drop(held);
+	renaming.join().unwrap().unwrap();
+	assert!(node.content("notes/held").is_some_and(|c| c == b"held") && !caches.join("held").exists());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_file_this_view_made_and_no_boundary_published_renames_into_a_cache() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let at = "code/o/n/worktrees/w";
+	node.put(&format!("{at}/README"), "readme", false);
+	node.put(&format!("{at}/.gitignore"), "*.log\n", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let w = company.join(at);
+	let caches = node.dir.join("state/local/caches/d/code/d/o/d/n/d/worktrees/d/w");
+	let in_folder = |path: &str| node.exists(&format!("{at}/{path}"));
+	// A build writes its output beside its place and renames it in: the file leaves the folder, as the cache's.
+	std::fs::write(w.join("out.tmp"), "built").unwrap();
+	std::fs::set_permissions(w.join("out.tmp"), std::fs::Permissions::from_mode(0o755)).unwrap();
+	std::fs::rename(w.join("out.tmp"), w.join("out.log")).unwrap();
+	assert!(!in_folder("out.tmp") && !in_folder("out.log"));
+	assert_eq!(std::fs::read_to_string(caches.join("t/out.log")).unwrap(), "built");
+	assert_eq!(std::fs::read_to_string(w.join("out.log")).unwrap(), "built");
+	assert_ne!(std::fs::metadata(w.join("out.log")).unwrap().permissions().mode() & 0o100, 0);
+	assert_eq!(names(&w), [".gitignore", "README", "out.log"]);
+	// Over a cache's file, in its place; RENAME_NOREPLACE onto one is EEXIST.
+	std::fs::write(w.join("old.log"), "old").unwrap();
+	std::fs::write(w.join("new.txt"), "new").unwrap();
+	assert_eq!(rename_no_replace(&w.join("new.txt"), &w.join("old.log")), Some(libc::EEXIST));
+	std::fs::rename(w.join("new.txt"), w.join("old.log")).unwrap();
+	assert!(!in_folder("new.txt") && std::fs::read_to_string(w.join("old.log")).unwrap() == "new");
+	// One the node does not take off gives the cache's file back its place, and stays in the folder.
+	std::fs::write(w.join("y.txt"), "y").unwrap();
+	node.busy_removes(1);
+	assert_eq!(std::fs::rename(w.join("y.txt"), w.join("old.log")).unwrap_err().raw_os_error(), Some(libc::EBUSY));
+	assert!(in_folder("y.txt") && std::fs::read_to_string(caches.join("t/old.log")).unwrap() == "new");
+	std::fs::rename(w.join("y.txt"), w.join("old.log")).unwrap();
+	assert!(!in_folder("y.txt") && std::fs::read_to_string(caches.join("t/old.log")).unwrap() == "y");
+	// Into a cache folder, from a folder this view made.
+	std::fs::create_dir(w.join("node_modules")).unwrap();
+	std::fs::create_dir(w.join("src")).unwrap();
+	std::fs::write(w.join("src/a.js"), "a").unwrap();
+	assert_eq!(rename_no_replace(&w.join("src/a.js"), &w.join("node_modules/a.js")), None);
+	assert!(!in_folder("src/a.js") && std::fs::read_to_string(caches.join("t/node_modules/a.js")).unwrap() == "a");
+	// Not a file of this view's: one a boundary published, alone or with the folder this view made it in, one another
+	// view changed, one renamed over a file of the folder's (a save of that one), one its folder's rename took along
+	// (the node gives it a new version), and any once the feed may have missed a boundary. EXDEV (`mv` copies).
+	let exdev = |from: &str, to: &str| std::fs::rename(w.join(from), w.join(to)).unwrap_err().raw_os_error() == Some(libc::EXDEV);
+	std::fs::create_dir(w.join("new")).unwrap();
+	for path in ["p.txt", "q.txt", "r.txt", "s.txt", "new/t.txt", "u.txt"] {
+		std::fs::write(w.join(path), path).unwrap();
+	}
+	node.tell(&[&format!("{at}/p.txt"), &format!("{at}/new/\u{1}")]);
+	assert!(exdev("p.txt", "p.log") && exdev("new/t.txt", "new/t.log"));
+	node.put_quietly(&format!("{at}/q.txt"), "theirs");
+	assert!(exdev("q.txt", "q.log"));
+	node.publish_quietly(&format!("{at}/r.txt"));
+	assert!(exdev("r.txt", "r.log"));
+	std::fs::rename(w.join("s.txt"), w.join("README")).unwrap();
+	assert!(exdev("README", "README.log"));
+	std::fs::write(w.join("src/b.js"), "b").unwrap();
+	std::fs::rename(w.join("src"), w.join("lib")).unwrap();
+	assert!(exdev("lib/b.js", "node_modules/b.js"));
+	node.drop_feeds();
+	assert!(eventually(Duration::from_secs(10), || node.feeds() == 1));
+	node.tell(&[]);
+	assert!(exdev("u.txt", "u.log"));
+	std::fs::write(w.join("v.txt"), "v").unwrap();
+	node.resync();
+	assert!(exdev("v.txt", "v.log"));
+	// One open for writing here, new or saved before: EXDEV until it is closed.
+	let mut writing = std::fs::File::create(w.join("x.txt")).unwrap();
+	writing.write_all(b"x").unwrap();
+	assert!(exdev("x.txt", "x.log"));
+	drop(writing);
+	let mut writing = std::fs::OpenOptions::new().write(true).open(w.join("x.txt")).unwrap();
+	writing.write_all(b"y").unwrap();
+	assert!(exdev("x.txt", "x.log"));
+	drop(writing);
+	std::fs::rename(w.join("x.txt"), w.join("x.log")).unwrap();
+	assert!(!in_folder("x.txt") && std::fs::read_to_string(caches.join("t/x.log")).unwrap() == "y");
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }
@@ -977,8 +1128,9 @@ fn a_changed_gitignore_decides_only_new_names_and_nothing_published_renames_into
 	assert!(node.exists(&format!("{at}/b.log")) && !node.exists(&format!("{at}/b.txt")));
 	assert!(!node.exists(&format!("{at}/a.log")) && node.content(&format!("{at}/a.txt")).unwrap() == b"published");
 	assert_eq!(std::fs::read_to_string(w.join("a.log")).unwrap(), "cached");
-	// A published file renamed to a name the rules leave out would leave the folder: EXDEV (`mv` copies). To a name
-	// they keep, it is the node's rename.
+	// A boundary publishes a.txt: renamed to a name the rules leave out, it would leave the folder, EXDEV (`mv` copies).
+	// To a name they keep, it is the node's rename.
+	node.tell(&[&format!("{at}/a.txt")]);
 	let exdev = |r: std::io::Result<()>| r.unwrap_err().raw_os_error() == Some(libc::EXDEV);
 	assert!(exdev(std::fs::rename(w.join("a.txt"), w.join("c.txt"))));
 	assert!(exdev(std::fs::hard_link(w.join("a.txt"), w.join("c.txt"))));

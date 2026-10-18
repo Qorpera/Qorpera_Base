@@ -62,6 +62,8 @@ struct Node {
 	/// Removed or replaced by this program's own change (a removal, a move, a file made over it): its path holds
 	/// another file now, or none.
 	removed: bool,
+	/// Moved into a cache by this program (`mount/on_disk.rs`): the kernel's entry for it names the cache's file now.
+	cached: bool,
 }
 
 /// One entry of a listing as the kernel gets it.
@@ -110,6 +112,7 @@ impl Tree {
 				listed: false,
 				detached: false,
 				removed: false,
+				cached: false,
 			},
 		);
 		let mut by_path = HashMap::new();
@@ -154,6 +157,19 @@ impl Tree {
 	/// path to go to (a newer version arriving from the node does not count: its path is still the same file's).
 	pub fn removed_here(&self, ino: u64) -> bool {
 		self.nodes.get(&ino).is_none_or(|n| n.removed)
+	}
+
+	/// This program moved the inode's file into a cache, after it removed it (`removed_local`): the kernel moved its entry
+	/// to the cache file's name, so an open by it is stale until the kernel drops that.
+	pub fn moved_to_cache(&mut self, ino: u64) {
+		if let Some(n) = self.nodes.get_mut(&ino) {
+			n.cached = true;
+		}
+	}
+
+	/// Whether this program moved the inode's file into a cache (`moved_to_cache`).
+	pub fn in_cache(&self, ino: u64) -> bool {
+		self.nodes.get(&ino).is_some_and(|n| n.cached)
 	}
 
 	/// The cached listing of a folder.
@@ -209,6 +225,7 @@ impl Tree {
 							listed: false,
 							detached: false,
 							removed: false,
+							cached: false,
 						},
 					);
 					self.by_path.insert(path, ino);
@@ -383,6 +400,7 @@ impl Tree {
 				listed: false,
 				detached: false,
 				removed: false,
+				cached: false,
 			},
 		);
 		self.by_path.insert(path, ino);
@@ -780,6 +798,9 @@ mod tests {
 		assert_eq!(t.attr(x).unwrap().version, "1");
 		// Removed here, unlike a version a newer one from the node replaced, and unlike the file renamed over above.
 		assert!(t.removed_here(x) && t.removed_here(f) && !t.removed_here(n));
+		// One moved into a cache is stale by the name the kernel moved it to; only it.
+		t.moved_to_cache(x);
+		assert!(t.in_cache(x) && !t.in_cache(f) && !t.in_cache(d));
 		let (kids, _) = t.install(ROOT, vec![file("f", 9, "p3")], t.changes(), true, Some("f"));
 		assert_ne!(ino_of(&kids, "f"), n);
 		assert!(!t.current(n) && !t.removed_here(n));
