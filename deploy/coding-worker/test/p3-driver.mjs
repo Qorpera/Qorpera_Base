@@ -988,8 +988,18 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 			return fail(`a search of the node for ${needles} could not finish: ${String(error.stderr ?? "").trim().split("\n").at(-1) || error.message}`);
 		}
 	};
+	// A file search's hits, and its last line's counts: the files busy at first, and those gone at its end.
+	const fileSearchOf = (needles) => {
+		const lines = search(PLACES, needles).split("\n");
+		const counts = /^busy=(\d+) gone=(\d+)$/.exec(lines.pop());
+		return counts ? { hits: lines.filter(Boolean), busy: Number(counts[1]), gone: Number(counts[2]) } :
+			fail(`a search of the node for ${needles} did not end with its counts`);
+	};
+	// What can keep a file busy for the search: nfsd's write delegations to the NAS's own client (fileSearch).
+	const delegations = lxc("exec", vm, "--", "bash", "-c", "grep -cE '^[0-9]+: DELEG +[A-Z]+ +WRITE ' /proc/locks; true").trim();
 	const STORED = /^\/srv\/p3-objects\/store\/.*\/([0-9a-f]{64})$/;
-	const fileHits = search(PLACES, "/root/p3-custody-forms").split("\n").filter(Boolean);
+	const formFiles = fileSearchOf("/root/p3-custody-forms");
+	const fileHits = formFiles.hits;
 	const elsewhere = fileHits.filter((path) => !STORED.test(path));
 	if (elsewhere.length) problems.push(`files in the node hold a form of the value: ${elsewhere.join(", ")}`);
 	// An object in the store is the folder's only once a path version names it, itself or as a chunk of its manifest; a
@@ -1000,8 +1010,11 @@ async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
 			or exists (select 1 from public.qorpera_folder_file_chunks c join public.qorpera_folder_path_versions v on v.manifest_sha256 = c.manifest_sha256
 				where c.chunk_sha256 = s)`) : [];
 	if (named.length) problems.push(`the company folder saved a form of the value: the objects ${named.join(", ")}`);
-	const controlFiles = search(PLACES, "/root/p3-custody-control").split("\n").filter(Boolean);
+	const controlSearch = fileSearchOf("/root/p3-custody-control");
+	const controlFiles = controlSearch.hits;
 	if (!controlFiles.length) problems.push("no file in the node holds the control");
+	console.log(`p3: the node's file searches: nfsd held ${delegations} write delegations as they started; files busy at first: ` +
+		`${formFiles.busy} and ${controlSearch.busy}; files gone at their end: ${formFiles.gone} and ${controlSearch.gone}`);
 	const GITHUB = countSearch("git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch");
 	const githubForms = Number(search(GITHUB, "/root/p3-custody-forms"));
 	const githubControl = Number(search(GITHUB, "/root/p3-custody-control"));
