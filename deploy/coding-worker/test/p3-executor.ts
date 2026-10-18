@@ -7,7 +7,11 @@
 //     RPC as service_role on the test database, a failure with PostgREST's status and error body;
 //   - the agent plug: no agent exit here (it would have no network to give); the machine's card goes on a bare
 //     qagent0 bridge with the MAC the plug tool gives the first machine address;
-//   - longer waits for a machine's guest to come up and for a session's mount (see the host's options below).
+//   - longer waits for a machine's guest to come up and for a session's mount (see the host's options below);
+//   - the secret broker's network, when the configuration has `broker` (the custody proof): the executor's own broker
+//     client asks for a session's vault environment as in production (../coding-environment.ts), but its request goes
+//     to the driver ("broker" lines), which hands it to the proof's broker (p3-broker.ts) and answers its status and body.
+//     The folder service then gets the machine's secret values for its save check, as executor.ts gives them.
 // The driver also reaches the command service through stdio ("http" lines), as the runtime's gateway would through
 // the node's proxy, and asks what a company's code area holds ("inspect" lines: a code host job of its own, as a
 // session's attach runs one). Protocol lines on stdout start with "P3 "; every log line goes to stderr.
@@ -24,6 +28,7 @@ import { LxdCodeHosts } from "../../../packages/runner-orchestrator/src/code-hos
 import { inspectCodeArea } from "../../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../../packages/runner-orchestrator/src/code-host-repositories.ts";
 import { CodeHostJobs } from "../../../packages/runner-orchestrator/src/code-host-views.ts";
+import { CodingMachineCommandSecrets } from "../../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { CloudCodingExecutor } from "../../../packages/runner-orchestrator/src/coding-executor.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { codingCommandExecution } from "../../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
@@ -33,6 +38,7 @@ import { CodingFolderViews } from "../../../packages/runner-orchestrator/src/cod
 import { createCodingNasStorage } from "../../../packages/runner-orchestrator/src/coding-storage.ts";
 import { LxdUnixClient } from "../../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../../packages/runtime/src/cloud-coding-command-http.ts";
+import { BrokerCodingEnvironment } from "../coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "../command-authority.ts";
 import { CodingCommandRouter } from "../command-routing.ts";
 import { CodingExecutorHttpControl } from "../control.ts";
@@ -120,6 +126,39 @@ class DriverRest {
 	}
 }
 
+/** The secret broker's network: each request of the executor's broker client goes to the driver ("broker" lines), which
+ * hands it to the proof's broker and answers its status and body, or status 0 when the broker is not reached. */
+class DriverBroker {
+	#next = 0;
+	readonly #pending = new Map<number, (message: Record<string, unknown>) => void>();
+	readonly fetch: typeof fetch = (input, init) => {
+		const url = new URL(input instanceof Request ? input.url : input);
+		const id = ++this.#next;
+		const signal = init?.signal;
+		return new Promise((resolve, reject) => {
+			const abort = () => {
+				this.#pending.delete(id);
+				reject(signal?.reason ?? new Error("aborted"));
+			};
+			if (signal?.aborted) return abort();
+			signal?.addEventListener("abort", abort, { once: true });
+			this.#pending.set(id, (message) => {
+				signal?.removeEventListener("abort", abort);
+				if (Number(message.status) === 0) return reject(new Error("P3_BROKER_UNREACHABLE"));
+				const headers = { "content-type": "application/json" };
+				resolve(new Response(String(message.body), { status: Number(message.status), headers }));
+			});
+			send({ t: "broker", id, method: init?.method ?? "GET", path: `${url.pathname}${url.search}`,
+				headers: Object.fromEntries(new Headers(init?.headers).entries()), body: typeof init?.body === "string" ? init.body : null });
+		});
+	};
+	answer(message: Record<string, unknown>): void {
+		const settle = this.#pending.get(Number(message.id));
+		this.#pending.delete(Number(message.id));
+		settle?.(message);
+	}
+}
+
 async function main(): Promise<void> {
 	if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.()) throw new Error("UNPRIVILEGED_LINUX_REQUIRED");
 	const directory = process.env.CREDENTIALS_DIRECTORY;
@@ -129,10 +168,14 @@ async function main(): Promise<void> {
 	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
 	const rest = new DriverRest();
+	const broker = new DriverBroker();
 	// The driver runs each request as service_role and reads no key: this one is a placeholder, not a secret.
 	const control = new CodingExecutorHttpControl({
 		supabaseUrl: "https://p3-supabase.test", serviceRoleKey: "p3", fetch: rest.fetch,
 	});
+	// The broker gives each command its session's vault environment (5j-4), as in executor.ts.
+	const commandSecrets = config.broker ? new CodingMachineCommandSecrets(new BrokerCodingEnvironment({ origin: config.broker.origin,
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner, fetch: broker.fetch })) : null;
 	const stop = new AbortController();
 	const lines = createInterface({ input: process.stdin });
 	const storage = createCodingNasStorage(config.storagePolicy);
@@ -147,10 +190,18 @@ async function main(): Promise<void> {
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
-		// The folder service's save check gets the machine's secret values as keyed hashes, as executor.ts gives them (5j-5
-		// (a)): with no broker here, none.
+		// The folder service's save check gets the machine's secret values as keyed hashes, as executor.ts gives them.
 		const folderSecretKey = new CodingFolderSecretKey();
-		const secrets = () => folderSecretKey.set([]).set;
+		const omitted = new Map<string, number>();
+		const secrets = (machineId: string) => {
+			const values = commandSecrets ? commandSecrets.values(machineId) : [];
+			if (values === undefined) return undefined;
+			const { set, omitted: count } = folderSecretKey.set(values);
+			if ((omitted.get(machineId) ?? 0) !== count) console.log(JSON.stringify({ event: "coding-folder-secrets-omitted", machineId, omitted: count }));
+			if (count) omitted.set(machineId, count);
+			else omitted.delete(machineId);
+			return set;
+		};
 		// The views it holds are recorded beside its journals, on the NAS: a restarted executor still ends them.
 		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		// Each boundary's answer goes to the log, so a CODING_FOLDER_BOUNDARY_HELD shows which view held and why: whole
@@ -181,6 +232,7 @@ async function main(): Promise<void> {
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
+		...(commandSecrets ? { commandSecrets } : {}),
 		agentPlug: async () => "0e:51:0a:d2:01:0a",
 		// A coding machine here is three levels deep (test machine, node, machine): its agent took 4 minutes and
 		// its systemd 6 in the first run, against production's one level.
@@ -226,6 +278,7 @@ async function main(): Promise<void> {
 			return log({ event: "p3-bad-line" });
 		}
 		if (message.t === "rest") rest.answer(message);
+		else if (message.t === "broker") broker.answer(message);
 		else if (message.t === "stop") stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 		else if (message.t === "inspect")
 			void (async () => {

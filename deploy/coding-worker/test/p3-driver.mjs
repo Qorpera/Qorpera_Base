@@ -1,7 +1,7 @@
 // P3's driver, on the test machine (test/prove-coding-session-vm.sh runs it as root once the throwaway node is set up):
 // the test database (p3-database.mjs) with a company whose member has a coding session, the node's executor
 // (p3-executor.ts) started in the node as its service unit would start it, and the runtime's side of four turns (ten on
-// the folder model's phase B):
+// the folder model's phase B, nine with P3_CUSTODY=1):
 //   turn 1 starts a command that keeps printing, and edits and commits in its workspace (the executor's clone of a
 //     throwaway repository on the node's stand-in GitHub); the turn's end pushes the commit and opens a draft pull request
 //     (on the folder model's phase A, which has no repositories yet, its commands start at /company instead; on phase B,
@@ -26,10 +26,19 @@
 // The executor's control RPCs come here over its stdout and run on the database as service_role; the runtime's coding
 // command gateway (packages/runtime/src/cloud-coding-command-http.ts, bundled as p3-gateway.mjs) reaches the
 // executor's command service through the same pipe. Prints PASS lines, then SESSION PROVEN.
+// With P3_CUSTODY=1 (phase B only), turns 2 to 9 prove a member's vault secret in custody in place of the rest of
+// Order 9, C2's turns and C1-V (p3-custody.mjs): the company's secret broker (p3-broker.ts, whose database calls run here as its own login)
+// serves a made-up value to the session's commands, whose output masks it. Each way a turn could save the value in the
+// company folder is refused, with the session still attached and nothing published, and the next turn takes the
+// refusal's way out and saves: a commit of a file with it (turns 2 and 3: the commit's ref update and its loose blob
+// are refused), a plain file (4 and 5), the refused commit repacked so that only a pack holds it (6 and 7), and a pack
+// that holds it whole only once a delta is resolved (8 and 9). Turn 9 commits a control and publishes as turn 1 did.
+// Then the tables, the node's files, the stand-in GitHub, the node's journal and the folder's git objects are searched
+// for the value's forms, and it prints CUSTODY PROVEN before SESSION PROVEN. No line it prints carries a form (withhold).
 //
 //   node deploy/coding-worker/test/p3-driver.mjs <project> <node VM> <coding image fingerprint> <package directory> <node facts JSON>
 import { execFileSync, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,6 +46,10 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import * as c1v from "./p3-c1v.mjs";
 import * as c2 from "./p3-c2.mjs";
+import {
+	brokerDatabase, CARRIES, countSearch, custodyForms, DELTA_PACK, databaseHolds, fileSearch, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED,
+	turnRefusals, value as databaseValue, WAITS_FOR_REFUSED, wayOutScript, withhold,
+} from "./p3-custody.mjs";
 import * as database from "./p3-database.mjs";
 import * as order9 from "./p3-order9.mjs";
 import { postgrestError } from "./p3-postgrest-errors.mjs";
@@ -139,6 +152,21 @@ const CODE_HOST_LOOK = [
 // The core calls whose request and answer the log keeps (startPostgrest): the saves, git leases and read releases a
 // boundary waits on, so a held boundary shows its refusal (reason and paths) even on a 200.
 const CORE_LOGGED = /^qorpera_folder_(commit|git_publish|git_lease_take|git_lease_release|record_release)$/;
+// The custody proof (P3_CUSTODY=1): a made-up value for a member's vault secret and the forms it is searched in, a
+// control the run writes where the value may not go, the broker's ids, the executor's turn completions (outcome and
+// summary), the broker's answers by status, and the turn outcome the proof expects next (no run stop for it).
+const custody = process.env.P3_CUSTODY === "1" ? {
+	probe: `p3probe-${randomBytes(24).toString("base64url")}`, control: `p3control-${randomBytes(16).toString("hex")}`,
+	authorityId: randomUUID(), secretId: randomUUID(), keyId: "p3-kek-1", withheld: {}, completions: [], answers: {},
+	expect: null, broker: null,
+	startBroker: (await import(pathToFileURL(resolve(packageDirectory, "p3/p3-broker.mjs")).href)).startP3Broker,
+} : null;
+if (custody) {
+	if (!node.codeHost) throw new Error("the custody proof needs phase B (P3_CODE_HOST=1)");
+	custody.forms = custodyForms(custody.probe);
+	withhold(process.stdout, custody.forms, custody.withheld);
+	withhold(process.stderr, custody.forms, custody.withheld);
+}
 
 const db = await database.openDatabase();
 let executor;
@@ -166,6 +194,38 @@ try {
 				rootDiskBytes: 12 * 1024 ** 3, running: 1 },
 		} : {}),
 	};
+	if (custody) {
+		// The company's secret broker, and a member's vault secret as its capture would leave it: the owner's own, named
+		// p3_probe on the environment connector, which a session of theirs gets as P3_PROBE with no grant.
+		const { authorityId, secretId, keyId } = custody;
+		custody.broker = await custody.startBroker({ authorityId, keyId, database: brokerDatabase(db, note) });
+		const envelope = Buffer.from(custody.broker.seal({ companyId: ids.profileId, environmentId: ids.environmentId, secretId, version: 1, keyId },
+			custody.probe)).toString("hex");
+		const q = database.quote;
+		await db.psql([
+			"begin;",
+			"select set_config('request.jwt.claims', '{\"role\":\"service_role\"}', true), set_config('request.jwt.claim.role', 'service_role', true) \\g /dev/null",
+			`insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
+				values (${q(authorityId)}, ${q(ids.profileId)}, 'https://p3-broker.test', ${q(keyId)}, ${q(custody.broker.capabilitySha256)});`,
+			`insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id,
+				connector_id, secret_name, purpose, current_version, created_by_user_id)
+				values (${q(secretId)}, ${q(ids.profileId)}, ${q(ids.environmentId)}, ${q(authorityId)}, 'member', ${q(ids.ownerUserId)},
+				'environment', 'p3_probe', 'P3 custody probe', 1, ${q(ids.ownerUserId)});`,
+			`insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
+				envelope_sha256, created_by_user_id)
+				values (${q(secretId)}, 1, ${q(authorityId)}, ${q(keyId)}, decode(${q(envelope)}, 'hex'),
+				encode(extensions.digest(decode(${q(envelope)}, 'hex'), 'sha256'), 'hex'), ${q(ids.ownerUserId)});`,
+			"commit;",
+		].join("\n"));
+		// The brokers' shared origin is a name only: the executor's broker client reaches it through the driver.
+		config.broker = { origin: "https://p3-broker.test", executorTokenCredential: "qorpera-coding-broker-executor" };
+		pushFile("/etc/qorpera/coding-broker-executor.key", custody.broker.executorToken);
+		// What the node's searches look for, one per line, kept in the node as root (never in an argument).
+		pushFile("/root/p3-custody-forms", custody.forms.join("\n"));
+		pushFile("/root/p3-custody-control", custody.control);
+		pass(`the company's secret broker runs, and the owner has a vault secret p3_probe: a made-up value of ${custody.probe.length} ` +
+			`characters, searched for later in ${custody.forms.length} forms (${elapsed()})`);
+	}
 	pushFile("/etc/qorpera/coding-executor.json", JSON.stringify(config));
 	pushFile("/etc/qorpera/coding-command.key", commandToken);
 
@@ -195,6 +255,8 @@ try {
 	try {
 		// --- Turn 1: a command that keeps printing ------------------------------------------------------------------------
 		const { workerId } = await database.dispatchCodingTask(db, ids, { instructions: "P3 proof: start a command that keeps printing." });
+		if (custody && await databaseValue(db, `select to_jsonb(owner_user_id) from public.qorpera_runtime_workers where id = ${database.quote(workerId)}`) !== ids.ownerUserId)
+			fail("the session's worker is not the vault secret's owner's");
 		const turn1 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 1, timeoutMs: 20 * 60000 });
 		pass(`turn 1 runs: the executor prepared the workspace and attached the session (${elapsed()})`);
 		const mounted = () => executor.folderLines.mounts.filter((line) => {
@@ -273,386 +335,389 @@ try {
 		pass(`turn 2 reads the command turn 1 started: still running, at tick ${ticks.at(-1)} (${second.log.totalBytes} bytes, ${elapsed()})`);
 		const cancelled = await gateway2.cancel(turn2.scope, begun.commandId, AbortSignal.timeout(60000));
 		pass(`turn 2 stops it (${cancelled.state})`);
-		const sleeper2 = await startSleeper(turn2, gateway2, "p3-sleeper-2");
-		await database.finishTurn(db, turn2, { operationKey: "p3-turn-2", summary: "Read and stopped the command from turn 1.", headSha: head });
-		await executor.turnSettled();
-		console.error(JSON.stringify(await database.describe(db, ids)));
-		pass(`turn 2 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
-
-		// --- Order 9: the machine sleeps after 10 idle minutes, and the next turn says what stopped ------------------------
-		const machine = await order9.machineOf(db, workerId);
-		await order9.awaitRunning(db, workerId, sleeper2.commandId, 60000);
-		const idle2 = await order9.awaitIdle(db, workerId, machine);
-		pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 2 finds the session and its machine idle: ${JSON.stringify(idle2)} (${elapsed()})`);
-		await order9.idleTenMinutes(db, machine);
-		const slept = await order9.awaitDetached(db, workerId, machine, "SLEEP", 5 * 60000);
-		const state = guestState(machine);
-		if (state !== "STOPPED" || !slept.suspendedAt) fail(`the machine sleeps but is ${state} (node demand suspended at ${slept.suspendedAt})`);
-		if (!slept.event.body.stopped.some((stopped) => stopped.commandId === sleeper2.commandId))
-			fail(`the machine's sleep does not name turn 2's command: ${JSON.stringify(slept.event)}`);
-		pass(`10 idle minutes later (the wait cut short in the database) the machine sleeps: ${machine.name} is stopped, its node ` +
-			`capacity suspended at ${slept.suspendedAt}, and the session says what stopped: ${JSON.stringify(slept.event.body)} (${elapsed()})`);
-		await database.followUp(db, ids, { workerId, text: "P3 proof: what stopped while your machine slept?" });
-		const turn3 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 3, timeoutMs: 20 * 60000 });
-		const stopped3 = (await database.turnContext(db, turn3)).commands.stopped;
-		if (!stopped3.some((stopped) => stopped.commandId === sleeper2.commandId && stopped.reason === "SLEEP"))
-			fail(`turn 3's context does not say the sleep stopped turn 2's command: ${JSON.stringify(stopped3)}`);
-		pass(`turn 3 wakes the machine (${guestState(machine)}), and its context says what stopped: ${JSON.stringify(stopped3)} (${elapsed()})`);
-		const gateway3 = gatewayFor(turn3);
-		const watch3 = node.codeHost ? ARCHIVE_WATCH : SLEEPER;
-		const sleeper3 = await startSleeper(turn3, gateway3, "p3-sleeper-3", watch3);
-		await database.finishTurn(db, turn3, { operationKey: "p3-turn-3", summary: "Read what the sleep stopped; left a command running.", headSha: head });
-		await executor.turnSettled();
-		pass(`turn 3 ended, leaving \`${watch3}\` running (${elapsed()})`);
-
-		// --- Order 9: after a quiet day the agent is asked about archiving --------------------------------------------------
-		await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
-		const settled = await database.settleParent(db, ids, { workerId });
-		note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
-		const idle3 = await order9.awaitIdle(db, workerId, machine);
-		pass(`with only \`${watch3}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
-		const quiet = await order9.quietDay(db, workerId);
-		note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
-		if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
-			fail(`a quiet day later the agent is not asked about archiving: ${JSON.stringify(quiet)}`);
-		pass(`a quiet day later (the wait cut short in the database) the agent is asked about archiving: ${quiet.asked.occurrenceKey} ` +
-			`(${quiet.asked.status}): ${JSON.stringify(quiet.asked.summary)} (${elapsed()})`);
-
-		// --- Order 9: archiving stops the session's programs, and a new message reopens it ----------------------------------
-		const keepFromArchive = executor.keepLines.length;
-		if ((await order9.archive(db, workerId)) !== true) fail("the agent's archive archived nothing");
-		const archived = await order9.awaitDetached(db, workerId, machine, "ARCHIVED", 2 * 60000);
-		if (!archived.event.body.stopped.some((stopped) => stopped.commandId === sleeper3.commandId))
-			fail(`the archive does not name turn 3's command: ${JSON.stringify(archived.event)}`);
-		const left = guestProcesses(machine, SLEEPER);
-		if (left) fail(`the archived session's command still runs on its machine: ${left}`);
-		pass(`archiving stops the session's programs: ${JSON.stringify(archived.event.body)}; no \`${SLEEPER}\` is left on ${machine.name} (${elapsed()})`);
-		if (node.codeHost) {
-			// 49's archive row: what turn 3's command wrote once stopped is the folder's after the archive. The keeper's next
-			// pass (every 10 s) reports the take-off, once it ended.
-			for (let waited = 0; !order9.detachDone(executor.keepLines.slice(keepFromArchive), workerId) && waited < 60000; waited += 2000)
-				await new Promise((settle) => setTimeout(settle, 2000));
-			const watched = `code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}/p3-archived.txt`;
-			const entry = await order9.savedFile(db, ids.environmentId, watched);
-			const kept = order9.judgeArchive({
-				lines: executor.keepLines.slice(keepFromArchive), workerId, entry, stored: entry && storedObject(ids.profileId, entry.fileSha256), text: "stopped\n",
-			});
-			if (kept.failures.length) fail(`the archive did not keep what turn 3's command wrote once stopped: ${kept.failures.join("; ")}`);
-			pass(`the archive keeps what turn 3's command wrote once stopped: the folder's ${watched} says "stopped" ` +
-				`(${JSON.stringify(entry)}, its bytes in the node's store), and its detach is done with no session error: ` +
-				`${JSON.stringify(kept.done)} (${elapsed()})`);
-		}
-		await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the archive." });
-		const turn4 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 4, timeoutMs: 20 * 60000 });
-		const reopened = await order9.event(db, workerId, "reopened");
-		if (!reopened) fail("turn 4 runs, but the session has no Reopened event");
-		const stopped4 = (await database.turnContext(db, turn4)).commands.stopped;
-		if (!stopped4.some((stopped) => stopped.commandId === sleeper3.commandId && stopped.reason === "ARCHIVED"))
-			fail(`turn 4's context does not say the archive stopped turn 3's command: ${JSON.stringify(stopped4)}`);
-		pass(`a new message reopens it: ${JSON.stringify(reopened.body)}, turn 4 runs, and its context says what the archive stopped: ` +
-			`${JSON.stringify(stopped4)} (${elapsed()})`);
-		await database.finishTurn(db, turn4, { operationKey: "p3-turn-4", summary: "Read what the archive stopped.", headSha: head });
-		await executor.turnSettled();
-		console.error(JSON.stringify(await database.describe(db, ids)));
-		pass(`turn 4 ended (${elapsed()})`);
-
-		// Phase B only: the node's store has a file's bytes only once a machine saved them, as phase B's code area and the
-		// P3-PROOF.md turn 1 committed in its worktree; the seed's files are in the core alone (a read of one on the node is
-		// UNAVAILABLE), and they are all phase A has. P3_UNTIL_ARCHIVE=1 ends the session before them.
-		if (node.codeHost && !untilArchive) {
-			// --- C2: a long turn whose guest stays quiet keeps its machine awake ----------------------------------------------
-			await database.followUp(db, ids, { workerId, text: "P3 proof: think for a while, then leave a command reading your proof file." });
-			const turn5 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 5, timeoutMs: 20 * 60000 });
-			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 5 runs on another machine");
-			const quiet5 = await c2.awaitQuiet(db, workerId, machine, 5 * 60000);
-			note(`turn 5's guest is quiet: ${JSON.stringify(quiet5)}`);
-			await c2.quietElevenMinutes(db, machine);
-			const before5 = await c2.standing(db, workerId, machine);
-			const lines5 = executor.machineLines.length;
-			const lists5 = calls.rpc.get("qorpera_list_coding_machines") ?? 0;
-			// Two housekeeping passes (every 30 s) and about seven keeps (every 10 s); the list as they read it, every 15 s.
-			const entries5 = [];
-			for (let waited = 0; waited <= 75000; waited += 15000) {
-				if (waited) await new Promise((settle) => setTimeout(settle, 15000));
-				entries5.push(await c2.listed(db, ids.owner, machineIdSha256, machine));
-			}
-			const clocks5 = await c2.clocks(db, machine);
-			// A clock moved back up proves nothing about the turn: say which, and never move it back again.
-			const moved = [clocks5.lastUsedAgo < 600 && `last used ${clocks5.lastUsedAt}`, clocks5.busyAgo < 600 && `last busy ${clocks5.busyAt}`].filter(Boolean);
-			if (moved.length) fail(`a clock moved during turn 5's quiet wait, so the wait proved nothing: ${moved.join(", ")} (${JSON.stringify(clocks5)})`);
-			const due = entries5.filter((entry) => entry?.live !== true || entry.reserved !== true || entry.superseded !== false || entry.sleepDue !== false);
-			if (due.length) fail(`the executor's list does not keep turn 5's machine awake: ${JSON.stringify(due)}`);
-			const sleeps = executor.machineLines.slice(lines5).filter((line) => line.machineId === machine.machineId && line.step === "sleep");
-			if (sleeps.length) fail(`the executor's housekeeping tried to sleep turn 5's machine: ${JSON.stringify(sleeps)}`);
-			const lists = (calls.rpc.get("qorpera_list_coding_machines") ?? 0) - lists5;
-			if (lists < 4) fail(`the executor's keeper and housekeeping read the list only ${lists} times in 75 s`);
-			const awake5 = await c2.standing(db, workerId, machine);
-			const slept5 = (await c2.eventsAfter(db, workerId, before5.lastEventId)).filter((event) => event.body?.reason === "SLEEP");
-			if (guestState(machine) !== "RUNNING" || awake5.attachedMachineId !== machine.machineId || !awake5.attached || !awake5.demand ||
-				awake5.suspendedAt || slept5.length)
-				fail(`turn 5's machine did not stay awake: ${guestState(machine)} ${JSON.stringify(awake5)} ${JSON.stringify(slept5)}`);
-			pass(`turn 5 stays awake with both idle clocks 11 minutes back: 75 s and ${lists} list reads later its entry is live, ` +
-				`reserved and not due to sleep (${JSON.stringify(entries5.at(-1))}), the clocks did not move (${JSON.stringify(clocks5)}), ` +
-				`no sleep was tried, and the machine is RUNNING with the session attached (${elapsed()})`);
-			await c2.usedNow(db, machine);
-
-			// --- C2: the folder service crashes while a command's read is unreleased ------------------------------------------
-			// The command waits for the driver, then reads turn 1's P3-PROOF.md after the turn and prints a number only the
-			// guest's shell works out, so neither the command nor anything the driver writes holds it; then it only waits.
-			const gateway5 = gatewayFor(turn5);
-			const proofFile = `/company/code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}/P3-PROOF.md`;
-			const nonce = randomBytes(4).readUInt32BE();
-			const unsaved = `P3-UNSAVED-${nonce + 1}`;
-			const reader = await database.beginCommand(db, turn5, {
-				operationKey: "p3-unsaved", timeoutMs: null,
-				command: `while [ ! -e /dev/shm/p3-go ]; do sleep 1; done; if cat ${proofFile} 2>/dev/shm/p3-read-error; then touch /dev/shm/p3-read; fi; ` +
-					`echo P3-UNSAVED-$((${nonce} + 1)); exec sleep 86401`,
-			});
-			const readerStart = await gateway5.start(turn5.scope, reader.input, AbortSignal.timeout(60000));
-			await reader.complete(readerStart);
-			if (readerStart.state !== "running") fail(`turn 5's reading command is ${readerStart.state}, not running: ${JSON.stringify(readerStart)}`);
-			await database.finishTurn(db, turn5, { operationKey: "p3-turn-5", summary: "Stayed awake; left a command reading P3-PROOF.md.", headSha: head });
-			await executor.turnSettled();
-			pass(`turn 5 ended, leaving a command that has read nothing yet (${elapsed()})`);
-			guestRun(machine, "touch", "/dev/shm/p3-go");
-			let waiting = guestProcesses(machine, "^sleep 86401$");
-			for (let waited = 0; !waiting && waited < 60000; waited += 1000, waiting = guestProcesses(machine, "^sleep 86401$"))
-				await new Promise((settle) => setTimeout(settle, 1000));
-			if (!waiting) fail("turn 5's command did not get past its read within 60 s");
-			if (!guestHas(machine, "/dev/shm/p3-read"))
-				fail(`turn 5's command could not read P3-PROOF.md after the turn: ${guestRun(machine, "cat", "/dev/shm/p3-read-error").trim()}`);
-			await order9.awaitRunning(db, workerId, reader.commandId, 60000);
-			const boot5 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
-			const service5 = folderService();
-			if (!service5.MainPID || service5.MainPID === "0") fail(`the node's folder service is not running: ${JSON.stringify(service5)}`);
-			const crash = await c2.standing(db, workerId, machine);
-			lxc("exec", vm, "--", "touch", "/run/p3-c2-crash");
-			lxc("exec", vm, "--", "systemctl", "kill", "--signal=SIGKILL", "qorpera-folder-service.service");
-			for (let waited = 0; nodeHas(`/proc/${service5.MainPID}`) && waited < 10000; waited += 250) await new Promise((settle) => setTimeout(settle, 250));
-			if (nodeHas(`/proc/${service5.MainPID}`)) fail(`the folder service's process ${service5.MainPID} outlived its SIGKILL`);
-			if (nodeHas("/run/qorpera-folder-service/clean-stop.json")) fail("the folder service's crash left a clean-stop note");
-			pass(`the command read P3-PROOF.md after turn 5 and printed what it read; then the node's folder service ` +
-				`(${service5.MainPID}) is killed, leaving no clean-stop note (${elapsed()})`);
-
-			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the folder service crashed." });
-			const turn6 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 6, timeoutMs: 20 * 60000 });
-			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 6 runs on another machine");
-			// Whichever look found the view gone (a renewal, the next attach), the machine restarts before the turn's view opens.
-			let restarts = await c2.restartsSince(db, machine, crash.now);
-			for (let waited = 0; !restarts.some((row) => row.state === "restarted") && waited < 180000; waited += 2000) {
-				await new Promise((settle) => setTimeout(settle, 2000));
-				restarts = await c2.restartsSince(db, machine, crash.now);
-			}
-			if (!restarts.some((row) => row.state === "restarted")) fail(`the machine was not restarted for the folder after the crash: ${JSON.stringify(restarts)}`);
-			const after6 = await c2.standing(db, workerId, machine);
-			if (after6.folderRestartAt || after6.newDiskAt || after6.attachedMachineId !== machine.machineId || !after6.demand || after6.suspendedAt)
-				fail(`after the restart turn 6's machine is not as it should be: ${JSON.stringify(after6)}`);
-			const events6 = await c2.eventsAfter(db, workerId, crash.lastEventId);
-			const restartEvent = events6.find((event) => event.body?.reason === "FOLDER_RESTART");
-			if (!restartEvent?.body.stopped.some((stopped) => stopped.commandId === reader.commandId))
-				fail(`the session's restart event does not name turn 5's command: ${JSON.stringify(events6)}`);
-			if (events6.some((event) => event.body?.reason === "SLEEP")) fail(`the machine slept after the crash: ${JSON.stringify(events6)}`);
-			const boot6 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
-			if (boot6 === boot5 || guestState(machine) !== "RUNNING") fail(`turn 6's machine did not boot again: boot ${boot6}, ${guestState(machine)}`);
-			const stopped6 = (await database.turnContext(db, turn6)).commands.stopped;
-			if (!stopped6.some((stopped) => stopped.commandId === reader.commandId && stopped.reason === "FOLDER_RESTART"))
-				fail(`turn 6's context does not say the restart stopped turn 5's command: ${JSON.stringify(stopped6)}`);
-			pass(`turn 6 runs on the same machine, restarted for the folder (boot ${boot5} → ${boot6}): ${JSON.stringify(restarts)}; ` +
-				`the session says what stopped: ${JSON.stringify(restartEvent.body)}, and so does turn 6's context (${elapsed()})`);
-			const gateway6 = gatewayFor(turn6);
-			const left6 = await gateway6.read(turn6.scope, { commandId: reader.commandId, offset: 0, limit: 4096 }, AbortSignal.timeout(60000));
-			if (left6.state !== "machine_stopped" || (left6.output ?? "").includes(unsaved) || (left6.output ?? "").includes("P3 proof"))
-				fail(`turn 6 reads what turn 5's command printed from its unreleased read: ${JSON.stringify(left6)}`);
-			// A command's output is kept in its host record on the NAS (host-commands/<id>/output.log, once its reads are
-			// released); SQL keeps only digests. Neither may hold it.
-			const held = await c2.holding(db, unsaved);
-			if (held?.holding?.length !== 0 || held.unread?.length !== 0) fail(`the core keeps what turn 5's command printed: ${JSON.stringify(held)}`);
-			const records = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/workers`, "-type", "d", "-name", reader.commandId.replaceAll("-", "")).trim();
-			const kept = [nodeGrep(unsaved, nasPolicy.rootPath), records ? nodeGrep("P3 proof", ...records.split("\n")) : null].filter(Boolean);
-			const recorded = records ? lxc("exec", vm, "--", "ls", "-la", ...records.split("\n")).trim() : "none";
-			if (kept.length) fail(`the NAS keeps what turn 5's command printed: ${kept.join(" ")} (its host record: ${recorded})`);
-			const dropped = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/control`, "-name", "dropped-start-*.json", "-newer", "/run/p3-c2-crash").trim();
-			if (!dropped) fail("the executor did not write down that the crashed boot's disk is not to be kept (no dropped-start mark)");
-			const service6 = folderService();
-			if (!service6.MainPID || service6.MainPID === "0" || service6.MainPID === service5.MainPID)
-				fail(`the node's folder service did not come back: ${JSON.stringify(service6)}`);
-			const read6 = await runToEnd(turn6, gateway6, "p3-read-6", `cat ${proofFile}`);
-			if (read6.state !== "succeeded" || !read6.output.includes("P3 proof")) fail(`turn 6 cannot read P3-PROOF.md on the new boot: ${JSON.stringify(read6)}`);
-			pass(`what turn 5's command printed is gone: turn 6 reads it ${left6.state} with nothing of it, no table in the core and no ` +
-				`file on the NAS holds ${unsaved} (its host record: ${recorded.split("\n").join("; ")}), the crashed boot is marked dropped ` +
-				`(${dropped.split("\n").join(" ")}), and the folder service is back (${JSON.stringify(service6)}), so turn 6 reads ` +
-				`P3-PROOF.md again (${elapsed()})`);
-			await database.finishTurn(db, turn6, { operationKey: "p3-turn-6", summary: "Carried on after the folder service crashed.", headSha: head });
+		if (custody) await proveCustody({ ids, workerId, turn2, gateway2, head });
+		else {
+			const sleeper2 = await startSleeper(turn2, gateway2, "p3-sleeper-2");
+			await database.finishTurn(db, turn2, { operationKey: "p3-turn-2", summary: "Read and stopped the command from turn 1.", headSha: head });
 			await executor.turnSettled();
 			console.error(JSON.stringify(await database.describe(db, ids)));
-			pass(`turn 6 ended (${elapsed()})`);
+			pass(`turn 2 ended, leaving \`${SLEEPER}\` running (${elapsed()})`);
 
-			// --- C2: a read the session's turn can no longer place gets its machine a new disk --------------------------------
-			// The platform saves a text in a folder of its own: no machine saved it, so none has a copy, and turn 7's read of
-			// it comes from the node's folder service, into the machine's read set at the turn's boundary. Its bytes go into
-			// the node's store as the object gateway's put leaves them, and the save confirms them in SQL (a test-only
-			// shortcut: a member's machine or the office would save it through the folder service and the gateway).
-			const shared = "p3-shared/disk.md";
-			const sharedFolder = shared.split("/")[0];
-			const sharedText = `P3 shared disk ${randomBytes(16).toString("hex")}\n`;
-			const sharedChunk = `{"sha256":"${sha256(sharedText)}","bytes":${Buffer.byteLength(sharedText)}}`;
-			const sharedManifest = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha256(sharedText)}","bytes":${Buffer.byteLength(sharedText)},` +
-				`"mediaType":"text/markdown","executable":false,"chunks":[${sharedChunk}]}`;
-			storeObject(ids.profileId, sharedText);
-			storeObject(ids.profileId, sharedManifest);
-			const saved = await database.shareFile(db, ids, { path: shared, text: sharedText });
-			if (saved?.manifest !== sharedManifest || !UUID.test(saved.version ?? "")) fail(`the platform's save of ${shared}: ${JSON.stringify(saved)}`);
-			pass(`the platform saves ${shared} in a folder of its own, its bytes in the node's store (version ${saved.version}, ${elapsed()})`);
-
-			await database.followUp(db, ids, { workerId, text: "P3 proof: read the shared file, then leave a command running." });
-			const turn7 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 7, timeoutMs: 20 * 60000 });
-			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 7 runs on another machine");
-			const gateway7 = gatewayFor(turn7);
-			const read7 = await runToEnd(turn7, gateway7, "p3-read-7", `cat /company/${shared}`);
-			if (read7.state !== "succeeded" || !read7.output.includes(sharedText)) fail(`turn 7 cannot read ${shared}: ${JSON.stringify(read7)}`);
-			// A file in the session's home, on the machine's own disk, which a restart keeps and a new disk does not.
-			const home7 = await runToEnd(turn7, gateway7, "p3-home-7",
-				'echo P3-HOME >"$HOME/p3-home-marker" && cat "$HOME/p3-home-marker" && echo "$HOME" && findmnt -no FSTYPE --target "$HOME"');
-			const [marker7, home, homeDisk] = (home7.output ?? "").trim().split("\n").slice(-3);
-			if (home7.state !== "succeeded" || marker7 !== "P3-HOME" || !home?.startsWith("/") || home.startsWith("/company") ||
-				!homeDisk || homeDisk === "tmpfs" || homeDisk.startsWith("fuse"))
-				fail(`turn 7 cannot leave a file in its home, on the machine's own disk: ${JSON.stringify(home7)}`);
-			const identity7 = instanceIdentity(machine);
-			const boot7 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
-			const sleeper7 = await startSleeper(turn7, gateway7, "p3-sleeper-7");
-			await database.finishTurn(db, turn7, { operationKey: "p3-turn-7", summary: "Read the shared file; left a command running.", headSha: head });
+			// --- Order 9: the machine sleeps after 10 idle minutes, and the next turn says what stopped ------------------------
+			const machine = await order9.machineOf(db, workerId);
+			await order9.awaitRunning(db, workerId, sleeper2.commandId, 60000);
+			const idle2 = await order9.awaitIdle(db, workerId, machine);
+			pass(`with only \`${SLEEPER}\` running, a keep 40 s after turn 2 finds the session and its machine idle: ${JSON.stringify(idle2)} (${elapsed()})`);
+			await order9.idleTenMinutes(db, machine);
+			const slept = await order9.awaitDetached(db, workerId, machine, "SLEEP", 5 * 60000);
+			const state = guestState(machine);
+			if (state !== "STOPPED" || !slept.suspendedAt) fail(`the machine sleeps but is ${state} (node demand suspended at ${slept.suspendedAt})`);
+			if (!slept.event.body.stopped.some((stopped) => stopped.commandId === sleeper2.commandId))
+				fail(`the machine's sleep does not name turn 2's command: ${JSON.stringify(slept.event)}`);
+			pass(`10 idle minutes later (the wait cut short in the database) the machine sleeps: ${machine.name} is stopped, its node ` +
+				`capacity suspended at ${slept.suspendedAt}, and the session says what stopped: ${JSON.stringify(slept.event.body)} (${elapsed()})`);
+			await database.followUp(db, ids, { workerId, text: "P3 proof: what stopped while your machine slept?" });
+			const turn3 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 3, timeoutMs: 20 * 60000 });
+			const stopped3 = (await database.turnContext(db, turn3)).commands.stopped;
+			if (!stopped3.some((stopped) => stopped.commandId === sleeper2.commandId && stopped.reason === "SLEEP"))
+				fail(`turn 3's context does not say the sleep stopped turn 2's command: ${JSON.stringify(stopped3)}`);
+			pass(`turn 3 wakes the machine (${guestState(machine)}), and its context says what stopped: ${JSON.stringify(stopped3)} (${elapsed()})`);
+			const gateway3 = gatewayFor(turn3);
+			const watch3 = node.codeHost ? ARCHIVE_WATCH : SLEEPER;
+			const sleeper3 = await startSleeper(turn3, gateway3, "p3-sleeper-3", watch3);
+			await database.finishTurn(db, turn3, { operationKey: "p3-turn-3", summary: "Read what the sleep stopped; left a command running.", headSha: head });
 			await executor.turnSettled();
-			await order9.awaitRunning(db, workerId, sleeper7.commandId, 60000);
-			// The read is the machine's once the turn's boundary released it; with no record of it the narrowing proves nothing.
-			let reads7 = await c2.readSet(db, machine, shared);
-			for (let waited = 0; !reads7?.holds && waited < 60000; waited += 2000) {
-				await new Promise((settle) => setTimeout(settle, 2000));
-				reads7 = await c2.readSet(db, machine, shared);
-			}
-			if (!reads7?.holds) fail(`turn 7's boundary did not put its read of ${shared} in the machine's read set: ${JSON.stringify(reads7)}`);
-			pass(`turn 7 reads ${shared} from the node's folder service, and its boundary puts the read in the machine's read set ` +
-				`(${JSON.stringify(reads7)}); it left a file in its home, ${home} (${homeDisk}), and \`${SLEEPER}\` running (${elapsed()})`);
-			const narrowed = await c2.standing(db, workerId, machine);
-			if (narrowed.folderRestartAt || narrowed.newDiskAt) fail(`turn 7's machine is marked before the narrowing: ${JSON.stringify(narrowed)}`);
-			const custody7 = calls.custody.length;
-			const resource = await database.narrow(db, ids, { path: sharedFolder });
-			pass(`the owner narrows ${sharedFolder} to the company's members: ${JSON.stringify(resource)} (${elapsed()})`);
+			pass(`turn 3 ended, leaving \`${watch3}\` running (${elapsed()})`);
 
-			// Turn 8's view opens before its lease, on a machine not marked yet; the lease's take-in then finds turn 7's read
-			// no longer readable and marks the machine. Turn 8 runs nothing: a command would be refused (MACHINE_NEW_DISK).
-			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the narrowing." });
-			const turn8 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 8, timeoutMs: 20 * 60000 });
-			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 8 runs on another machine");
-			const marking = async () => ({ standing: await c2.standing(db, workerId, machine), restarts: await c2.restartsSince(db, machine, narrowed.now) });
-			const isMarked = ({ standing, restarts }) =>
-				(standing.newDiskAt && standing.folderRestartAt) || restarts.some((row) => row.state === "new-disk" || row.state === "replaced");
-			let marked8 = await marking();
-			for (let waited = 0; !isMarked(marked8) && waited < 60000; waited += 2000) {
-				await new Promise((settle) => setTimeout(settle, 2000));
-				marked8 = await marking();
-			}
-			if (!isMarked(marked8)) fail(`turn 8's lease did not mark the machine for a new disk: the narrowing left the read readable (${JSON.stringify(marked8)})`);
-			pass(`turn 8's lease finds turn 7's read no longer readable and marks the machine for a new disk: ${JSON.stringify(marked8)} (${elapsed()})`);
-			await database.finishTurn(db, turn8, { operationKey: "p3-turn-8", summary: "Ran nothing on a machine marked for a new disk.", headSha: head });
-			await executor.turnSettled();
-			pass(`turn 8 ended, running nothing (${elapsed()})`);
+			// --- Order 9: after a quiet day the agent is asked about archiving --------------------------------------------------
+			await order9.awaitRunning(db, workerId, sleeper3.commandId, 60000);
+			const settled = await database.settleParent(db, ids, { workerId });
+			note(`the parent run, as the runner leaves it once the agent read the reports: ${JSON.stringify(settled)}`);
+			const idle3 = await order9.awaitIdle(db, workerId, machine);
+			pass(`with only \`${watch3}\` running, a keep 40 s after turn 3 finds the session idle: ${JSON.stringify(idle3)} (${elapsed()})`);
+			const quiet = await order9.quietDay(db, workerId);
+			note(`the check-ins drain: ${JSON.stringify(quiet.due)} ${JSON.stringify(quiet.steps)}`);
+			if (quiet.asked?.askedDays !== 1 || !/manage_worker action archive/.test(quiet.asked.summary ?? "") || !/with 1 command still running/.test(quiet.asked.summary))
+				fail(`a quiet day later the agent is not asked about archiving: ${JSON.stringify(quiet)}`);
+			pass(`a quiet day later (the wait cut short in the database) the agent is asked about archiving: ${quiet.asked.occurrenceKey} ` +
+				`(${quiet.asked.status}): ${JSON.stringify(quiet.asked.summary)} (${elapsed()})`);
 
-			// Before turn 9 the executor stops the machine ('new-disk', which ends the session's attachment and the command
-			// turn 7 left) and rebuilds it from its image ('replaced', which empties the read set), then starts it.
-			const keepFrom9 = executor.keepLines.length;
-			await database.followUp(db, ids, { workerId, text: "P3 proof: what happened to your machine?" });
-			const turn9 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 9, timeoutMs: 20 * 60000 });
-			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 9 runs on another machine");
-			let restarts9 = await c2.restartsSince(db, machine, narrowed.now);
-			for (let waited = 0; !restarts9.some((row) => row.state === "replaced") && waited < 180000; waited += 2000) {
-				await new Promise((settle) => setTimeout(settle, 2000));
-				restarts9 = await c2.restartsSince(db, machine, narrowed.now);
+			// --- Order 9: archiving stops the session's programs, and a new message reopens it ----------------------------------
+			const keepFromArchive = executor.keepLines.length;
+			if ((await order9.archive(db, workerId)) !== true) fail("the agent's archive archived nothing");
+			const archived = await order9.awaitDetached(db, workerId, machine, "ARCHIVED", 2 * 60000);
+			if (!archived.event.body.stopped.some((stopped) => stopped.commandId === sleeper3.commandId))
+				fail(`the archive does not name turn 3's command: ${JSON.stringify(archived.event)}`);
+			const left = guestProcesses(machine, SLEEPER);
+			if (left) fail(`the archived session's command still runs on its machine: ${left}`);
+			pass(`archiving stops the session's programs: ${JSON.stringify(archived.event.body)}; no \`${SLEEPER}\` is left on ${machine.name} (${elapsed()})`);
+			if (node.codeHost) {
+				// 49's archive row: what turn 3's command wrote once stopped is the folder's after the archive. The keeper's next
+				// pass (every 10 s) reports the take-off, once it ended.
+				for (let waited = 0; !order9.detachDone(executor.keepLines.slice(keepFromArchive), workerId) && waited < 60000; waited += 2000)
+					await new Promise((settle) => setTimeout(settle, 2000));
+				const watched = `code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}/p3-archived.txt`;
+				const entry = await order9.savedFile(db, ids.environmentId, watched);
+				const kept = order9.judgeArchive({
+					lines: executor.keepLines.slice(keepFromArchive), workerId, entry, stored: entry && storedObject(ids.profileId, entry.fileSha256), text: "stopped\n",
+				});
+				if (kept.failures.length) fail(`the archive did not keep what turn 3's command wrote once stopped: ${kept.failures.join("; ")}`);
+				pass(`the archive keeps what turn 3's command wrote once stopped: the folder's ${watched} says "stopped" ` +
+					`(${JSON.stringify(entry)}, its bytes in the node's store), and its detach is done with no session error: ` +
+					`${JSON.stringify(kept.done)} (${elapsed()})`);
 			}
-			const replaced = restarts9.find((row) => row.state === "replaced");
-			if (!replaced) fail(`the machine was not rebuilt for turn 9: ${JSON.stringify(restarts9)}`);
-			const between = await c2.inTurn(db, workerId, 8, replaced.recordedAt);
-			if (!between?.inTurn) fail(`the rebuild's record is not between turns 8 and 9: ${JSON.stringify(replaced)} ${JSON.stringify(between)}`);
-			const after9 = await c2.standing(db, workerId, machine);
-			if (after9.folderRestartAt || after9.newDiskAt || after9.lastError || after9.attachedMachineId !== machine.machineId || !after9.attached ||
-				!after9.demand || after9.suspendedAt)
-				fail(`after the rebuild turn 9's machine is not as it should be: ${JSON.stringify(after9)}`);
-			const reads9 = await c2.readSet(db, machine, shared);
-			if (reads9?.pairs !== 0 || reads9.records !== 0) fail(`the rebuild left the machine's read set: ${JSON.stringify(reads9)}`);
-			const events9 = await c2.eventsAfter(db, workerId, narrowed.lastEventId);
-			const newDisk = events9.filter((event) => event.body?.reason === "MACHINE_NEW_DISK");
-			if (newDisk.length !== 1 || !newDisk[0].body.stopped?.some((stopped) => stopped.commandId === sleeper7.commandId))
-				fail(`the session does not have one MACHINE_NEW_DISK event naming turn 7's command: ${JSON.stringify(events9)}`);
-			const context9 = await database.turnContext(db, turn9);
-			if (context9.machine?.newDisk !== true ||
-				!context9.commands.stopped.some((stopped) => stopped.commandId === sleeper7.commandId && stopped.reason === "MACHINE_NEW_DISK"))
-				fail(`turn 9's context does not say the machine got a new disk, which stopped turn 7's command: ` +
-					`${JSON.stringify({ machine: context9.machine, stopped: context9.commands.stopped })}`);
-			// The records since the narrowing, read again now that turn 9 is attached (its machine started): SQL's, the
-			// custody the executor was answered for the machine, and its journal on the NAS (c2.judgeNewDisk).
-			const journal9 = journalOf(machine);
-			const restartsNow = await c2.restartsSince(db, machine, narrowed.now);
-			const rebuild9 = c2.judgeNewDisk({
-				restarts: restartsNow,
-				custody: calls.custody.slice(custody7).filter((entry) => entry.machineId === machine.machineId),
-				journal: journal9,
-			});
-			if (rebuild9.failures.length) fail(`${rebuild9.failures.join("; ")} (journal ${journal9.directory})`);
-			pass(`before turn 9 the executor stopped the machine for a new disk and rebuilt it from its image: ${JSON.stringify(restartsNow)} ` +
-				`(the rebuild between turns 8 and 9: ${JSON.stringify(between)}); custody granted ${rebuild9.granted.join(" → ")}; ` +
-				`the journal ran ${rebuild9.ran.join(" → ")} ` +
-				`and its disk record is ${JSON.stringify(journal9.disk)}; the session says what stopped: ${JSON.stringify(newDisk[0].body)}, ` +
-				`turn 9's context says ${JSON.stringify(context9.machine)}, the read set is empty (${JSON.stringify(reads9)}), and the ` +
-				`machine is attached, marks clear, with no error (${JSON.stringify(after9)}) (${elapsed()})`);
-			const gateway9 = gatewayFor(turn9);
-			const look9 = await runToEnd(turn9, gateway9, "p3-home-9",
-				'if [ -e "$HOME/p3-home-marker" ]; then echo P3-HOME-KEPT; else echo P3-HOME-GONE; fi; echo "$HOME"; git rev-parse HEAD');
-			const [kept9, home9, head9] = (look9.output ?? "").trim().split("\n").slice(-3);
-			if (look9.state !== "succeeded" || kept9 !== "P3-HOME-GONE" || home9 !== home || head9 !== head)
-				fail(`turn 9 does not find only the company folder kept (a new home ${home}, its worktree at ${head}): ${JSON.stringify(look9)}`);
-			const read9 = await runToEnd(turn9, gateway9, "p3-read-9", `cat /company/${shared}`);
-			if (read9.state === "succeeded" || (read9.output ?? "").includes(sharedText)) fail(`turn 9 still reads ${shared} after the narrowing: ${JSON.stringify(read9)}`);
-			const boot9 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
-			if (boot9 === boot7 || guestState(machine) !== "RUNNING") fail(`turn 9's machine did not boot again: boot ${boot9}, ${guestState(machine)}`);
-			// The instance after the rebuild, compared after turn 10, so one run shows both.
-			const identity9 = instanceIdentity(machine);
-			pass(`turn 9 finds only the company folder kept: its home ${home} is new, its worktree is at ${head}, and it no longer reads ` +
-				`${shared} (${read9.state}); the machine booted again (boot ${boot7} → ${boot9}) (${elapsed()})`);
-			// The keeper keeps turn 9's attachment on the new boot, read before turn 10's attach moves it again: a keep pass
-			// ended after turn 9's view mounted with the session kept (within about 10 s plus a pass of at most 15 s), the
-			// attachment SQL holds after that pass is renewed, and the executor logged no session error for the machine after
-			// the mount (c2.judgeKeep).
-			for (let waited = 0; !c2.keptPass(executor.keepLines.slice(keepFrom9), machine.machineId, workerId) && waited < 45000; waited += 2000)
-				await new Promise((settle) => setTimeout(settle, 2000));
-			const attachment9 = await c2.attachment(db, workerId);
-			const keep9 = c2.judgeKeep({ lines: executor.keepLines.slice(keepFrom9), machineId: machine.machineId, workerId, attachment: attachment9 });
-			if (keep9.failures.length) fail(keep9.failures.join("; "));
-			pass(`the keeper renewed turn 9's attachment on the new boot (${JSON.stringify(attachment9)}) in a pass that ended after turn 9's ` +
-				`view mounted (${JSON.stringify(keep9.pass.outcomes)}), and the executor logged no session error for the machine after the ` +
-				`mount; before it, during the rebuild: ${JSON.stringify(keep9.before)} (${elapsed()})`);
-			await database.finishTurn(db, turn9, { operationKey: "p3-turn-9", summary: "Read that the machine got a new disk.", headSha: head });
-			await executor.turnSettled();
-			pass(`turn 9 ended (${elapsed()})`);
-
-			// The next turn no longer says it (20260930515000: a rebuild since the previous turn began).
-			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on." });
-			const turn10 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 10, timeoutMs: 20 * 60000 });
-			if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 10 runs on another machine");
-			const context10 = await database.turnContext(db, turn10);
-			if (context10.machine?.newDisk !== false) fail(`turn 10's context still says the machine got a new disk: ${JSON.stringify(context10.machine)}`);
-			pass(`turn 10's context no longer says it: ${JSON.stringify(context10.machine)} (${elapsed()})`);
-			// LXD's rebuild gives the instance a new root disk from its image and keeps the instance itself.
-			const differs = c2.judgeIdentity({ before: identity7, after: identity9, image: imageFingerprint });
-			if (differs.length) fail(`the rebuilt machine is not the same instance on a disk from its image: ${differs.join("; ")}`);
-			pass(`the rebuilt machine is the same instance on a disk from its image: ${JSON.stringify(identity9)} (${elapsed()})`);
-			await database.finishTurn(db, turn10, { operationKey: "p3-turn-10", summary: "Carried on after the new disk.", headSha: head });
+			await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the archive." });
+			const turn4 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 4, timeoutMs: 20 * 60000 });
+			const reopened = await order9.event(db, workerId, "reopened");
+			if (!reopened) fail("turn 4 runs, but the session has no Reopened event");
+			const stopped4 = (await database.turnContext(db, turn4)).commands.stopped;
+			if (!stopped4.some((stopped) => stopped.commandId === sleeper3.commandId && stopped.reason === "ARCHIVED"))
+				fail(`turn 4's context does not say the archive stopped turn 3's command: ${JSON.stringify(stopped4)}`);
+			pass(`a new message reopens it: ${JSON.stringify(reopened.body)}, turn 4 runs, and its context says what the archive stopped: ` +
+				`${JSON.stringify(stopped4)} (${elapsed()})`);
+			await database.finishTurn(db, turn4, { operationKey: "p3-turn-4", summary: "Read what the archive stopped.", headSha: head });
 			await executor.turnSettled();
 			console.error(JSON.stringify(await database.describe(db, ids)));
-			pass(`turn 10 ended (${elapsed()})`);
+			pass(`turn 4 ended (${elapsed()})`);
+
+			// Phase B only: the node's store has a file's bytes only once a machine saved them, as phase B's code area and the
+			// P3-PROOF.md turn 1 committed in its worktree; the seed's files are in the core alone (a read of one on the node is
+			// UNAVAILABLE), and they are all phase A has. P3_UNTIL_ARCHIVE=1 ends the session before them.
+			if (node.codeHost && !untilArchive) {
+				// --- C2: a long turn whose guest stays quiet keeps its machine awake ----------------------------------------------
+				await database.followUp(db, ids, { workerId, text: "P3 proof: think for a while, then leave a command reading your proof file." });
+				const turn5 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 5, timeoutMs: 20 * 60000 });
+				if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 5 runs on another machine");
+				const quiet5 = await c2.awaitQuiet(db, workerId, machine, 5 * 60000);
+				note(`turn 5's guest is quiet: ${JSON.stringify(quiet5)}`);
+				await c2.quietElevenMinutes(db, machine);
+				const before5 = await c2.standing(db, workerId, machine);
+				const lines5 = executor.machineLines.length;
+				const lists5 = calls.rpc.get("qorpera_list_coding_machines") ?? 0;
+				// Two housekeeping passes (every 30 s) and about seven keeps (every 10 s); the list as they read it, every 15 s.
+				const entries5 = [];
+				for (let waited = 0; waited <= 75000; waited += 15000) {
+					if (waited) await new Promise((settle) => setTimeout(settle, 15000));
+					entries5.push(await c2.listed(db, ids.owner, machineIdSha256, machine));
+				}
+				const clocks5 = await c2.clocks(db, machine);
+				// A clock moved back up proves nothing about the turn: say which, and never move it back again.
+				const moved = [clocks5.lastUsedAgo < 600 && `last used ${clocks5.lastUsedAt}`, clocks5.busyAgo < 600 && `last busy ${clocks5.busyAt}`].filter(Boolean);
+				if (moved.length) fail(`a clock moved during turn 5's quiet wait, so the wait proved nothing: ${moved.join(", ")} (${JSON.stringify(clocks5)})`);
+				const due = entries5.filter((entry) => entry?.live !== true || entry.reserved !== true || entry.superseded !== false || entry.sleepDue !== false);
+				if (due.length) fail(`the executor's list does not keep turn 5's machine awake: ${JSON.stringify(due)}`);
+				const sleeps = executor.machineLines.slice(lines5).filter((line) => line.machineId === machine.machineId && line.step === "sleep");
+				if (sleeps.length) fail(`the executor's housekeeping tried to sleep turn 5's machine: ${JSON.stringify(sleeps)}`);
+				const lists = (calls.rpc.get("qorpera_list_coding_machines") ?? 0) - lists5;
+				if (lists < 4) fail(`the executor's keeper and housekeeping read the list only ${lists} times in 75 s`);
+				const awake5 = await c2.standing(db, workerId, machine);
+				const slept5 = (await c2.eventsAfter(db, workerId, before5.lastEventId)).filter((event) => event.body?.reason === "SLEEP");
+				if (guestState(machine) !== "RUNNING" || awake5.attachedMachineId !== machine.machineId || !awake5.attached || !awake5.demand ||
+					awake5.suspendedAt || slept5.length)
+					fail(`turn 5's machine did not stay awake: ${guestState(machine)} ${JSON.stringify(awake5)} ${JSON.stringify(slept5)}`);
+				pass(`turn 5 stays awake with both idle clocks 11 minutes back: 75 s and ${lists} list reads later its entry is live, ` +
+					`reserved and not due to sleep (${JSON.stringify(entries5.at(-1))}), the clocks did not move (${JSON.stringify(clocks5)}), ` +
+					`no sleep was tried, and the machine is RUNNING with the session attached (${elapsed()})`);
+				await c2.usedNow(db, machine);
+
+				// --- C2: the folder service crashes while a command's read is unreleased ------------------------------------------
+				// The command waits for the driver, then reads turn 1's P3-PROOF.md after the turn and prints a number only the
+				// guest's shell works out, so neither the command nor anything the driver writes holds it; then it only waits.
+				const gateway5 = gatewayFor(turn5);
+				const proofFile = `/company/code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}/worktrees/${workerId}/P3-PROOF.md`;
+				const nonce = randomBytes(4).readUInt32BE();
+				const unsaved = `P3-UNSAVED-${nonce + 1}`;
+				const reader = await database.beginCommand(db, turn5, {
+					operationKey: "p3-unsaved", timeoutMs: null,
+					command: `while [ ! -e /dev/shm/p3-go ]; do sleep 1; done; if cat ${proofFile} 2>/dev/shm/p3-read-error; then touch /dev/shm/p3-read; fi; ` +
+						`echo P3-UNSAVED-$((${nonce} + 1)); exec sleep 86401`,
+				});
+				const readerStart = await gateway5.start(turn5.scope, reader.input, AbortSignal.timeout(60000));
+				await reader.complete(readerStart);
+				if (readerStart.state !== "running") fail(`turn 5's reading command is ${readerStart.state}, not running: ${JSON.stringify(readerStart)}`);
+				await database.finishTurn(db, turn5, { operationKey: "p3-turn-5", summary: "Stayed awake; left a command reading P3-PROOF.md.", headSha: head });
+				await executor.turnSettled();
+				pass(`turn 5 ended, leaving a command that has read nothing yet (${elapsed()})`);
+				guestRun(machine, "touch", "/dev/shm/p3-go");
+				let waiting = guestProcesses(machine, "^sleep 86401$");
+				for (let waited = 0; !waiting && waited < 60000; waited += 1000, waiting = guestProcesses(machine, "^sleep 86401$"))
+					await new Promise((settle) => setTimeout(settle, 1000));
+				if (!waiting) fail("turn 5's command did not get past its read within 60 s");
+				if (!guestHas(machine, "/dev/shm/p3-read"))
+					fail(`turn 5's command could not read P3-PROOF.md after the turn: ${guestRun(machine, "cat", "/dev/shm/p3-read-error").trim()}`);
+				await order9.awaitRunning(db, workerId, reader.commandId, 60000);
+				const boot5 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
+				const service5 = folderService();
+				if (!service5.MainPID || service5.MainPID === "0") fail(`the node's folder service is not running: ${JSON.stringify(service5)}`);
+				const crash = await c2.standing(db, workerId, machine);
+				lxc("exec", vm, "--", "touch", "/run/p3-c2-crash");
+				lxc("exec", vm, "--", "systemctl", "kill", "--signal=SIGKILL", "qorpera-folder-service.service");
+				for (let waited = 0; nodeHas(`/proc/${service5.MainPID}`) && waited < 10000; waited += 250) await new Promise((settle) => setTimeout(settle, 250));
+				if (nodeHas(`/proc/${service5.MainPID}`)) fail(`the folder service's process ${service5.MainPID} outlived its SIGKILL`);
+				if (nodeHas("/run/qorpera-folder-service/clean-stop.json")) fail("the folder service's crash left a clean-stop note");
+				pass(`the command read P3-PROOF.md after turn 5 and printed what it read; then the node's folder service ` +
+					`(${service5.MainPID}) is killed, leaving no clean-stop note (${elapsed()})`);
+
+				await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the folder service crashed." });
+				const turn6 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 6, timeoutMs: 20 * 60000 });
+				if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 6 runs on another machine");
+				// Whichever look found the view gone (a renewal, the next attach), the machine restarts before the turn's view opens.
+				let restarts = await c2.restartsSince(db, machine, crash.now);
+				for (let waited = 0; !restarts.some((row) => row.state === "restarted") && waited < 180000; waited += 2000) {
+					await new Promise((settle) => setTimeout(settle, 2000));
+					restarts = await c2.restartsSince(db, machine, crash.now);
+				}
+				if (!restarts.some((row) => row.state === "restarted")) fail(`the machine was not restarted for the folder after the crash: ${JSON.stringify(restarts)}`);
+				const after6 = await c2.standing(db, workerId, machine);
+				if (after6.folderRestartAt || after6.newDiskAt || after6.attachedMachineId !== machine.machineId || !after6.demand || after6.suspendedAt)
+					fail(`after the restart turn 6's machine is not as it should be: ${JSON.stringify(after6)}`);
+				const events6 = await c2.eventsAfter(db, workerId, crash.lastEventId);
+				const restartEvent = events6.find((event) => event.body?.reason === "FOLDER_RESTART");
+				if (!restartEvent?.body.stopped.some((stopped) => stopped.commandId === reader.commandId))
+					fail(`the session's restart event does not name turn 5's command: ${JSON.stringify(events6)}`);
+				if (events6.some((event) => event.body?.reason === "SLEEP")) fail(`the machine slept after the crash: ${JSON.stringify(events6)}`);
+				const boot6 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
+				if (boot6 === boot5 || guestState(machine) !== "RUNNING") fail(`turn 6's machine did not boot again: boot ${boot6}, ${guestState(machine)}`);
+				const stopped6 = (await database.turnContext(db, turn6)).commands.stopped;
+				if (!stopped6.some((stopped) => stopped.commandId === reader.commandId && stopped.reason === "FOLDER_RESTART"))
+					fail(`turn 6's context does not say the restart stopped turn 5's command: ${JSON.stringify(stopped6)}`);
+				pass(`turn 6 runs on the same machine, restarted for the folder (boot ${boot5} → ${boot6}): ${JSON.stringify(restarts)}; ` +
+					`the session says what stopped: ${JSON.stringify(restartEvent.body)}, and so does turn 6's context (${elapsed()})`);
+				const gateway6 = gatewayFor(turn6);
+				const left6 = await gateway6.read(turn6.scope, { commandId: reader.commandId, offset: 0, limit: 4096 }, AbortSignal.timeout(60000));
+				if (left6.state !== "machine_stopped" || (left6.output ?? "").includes(unsaved) || (left6.output ?? "").includes("P3 proof"))
+					fail(`turn 6 reads what turn 5's command printed from its unreleased read: ${JSON.stringify(left6)}`);
+				// A command's output is kept in its host record on the NAS (host-commands/<id>/output.log, once its reads are
+				// released); SQL keeps only digests. Neither may hold it.
+				const held = await c2.holding(db, unsaved);
+				if (held?.holding?.length !== 0 || held.unread?.length !== 0) fail(`the core keeps what turn 5's command printed: ${JSON.stringify(held)}`);
+				const records = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/workers`, "-type", "d", "-name", reader.commandId.replaceAll("-", "")).trim();
+				const kept = [nodeGrep(unsaved, nasPolicy.rootPath), records ? nodeGrep("P3 proof", ...records.split("\n")) : null].filter(Boolean);
+				const recorded = records ? lxc("exec", vm, "--", "ls", "-la", ...records.split("\n")).trim() : "none";
+				if (kept.length) fail(`the NAS keeps what turn 5's command printed: ${kept.join(" ")} (its host record: ${recorded})`);
+				const dropped = lxc("exec", vm, "--", "find", `${nasPolicy.rootPath}/control`, "-name", "dropped-start-*.json", "-newer", "/run/p3-c2-crash").trim();
+				if (!dropped) fail("the executor did not write down that the crashed boot's disk is not to be kept (no dropped-start mark)");
+				const service6 = folderService();
+				if (!service6.MainPID || service6.MainPID === "0" || service6.MainPID === service5.MainPID)
+					fail(`the node's folder service did not come back: ${JSON.stringify(service6)}`);
+				const read6 = await runToEnd(turn6, gateway6, "p3-read-6", `cat ${proofFile}`);
+				if (read6.state !== "succeeded" || !read6.output.includes("P3 proof")) fail(`turn 6 cannot read P3-PROOF.md on the new boot: ${JSON.stringify(read6)}`);
+				pass(`what turn 5's command printed is gone: turn 6 reads it ${left6.state} with nothing of it, no table in the core and no ` +
+					`file on the NAS holds ${unsaved} (its host record: ${recorded.split("\n").join("; ")}), the crashed boot is marked dropped ` +
+					`(${dropped.split("\n").join(" ")}), and the folder service is back (${JSON.stringify(service6)}), so turn 6 reads ` +
+					`P3-PROOF.md again (${elapsed()})`);
+				await database.finishTurn(db, turn6, { operationKey: "p3-turn-6", summary: "Carried on after the folder service crashed.", headSha: head });
+				await executor.turnSettled();
+				console.error(JSON.stringify(await database.describe(db, ids)));
+				pass(`turn 6 ended (${elapsed()})`);
+
+				// --- C2: a read the session's turn can no longer place gets its machine a new disk --------------------------------
+				// The platform saves a text in a folder of its own: no machine saved it, so none has a copy, and turn 7's read of
+				// it comes from the node's folder service, into the machine's read set at the turn's boundary. Its bytes go into
+				// the node's store as the object gateway's put leaves them, and the save confirms them in SQL (a test-only
+				// shortcut: a member's machine or the office would save it through the folder service and the gateway).
+				const shared = "p3-shared/disk.md";
+				const sharedFolder = shared.split("/")[0];
+				const sharedText = `P3 shared disk ${randomBytes(16).toString("hex")}\n`;
+				const sharedChunk = `{"sha256":"${sha256(sharedText)}","bytes":${Buffer.byteLength(sharedText)}}`;
+				const sharedManifest = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha256(sharedText)}","bytes":${Buffer.byteLength(sharedText)},` +
+					`"mediaType":"text/markdown","executable":false,"chunks":[${sharedChunk}]}`;
+				storeObject(ids.profileId, sharedText);
+				storeObject(ids.profileId, sharedManifest);
+				const saved = await database.shareFile(db, ids, { path: shared, text: sharedText });
+				if (saved?.manifest !== sharedManifest || !UUID.test(saved.version ?? "")) fail(`the platform's save of ${shared}: ${JSON.stringify(saved)}`);
+				pass(`the platform saves ${shared} in a folder of its own, its bytes in the node's store (version ${saved.version}, ${elapsed()})`);
+
+				await database.followUp(db, ids, { workerId, text: "P3 proof: read the shared file, then leave a command running." });
+				const turn7 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 7, timeoutMs: 20 * 60000 });
+				if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 7 runs on another machine");
+				const gateway7 = gatewayFor(turn7);
+				const read7 = await runToEnd(turn7, gateway7, "p3-read-7", `cat /company/${shared}`);
+				if (read7.state !== "succeeded" || !read7.output.includes(sharedText)) fail(`turn 7 cannot read ${shared}: ${JSON.stringify(read7)}`);
+				// A file in the session's home, on the machine's own disk, which a restart keeps and a new disk does not.
+				const home7 = await runToEnd(turn7, gateway7, "p3-home-7",
+					'echo P3-HOME >"$HOME/p3-home-marker" && cat "$HOME/p3-home-marker" && echo "$HOME" && findmnt -no FSTYPE --target "$HOME"');
+				const [marker7, home, homeDisk] = (home7.output ?? "").trim().split("\n").slice(-3);
+				if (home7.state !== "succeeded" || marker7 !== "P3-HOME" || !home?.startsWith("/") || home.startsWith("/company") ||
+					!homeDisk || homeDisk === "tmpfs" || homeDisk.startsWith("fuse"))
+					fail(`turn 7 cannot leave a file in its home, on the machine's own disk: ${JSON.stringify(home7)}`);
+				const identity7 = instanceIdentity(machine);
+				const boot7 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
+				const sleeper7 = await startSleeper(turn7, gateway7, "p3-sleeper-7");
+				await database.finishTurn(db, turn7, { operationKey: "p3-turn-7", summary: "Read the shared file; left a command running.", headSha: head });
+				await executor.turnSettled();
+				await order9.awaitRunning(db, workerId, sleeper7.commandId, 60000);
+				// The read is the machine's once the turn's boundary released it; with no record of it the narrowing proves nothing.
+				let reads7 = await c2.readSet(db, machine, shared);
+				for (let waited = 0; !reads7?.holds && waited < 60000; waited += 2000) {
+					await new Promise((settle) => setTimeout(settle, 2000));
+					reads7 = await c2.readSet(db, machine, shared);
+				}
+				if (!reads7?.holds) fail(`turn 7's boundary did not put its read of ${shared} in the machine's read set: ${JSON.stringify(reads7)}`);
+				pass(`turn 7 reads ${shared} from the node's folder service, and its boundary puts the read in the machine's read set ` +
+					`(${JSON.stringify(reads7)}); it left a file in its home, ${home} (${homeDisk}), and \`${SLEEPER}\` running (${elapsed()})`);
+				const narrowed = await c2.standing(db, workerId, machine);
+				if (narrowed.folderRestartAt || narrowed.newDiskAt) fail(`turn 7's machine is marked before the narrowing: ${JSON.stringify(narrowed)}`);
+				const custody7 = calls.custody.length;
+				const resource = await database.narrow(db, ids, { path: sharedFolder });
+				pass(`the owner narrows ${sharedFolder} to the company's members: ${JSON.stringify(resource)} (${elapsed()})`);
+
+				// Turn 8's view opens before its lease, on a machine not marked yet; the lease's take-in then finds turn 7's read
+				// no longer readable and marks the machine. Turn 8 runs nothing: a command would be refused (MACHINE_NEW_DISK).
+				await database.followUp(db, ids, { workerId, text: "P3 proof: carry on after the narrowing." });
+				const turn8 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 8, timeoutMs: 20 * 60000 });
+				if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 8 runs on another machine");
+				const marking = async () => ({ standing: await c2.standing(db, workerId, machine), restarts: await c2.restartsSince(db, machine, narrowed.now) });
+				const isMarked = ({ standing, restarts }) =>
+					(standing.newDiskAt && standing.folderRestartAt) || restarts.some((row) => row.state === "new-disk" || row.state === "replaced");
+				let marked8 = await marking();
+				for (let waited = 0; !isMarked(marked8) && waited < 60000; waited += 2000) {
+					await new Promise((settle) => setTimeout(settle, 2000));
+					marked8 = await marking();
+				}
+				if (!isMarked(marked8)) fail(`turn 8's lease did not mark the machine for a new disk: the narrowing left the read readable (${JSON.stringify(marked8)})`);
+				pass(`turn 8's lease finds turn 7's read no longer readable and marks the machine for a new disk: ${JSON.stringify(marked8)} (${elapsed()})`);
+				await database.finishTurn(db, turn8, { operationKey: "p3-turn-8", summary: "Ran nothing on a machine marked for a new disk.", headSha: head });
+				await executor.turnSettled();
+				pass(`turn 8 ended, running nothing (${elapsed()})`);
+
+				// Before turn 9 the executor stops the machine ('new-disk', which ends the session's attachment and the command
+				// turn 7 left) and rebuilds it from its image ('replaced', which empties the read set), then starts it.
+				const keepFrom9 = executor.keepLines.length;
+				await database.followUp(db, ids, { workerId, text: "P3 proof: what happened to your machine?" });
+				const turn9 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 9, timeoutMs: 20 * 60000 });
+				if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 9 runs on another machine");
+				let restarts9 = await c2.restartsSince(db, machine, narrowed.now);
+				for (let waited = 0; !restarts9.some((row) => row.state === "replaced") && waited < 180000; waited += 2000) {
+					await new Promise((settle) => setTimeout(settle, 2000));
+					restarts9 = await c2.restartsSince(db, machine, narrowed.now);
+				}
+				const replaced = restarts9.find((row) => row.state === "replaced");
+				if (!replaced) fail(`the machine was not rebuilt for turn 9: ${JSON.stringify(restarts9)}`);
+				const between = await c2.inTurn(db, workerId, 8, replaced.recordedAt);
+				if (!between?.inTurn) fail(`the rebuild's record is not between turns 8 and 9: ${JSON.stringify(replaced)} ${JSON.stringify(between)}`);
+				const after9 = await c2.standing(db, workerId, machine);
+				if (after9.folderRestartAt || after9.newDiskAt || after9.lastError || after9.attachedMachineId !== machine.machineId || !after9.attached ||
+					!after9.demand || after9.suspendedAt)
+					fail(`after the rebuild turn 9's machine is not as it should be: ${JSON.stringify(after9)}`);
+				const reads9 = await c2.readSet(db, machine, shared);
+				if (reads9?.pairs !== 0 || reads9.records !== 0) fail(`the rebuild left the machine's read set: ${JSON.stringify(reads9)}`);
+				const events9 = await c2.eventsAfter(db, workerId, narrowed.lastEventId);
+				const newDisk = events9.filter((event) => event.body?.reason === "MACHINE_NEW_DISK");
+				if (newDisk.length !== 1 || !newDisk[0].body.stopped?.some((stopped) => stopped.commandId === sleeper7.commandId))
+					fail(`the session does not have one MACHINE_NEW_DISK event naming turn 7's command: ${JSON.stringify(events9)}`);
+				const context9 = await database.turnContext(db, turn9);
+				if (context9.machine?.newDisk !== true ||
+					!context9.commands.stopped.some((stopped) => stopped.commandId === sleeper7.commandId && stopped.reason === "MACHINE_NEW_DISK"))
+					fail(`turn 9's context does not say the machine got a new disk, which stopped turn 7's command: ` +
+						`${JSON.stringify({ machine: context9.machine, stopped: context9.commands.stopped })}`);
+				// The records since the narrowing, read again now that turn 9 is attached (its machine started): SQL's, the
+				// custody the executor was answered for the machine, and its journal on the NAS (c2.judgeNewDisk).
+				const journal9 = journalOf(machine);
+				const restartsNow = await c2.restartsSince(db, machine, narrowed.now);
+				const rebuild9 = c2.judgeNewDisk({
+					restarts: restartsNow,
+					custody: calls.custody.slice(custody7).filter((entry) => entry.machineId === machine.machineId),
+					journal: journal9,
+				});
+				if (rebuild9.failures.length) fail(`${rebuild9.failures.join("; ")} (journal ${journal9.directory})`);
+				pass(`before turn 9 the executor stopped the machine for a new disk and rebuilt it from its image: ${JSON.stringify(restartsNow)} ` +
+					`(the rebuild between turns 8 and 9: ${JSON.stringify(between)}); custody granted ${rebuild9.granted.join(" → ")}; ` +
+					`the journal ran ${rebuild9.ran.join(" → ")} ` +
+					`and its disk record is ${JSON.stringify(journal9.disk)}; the session says what stopped: ${JSON.stringify(newDisk[0].body)}, ` +
+					`turn 9's context says ${JSON.stringify(context9.machine)}, the read set is empty (${JSON.stringify(reads9)}), and the ` +
+					`machine is attached, marks clear, with no error (${JSON.stringify(after9)}) (${elapsed()})`);
+				const gateway9 = gatewayFor(turn9);
+				const look9 = await runToEnd(turn9, gateway9, "p3-home-9",
+					'if [ -e "$HOME/p3-home-marker" ]; then echo P3-HOME-KEPT; else echo P3-HOME-GONE; fi; echo "$HOME"; git rev-parse HEAD');
+				const [kept9, home9, head9] = (look9.output ?? "").trim().split("\n").slice(-3);
+				if (look9.state !== "succeeded" || kept9 !== "P3-HOME-GONE" || home9 !== home || head9 !== head)
+					fail(`turn 9 does not find only the company folder kept (a new home ${home}, its worktree at ${head}): ${JSON.stringify(look9)}`);
+				const read9 = await runToEnd(turn9, gateway9, "p3-read-9", `cat /company/${shared}`);
+				if (read9.state === "succeeded" || (read9.output ?? "").includes(sharedText)) fail(`turn 9 still reads ${shared} after the narrowing: ${JSON.stringify(read9)}`);
+				const boot9 = guestRun(machine, "cat", "/proc/sys/kernel/random/boot_id").trim();
+				if (boot9 === boot7 || guestState(machine) !== "RUNNING") fail(`turn 9's machine did not boot again: boot ${boot9}, ${guestState(machine)}`);
+				// The instance after the rebuild, compared after turn 10, so one run shows both.
+				const identity9 = instanceIdentity(machine);
+				pass(`turn 9 finds only the company folder kept: its home ${home} is new, its worktree is at ${head}, and it no longer reads ` +
+					`${shared} (${read9.state}); the machine booted again (boot ${boot7} → ${boot9}) (${elapsed()})`);
+				// The keeper keeps turn 9's attachment on the new boot, read before turn 10's attach moves it again: a keep pass
+				// ended after turn 9's view mounted with the session kept (within about 10 s plus a pass of at most 15 s), the
+				// attachment SQL holds after that pass is renewed, and the executor logged no session error for the machine after
+				// the mount (c2.judgeKeep).
+				for (let waited = 0; !c2.keptPass(executor.keepLines.slice(keepFrom9), machine.machineId, workerId) && waited < 45000; waited += 2000)
+					await new Promise((settle) => setTimeout(settle, 2000));
+				const attachment9 = await c2.attachment(db, workerId);
+				const keep9 = c2.judgeKeep({ lines: executor.keepLines.slice(keepFrom9), machineId: machine.machineId, workerId, attachment: attachment9 });
+				if (keep9.failures.length) fail(keep9.failures.join("; "));
+				pass(`the keeper renewed turn 9's attachment on the new boot (${JSON.stringify(attachment9)}) in a pass that ended after turn 9's ` +
+					`view mounted (${JSON.stringify(keep9.pass.outcomes)}), and the executor logged no session error for the machine after the ` +
+					`mount; before it, during the rebuild: ${JSON.stringify(keep9.before)} (${elapsed()})`);
+				await database.finishTurn(db, turn9, { operationKey: "p3-turn-9", summary: "Read that the machine got a new disk.", headSha: head });
+				await executor.turnSettled();
+				pass(`turn 9 ended (${elapsed()})`);
+
+				// The next turn no longer says it (20260930515000: a rebuild since the previous turn began).
+				await database.followUp(db, ids, { workerId, text: "P3 proof: carry on." });
+				const turn10 = await database.awaitIdentityTurn(db, ids, { workerId, sequence: 10, timeoutMs: 20 * 60000 });
+				if ((await order9.machineOf(db, workerId)).machineId !== machine.machineId) fail("turn 10 runs on another machine");
+				const context10 = await database.turnContext(db, turn10);
+				if (context10.machine?.newDisk !== false) fail(`turn 10's context still says the machine got a new disk: ${JSON.stringify(context10.machine)}`);
+				pass(`turn 10's context no longer says it: ${JSON.stringify(context10.machine)} (${elapsed()})`);
+				// LXD's rebuild gives the instance a new root disk from its image and keeps the instance itself.
+				const differs = c2.judgeIdentity({ before: identity7, after: identity9, image: imageFingerprint });
+				if (differs.length) fail(`the rebuilt machine is not the same instance on a disk from its image: ${differs.join("; ")}`);
+				pass(`the rebuilt machine is the same instance on a disk from its image: ${JSON.stringify(identity9)} (${elapsed()})`);
+				await database.finishTurn(db, turn10, { operationKey: "p3-turn-10", summary: "Carried on after the new disk.", headSha: head });
+				await executor.turnSettled();
+				console.error(JSON.stringify(await database.describe(db, ids)));
+				pass(`turn 10 ended (${elapsed()})`);
+			}
+			// C1-V (p3-c1v.mjs), with P3_C1V=1: a second session busy beside this one keeps the machine awake, not this session.
+			if (node.codeHost && !untilArchive && process.env.P3_C1V === "1")
+				await c1v.run({ db, ids, executor, calls, workerId, machine, head, machineIdSha256, gatewayFor, startSleeper, runToEnd,
+					guestState, guestProcesses, pass, note, fail, elapsed });
 		}
-		// C1-V (p3-c1v.mjs), with P3_C1V=1: a second session busy beside this one keeps the machine awake, not this session.
-		if (node.codeHost && !untilArchive && process.env.P3_C1V === "1")
-			await c1v.run({ db, ids, executor, calls, workerId, machine, head, machineIdSha256, gatewayFor, startSleeper, runToEnd,
-				guestState, guestProcesses, pass, note, fail, elapsed });
 		if (node.folder) pass(`the session's folder view mounts, worker and view: ${mounted().join(" ")}`);
 	} finally {
 		clearInterval(refreshing);
@@ -667,8 +732,336 @@ try {
 	process.exitCode = 1;
 } finally {
 	await executor?.stop().catch(() => undefined);
+	await custody?.broker?.close().catch(() => undefined);
 	postgrest?.stop();
 	await db.close();
+}
+
+/** The custody proof (P3_CUSTODY=1), turns 2 to 9 in place of the rest of Order 9: the member's vault value reaches the
+ * session's commands, and their output masks it. Then each way a turn could save the value in the company folder is
+ * refused at its end, which ends `failed` with the session still attached and nothing published, and the next turn
+ * takes the refusal's way out and its end saves: a commit of a file with the value, whose ref update the folder refuses
+ * and whose loose blob it keeps unsaved (turns 2 and 3); a plain file (turns 4 and 5); the refused commit's objects
+ * repacked, so the value is only in a pack (turns 6 and 7); and a pack in which it is whole only once a delta is
+ * resolved (turns 8 and 9). Turn 9 then commits a control, and its end publishes. Last, every place the run could have
+ * kept the value is searched for its forms, and for the control, which shows each search reads that place. Nothing
+ * printed holds the value: its length, counts, paths, object ids and the folder's own reasons. */
+async function proveCustody({ ids, workerId, turn2, gateway2, head }) {
+	const AUTHOR = "git -c user.name='P3 proof' -c user.email=p3@qorpera.invalid";
+	const { forms, control } = custody;
+	const carries = (text) => forms.some((form) => text.includes(form));
+	const lastCompletion = (from) => custody.completions.slice(from).at(-1) ?? null;
+	const attachment = () => databaseValue(db, `select to_jsonb(attached_machine_id) from public.qorpera_coding_sessions where worker_id = ${database.quote(workerId)}`);
+	// The session's code area and worktree in the company folder, as the boundary's report names their paths.
+	const code = `code/${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`;
+	const worktree = `${code}/worktrees/${workerId}`;
+	const loosePath = (oid) => `${code}/repo.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
+	const packPath = (pack) => `${code}/repo.git/objects/pack/${pack}.pack`;
+	const packFiles = (pack) => ["pack", "idx", "rev"].map((suffix) => `${code}/repo.git/objects/pack/${pack}.${suffix}`);
+	const OID = /^[0-9a-f]{40}$/;
+	// A command's `name=value` lines.
+	const fields = (output) => Object.fromEntries(output.split("\n").map((line) => /^([a-z-]+)=(.*)$/.exec(line)?.slice(1)).filter(Boolean));
+	const list = (refused) => [...refused].map(([path, reason]) => `${path} (${reason})`).join(", ") || "nothing";
+
+	// --- The member's vault value reaches the session's commands as P3_PROBE, and their output masks it ----------------
+	const held = await runToEnd(turn2, gateway2, "p3-custody-held", "printf 'len=%s\\n' \"${#P3_PROBE}\"; printf '%s' \"$P3_PROBE\" | sha256sum");
+	if (held.state !== "succeeded" || held.output.trim() !== `len=${custody.probe.length}\n${sha256(custody.probe)}  -`)
+		fail(`turn 2's commands do not hold the owner's vault value as P3_PROBE (${held.state}, ${held.output.length} characters of output)`);
+	pass(`a member's vault secret reaches the session's commands: P3_PROBE has the length and SHA-256 of the value the broker serves (${elapsed()})`);
+	const echoed = await runToEnd(turn2, gateway2, "p3-custody-echo", "printf 'probe=%s\\n' \"$P3_PROBE\"; printf '%s' \"$P3_PROBE\" | base64 -w0; echo; " +
+		`printf '%s\\n' '${control}' >p3-control.txt; cat p3-control.txt`);
+	const lines = echoed.output.split("\n");
+	if (echoed.state !== "succeeded" || lines[0] !== "probe=***" || !lines[1]?.startsWith("***") || lines[2] !== control || carries(echoed.output))
+		fail(`turn 2's command output does not mask the value beside a control: ${echoed.state}; printed whole ${lines[0] === "probe=***" ? "masked" : "NOT masked"}, ` +
+			`in base64 ${lines[1]?.startsWith("***") ? "masked" : "NOT masked"}, the control ${lines[2] === control ? "kept" : "NOT kept"}, ` +
+			`${carries(echoed.output) ? "a form of the value in it" : "no form of the value in it"}`);
+	pass(`the command's output masks the value: printed whole it reads \`probe=***\`, its base64 starts \`***\`, and the control beside it ` +
+		`is kept (${elapsed()})`);
+	const attached = await attachment();
+	if (!attached) fail("the session is not attached to a coding machine in turn 2");
+
+	// --- How each turn is driven and read ------------------------------------------------------------------------------
+	const nextTurn = async (sequence, text) => {
+		await database.followUp(db, ids, { workerId, text });
+		const turn = await database.awaitIdentityTurn(db, ids, { workerId, sequence, timeoutMs: 20 * 60000 });
+		return [turn, gatewayFor(turn)];
+	};
+	// Ends turn `n`: how it settled, its completion, the folder's refusals in the boundary answers since `mark` (each
+	// command's, then the turn's end, whose last decides its save: p3-custody.mjs turnRefusals), the session's machine and
+	// the published branch. The boundary answers come on the executor's other pipe: a second for the last to arrive.
+	const endTurn = async (turn, n, mark, summary, headSha, expected) => {
+		const before = custody.completions.length;
+		const end = executor.boundaries.length;
+		custody.expect = expected === "failed" ? "failed" : null;
+		await database.finishTurn(db, turn, { operationKey: `p3-turn-${n}`, summary, headSha });
+		const settled = await executor.turnSettled();
+		custody.expect = null;
+		await new Promise((settle) => setTimeout(settle, 1000));
+		return { n, settled, completed: lastCompletion(before), ...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`),
+			still: await attachment(), pushed: published(workerId) };
+	};
+	// What every turn's boundaries must show: an answer at its end, each answer read, and no refusal for another reason.
+	const answered = (end) => `${end.ends} boundary answers at its end, ${end.unread} unread; refused for another reason: ${list(end.odd)}`;
+	// The turn's end is refused: it ends failed with the save refusal (which names no path) and, for a git change, its way
+	// out (each of GIT_WAY_OUT); the end's last boundary refuses each of `paths` as carrying the value and holds back
+	// nothing but the rest of the repo.git, the session stays attached, and nothing is published.
+	const refusedTurn = (end, paths, what, git) => {
+		const summary = end.completed?.summary ?? "";
+		const missing = paths.filter((path) => end.refused.get(path) !== CARRIES);
+		const held = [...end.refused.keys()].filter((path) => !paths.includes(path));
+		const stray = held.filter((path) => end.refused.get(path) !== WAITS_FOR_REFUSED || !path.startsWith(`${code}/repo.git/`));
+		const untold = git ? GIT_WAY_OUT.filter((step) => !summary.includes(`\`${step}\``)) : [];
+		if (end.settled !== "failed" || end.completed?.outcome !== "failed" || !summary.startsWith(SAVE_REFUSED) || untold.length || missing.length ||
+			stray.length || end.odd.length || !end.ends || end.unread || end.still !== attached || end.pushed.sha !== head)
+			fail(`turn ${end.n}'s save of ${what} is not refused: the turn settled ${end.settled}, completed ${end.completed?.outcome} ` +
+				`(${summary.startsWith(SAVE_REFUSED) ? "with" : "NOT with"} the save refusal; its way out lacks ${untold.join(", ") || "nothing"}); ` +
+				`not refused as carrying the value: ${missing.join(", ") || "none"}; refused otherwise than held with it: ` +
+				`${list(stray.map((path) => [path, end.refused.get(path)]))}; ${answered(end)}; ` +
+				`the session attached to ${attached} then ${end.still}; the branch at ${end.pushed.sha}`);
+		pass(`turn ${end.n}'s end is refused (CODING_FOLDER_SAVE_REFUSED): the turn ends failed with the save refusal, which names no path` +
+			`${git ? ", and gives the way out" : ""}; the folder refuses ${list(paths.map((path) => [path, CARRIES]))}` +
+			`${held.length ? ` and holds back ${held.length} more paths of ${code}/repo.git with it (${WAITS_FOR_REFUSED})` : ""}; nothing is ` +
+			`published (${end.pushed.branch} stays at ${head}), and the session stays attached to ${end.still} (${elapsed()})`);
+	};
+	// The turn's end saves: it completes, the end's last boundary refuses nothing, the session stays attached, and the
+	// branch is at `branch` (null: not looked at here).
+	const savedTurn = (end, what, branch) => {
+		if (end.settled !== "completed" || end.completed?.outcome !== "succeeded" || end.refused.size || end.odd.length || !end.ends || end.unread ||
+			end.still !== attached || (branch && end.pushed.sha !== branch))
+			fail(`turn ${end.n}'s end does not save ${what}: the turn settled ${end.settled}, completed ${end.completed?.outcome}; refused at its end: ` +
+				`${list(end.refused)}; ${answered(end)}; the session attached to ${attached} then ${end.still}; the branch at ${end.pushed.sha}`);
+	};
+	// A file with the value, committed from the index alone (never in the worktree): the folder refuses the commit's ref
+	// update, so the commit must fail. Then the head, the commit the worktree's HEAD log names last (the refused one),
+	// git's last error line, the blob and how many of its lines hold the value.
+	const COMMIT_VALUE = (file, message) => `blob=$(printf 'P3 custody: %s\\n%s\\n' '${file}' "$P3_PROBE" | git hash-object -w --stdin) && ` +
+		`git update-index --add --cacheinfo "100644,$blob,${file}" || exit 1; ` +
+		`if error=$(${AUTHOR} commit -q -m '${message}' 2>&1); then echo committed; exit 1; fi; ` +
+		"echo \"head=$(git rev-parse HEAD)\"; echo \"made=$(tail -n1 \"$(git rev-parse --git-path logs/HEAD)\" | cut -d' ' -f2)\"; " +
+		"echo \"error=$(printf '%s\\n' \"$error\" | tail -n1)\"; echo \"blob=$blob\"; echo \"carries=$(git cat-file blob \"$blob\" | grep -cF \"$P3_PROBE\")\"";
+	const committedRefused = (n, done, what) => {
+		const left = fields(done.output);
+		if (done.state !== "succeeded" || left.head !== head || !OID.test(left.made ?? "") || left.made === head || !OID.test(left.blob ?? "") || left.carries !== "1")
+			fail(`turn ${n}'s commit of ${what} is not refused at its ref update: ${done.state}, ${done.output.split("\n").includes("committed") ? "committed" : "not committed"}, ` +
+				`HEAD at ${left.head}, the refused commit ${left.made}, ${left.carries} lines of its blob ${left.blob} with the value`);
+		return left;
+	};
+	// Turn `n` takes the way out `way`, then checks it: before the turn's end saves, git can read none of `carrying` (of
+	// `oids`), no object git reads holds the value, and with `pack`, the pack is gone. Either side may have cleared them,
+	// the folder before the way out or the way out itself: which one did is noted, and both pass.
+	const wayOut = async (turn, gateway, n, way, oids, carrying, pack) => {
+		const done = await runToEnd(turn, gateway, `p3-custody-way-out-${n}`, way);
+		const checked = await runToEnd(turn, gateway, `p3-custody-gone-${n}`, goneScript(oids, pack));
+		const out = { ...fields(done.output), ...fields(checked.output) };
+		const ids = (name) => (out[name] ?? "").split(" ").filter(Boolean);
+		const [before, kept, left] = [ids("before"), ids("kept"), ids("left")];
+		const readable = carrying.filter((oid) => kept.includes(oid));
+		if (done.state !== "succeeded" || checked.state !== "succeeded" || !/^0 \d+$/.test(out["way-out"] ?? "") || readable.length ||
+			!(Number(out.objects) > 0) || out.readable !== "0" || (pack && left.includes(`${pack}.pack`)))
+			fail(`turn ${n}'s way out does not clear the value: ${done.state} then ${checked.state}, git's status and warnings ${out["way-out"]}; ` +
+				`git still reads ${readable.join(" ") || "none"} of ${carrying.join(" ")}; ${out.readable} lines of the ${out.objects} objects git reads ` +
+				`hold the value${pack ? `; left of ${pack}: ${left.join(" ") || "nothing"}` : ""}`);
+		const by = carrying.some((oid) => before.includes(oid)) ? "the way out" : "the folder, before the way out";
+		return { kept, left, said: `cleared by ${by}; git reads ${out.objects} objects, and no line of them holds the value; ` +
+			`${out.logged} log lines name the refused objects; git printed ${out["way-out"].split(" ")[1]} lines` };
+	};
+
+	// --- Turn 2 commits a file with the value: the ref update is refused, and the folder keeps its blob unsaved ---------
+	const mark2 = executor.boundaries.length;
+	const committed2 = await runToEnd(turn2, gateway2, "p3-custody-commit", COMMIT_VALUE("p3-leak.txt", "P3 custody: a value in a file"));
+	const { made: made2, blob: blob2, error: error2 } = committedRefused(2, committed2, "a file with the value");
+	pass(`turn 2 commits a file with the value from the index: its ref update is refused ("${error2}"), HEAD stays at ${head}, ` +
+		`and the refused commit ${made2} is only in the worktree's HEAD log (${elapsed()})`);
+	const end2 = await endTurn(turn2, 2, mark2, "Read and stopped the command from turn 1; committed a file, which was refused.", head, "failed");
+	refusedTurn(end2, [loosePath(blob2)], "a commit's blob that carries the value", true);
+	pass(`turn 2's end gives the agent the refusal and its way out: "${end2.completed.summary}"`);
+
+	// --- Turn 3 takes the way out: git cannot read the blob, nothing git reads holds the value, and its end saves -------
+	const mark3 = executor.boundaries.length;
+	const [turn3, gateway3] = await nextTurn(3, "P3 proof: the save was refused; take its way out.");
+	const out3 = await wayOut(turn3, gateway3, 3, wayOutScript([blob2], "p3-leak.txt"), [blob2, made2], [blob2]);
+	const end3 = await endTurn(turn3, 3, mark3, "Took the refusal's way out.", head, "completed");
+	savedTurn(end3, "the way out", head);
+	pass(`turn 3 takes the way out: git cannot read the blob ${blob2} (${out3.said}), ${out3.kept.includes(made2) ? `the refused commit ${made2} ` +
+		"stays (saved: the folder keeps a saved object; it does not carry the value)" : `the refused commit ${made2} is gone too`}; its end saves, ` +
+		`the folder refuses nothing, and the session stays attached (${elapsed()})`);
+
+	// --- Turn 4 writes a file with the value: refused; turn 5 removes it and saves ---------------------------------------
+	const mark4 = executor.boundaries.length;
+	const [turn4, gateway4] = await nextTurn(4, "P3 proof: carry on.");
+	const written = await runToEnd(turn4, gateway4, "p3-custody-file", "printf '%s' \"$P3_PROBE\" >p3-probe.txt && echo \"in-file=$(grep -cF \"$P3_PROBE\" p3-probe.txt)\"");
+	if (written.state !== "succeeded" || written.output.trim() !== "in-file=1") fail(`turn 4 cannot write the value in a file: ${written.state}`);
+	refusedTurn(await endTurn(turn4, 4, mark4, "Wrote a file.", head, "failed"), [`${worktree}/p3-probe.txt`], "a file that carries the value");
+	const mark5 = executor.boundaries.length;
+	const [turn5, gateway5] = await nextTurn(5, "P3 proof: the save was refused; remove the file and finish.");
+	const removed = await runToEnd(turn5, gateway5, "p3-custody-remove", "rm -f p3-probe.txt && test ! -e p3-probe.txt && echo removed");
+	if (removed.state !== "succeeded" || removed.output.trim() !== "removed") fail(`turn 5 cannot remove the file: ${removed.state}`);
+	savedTurn(await endTurn(turn5, 5, mark5, "Removed the file.", head, "completed"), "the file's removal", head);
+	pass(`turn 5 removes the file; its end saves, the folder refuses nothing, and the session stays attached (${elapsed()})`);
+
+	// --- Turn 6 repacks a refused commit: the value is only in a pack, whole; refused. Turn 7 takes the way out ---------
+	const mark6 = executor.boundaries.length;
+	const [turn6, gateway6] = await nextTurn(6, "P3 proof: carry on.");
+	const packed6 = await runToEnd(turn6, gateway6, "p3-custody-pack", `${COMMIT_VALUE("p3-pack.txt", "P3 custody: a value in a pack")}; ` +
+		"warned=$(git repack -d -q 2>&1 >/dev/null); echo \"repack=$? $(printf '%s' \"$warned\" | grep -c .)\"; git rm -q --cached p3-pack.txt; " +
+		"objects=$(git rev-parse --git-path objects); echo \"loose=$(test -e \"$objects/${blob:0:2}/${blob:2}\" && echo 1 || echo 0)\"; " +
+		"pack=$(for idx in \"$objects\"/pack/pack-*.idx; do git show-index <\"$idx\" | grep -q \" $blob \" && basename \"$idx\" .idx; done); echo \"pack=$pack\"; " +
+		"set -- $(git verify-pack -v \"$objects/pack/$pack.idx\" | grep \"^$blob \"); echo \"fields=$#\"");
+	const left6 = committedRefused(6, packed6, "a file with the value");
+	if (!/^0 \d+$/.test(left6.repack ?? "") || left6.loose !== "0" || !/^pack-[0-9a-f]{40}$/.test(left6.pack ?? "") || left6.fields !== "5")
+		fail(`turn 6 cannot repack the refused commit's objects: git's status and warnings ${left6.repack}, ${left6.loose} loose blobs left, ` +
+			`the blob in ${left6.pack || "no pack"} (${left6.fields} fields of \`git verify-pack -v\`)`);
+	pass(`turn 6 commits a file with the value (refused at its ref update, the commit ${left6.made}) and repacks: its blob ${left6.blob} is ` +
+		`whole only in ${left6.pack}, no loose copy left (git warned ${left6.repack.split(" ")[1]} lines) (${elapsed()})`);
+	refusedTurn(await endTurn(turn6, 6, mark6, "Committed a file, which was refused, and repacked.", head, "failed"), [packPath(left6.pack)],
+		"a pack that holds the value whole", true);
+	const mark7 = executor.boundaries.length;
+	const [turn7, gateway7] = await nextTurn(7, "P3 proof: the save was refused; take its way out.");
+	const out7 = await wayOut(turn7, gateway7, 7, wayOutScript([left6.blob]), [left6.blob, left6.made], [left6.blob], left6.pack);
+	savedTurn(await endTurn(turn7, 7, mark7, "Took the refusal's way out.", head, "completed"), "the pack's way out", head);
+	pass(`turn 7 takes the way out for a pack: git cannot read the blob ${left6.blob} (${out7.said}), ${left6.pack}.pack is gone (left of it: ` +
+		`${out7.left.join(" ") || "nothing"}), ${out7.kept.includes(left6.made) ? `the refused commit ${left6.made} stays` : "the refused commit is gone too"}; ` +
+		`its end saves, the folder refuses nothing, and the session stays attached (${elapsed()})`);
+
+	// --- Turn 8 writes a pack in which the value is whole only once a delta is resolved: refused -----------------------
+	const mark8 = executor.boundaries.length;
+	const [turn8, gateway8] = await nextTurn(8, "P3 proof: carry on.");
+	const delta = await runToEnd(turn8, gateway8, "p3-custody-delta", DELTA_PACK);
+	const pack8 = fields(delta.output);
+	if (delta.state !== "succeeded" || !/^pack-[0-9a-f]{40}$/.test(pack8.pack ?? "") || !OID.test(pack8.base ?? "") || !OID.test(pack8.target ?? "") ||
+		pack8.delta !== `7 ${pack8.base}` || pack8["in-base"] !== "0" || pack8["in-target"] !== "1" || pack8["in-pack"] !== "0" || pack8.loose !== "0")
+		fail(`turn 8 cannot write a pack whose value is whole only in a resolved delta: ${delta.state}, the pack ${pack8.pack}, the target's ` +
+			`\`git verify-pack -v\` fields and base ${pack8.delta}; lines with the value: the base ${pack8["in-base"]}, the target ` +
+			`${pack8["in-target"]}, the pack's bytes ${pack8["in-pack"]}; ${pack8.loose} loose objects left`);
+	pass(`turn 8 writes ${pack8.pack}: the blob ${pack8.target} is a delta on ${pack8.base}, which holds only half the value, and the pack's ` +
+		`bytes hold none of it; git reads the value whole only in the resolved target (${elapsed()})`);
+	refusedTurn(await endTurn(turn8, 8, mark8, "Wrote a pack.", head, "failed"), [packPath(pack8.pack)],
+		"a pack in which the value is whole only once a delta is resolved", true);
+
+	// --- Turn 9 takes the way out, commits the control, and publishes through the repository's credential ---------------
+	const mark9 = executor.boundaries.length;
+	const [turn9, gateway9] = await nextTurn(9, "P3 proof: the save was refused; take its way out, commit the control and finish.");
+	const out9 = await wayOut(turn9, gateway9, 9, wayOutScript([pack8.target]), [pack8.base, pack8.target], [pack8.target], pack8.pack);
+	const cleaned = await runToEnd(turn9, gateway9, "p3-custody-control",
+		`git add p3-control.txt && ${AUTHOR} commit -q -m 'P3 custody: a control' && echo "head=$(git rev-parse HEAD)"`);
+	const head9 = fields(cleaned.output).head;
+	if (!OID.test(head9 ?? "") || head9 === head) fail(`turn 9 cannot commit the control after the way out: HEAD at ${head9}`);
+	// The control in the turn's summary too: the table search must find it.
+	const end9 = await endTurn(turn9, 9, mark9, `Took the way out; committed the control ${control}.`, head9, "completed");
+	savedTurn(end9, "the control's commit", null);
+	let pushed9 = end9.pushed;
+	for (let waited = 0; (pushed9.sha !== head9 || !pushed9.pull) && waited < 60000; waited += 2000, pushed9 = published(workerId))
+		await new Promise((settle) => setTimeout(settle, 2000));
+	if (pushed9.sha !== head9 || pushed9.pull?.draft !== true || pushed9.pull.head.sha !== head9)
+		fail(`turn 9's end does not publish: ${JSON.stringify(pushed9)}`);
+	pass(`turn 9 takes the way out: git cannot read the blob ${pack8.target} (${out9.said}), ${pack8.pack}.pack is gone (left of it: ` +
+		`${out9.left.join(" ") || "nothing"}), ${out9.kept.includes(pack8.base) ? `its base ${pack8.base} stays` : "its base is gone too"}; it ` +
+		`commits the control, ${head9}: its commit's ref update passes, its end saves, the folder refuses nothing, and it pushes ` +
+		`through the repository's credential; the draft pull request ${pushed9.pull.html_url} has it (${elapsed()})`);
+
+	// --- Where the run could have kept the value -----------------------------------------------------------------------
+	// Every problem is gathered, then the run fails once; only counts and paths are printed.
+	const problems = [];
+	const holds = await databaseHolds(db, [...forms, control]);
+	const formTables = [...new Set(holds.slice(0, forms.length).flat())];
+	const controlTables = holds.at(-1);
+	if (formTables.length) problems.push(`the tables ${formTables.join(", ")} hold a form of the value`);
+	if (!controlTables.length) problems.push("no table holds the control");
+	const audited = await databaseValue(db, "select to_jsonb(count(*)) from public.qorpera_cloud_secret_audit_events " +
+		`where event_type = 'environment_secret_used' and coding_worker_id = ${database.quote(workerId)}`);
+	if (!(audited >= 1)) problems.push("the broker audited no use of the secret by the session");
+	// The node's files: its NAS, the object store and its state, the stand-in GitHub, the folder service's and the
+	// executor's runtime directories, logs, temporary folders, configuration and LXD's logs. Not the coding machines' disks.
+	const PLACES = fileSearch(["/srv/nas", "/srv/p3-objects/state", "/srv/p3-objects/store", "/srv/p3-github", "/srv/qorpera", "/run/qorpera-folder-*",
+		"/run/qorpera-coding-host", "/var/log", "/tmp", "/var/tmp", "/etc", "/var/snap/lxd/common/lxd/logs", "/var/lib/qorpera*"]);
+	// A search that fails (a place it could not read, or its producer ended early) is no answer: the run fails on it.
+	const search = (script, needles) => {
+		try {
+			return lxc("exec", vm, "--", "bash", "-c", script, "p3", needles).trim();
+		} catch (error) {
+			return fail(`a search of the node for ${needles} could not finish: ${String(error.stderr ?? "").trim().split("\n").at(-1) || error.message}`);
+		}
+	};
+	const STORED = /^\/srv\/p3-objects\/store\/.*\/([0-9a-f]{64})$/;
+	const fileHits = search(PLACES, "/root/p3-custody-forms").split("\n").filter(Boolean);
+	const elsewhere = fileHits.filter((path) => !STORED.test(path));
+	if (elsewhere.length) problems.push(`files in the node hold a form of the value: ${elsewhere.join(", ")}`);
+	// An object in the store is the folder's only once a path version names it, itself or as a chunk of its manifest; a
+	// refused save's bytes may wait there, unnamed, until the store's GC.
+	const stored = fileHits.map((path) => STORED.exec(path)?.[1]).filter(Boolean);
+	const named = stored.length ? await databaseValue(db, `select coalesce(jsonb_agg(s), '[]'::jsonb) from unnest(${database.quote(`{${stored.join(",")}}`)}::text[]) as s
+		where exists (select 1 from public.qorpera_folder_path_versions v where s in (v.file_sha256, v.manifest_sha256))
+			or exists (select 1 from public.qorpera_folder_file_chunks c join public.qorpera_folder_path_versions v on v.manifest_sha256 = c.manifest_sha256
+				where c.chunk_sha256 = s)`) : [];
+	if (named.length) problems.push(`the company folder saved a form of the value: the objects ${named.join(", ")}`);
+	const controlFiles = search(PLACES, "/root/p3-custody-control").split("\n").filter(Boolean);
+	if (!controlFiles.length) problems.push("no file in the node holds the control");
+	const GITHUB = countSearch("git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch");
+	const githubForms = Number(search(GITHUB, "/root/p3-custody-forms"));
+	const githubControl = Number(search(GITHUB, "/root/p3-custody-control"));
+	if (githubForms !== 0) problems.push(`the stand-in GitHub's objects hold a form of the value (${githubForms} lines)`);
+	if (!(githubControl >= 1)) problems.push("the stand-in GitHub's objects do not hold the control");
+	// The control goes to the journal here, after the file search, so the journal's search reads it.
+	search("logger -t p3-custody -- \"$(cat \"$1\")\"; journalctl --sync 2>/dev/null; sleep 1", "/root/p3-custody-control");
+	const JOURNAL = countSearch("journalctl --no-pager -o cat");
+	const journalForms = Number(search(JOURNAL, "/root/p3-custody-forms"));
+	const journalControl = Number(search(JOURNAL, "/root/p3-custody-control"));
+	if (journalForms !== 0) problems.push(`the node's journal holds a form of the value (${journalForms} lines)`);
+	if (!(journalControl >= 1)) problems.push("the node's journal does not hold the control");
+	// The folder's git objects (#1286's "Left open": the save check reads a git object's bytes as they are, compressed):
+	// each object in the store that inflates as one, and each repo.git of the saved folder, rebuilt from its path
+	// versions and read whole by git, packs included. Turn 9's commit and the control it adds show both ways read them.
+	const savedGit = await databaseValue(db, "select coalesce(jsonb_agg(jsonb_build_object('path', path, 'manifest', manifest_sha256, " +
+		"'file', file_sha256)), '[]'::jsonb) from (select distinct path, manifest_sha256, file_sha256 from public.qorpera_folder_path_versions " +
+		`where environment_id = ${database.quote(ids.environmentId)} and kind = 'file' and manifest_sha256 is not null ` +
+		"and path like 'code/%/repo.git/objects/%') as v");
+	// Each refused case's carrier: the folder keeps none of them, as git could read it or not. And no path version names a
+	// file a refused save named: the carrier's loose path, a refused pack, its index or its reverse index.
+	const refusedOids = [blob2, left6.blob, pack8.target];
+	const refusedFiles = [loosePath(blob2), ...packFiles(left6.pack), ...packFiles(pack8.pack)];
+	const refusedSaved = await databaseValue(db, "select coalesce(jsonb_agg(distinct path), '[]'::jsonb) from public.qorpera_folder_path_versions " +
+		`where environment_id = ${database.quote(ids.environmentId)} and kind = 'file' and path = any(${database.quote(`{${refusedFiles.join(",")}}`)}::text[])`);
+	if (refusedSaved.length) problems.push(`the company folder saved files a refused save named: ${refusedSaved.join(", ")}`);
+	pushFile("/root/p3-custody-git.json", JSON.stringify({ store: "/srv/p3-objects/store", saved: savedGit, forms: "/root/p3-custody-forms",
+		control: "/root/p3-custody-control", oids: [head9], refused: refusedOids, scratch: "/root" }));
+	const git = JSON.parse(lxc("exec", vm, "--", "/usr/local/bin/node", "-e", "process.stdout.write(JSON.stringify(" +
+		`(${gitObjectSearch})(require, JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")))))`, "/root/p3-custody-git.json"));
+	// A store object is the folder's once a path version names it, itself or as a chunk of its manifest.
+	const gitNamed = git.store.forms.length ? await databaseValue(db, "select jsonb_object_agg(s, (select coalesce(jsonb_agg(distinct v.path), '[]'::jsonb) " +
+		"from public.qorpera_folder_path_versions v where s in (v.file_sha256, v.manifest_sha256) or exists (select 1 from public.qorpera_folder_file_chunks c " +
+		`where c.manifest_sha256 = v.manifest_sha256 and c.chunk_sha256 = s))) from unnest(${database.quote(`{${git.store.forms.map((found) => found.object).join(",")}}`)}::text[]) as s`) : {};
+	const gitObject = (found) => `${found.type} ${found.oid ?? "(the start of one)"}${found.pack ? " in a pack" : ""}`;
+	const gitSaved = git.store.forms.filter((found) => gitNamed[found.object]?.length);
+	const gitUnsaved = git.store.forms.filter((found) => !gitNamed[found.object]?.length);
+	console.log(`p3: the folder's git objects: ${git.store.git} of the store's ${git.store.objects} objects inflate as git objects and ` +
+		`${git.store.packs} are packs (${git.store.unreadPacks} more start one but cannot be read alone), ${git.store.forms.length} git objects ` +
+		`with a form of the value (${gitSaved.length} saved), ${git.store.control.length} with the control; ` +
+		`the saved folder's ${git.saved.files} git files (${git.saved.missing} unread) hold ${git.saved.objects} objects in ` +
+		`${git.saved.repositories} repo.git, ${git.saved.forms.length} with a form of the value, ${git.saved.control.length} with the control`);
+	if (gitSaved.length) problems.push(`the company folder saved git objects that hold a form of the value: ${gitSaved.map((found) =>
+		`${gitObject(found)}, the store object ${found.object}, saved as ${gitNamed[found.object].join(", ")}`).join("; ")}`);
+	if (git.saved.forms.length) problems.push(`the saved folder's repo.git holds git objects with a form of the value: ${git.saved.forms.map((found) =>
+		`${gitObject(found)} at ${found.where.join(", ") || "no loose path or pack"}`).join("; ")}`);
+	if (git.saved.missing) problems.push(`${git.saved.missing} of the folder's saved git files cannot be read back from the store`);
+	if (git.saved.refused.length) problems.push(`the saved folder's repo.git keeps objects the folder refused: ${git.saved.refused.map((found) =>
+		`${found.oid} (${found.where})`).join("; ")}`);
+	for (const [way, found] of [["the store's objects", git.store], ["the saved folder's repo.git", git.saved]])
+		if (!found.seen.includes(head9) || !found.control.length)
+			problems.push(`the search of ${way} does not find turn 9's commit ${head9} (${found.seen.includes(head9) ? "found" : "NOT found"}) ` +
+				`and the control it adds (${found.control.length} objects)`);
+	const withheld = Object.entries(custody.withheld).filter(([, count]) => count > 0);
+	if (withheld.length) problems.push(`lines the driver would have printed carried a form: ${withheld.map(([source, count]) => `${source} ${count}`).join(", ")}`);
+	if (problems.length) fail(`the value was kept: ${problems.join("; ")}`);
+	pass(`the value is kept nowhere it was searched for: no table (the control is in ${controlTables.length}), no file in the node ` +
+		`(the control is in ${controlFiles.length}), no object of the stand-in GitHub (the control is in ${githubControl} lines), not the node's ` +
+		`journal (the control is in ${journalControl} lines), no git object of the company folder (${git.store.git} in the store and ` +
+		`${git.store.packs} packs, ${git.saved.objects} in its saved repo.git, turn 9's commit and the control found both ways), no line the ` +
+		`driver printed; the saved repo.git keeps none of the ${refusedOids.length} refused carriers (no loose path, pack or index) and none of ` +
+		`the ${refusedFiles.length} files the refused saves named; ` +
+		`${stored.length ? `LIMIT: ${stored.length} unsaved objects in the store hold it until the store's GC; ` : ""}` +
+		`${gitUnsaved.length ? `LIMIT: ${gitUnsaved.length} unsaved git objects in the store hold it until the store's GC; ` : ""}` +
+		`the broker answered ${JSON.stringify(custody.answers)} and audited ${audited} uses (${elapsed()})`);
+	console.log("CUSTODY PROVEN");
 }
 
 /** Starts a command that uses nothing and never ends on its own (`command`, SLEEPER unless given), which the turn
@@ -839,6 +1232,7 @@ function executorSandbox() {
 		"LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json",
 		"LoadCredential=qorpera-coding-command:/etc/qorpera/coding-command.key",
 		"LoadCredential=qorpera-coding-repository-p3:/etc/qorpera/coding-repository-p3.key",
+		...(custody ? ["LoadCredential=qorpera-coding-broker-executor:/etc/qorpera/coding-broker-executor.key"] : []),
 		"KillMode=control-group", "TimeoutStopSec=75s", "NoNewPrivileges=yes", "PrivateTmp=yes", "PrivateDevices=yes",
 		"ProtectSystem=strict", "ProtectHome=yes", "ProtectKernelTunables=no", "ProtectKernelModules=yes",
 		"ProtectControlGroups=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "CapabilityBoundingSet=",
@@ -885,6 +1279,18 @@ function startExecutor() {
 	const machineLines = [];
 	// And, in one order, each view it mounts, each session error its keeper logs and each keep pass that ended (c2.judgeKeep).
 	const keepLines = [];
+	// Each boundary's answer as p3-executor.ts's witness logs it: the paths the folder refused in it (path and reason), or
+	// null for an answer that cannot be read (cut, or not a boundary's).
+	const boundaries = [];
+	const refusedIn = (logged) => {
+		if (logged.cut) return null;
+		try {
+			return JSON.parse(logged.answer).boundary.views.flatMap((view) => view.report?.paths ?? [])
+				.filter((path) => path.outcome === "refused").map(({ path, reason }) => ({ path, reason }));
+		} catch {
+			return null;
+		}
+	};
 	createInterface({ input: child.stderr }).on("line", (line) => {
 		console.error(`executor: ${line}`);
 		let logged;
@@ -897,6 +1303,7 @@ function startExecutor() {
 		if (logged?.event === "coding-executor-folder") folderLines.start = line;
 		else if (logged?.event === "coding-folder-mount") folderLines.mounts.push(line);
 		else if (logged?.event === "coding-machine" || logged?.event === "coding-machine-error") machineLines.push(logged);
+		else if (logged?.event === "coding-folder-boundary-answer") boundaries.push(refusedIn(logged));
 	});
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.startsWith("P3 ")) return void console.error(`executor stdout: ${line}`);
@@ -907,7 +1314,25 @@ function startExecutor() {
 			const name = message.path.split("?")[0].replace(/^\/rest\/v1\/rpc\//, "");
 			void timed("rpc", name, restAnswer(message.method, message.path, message.body)).then((answer) => {
 				if (answer.status !== 200) note(`rpc ${name} answered ${answer.status}: ${answer.body.slice(0, 300)}`);
+				else if (custody && name === "qorpera_complete_coding_turn") {
+					const completed = JSON.parse(message.body ?? "{}");
+					custody.completions.push({ outcome: completed.p_outcome, summary: completed.p_summary });
+				}
 				send({ t: "rest", id: message.id, status: answer.status, body: answer.body });
+			});
+		} else if (message.t === "broker") {
+			// The executor's broker client (../coding-environment.ts), answered by the run's broker; neither body nor headers
+			// are logged.
+			if (!custody?.broker) send({ t: "broker", id: message.id, status: 0 });
+			else void timed("broker", "coding-environment", fetch(`http://127.0.0.1:${custody.broker.port}${message.path}`, {
+				method: message.method, headers: message.headers, body: message.body ?? undefined, redirect: "error", signal: AbortSignal.timeout(30000),
+			}).then(async (response) => ({ status: response.status, body: await response.text() }))).then((answer) => {
+				custody.answers[answer.status] = (custody.answers[answer.status] ?? 0) + 1;
+				if (answer.status !== 200) note(`the broker answered ${answer.status}`);
+				send({ t: "broker", id: message.id, status: answer.status, body: answer.body });
+			}, (error) => {
+				note(`the broker is unreachable: ${error?.message}`);
+				send({ t: "broker", id: message.id, status: 0 });
 			});
 		} else if (message.t === "http") {
 			const pending = httpPending.get(message.id);
@@ -928,8 +1353,10 @@ function startExecutor() {
 			readyReject(new Error(`the executor stopped: ${(message.causes ?? []).join(" <- ")}`));
 		} else if (message.t === "turn") {
 			note(`the executor's turn settled: ${JSON.stringify(message.status)}`);
-			// No later step can pass after such a turn: end the run now, not at the deadline of what the driver waits for.
-			if (["blocked", "failed", "recovery-required"].includes(message.status)) void stopRun(`the executor's turn settled ${message.status}`);
+			// No later step can pass after such a turn, unless the custody proof expects it: end the run now, not at the
+			// deadline of what the driver waits for.
+			if (custody?.expect && custody.expect === message.status) custody.expect = null;
+			else if (["blocked", "failed", "recovery-required"].includes(message.status)) void stopRun(`the executor's turn settled ${message.status}`);
 			const waiter = turnWaiters.shift();
 			if (waiter) waiter(message.status);
 			else settledTurns.push(message.status);
@@ -940,6 +1367,7 @@ function startExecutor() {
 		folderLines,
 		machineLines,
 		keepLines,
+		boundaries,
 		http(url, init) {
 			const id = ++nextHttp;
 			const path = new URL(url).pathname;

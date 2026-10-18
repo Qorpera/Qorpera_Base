@@ -3,19 +3,34 @@
 // 38 minutes in). And that its stand-in PostgREST fails a call as PostgREST does, for the executor's control, which is
 // production's own, as for the folder service. And that the archive's judgment (49's archive row), turn 9's of the new
 // disk and of the keep on it, and turn 10's of the rebuilt instance, pass a real run's records and fail each of them
-// broken. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it
-// builds anything.
+// broken. And for the custody proof (P3_CUSTODY=1): the forms it searches, the guard on the driver's output, the
+// executor's reasons it reads, the executor composition's broker and save check, its search of the company folder's git
+// objects, the pack it writes whose value is whole only in a resolved delta, and the refusal's way out it takes, with the
+// check after it. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it builds
+// anything.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
+import {
+	CARRIES, countSearch, custodyForms, DELTA_PACK, fileSearch, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, turnRefusals, WAITS_FOR_REFUSED,
+	wayOutScript, withhold,
+} from "./p3-custody.mjs";
 import { detachDone, judgeArchive } from "./p3-order9.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
 
 const driver = fileURLToPath(new URL("./p3-driver.mjs", import.meta.url));
 const executor = fileURLToPath(new URL("./p3-executor.ts", import.meta.url));
+const codingExecutor = fileURLToPath(new URL("../../../packages/runner-orchestrator/src/coding-executor.ts", import.meta.url));
+const secretScan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/secret-scan.ts", import.meta.url));
+const plan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/plan.ts", import.meta.url));
 
 test("the driver's imports link and it stops at its usage line", () => {
 	const run = spawnSync(process.execPath, [driver], { encoding: "utf8" });
@@ -338,4 +353,378 @@ test("the executor's control is production's, and the driver answers its request
 	const driven = readFileSync(driver, "utf8");
 	assert.match(driven, /if \(message\.t === "rest"\) \{\n[^\n]*\n\t*void timed\("rpc", name, restAnswer\(/);
 	assert.match(driven, /return \{ name: rpc\?\.\[1\], \.\.\.postgrestError\(error\) \};/);
+});
+
+test("the custody proof searches the value, its hex, its base64 at each offset and its URL encoding", () => {
+	const value = "p3probe-Zm9vYmFy_baz-0123456789abcdefABCDEF";
+	const forms = custodyForms(value);
+	assert.ok(forms.includes(value));
+	assert.ok(forms.includes(Buffer.from(value).toString("hex")));
+	// Whatever bytes come before and after it, its base64 in either alphabet holds one of the forms.
+	for (const encoding of ["base64", "base64url"])
+		for (let before = 0; before < 6; before += 1)
+			for (let after = 0; after < 3; after += 1) {
+				const text = Buffer.concat([Buffer.alloc(before, 0xa7), Buffer.from(value), Buffer.alloc(after, 0x5c)]).toString(encoding);
+				assert.ok(forms.some((form) => form !== value && text.includes(form)), `${encoding}, ${before} bytes before, ${after} after`);
+			}
+	// No URL form for a value URL encoding leaves alone; one for a value it changes.
+	assert.ok(!forms.some((form) => form.includes("%")));
+	assert.ok(custodyForms("p3 probe/value+1").includes("p3%20probe%2Fvalue%2B1"));
+	// The driver's probe: every form is long enough to match nothing by chance.
+	assert.ok(custodyForms(`p3probe-${"A".repeat(32)}`).every((form) => form.length >= 40));
+});
+
+test("the driver's output withholds a line that carries a form, and counts it by source", () => {
+	const forms = custodyForms("p3probe-withheld-0123456789");
+	const written = [];
+	const stream = { write: (chunk, ...rest) => written.push([String(chunk), rest.length]) };
+	const counts = {};
+	withhold(stream, forms, counts);
+	stream.write("PASS: nothing here\n");
+	stream.write(`executor: {"event":"x","value":"${forms[0]}"}\np3: rpc ok\n`, "utf8", () => undefined);
+	stream.write(Buffer.from(`p3: rpc answered ${forms[1]}\n`));
+	stream.write(`something ${forms.at(-1)}\n`);
+	assert.equal(written[0][0], "PASS: nothing here\n");
+	assert.match(written[1][0], /^withheld: a line \(executor\) that carried a custody form \(\d+ characters\)\np3: rpc ok\n$/);
+	assert.equal(written[1][1], 1, "the encoding is dropped with the text; the callback stays");
+	assert.match(written[2][0], /^withheld: a line \(rpc\) /);
+	assert.match(written[3][0], /^withheld: a line \(driver\) /);
+	assert.ok(written.every(([text]) => !forms.some((form) => text.includes(form))));
+	assert.deepEqual(counts, { executor: 1, rpc: 1, driver: 1 });
+});
+
+test("the custody proof reads the executor's own reason for a refused save, and the folder's for a path that carries a value or waits for one", () => {
+	// The refusal, then its way out of a git commit that carried the value: a string on master, and with #1299 a
+	// template that gives GIT_WAY_OUT's text.
+	const source = readFileSync(codingExecutor, "utf8");
+	const wayOutText = /const GIT_WAY_OUT =\n\t"([^"]*)";/.exec(source)?.[1];
+	const template = /^const SAVE_REFUSAL = `((?:[^`\\]|\\.)*)`;$/m.exec(source)?.[1]?.replace(/\\(.)/g, "$1");
+	const refusal = template?.replaceAll("${GIT_WAY_OUT}", wayOutText ?? "(no GIT_WAY_OUT)") ??
+		/const SAVE_REFUSAL =\n\t"([^"]*)";/.exec(source)?.[1];
+	assert.ok(refusal?.startsWith(SAVE_REFUSED), refusal);
+	assert.doesNotMatch(refusal, /\$\{/);
+	// Past its start, the refusal gives each step of the way out in backticks, in order, as the driver checks.
+	if (refusal.length > SAVE_REFUSED.length) {
+		const at = GIT_WAY_OUT.map((step) => refusal.indexOf(`\`${step}\``, SAVE_REFUSED.length));
+		assert.ok(at.every((index, n) => index > (at[n - 1] ?? 0)), refusal);
+	}
+	assert.match(readFileSync(secretScan, "utf8"), new RegExp(`^export const CARRIES = ${JSON.stringify(CARRIES)};$`, "m"));
+	assert.match(readFileSync(plan, "utf8"), new RegExp(`^export const WAITS_FOR_REFUSED = ${JSON.stringify(WAITS_FOR_REFUSED)};$`, "m"));
+});
+
+test("a turn's save is judged by its end's last boundary, and a refusal for another reason fails it wherever it comes", () => {
+	const UNCHECKED = /^export const UNCHECKED = "([^"]*)";$/m.exec(readFileSync(secretScan, "utf8"))?.[1];
+	assert.ok(UNCHECKED);
+	const repoGit = "code/qorpera/proof/repo.git/";
+	const carrier = `${repoGit}objects/ab/cdef0123`;
+	const pack = `${repoGit}objects/pack/pack-0123.pack`;
+	const held = `${repoGit}logs/HEAD`;
+	const refused = (path, reason = CARRIES) => ({ path, reason });
+	const judged = (answers, end) => {
+		const { refused: last, odd, unread, ends } = turnRefusals(answers, end, repoGit);
+		return { refused: [...last], odd, unread, ends };
+	};
+	// Review r1 F2: a cleanup's command shows output while the carrier it removes is still there, so that boundary refuses
+	// it; the turn's end refuses nothing, and saves.
+	assert.deepEqual(judged([[], [refused(carrier)], [refused(carrier), refused(held, WAITS_FOR_REFUSED)], []], 3),
+		{ refused: [], odd: [], unread: 0, ends: 1 });
+	// Turn 6: a boundary refuses the loose blob before the repack; the end refuses only the pack, and holds back the rest.
+	assert.deepEqual(judged([[refused(carrier)], [refused(pack), refused(held, WAITS_FOR_REFUSED)]], 1),
+		{ refused: [[pack, CARRIES], [held, WAITS_FOR_REFUSED]], odd: [], unread: 0, ends: 1 });
+	// An end asked again while a check runs: its last answer decides.
+	assert.deepEqual(judged([[], [], [refused(pack)]], 1), { refused: [[pack, CARRIES]], odd: [], unread: 0, ends: 2 });
+	// Review r1 F3: a refusal for another reason is odd, though a later answer says the path carries the value; so is a
+	// hold outside a repo.git. Each is named once.
+	assert.deepEqual(judged([[refused(carrier, UNCHECKED)], [refused(carrier, UNCHECKED)], [refused(carrier)]], 2),
+		{ refused: [[carrier, CARRIES]], odd: [[carrier, UNCHECKED]], unread: 0, ends: 1 });
+	const file = "code/qorpera/proof/worktrees/w1/p3-probe.txt";
+	assert.deepEqual(judged([[refused(file, WAITS_FOR_REFUSED)], []], 1).odd, [[file, WAITS_FOR_REFUSED]]);
+	// An answer that cannot be read is counted; an end that got no answer has none, and refuses nothing.
+	assert.deepEqual(judged([null, [refused(carrier)]], 2), { refused: [], odd: [], unread: 1, ends: 0 });
+	// The driver takes the end's mark before it finishes the turn, and both judgments ask each of these.
+	const driven = readFileSync(driver, "utf8");
+	assert.match(driven, /const end = executor\.boundaries\.length;\n(?:[^\n]*\n)?\t*await database\.finishTurn\(/);
+	assert.ok(driven.includes("...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`),"));
+	assert.equal(driven.split("end.odd.length || !end.ends || end.unread").length, 3, "refusedTurn and savedTurn");
+	assert.ok(!driven.includes("refusalsSince"));
+});
+
+test("the custody proof's searches fail when what they read fails, though it printed the control first", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-search-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const control = `p3-control-${randomBytes(16).toString("hex")}`;
+	const needles = join(root, "control");
+	writeFileSync(needles, `${control}\n`);
+	const bash = (script, file = needles) => spawnSync("bash", ["--noprofile", "--norc", "-c", script, "p3", file], { encoding: "utf8" });
+	// A producer that reads to its end: the count of lines with the control, or none.
+	let run = bash(countSearch("printf 'a\\n%s\\nb\\n' \"$(cat \"$1\")\""));
+	assert.deepEqual([run.status, run.stdout.trim()], [0, "1"], run.stderr);
+	run = bash(countSearch("printf 'a\\nb\\n'"));
+	assert.deepEqual([run.status, run.stdout.trim()], [0, "0"], run.stderr);
+	// Review r1 F1: one that prints the control, then fails before the rest, is no answer. Nor is a grep with no lines.
+	run = bash(countSearch("{ cat \"$1\"; exit 3; }"));
+	assert.equal(run.status, 2, run.stdout);
+	assert.match(run.stderr, /the search failed: its producer and grep ended 3 0/);
+	assert.equal(bash(countSearch("printf 'a\\n'"), join(root, "missing")).status, 2);
+
+	// The files under each place that exists (a pattern that matches none is skipped): each that holds the control.
+	const places = join(root, "places");
+	mkdirSync(join(places, "deep"), { recursive: true });
+	writeFileSync(join(places, "deep", "holds"), `x ${control} y`);
+	writeFileSync(join(places, "clean"), "nothing");
+	run = bash(fileSearch([places, join(root, "absent"), join(root, "none-*")]));
+	assert.deepEqual([run.status, run.stdout.trim()], [0, join(places, "deep", "holds")], run.stderr);
+	// A file grep cannot read fails it (root reads every file).
+	if (process.getuid?.() !== 0) {
+		writeFileSync(join(places, "unread"), "anything", { mode: 0o000 });
+		run = bash(fileSearch([places]));
+		assert.equal(run.status, 2, run.stdout);
+		assert.match(run.stderr, /^the file search failed: grep ended 2: grep: .*\/unread: Permission denied$/m);
+	}
+	// No lines to search for, or no place to search: no answer.
+	assert.equal(bash(fileSearch([places]), join(root, "missing")).status, 2);
+	assert.equal(bash(fileSearch([join(root, "absent")])).status, 2);
+	// The driver's searches are these, and a search that fails fails the run.
+	const driven = readFileSync(driver, "utf8");
+	assert.ok(driven.includes('const PLACES = fileSearch(["/srv/nas", '));
+	assert.ok(driven.includes('const GITHUB = countSearch("git --git-dir /srv/p3-github/qorpera-p3/proof.git cat-file --batch-all-objects --batch");'));
+	assert.ok(driven.includes('const JOURNAL = countSearch("journalctl --no-pager -o cat");'));
+	assert.match(driven, /const search = \(script, needles\) => \{\n\t*try \{\n\t*return lxc\("exec", vm, "--", "bash", "-c", script, "p3", needles\)\.trim\(\);\n\t*\} catch \(error\) \{\n\t*return fail\(/);
+});
+
+test("the executor composition asks the broker as production's client, and gives the save check the machine's values", () => {
+	const source = readFileSync(executor, "utf8");
+	assert.match(source, /new CodingMachineCommandSecrets\(new BrokerCodingEnvironment\(\{[^}]*fetch: broker\.fetch \}\)\)/);
+	assert.match(source, /\.\.\.\(commandSecrets \? \{ commandSecrets \} : \{\}\),/);
+	// The host reads the boundaries' secrets at a session's attach: without it, the attach fails on a TypeError.
+	assert.match(source, /const boundaries: Pick<CodingFolderControl, "boundary" \| "restarted" \| "secrets"> = \{/);
+	// The views' final boundaries go through the same control, so their save check gets the values too.
+	assert.match(source, /new CodingFolderControl\(\{ path: await boundaryWitness\(config\.folder\.controlSocket \?\? CODING_FOLDER_CONTROL_SOCKET\), secrets \}\)/);
+	assert.match(source, /new CodingFolderViews\(\{ control, folder: boundaries, /);
+	assert.match(source, /else if \(message\.t === "broker"\) broker\.answer\(message\);/);
+});
+
+test("the custody proof finds a value in the folder's git objects: loose in the store, loose or packed in the saved repo.git, and " +
+	"a refused object's every place there", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-git-search-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const value = `p3probe-${randomBytes(16).toString("hex")}`;
+	const control = `p3-control-${randomBytes(16).toString("hex")}`;
+	const forms = custodyForms(value);
+	writeFileSync(join(root, "forms"), forms.join("\n"));
+	writeFileSync(join(root, "control"), control);
+	const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+	const repository = (name) => {
+		const work = join(root, name);
+		execFileSync("git", ["init", "-q", work], { stdio: "pipe" });
+		const git = (...args) => execFileSync("git", ["-C", work, "-c", "user.name=P3", "-c", "user.email=p3@qorpera.invalid", ...args],
+			{ encoding: "utf8", stdio: "pipe" }).trim();
+		const commit = (files, message) => {
+			for (const [file, text] of Object.entries(files))
+				if (text === null) rmSync(join(work, file));
+				else writeFileSync(join(work, file), text);
+			git("add", "-A");
+			git("commit", "-q", "-m", message);
+			return git("rev-parse", "HEAD");
+		};
+		const objects = join(work, ".git", "objects");
+		const files = () => readdirSync(objects, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
+			.map((entry) => relative(objects, join(entry.parentPath, entry.name)));
+		return { git, commit, objects, files };
+	};
+	const blob = (text) => execFileSync("git", ["hash-object", "--stdin"], { input: text, encoding: "utf8" }).trim();
+	const noise = randomBytes(6000).toString("hex").match(/.{1,64}/g).join("\n");
+
+	// Loose, as a turn leaves them: a value committed and removed, a big file that starts with it, and a control.
+	const loose = repository("loose");
+	loose.commit({ "leak.txt": `P3 custody\n${value}\n`, "big.txt": `${value}\n${noise}\n` }, "a value");
+	const headLoose = loose.commit({ "leak.txt": null, "big.txt": null, "control.txt": `${control}\n` }, "a control");
+	// Packed: the value only in a blob the pack holds as a delta of a bigger one.
+	const packed = repository("packed");
+	const base = `${noise}\n${randomBytes(2000).toString("hex")}\n`;
+	packed.commit({ "big.txt": base }, "base");
+	packed.commit({ "big.txt": `${noise}\n${value}\n` }, "a value");
+	const headPacked = packed.commit({ "big.txt": base, "control.txt": `${control}\n` }, "a control");
+	packed.git("repack", "-a", "-d", "-f", "-q");
+	const [pack] = packed.files().filter((file) => file.endsWith(".pack"));
+	const deltified = blob(`${noise}\n${value}\n`);
+	const verified = packed.git("verify-pack", "-v", join(packed.objects, pack.replace(/\.pack$/, ".idx"))).split("\n");
+	assert.equal(verified.find((line) => line.startsWith(deltified))?.split(/\s+/).length, 7, "the value's blob is a delta in the pack");
+	assert.ok(!packed.files().some((file) => /^[0-9a-f]{2}\//.test(file)), "no loose object is left");
+	// Refused: a value in a pack, which one repository saves only the index of (git reads none of its objects) and another
+	// only the pack of (the search indexes it, as git must).
+	const refused = repository("refused");
+	const headRefused = refused.commit({ "refused.txt": `P3 refused\n${value}\n` }, "a refused value");
+	refused.git("repack", "-a", "-d", "-q");
+	const refusedPack = refused.files().find((file) => file.endsWith(".pack"));
+	const refusedIndex = refusedPack.replace(/\.pack$/, ".idx");
+	const refusedObjects = refused.git("verify-pack", "-v", join(refused.objects, refusedIndex)).split("\n").filter((line) => /^[0-9a-f]{40} /.test(line)).length;
+	assert.ok(!refused.files().some((file) => /^[0-9a-f]{2}\//.test(file)), "no loose object is left");
+
+	// The store and the saved folder's path versions: a loose object in one chunk (the big one in two), a pack in three.
+	const store = join(root, "store");
+	const profile = join(store, "00000000-0000-4000-8000-000000000001");
+	mkdirSync(profile, { recursive: true });
+	const put = (bytes) => {
+		writeFileSync(join(profile, sha256(bytes)), bytes);
+		return sha256(bytes);
+	};
+	const bigLoose = blob(`${value}\n${noise}\n`);
+	const save = (path, bytes, parts) => {
+		const size = Math.ceil(bytes.length / parts);
+		const chunks = Array.from({ length: parts }, (_, index) => bytes.subarray(index * size, (index + 1) * size));
+		const manifest = JSON.stringify({ schema: "qorpera.cloud-file-manifest/v2", fileSha256: sha256(bytes), bytes: bytes.length,
+			mediaType: "application/octet-stream", executable: false, chunks: chunks.map((chunk) => ({ sha256: put(chunk), bytes: chunk.length })) });
+		return { path, manifest: put(Buffer.from(manifest)), file: sha256(bytes) };
+	};
+	const saved = [];
+	for (const [name, at] of [["loose", loose], ["packed", packed]])
+		for (const file of at.files())
+			saved.push(save(`code/qorpera/${name}/repo.git/objects/${file}`, readFileSync(join(at.objects, file)),
+				file === `${bigLoose.slice(0, 2)}/${bigLoose.slice(2)}` ? 2 : file.endsWith(".pack") ? 3 : 1));
+	saved.push(save(`code/qorpera/refused/repo.git/objects/${refusedIndex}`, readFileSync(join(refused.objects, refusedIndex)), 1));
+	saved.push(save(`code/qorpera/unindexed/repo.git/objects/${refusedPack}`, readFileSync(join(refused.objects, refusedPack)), 3));
+	// The pack whole too, unnamed, as a refused save's bytes may wait in the store.
+	put(readFileSync(join(packed.objects, pack)));
+	// Alternates would have git read the packed repository's objects from the disk: not followed.
+	saved.push(save("code/qorpera/loose/repo.git/objects/info/alternates", Buffer.from(`${packed.objects}\n`), 1));
+	// A saved file whose bytes the store lacks is counted.
+	saved.push({ path: `code/qorpera/loose/repo.git/objects/ff/${"0".repeat(38)}`, manifest: "e".repeat(64), file: "e".repeat(64) });
+
+	const leak = blob(`P3 custody\n${value}\n`);
+	const leakRefused = blob(`P3 refused\n${value}\n`);
+	const found = gitObjectSearch(createRequire(import.meta.url), { store, saved, forms: join(root, "forms"), control: join(root, "control"),
+		oids: [headLoose, headPacked, headRefused], refused: [leak, deltified, leakRefused, blob("never written\n")], scratch: root });
+	const text = JSON.stringify(found);
+	assert.ok(!forms.some((form) => text.includes(form)) && !text.includes(control), "only counts, ids and paths");
+	assert.deepEqual(readdirSync(root).filter((name) => name.startsWith("p3-git-")), [], "the rebuilt repositories are removed");
+	const looseObjects = loose.files().filter((file) => /^[0-9a-f]{2}\//.test(file)).length;
+	const kept = blob(`${control}\n`);
+	// The store: each loose object inflates; the big one's first chunk holds its start, the value in it, and no id. The
+	// whole pack is read, deltas resolved; the first of each pack's three chunks starts one, and cannot be read alone.
+	assert.equal(found.store.git, looseObjects);
+	assert.equal(found.store.packs, 1);
+	assert.equal(found.store.unreadPacks, 2);
+	const inStore = (list) => list.map(({ oid, type, pack: inPack }) => `${oid} ${type}${inPack ? " pack" : ""}`).sort();
+	assert.deepEqual(inStore(found.store.forms), [`${leak} blob`, "null blob", `${deltified} blob pack`].sort());
+	assert.deepEqual(inStore(found.store.control), [`${kept} blob`, `${kept} blob pack`].sort());
+	assert.deepEqual(found.store.seen.sort(), [headLoose, headPacked].sort());
+	// The saved folder: each repository whole, where each object is, the alternates not followed, the missing file; the
+	// lone index read by no git, the lone pack indexed and read.
+	const loosePath = (oid) => `loose code/qorpera/loose/repo.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
+	const packPath = `pack code/qorpera/packed/repo.git/objects/${pack}`;
+	const unindexedPath = `pack code/qorpera/unindexed/repo.git/objects/${refusedPack}`;
+	assert.equal(found.saved.repositories, 4);
+	assert.equal(found.saved.missing, 1);
+	assert.equal(found.saved.files, saved.length);
+	assert.equal(found.saved.objects, looseObjects + verified.filter((line) => /^[0-9a-f]{40} /.test(line)).length + refusedObjects);
+	const where = (list) => list.map(({ oid, type, where: at }) => `${oid} ${type} ${at.join(" + ")}`).sort();
+	assert.deepEqual(where(found.saved.forms), [`${leak} blob ${loosePath(leak)}`, `${bigLoose} blob ${loosePath(bigLoose)}`,
+		`${deltified} blob ${packPath}`, `${leakRefused} blob ${unindexedPath}`].sort());
+	assert.deepEqual(where(found.saved.control), [`${kept} blob ${loosePath(kept)}`, `${kept} blob ${packPath}`].sort());
+	assert.deepEqual(found.saved.seen.sort(), [headLoose, headPacked, headRefused].sort());
+	// Each refused object's every place: loose, in a saved pack (its index saved or built), and listed by a lone index.
+	assert.deepEqual(found.saved.refused.map(({ oid, where: at }) => `${oid} ${at}`).sort(), [`${leak} ${loosePath(leak)}`, `${deltified} ${packPath}`,
+		`${leakRefused} index code/qorpera/refused/repo.git/objects/${refusedIndex}`, `${leakRefused} ${unindexedPath}`].sort());
+});
+
+test("the driver runs the git object search in the node, after the file search, on the saved folder's git files", () => {
+	const driven = readFileSync(driver, "utf8");
+	const files = driven.indexOf('const fileHits = search(PLACES, "/root/p3-custody-forms")');
+	const objects = driven.indexOf("`(${gitObjectSearch})(require, JSON.parse(require(\"node:fs\").readFileSync(process.argv[1], \"utf8\")))))`");
+	assert.ok(files > 0 && objects > files, "the rebuilt repositories, in the node's /root, come after the file search");
+	assert.ok(driven.includes("and path like 'code/%/repo.git/objects/%') as v\");"));
+	assert.ok(driven.includes('oids: [head9], refused: refusedOids, scratch: "/root" }));'));
+});
+
+test("the custody proof's delta pack holds the value whole in no object as the pack stores it, only in the resolved delta", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-delta-pack-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	execFileSync("git", ["init", "-q", root], { stdio: "pipe" });
+	const value = `p3probe-${randomBytes(24).toString("base64url")}`;
+	const output = execFileSync("bash", ["--noprofile", "--norc", "-c", DELTA_PACK], { cwd: root, env: { ...process.env, P3_PROBE: value }, encoding: "utf8" });
+	assert.ok(!output.includes(value));
+	const fields = Object.fromEntries(output.trim().split("\n").map((line) => line.split(/=(.*)/s).slice(0, 2)));
+	assert.match(fields.pack, /^pack-[0-9a-f]{40}$/);
+	assert.match(fields.base, /^[0-9a-f]{40}$/);
+	assert.equal(fields.delta, `7 ${fields.base}`, "the target is a delta on the base");
+	assert.deepEqual([fields["in-base"], fields["in-target"], fields["in-pack"], fields.loose], ["0", "1", "0", "0"]);
+	// Each object inflated as the pack stores it (the target as its delta's instructions): none holds the value.
+	const pack = join(root, ".git", "objects", "pack", fields.pack);
+	const bytes = readFileSync(`${pack}.pack`);
+	const entries = execFileSync("git", ["-C", root, "verify-pack", "-v", `${pack}.idx`], { encoding: "utf8" }).split("\n")
+		.map((line) => line.split(/\s+/)).filter((parts) => /^[0-9a-f]{40}$/.test(parts[0]));
+	assert.deepEqual(entries.map((parts) => parts[0]).sort(), [fields.base, fields.target].sort());
+	const types = {};
+	for (const [oid, , , stored, offset] of entries) {
+		const entry = bytes.subarray(Number(offset), Number(offset) + Number(stored));
+		// The entry's header: its type and size, then an offset delta's base offset or a ref delta's base id.
+		let at = 0;
+		while (entry[at] & 0x80) at += 1;
+		at += 1;
+		const type = (entry[0] >> 4) & 7;
+		if (type === 6) {
+			while (entry[at] & 0x80) at += 1;
+			at += 1;
+		} else if (type === 7) at += 20;
+		types[oid] = type;
+		assert.ok(!inflateSync(entry.subarray(at)).includes(value), `the pack's ${oid}`);
+	}
+	// The base whole (a blob, type 3), the target a delta on its id (type 7).
+	assert.deepEqual(types, { [fields.base]: 3, [fields.target]: 7 });
+});
+
+test("the refusal's way out leaves git none of a refused commit's value, loose, packed or in a delta pack, and the check after it sees that", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "p3-way-out-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const value = `p3probe-${randomBytes(24).toString("base64url")}`;
+	const ident = { GIT_AUTHOR_NAME: "P3", GIT_AUTHOR_EMAIL: "p3@qorpera.invalid", GIT_COMMITTER_NAME: "P3", GIT_COMMITTER_EMAIL: "p3@qorpera.invalid" };
+	const bash = (script) => {
+		const output = execFileSync("bash", ["--noprofile", "--norc", "-c", script], { cwd: root, env: { ...process.env, ...ident, P3_PROBE: value }, encoding: "utf8" });
+		assert.ok(!output.includes(value));
+		return Object.fromEntries(output.trim().split("\n").map((line) => line.split(/=(.*)/s).slice(0, 2)));
+	};
+	const ids = (field) => (field ?? "").split(" ").filter(Boolean).sort();
+	execFileSync("git", ["init", "-q", root], { stdio: "pipe" });
+	writeFileSync(join(root, "control.txt"), "a control\n");
+	bash("git add control.txt && git commit -q -m control");
+	// A commit whose blob carries the value, refused at its ref update: the branch stays where it was, and only the index
+	// and the worktree's HEAD log name the commit and its blob.
+	const refuse = (file) => bash(`blob=$(printf '%s\\n%s\\n' '${file}' "$P3_PROBE" | git hash-object -w --stdin) && ` +
+		`git update-index --add --cacheinfo "100644,$blob,${file}" && head=$(git rev-parse HEAD) && made=$(git commit-tree "$(git write-tree)" -p "$head" -m refused) && ` +
+		`printf '%s %s P3 <p3@qorpera.invalid> %s +0000\\tcommit: refused\\n' "$head" "$made" "$(date +%s)" >>"$(git rev-parse --git-path logs/HEAD)" && ` +
+		`echo "blob=$blob"; echo "made=$made"`);
+	// Before the way out the check sees the value; after it, none of the refused objects, nothing git reads holds the value,
+	// and no file of a refused pack is left.
+	const wayOut = (carrier, oids, file, pack) => {
+		const before = bash(goneScript(oids, pack));
+		assert.deepEqual(ids(before.kept), [...oids].sort());
+		assert.notEqual(before.readable, "0");
+		if (pack) assert.ok(ids(before.left).includes(`${pack}.pack`));
+		const out = bash(wayOutScript([carrier], file));
+		assert.deepEqual(ids(out.before), [carrier]);
+		assert.match(out["way-out"], /^0 \d+$/);
+		const after = bash(goneScript(oids, pack));
+		assert.deepEqual([after.kept, after.logged, after.readable, after.left], ["", "0", "0", pack ? "" : undefined]);
+		assert.ok(Number(after.objects) > 0, "git reads the control's objects");
+	};
+
+	// Loose (turns 2 and 3).
+	const loose = refuse("leak.txt");
+	wayOut(loose.blob, [loose.blob, loose.made], "leak.txt");
+	// Packed (turns 6 and 7): repacked while the index names the blob, then out of the index.
+	const packed = refuse("pack.txt");
+	bash("git repack -d -q && git rm -q --cached pack.txt");
+	const [pack] = readdirSync(join(root, ".git", "objects", "pack")).filter((name) => name.endsWith(".idx"))
+		.filter((name) => execFileSync("git", ["-C", root, "show-index"], { input: readFileSync(join(root, ".git", "objects", "pack", name)), encoding: "utf8" })
+			.includes(` ${packed.blob} `)).map((name) => name.replace(/\.idx$/, ""));
+	assert.match(pack ?? "", /^pack-[0-9a-f]{40}$/);
+	wayOut(packed.blob, [packed.blob, packed.made], undefined, pack);
+	// A delta pack (turns 8 and 9): no ref, index or log names its objects.
+	const delta = bash(DELTA_PACK);
+	wayOut(delta.target, [delta.base, delta.target], undefined, delta.pack);
+	// Nothing left to clear (the folder cleared it first): the way out still succeeds.
+	const again = bash(wayOutScript([delta.target]));
+	assert.deepEqual([again.before, again["way-out"].split(" ")[0]], ["", "0"]);
+	assert.equal(execFileSync("git", ["-C", root, "status", "--porcelain"], { encoding: "utf8" }), "", "the worktree and index are the control's");
 });

@@ -18,11 +18,12 @@
 # one level further down, so they need the test machine's nested KVM. With P3_CODE_HOST=1 (phase B), the company's
 # code host image is built and exported first (../../code-host/test/export-code-host-image.sh, which needs the
 # default storage pool and lxdbr0) and the node runs the company's code host from it, beside the coding machine, for
-# the session's repository. test/prove-coding-session-node.sh sets the node
-# up; then test/p3-driver.mjs runs the test database here and the executor in the node, for four turns of one coding
-# session (ten on phase B: C2's six keep a quiet turn awake, kill the folder service inside the node, and narrow a
-# folder a turn read, so its machine gets a new disk from its image; with P3_UNTIL_ARCHIVE=1 it ends after the four,
-# once turn 3's archive is judged).
+# the session's repository. With P3_CUSTODY=1 as well, turns 2 to 9 prove a member's vault secret in custody in place
+# of the rest of Order 9, C2's turns and C1-V (test/p3-custody.mjs), and the run needs CUSTODY PROVEN.
+# test/prove-coding-session-node.sh sets the node up; then test/p3-driver.mjs runs the test database here and the
+# executor in the node, for four turns of one coding session (ten on phase B without custody: C2's six keep a quiet turn
+# awake, kill the folder service inside the node, and narrow a folder a turn read, so its machine gets a new disk from
+# its image; with P3_UNTIL_ARCHIVE=1 it ends after the four, once turn 3's archive is judged; nine with custody).
 # Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and the modules a proof
 # could load are compared: one of those changing, or any module going away, fails the run. Everything it made is
 # removed at the end, also on failure. It needs 40 GiB free in /var/tmp. Prints PASS lines, then ALL PASSED.
@@ -46,6 +47,9 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
+[[ ${P3_CUSTODY:-0} == 1 && ${P3_CODE_HOST:-0} != 1 ]] && fail "P3_CUSTODY=1 needs P3_CODE_HOST=1"
+[[ ${P3_CUSTODY:-0} == 1 && ${P3_C1V:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of C1-V: leave P3_C1V unset"
+[[ ${P3_CUSTODY:-0} == 1 && ${P3_UNTIL_ARCHIVE:-0} == 1 ]] && fail "P3_CUSTODY=1 runs in place of the archive: leave P3_UNTIL_ARCHIVE unset"
 export PATH=$PATH:/snap/bin
 for tool in lxc snap apt-get apt-cache nft jq python3 setpriv setsid docker; do
 	command -v "$tool" >/dev/null || fail "no $tool here"
@@ -293,6 +297,9 @@ else
 		echo "note: P3_UNTIL_ARCHIVE=1, so the session ended after turn 4: no C2 turn ran"
 	else
 		grep -qx "SESSION PROVEN" "$WORK/driver.out" || fail "the coding session did not finish"
+	fi
+	if [[ ${P3_CUSTODY:-0} == 1 ]]; then
+		grep -qx "CUSTODY PROVEN" "$WORK/driver.out" || fail "the custody proof did not finish"
 	fi
 fi
 
