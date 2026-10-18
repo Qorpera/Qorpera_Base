@@ -2235,8 +2235,7 @@ export class FolderService {
 		await this.#quiet(view);
 		const pending = view.pending;
 		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
-		await this.#gitChecked(view, target);
-		await this.#inTurn(view, async () => {
+		await this.#gitTurn(view, target, async () => {
 			const answer = await this.#gitPublishNow(view, pending, from, target, lock);
 			return { commitId: answer.commitId, seq: answer.seq, paths: [] };
 		});
@@ -2282,7 +2281,7 @@ export class FolderService {
 			);
 			made.push({ path: file.path, at: file.at, version });
 		}
-		await this.#gitHold(view, pending, target);
+		this.#gitHold(view, pending, target);
 		await this.#gitReadGate(view);
 		// What a change set saved: the live versions of the files made, which show again once the feed has it.
 		const saved = (outcomes: CommitAnswer["units"], files: typeof made): Map<string, string> => {
@@ -2404,9 +2403,10 @@ export class FolderService {
 		const node = pending.nodes().get(path);
 		if (node?.kind === "file" && node.open > 0)
 			throw new ProtocolError(ErrorCode.busy, "The git lock is still open for writing");
-		if (lock.deleted.size > 0 || lock.replaced.size > 0) await this.#gitChecked(view, target);
+		// A lock that removed and replaced nothing publishes nothing, so it waits for no check.
+		const checks = lock.deleted.size > 0 || lock.replaced.size > 0;
 		let published = true;
-		await this.#inTurn(view, async () => {
+		await this.#gitTurn(view, checks ? target : undefined, async () => {
 			const guarded = gitGuarded(target);
 			if (lock.ended) {
 				view.gitLeases.delete(target);
@@ -2438,7 +2438,7 @@ export class FolderService {
 				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
 			}
 			if (units.length > 0) {
-				await this.#gitHold(view, pending, target);
+				this.#gitHold(view, pending, target);
 				await this.#gitReadGate(view);
 			}
 			let answer: GitPublish | null = null;
@@ -3016,45 +3016,108 @@ export class FolderService {
 		);
 	}
 
-	/** Stages a file a git lease publishes (§6). A coding view's is checked as a boundary checks it (5j-5), its name
-	 * first: the git change waits for the machine's values, and one that carries a value is refused whole. */
+	/** Stages a file a git lease publishes (§6), in the lease's turn. A coding view's is checked as a boundary checks it
+	 * (5j-5), its name first: the git change waits for the machine's values, and one that carries a value is refused
+	 * whole. Its bytes were checked before the turn (`#gitTurn`); only a plain file's (the lock git renames onto a ref,
+	 * staged again as the ref) may be checked in it, as that check is short. A git object not checked by then (its check
+	 * failed) is not checked in the turn: the change is refused as not checked now. */
 	async #gitStage(view: View, node: PendingFile, path: string): Promise<FileRef | undefined> {
 		const secrets = this.#secretsOf(view);
 		if (secrets === null)
 			throw new ProtocolError(ErrorCode.busy, "The git change waits for the machine's secret check");
 		if (secrets?.carries(path))
 			throw new ProtocolError(ErrorCode.notPermitted, "The git change carries a secret value");
-		// A check running for it already (`#stageAll`) is joined, not started again.
-		await this.#runningFor(node, path, secrets)?.done;
+		const check = secrets && this.#checksBytes(node, path) ? secrets : undefined;
+		// A refusal the check made is final here, one for the node's load too: the turn does not check the file again.
+		const refuse = (): void => {
+			const refusal = check && this.#refusalOf(node, check);
+			if (refusal)
+				throw new ProtocolError(
+					ErrorCode.notPermitted,
+					refusal === CARRIES
+						? "The git change carries a secret value"
+						: "The git change could not be checked for secret values",
+				);
+		};
+		refuse();
+		if (
+			check &&
+			storedForm(path) !== "plain" &&
+			!(this.#stagedNow(view, node, path) && this.#stagedFor(node, check, path))
+		)
+			throw new ProtocolError(ErrorCode.unavailable, "The git change could not be checked for secret values now");
 		const staged = await this.#stage(view, node, path, secrets);
-		const refusal = secrets && this.#checksBytes(node, path) ? this.#refusalOf(node, secrets) : undefined;
-		if (refusal)
-			throw new ProtocolError(
-				ErrorCode.notPermitted,
-				refusal === CARRIES
-					? "The git change carries a secret value"
-					: "The git change could not be checked for secret values",
-			);
+		refuse();
 		return staged;
 	}
 
 	/** Stages and checks every file a coding view has pending in the git directory of `target`'s code area (5j-5), as a
-	 * boundary would, however long a pack's check takes: before a git lease's turn, so a boundary meanwhile does not
-	 * wait for them in the queue of turns (`#inTurn`), but joins them for a while (`#stageAll`). */
+	 * boundary would, however long a pack's check takes: before a git lease's turn (`#gitTurn`), so a boundary meanwhile
+	 * does not wait for them in the queue of turns (`#inTurn`), but joins them for a while (`#stageAll`). */
 	async #gitChecked(view: View, target: string): Promise<void> {
 		const secrets = this.#secretsOf(view);
 		const place = gitPlace(target);
 		if (secrets && place.kind === "git") await this.#stageAll(view, secrets, { under: `${place.area}/repo.git/` });
 	}
 
+	/** A git lease's step, in the view's turn (`#inTurn`) once what a coding view has pending in `target`'s git
+	 * directory is checked (5j-5). The checks run before the turn (`#gitChecked`), however long a pack's takes, so a
+	 * boundary meanwhile does not wait for them in the queue. A file closed meanwhile whose check has not ended when the
+	 * turn comes (`#gitUnchecked`) sends the step back out of the queue to wait for it: the turn checks no git object
+	 * (`#gitStage`). A file whose check an error ended is waited for once: left unchecked the same after that, the step
+	 * runs and refuses it. `target` undefined: a step that publishes nothing, which waits for no check. */
+	async #gitTurn(view: View, target: string | undefined, step: () => Promise<Report>): Promise<void> {
+		let left = new Map<PendingFile, string | undefined>();
+		for (;;) {
+			if (target !== undefined) await this.#gitChecked(view, target);
+			let out = false;
+			await this.#inTurn(view, async () => {
+				const now =
+					target === undefined ? new Map<PendingFile, string | undefined>() : this.#gitUnchecked(view, target);
+				out = [...now].some(([node, at]) => at === undefined || left.get(node) !== at);
+				left = now;
+				return out ? { commitId: null, seq: null, paths: [] } : step();
+			});
+			if (!out) return;
+		}
+	}
+
+	/** The files a coding view has pending in `target`'s git directory whose check against its machine's values has not
+	 * ended (5j-5), each with its version and path: one whose check runs (`undefined`), and one whose bytes, or whose
+	 * move to a git form (`#checkMoved`), were neither checked as their path stores them nor refused. */
+	#gitUnchecked(view: View, target: string): Map<PendingFile, string | undefined> {
+		const unchecked = new Map<PendingFile, string | undefined>();
+		const secrets = this.#secretsOf(view);
+		const place = gitPlace(target);
+		if (!secrets || place.kind !== "git") return unchecked;
+		for (const [path, node] of view.pending?.nodes() ?? []) {
+			if (node.kind !== "file" || node.open > 0 || !path.startsWith(`${place.area}/repo.git/`)) continue;
+			if (this.#runningFor(node, path, secrets)) {
+				unchecked.set(node, undefined);
+				continue;
+			}
+			const bytes =
+				!this.#checksBytes(node, path) ||
+				(this.#stagedNow(view, node, path) && this.#stagedFor(node, secrets, path) !== undefined) ||
+				this.#refusalOf(node, secrets) !== undefined;
+			const had = this.#movedChecks.get(node);
+			const moved =
+				!node.origin ||
+				!formChanged(node.origin.path, path) ||
+				(had?.version === node.version && had.secrets === secrets && had.form === storedForm(path));
+			if (!bytes || !moved) unchecked.set(node, `${node.version}\0${path}`);
+		}
+		return unchecked;
+	}
+
 	/** A coding view's git lease publishes or releases nothing while its code area's git directory holds a change the
 	 * check refused (5j-5): the repository is held whole, as a boundary holds it (`BoundaryPlan.gitHeld`), until the
-	 * way out the turn summary gives clears it. A lease that publishes nothing still ends. */
-	async #gitHold(view: View, pending: PendingView, target: string): Promise<void> {
+	 * way out the turn summary gives clears it. Its checks ended before the lease's turn (`#gitTurn`). A lease that
+	 * publishes nothing still ends. */
+	#gitHold(view: View, pending: PendingView, target: string): void {
 		const secrets = this.#secretsOf(view);
 		const place = gitPlace(target);
 		if (!secrets || place.kind !== "git") return;
-		await this.#gitChecked(view, target);
 		const plan = planBoundary(pending, (node, path) => this.#stagedFor(node, secrets, path), this.#checkOf(secrets));
 		const waits = plan.gitHeld.get(place.area);
 		if (waits !== undefined)

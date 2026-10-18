@@ -717,4 +717,87 @@ describe("the save check of git's own storage (repo.git)", () => {
 		expect(codingFolderBoundaryChecking(answer)).toBe(false);
 		expect(core.entries.get(pack)?.fileSha256).toBe(hashOf(honest));
 	});
+
+	it("answers the coding executor's control client in its time while a ref's update waits for a pack closed during its own pack's check, and publishes both with the ref once they end", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-packs-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const honest = packHolding(scratch, "the key is gone.\n");
+		const later = packHolding(scratch, "the key is still gone.\n");
+		// Checks on the node that hold its one turn until the test lets each end, each started ahead of a pack's.
+		const checks = new SaveChecks({ atOnce: 1 });
+		const holding = () => {
+			const check = checks.start(secretsOf(VALUE), honest.length, "pack");
+			return { check, started: check.push(honest.subarray(0, 20)) };
+		};
+		const first = holding();
+		const repo = "code/acme/app/repo.git";
+		const main = `${repo}/refs/heads/main`;
+		const { core, service, open } = await company(
+			secretsOf(VALUE),
+			{
+				code: null,
+				"code/acme": null,
+				"code/acme/app": null,
+				[repo]: null,
+				[`${repo}/objects`]: null,
+				[`${repo}/refs`]: null,
+				[`${repo}/refs/heads`]: null,
+				[main]: "1111\n",
+			},
+			checks,
+			1_000,
+		);
+		// The executor's control socket and client, as in the test before.
+		const dir = await realpath(await mkdtemp("/tmp/qfs-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		const path = join(dir, "control.sock");
+		const server = createControlServer({
+			target: service,
+			path,
+			executorUid: process.getuid?.(),
+			log: () => undefined,
+		});
+		await new Promise<void>((resolve) => server.listen(path, resolve));
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await chmod(path, 0o600);
+		const control = new CodingFolderControl({ path, timeoutMs: 2_000 });
+		const signal = new AbortController().signal;
+		const view = await open();
+		const [a, b] = [
+			`${repo}/objects/pack/pack-${"1".repeat(40)}.pack`,
+			`${repo}/objects/pack/pack-${"2".repeat(40)}.pack`,
+		];
+		// A fetch writes its pack, takes the branch's lock and renames it onto the branch: the update waits for the pack's
+		// check, before its turn.
+		await put(view, a, honest);
+		const { handle } = await view.open({ path: `${main}.lock`, create: true, exclusive: true, truncate: true });
+		const ref = Buffer.from("3333\n");
+		await view.chunk({ handle, index: 0, sha256: hashOf(ref), bytes: ref.byteLength, offset: 0, data: ref });
+		await view.close(handle, ref.byteLength);
+		const updated = view.rename({ from: `${main}.lock`, to: main, noReplace: false });
+		// Meanwhile another git command writes a pack, whose check waits behind another check on the node.
+		const second = holding();
+		await put(view, b, later);
+		// The first ends: the fetch's pack is checked, and its update's turn comes while the other pack's check waits.
+		await first.started;
+		await first.check.push(honest.subarray(20));
+		await first.check.end();
+		await second.started;
+		for (let i = 0; i < 2; i++) {
+			// Three asked at once, twice: none waits in the queue for the other pack's check, which the update waits for
+			// out of it.
+			const answers = await Promise.all([0, 1, 2].map(() => control.boundary(CODING_MACHINE_ID, [], signal)));
+			for (const answer of answers) expect(codingFolderBoundaryChecking(answer)).toBe(true);
+			expect(core.gitPublishes).toEqual([]);
+			expect(core.entries.get(main)?.fileSha256).toBe(hashOf("1111\n"));
+		}
+		// Once that check ends, the update publishes the branch, with both packs.
+		await second.check.push(honest.subarray(20));
+		await second.check.end();
+		await updated;
+		expect(core.gitPublishes).toMatchObject([{ published: true }]);
+		expect(core.entries.get(main)?.fileSha256).toBe(hashOf("3333\n"));
+		expect(core.entries.get(a)?.fileSha256).toBe(hashOf(honest));
+		expect(core.entries.get(b)?.fileSha256).toBe(hashOf(later));
+	});
 });
