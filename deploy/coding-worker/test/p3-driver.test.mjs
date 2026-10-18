@@ -4,7 +4,8 @@
 // production's own, as for the folder service. And that the archive's judgment (49's archive row), turn 9's of the new
 // disk and of the keep on it, and turn 10's of the rebuilt instance, pass a real run's records and fail each of them
 // broken. And for the custody proof (P3_CUSTODY=1): the forms it searches, the guard on the driver's output, the
-// executor's reasons it reads, the executor composition's broker and save check, its search of the company folder's git
+// executor's reasons it reads, the refusals it lets a turn's boundaries give (a way out's commands' deletes of published
+// objects among them), the executor composition's broker and save check, its search of the company folder's git
 // objects, the pack it writes whose value is whole only in a resolved delta, and the refusal's way out it takes, with the
 // check after it. The run-on-node plan's deploy-node step runs it, and prove-coding-session-vm.sh before it builds
 // anything.
@@ -20,8 +21,8 @@ import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import { identityOf, judgeIdentity, judgeKeep, judgeNewDisk, keptPass } from "./p3-c2.mjs";
 import {
-	CARRIES, countSearch, custodyForms, DELTA_PACK, fileSearch, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, turnRefusals, WAITS_FOR_REFUSED,
-	wayOutScript, withhold,
+	CARRIES, countSearch, custodyForms, DELTA_PACK, fileSearch, GIT_OBJECT_DELETE, GIT_WAY_OUT, gitObjectSearch, goneScript, SAVE_REFUSED, turnRefusals,
+	WAITS_FOR_REFUSED, wayOutScript, withhold,
 } from "./p3-custody.mjs";
 import { detachDone, judgeArchive } from "./p3-order9.mjs";
 import { postgrestError, postgrestStatus } from "./p3-postgrest-errors.mjs";
@@ -31,6 +32,8 @@ const executor = fileURLToPath(new URL("./p3-executor.ts", import.meta.url));
 const codingExecutor = fileURLToPath(new URL("../../../packages/runner-orchestrator/src/coding-executor.ts", import.meta.url));
 const secretScan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/secret-scan.ts", import.meta.url));
 const plan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/plan.ts", import.meta.url));
+const folderGit = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/git.ts", import.meta.url));
+const gitRules = fileURLToPath(new URL("../../../supabase/migrations/20260930446200_folder_git_rules.sql", import.meta.url));
 
 test("the driver's imports link and it stops at its usage line", () => {
 	const run = spawnSync(process.execPath, [driver], { encoding: "utf8" });
@@ -444,9 +447,67 @@ test("a turn's save is judged by its end's last boundary, and a refusal for anot
 	// The driver takes the end's mark before it finishes the turn, and both judgments ask each of these.
 	const driven = readFileSync(driver, "utf8");
 	assert.match(driven, /const end = executor\.boundaries\.length;\n(?:[^\n]*\n)?\t*await database\.finishTurn\(/);
-	assert.ok(driven.includes("...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`),"));
+	assert.ok(driven.includes("...turnRefusals(executor.boundaries.slice(mark), end - mark, `${code}/repo.git/`, out !== null),"));
 	assert.equal(driven.split("end.odd.length || !end.ends || end.unread").length, 3, "refusedTurn and savedTurn");
 	assert.ok(!driven.includes("refusalsSince"));
+});
+
+test("a way out's commands may be refused the deletes of published objects, by design, and no other refusal with them", () => {
+	const UNCHECKED = /^export const UNCHECKED = "([^"]*)";$/m.exec(readFileSync(secretScan, "utf8"))?.[1];
+	assert.ok(UNCHECKED);
+	const repoGit = "code/qorpera/proof/repo.git/";
+	const sha1 = "0123456789abcdef0123456789abcdef01234567";
+	const sha256 = `${sha1}${"89abcdef".repeat(3)}`;
+	const deleted = (rest, reason = GIT_OBJECT_DELETE) => ({ path: `${repoGit}${rest}`, reason });
+	const judged = (answers, end, wayOut) => {
+		const { refused, odd, deletes } = turnRefusals(answers, end, repoGit, wayOut);
+		return { refused: [...refused], odd, deletes };
+	};
+	// After-run 2's turn 3 (20261018T155118-20773-222213a3): the boundary after the way out's repack and prune was refused
+	// the deletes of the published pack's three files, of three loose objects and of their three folders. A way out's
+	// command boundary may be refused them, each path counted once; the end refuses nothing, and saves.
+	const published = [
+		...["pack", "idx", "rev"].map((kind) => `objects/pack/pack-${sha1}.${kind}`),
+		...["08", "4d", "c5"].flatMap((folder) => [`objects/${folder}`, `objects/${folder}/${sha1.slice(2)}`]),
+	];
+	assert.deepEqual(judged([[], published.map((rest) => deleted(rest)), published.map((rest) => deleted(rest)), []], 3, true),
+		{ refused: [], odd: [], deletes: 9 });
+	// At the end they are odd, though the way out ran; and in a turn without the way out, at a command's boundary too.
+	const odd = published.map((rest) => [`${repoGit}${rest}`, GIT_OBJECT_DELETE]);
+	assert.deepEqual(judged([[], published.map((rest) => deleted(rest))], 1, true),
+		{ refused: published.map((rest) => [`${repoGit}${rest}`, GIT_OBJECT_DELETE]), odd, deletes: 0 });
+	assert.deepEqual(judged([published.map((rest) => deleted(rest)), []], 1, false), { refused: [], odd, deletes: 0 });
+	assert.deepEqual(turnRefusals([published.map((rest) => deleted(rest)), []], 1, repoGit).odd, odd, "no way out unless the driver says so");
+	// Only a published object's path, as folder-service/git.ts gitPublishedObject takes it, or a loose object's folder:
+	// refs, packed-refs, git's own indexes, a pack's .keep, a temporary pack, the objects and pack folders are odd.
+	const others = ["refs/heads/main", "packed-refs", "logs/HEAD", "objects/info/packs", "objects/info/commit-graph",
+		"objects/pack/multi-pack-index", `objects/pack/pack-${sha1}.keep`, `objects/pack/tmp_pack_${sha1}`, "objects/pack", "objects",
+		"objects/ab/cdef", "objects/AB", `objects/incoming-Q1/pack/pack-${sha1}.pack`];
+	for (const rest of others)
+		assert.deepEqual(judged([[deleted(rest)], []], 1, true), { refused: [], odd: [[`${repoGit}${rest}`, GIT_OBJECT_DELETE]], deletes: 0 }, rest);
+	const shapes = [...published, `objects/${sha256.slice(0, 2)}/${sha256.slice(2)}`, `objects/pack/pack-${sha256}.pack`,
+		...["bitmap", "mtimes", "promisor"].map((kind) => `objects/pack/pack-${sha1}.${kind}`)];
+	for (const rest of shapes) assert.equal(judged([[deleted(rest)], []], 1, true).deletes, 1, rest);
+	const objectShape = /^\t\t\/(\^objects\\\/[^\n]*\$)\/\.test\($/m.exec(readFileSync(folderGit, "utf8"))?.[1];
+	assert.ok(objectShape, "gitPublishedObject's pattern");
+	for (const rest of [...shapes, ...others])
+		assert.equal(new RegExp(objectShape).test(rest) || /^objects\/[0-9a-f]{2}$/.test(rest), shapes.includes(rest), rest);
+	// Under the turn's repo.git only: another area's, or a worktree's path, is odd.
+	for (const path of [`code/qorpera/other/repo.git/objects/pack/pack-${sha1}.pack`, `code/qorpera/proof/worktrees/w1/objects/pack/pack-${sha1}.pack`])
+		assert.deepEqual(judged([[{ path, reason: GIT_OBJECT_DELETE }], []], 1, true).odd, [[path, GIT_OBJECT_DELETE]], path);
+	// Another reason on a published object's path is odd, at a way out's command boundary too.
+	for (const reason of ["git_platform_only", "git_keep_file", UNCHECKED])
+		assert.deepEqual(judged([[deleted(published[0], reason)], []], 1, true).odd, [[`${repoGit}${published[0]}`, reason]], reason);
+	// The reason is the core's for a session's delete under repo.git/objects (RUNTIME-COMPANY-FOLDER.md §6).
+	assert.match(readFileSync(gitRules, "utf8"), /^\t\tif p_op in \('delete','rmdir'\) then return 'git_object_delete'; end if;$/m);
+	assert.equal(GIT_OBJECT_DELETE, "git_object_delete");
+	// The driver lets them through only in the turns that take the way out (3, 7 and 9), each with its own.
+	const driven = readFileSync(driver, "utf8");
+	const ends = [...driven.matchAll(/await endTurn\(turn(\d), \1, mark\1, [^\n]*?, head9?, "(?:failed|completed)"(, out\1)?\)/g)];
+	assert.equal(ends.length, driven.split("await endTurn(").length - 1, "every turn's end");
+	assert.deepEqual(ends.filter((call) => call[2]).map((call) => call[1]), ["3", "7", "9"]);
+	for (const n of ["3", "7", "9"]) assert.match(driven, new RegExp(`const out${n} = await wayOut\\(turn${n}, gateway${n}, ${n}, `));
+	assert.equal(driven.split("${deleted(end").length - 1, 3, "each way out's pass line counts them");
 });
 
 test("the custody proof's searches fail when what they read fails, though it printed the control first", (t) => {
