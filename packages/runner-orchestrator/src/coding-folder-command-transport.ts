@@ -453,23 +453,6 @@ async function readPage(
 	};
 }
 
-/** The receipt with nothing of the command (F3 5g-5): none of its output, nor how much it printed or lost, nor
- * whether or how it ended. `state` is the host's own word: `machine_stopped` for a command started on a disk the
- * machine no longer has, or on another machine, `unconfirmed` for one the host can't say anything of. */
-function withoutOutput(
-	receipt: CloudCodingCommandReceipt,
-	state: "machine_stopped" | "unconfirmed",
-): CloudCodingCommandReceipt {
-	return parseCloudCodingCommandReceipt({
-		...receipt,
-		state,
-		exitCode: null,
-		output: "",
-		truncated: false,
-		log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: receipt.log.limitBytes, limitReached: false },
-	});
-}
-
 /** How the guest's command ended, as a receipt says it; null while it runs. A command the guest lost ended with the
  * machine when the machine started again since the command did. */
 function finalOf(command: CodingGuestCommand, moved: boolean): Omit<Outcome, "schema"> | null {
@@ -571,17 +554,15 @@ export interface LxdCodingFolderCommandTransportOptions {
 	 * left on the machine's disk. Asked of the command's own start each time its output is about to be kept. */
 	readonly dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
 	/** Whether the machine shows nothing of its commands (F3 5g-5: SQL holds it marked for a new disk, so its disk may
-	 * hold a read the turn can no longer read): nothing more of a command's output is kept, and a cancel, which still
-	 * goes, answers nothing of the command, how it ended included. Asked after the machine's boundary releases; no
-	 * answer withholds. Never by default. */
+	 * hold a read the turn can no longer read): nothing more of a command's output is kept (asked after the machine's
+	 * boundary releases), and `hidden` answers nothing of the command, how it ended included. No answer withholds.
+	 * Never by default. */
 	readonly withheld?: (signal: AbortSignal) => Promise<boolean>;
 	/** The rebuild that gave the machine the disk it has now (F3 5g-5, from next to its journal), or null for the disk
 	 * it was made with. A command starts on it, and nothing of one started on a disk the machine no longer has, or on
-	 * another machine the session ran on before, is shown (not what it printed, nor how much, nor how it ended) or kept,
-	 * whatever the folder service and SQL say now: the reads that disk may have held stayed with it, not with the
-	 * command's custody. Asked last before each answer, once its last authorization and a cancel's `withheld` are in,
-	 * since a new disk is written down before SQL clears the marks those answer by; no answer shows nothing. Never
-	 * replaced by default. */
+	 * another machine the session ran on before, is kept or shown (`hidden`: not what it printed, nor how much, nor how
+	 * it ended), whatever the folder service and SQL say now: the reads that disk may have held stayed with it, not with
+	 * the command's custody. No answer shows nothing. Never replaced by default. */
 	readonly disk?: (signal: AbortSignal) => Promise<string | null>;
 	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
@@ -729,7 +710,7 @@ export class LxdCodingFolderCommandTransport {
 		)
 			throw new Error("CODING_COMMAND_INPUT_INVALID");
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		const { request, receipt } = await this.#within(input.commandId, signal, true, async (folder, budget) => {
+		const receipt = await this.#within(input.commandId, signal, true, async (folder, budget) => {
 			// A command starts under the start the machine runs now, whenever this transport was made; none while it starts
 			// again.
 			const start = this.#currentStart();
@@ -768,10 +749,7 @@ export class LxdCodingFolderCommandTransport {
 				// Nor once it started again while the secrets were read: the command then ended with the boot it was started
 				// under, before it ran.
 				if (request.startOperationId !== this.#currentStart())
-					return {
-						request,
-						receipt: await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false),
-					};
+					return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
 				try {
 					await this.#guest.run(
 						{
@@ -797,13 +775,10 @@ export class LxdCodingFolderCommandTransport {
 				}
 				progress = await this.#save(folder, { ...progress, acknowledged: true });
 			}
-			return {
-				request,
-				receipt: await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false),
-			};
+			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
 		});
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
-		return this.#answer(request, receipt, signal);
+		return receipt;
 	}
 
 	async read(
@@ -813,15 +788,12 @@ export class LxdCodingFolderCommandTransport {
 	): Promise<CloudCodingCommandReceipt> {
 		const read = parseCloudCodingCommandRead(input);
 		await this.#gate("read", scope, read.commandId, null, signal);
-		const { request, receipt } = await this.#within(read.commandId, signal, false, async (folder, budget) => {
+		const receipt = await this.#within(read.commandId, signal, false, async (folder, budget) => {
 			const { request, progress, outcome } = await this.#records(folder, read.commandId);
-			return {
-				request,
-				receipt: await this.#settle(folder, request, progress, outcome, budget, signal, read, false),
-			};
+			return this.#settle(folder, request, progress, outcome, budget, signal, read, false);
 		});
 		await this.#gate("read", scope, read.commandId, null, signal);
-		return this.#answer(request, receipt, signal);
+		return receipt;
 	}
 
 	async cancel(
@@ -830,7 +802,7 @@ export class LxdCodingFolderCommandTransport {
 		signal: AbortSignal,
 	): Promise<CloudCodingCommandReceipt> {
 		await this.#gate("cancel", scope, commandId, null, signal);
-		const { request, receipt } = await this.#within(commandId, signal, false, async (folder, budget) => {
+		const receipt = await this.#within(commandId, signal, false, async (folder, budget) => {
 			const records = await this.#records(folder, commandId);
 			const { request, outcome } = records;
 			let { progress } = records;
@@ -839,27 +811,25 @@ export class LxdCodingFolderCommandTransport {
 				if (!progress.cancelled) progress = await this.#save(folder, { ...progress, cancelled: true });
 				await this.#stop(commandId, budget, signal);
 			}
-			const settled = await this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
-			// A machine that shows nothing of its commands answers none of what was kept before either, nor how the command
-			// ended.
-			return {
-				request,
-				receipt: (await this.#withholds(budget, signal)) ? withoutOutput(settled, "unconfirmed") : settled,
-			};
+			return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, true);
 		});
 		await this.#gate("cancel", scope, commandId, null, signal);
-		return this.#answer(request, receipt, signal);
+		return receipt;
 	}
 
-	/** The call's answer, once its last authorization and a cancel's `withheld` are in: nothing of a command started on
-	 * a disk the machine no longer has, or on another machine (`machine_stopped`), though it ended and nothing asks the
-	 * machine about it any more, as the reads it may hold were cleared with that disk or never were this machine's.
-	 * Asked last: a rebuild writes its new disk down before SQL clears the marks those answer by, so a call that found
-	 * the machine no longer marked finds its new disk here. */
-	async #answer(request: Request, receipt: CloudCodingCommandReceipt, signal: AbortSignal) {
-		const budget = AbortSignal.any([signal, AbortSignal.timeout(BUDGET_MS)]);
-		const replaced = await this.#replaced(request, budget, signal);
-		return replaced ? withoutOutput(receipt, replaced) : receipt;
+	/** Whether a call's receipt shows nothing of its command (F3 5g-5), and as what: `machine_stopped` for one started
+	 * on a disk the machine no longer has, or on another machine, though it ended and nothing asks the machine about it
+	 * any more, as the reads it may hold were cleared with that disk or never were this machine's; `unconfirmed` while
+	 * the machine shows nothing of its commands (`withheld`), or its disk is not known. The command service asks it once,
+	 * after its final authorization, right before it sends the answer. The marks are asked first: a rebuild writes its
+	 * new disk down before SQL clears them, so a call that finds the machine no longer marked finds its new disk after. */
+	async hidden(commandId: string, signal: AbortSignal): Promise<"machine_stopped" | "unconfirmed" | undefined> {
+		if (!isUuid(commandId)) throw new Error("CODING_COMMAND_SCOPE_DIFFERS");
+		return this.#within(commandId, signal, false, async (folder, budget) => {
+			const { request } = await this.#records(folder, commandId);
+			const withheld = await this.#withholds(budget, signal);
+			return (await this.#replaced(request, budget, signal)) ?? (withheld ? "unconfirmed" : undefined);
+		});
 	}
 
 	/** Brings the kept output up to date unless the command ended, and answers a page of it. */

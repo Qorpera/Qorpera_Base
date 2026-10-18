@@ -303,6 +303,8 @@ async function fixture(
 		read: (commandId: string, more: Omit<CloudCodingCommandRead, "commandId"> = {}) =>
 			transport.read(scope, { commandId, ...more }, signal),
 		cancel: (commandId: string) => transport.cancel(scope, commandId, signal),
+		/** What of the command the command service is to show, as it asks after its final authorization (F3 5g-5). */
+		hidden: (commandId: string) => transport.hidden(commandId, signal),
 		/** The receipt a call should answer: by default a whole log of `output` from offset 0. */
 		receipt(
 			input: { commandId: string; inputSha256: string },
@@ -863,48 +865,48 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await json(join(folder, "outcome.json"))).toMatchObject({ state: "cancelled", exitCode: null });
 	});
 
-	it("keeps nothing more of a machine that withholds its commands, and cancels in it showing nothing of the command, how it ended included (F3 5g-5)", async () => {
+	it("keeps nothing more of a machine that withholds its commands, cancels in it, and has nothing of the command shown, how it ended included (F3 5g-5)", async () => {
 		const at = await fixture();
 		const withheld = vi.fn<NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>>(async () => false);
 		const transport = at.another({ withheld });
 		const input = at.input();
 		at.guest.print(input.commandId, "kept\n");
-		expect(await transport.start(at.scope, input, signal)).toStrictEqual(
-			at.receipt(input, { state: "running", output: "kept\n" }),
-		);
+		const kept = at.receipt(input, { state: "running", output: "kept\n" });
+		expect(await transport.start(at.scope, input, signal)).toStrictEqual(kept);
 		const ended = at.input("test -s notes");
 		at.guest.print(ended.commandId, "seen\n");
 		at.guest.end(ended.commandId, "exited", { code: 3, signal: null });
-		expect(await transport.start(at.scope, ended, signal)).toStrictEqual(
-			at.receipt(ended, { state: "failed", exitCode: 3, output: "seen\n" }),
-		);
+		const failed = at.receipt(ended, { state: "failed", exitCode: 3, output: "seen\n" });
+		expect(await transport.start(at.scope, ended, signal)).toStrictEqual(failed);
+		expect(await transport.hidden(input.commandId, signal)).toBeUndefined();
 		// SQL marks the machine for a new disk, and the command prints more on the disk it is to lose; every read the
 		// machine was served is still released.
 		withheld.mockResolvedValue(true);
 		at.guest.print(input.commandId, "old disk\n");
-		// Neither what a command printed, nor how much, nor how it ended.
-		const shown = at.receipt(input, { state: "unconfirmed" });
-		expect(await transport.cancel(at.scope, input.commandId, signal)).toStrictEqual(shown);
+		// The cancel goes and keeps nothing more; the command service then shows neither what the command printed, nor how
+		// much, nor how it ended.
+		expect(await transport.cancel(at.scope, input.commandId, signal)).toStrictEqual(kept);
+		expect(await transport.hidden(input.commandId, signal)).toBe("unconfirmed");
 		expect(at.guest.client.cancel).toHaveBeenCalledTimes(1);
 		const folder = at.folder(input.commandId);
 		expect(await json(join(folder, "progress.json"))).toMatchObject({ cancelled: true, logBytes: 5 });
 		expect(await readFile(join(folder, "output.log"), "utf8")).toBe("kept\n");
 		await absent(join(folder, "outcome.json"));
-		// Asked once the boundary released, and again for the cancel's answer.
-		expect(withheld).toHaveBeenCalledTimes(4);
-		expect(at.control.boundary.mock.invocationCallOrder[2]).toBeLessThan(withheld.mock.invocationCallOrder[2]);
+		// Asked once the boundary released, and again for what is shown.
+		expect(withheld).toHaveBeenCalledTimes(5);
+		expect(at.control.boundary.mock.invocationCallOrder[2]).toBeLessThan(withheld.mock.invocationCallOrder[3]);
 		// One that ended before shows nothing either, though nothing asks the machine about it.
-		expect(await transport.cancel(at.scope, ended.commandId, signal)).toStrictEqual(
-			at.receipt(ended, { state: "unconfirmed" }),
-		);
+		expect(await transport.cancel(at.scope, ended.commandId, signal)).toStrictEqual(failed);
+		expect(await transport.hidden(ended.commandId, signal)).toBe("unconfirmed");
 		// No answer withholds.
 		withheld.mockRejectedValue(new Error("CODING_CUSTODY_UNAVAILABLE"));
-		expect(await transport.cancel(at.scope, input.commandId, signal)).toStrictEqual(shown);
+		expect(await transport.cancel(at.scope, input.commandId, signal)).toStrictEqual(kept);
+		expect(await transport.hidden(input.commandId, signal)).toBe("unconfirmed");
 		expect(await readFile(join(folder, "output.log"), "utf8")).toBe("kept\n");
 		await absent(join(folder, "outcome.json"));
 	});
 
-	it("shows nothing a command printed on a disk the machine no longer has, read or cancelled, though it ended (F3 5g-5)", async () => {
+	it("has nothing shown of a command started on a disk the machine no longer has, read or cancelled, though it ended (F3 5g-5)", async () => {
 		const at = await fixture();
 		const done = at.input("cat notes");
 		at.guest.print(done.commandId, "secret\n");
@@ -921,17 +923,22 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		at.guest.print(running.commandId, "old disk\n");
 		const outputs = at.guest.client.output.mock.calls.length;
 		const rebuilt = at.rebuild();
-		// Neither what it printed, nor how much, nor how it ended: it ended with the disk.
-		const ended = at.receipt(done, { state: "machine_stopped" });
-		const stopped = at.receipt(running, { state: "machine_stopped" });
+		// Each call answers what the custody kept, and the command service then shows neither what it printed, nor how
+		// much, nor how it ended: it ended with the disk.
+		const ended = at.receipt(done, { state: "succeeded", exitCode: 0, output: "secret\n" });
+		const stopped = at.receipt(running, { state: "machine_stopped", output: "kept\n" });
 		// Whichever turn's transport asks, made before the rebuild or after, and whatever page.
 		for (const transport of [rebuilt, at.transport]) {
 			expect(await transport.read(at.scope, { commandId: done.commandId }, signal)).toStrictEqual(ended);
-			expect(await transport.read(at.scope, { commandId: done.commandId, offset: 3 }, signal)).toStrictEqual(ended);
+			expect(await transport.read(at.scope, { commandId: done.commandId, offset: 3 }, signal)).toStrictEqual(
+				at.receipt(done, { state: "succeeded", exitCode: 0, output: "ret\n", log: { offset: 3 } }),
+			);
 			expect(await transport.cancel(at.scope, done.commandId, signal)).toStrictEqual(ended);
 			// The one still running then ended with the old disk, and nothing more of it is pulled.
 			expect(await transport.read(at.scope, { commandId: running.commandId }, signal)).toStrictEqual(stopped);
 			expect(await transport.cancel(at.scope, running.commandId, signal)).toStrictEqual(stopped);
+			for (const command of [done, running])
+				expect(await transport.hidden(command.commandId, signal)).toBe("machine_stopped");
 		}
 		expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
 		expect(at.guest.client.cancel).not.toHaveBeenCalled();
@@ -956,12 +963,13 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			diskOperationId: at.machineDisk.now,
 		});
 		expect(await at.read(fresh.commandId)).toStrictEqual(shown);
+		expect(await at.hidden(fresh.commandId)).toBeUndefined();
 		// No answer for the disk, or one that names no rebuild, shows nothing, and the next answer shows it again.
 		at.disk.mockRejectedValueOnce(new Error("CODING_MACHINE_JOURNAL_INVALID"));
-		expect(await at.read(fresh.commandId)).toStrictEqual(at.receipt(fresh, { state: "unconfirmed" }));
+		expect(await at.hidden(fresh.commandId)).toBe("unconfirmed");
 		at.disk.mockResolvedValueOnce("not-a-disk");
-		expect(await at.read(fresh.commandId)).toStrictEqual(at.receipt(fresh, { state: "unconfirmed" }));
-		expect(await at.read(fresh.commandId)).toStrictEqual(shown);
+		expect(await at.hidden(fresh.commandId)).toBe("unconfirmed");
+		expect(await at.hidden(fresh.commandId)).toBeUndefined();
 		// Without an answer, or with one that is not a rebuild's, nothing starts.
 		const refused = at.input();
 		at.disk.mockRejectedValueOnce(new Error("CODING_MACHINE_JOURNAL_INVALID"));
@@ -972,7 +980,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(at.guest.client.run).toHaveBeenCalledTimes(3);
 	});
 
-	it("shows nothing a command printed on another machine the session ran on, though both machines have their first disk (F3 5g-5)", async () => {
+	it("has nothing shown of a command started on another machine the session ran on, though both machines have their first disk (F3 5g-5)", async () => {
 		const at = await fixture();
 		const done = at.input("cat notes");
 		at.guest.print(done.commandId, "secret\n");
@@ -996,13 +1004,16 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		const scope = { ...at.scope, vmId: machine.machineId };
 		at.machineStart.now = randomUUID();
 		const moved = at.another({ machine, scope });
-		// Neither what it printed, nor how much, nor how it ended, whichever call asks; and the same command again runs
-		// nothing.
-		for (const input of [done, running]) {
-			const hidden = at.receipt(input, { state: "machine_stopped" });
-			expect(await moved.read(scope, { commandId: input.commandId }, signal)).toStrictEqual(hidden);
-			expect(await moved.cancel(scope, input.commandId, signal)).toStrictEqual(hidden);
-			expect(await moved.start(scope, input, signal)).toStrictEqual(hidden);
+		// Neither what it printed, nor how much, nor how it ended is shown, whichever call asks; and the same command again
+		// runs nothing.
+		for (const [input, kept] of [
+			[done, at.receipt(done, { state: "succeeded", exitCode: 0, output: "secret\n" })],
+			[running, at.receipt(running, { state: "machine_stopped", output: "kept\n" })],
+		] as const) {
+			expect(await moved.read(scope, { commandId: input.commandId }, signal)).toStrictEqual(kept);
+			expect(await moved.cancel(scope, input.commandId, signal)).toStrictEqual(kept);
+			expect(await moved.start(scope, input, signal)).toStrictEqual(kept);
+			expect(await moved.hidden(input.commandId, signal)).toBe("machine_stopped");
 		}
 		expect(at.guest.client.output).toHaveBeenCalledTimes(outputs);
 		expect(at.guest.client.cancel).not.toHaveBeenCalled();
@@ -1022,11 +1033,13 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			diskOperationId: null,
 		});
 		expect(await moved.read(scope, { commandId: fresh.commandId }, signal)).toStrictEqual(shown);
-		expect(await at.read(fresh.commandId)).toStrictEqual(at.receipt(fresh, { state: "machine_stopped" }));
+		expect(await moved.hidden(fresh.commandId, signal)).toBeUndefined();
+		expect(await at.read(fresh.commandId)).toStrictEqual(shown);
+		expect(await at.hidden(fresh.commandId)).toBe("machine_stopped");
 		expect(at.guest.client.run).toHaveBeenCalledTimes(3);
 	});
 
-	it("shows nothing of a command whose disk a rebuild replaced while its answer was authorized, or its cancel asked whether the machine withholds (F3 5g-5)", async () => {
+	it("has nothing shown of a command whose disk a rebuild replaced while its call was authorized the last time, or what is shown was asked, or whose machine its cancel's last authorization marked (F3 5g-5)", async () => {
 		const at = await fixture();
 		const withheld = vi.fn<NonNullable<LxdCodingFolderCommandTransportOptions["withheld"]>>(async () => false);
 		const transport = at.another({ withheld });
@@ -1036,25 +1049,28 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			at.guest.end(input.commandId, "exited", { code: 0, signal: null });
 			return input;
 		};
-		const hidden = (input: Input) => at.receipt(input, { state: "machine_stopped" });
-		// Another turn ends the machine's rebuild while this cancel waits for whether the machine withholds its commands:
-		// the new disk is written down, and SQL has cleared the marks by the time it answers, so nothing withholds.
+		// Another turn ends the machine's rebuild while what this cancel's answer shows waits for whether the machine
+		// withholds its commands: the new disk is written down, and SQL has cleared the marks by the time it answers, so
+		// nothing withholds.
 		const cancelled = ended("cat notes", "secret\n");
 		expect(await transport.start(at.scope, cancelled, signal)).toMatchObject({ output: "secret\n" });
+		expect(await transport.cancel(at.scope, cancelled.commandId, signal)).toMatchObject({ output: "secret\n" });
 		withheld.mockImplementationOnce(async () => {
 			at.rebuild();
 			return false;
 		});
-		expect(await transport.cancel(at.scope, cancelled.commandId, signal)).toStrictEqual(hidden(cancelled));
+		expect(await transport.hidden(cancelled.commandId, signal)).toBe("machine_stopped");
 		// ...or while a read's or a start's answer is authorized the last time, which SQL allows once the marks are
 		// cleared.
 		const read = ended("cat more", "more\n");
 		expect(await transport.start(at.scope, read, signal)).toMatchObject({ output: "more\n" });
 		at.authorize.mockImplementationOnce(async () => undefined).mockImplementationOnce(async () => void at.rebuild());
-		expect(await transport.read(at.scope, { commandId: read.commandId }, signal)).toStrictEqual(hidden(read));
+		expect(await transport.read(at.scope, { commandId: read.commandId }, signal)).toMatchObject({ output: "more\n" });
+		expect(await transport.hidden(read.commandId, signal)).toBe("machine_stopped");
 		const started = ended("cat last", "last\n");
 		at.authorize.mockImplementationOnce(async () => undefined).mockImplementationOnce(async () => void at.rebuild());
-		expect(await transport.start(at.scope, started, signal)).toStrictEqual(hidden(started));
+		expect(await transport.start(at.scope, started, signal)).toMatchObject({ output: "last\n" });
+		expect(await transport.hidden(started.commandId, signal)).toBe("machine_stopped");
 		// Each was started on the disk the rebuild during its own call replaced.
 		const disks = await Promise.all(
 			[cancelled, read, started].map(
@@ -1066,6 +1082,23 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(new Set(disks).size).toBe(3);
 		expect(disks[0]).toBeNull();
 		expect(disks).not.toContain(at.machineDisk.now);
+		// A cancel's last authorization marks the machine for a new disk (the executor's run there may mark it), after it
+		// kept what the command printed: what its answer shows is asked after it.
+		let marked = false;
+		withheld.mockImplementation(async () => marked);
+		const running = at.input();
+		at.guest.print(running.commandId, "before\n");
+		expect(await transport.start(at.scope, running, signal)).toMatchObject({ state: "running", output: "before\n" });
+		at.authorize
+			.mockImplementationOnce(async () => undefined)
+			.mockImplementationOnce(async () => {
+				marked = true;
+			});
+		expect(await transport.cancel(at.scope, running.commandId, signal)).toStrictEqual(
+			at.receipt(running, { state: "cancelled", output: "before\n" }),
+		);
+		expect(marked).toBe(true);
+		expect(await transport.hidden(running.commandId, signal)).toBe("unconfirmed");
 	});
 
 	it("keeps nothing of a pull the machine's rebuild crossed (F3 5g-5)", async () => {
@@ -1080,8 +1113,12 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			at.rebuild();
 			return { machine: machineId, reads: "released", views: [] };
 		});
-		// Not even how much it printed, or lost.
-		expect(await at.read(input.commandId)).toStrictEqual(at.receipt(input, { state: "machine_stopped" }));
+		// The pull is counted lost, and the command service shows nothing of the command, not even how much it printed,
+		// or lost.
+		expect(await at.read(input.commandId)).toStrictEqual(
+			at.receipt(input, { state: "machine_stopped", output: "kept\n", log: { gapBytes: 9 } }),
+		);
+		expect(await at.hidden(input.commandId)).toBe("machine_stopped");
 		expect(await json(join(at.folder(input.commandId), "progress.json"))).toMatchObject({ logBytes: 5, gapBytes: 9 });
 		await expect(readFile(join(at.folder(input.commandId), "output.log"), "utf8")).resolves.toBe("kept\n");
 		expect(await json(join(at.folder(input.commandId), "outcome.json"))).toStrictEqual({

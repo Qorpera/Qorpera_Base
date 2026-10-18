@@ -329,8 +329,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
 				await authorizeCodingCommand(control, request, checked);
 			}, signal);
-			return request.action === "start" ? transport.start(request.scope, request.input, signal) :
-				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal);
+			const receipt = await (request.action === "start" ? transport.start(request.scope, request.input, signal) :
+				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
+			// F3 5g-5: the command service asks the folder model's transport what the receipt shows, after its final authorization.
+			return { receipt, hidden: async (checked) => "hidden" in transport ? transport.hidden(request.input.commandId, checked) : undefined };
 		},
 	});
 	const commandToken = await credential("qorpera-coding-command");

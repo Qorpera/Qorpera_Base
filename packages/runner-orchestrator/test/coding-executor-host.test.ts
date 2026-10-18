@@ -4013,7 +4013,7 @@ describe("a coding session on the folder model", () => {
 		expect(f.lxd.running).toBe(true);
 		expect(f.state.newDisk).toBe(true);
 	});
-	it("keeps and shows none of what a command printed on a machine SQL marked for a new disk, and still cancels it, through the folder model's own command transport (F3 5g-5)", async () => {
+	it("keeps and shows none of what a command printed on a machine its cancel's last authorization marked for a new disk, and still cancels it, through the folder model's own command transport (F3 5g-5)", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		await f.host.commandTransport(
@@ -4067,43 +4067,69 @@ describe("a coding session on the folder model", () => {
 		const transport = new LxdCodingFolderCommandTransport({ ...options, guest });
 		const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "make", timeoutMs: null };
 		expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "running", output: "before\n" });
-		// The turn's take-in at its next run marks the machine for a new disk without placing the read on it that the
-		// turn can no longer read (20260930505000); the command prints more on the disk it is to lose, and the machine's
-		// boundary still releases every read it was served.
+		// The command prints more, and the turn cancels it. The take-in at the cancel's last authorization (its run) marks
+		// the machine for a new disk without placing the read on it that the turn can no longer read (20260930505000),
+		// after what the command printed was kept and while the guest still stops it; the machine's boundary still
+		// releases every read it was served.
 		const answer = f.call.getMockImplementation()!;
+		let runs = 0;
 		f.call.mockImplementation(async (called, args, signal) => {
-			if (called === "qorpera_authorize_coding_machine_run") {
+			if (called === "qorpera_authorize_coding_machine_run" && ++runs === 2) {
 				f.state.newDisk = true;
 				f.state.folderRestart = true;
 			}
 			return answer(called, args, signal);
 		});
 		command.printed = Buffer.concat([command.printed, Buffer.from("old disk\n")]);
-		// The cancel goes, and keeps and shows nothing of the command: not what it printed since, nor what was kept, nor
-		// how much, nor how it ended.
-		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual({
+		guest.cancel.mockImplementationOnce(async (request) => ({
+			schema: "qorpera.coding-guest-command/v1",
+			workerId,
+			...stateOf(parseCodingGuestRequest("cancel", request).commandId),
+		}));
+		const answered = (output: string) => ({
 			schema: "qorpera.coding-command-result/v2",
 			workerId,
 			commandId: input.commandId,
 			inputSha256: input.inputSha256,
-			state: "unconfirmed",
+			state: "running",
 			exitCode: null,
-			output: "",
+			output,
 			truncated: false,
-			log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: options.limitBytes, limitReached: false },
+			log: {
+				offset: 0,
+				nextOffset: Buffer.byteLength(output),
+				totalBytes: Buffer.byteLength(output),
+				limitBytes: options.limitBytes,
+				limitReached: false,
+			},
 		});
-		expect(guest.cancel).toHaveBeenCalledTimes(1);
+		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(
+			answered("before\nold disk\n"),
+		);
+		expect(runs).toBe(2);
+		// The command service asks what is shown after that authorization: not what the command printed, nor how much,
+		// nor how it ended.
+		await expect(transport.hidden(input.commandId, f.signal)).resolves.toBe("unconfirmed");
+		// It prints more on the disk it is to lose, and the guest stops it: the next cancel still goes, and keeps nothing
+		// more of it, nor how it ended.
+		command.printed = Buffer.concat([command.printed, Buffer.from("after\n")]);
+		expect(await transport.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(
+			answered("before\nold disk\n"),
+		);
+		await expect(transport.hidden(input.commandId, f.signal)).resolves.toBe("unconfirmed");
+		expect(guest.cancel).toHaveBeenCalledTimes(2);
 		const kept = join(options.custody, "host-commands", input.commandId.replaceAll("-", ""));
-		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\n");
+		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\nold disk\n");
+		await expect(readFile(join(kept, "outcome.json"))).rejects.toMatchObject({ code: "ENOENT" });
 		// Nor is the command read, until the machine has its new disk.
 		await expect(transport.read(f.scope(), { commandId: input.commandId }, f.signal)).rejects.toThrow(
 			"CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK",
 		);
-		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\n");
+		expect(await readFile(join(kept, "output.log"), "utf8")).toBe("before\nold disk\n");
 		expect(f.lxd.running).toBe(true);
 		expect(f.state.newDisk).toBe(true);
 	});
-	it("shows none of what a command printed on the disk a rebuild replaced, read or cancelled in a later turn, though it ended, through the folder model's own command transport (F3 5g-5)", async () => {
+	it("has none of what a command printed on the disk a rebuild replaced shown, read or cancelled in a later turn, though it ended, through the folder model's own command transport (F3 5g-5)", async () => {
 		const f = await folderFixture();
 		// The machine's journal names the start it last ran under.
 		mocked.startOperation.mockImplementation(async () => f.state.startOperationId);
@@ -4196,7 +4222,7 @@ describe("a coding session on the folder model", () => {
 		expect(f.state.newDisk).toBe(false);
 		expect(f.state.folderRestart).toBe(false);
 		// The later turn reads and cancels both commands of the old disk: SQL lets it, every read is released and nothing
-		// withholds, but it is shown nothing the custody kept of them, and the guest is not asked.
+		// withholds, but nothing the custody kept of them is shown, and the guest is not asked.
 		await f.host.commandTransport(
 			f.scope(),
 			vi.fn(async () => undefined),
@@ -4205,21 +4231,32 @@ describe("a coding session on the folder model", () => {
 		const later = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
 		expect(later.custody).toBe(options.custody);
 		const second = new LxdCodingFolderCommandTransport({ ...later, guest });
-		// Neither what each printed, nor how much, nor how it ended: both ended with the old disk.
-		const hidden = (input: { commandId: string; inputSha256: string }) => ({
-			schema: "qorpera.coding-command-result/v2",
-			workerId,
-			commandId: input.commandId,
-			inputSha256: input.inputSha256,
-			state: "machine_stopped",
-			exitCode: null,
-			output: "",
-			truncated: false,
-			log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: later.limitBytes, limitReached: false },
-		});
-		for (const input of [done, running]) {
-			expect(await second.read(f.scope(), { commandId: input.commandId }, f.signal)).toStrictEqual(hidden(input));
-			expect(await second.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(hidden(input));
+		// Each call answers what the custody kept, and the command service then shows neither what each printed, nor how
+		// much, nor how it ended: both ended with the old disk.
+		for (const [input, state, exitCode, output] of [
+			[done, "succeeded", 0, "secret\n"],
+			[running, "machine_stopped", null, "before\n"],
+		] as const) {
+			const answered = {
+				schema: "qorpera.coding-command-result/v2",
+				workerId,
+				commandId: input.commandId,
+				inputSha256: input.inputSha256,
+				state,
+				exitCode,
+				output,
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: output.length,
+					totalBytes: output.length,
+					limitBytes: later.limitBytes,
+					limitReached: false,
+				},
+			};
+			expect(await second.read(f.scope(), { commandId: input.commandId }, f.signal)).toStrictEqual(answered);
+			expect(await second.cancel(f.scope(), input.commandId, f.signal)).toStrictEqual(answered);
+			await expect(second.hidden(input.commandId, f.signal)).resolves.toBe("machine_stopped");
 		}
 		expect(guest.output).toHaveBeenCalledTimes(outputs);
 		expect(guest.cancel).not.toHaveBeenCalled();

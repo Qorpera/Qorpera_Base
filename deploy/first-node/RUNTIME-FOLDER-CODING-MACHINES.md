@@ -438,8 +438,9 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      gives the machine its new disk before the view opens. Each command's start and read asks so too and is refused on
      a marked machine (`CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK`). A cancel still goes, but keeps and shows
      nothing of the command: the command transport asks so too once the machine's boundary releases (no answer is
-     marked), keeps nothing more of the command's output, and answers the cancel with none of it, what was kept before
-     included, nor how much it printed or lost, nor how it ended (`unconfirmed`, no exit code, an empty log). A machine
+     marked) and keeps nothing more of the command's output, and the command service answers the cancel with none of
+     it, what was kept before included, nor how much it printed or lost, nor how it ended (`unconfirmed`, no exit code,
+     an empty log). A machine
      so marked restarts as above, but the restart's record answers `new-disk`: it detaches the
      sessions with a `MACHINE_NEW_DISK` event and keeps both marks. Custody then grants `rebuild` (only with `new_disk_at` set; under a leased turn, as for the stop), the
      executor rebuilds the instance from its binding's image (`imageFingerprint`), and
@@ -453,10 +454,15 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
      output, nor how much it printed or lost, nor how it ended (`machine_stopped`, no exit code, an empty log). The
      same holds for a command from another machine the session ran on before, as its custody goes with it. The
      command logs on the host outlive the disk, but nothing of them is shown, since the reads that output came from
-     left with the disk. The disk is read last before each answer, after the call's last authorization and a cancel's
-     withholding probe: those see the marks, which are cleared only after `disk.json` is written, so a rebuild that
-     ends during a call is seen. A `disk.json` that can't be read withholds (`unconfirmed`, as empty). Then the machine
-     starts. Before the rebuild goes out, the executor checks that the image
+     left with the disk. Whether a call's answer shows its command is decided in one place: the command service on the
+     executor that holds the machine asks the transport once, after the call's final authorization (which can mark the
+     machine) and right before it answers, and only then builds the answer. The transport asks the marks first and
+     `disk.json` after: the marks are cleared only after `disk.json` is written, so a rebuild that ends before that
+     check is seen. A `disk.json` that can't be read withholds (`unconfirmed`, as empty). A rebuild that ends after that
+     check, while the decided answer is on its way, is not caught; that answer was true when it was decided. For a
+     forwarded command the check runs on the executor that holds the machine, and the trip back to the ingress is on
+     its way too: the ingress's checks after it can only refuse. A receipt that shows nothing of its command answers
+     any page, so a paged read across a rebuild answers `machine_stopped`. Then the machine starts. Before the rebuild goes out, the executor checks that the image
      is still in the node's LXD image store (old images are cleaned up): while it is gone, the machine stays stopped
      with both marks, its `wake` error is `CODING_MACHINE_IMAGE_GONE`, and each turn on it fails so, before any rebuild,
      until the image is back or the machine is removed; the new disk's record clears that error. A session attached then hears of it

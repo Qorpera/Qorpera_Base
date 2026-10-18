@@ -2771,7 +2771,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await this.#run(ready.claim, ready.machine, ready.storage, checked);
 			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
 			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes, and
-			// keeps and shows nothing of the command (the transport's `withheld` below).
+			// keeps and shows nothing of the command (the transport's `withheld` below, asked before anything is kept, and
+			// by its `hidden` after the command service's final authorization).
 			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
 				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
@@ -2781,8 +2782,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
 			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
 			// That folder outlives a new disk, and goes with the session to another machine: what a command printed on a disk
-			// the machine no longer has, or on another machine, is never shown, whichever turn asks (the transport's `disk`,
-			// from next to the machine's journal).
+			// the machine no longer has, or on another machine, is never shown, whichever turn asks (the transport's `hidden`,
+			// by its `disk` from next to the machine's journal).
 			const { machineId } = ready.machine;
 			// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
 			// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
