@@ -16,6 +16,7 @@ import {
 	parseCloudMachineCommandRequest,
 } from "@qorpera/contracts";
 import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
+import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
 
 // The command guest's machine profile (2026-09-28). A company machine is a
@@ -72,6 +73,8 @@ export interface MachineGuestPorts {
 	/** The company folder's private folder (/run/qorpera-folder) and its mount (/company); see MACHINE_FOLDER. */
 	folderRoot?: string;
 	folderMountpoint?: string;
+	/** The folder program's cache folder on the machine's disk (MACHINE_FOLDER.cache). */
+	folderCache?: string;
 	/** This process's /proc/self/mountinfo. */
 	readMountinfo?: () => Promise<string>;
 	/** How long folder-mount waits for the folder's lock (FOLDER_LOCK_WAIT_SECONDS). */
@@ -883,6 +886,9 @@ export const MACHINE_FOLDER = Object.freeze({
 	root: "/run/qorpera-folder",
 	mountpoint: "/company",
 	unit: "qorpera-machine-folder.service",
+	/** On the machine's disk, the unit's --cache-dir: the program's caches outlive its starts and the machine's boots.
+	 * Commands run as root, so walls between caches would protect nothing: one for the machine. */
+	cache: FOLDER_CACHE.machine,
 });
 const FOLDER_VIEW_MAX_BYTES = 4096;
 const FOLDER_POLLS = 100;
@@ -1069,6 +1075,9 @@ async function showFolderView(
 		await writeJson(file, view, 0o600);
 	}
 	await mkdir(mountpoint, { recursive: true, mode: 0o755 });
+	// The image made it; it is made again if it went. The program refuses a cache folder it does not find root's and
+	// closed, and makes none of it itself.
+	await ensureFolderCacheDir(ports.folderCache ?? MACHINE_FOLDER.cache);
 	await run("/usr/bin/systemctl", ["start", MACHINE_FOLDER.unit]);
 	// The unit is up once the program runs (Type=exec); the mount comes after the node accepts the view.
 	for (let poll = 0; ; poll += 1) {

@@ -8,6 +8,7 @@ import {
 	readFile,
 	realpath,
 	rm,
+	symlink,
 	utimes,
 	writeFile,
 } from "node:fs/promises";
@@ -88,6 +89,8 @@ async function machine() {
 	const stateRoot = join(root, "state");
 	const runRoot = join(root, "run");
 	const folderRoot = join(root, "folder");
+	// The machine's disk: /var/lib/qorpera-folder/cache/machine.
+	const folderCache = join(root, "lib", "qorpera-folder", "cache", "machine");
 	const systemdRoot = join(root, "systemd");
 	const subuid = join(root, "subuid");
 	const subgid = join(root, "subgid");
@@ -95,6 +98,7 @@ async function machine() {
 	const work = join(root, "work");
 	await mkdir(work);
 	await mkdir(join(root, "proc"));
+	await mkdir(join(root, "lib"));
 	await writeFile(resolv, "nameserver 192.0.2.53\n");
 	const calls: string[][] = [];
 	const chowns: [string, number, number][] = [];
@@ -182,6 +186,7 @@ async function machine() {
 		stateRoot,
 		runtimeRoot: runRoot,
 		folderRoot,
+		folderCache,
 		systemdRoot,
 		subidFiles: { uid: subuid, gid: subgid },
 		resolvConf: resolv,
@@ -250,6 +255,7 @@ async function machine() {
 		stateRoot,
 		runRoot,
 		folderRoot,
+		folderCache,
 		systemdRoot,
 		subuid,
 		subgid,
@@ -581,6 +587,8 @@ describe("mounting a session", () => {
 			s.folderState,
 			"--local-dir",
 			s.folderLocal,
+			"--cache-dir",
+			m.folderCache,
 			"--allow-other",
 			"yes",
 			"--owner-uid",
@@ -591,6 +599,13 @@ describe("mounting a session", () => {
 		expect(await readJsonFile(s.view)).toEqual(VIEW);
 		expect(await mode(s.view)).toBe(0o600);
 		expect(await mode(s.folderState)).toBe(0o700);
+		// The machine's cache folder and the two above it, made before the program started: root's (this process's
+		// user here), real folders and closed to every other user, as the program takes them (it makes none of them).
+		for (const folder of [dirname(dirname(m.folderCache)), dirname(m.folderCache), m.folderCache]) {
+			expect((await lstat(folder)).isDirectory()).toBe(true);
+			expect((await lstat(folder)).uid).toBe(process.geteuid?.());
+			expect(await mode(folder)).toBe(0o700);
+		}
 		expect(await readJsonFile(s.user)).toEqual({
 			schema: "qorpera.coding-guest-session-user/v1",
 			uid: UID,
@@ -630,9 +645,11 @@ describe("mounting a session", () => {
 		const workerId = await mounted(m);
 		const s = sessionAt(m, workerId);
 		await writeFile(join(s.folderState, "cache"), "old");
-		// The local folder is on the machine's disk and the program's: a new view keeps it.
-		await mkdir(join(s.folderLocal, "cache"), { recursive: true });
-		await writeFile(join(s.folderLocal, "cache", "built"), "kept");
+		// The local folder and the machine's cache folder are on the machine's disk and the program's: a new view keeps
+		// both (the program takes off what is no longer the view's).
+		await mkdir(join(s.folderLocal, "git"), { recursive: true });
+		await writeFile(join(s.folderLocal, "git", "built"), "kept");
+		await writeFile(join(m.folderCache, "built"), "kept");
 		const answer = await call(m, "mount", mountRequest(workerId, { ...VIEW, viewId: "view-2" }));
 		expect(answer.line).toMatchObject({ viewId: "view-2", mount: "mounted" });
 		expect(brief(m.calls)).toEqual([
@@ -647,7 +664,8 @@ describe("mounting a session", () => {
 			["loginctl", "enable-linger", "qorpera-200001"],
 		]);
 		await gone(join(s.folderState, "cache"));
-		expect(await readFile(join(s.folderLocal, "cache", "built"), "utf8")).toBe("kept");
+		expect(await readFile(join(s.folderLocal, "git", "built"), "utf8")).toBe("kept");
+		expect(await readFile(join(m.folderCache, "built"), "utf8")).toBe("kept");
 		expect(await readJsonFile(s.view)).toEqual({ ...VIEW, viewId: "view-2" });
 	});
 	it("starts a failed program again and restarts the user manager", async () => {
@@ -715,6 +733,27 @@ describe("mounting a session", () => {
 		);
 		expect(m.calls).toEqual([]);
 		for (const path of [m.stateRoot, m.runRoot, m.folderRoot]) await gone(path);
+	});
+	it("refuses a cache folder that is a link or a file, or has a link above it, and starts no program", async () => {
+		const shapes: [string, (m: Machine) => Promise<void>][] = [
+			["a link", (m) => symlink(m.work, m.folderCache)],
+			["a file", (m) => writeFile(m.folderCache, "")],
+			[
+				"a link above it",
+				async (m) => {
+					await rm(dirname(m.folderCache), { recursive: true });
+					await symlink(m.work, dirname(m.folderCache));
+				},
+			],
+		];
+		for (const [name, make] of shapes) {
+			const m = await machine();
+			await mkdir(dirname(m.folderCache), { recursive: true });
+			await make(m);
+			const answer = await call(m, "mount", mountRequest(randomUUID()));
+			expect(answer.line, name).toEqual(refusal("FOLDER_CACHE_DIR_UNCONFIRMED"));
+			expect(m.calls.some(([tool]) => tool === "systemd-run"), name).toBe(false);
+		}
 	});
 	it("refuses another user for a mounted session", async () => {
 		const m = await machine();
@@ -1730,6 +1769,8 @@ describe("stopping a session", () => {
 		for (const path of [others, join(m.runRoot, "networks", "nat.ready")])
 			expect((await lstat(path)).isFile()).toBe(true);
 		expect(m.passwd.has(UID)).toBe(true);
+		// The machine's cache folder is not the session's: it outlives every session.
+		expect((await lstat(m.folderCache)).isDirectory()).toBe(true);
 	});
 	it("stops a session never mounted and one already stopped, which mounts again", async () => {
 		const m = await machine();

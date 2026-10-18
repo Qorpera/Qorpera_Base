@@ -182,7 +182,11 @@ stdin. The pass stays in the program's memory and is never written to the disk. 
 exits while the boot's view is open; root can stop or unmount it, which changes nothing outside the machine. There is
 one mount for the whole machine and no namespace per command (item 2): every command, and every process a command leaves
 running, sees the same `/company`. A Docker container binds `/company` like any other path; 6c's tests repeat step 4's
-mount propagation proof for a container started before the mount came up.
+mount propagation proof for a container started before the mount came up. The program keeps item 8's caches in
+`--cache-dir /var/lib/qorpera-folder/cache/machine` (MC3c), on the machine's disk, so they outlive its starts and the
+machine's boots: one for the machine, as its commands all run as root. The image makes the folder and the two above it,
+root's with mode 0700, and the helper makes them again if they went and refuses a link or a file in their place before
+it starts the program (the program makes none of them).
 
 - **Commands.** Each command runs as today: a transient systemd unit under `qorpera-machine.slice`, with
   `KillMode=control-group` (`cloud-machine-guest.ts:459`). A program that keeps running, such as a dev server or a
@@ -196,7 +200,7 @@ mount propagation proof for a container started before the mount came up.
   does not wait for it (coordinator, 17 Oct); a build in `/company` (README's acceptance step 4) does: item 8's MC1–MC3.
   5d builds that part for worktrees, and item 8's plan
   ([RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md)) extends it; there a test machine's cache is
-  one per machine, in the folder 6d's guest gives (`--cache-dir`).
+  one per machine, in the folder 6d's guest gives (`--cache-dir`, "Mounts in the VM").
 - **The toolbox** (item 7): "Agents' own machines and test machines start from a base image that carries it." 6c adds
   to `build-machine-image.sh` what today's image lacks of 4e's list (`tsc` and `tsx`, uv, ripgrep, fd, sqlite3, zip and
   LibreOffice), with `fuse3` and the folder program, in a new image generation. The image tests are 4e's: every
