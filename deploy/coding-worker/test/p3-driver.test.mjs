@@ -33,7 +33,7 @@ const codingExecutor = fileURLToPath(new URL("../../../packages/runner-orchestra
 const secretScan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/secret-scan.ts", import.meta.url));
 const plan = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/plan.ts", import.meta.url));
 const folderGit = fileURLToPath(new URL("../../../packages/object-gateway/src/folder-service/git.ts", import.meta.url));
-const gitRules = fileURLToPath(new URL("../../../supabase/migrations/20260930446200_folder_git_rules.sql", import.meta.url));
+const gitRules = fileURLToPath(new URL("../../../supabase/migrations/20260928569120_folder_git_rules.sql", import.meta.url));
 
 test("the driver's imports link and it stops at its usage line", () => {
 	const run = spawnSync(process.execPath, [driver], { encoding: "utf8" });

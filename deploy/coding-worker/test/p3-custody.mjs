@@ -19,7 +19,7 @@ export const WAITS_FOR_REFUSED = "it waits for a change that carries a secret va
 /** The way out of a refused git commit, as the save refusal gives it (#1299): each step, in order. */
 export const GIT_WAY_OUT = ["git reflog expire --expire-unreachable=now HEAD", "git repack -a -d --max-pack-size=64m", "git prune --expire=now"];
 
-/** The core's reason for a session's delete of a published git object (20260930446200_folder_git_rules.sql): "A session
+/** The core's reason for a session's delete of a published git object (20260928569120_folder_git_rules.sql): "A session
  * cannot delete a published path under `repo.git/objects`" (RUNTIME-COMPANY-FOLDER.md §6). */
 export const GIT_OBJECT_DELETE = "git_object_delete";
 
