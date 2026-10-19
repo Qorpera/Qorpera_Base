@@ -502,6 +502,157 @@ describe("machine command guest", () => {
 		expect((await observeMachine([], m.ports)).cpuUsec).toBe(5_400_000);
 	});
 
+	it("leaves the system's plumbing and the host's steal out of a quiet machine, and still sees a command, a container and a program left behind", async () => {
+		// An image without rsyslog.service is the same.
+		for (const syslog of [true, false]) {
+			const m = await machine();
+			await prepareMachineGuest(m.machineId, 1, m.ports);
+			await refreshMachineLease(900000, m.ports);
+			// The first line of /proc/stat in ticks: user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice.
+			const cpu = [150, 0, 50, 800, 50, 0, 0, 0, 0, 0];
+			const ports: MachineGuestPorts = { ...m.ports, readCpu: async () => `cpu  ${cpu.join(" ")}\ncpu0 1 2 3\n` };
+			// What the machine's own control and the system's plumbing each use of the processor (microseconds) and move
+			// (bytes) in 30 s of a quiet machine. The watchdog's timer (every 10 s) has systemd (pid 1) start and stop it and
+			// the journal and syslog log that, and each of the executor's looks runs the helper under the LXD agent.
+			const parts = [
+				{
+					unit: "qorpera-control.slice",
+					group: "/qorpera.slice/qorpera-control.slice",
+					pid: 800,
+					argv0: "/usr/bin/node",
+					usec: 300000,
+					bytes: 3000000,
+				},
+				{
+					unit: "lxd-agent.service",
+					group: "/system.slice/lxd-agent.service",
+					pid: 700,
+					argv0: "lxd-agent",
+					usec: 200000,
+					bytes: 2000000,
+				},
+				{ unit: "init.scope", group: "/init.scope", pid: 1, argv0: "/sbin/init", usec: 600000, bytes: 520000 },
+				{
+					unit: "systemd-journald.service",
+					group: "/system.slice/systemd-journald.service",
+					pid: 300,
+					argv0: "/usr/lib/systemd/systemd-journald",
+					usec: 300000,
+					bytes: 16000,
+				},
+				...(syslog
+					? [
+							{
+								unit: "rsyslog.service",
+								group: "/system.slice/rsyslog.service",
+								pid: 400,
+								argv0: "/usr/sbin/rsyslogd",
+								usec: 200000,
+								bytes: 10000,
+							},
+						]
+					: []),
+			].map((part) => ({ ...part, used: 0, moved: 0 }));
+			const show = () => {
+				for (const part of parts) {
+					m.units.set(part.unit, `ControlGroup=${part.group}\n`);
+					m.files.set(`/sys/fs/cgroup${part.group}/cpu.stat`, `usage_usec ${part.used}\n`);
+					// A slice holds no process: the watchdog runs in its own service under the control's slice.
+					const group = part.group.endsWith(".slice")
+						? `${part.group}/qorpera-machine-watchdog.service`
+						: part.group;
+					m.process(part.pid, group, `${part.argv0}\0`, `rchar: ${part.moved}\nwchar: 0\n`);
+				}
+			};
+			const sample = async () => {
+				const observed = await observeMachine([], ports);
+				return {
+					cpuUsec: observed.cpuUsec,
+					cpuSeconds: observed.cpuUsec / 1e6,
+					ioBytes: observed.ioBytes,
+					at: observed.at,
+				};
+			};
+			show();
+			let before = await sample();
+			/** The next look, 30 s on, with the control and the plumbing at work, the host stealing 2 s, and `work`: whether
+			 * the machine was busy since the look before, and what of the machine's it saw. */
+			const next = async (work: () => void) => {
+				m.tick(30000);
+				for (const part of parts) {
+					part.used += part.usec;
+					part.moved += part.bytes;
+					cpu[0] += part.usec / 10000;
+				}
+				cpu[7] += 200;
+				show();
+				work();
+				const after = await sample();
+				const seen = {
+					busy: idleRuleBusy(before, after),
+					cpuUsec: after.cpuUsec - before.cpuUsec,
+					ioBytes: after.ioBytes - before.ioBytes,
+				};
+				before = after;
+				return seen;
+			};
+			// Two looks with only them at work: not busy, nothing of the machine's.
+			expect(await next(() => {})).toEqual({ busy: false, cpuUsec: 0, ioBytes: 0 });
+			expect(await next(() => {})).toEqual({ busy: false, cpuUsec: 0, ioBytes: 0 });
+			// A nested VM's 1 s (guest, already in user) and 0.2 s niced (guest_nice, already in nice), and 0.1 s of
+			// interrupts, while the host steals 3 s more: 1.3 s of the machine's, each counted once, not busy.
+			expect(
+				await next(() => {
+					for (const [field, ticks] of [
+						[0, 100],
+						[8, 100],
+						[1, 20],
+						[9, 20],
+						[5, 5],
+						[6, 5],
+						[7, 300],
+					])
+						cpu[field] += ticks;
+				}),
+			).toEqual({ busy: false, cpuUsec: 1_300_000, ioBytes: 0 });
+			// A command's process that reads and writes 600 KB in 30 s is busy. So is a container's process (its scope) with
+			// containerd's, 400 KB and 200 KB.
+			const unit = (id: string) => `/qorpera.slice/qorpera-machine.slice/qorpera-machine-command-${id}.service`;
+			const build = await m.request("npm run build");
+			await startMachineCommand(build, m.ports);
+			expect(
+				await next(() =>
+					m.process(501, unit(build), "/bin/bash\0-l\0-c\0npm run build\0", "rchar: 400000\nwchar: 200000\n"),
+				),
+			).toEqual({ busy: true, cpuUsec: 0, ioBytes: 600000 });
+			expect(
+				await next(() => {
+					m.process(
+						600,
+						`/system.slice/docker-${"c".repeat(64)}.scope`,
+						"postgres\0",
+						"rchar: 400000\nwchar: 0\n",
+					);
+					m.process(650, "/system.slice/containerd.service", "/usr/bin/containerd\0", "rchar: 0\nwchar: 200000\n");
+				}),
+			).toEqual({ busy: true, cpuUsec: 0, ioBytes: 600000 });
+			// So is a program a command left behind once it ended (systemd keeps the command's unit while it runs), by the
+			// bytes it moves or by 2 s of the processor in 30 s.
+			const serve = await m.request("nohup ./serve.sh &");
+			await startMachineCommand(serve, m.ports);
+			m.exit(serve, 0);
+			expect(
+				await next(() => m.process(502, unit(serve), "/bin/sh\0./serve.sh\0", "rchar: 0\nwchar: 600000\n")),
+			).toEqual({ busy: true, cpuUsec: 0, ioBytes: 600000 });
+			expect(
+				await next(() => {
+					cpu[0] += 200;
+				}),
+			).toEqual({ busy: true, cpuUsec: 2_000_000, ioBytes: 0 });
+			expect(await next(() => {})).toEqual({ busy: false, cpuUsec: 0, ioBytes: 0 });
+		}
+	});
+
 	it("keeps the ended commands' output tails within one reply", async () => {
 		const m = await machine();
 		await prepareMachineGuest(m.machineId, 1, m.ports);
