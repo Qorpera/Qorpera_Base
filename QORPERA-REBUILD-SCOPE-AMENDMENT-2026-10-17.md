@@ -149,6 +149,6 @@ Reconcile the following documents and active briefs. Historical build records sh
 | `deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md` | Mark remaining 5h/5i deferred and split 5m core proofs from future-feature proofs. |
 | Coordinator registry, release list, feature briefs and launch checklist | Record this scope reset, stop conflicting dispatches, retain real core blockers, and separate optional enablement and deferred work. |
 
-The implementation handoff must call out the future removal instruction in `20260930352000_memory_run_log_gate.sql`; preserve an effective mode gate through a forward change rather than editing a merged migration.
+The implementation handoff must call out the future removal instruction in `20260928579100_memory_run_log_gate.sql`; preserve an effective mode gate through a forward change rather than editing a merged migration.
 
 This amendment authorizes scope correction and implementation planning. It does not itself authorize a new production deployment, destructive data migration, or deletion of user records. Completion reporting must distinguish **scope recorded**, **work reassigned**, **behavior implemented**, and **behavior verified**.

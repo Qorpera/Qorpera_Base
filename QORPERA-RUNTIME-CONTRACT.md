@@ -5728,7 +5728,7 @@ the proofs and the list of documents, is
      The Settings choice itself, with "Agent notebooks" as its default, is core; the beta option may show as
      unavailable until its checks pass.
    - The gate is kept by a forward change. No applied migration is edited, and the gate's planned removal (the note
-     in `20260930352000_memory_run_log_gate.sql`) does not happen.
+     in `20260928579100_memory_run_log_gate.sql`) does not happen.
 2. **Interfaces: two pages made by Qorpera, which an authorized member turns on.**
    - Interfaces are pages Qorpera designs. An authorized member turns one on for the company and connects it to data
      they may already read. The first scope is exactly two pages:
