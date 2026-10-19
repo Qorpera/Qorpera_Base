@@ -68,6 +68,9 @@ const DELIVERY_MS = 30000;
 const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"';
 /** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
 const LOG_LIMIT_BYTES = 67108864;
+/** One NAS storage check's own bound, as the coding host's. It runs from the check's start: the wait for the checks
+ * before it is bounded only by its caller's own signal (a start's 300 s, a stop's 120 s). */
+const STORAGE_TASK_MS = 5000;
 
 /** Why a boot whose folder ended (6d-2) has no /company, by the cause its ending keeps (#endings). */
 const FOLDER_ENDED: Readonly<Record<string, string>> = Object.freeze({
@@ -399,6 +402,8 @@ export class LxdCompanyMachineHost {
 	readonly #policy: Readonly<CompanyMachinePolicy>;
 	readonly #storage: CodingNasStorage;
 	readonly #work = new Map<string, Promise<unknown>>();
+	/** The last NAS storage check (#storageTask). */
+	#storageWork: Promise<unknown> = Promise.resolve();
 	/** Per placement: the boot whose helper was checked and prepared, the whole machine's last sample, and whether it was
 	 * busy since SQL last took that. */
 	readonly #guests = new Map<string, { bootId: string; sample: IdleRuleSample; busy: boolean }>();
@@ -450,15 +455,48 @@ export class LxdCompanyMachineHost {
 			if (this.#work.get(placementId) === next) this.#work.delete(placementId);
 		}
 	}
+	/** NAS storage checks run one at a time, each once the one before it settled: the storage refuses a check while
+	 * another runs (CODING_STORAGE_IO_PENDING), and a pass steps all its placements at once. Its caller leaves on its own
+	 * signal, or on the check's bound once the check began; a check whose caller left before it began never runs. The
+	 * chain keeps the real promise, so a check that outlives its caller (hard-NFS IO answers no signal) still holds off
+	 * the next. */
+	async #storageTask<T>(use: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+		const bound = new AbortController();
+		const left = AbortSignal.any([signal, bound.signal]);
+		const work = this.#storageWork
+			.catch(() => undefined)
+			.then(() => {
+				signal.throwIfAborted();
+				const checked = AbortSignal.any([signal, AbortSignal.timeout(STORAGE_TASK_MS)]);
+				checked.addEventListener("abort", () => bound.abort(checked.reason), { once: true });
+				return use(checked);
+			});
+		this.#storageWork = work;
+		let abort: (() => void) | undefined;
+		try {
+			return await Promise.race([
+				work,
+				new Promise<never>((_resolve, reject) => {
+					abort = () => reject(left.reason);
+					left.addEventListener("abort", abort, { once: true });
+					if (left.aborted) abort();
+				}),
+			]);
+		} finally {
+			if (abort) left.removeEventListener("abort", abort);
+		}
+	}
 	async #journalRoot(signal: AbortSignal): Promise<string> {
-		await this.#storage.assertControl(signal);
-		await checkDirectory(this.#options.journalRoot);
-		const path = join(this.#options.journalRoot, "company-machines");
-		await mkdir(path, { mode: 0o700 }).catch((error) => {
-			if (!code(error, "EEXIST")) throw error;
-		});
-		await checkDirectory(path);
-		return path;
+		return this.#storageTask(async (checked) => {
+			await this.#storage.assertControl(checked);
+			await checkDirectory(this.#options.journalRoot);
+			const path = join(this.#options.journalRoot, "company-machines");
+			await mkdir(path, { mode: 0o700 }).catch((error) => {
+				if (!code(error, "EEXIST")) throw error;
+			});
+			await checkDirectory(path);
+			return path;
+		}, signal);
 	}
 	#plan(e: CompanyMachineEntry) {
 		const plan = lxdCompanyMachineJournalPlan(e.binding);
