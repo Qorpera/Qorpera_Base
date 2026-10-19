@@ -18,7 +18,7 @@ ratified.
 > - Cancelled: switching the tree on for every company, trimming the notebook's tiers and tools, and removing the
 >   mode gate after W1d. M5 is now the reversible Settings choice.
 > - The gate between the modes stays for good, kept by a forward change. No applied migration is edited, and the
->   removal planned in the comments of `20260930352000_memory_run_log_gate.sql` does not happen.
+>   removal planned in the comments of `20260928579100_memory_run_log_gate.sql` does not happen.
 > - The mode applies to conversation views, new run logs, folding and composition, and the tree's background work.
 >   A run keeps the mode recorded when it is made, so a run queued before a change keeps the old mode. A change
 >   applies to the runs made after it.
