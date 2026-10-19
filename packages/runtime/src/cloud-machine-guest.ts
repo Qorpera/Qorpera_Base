@@ -532,9 +532,17 @@ export async function cancelMachineCommand(
 /** Linux's USER_HZ, the unit of /proc/stat on every architecture machines run. */
 const CLOCK_TICKS_PER_SECOND = 100;
 /** The machine's own control: the slice of the watchdog and the company folder's program, and the LXD agent the
- * executor's calls run under. Everything else on
- * the machine, its commands, containers and programs left behind, is the machine's work. */
-const OWN_UNITS = ["qorpera-control.slice", "lxd-agent.service"];
+ * executor's calls run under. And the system's plumbing: systemd (pid 1), the journal and syslog (where the image has
+ * it), which only start, log and stop for other processes, each counted on its own; the watchdog's timer alone makes
+ * them move about 123 KB every 10 s. A unit the machine does not have is skipped. Everything else on the machine, its
+ * commands, containers, their daemons and programs left behind, is the machine's work. */
+const OWN_UNITS = [
+	"qorpera-control.slice",
+	"lxd-agent.service",
+	"init.scope",
+	"systemd-journald.service",
+	"rsyslog.service",
+];
 /** At most this many processes are read for the bytes they moved. */
 const MACHINE_PROCESSES_READ = 8192;
 /** The ended commands' output tails share this many bytes of one reply, as JSON writes them (an escaped control
@@ -630,10 +638,10 @@ async function relayUsec(ports: MachineGuestPorts, bootId: string, relays: Map<s
 	});
 	return usec;
 }
-/** The whole machine's work so far, apart from its own control: the processor time it used (microseconds, all
- * processors) and the bytes its processes passed to read and write calls, the commands' relays aside (a relay only
- * copies its command's output to the log; its children, the command, count). The idle rule's busy measure, taken
- * between two looks. */
+/** The whole machine's work so far, apart from its own control and the system's plumbing: the processor time it used
+ * (microseconds, all processors) and the bytes its processes passed to read and write calls, the commands' relays
+ * aside (a relay only copies its command's output to the log; its children, the command, count). The idle rule's busy
+ * measure, taken between two looks. */
 async function machineWork(ports: MachineGuestPorts, bootId: string): Promise<{ cpuUsec: number; ioBytes: number }> {
 	const ticks = (await (ports.readCpu ?? (() => readFile("/proc/stat", "utf8")))())
 		.split("\n")[0]
@@ -641,7 +649,9 @@ async function machineWork(ports: MachineGuestPorts, bootId: string): Promise<{ 
 		.split(/\s+/)
 		.slice(1)
 		.map(Number);
-	const busy = ticks.reduce((sum, value) => sum + value, 0) - (ticks[3] ?? 0) - (ticks[4] ?? 0);
+	// user, nice, system, irq and softirq. Idle and iowait are no work, steal is the host's (it ran something else), and
+	// guest and guest_nice are already in user and nice.
+	const busy = [0, 1, 2, 5, 6].reduce((sum, field) => sum + (ticks[field] ?? 0), 0);
 	const own: string[] = [];
 	let ownUsec = 0;
 	for (const unit of OWN_UNITS) {
@@ -697,8 +707,8 @@ function tailWithin(text: string, budget: number): string {
 }
 
 /** One look inside for the executor's pass: how each listed command stands (only the ended ones are reported, with the
- * end of their output) and the whole machine's work so far apart from its own control, from which the executor sees a
- * busy machine (the one idle rule). The clock is the boot's (uptime). */
+ * end of their output) and the whole machine's work so far apart from its own control and the system's plumbing, from
+ * which the executor sees a busy machine (the one idle rule). The clock is the boot's (uptime). */
 export async function observeMachine(commandIds: readonly string[], ports: MachineGuestPorts = {}) {
 	requireRoot(ports);
 	if (commandIds.length > 64) throw new Error("MACHINE_GUEST_OBSERVATION_INVALID");
