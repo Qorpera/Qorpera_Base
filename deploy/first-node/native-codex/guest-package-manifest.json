@@ -132,8 +132,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 3244047,
-      "sha256": "9a78882c11c57d9a3ce91f20bb2b0a002caf1793cd61fe85596db08b38c1c632"
+      "bytes": 3189854,
+      "sha256": "75f3e52cfd932f740d734d1248e593814f38bbdf82f19859e8311b529438b7d1"
     },
     {
       "file": "qorpera-native-provider-host.service",
