@@ -3,7 +3,6 @@
 (() => {
 	const model = window.QORPERA_MOTION_MODEL;
 	// Native Ghost, Acorn, Rocket, and Crown shades remain shared choices.
-	// Choosing one on its original figure leaves that artwork untouched.
 	const palette = Object.freeze([
 		{ name: "Charcoal", color: "#312f2d" },
 		{ name: "Brown", color: "#87674c" },
@@ -18,71 +17,96 @@
 		{ name: "Gray", color: "#7c7c7a" },
 	].map(Object.freeze));
 	const selected = new Map();
-	const transforms = new Map();
 	const originals = new Map();
 	const rendered = new Map();
-	const materialLights = new Map();
-	// White-eye thresholds in each source's least-colored channel. Lighting is
-	// independent of this mask: preserve the original shadow/highlight field.
+	const materials = new Map();
+	// White-eye thresholds in each source's least-colored channel.
 	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, ghost: 95 });
 	const linearChannels = Array.from({ length: 256 }, (_, index) => {
 		const channel = index / 255;
 		return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
 	});
-	const toneSteps = 4095;
-	const rangeWeights = Float32Array.from({ length: 1025 }, (_, index) => Math.exp(-.5 * (index / 1024 / .22) ** 2));
+	const encode = (channel) => Math.round(Math.max(0, Math.min(1, channel <= .0031308 ? channel * 12.92 : 1.055 * channel ** (1 / 2.4) - .055)) * 255);
+	// Range weights for the light smoothing, indexed by a difference in stops
+	// over its range (4 ranges at most) at 256 steps per range.
+	const lightRange = .16;
+	const rangeWeights = Float32Array.from({ length: 1025 }, (_, index) => Math.exp(-.5 * (index / 256) ** 2));
+	// The material's tone ramp, sampled per 1/256 stop over the stops it reaches.
+	const toneLow = -1.6, toneHigh = .6, toneSamples = 564;
 
-	function smoothLighting(id, pixels, width, height) {
-		const source = [1, 3, 5].map((start) => Number.parseInt(avatar(id).color.slice(start, start + 2), 16));
-		const eyeChannel = source.indexOf(Math.min(...source));
-		const lights = new Float32Array(width * height);
-		const weights = new Float32Array(lights.length);
-		let count = 0;
-		for (let index = 0; index < lights.length; index++) {
+	function toOklab([red, green, blue]) {
+		const l = Math.cbrt(.4122214708 * red + .5363325363 * green + .0514459929 * blue);
+		const m = Math.cbrt(.2119034982 * red + .6806995451 * green + .1073969566 * blue);
+		const s = Math.cbrt(.0883024619 * red + .2817188376 * green + .6299787005 * blue);
+		return [.2104542553 * l + .793617785 * m - .0040720468 * s, 1.9779984951 * l - 2.428592205 * m + .4505937099 * s, .0259040371 * l + .7827717662 * m - .808675766 * s];
+	}
+
+	function fromOklch(lightness, chroma, hue) {
+		const a = chroma * Math.cos(hue), b = chroma * Math.sin(hue);
+		const l = (lightness + .3963377774 * a + .2158037573 * b) ** 3;
+		const m = (lightness - .1055613458 * a - .0638541728 * b) ** 3;
+		const s = (lightness - .0894841775 * a - 1.291485548 * b) ** 3;
+		return [4.0767416621 * l - 3.3077115913 * m + .2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - .3413193965 * s, -.0041960863 * l - .7034186147 * m + 1.707614701 * s];
+	}
+
+	// The strongest chroma below `limit` that stays inside sRGB at this
+	// lightness and hue.
+	function gamutChroma(lightness, hue, limit) {
+		const inside = (chroma) => fromOklch(lightness, chroma, hue).every((channel) => channel >= -.0005 && channel <= 1.0005);
+		if (inside(limit)) return limit;
+		let low = 0, high = limit;
+		for (let step = 0; step < 18; step++) {
+			const middle = (low + high) / 2;
+			if (inside(middle)) low = middle;
+			else high = middle;
+		}
+		return low;
+	}
+
+	// One smooth light field per plate, in stops. The source renders carry a
+	// paper grain; neighbors across a real crease (Planet's ring, Acorn's cap)
+	// differ by far more than the grain does, so the edge-aware passes melt
+	// the grain and keep the creases. Eyes and transparent pixels never count
+	// as neighbors, so neither brightens nor darkens the rim around them.
+	function lightField(pixels, coverage, eyes, width, height) {
+		let stops = new Float32Array(width * height);
+		for (let index = 0; index < stops.length; index++) {
 			const offset = index * 4;
-			lights[index] = linearChannels[pixels[offset]] * .2126 + linearChannels[pixels[offset + 1]] * .7152 + linearChannels[pixels[offset + 2]] * .0722;
-			// Keep the silhouette and white eyes out of the lighting filter.
-			// Their original alpha and antialiased edge pixels are never blurred.
-			if (!pixels[offset + 3] || pixels[offset + eyeChannel] > eyeStarts[id]) continue;
-			weights[index] = pixels[offset + 3] / 255;
-			count++;
+			const light = linearChannels[pixels[offset]] * .2126 + linearChannels[pixels[offset + 1]] * .7152 + linearChannels[pixels[offset + 2]] * .0722;
+			stops[index] = Math.log2(Math.max(.0001, light));
 		}
-		if (!count) return lights;
-		const radius = Math.max(2, Math.round(Math.min(width, height) / 85));
-		const spatial = Float32Array.from({ length: radius * 2 + 1 }, (_, index) => Math.exp(-.5 * ((index - radius) / (radius / 2)) ** 2));
-		// Two edge-aware passes remove fine source grain, not broad form or the
-		// ring/fold shadows. Log-light differences adapt to both dark and light
-		// originals, so Ghost's texture is not magnified by a bright recolor.
-		let filtered = lights;
-		for (const vertical of [false, true]) {
-			const output = new Float32Array(lights.length);
-			const guide = Float32Array.from(filtered, (light) => Math.log2(Math.max(.0001, light)));
-			for (let y = 0; y < height; y++) {
-				for (let x = 0; x < width; x++) {
-					const index = y * width + x;
-					if (!weights[index]) { output[index] = filtered[index]; continue; }
-					let sum = 0;
-					let total = 0;
-					const position = vertical ? y : x;
-					const limit = vertical ? height : width;
-					const stride = vertical ? width : 1;
-					for (let distance = Math.max(-radius, -position); distance <= Math.min(radius, limit - position - 1); distance++) {
-						const neighbor = index + distance * stride;
-						if (!weights[neighbor]) continue;
-						const difference = Math.round(Math.abs(guide[index] - guide[neighbor]) * 1024);
-						if (difference > 1024) continue;
-						const weight = spatial[distance + radius] * rangeWeights[difference] * weights[neighbor];
-						sum += filtered[neighbor] * weight;
-						total += weight;
+		const scale = width / 512;
+		const radius = Math.round(9 * scale);
+		const spatial = Float32Array.from({ length: radius * 2 + 1 }, (_, index) => Math.exp(-.5 * ((index - radius) / (4.5 * scale)) ** 2));
+		for (let pass = 0; pass < 3; pass++) {
+			for (const vertical of [false, true]) {
+				const output = new Float32Array(stops.length);
+				const limit = vertical ? height : width;
+				const stride = vertical ? width : 1;
+				for (let y = 0; y < height; y++) {
+					for (let x = 0; x < width; x++) {
+						const index = y * width + x;
+						output[index] = stops[index];
+						if (!coverage[index]) continue;
+						const position = vertical ? y : x;
+						let sum = 0;
+						let total = 0;
+						for (let distance = Math.max(-radius, -position); distance <= Math.min(radius, limit - position - 1); distance++) {
+							const neighbor = index + distance * stride;
+							if (coverage[neighbor] < .5 || (eyes && eyes[neighbor])) continue;
+							const difference = Math.round(Math.abs(stops[neighbor] - stops[index]) / lightRange * 256);
+							if (difference > 1024) continue;
+							const weight = spatial[distance + radius] * rangeWeights[difference] * coverage[neighbor];
+							sum += stops[neighbor] * weight;
+							total += weight;
+						}
+						if (total) output[index] = sum / total;
 					}
-					output[index] = sum / total;
 				}
+				stops = output;
 			}
-			filtered = output;
 		}
-		// Preserve some native grain at portrait scale without amplifying it
-		// into harsh chromatic noise. Broad lighting and silhouette stay intact.
-		return id === "ghost" ? filtered : Float32Array.from(filtered, (light, index) => light * .65 + lights[index] * .35);
+		return stops;
 	}
 
 	function avatar(id) {
@@ -102,89 +126,47 @@
 		else selected.set(id, value);
 	}
 
-	function hueSaturationValue(channels) {
-		const high = Math.max(...channels), low = Math.min(...channels);
-		const range = high - low;
-		const [red, green, blue] = channels;
-		const hue = range === 0 ? 0 : high === red ? ((green - blue) / range + 6) % 6 : high === green ? (blue - red) / range + 2 : (red - green) / range + 4;
-		return [hue, high ? range / high : 0, high];
-	}
-
-	function transform(id, value) {
-		const source = avatar(id).color;
+	// The chosen color as one smooth, saturated material: a tone ramp from
+	// stops of light (around the figure's median) to sRGB. Shade keeps its
+	// color instead of turning gray, light thins it only a little, and the
+	// color itself moves part of the way to the strongest sRGB chroma at its
+	// lightness and hue. Grays stay gray, muted colors (Brown) move less, and
+	// strong ones (Blue) are capped so they never turn electric.
+	function material(value) {
 		if (!/^#[\da-f]{6}$/.test(value)) throw new RangeError("Invalid avatar color");
-		if (source === value) return null;
-		const key = id + value;
-		if (transforms.has(key)) return transforms.get(key);
-		const from = [1, 3, 5].map((start) => linearChannels[Number.parseInt(source.slice(start, start + 2), 16)]);
-		const to = [1, 3, 5].map((start) => linearChannels[Number.parseInt(value.slice(start, start + 2), 16)]);
-		const baseLight = materialLights.get(id) ?? from[0] * .2126 + from[1] * .7152 + from[2] * .0722;
-		const eyeStart = eyeStarts[id] / 255;
-		// Transfer diffuse shade and highlight energy in linear light, anchored
-		// to the chosen color. No percentile clamp or flattened material range.
-		// A lookup table keeps recoloring responsive and preserves dark detail.
-		const tables = to.map((channel) => Array.from({ length: toneSteps + 1 }, (_, index) => {
-			const level = index / toneSteps;
-			const lit = level <= baseLight ? channel * level / baseLight : channel + (1 - channel) * (level - baseLight) / (1 - baseLight);
-			return lit <= .0031308 ? lit * 12.92 : 1.055 * lit ** (1 / 2.4) - .055;
-		}));
-		// Bright blue/green material is not a white eye. Preserve the eyes with
-		// their own channel mask rather than treating body brightness as white.
-		const eyeChannel = from.indexOf(Math.min(...from));
-		const eyeTable = Array.from({ length: 256 }, (_, index) => Math.max(0, (index / 255 - eyeStart) / (1 - eyeStart)));
-		const fromHsv = hueSaturationValue([1, 3, 5].map((start) => Number.parseInt(source.slice(start, start + 2), 16) / 255));
-		const toHsv = hueSaturationValue([1, 3, 5].map((start) => Number.parseInt(value.slice(start, start + 2), 16) / 255));
-		const result = { tables, eyeChannel, eyeTable, hueShift: toHsv[0] - fromHsv[0], saturationGain: (toHsv[1] / fromHsv[1]) ** .8, valueGain: toHsv[2] / fromHsv[2] };
-		transforms.set(key, result);
-		return result;
+		if (materials.has(value)) return materials.get(value);
+		const [lightness, a, b] = toOklab([1, 3, 5].map((start) => linearChannels[Number.parseInt(value.slice(start, start + 2), 16)]));
+		const hue = Math.atan2(b, a), chroma = Math.hypot(a, b);
+		const vivid = chroma < .03 ? chroma : chroma + Math.min(.045, chroma * .25, (gamutChroma(lightness, hue, .4) - chroma) * .85 * Math.min(1, chroma / .1));
+		// Charcoal reads its form through a wider lift, not through depth.
+		const dark = lightness < .4;
+		const ramp = new Uint8ClampedArray(toneSamples * 3);
+		for (let sample = 0; sample < toneSamples; sample++) {
+			const tone = (toneLow + (toneHigh - toneLow) * sample / (toneSamples - 1)) * .8;
+			const shade = tone < 0;
+			const level = Math.min(.97, Math.max(.12, lightness + .01 + tone * (dark ? (shade ? .16 : .09) : shade ? .11 : .06)));
+			const strength = vivid * (shade ? 1 + Math.min(.18, -tone * .15) : 1 - Math.min(.06, tone * .1));
+			const channels = fromOklch(level, gamutChroma(level, hue, strength), hue);
+			for (let channel = 0; channel < 3; channel++) ramp[sample * 3 + channel] = encode(channels[channel]);
+		}
+		materials.set(value, ramp);
+		return ramp;
 	}
 
-	function tintPixels(id, value, pixels, lighting = null, width = 512, hasEyes = true) {
-		const spec = transform(id, value);
-		if (!spec) return pixels;
-		const height = pixels.length / 4 / width;
-		const eyes = model.faces[id].map((eye) => ({ ...eye, cosine: Math.cos(eye.rotation * Math.PI / 180), sine: Math.sin(eye.rotation * Math.PI / 180) }));
-		for (let index = 0; index < pixels.length; index += 4) {
-			if (pixels[index + 3] === 0) continue;
-			if (pixels[index] === 255 && pixels[index + 1] === 255 && pixels[index + 2] === 255) continue;
-			if (id === "planet" || id === "flame") {
-				// These saturated portraits retain the source's value, pigment
-				// texture and highlight rolloff. A single luminance ramp created
-				// visible contour bands where the teal's red channel reached zero.
-				const original = hueSaturationValue([pixels[index], pixels[index + 1], pixels[index + 2]].map((channel) => channel / 255));
-				const hue = (original[0] + spec.hueShift + 6) % 6;
-				const saturation = Math.min(.98, original[1] * spec.saturationGain);
-				const value = Math.min(1, original[2] * spec.valueGain);
-				const chroma = value * saturation;
-				const secondary = chroma * (1 - Math.abs(hue % 2 - 1));
-				const shade = value - chroma;
-				const channels = [[chroma, secondary, 0], [secondary, chroma, 0], [0, chroma, secondary], [0, secondary, chroma], [secondary, 0, chroma], [chroma, 0, secondary]][Math.floor(hue)];
-				for (let channel = 0; channel < 3; channel++) pixels[index + channel] = Math.round((channels[channel] + shade) * 255);
-				continue;
-			}
-			const r = linearChannels[pixels[index]];
-			const g = linearChannels[pixels[index + 1]];
-			const b = linearChannels[pixels[index + 2]];
-			const level = (lighting ? lighting[index / 4] : r * .2126 + g * .7152 + b * .0722) * toneSteps;
-			const lower = Math.floor(level);
-			const upper = Math.min(toneSteps, lower + 1);
-			const x = ((index / 4) % width + .5) / width * 100;
-			const y = (Math.floor(index / 4 / width) + .5) / height * 100;
-			// White-eye protection belongs only to the measured eyes. Applying
-			// it across the body bleaches highlights and flattens teal and pink.
-			const inEye = hasEyes && eyes.some((eye) => {
-				const dx = x - eye.x, dy = y - eye.y;
-				const u = dx * eye.cosine + dy * eye.sine;
-				const v = -dx * eye.sine + dy * eye.cosine;
-				return Math.hypot(u, Math.max(0, Math.abs(v) - (eye.height - eye.width) / 2)) <= eye.width / 2 + 1;
-			});
-			const eye = inEye ? spec.eyeTable[pixels[index + spec.eyeChannel]] : 0;
-			for (let channel = 0; channel < 3; channel++) {
-				const table = spec.tables[channel];
-				const material = table[lower] + (table[upper] - table[lower]) * (level - lower);
-				const output = material + (1 - material) * eye;
-				pixels[index + channel] = Math.round(Math.max(0, Math.min(1, output)) * 255);
-			}
+	function paint(id, value, original) {
+		const figure = id.endsWith("-face") ? id.slice(0, -5) : id;
+		const ramp = material(value);
+		const median = originals.get(figure)?.median ?? original.median;
+		const { width, height, stops, eyes } = original;
+		const pixels = new ImageData(new Uint8ClampedArray(original.pixels.data), width, height);
+		const data = pixels.data;
+		for (let index = 0; index < stops.length; index++) {
+			const offset = index * 4;
+			if (!data[offset + 3]) continue;
+			const tone = Math.max(toneLow, Math.min(toneHigh, stops[index] - median));
+			const sample = Math.round((tone - toneLow) / (toneHigh - toneLow) * (toneSamples - 1)) * 3;
+			const eye = eyes ? eyes[index] : 0;
+			for (let channel = 0; channel < 3; channel++) data[offset + channel] = ramp[sample + channel] + (255 - ramp[sample + channel]) * eye;
 		}
 		return pixels;
 	}
@@ -249,14 +231,40 @@
 		}
 	}
 
+	// How white each pixel of a body is as part of an eye: the measured eye
+	// shapes, then the source's white in its least-colored channel.
+	function eyeCover(id, pixels, width, height) {
+		const source = [1, 3, 5].map((start) => Number.parseInt(avatar(id).color.slice(start, start + 2), 16));
+		const eyeChannel = source.indexOf(Math.min(...source));
+		const eyeStart = eyeStarts[id] / 255;
+		const eyes = model.faces[id].map((eye) => ({ ...eye, cosine: Math.cos(eye.rotation * Math.PI / 180), sine: Math.sin(eye.rotation * Math.PI / 180) }));
+		const cover = new Float32Array(width * height);
+		for (let index = 0; index < cover.length; index++) {
+			const offset = index * 4;
+			if (!pixels[offset + 3]) continue;
+			const x = (index % width + .5) / width * 100;
+			const y = (Math.floor(index / width) + .5) / height * 100;
+			const inEye = eyes.some((eye) => {
+				const dx = x - eye.x, dy = y - eye.y;
+				const u = dx * eye.cosine + dy * eye.sine;
+				const v = -dx * eye.sine + dy * eye.cosine;
+				return Math.hypot(u, Math.max(0, Math.abs(v) - (eye.height - eye.width) / 2)) <= eye.width / 2 + 1;
+			});
+			if (inEye) cover[index] = Math.max(0, (pixels[offset + eyeChannel] / 255 - eyeStart) / (1 - eyeStart));
+		}
+		return cover;
+	}
+
 	function prepare(id, image) {
 		const isFace = id.endsWith("-face");
 		const figure = isFace ? id.slice(0, -5) : id;
 		avatar(figure);
 		if (originals.has(id)) return;
 		const body = isFace ? originals.get(figure) : null;
-		const width = body && figure !== "planet" ? body.width : image.naturalWidth;
-		const height = body && figure !== "planet" ? body.height : image.naturalHeight;
+		// A face plate is read at its body's size; the Planet plate's larger
+		// source is resampled here, as the other six plates were when exported.
+		const width = body ? body.width : image.naturalWidth;
+		const height = body ? body.height : image.naturalHeight;
 		const canvas = document.createElement("canvas");
 		canvas.width = width;
 		canvas.height = height;
@@ -274,50 +282,30 @@
 		} else if (isFace && body) {
 			matchFaceLighting(figure, pixels.data, body.pixels.data, width, height);
 		}
-		const lighting = smoothLighting(figure, pixels.data, width, height);
-		if (!isFace) {
-			// Anchor the material to its measured median light, not the luminance
-			// of three independently sampled channel medians. That small offset
-			// otherwise adds an unwanted pale tint to saturated green and teal.
-			const histogram = new Uint32Array(toneSteps + 1);
-			let count = 0;
-			for (let index = 0; index < pixels.data.length; index += 4) {
-				const data = pixels.data;
-				if (data[index + 3] !== 255 || Math.min(data[index], data[index + 1], data[index + 2]) >= 220) continue;
-				const light = lighting[index / 4];
-				histogram[Math.round(light * toneSteps)]++;
-				count++;
-			}
-			if (count > 0) {
-				let cumulative = 0;
-				for (let level = 0; level <= toneSteps; level++) {
-					cumulative += histogram[level];
-					if (cumulative <= count / 2) continue;
-					if (level > 0 && level < toneSteps) materialLights.set(id, level / toneSteps);
-					break;
-				}
-				for (const key of transforms.keys()) if (key.startsWith(id + "#")) transforms.delete(key);
-			}
-		}
-		originals.set(id, { image, pixels, lighting, width, height });
+		// The body's alpha is the silhouette: the Planet plate is opaque, and
+		// drawing clips every plate to its body.
+		const silhouette = body ? body.pixels.data : pixels.data;
+		const coverage = Float32Array.from({ length: width * height }, (_, index) => silhouette[index * 4 + 3] / 255);
+		const eyes = isFace ? null : eyeCover(figure, pixels.data, width, height);
+		const stops = lightField(pixels.data, coverage, eyes, width, height);
+		// Anchor the ramp to the body's median light, so a body and its plate
+		// meet without a seam.
+		const lights = [];
+		for (let index = 0; index < stops.length; index++) if (coverage[index] === 1 && !(eyes && eyes[index])) lights.push(stops[index]);
+		lights.sort((first, second) => first - second);
+		const median = lights.length ? lights[lights.length >> 1] : 0;
+		originals.set(id, { image, pixels, stops, eyes, median, width, height });
 	}
 
 	function variant(id, value) {
 		const original = originals.get(id);
 		if (!original) throw new Error(`Avatar artwork not prepared: ${id}`);
-		const isFace = id.endsWith("-face");
-		const figure = isFace ? id.slice(0, -5) : id;
-		if (!isFace && value === avatar(figure).color) return { image: original.image, url: original.image.src };
 		const key = id + value;
 		if (rendered.has(key)) return rendered.get(key);
 		const canvas = document.createElement("canvas");
 		canvas.width = original.width;
 		canvas.height = original.height;
-		const context = canvas.getContext("2d", { colorSpace: "srgb" });
-		const pixels = context.createImageData(original.width, original.height);
-		pixels.data.set(original.pixels.data);
-		tintPixels(figure, value, pixels.data, original.lighting, original.width, !isFace);
-		context.putImageData(pixels, 0, 0);
+		canvas.getContext("2d", { colorSpace: "srgb" }).putImageData(paint(id, value, original), 0, 0);
 		const result = { image: canvas, url: canvas.toDataURL("image/png") };
 		rendered.set(key, result);
 		return result;
@@ -331,5 +319,5 @@
 		return variant(id, value).image;
 	}
 
-	window.QORPERA_AVATAR_APPEARANCE = Object.freeze({ palette, color, setColor, transform, tintPixels, prepare, source, drawable });
+	window.QORPERA_AVATAR_APPEARANCE = Object.freeze({ palette, color, setColor, prepare, source, drawable });
 })();
