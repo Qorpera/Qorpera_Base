@@ -35,7 +35,7 @@
 	const toneLow = -1.6, toneHigh = .8, toneSamples = 615;
 	// The source renders' silhouettes fade over about 6 px at 512; their
 	// coverage is steepened around its middle so a figure's edge is crisp.
-	const edgeGain = 2.5;
+	const edgeGain = 2;
 
 	function toOklab([red, green, blue]) {
 		const l = Math.cbrt(.4122214708 * red + .5363325363 * green + .0514459929 * blue);
