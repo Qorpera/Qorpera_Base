@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { parseCompanyStateFile, writeSectionsFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
@@ -14,10 +15,12 @@ import {
 	parseCompanySidebar,
 	type SidebarRequest,
 } from "../src/cloud/sidebar.ts";
+import { SECTIONS_PATH } from "../src/cloud/sidebar-sections-file.ts";
 import type { HostedSession, HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { folderFake } from "./folder-fake.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -113,6 +116,63 @@ function companyWith(
 	cleanup.push(company.store.subscribe(draw));
 	draw();
 	return { f, company, rail, draw, manage, read, ready: company.refreshSidebar() };
+}
+
+/** A folder-v2 company: its sections are agents/sections.md, whose commit places the sidebar (sections keep their ids
+ * by name), and the sidebar RPC refuses section changes and moves, as the cloud does; pins stay the RPC's. */
+function companyWithFile(sections: [string, ...string[]][], pinned: string[] = []) {
+	const fake = folderFake();
+	fake.put(
+		SECTIONS_PATH,
+		writeSectionsFile({
+			sections: sections.map(([name, ...ids]) => ({
+				name,
+				line: 0,
+				members: ids.map((itemId) => ({ id: itemId, line: 0 })),
+			})),
+		}),
+	);
+	const sectionIds = new Map([
+		["research", research],
+		["ops", ops],
+	]);
+	let pins = [...pinned];
+	const placed = (): CompanySidebar => {
+		const parsed = parseCompanyStateFile(SECTIONS_PATH, fake.text(SECTIONS_PATH) ?? "");
+		if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
+		const placements: CompanySidebar["placements"] = {};
+		const list = parsed.file.sections.map((section) => {
+			const key = section.name.toLowerCase();
+			if (!sectionIds.has(key)) sectionIds.set(key, id(70 + sectionIds.size));
+			const sectionId = sectionIds.get(key)!;
+			section.members.forEach((member, position) => {
+				placements[member.id] = { sectionId, position };
+			});
+			return { sectionId, name: section.name };
+		});
+		return { sections: list, placements, pinned: [...pins], hidden: [], groupChats: true };
+	};
+	const made = companyWith(placed());
+	made.read.mockImplementation(async () => placed());
+	made.manage.mockImplementation(async (_profileId, request) => {
+		if (request.action !== "set_pins")
+			throw new CloudRpcError(
+				"qorpera_manage_company_sidebar",
+				{ message: "This company keeps its sections in agents/sections.md; edit that file", code: "55000" },
+				400,
+			);
+		pins = [...request.order];
+		return placed();
+	});
+	made.company.useSectionsFile(() => fake.folder);
+	return { ...made, fake, placed };
+}
+
+/** The file's sections as names, each with its ids. */
+function fileSections(text: string | undefined): [string, ...string[]][] {
+	const parsed = parseCompanyStateFile(SECTIONS_PATH, text ?? "");
+	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
+	return parsed.file.sections.map((section) => [section.name, ...section.members.map((member) => member.id)]);
 }
 
 const names = (elements: Iterable<Element>) =>
@@ -792,6 +852,118 @@ describe("dragging agents in the rail", () => {
 		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Launch", "Dee"]);
 		// The drop's click guard lasts one task; let it go before the next test clicks.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("moves agents by editing agents/sections.md, where the sidebar RPC refuses moves", async () => {
+		const { rail, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id], ["Ops"]], [dee.id]);
+		await ready;
+		await settle();
+		let boxes = layout(rail);
+		drag(rowOf(rail, "Cy"), boxes.get(rowOf(rail, "Ada"))!, rail);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, cy.id, ada.id], ["Ops"]]);
+		expect(fake.text(SECTIONS_PATH)).toContain(`- ${cy.id} Cy\n`);
+		expect(manage).not.toHaveBeenCalled();
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Cy", "Ada"]);
+		expect(rail.querySelector(".notice")).toBeNull();
+		// Out of the pinned row into a section: the file places it, and the pin goes.
+		boxes = layout(rail);
+		drag(rail.querySelector(".rail-pin")!, boxes.get(rowOf(rail, "Cy"))!, rail);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, dee.id, cy.id, ada.id], ["Ops"]]);
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [], groupChats: true });
+		expect(rail.querySelector(".rail-pin")).toBeNull();
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Dee", "Cy", "Ada"]);
+		expect(rail.querySelector(".notice")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("says Unassigned keeps no order, and sends nothing for a reorder there", async () => {
+		const { rail, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id]]);
+		await ready;
+		await settle();
+		const unassigned = () =>
+			groups(rail)
+				.find((group) => group.includes("Cy"))!
+				.slice(1);
+		expect(unassigned()).toEqual(["Cy", "Dee", "Fixture conversation"]);
+		const boxes = layout(rail);
+		drag(rowOf(rail, "Dee"), boxes.get(rowOf(rail, "Cy"))!, rail);
+		await settle();
+		expect(rail.querySelector(".notice")?.textContent).toContain(
+			"Agents outside a section stay in the order they joined. Put them in a section to order them.",
+		);
+		expect(fake.commits).toHaveLength(0);
+		expect(manage).not.toHaveBeenCalled();
+		expect(unassigned()).toEqual(["Cy", "Dee", "Fixture conversation"]);
+		// So does Alt and an arrow.
+		rail.querySelector<HTMLElement>(".notice button")?.click();
+		const dee2 = rowOf(rail, "Dee");
+		dee2.focus();
+		dee2.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true, cancelable: true }),
+		);
+		await settle();
+		expect(rail.querySelector(".notice")?.textContent).toContain("Agents outside a section stay in the order");
+		expect(fake.commits).toHaveLength(0);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("names a new section in the moves queued behind it, before the cloud answers", async () => {
+		const { company, rail, fake, ready } = companyWithFile([["Research", bo.id, ada.id]]);
+		await ready;
+		await settle();
+		const made = company.changeSidebar({
+			action: "create_section",
+			sectionId: id(80),
+			name: "Sales",
+			staffAgentId: cy.id,
+		});
+		const moved = company.changeSidebar({ action: "move_agent", staffAgentId: dee.id, sectionId: id(80) });
+		expect(await Promise.all([made, moved])).toEqual([true, true]);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([
+			["Research", bo.id, ada.id],
+			["Sales", cy.id, dee.id],
+		]);
+		expect(groups(rail).slice(0, 2)).toEqual([
+			["Research", "Bo", "Ada"],
+			["Sales", "Cy", "Dee"],
+		]);
+		expect(company.store.get().sidebar?.sections.map((section) => section.sectionId)).not.toContain(id(80));
+	});
+	it("sends no unpin once the company is left while the moved sidebar is read", async () => {
+		const { company, rail, read, manage, fake, placed, ready } = companyWithFile(
+			[["Research", bo.id, ada.id]],
+			[dee.id],
+		);
+		await ready;
+		await settle();
+		const answer = deferred<CompanySidebar>();
+		read.mockImplementationOnce(() => answer.promise);
+		const boxes = layout(rail);
+		drag(rail.querySelector(".rail-pin")!, boxes.get(rowOf(rail, "Ada"))!, rail);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, dee.id, ada.id]]);
+		company.stop();
+		// What the commit placed: Dee is in Research and still pinned, until the unpin that must not come.
+		const moved = placed();
+		expect(moved.pinned).toEqual([dee.id]);
+		answer.resolve(moved);
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("puts the sections back and says why when the company folder refuses the file", async () => {
+		const { rail, fake, ready } = companyWithFile([["Research", bo.id, ada.id]]);
+		await ready;
+		await settle();
+		fake.answer("refused", "structured_rule", [`the Co-Founder stands above the sections; remove ${cofounder.id}`]);
+		const boxes = layout(rail);
+		drag(rowOf(rail, "Cy"), boxes.get(rowOf(rail, "Ada"))!, rail);
+		await settle();
+		expect(fake.commits).toHaveLength(1);
+		expect(rail.querySelector(".notice")?.textContent).toContain("The Co-Founder stays on top, above the sections.");
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada"]);
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, ada.id]]);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 });
