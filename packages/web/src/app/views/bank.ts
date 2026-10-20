@@ -370,7 +370,8 @@ class BankView {
 		const drawn = smoothed(points);
 		const least = Math.min(...drawn);
 		const most = Math.max(...drawn);
-		const step = axisStep(most - least || Math.abs(most) || 1);
+		// Never less than a krone apart, so the lines' names, whole kroner at the finest, always differ.
+		const step = Math.max(1, axisStep(most - least || Math.abs(most) || 1));
 		const low = Math.floor(least / step) * step;
 		const high = Math.max(low + step, Math.ceil(most / step) * step);
 		const x = (index: number) => (index / (points.length - 1)) * CHART_WIDTH;
