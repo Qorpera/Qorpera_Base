@@ -699,6 +699,82 @@ describe("a folder-v2 company's Company File", () => {
 		expect(older()).toBeDefined();
 	});
 
+	it("forgets older Recents when a folder listing moves past feed changes it never read", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host, browser } = await opened({ embedded: true });
+		const shown = () =>
+			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
+		const older = () =>
+			[...host.querySelectorAll<HTMLButtonElement>(".storage-recents button")].find(
+				(button) => button.textContent === "Show older",
+			);
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 4, items: [recentSet(4), recentSet(3)], next: 3 });
+		browser.showRecents();
+		await settle();
+		fake.client.history.mockResolvedValueOnce({
+			asOfSeq: 4,
+			items: [recentSet(2, "secret/plan.md"), recentSet(1)],
+			next: null,
+		});
+		await click(older());
+		expect(shown()).toContain("secret/plan.md");
+		// An ordinary change at 5 in the open folder makes the sync list it again; access to secret/ goes at 6, before
+		// the listing answers, so the listing is as of 6 and the feed's authority event at 6 is never read.
+		fake.bump(5);
+		fake.changes.push({
+			asOfSeq: 5,
+			resync: false,
+			events: [
+				{
+					kind: "change_set",
+					seq: 5,
+					commitId: id(300),
+					at,
+					by: { kind: "member", userId: other },
+					changes: [
+						{
+							unitNo: 1,
+							op: "write",
+							kind: "file",
+							path: "new.txt",
+							version: id(105),
+							priorVersion: null,
+							updatedAt: at,
+							file: file("New."),
+							target: null,
+						},
+					],
+				},
+			],
+			next: { afterSeq: 5, cursor: null },
+			more: false,
+		});
+		const listing = deferred<CloudMemberFolderListPage>();
+		fake.client.list.mockReturnValueOnce(listing.promise);
+		fake.client.history.mockResolvedValueOnce({
+			asOfSeq: 6,
+			items: [recentSet(5, "new.txt"), recentSet(4)],
+			next: 4,
+		});
+		src.hint(5);
+		await vi.advanceTimersByTimeAsync(1100);
+		fake.bump(6);
+		listing.resolve({ asOfSeq: 6, entries: [entry("new.txt", "New.")], next: null });
+		await settle();
+		expect(shown()).toEqual(["new.txt", "change-4.txt"]);
+		expect(host.querySelector(".storage-recents")?.textContent).not.toContain("secret/plan.md");
+		expect(older()).toBeDefined();
+		// Later polls follow the feed from 6; the forgotten rows do not come back.
+		fake.client.history.mockResolvedValueOnce({
+			asOfSeq: 6,
+			items: [recentSet(5, "new.txt"), recentSet(4)],
+			next: 4,
+		});
+		await vi.advanceTimersByTimeAsync(61_000);
+		await settle();
+		expect(shown()).toEqual(["new.txt", "change-4.txt"]);
+	});
+
 	it("reads through every change that arrived between two refreshes before joining the older Recents pages", async () => {
 		vi.useFakeTimers();
 		const { fake, src, host, browser } = await opened({ embedded: true });

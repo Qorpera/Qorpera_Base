@@ -544,8 +544,11 @@ export class CompanyFolderBrowser {
 		this.#next = page.next;
 		// The listing is current as of asOfSeq: the feed is followed from there. Changes in between are not examined,
 		// so an open file is read again when the position moves.
-		const jumped =
-			!append && this.#position !== null && page.asOfSeq > this.#position.afterSeq && this.#opened !== null;
+		const skipped = !append && this.#position !== null && page.asOfSeq > this.#position.afterSeq;
+		const jumped = skipped && this.#opened !== null;
+		// The feed between the old position and asOfSeq is never read, so an authority change there would go unseen:
+		// Recents read before is forgotten as if one had been seen.
+		if (skipped) this.#forgetRecents();
 		if (!append && (this.#position === null || page.asOfSeq > this.#position.afterSeq))
 			this.#position = { afterSeq: page.asOfSeq, cursor: null };
 		if (moved) this.#search.value = "";
