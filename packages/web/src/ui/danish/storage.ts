@@ -3,8 +3,6 @@ export const STORAGE: Record<string, string> = {
 	"Settings and storage": "Indstillinger og lager",
 	Documents: "Dokumenter",
 	Recents: "Seneste",
-	Esc: "Esc",
-	"to close": "for at lukke",
 	Folder: "Mappe",
 	Link: "Link",
 	Markdown: "Markdown",
@@ -27,6 +25,6 @@ export const STORAGE: Record<string, string> = {
 	"{shown} of {count} loaded items": "{shown} af {count} indlæste elementer",
 	"{count} items": "{count} elementer",
 	"{shown} of {count} items": "{shown} af {count} elementer",
-	"Recent changes to company documents.": "Seneste ændringer i virksomhedens dokumenter.",
+	Yesterday: "I går",
 	"No recent changes match your search.": "Ingen seneste ændringer matcher din søgning.",
 };

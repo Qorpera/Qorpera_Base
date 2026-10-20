@@ -14,7 +14,7 @@ import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
-import { presentationLocale, t } from "../../ui/preferences.ts";
+import { presentationDay, presentationLocale, t, timeZoneOption } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
@@ -71,6 +71,63 @@ function fileKind(item: Pick<CloudMemberFolderEntry, "kind" | "path">): string {
 	if (MARKDOWN.has(ext)) return t("Markdown");
 	if (ext === "txt") return t("Text document");
 	return ext ? ext.toUpperCase() : t("File");
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+
+function svgNode(name: string, attributes: Record<string, string | number>, text?: string): SVGElement {
+	const node = document.createElementNS(SVG, name);
+	for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+	if (text) node.textContent = text;
+	return node;
+}
+
+/** The icon view's large glyphs, drawn as one family: a two-tone folder, and a page with a folded corner whose coloured
+ * tag names the file's type, the way a desktop file manager draws them. Colours come from the category's CSS. */
+function tileGlyph(item: CloudMemberFolderEntry, category: FileCategory): SVGSVGElement {
+	const svg = svgNode("svg", { class: "storage-glyph", viewBox: "0 0 64 64", "aria-hidden": "true" }) as SVGSVGElement;
+	if (category === "folder") {
+		svg.append(
+			svgNode("path", {
+				class: "storage-glyph-back",
+				d: "M6 16a4 4 0 0 1 4-4h14l5 5h25a4 4 0 0 1 4 4v29a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4Z",
+			}),
+			svgNode("path", {
+				class: "storage-glyph-front",
+				d: "M6 24a4 4 0 0 1 4-4h44a4 4 0 0 1 4 4v26a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4Z",
+			}),
+		);
+		return svg;
+	}
+	svg.append(
+		svgNode("path", {
+			class: "storage-glyph-page",
+			d: "M15 5h24l13 13v38a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3Z",
+		}),
+		svgNode("path", { class: "storage-glyph-fold", d: "M39 5v10a3 3 0 0 0 3 3h10" }),
+	);
+	if (category === "image")
+		svg.append(
+			svgNode("path", { class: "storage-glyph-mark", d: "M19 44l7-8 5 5 4-4 9 7Z" }),
+			svgNode("circle", { class: "storage-glyph-mark", cx: 36, cy: 29, r: 3 }),
+		);
+	else if (category === "link")
+		svg.append(
+			svgNode("path", {
+				class: "storage-glyph-line",
+				d: "M27 38h-2a5 5 0 0 1 0-10h2M37 28h2a5 5 0 0 1 0 10h-2M27 33h10",
+			}),
+		);
+	else svg.append(svgNode("path", { class: "storage-glyph-line", d: "M20 26h18M20 32h24M20 38h14" }));
+	const tag = category === "link" ? "" : extension(item.path).slice(0, 4).toUpperCase();
+	if (tag) {
+		const width = Math.max(22, tag.length * 7 + 10);
+		svg.append(
+			svgNode("rect", { class: "storage-glyph-tag", x: 32 - width / 2, y: 46, width, height: 12, rx: 3 }),
+			svgNode("text", { class: "storage-glyph-tag-text", x: 32, y: 54.6, "text-anchor": "middle" }, tag),
+		);
+	}
+	return svg;
 }
 
 /** An open file, with its text or a picture's object URL when it has a preview, or an open link, which shows its target
@@ -139,7 +196,6 @@ export class CompanyFolderBrowser {
 	readonly #options: CompanyFolderBrowserOptions;
 	readonly #stop: AbortController;
 	readonly #locale = presentationLocale();
-	readonly #when: Intl.DateTimeFormat;
 	readonly #root = h("div", { class: "files-root" });
 	readonly #status = h("div", { class: "files-status", role: "status" });
 	/** The restores whose answer was lost, each with its Try again; no other message or sync clears them. */
@@ -209,7 +265,6 @@ export class CompanyFolderBrowser {
 				spellcheck: "false",
 			});
 		this.#stop = new AbortController();
-		this.#when = new Intl.DateTimeFormat(this.#locale, { dateStyle: "medium", timeStyle: "short" });
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 		this.#search.addEventListener(
 			"input",
@@ -391,6 +446,13 @@ export class CompanyFolderBrowser {
 		);
 	}
 
+	/** Draws the shown dates again, in the time zone and language chosen now, without reading anything. */
+	redraw(): void {
+		if (!this.#ready || this.#disposed) return;
+		this.#drawList(false);
+		if (this.#section === "recents") this.#drawRecents();
+	}
+
 	#setSection(section: "documents" | "recents"): void {
 		this.#section = section;
 		this.#documents.hidden = section !== "documents";
@@ -521,9 +583,9 @@ export class CompanyFolderBrowser {
 
 	#drawCrumbs(): void {
 		const parts = this.#dir ? this.#dir.split("/") : [];
+		// The title already names the top folder, so the trail is drawn only below it.
+		this.#crumbs.hidden = this.#options.embedded === true && parts.length === 0;
 		const steps: HTMLElement[] = [
-			h("span", { class: "storage-company-crumb" }, t("Company")),
-			h("span", { class: "files-crumb-sep", "aria-hidden": "true" }, icon("chevron")),
 			parts.length
 				? h(
 						"button",
@@ -614,10 +676,7 @@ export class CompanyFolderBrowser {
 				h(
 					"span",
 					{ class: `files-kind is-${category}`, "aria-hidden": "true" },
-					icon(kind),
-					category === "document" || category === "pdf" || category === "other"
-						? h("span", { class: "storage-extension" }, extension(item.path).slice(0, 5).toUpperCase())
-						: null,
+					this.#view === "grid" && this.#options.embedded ? tileGlyph(item, category) : icon(kind),
 				),
 				h(
 					"span",
@@ -630,16 +689,16 @@ export class CompanyFolderBrowser {
 								`→ ${item.target}`,
 							)
 						: null,
-					h("span", { class: "storage-grid-meta" }, item.file ? `${label} · ${fmtBytes(item.file.bytes)}` : label),
+					item.file ? h("span", { class: "storage-grid-meta" }, fmtBytes(item.file.bytes)) : null,
 				),
 				h(
 					"time",
 					{
 						class: "storage-modified",
 						datetime: item.updatedAt,
-						title: this.#when.format(new Date(item.updatedAt)),
+						title: this.#format(item.updatedAt),
 					},
-					fmtTime(item.updatedAt),
+					this.#modified(item.updatedAt),
 				),
 				h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : "—"),
 				h("span", { class: "storage-kind-label" }, label),
@@ -707,14 +766,14 @@ export class CompanyFolderBrowser {
 		}
 		if (touchedFolder) await this.#reloadFolder();
 		if (touchedFile) await this.#refreshOpened();
-		if (this.#section === "recents") await this.#loadRecents();
+		if (this.#section === "recents") await this.#loadRecents("refresh");
 	}
 
 	/** Reads the open folder and the open file again, from a fresh position. */
 	async #reload(): Promise<void> {
 		await this.#reloadFolder();
 		await this.#refreshOpened();
-		if (this.#section === "recents") await this.#loadRecents();
+		if (this.#section === "recents") await this.#loadRecents("refresh");
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
@@ -880,7 +939,7 @@ export class CompanyFolderBrowser {
 				? h(
 						"p",
 						{ class: "files-note" },
-						t("An earlier version, from {when}.", { when: this.#when.format(new Date(opened.version.at)) }),
+						t("An earlier version, from {when}.", { when: this.#format(opened.version.at) }),
 					)
 				: null,
 			h("div", { class: "files-preview-body" }, body),
@@ -908,6 +967,29 @@ export class CompanyFolderBrowser {
 	}
 
 	// ---- history ----------------------------------------------------------------
+
+	/** A moment in full, in the time zone chosen now: Settings can change the zone while this browser stays open. */
+	#format(iso: string): string {
+		return new Date(iso).toLocaleString(this.#locale, {
+			dateStyle: "medium",
+			timeStyle: "short",
+			...timeZoneOption(),
+		});
+	}
+
+	/** A file's modified time, the way a file manager says it: today and yesterday by name, then the date. */
+	#modified(iso: string): string {
+		const date = new Date(iso);
+		if (Number.isNaN(date.getTime())) return "";
+		const zone = timeZoneOption();
+		const day = presentationDay(date, zone.timeZone);
+		const now = new Date();
+		const time = date.toLocaleTimeString(this.#locale, { hour: "2-digit", minute: "2-digit", ...zone });
+		if (day === presentationDay(now, zone.timeZone)) return t("Today {time}", { time });
+		if (day === presentationDay(new Date(now.getTime() - 86_400_000), zone.timeZone))
+			return t("Yesterday {time}", { time });
+		return fmtTime(iso);
+	}
 
 	#who(by: CloudMemberFolderBy): string {
 		const people = this.#people();
@@ -957,7 +1039,7 @@ export class CompanyFolderBrowser {
 					"div",
 					{ class: "folder-history-what" },
 					h("span", null, this.#what(version)),
-					h("small", null, `${this.#who(version.by)} · ${this.#when.format(new Date(version.at))}`),
+					h("small", null, `${this.#who(version.by)} · ${this.#format(version.at)}`),
 				),
 				held ? this.#viewButton(path, version) : null,
 				held && version.version !== current ? this.#restoreButton(path, version) : null,
@@ -984,19 +1066,13 @@ export class CompanyFolderBrowser {
 			() => void this.#run(() => this.#show({ path, file: version.file, target: version.target, version })),
 			{ small: true },
 		);
-		control.setAttribute(
-			"aria-label",
-			t("View the version from {when}", { when: this.#when.format(new Date(version.at)) }),
-		);
+		control.setAttribute("aria-label", t("View the version from {when}", { when: this.#format(version.at) }));
 		return control;
 	}
 
 	#restoreButton(path: string, version: CloudMemberFolderVersion): HTMLButtonElement {
 		const control = button(t("Restore"), () => void this.#run(() => this.#restore(path, version)), { small: true });
-		control.setAttribute(
-			"aria-label",
-			t("Restore the version from {when}", { when: this.#when.format(new Date(version.at)) }),
-		);
+		control.setAttribute("aria-label", t("Restore the version from {when}", { when: this.#format(version.at) }));
 		return control;
 	}
 
@@ -1076,7 +1152,7 @@ export class CompanyFolderBrowser {
 				h(
 					"div",
 					{ class: "folder-history-what" },
-					h("small", null, `${this.#who(set.by)} · ${this.#when.format(new Date(set.at))}`),
+					h("small", null, `${this.#who(set.by)} · ${this.#format(set.at)}`),
 					h(
 						"ul",
 						{ class: "folder-history-paths" },
@@ -1104,11 +1180,23 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	async #loadRecents(append = false): Promise<void> {
-		const page = await this.#client!.history(append ? this.#recentNext : null, 20, this.#signal());
+	/** Recents' newest page ("fresh"), the page below what is shown ("older"), or the newest page again on a sync
+	 * ("refresh"), which keeps the older pages already shown below it so "Show older" is not undone by a poll. */
+	async #loadRecents(mode: "fresh" | "older" | "refresh" = "fresh"): Promise<void> {
+		const page = await this.#client!.history(mode === "older" ? this.#recentNext : null, 20, this.#signal());
 		this.#live();
-		this.#recentSets = append ? [...this.#recentSets, ...page.items] : [...page.items];
-		this.#recentNext = page.next;
+		if (mode === "older") {
+			this.#recentSets = [...this.#recentSets, ...page.items];
+			this.#recentNext = page.next;
+		} else {
+			const oldest = page.items.at(-1)?.seq;
+			const kept =
+				mode === "refresh" && page.next !== null && oldest !== undefined
+					? this.#recentSets.filter((set) => set.seq < oldest)
+					: [];
+			this.#recentSets = [...page.items, ...kept];
+			if (kept.length === 0) this.#recentNext = page.next;
+		}
 		this.#drawRecents();
 	}
 
@@ -1120,33 +1208,113 @@ export class CompanyFolderBrowser {
 				paths: set.paths.filter((item) => !query || item.path.toLocaleLowerCase(this.#locale).includes(query)),
 			}))
 			.filter((set) => set.paths.length > 0);
-		const rows = this.#changeRows(sets);
 		replace(
 			this.#recents,
-			h(
-				"nav",
-				{ class: "files-crumbs", "aria-label": t("Folder path") },
-				h(
-					"div",
-					{ class: "files-crumb-trail" },
-					h("span", { class: "storage-company-crumb" }, t("Company")),
-					h("span", { class: "files-crumb-sep", "aria-hidden": "true" }, icon("chevron")),
-					h("span", { class: "files-crumb is-current", "aria-current": "page" }, t("Recents")),
-				),
-			),
-			h("h2", { class: "storage-title" }, t("Recents")),
-			h("p", { class: "files-note" }, t("Recent changes to company documents.")),
-			rows.length
-				? h("ul", { class: "folder-history storage-recent-list" }, ...rows)
+			h("div", { class: "storage-toolbar" }, h("h2", { class: "storage-title" }, t("Recents"))),
+			sets.length
+				? h("ul", { class: "folder-history storage-recent-list" }, ...this.#recentRows(sets))
 				: h(
 						"p",
 						{ class: "files-empty" },
 						query ? t("No recent changes match your search.") : t("Nothing has changed yet."),
 					),
 			this.#recentNext !== null
-				? button(t("Show older"), () => void this.#run(() => this.#loadRecents(true)), { small: true })
+				? h(
+						"div",
+						{ class: "files-list-more" },
+						button(t("Show older"), () => void this.#run(() => this.#loadRecents("older")), { small: true }),
+					)
 				: null,
 		);
+	}
+
+	/** Recents' change sets under a heading for each day: today, yesterday, then the date. */
+	#recentRows(sets: readonly CloudMemberFolderChangeSet[]): HTMLElement[] {
+		const zone = timeZoneOption();
+		const now = new Date();
+		const today = presentationDay(now, zone.timeZone);
+		const yesterday = presentationDay(new Date(now.getTime() - 86_400_000), zone.timeZone);
+		const rows: HTMLElement[] = [];
+		let shownDay = "";
+		for (const set of sets) {
+			const at = new Date(set.at);
+			const day = presentationDay(at, zone.timeZone);
+			if (day !== shownDay) {
+				shownDay = day;
+				rows.push(
+					h(
+						"li",
+						{ class: "storage-recent-day", role: "presentation" },
+						day === today
+							? t("Today")
+							: day === yesterday
+								? t("Yesterday")
+								: at.toLocaleDateString(this.#locale, { dateStyle: "full", ...zone }),
+					),
+				);
+			}
+			const first = set.paths[0]!;
+			const category = fileCategory({ kind: first.kind, path: first.path });
+			rows.push(
+				h(
+					"li",
+					{ class: "folder-history-row is-set storage-recent-row" },
+					h(
+						"span",
+						{ class: `files-kind is-${category}`, "aria-hidden": "true" },
+						icon(
+							category === "folder"
+								? "folder"
+								: category === "image"
+									? "image"
+									: category === "spreadsheet"
+										? "table"
+										: category === "link"
+											? "link"
+											: "file",
+						),
+					),
+					h(
+						"div",
+						{ class: "folder-history-what" },
+						h(
+							"ul",
+							{ class: "folder-history-paths" },
+							...set.paths.map((item) => {
+								const parent = parentOf(item.path);
+								const label = [
+									parent ? h("span", { class: "storage-recent-folder" }, `${parent}/`) : null,
+									h("span", { class: "storage-recent-name" }, baseName(item.path)),
+								];
+								return h(
+									"li",
+									null,
+									item.kind !== "folder" && item.op !== "delete" && item.op !== "move_out"
+										? h(
+												"button",
+												{
+													type: "button",
+													class: "folder-history-path",
+													title: item.path,
+													onclick: () => void this.#run(() => this.#goTo(item.path)),
+												},
+												...label,
+											)
+										: h("span", { class: "folder-history-path is-gone", title: item.path }, ...label),
+								);
+							}),
+							set.more ? h("li", { class: "folder-history-more" }, t("and more")) : null,
+						),
+					),
+					h(
+						"small",
+						{ class: "storage-recent-when", title: this.#format(set.at) },
+						`${this.#who(set.by)} · ${at.toLocaleTimeString(this.#locale, { hour: "2-digit", minute: "2-digit", ...zone })}`,
+					),
+				),
+			);
+		}
+		return rows;
 	}
 
 	/** The standalone browser keeps its existing recent-changes panel. */

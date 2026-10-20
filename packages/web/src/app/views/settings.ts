@@ -135,6 +135,7 @@ export class SettingsView {
 		hidden: true,
 	});
 	readonly #storageCompany = h("div", { class: "settings-nav-heading" });
+	readonly #storageUsage = h("div", { class: "settings-storage-usage" });
 	readonly #storageContent = h("div", {
 		class: "settings-storage-content",
 		id: "settings-storage-content",
@@ -223,7 +224,6 @@ export class SettingsView {
 		const search = this.#search;
 		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
 		const nav = this.#nav;
-		nav.append(h("div", { class: "settings-nav-heading" }, uiText("Settings")));
 		const tablist = h("div", {
 			role: "tablist",
 			"aria-label": t("Settings sections"),
@@ -337,7 +337,7 @@ export class SettingsView {
 			this.#selectStorage(section);
 			this.#storageTabs.get(section)?.focus();
 		};
-		this.#storageNav.append(this.#storageCompany, storageTabs);
+		this.#storageNav.append(this.#storageCompany, storageTabs, this.#storageUsage);
 		this.el = h(
 			"div",
 			{
@@ -367,11 +367,6 @@ export class SettingsView {
 					),
 				),
 				h("div", { class: "settings-body" }, nav, this.#storageNav, this.#content, this.#storageContent),
-				h(
-					"footer",
-					{ class: "settings-footer" },
-					h("span", null, h("kbd", null, uiText("Esc")), " ", uiText("to close")),
-				),
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
@@ -545,6 +540,8 @@ export class SettingsView {
 		}
 		if (this.#mode !== "storage") return;
 		this.#storageCompany.textContent = company?.profile.profileName ?? t("Storage");
+		this.#drawStorageUsage();
+		if (company && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
 		this.#markStorageSection(this.#storageSection);
 		if (!company) {
 			replace(this.#storageContent, notice("neutral", t("Open a company to see its storage.")));
@@ -566,7 +563,11 @@ export class SettingsView {
 			);
 			return;
 		}
-		if (this.#folder) return;
+		if (this.#folder) {
+			// Settings may have changed the time zone or language while Storage was hidden.
+			this.#folder.redraw();
+			return;
+		}
 		const signal = AbortSignal.any([
 			this.#lifetime.signal,
 			this.#companyLifetime.signal,
@@ -628,6 +629,16 @@ export class SettingsView {
 			);
 		});
 		if (section === "recents") browser.showRecents();
+	}
+
+	/** The company's storage under Storage's navigation: what is used of what the plan includes. */
+	#drawStorageUsage(): void {
+		if (!this.#company) {
+			replace(this.#storageUsage);
+			return;
+		}
+		const storage = storageSummary(this.#file, this.#fileError);
+		replace(this.#storageUsage, storage.meter, h("small", null, storage.text));
 	}
 
 	#select(tab: SettingsCategory): void {
@@ -1089,6 +1100,7 @@ export class SettingsView {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
 				this.#drawCompany();
+				if (this.#mode === "storage") this.#drawStorageUsage();
 				if (this.#panels.has("plan")) this.#plan();
 			}
 		}
