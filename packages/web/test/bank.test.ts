@@ -6,9 +6,10 @@ import { BANK_SUMMARY_SCHEMA, parseBankSummary } from "../src/app/bank-summary.t
 import { CompanyController } from "../src/app/company.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces } from "../src/app/interfaces.ts";
+import { parseKroner } from "../src/app/views/bank.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
-import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 /* The Bank page (app/bank-page.ts, app/bank-summary.ts, app/views/bank.ts): a third page a company may switch on,
  * drawn from the bank summary in its folder. */
@@ -167,6 +168,9 @@ describe("the bank summary (app/bank-summary.ts)", () => {
 				],
 			}),
 			JSON.stringify({ ...summary(), months: [{ month: "2026-13", in: 1, out: 1 }] }),
+			JSON.stringify({ ...summary(), pausedSince: "2026-02-31" }),
+			JSON.stringify({ ...summary(), pausedSince: "2027-02-29" }),
+			JSON.stringify({ ...summary(), history: [{ date: "2026-04-31", saldo: 1 }] }),
 			JSON.stringify({ ...summary(), payTo: { reg: "12", account: "1" } }),
 			JSON.stringify({
 				...summary(),
@@ -177,6 +181,21 @@ describe("the bank summary (app/bank-summary.ts)", () => {
 			}),
 		];
 		for (const text of bad) expect(parseBankSummary(text)).toBeNull();
+		// A leap day is a day.
+		expect(parseBankSummary(JSON.stringify({ ...summary(), pausedSince: "2028-02-29" }))?.pausedSince).toBe(
+			"2028-02-29",
+		);
+	});
+});
+
+describe("an amount the member writes (app/views/bank.ts)", () => {
+	it("reads the Danish way, to the øre, and refuses what it would have to guess", () => {
+		expect(parseKroner("50.000")).toBe(50000);
+		expect(parseKroner("1.250,50")).toBe(1250.5);
+		expect(parseKroner("100,5")).toBe(100.5);
+		expect(parseKroner(" 2 500 ")).toBe(2500);
+		for (const bad of ["", "0", "100.50", "1,234", "12.34.567", "-5", "abc", "1.25"])
+			expect(parseKroner(bad)).toBeNull();
 	});
 });
 
@@ -238,7 +257,20 @@ describe("the Bank page (app/views/bank.ts)", () => {
 		const dialog = document.querySelector<HTMLDialogElement>(".bank-put-dialog");
 		expect(dialog?.textContent).toContain("A loan to the company");
 		expect(dialog?.textContent).toContain("Kaya writes a short loan paper");
+		const write = (value: string) => {
+			const input = dialog?.querySelector("input");
+			if (!input) throw new Error("No amount field");
+			input.value = value;
+			input.dispatchEvent(new Event("input"));
+		};
+		// An amount it can't read is said, never changed into another.
+		write("100.50");
 		click(dialog as HTMLElement, "Continue");
+		expect(dialog?.querySelector("[role=alert]")?.textContent).toBe("Write an amount like 50.000 or 1.250,50.");
+		expect(dialog?.querySelector("input")?.getAttribute("aria-invalid")).toBe("true");
+		write("1.250,50");
+		click(dialog as HTMLElement, "Continue");
+		expect(dialog?.textContent).toContain("Send 1.250,50 kr from your own bank");
 		expect(dialog?.textContent).toContain("Loan from Ann");
 		expect(dialog?.textContent).toContain("1234 0004471");
 		click(dialog as HTMLElement, "Back");
@@ -248,5 +280,51 @@ describe("the Bank page (app/views/bank.ts)", () => {
 		expect(dialog?.textContent).toContain("Share capital, Ann");
 		click(dialog as HTMLElement, "Done");
 		expect(document.querySelector(".bank-put-dialog")).toBeNull();
+	});
+
+	it("closes the dialog, with the company's account in it, when the page goes", async () => {
+		const page = draw(JSON.stringify(summary()));
+		click(page, "Put in money");
+		expect(document.querySelector(".bank-put-dialog")).not.toBeNull();
+		page.replaceChildren();
+		await settle();
+		expect(document.querySelector(".bank-put-dialog")).toBeNull();
+	});
+
+	it("keeps the saldo axis to a few round lines, however far apart the days are", () => {
+		const page = draw(
+			JSON.stringify(
+				summary({
+					history: [
+						{ date: "2026-10-13", saldo: 0 },
+						{ date: "2026-10-20", saldo: 900_000_000_000 },
+					],
+					expected: [],
+				}),
+			),
+		);
+		const lines = page.querySelectorAll(".bank-axis-y").length;
+		expect(lines).toBeGreaterThan(1);
+		expect(lines).toBeLessThanOrEqual(8);
+	});
+
+	it("tints a category in place when it is pointed at, and keeps the focus when one opens", () => {
+		const page = draw(JSON.stringify(summary()));
+		click(page, "Money out");
+		const ring = page.querySelector<HTMLElement>(".bank-ring");
+		const row = () =>
+			[...page.querySelectorAll<HTMLButtonElement>(".bank-category-row")].find((button) =>
+				button.textContent?.includes("Subscriptions"),
+			);
+		row()?.dispatchEvent(new Event("pointerenter"));
+		expect(page.querySelector(".bank-ring")).toBe(ring);
+		expect(page.querySelector(".bank-ring-hole")?.textContent).toContain("Subscriptions");
+		expect(page.querySelector(".bank-ring-hole")?.textContent).toContain("4.870 kr");
+		page.querySelector(".bank-categories")?.dispatchEvent(new Event("pointerleave"));
+		expect(page.querySelector(".bank-ring-hole")?.textContent).toContain("Total");
+		row()?.focus();
+		row()?.click();
+		expect(document.activeElement).toBe(row());
+		expect(row()?.getAttribute("aria-expanded")).toBe("true");
 	});
 });

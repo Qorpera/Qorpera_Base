@@ -30,6 +30,33 @@ const CHART_BOTTOM = 204;
 
 const kroner = new Intl.NumberFormat("da-DK", { maximumFractionDigits: 0 });
 const money = (amount: number) => t("{amount} kr", { amount: kroner.format(Math.round(amount)) });
+/** An amount to the øre, as a transfer needs it: øre shown only when there are any. */
+const exactMoney = (amount: number) =>
+	t("{amount} kr", {
+		amount: new Intl.NumberFormat("da-DK", {
+			minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+			maximumFractionDigits: 2,
+		}).format(amount),
+	});
+
+/** An amount the member wrote, the Danish way: dots between thousands, a comma before at most two øre ("50.000",
+ * "1.250,50", "100,5"). Anything else, "100.50" included, is null rather than read as something else. */
+export function parseKroner(value: string): number | null {
+	const match = /^(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?$/.exec(value.replace(/\s/g, ""));
+	if (!match) return null;
+	const whole = Number((match[1] ?? "").replace(/\./g, ""));
+	const ore = Number((match[2] ?? "").padEnd(2, "0"));
+	const amount = whole + ore / 100;
+	return Number.isFinite(amount) && amount > 0 && amount < 1e12 ? amount : null;
+}
+
+/** The step between the saldo axis's lines: a round number that gives at most six of them, whatever the range. */
+function axisStep(range: number): number {
+	const raw = range / 5;
+	if (!(raw > 0)) return 1;
+	const power = 10 ** Math.floor(Math.log10(raw));
+	return ([1, 2, 2.5, 5, 10].find((multiple) => multiple * power >= raw) ?? 10) * power;
+}
 
 function day(value: string): Date {
 	return new Date(`${value}T12:00:00Z`);
@@ -119,6 +146,7 @@ class BankView {
 
 	constructor(company: CompanyController) {
 		this.#company = company;
+		company.signal.addEventListener("abort", () => this.dispose(), { once: true });
 	}
 
 	/** Draws the summary when its text, the language or the company's state it shows changed. */
@@ -168,6 +196,7 @@ class BankView {
 						type: "button",
 						role: "tab",
 						class: "bank-tab",
+						dataset: { focusKey: `tab:${tab}` },
 						"aria-selected": String(this.#tab === tab),
 						onclick: () => {
 							this.#tab = tab;
@@ -179,6 +208,11 @@ class BankView {
 				),
 			),
 		);
+		// A redraw of the same tab keeps where the page was scrolled to and the control that had the focus.
+		const scrolled = this.el.querySelector<HTMLElement>(".bank-scroll");
+		const keep = scrolled !== null && scrolled.dataset.tab === this.#tab ? scrolled.scrollTop : 0;
+		const active = document.activeElement;
+		const focusKey = active instanceof HTMLElement && this.el.contains(active) ? active.dataset.focusKey : undefined;
 		const body =
 			this.#tab === "overview" ? this.#overview(summary) : this.#detail(summary, this.#tab === "in" ? "in" : "out");
 		replace(
@@ -186,7 +220,7 @@ class BankView {
 			tabs,
 			h(
 				"div",
-				{ class: "bank-scroll", "data-scroll-key": "bank" },
+				{ class: "bank-scroll", "data-scroll-key": "bank", dataset: { tab: this.#tab } },
 				h(
 					"div",
 					{ class: "bank-column" },
@@ -195,6 +229,12 @@ class BankView {
 				),
 			),
 		);
+		const scroller = this.el.querySelector<HTMLElement>(".bank-scroll");
+		if (scroller && keep > 0) scroller.scrollTop = keep;
+		if (focusKey !== undefined)
+			[...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")]
+				.find((control) => control.dataset.focusKey === focusKey)
+				?.focus({ preventScroll: true });
 	}
 
 	#empty(unreadable: boolean): HTMLElement {
@@ -274,6 +314,7 @@ class BankView {
 							"button",
 							{
 								type: "button",
+								dataset: { focusKey: `range:${range}` },
 								"aria-pressed": String(this.#range === range),
 								onclick: () => {
 									this.#range = range;
@@ -324,8 +365,12 @@ class BankView {
 			return wrap;
 		}
 		const drawn = smoothed(points);
-		const low = Math.floor((Math.min(...drawn) - 10_000) / 50_000) * 50_000;
-		const high = Math.ceil((Math.max(...drawn) + 10_000) / 50_000) * 50_000;
+		const least = Math.min(...drawn);
+		const most = Math.max(...drawn);
+		const step = axisStep(most - least || Math.abs(most) || 1);
+		const low = Math.floor(least / step) * step;
+		const high = Math.max(low + step, Math.ceil(most / step) * step);
+		const compact = new Intl.NumberFormat(presentationLocale(), { notation: "compact", maximumFractionDigits: 1 });
 		const x = (index: number) => (index / (points.length - 1)) * CHART_WIDTH;
 		const y = (value: number) => CHART_BOTTOM - ((value - low) / (high - low || 1)) * (CHART_BOTTOM - CHART_TOP);
 		const xy = drawn.map((value, index) => [x(index), y(value)] as const);
@@ -348,13 +393,14 @@ class BankView {
 		let grid = "";
 		const plot = h("div", { class: "bank-chart-plot" });
 		const labels: HTMLElement[] = [];
-		for (let value = low; value <= high; value += 50_000) {
+		for (let line = 0; line <= Math.round((high - low) / step); line++) {
+			const value = low + line * step;
 			grid += `M0,${y(value).toFixed(1)} L${CHART_WIDTH},${y(value).toFixed(1)} `;
 			plot.append(
 				h(
 					"span",
 					{ class: "bank-axis bank-axis-y", style: `top:${((y(value) / CHART_HEIGHT) * 100).toFixed(2)}%` },
-					`${kroner.format(value / 1000)}k`,
+					compact.format(value),
 				),
 			);
 		}
@@ -537,7 +583,13 @@ class BankView {
 	#fold(title: string, shown: boolean, toggle: () => void): HTMLButtonElement {
 		return h(
 			"button",
-			{ type: "button", class: "bank-fold", "aria-expanded": String(shown), onclick: toggle },
+			{
+				type: "button",
+				class: "bank-fold",
+				dataset: { focusKey: `fold:${title}` },
+				"aria-expanded": String(shown),
+				onclick: toggle,
+			},
 			h("span", { class: "bank-chevron", "aria-hidden": "true" }),
 			title,
 		);
@@ -563,34 +615,41 @@ class BankView {
 			return section;
 		}
 		const colour = (index: number) => colours[index % colours.length] ?? "#b3afaa";
-		let at = 0;
-		const stops: string[] = [];
-		categories.forEach((category, index) => {
-			const from = (at / (total || 1)) * 100;
-			const to = ((at + category.total) / (total || 1)) * 100;
-			const gap = Math.max(from, to - 0.6);
-			const tint = this.#hovered && this.#hovered !== category.name ? `${colour(index)}40` : colour(index);
-			stops.push(`${tint} ${from.toFixed(2)}% ${gap.toFixed(2)}%`, `var(--bg) ${gap.toFixed(2)}% ${to.toFixed(2)}%`);
-			at += category.total;
+		const disc = h("div", {
+			class: "bank-ring",
+			role: "img",
+			"aria-label": categories
+				.map((category) => `${category.name} ${Math.round((category.total / (total || 1)) * 100)}%`)
+				.join(", "),
 		});
-		const focus = categories.find((category) => category.name === this.#hovered);
+		const holeName = h("span");
+		const holeAmount = h("strong");
+		// Pointing at a category tints the others and names it in the ring; nothing else is drawn again.
+		const paint = () => {
+			let at = 0;
+			const stops: string[] = [];
+			categories.forEach((category, index) => {
+				const from = (at / (total || 1)) * 100;
+				const to = ((at + category.total) / (total || 1)) * 100;
+				const gap = Math.max(from, to - 0.6);
+				const tint = this.#hovered && this.#hovered !== category.name ? `${colour(index)}40` : colour(index);
+				stops.push(
+					`${tint} ${from.toFixed(2)}% ${gap.toFixed(2)}%`,
+					`var(--bg) ${gap.toFixed(2)}% ${to.toFixed(2)}%`,
+				);
+				at += category.total;
+			});
+			disc.style.background = `conic-gradient(${stops.join(", ")})`;
+			const focus = categories.find((category) => category.name === this.#hovered);
+			holeName.textContent = focus ? focus.name : t("Total");
+			holeAmount.textContent = money(focus ? focus.total : total);
+		};
+		paint();
 		const ring = h(
 			"div",
 			{ class: "bank-ring-wrap" },
-			h("div", {
-				class: "bank-ring",
-				role: "img",
-				"aria-label": categories
-					.map((category) => `${category.name} ${Math.round((category.total / (total || 1)) * 100)}%`)
-					.join(", "),
-				style: `background:conic-gradient(${stops.join(", ")})`,
-			}),
-			h(
-				"div",
-				{ class: "bank-ring-hole" },
-				h("span", null, focus ? focus.name : t("Total")),
-				h("strong", null, money(focus ? focus.total : total)),
-			),
+			disc,
+			h("div", { class: "bank-ring-hole" }, holeName, holeAmount),
 		);
 		const list = h(
 			"div",
@@ -605,6 +664,7 @@ class BankView {
 						{
 							type: "button",
 							class: "bank-category-row",
+							dataset: { focusKey: `category:${category.name}` },
 							"aria-expanded": String(open),
 							onclick: () => {
 								this.#open = open ? "" : category.name;
@@ -613,7 +673,7 @@ class BankView {
 							onpointerenter: () => {
 								if (this.#hovered === category.name) return;
 								this.#hovered = category.name;
-								this.#redraw();
+								paint();
 							},
 						},
 						h("span", { class: "bank-swatch", style: `background:${colour(index)}` }),
@@ -651,7 +711,7 @@ class BankView {
 		list.addEventListener("pointerleave", () => {
 			if (!this.#hovered) return;
 			this.#hovered = "";
-			this.#redraw();
+			paint();
 		});
 		section.append(h("div", { class: "bank-split" }, ring, list));
 		return section;
@@ -698,12 +758,19 @@ class BankView {
 		let kind: "loan" | "shares" = "loan";
 		let amount = "";
 		let step = 1;
+		let wrong = false;
+		// The dialog shows the company's account: it goes when the page does (another page, the company closed, access
+		// lost), not only when it is closed.
+		const gone = new MutationObserver(() => {
+			if (!this.el.isConnected) dialog.close(false);
+		});
 		const dialog = new SurfaceDialog(t("Put in money"), "bank-put-dialog", () => {
+			gone.disconnect();
 			if (this.#dialog === dialog) this.#dialog = null;
 		});
 		this.#dialog = dialog;
 		const draw = () => {
-			const amountText = money(Number(amount.replace(/\./g, "").replace(",", ".")) || 0);
+			const amountText = exactMoney(parseKroner(amount) ?? 0);
 			const transferText =
 				kind === "loan"
 					? t("Loan from {name}", { name: member || t("the owner") })
@@ -740,12 +807,20 @@ class BankView {
 										inputmode: "decimal",
 										value: amount,
 										"aria-label": t("Amount in kroner"),
+										"aria-invalid": wrong ? "true" : null,
 										oninput: (event: Event) => {
 											if (event.target instanceof HTMLInputElement) amount = event.target.value;
 										},
 									}),
 									h("span", null, t("kr")),
 								),
+								wrong
+									? h(
+											"small",
+											{ class: "bank-put-wrong", role: "alert" },
+											t("Write an amount like 50.000 or 1.250,50."),
+										)
+									: null,
 							),
 							h(
 								"div",
@@ -856,7 +931,8 @@ class BankView {
 							class: "btn btn-primary",
 							onclick: () => {
 								if (step === 1) {
-									step = 2;
+									wrong = parseKroner(amount) === null;
+									if (!wrong) step = 2;
 									draw();
 								} else dialog.close();
 							},
@@ -868,6 +944,7 @@ class BankView {
 		};
 		draw();
 		dialog.open();
+		gone.observe(document.body, { childList: true, subtree: true });
 	}
 }
 

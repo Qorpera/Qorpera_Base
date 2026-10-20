@@ -115,7 +115,10 @@ function positive(value: unknown): number {
 }
 
 function date(value: unknown): string {
-	if (typeof value !== "string" || !DATE.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) fail();
+	// A day the calendar has: 2026-02-31 doesn't parse back to itself.
+	if (typeof value !== "string" || !DATE.test(value)) fail();
+	const parsed = new Date(`${value}T00:00:00Z`);
+	if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) fail();
 	return value;
 }
 

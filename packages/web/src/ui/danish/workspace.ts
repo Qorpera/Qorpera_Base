@@ -561,4 +561,5 @@ export const WORKSPACE: Record<string, string> = {
 	"It shows here as money in when it arrives. Tell {agent}, so the registration can be prepared.":
 		"Det vises her som penge ind, når det kommer. Sig det til {agent}, så registreringen kan forberedes.",
 	Continue: "Fortsæt",
+	"Write an amount like 50.000 or 1.250,50.": "Skriv et beløb som 50.000 eller 1.250,50.",
 };

@@ -126,6 +126,7 @@
 .bank-put-step { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
 .bank-put-amount { display: flex; flex-direction: column; gap: 6px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .bank-put-field { display: flex; align-items: center; height: 43px; padding: 0 12px; border-radius: var(--radius-lg); box-shadow: 0 0 0 1px var(--border-strong); color: var(--text); font-size: 18px; font-weight: 650; }
+.bank-put-wrong { color: var(--danger); font-size: 12px; font-weight: 400; }
 .bank-put-field input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
 .bank-put-kinds { display: flex; flex-direction: column; gap: 6px; }
 .bank-put-kind { display: flex; align-items: flex-start; gap: 11px; padding: 11px 12px; border: 0; border-radius: var(--radius-lg); background: var(--bg); box-shadow: 0 0 0 1px var(--border-strong); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
