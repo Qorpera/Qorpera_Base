@@ -226,16 +226,20 @@ kickoff.
 ### `agents/sections.md`
 
 No settings block.
-- Lines before the first `## ` heading are free text, `###` headings included.
+- Lines before the first `## ` heading are free text, `###` headings included, except id lines
+  (`- <id>` or `* <id>`, optional words after): those order the agents and group chats in no section
+  (Unassigned), in file order (20260930519000). The parse carries them as `unassigned`, `[{id, line}]`,
+  only when there are some.
 - Each `## <name>` is a section, in order: 1–60 characters, no controls, unique ignoring case.
   A section may be empty. `##Sales` (no space) is refused.
 - Under a section, each non-blank line is `- <id>` (or `* <id>`), followed by optional words
   for reading. An id appears at most once.
 - Refused with its line number: any other line under a section, a `###` heading under a
-  section, an id line before the first section, and an uppercase id.
+  section, and an uppercase id (before the first section too). Before 20260930519000 an id line
+  before the first section was refused as well.
 
 **Database rules:**
-- Every id the save adds is an agent (not retired) or an open group chat of this company
+- Every id the save adds, in a section or before the first one, is an agent (not retired) or an open group chat of this company
   (**pending decision 1**: group chats are listed too, as #370 allows).
 - An id already in the saved version is never refused, even if its agent is gone or its group
   chat is closed, so an old line never blocks a save. The index keeps its place, which the sidebar
@@ -246,9 +250,10 @@ No settings block.
 
 **Index:** sections in file order, matched to today's rows by name ignoring case, so a section
 keeps its id when only its case changes. A section's agents and group chats share one order, as the
-sidebar draws them. An id with no agent or chat at all is skipped. Agents and group chats not
-listed are Unassigned, in roster order. Today's
-placement positions for Unassigned are not kept. Pins and hidden agents stay member settings in the database. Not
+sidebar draws them. An id with no agent or chat at all is skipped. The id lines before the first
+section are Unassigned in that order (placements with no section; 20260930519000), and the member's
+sidebar says `unassignedOrder: true`. Agents and group chats listed nowhere are Unassigned too,
+after them, in roster order, with no placement. Pins and hidden agents stay member settings in the database. Not
 reviewed. Deleting or moving the file is refused (seeded).
 
 The platform seeds:
@@ -1102,7 +1107,9 @@ C1d (bytes):
 
 **Built (W2): `organize_sidebar`** (`packages/runtime/src/cloud-folder-sidebar.ts`).
 - It reads and rewrites `agents/sections.md`. A section is named by its name, ignoring case; the file has no section
-  ids. Lines before the first section (the company's own notes) are kept as they are; the sections are written back in
+  ids. Lines before the first section (the company's own notes) are kept as they are, but for the id lines there,
+  which order Unassigned (20260930519000): they are written back after the notes, less any id the change put in a
+  section; `move_agent` with `section: null` does not add one, so it comes after them. The sections are written back in
   the seeded form, each line an id and the words after it only for reading (a line keeps its words, indented or not;
   an agent placed for the first time gets its name). A name ending in `#` takes the parser's closing ` #`, and what is
   written must read back as the sections intended, or the call is refused before any effect.
@@ -1115,7 +1122,8 @@ C1d (bytes):
   `conflict` or a refusal by F2-2's hook (the Co-Founder, worded as today; an id that is not an agent or an open group
   chat) comes back as `refused`, with nothing changed, showing the sections as read.
 - `list` and every result show the sections with names from the run context (the agent and its listed coworkers),
-  then the unlisted as Unassigned (`unassignedTruncated` when the context's coworker list was cut). The Co-Founder is
+  then the unlisted as Unassigned, the ones the file orders first (`unassignedTruncated` when the context's coworker
+  list was cut). The Co-Founder is
   left out when it is the run's own agent; the context does not say which coworker is. Each result releases the read
   of the file it shows.
 - A section reference ignores case and runs of spaces, as today. Differences from today: sections have no count cap

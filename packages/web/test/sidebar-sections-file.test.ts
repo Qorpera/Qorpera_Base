@@ -117,7 +117,7 @@ describe("agents/sections.md from the rail", () => {
 		expect(
 			rewriteSectionsFile(text, { action: "move", item: ada, section: "Research", order: [bo, ada] }, words),
 		).toBeNull();
-		// Unassigned keeps no order: an item there moved there again changes nothing.
+		// Without the order the cloud keeps (none given): an item in no section moved there again changes nothing.
 		expect(
 			rewriteSectionsFile(text, { action: "move", item: cy, section: null, order: [cy, ada] }, words),
 		).toBeNull();
@@ -144,6 +144,48 @@ describe("agents/sections.md from the rail", () => {
 		expect(() =>
 			rewriteSectionsFile(text, { action: "rename_section", from: "Sales", name: "Deals" }, words),
 		).toThrow("This section is no longer there.");
+	});
+
+	it("writes the order of what is in no section where the cloud keeps it, after the company's notes", () => {
+		const text = `# Sections\n\nOur notes.\n- ${cy} Cy the builder\n- ${gone}\n\n## Research\n- ${bo} Bo\n- ${ada} Ada\n`;
+		const unassigned = (written: string | null) => {
+			const parsed = parseCompanyStateFile(SECTIONS_PATH, written ?? "");
+			if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("not sections");
+			return (parsed.file.unassigned ?? []).map((member) => member.id);
+		};
+		// Ada out of Research, above Cy: the drawn order is written; the gone id keeps its place after it.
+		const out = rewriteSectionsFile(
+			text,
+			{ action: "move", item: ada, section: null, order: [ada, cy], unassigned: [ada, cy] },
+			words,
+		)!;
+		expect(read(out)).toEqual([["Research", bo]]);
+		expect(unassigned(out)).toEqual([ada, cy, gone]);
+		expect(out).toBe(
+			`# Sections\n\nOur notes.\n\n- ${ada} Ada\n- ${cy} Cy the builder\n- ${gone}\n\n## Research\n- ${bo} Bo\n`,
+		);
+		// Back into a section: it leaves the order, the rest stays.
+		const back = rewriteSectionsFile(
+			out,
+			{ action: "move", item: ada, section: "Research", order: [ada, bo] },
+			words,
+		)!;
+		expect(read(back)).toEqual([["Research", ada, bo]]);
+		expect(unassigned(back)).toEqual([cy, gone]);
+		// The same order again writes nothing.
+		expect(
+			rewriteSectionsFile(back, { action: "move", item: cy, section: null, order: [cy], unassigned: [cy] }, words),
+		).toBeNull();
+		// A deleted section's items join the order as drawn.
+		expect(
+			unassigned(
+				rewriteSectionsFile(back, { action: "delete_section", name: "research", unassigned: [cy, ada, bo] }, words),
+			),
+		).toEqual([cy, ada, bo, gone]);
+		// A cloud that keeps no such order gets none written: a move there only leaves its section.
+		const old = rewriteSectionsFile(back, { action: "move", item: bo, section: null, order: [bo, cy] }, words)!;
+		expect(unassigned(old)).toEqual([cy, gone]);
+		expect(read(old)).toEqual([["Research", ada]]);
 	});
 
 	it("tells apart sections whose names differ only in their spaces, as the parser does", () => {

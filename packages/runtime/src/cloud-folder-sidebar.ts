@@ -27,8 +27,10 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  *
  * As today, the tool is idempotent by content: a change already in the sections (their names in order, each with its
  * ids in order) saves nothing and says so, however the file is laid out. Lines before the first section (the company's
- * own notes) are kept as they are; the sections are written back in the seeded form, each line an id and the words
- * after it only for reading. A result that saved nothing shows the sections as read.
+ * own notes) are kept as they are, but for the id lines there, which order the agents in no section (20260930519000):
+ * they are written back after the notes, less any id the change put in a section. The sections are written back in the
+ * seeded form, each line an id and the words after it only for reading. A result that saved nothing shows the sections
+ * as read.
  */
 
 const PATH = "agents/sections.md";
@@ -54,9 +56,16 @@ function releaseIdFor(runId: string, callId: string): string {
 
 /** A section reference finds a name ignoring case and runs of spaces, as today. */
 const same = (a: string, b: string) => a.replace(/\s+/g, " ").toLowerCase() === b.replace(/\s+/g, " ").toLowerCase();
-/** The sections as the parser compares them: names in order, each with its ids in order. */
-const shape = (sections: readonly { name: string; members: readonly { id: string }[] }[]) =>
-	JSON.stringify(sections.map((section) => [section.name, section.members.map((member) => member.id)]));
+/** The sections as the parser compares them: names in order, each with its ids in order, then the ordered ids in no
+ * section. */
+const shape = (
+	sections: readonly { name: string; members: readonly { id: string }[] }[],
+	unassigned: readonly { id: string }[] = [],
+) =>
+	JSON.stringify([
+		sections.map((section) => [section.name, section.members.map((member) => member.id)]),
+		unassigned.map((member) => member.id),
+	]);
 /** The hook's Co-Founder rule, worded for the tool as today. */
 const COFOUNDER = /^the Co-Founder stands above the sections/;
 
@@ -96,17 +105,33 @@ export class CloudFolderSidebar {
 			);
 		const lines = found.text.split("\n");
 		const file = parsed.file as SectionsFile;
-		const preamble = lines.slice(0, file.sections.length ? (file.sections[0]?.line ?? 1) - 1 : lines.length);
+		const ordered = new Set((file.unassigned ?? []).map((member) => member.line));
+		// The company's notes: the lines before the first section but the ordered ids, which are written back after them.
+		const preamble = lines
+			.slice(0, file.sections.length ? (file.sections[0]?.line ?? 1) - 1 : lines.length)
+			.filter((_line, index) => !ordered.has(index + 1));
+		// The parser takes an indented entry too.
+		const words = (line: number) =>
+			/^[ \t]*[-*][ \t]+\S+[ \t]*(.*)$/.exec((lines[line - 1] ?? "").replace(/\r$/, ""))?.[1] ?? "";
 		const read: readonly Section[] = file.sections.map((section) => ({
 			name: section.name,
-			members: section.members.map((member) => ({
-				id: member.id,
-				// The parser takes an indented entry too.
-				words: /^[ \t]*[-*][ \t]+\S+[ \t]*(.*)$/.exec((lines[member.line - 1] ?? "").replace(/\r$/, ""))?.[1] ?? "",
-			})),
+			members: section.members.map((member) => ({ id: member.id, words: words(member.line) })),
 		}));
+		const readUnassigned = (file.unassigned ?? []).map((member) => ({ id: member.id, words: words(member.line) }));
 		const sections: Section[] = structuredClone(read) as Section[];
-		const refusal = request.action === "list" ? null : apply(sections, request, this.#people);
+		const refusal =
+			request.action === "list"
+				? null
+				: apply(
+						sections,
+						request,
+						this.#people,
+						new Map(readUnassigned.map((member) => [member.id, member.words])),
+					);
+		// An id the change put in a section leaves the order of those in no section.
+		const unassigned = readUnassigned.filter(
+			(member) => !sections.some((section) => section.members.some((listed) => listed.id === member.id)),
+		);
 		const output = (
 			shown: readonly Section[],
 			changed: boolean,
@@ -124,11 +149,18 @@ export class CloudFolderSidebar {
 					name: section.name,
 					agents: section.members.map((member) => ({ id: member.id, name: this.#name(member) })),
 				})),
+				// The ones the file orders first, in its order, then the rest.
 				unassigned: [...this.#people]
 					.filter(([id]) => !shown.some((section) => section.members.some((member) => member.id === id)))
-					.map(([id, name]) => ({ id, name })),
+					.map(([id, name], index) => ({ id, name, index }))
+					.sort((a, b) => rank(a.id, a.index) - rank(b.id, b.index))
+					.map(({ id, name }) => ({ id, name })),
 				...(this.#peopleComplete ? {} : { unassignedTruncated: true }),
 			});
+		const rank = (id: string, index: number) => {
+			const at = readUnassigned.findIndex((member) => member.id === id);
+			return at < 0 ? readUnassigned.length + index : at;
+		};
 		const release = async (releaseId: string, shown: string, releaseSignal: AbortSignal) => {
 			const entry: CloudCompanyFolderFileEntry = found.entry;
 			await this.#folder.release(
@@ -139,7 +171,11 @@ export class CloudFolderSidebar {
 			);
 		};
 		// A list, a refusal, or a change already in the sections: nothing to save.
-		if (request.action === "list" || refusal !== null || shape(sections) === shape(read)) {
+		if (
+			request.action === "list" ||
+			refusal !== null ||
+			shape(sections, unassigned) === shape(read, readUnassigned)
+		) {
 			const shown =
 				request.action === "list" || refusal !== null
 					? output(read, false, refusal)
@@ -147,10 +183,14 @@ export class CloudFolderSidebar {
 			await release(releaseIdFor(this.#identity.runId, context.callId), shown, signal);
 			return { kind: "text", value: shown };
 		}
-		const text = render(preamble, sections);
+		const text = render(preamble, unassigned, sections);
 		// What is written must read back as the sections intended (a file grown past its size, for one).
 		const check = parseCompanyStateFile(PATH, text);
-		if (!check?.ok || check.file.kind !== "sections" || shape(check.file.sections) !== shape(sections))
+		if (
+			!check?.ok ||
+			check.file.kind !== "sections" ||
+			shape(check.file.sections, check.file.unassigned) !== shape(sections, unassigned)
+		)
 			throw new CloudToolRefusal(
 				"The sections file cannot take this change (it would not read back as intended); tell the member",
 			);
@@ -213,6 +253,8 @@ function apply(
 	sections: Section[],
 	request: CloudFolderSidebarRequest,
 	people: ReadonlyMap<string, string>,
+	/** The words beside the ordered ids in no section, which a move into a section keeps. */
+	ordered: ReadonlyMap<string, string>,
 ): string | null {
 	const find = (name: string) => sections.find((section) => same(section.name, name));
 	if (request.action === "create_section") {
@@ -241,7 +283,7 @@ function apply(
 		if (request.section != null && !target) return "No such section";
 		// Already in that section: nothing changes, as today.
 		if (target?.members.some((member) => member.id === id)) return null;
-		let words = people.get(id) ?? "";
+		let words = ordered.get(id) || people.get(id) || "";
 		for (const section of sections) {
 			const index = section.members.findIndex((member) => member.id === id);
 			if (index >= 0) {
@@ -255,11 +297,14 @@ function apply(
 	return null;
 }
 
-/** The company's notes before the first section, kept as they are, then the sections in the seeded form. */
-function render(preamble: readonly string[], sections: readonly Section[]): string {
+/** The company's notes before the first section, kept as they are, then the ordered ids in no section, then the
+ * sections in the seeded form. */
+function render(preamble: readonly string[], unassigned: Section["members"], sections: readonly Section[]): string {
 	const head = [...preamble];
 	while (head.length > 0 && !(head.at(-1) ?? "").trim()) head.pop();
 	const out = head;
+	if (unassigned.length && out.length) out.push("");
+	for (const member of unassigned) out.push(`- ${member.id}${member.words ? ` ${member.words}` : ""}`);
 	for (const section of sections) {
 		// The parser's heading rule: a name ending in "#" takes a closing " #", which reading strips.
 		out.push("", `## ${section.name.endsWith("#") ? `${section.name} #` : section.name}`);

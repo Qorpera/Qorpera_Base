@@ -120,7 +120,12 @@ function companyWith(
 
 /** A folder-v2 company: its sections are agents/sections.md, whose commit places the sidebar (sections keep their ids
  * by name), and the sidebar RPC refuses section changes and moves, as the cloud does; pins stay the RPC's. */
-function companyWithFile(sections: [string, ...string[]][], pinned: string[] = []) {
+function companyWithFile(
+	sections: [string, ...string[]][],
+	pinned: string[] = [],
+	/** A cloud that keeps the order of what is in no section (20260930519000). */
+	keeps = false,
+) {
 	const fake = folderFake();
 	fake.put(
 		SECTIONS_PATH,
@@ -150,7 +155,18 @@ function companyWithFile(sections: [string, ...string[]][], pinned: string[] = [
 			});
 			return { sectionId, name: section.name };
 		});
-		return { sections: list, placements, pinned: [...pins], hidden: [], groupChats: true };
+		if (keeps)
+			(parsed.file.unassigned ?? []).forEach((member, position) => {
+				placements[member.id] = { position };
+			});
+		return {
+			sections: list,
+			placements,
+			pinned: [...pins],
+			hidden: [],
+			groupChats: true,
+			...(keeps ? { unassignedOrder: true } : {}),
+		};
 	};
 	const made = companyWith(placed());
 	made.read.mockImplementation(async () => placed());
@@ -173,6 +189,12 @@ function fileSections(text: string | undefined): [string, ...string[]][] {
 	const parsed = parseCompanyStateFile(SECTIONS_PATH, text ?? "");
 	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
 	return parsed.file.sections.map((section) => [section.name, ...section.members.map((member) => member.id)]);
+}
+/** The ids the file orders in no section. */
+function fileUnassigned(text: string | undefined): string[] {
+	const parsed = parseCompanyStateFile(SECTIONS_PATH, text ?? "");
+	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
+	return (parsed.file.unassigned ?? []).map((member) => member.id);
 }
 
 const names = (elements: Iterable<Element>) =>
@@ -905,6 +927,52 @@ describe("dragging agents in the rail", () => {
 		await settle();
 		expect(rail.querySelector(".notice")?.textContent).toContain("Agents outside a section stay in the order");
 		expect(fake.commits).toHaveLength(0);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("reorders Unassigned where the cloud keeps its order, and moves an agent into it at its drop", async () => {
+		const { company, rail, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id]], [], true);
+		await ready;
+		await settle();
+		const room = [...company.groupChatRooms().keys()];
+		const unassigned = () =>
+			groups(rail)
+				.find((group) => group.includes("Cy"))!
+				.slice(1);
+		expect(unassigned()).toEqual(["Cy", "Dee", "Fixture conversation"]);
+		let boxes = layout(rail);
+		drag(rowOf(rail, "Dee"), boxes.get(rowOf(rail, "Cy"))!, rail);
+		await settle();
+		expect(rail.querySelector(".notice")).toBeNull();
+		expect(fileUnassigned(fake.text(SECTIONS_PATH))).toEqual([dee.id, cy.id, ...room]);
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, ada.id]]);
+		expect(unassigned()).toEqual(["Dee", "Cy", "Fixture conversation"]);
+		// Out of a section, into Unassigned above Cy.
+		boxes = layout(rail);
+		drag(rowOf(rail, "Ada"), boxes.get(rowOf(rail, "Cy"))!, rail);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id]]);
+		expect(fileUnassigned(fake.text(SECTIONS_PATH))).toEqual([dee.id, ada.id, cy.id, ...room]);
+		expect(
+			groups(rail)
+				.find((group) => group.includes("Cy"))!
+				.slice(1),
+		).toEqual(["Dee", "Ada", "Cy", "Fixture conversation"]);
+		// And back into the section: it leaves the order.
+		boxes = layout(rail);
+		drag(rowOf(rail, "Ada"), boxes.get(rowOf(rail, "Bo"))!, rail);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", ada.id, bo.id]]);
+		expect(fileUnassigned(fake.text(SECTIONS_PATH))).toEqual([dee.id, cy.id, ...room]);
+		// Alt and an arrow too.
+		const cyRow = rowOf(rail, "Cy");
+		cyRow.focus();
+		cyRow.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true, cancelable: true }),
+		);
+		await settle();
+		expect(fileUnassigned(fake.text(SECTIONS_PATH))).toEqual([cy.id, dee.id, ...room]);
+		expect(manage).not.toHaveBeenCalled();
+		expect(rail.querySelector(".notice")).toBeNull();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	it("names a new section in the moves queued behind it, before the cloud answers", async () => {

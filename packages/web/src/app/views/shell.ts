@@ -1892,7 +1892,7 @@ function homeSection(sidebar: CompanySidebar, itemId: string): string | undefine
 	return placed && sidebar.sections.some((section) => section.sectionId === placed) ? placed : undefined;
 }
 
-/** agents/sections.md lists sections only: what is in none keeps the order the company has it in. */
+/** A cloud before 20260930519000 keeps no order for what is in no section: it stands in the order it joined. */
 const unassignedOrder = () =>
 	t("Agents outside a section stay in the order they joined. Put them in a section to order them.");
 
@@ -1933,7 +1933,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			const at = following ? next.indexOf(following) : -1;
 			next.splice(at < 0 ? next.length : at, 0, itemId);
 			if (!pinned && !wasHidden && next.join() === before.join()) return;
-			if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.sectionsInFile()) {
+			if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
 				company.reportRailError(unassignedOrder());
 				return;
 			}
@@ -1972,7 +1972,7 @@ function nudgeItem(company: CompanyController, item: RailItem, delta: number): v
 	const visible = order.filter((member) => !sidebar.pinned.includes(member) && !sidebar.hidden.includes(member));
 	const neighbour = visible[visible.indexOf(itemId) + delta];
 	if (!neighbour) return;
-	if (!sectionId && company.sectionsInFile()) {
+	if (!sectionId && company.unassignedOrderLost()) {
 		company.reportRailError(unassignedOrder());
 		return;
 	}
