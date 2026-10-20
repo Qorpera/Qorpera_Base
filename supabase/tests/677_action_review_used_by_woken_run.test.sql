@@ -232,11 +232,15 @@ begin
 	perform pg_temp.base_assert(v_context #>> '{origin,runId}' = v_holder ->> 'runId'
 		and v_context #> '{origin,routineIntent}' = 'null'::jsonb
 		and exists (select 1 from jsonb_array_elements(v_context #> '{origin,inputs}') as input
-			where input #>> '{content,text}' = 'Bob, tell Acme the meeting moved.'
-				and input ->> 'authorUserId' = '92400000-0000-4000-8000-000000000001')
-		and exists (select 1 from jsonb_array_elements(v_context -> 'history') as entry
+			where input ->> 'sourceKind' = 'history'
+				and input ->> 'authorUserId' = '92400000-0000-4000-8000-000000000001'
+				and (input #>> '{content,text}')::jsonb #>> '{entry,message,content,0,text}'
+					= 'Bob, tell Acme the meeting moved.'),
+		'Describe gives the woken run the holder''s request, the post its wake named: '
+			|| coalesce(v_context -> 'origin', 'null')::text);
+	perform pg_temp.base_assert(exists (select 1 from jsonb_array_elements(v_context -> 'history') as entry
 			where entry ->> 'id' = v_answer ->> 'inputId'),
-		'Describe gives the woken run the holder''s request beside the answer: ' || coalesce(v_context -> 'origin', 'null')::text);
+		'Describe gives the woken run the answer beside it: ' || coalesce(v_context -> 'history', 'null')::text);
 	v_begin := public.qorpera_begin_action_review(v_woken, c_call);
 	perform pg_temp.base_assert(v_begin ->> 'state' = 'approved' and v_begin ->> 'reviewId' = v_id::text,
 		'The woken run runs the card''s action on its approval: ' || v_begin::text);
