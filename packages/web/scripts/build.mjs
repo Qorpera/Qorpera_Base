@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { bundleLayout, bundleOptions, rewriteIndex } from "./bundle.mjs";
+import { bundleLayout, bundleOptions, rewriteIndex, VENDORED_SCRIPTS } from "./bundle.mjs";
 import { prepareDeployment } from "./deployment.mjs";
 import { webSourceProvenance } from "./provenance.mjs";
 
@@ -61,7 +61,8 @@ if (serve) {
 	};
 	writeFileSync(join(dist, "build-manifest.json"), `${JSON.stringify(metafile, null, 2)}\n`);
 	const layout = bundleLayout(metafile, { root, outdir: dist });
-	writeFileSync(join(dist, "index.html"), rewriteIndex(readFileSync(join(dist, "index.html"), "utf8"), layout));
+	const versions = Object.fromEntries(VENDORED_SCRIPTS.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex").slice(0, 12)]));
+	writeFileSync(join(dist, "index.html"), rewriteIndex(readFileSync(join(dist, "index.html"), "utf8"), layout, versions));
 	// Every script and stylesheet, chunks included: a deploy check can tell each file this build made.
 	const files = ["index.html", "_headers", ...deployment.notFoundPages, ...layout.files];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({

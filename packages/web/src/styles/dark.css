@@ -28,7 +28,6 @@
 :root[data-theme="dark"] .rail-toolbar:is(:not(.has-tabs), .is-searching) .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
 :root[data-theme="dark"] .rail-search input::placeholder { color: var(--text-muted); }
 :root[data-theme="dark"] .cofounder-stand::before { background: rgba(0, 0, 0, 0.5); }
-:root[data-theme="dark"] .cofounder-stand .figure { filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35)); }
 :root[data-theme="dark"] .rail-row-copy small { color: #adaca7; }
 :root[data-theme="dark"] .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
 

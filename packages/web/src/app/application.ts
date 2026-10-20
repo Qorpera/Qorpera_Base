@@ -442,6 +442,17 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			// The company's sections are agents/sections.md: the rail's moves are the member's edits of it.
+			controller.useSectionsFile((signal) => {
+				const current = () => {
+					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+						throw new Error(t("Company access changed."));
+				};
+				current();
+				const role = controller.store.get().team?.role;
+				if (!role) throw new Error(t("Company access changed."));
+				return new WebCompanyFiles(cloud, profile, userId, role, signal, current).folder();
+			});
 			if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
 				const outcome = planReturn;
 				planReturn = undefined;

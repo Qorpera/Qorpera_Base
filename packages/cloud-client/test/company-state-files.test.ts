@@ -563,10 +563,56 @@ Each line is an id. The words after it are only for reading.
 	it("refuses lines it cannot place", () => {
 		const problems = refused(
 			"agents/sections.md",
-			`- ${ANNA}\n## Sales\n- ${TOM}\nsome prose\n- ${TOM}\n## sales\n### Deep\n##\n##Team\n## A\tB\n## X\n- ${ANNA.toUpperCase()}\n`,
+			`- ${IDA.toUpperCase()}\n## Sales\n- ${TOM}\nsome prose\n- ${TOM}\n## sales\n### Deep\n##\n##Team\n## A\tB\n## X\n- ${ANNA.toUpperCase()}\n`,
 		);
 		expect(problems.map((problem) => problem.line)).toEqual([1, 4, 5, 6, 7, 8, 9, 10, 12]);
+		expect(problems[0]?.message).toBe("ids are written in lowercase");
 		expect(problems.at(-1)?.message).toBe("ids are written in lowercase");
+	});
+
+	it("orders the agents in no section by the id lines before the first section", () => {
+		const ordered = `# Sections
+
+Each line is an id. The words after it are only for reading.
+- not an id, so free text
+
+- ${TOM} Tom Holm
+* ${GROUP} Launch team
+
+## Sales
+- ${ANNA}
+`;
+		const file = ok("agents/sections.md", ordered);
+		expect(file).toEqual({
+			kind: "sections",
+			sections: [{ name: "Sales", line: 9, members: [{ id: ANNA, line: 10 }] }],
+			unassigned: [
+				{ id: TOM, line: 6 },
+				{ id: GROUP, line: 7 },
+			],
+		});
+		// None listed: the parse has no key for them, as before.
+		expect(ok("agents/sections.md", text)).not.toHaveProperty("unassigned");
+		// An id is listed once in the whole file.
+		expect(refused("agents/sections.md", `- ${ANNA}\n## Sales\n- ${ANNA}\n`).map((problem) => problem.line)).toEqual([
+			3,
+		]);
+		expect(refused("agents/sections.md", `- ${ANNA}\n- ${ANNA}\n`).map((problem) => problem.message)).toEqual([
+			`${ANNA} is listed twice`,
+		]);
+		if (file.kind !== "sections") throw new Error("kind");
+		const written = writeSectionsFile(file, new Map([[TOM, "Tom Holm"]]));
+		expect(written).toBe(
+			`# Sections\n\nEach line is an id. The words after it are only for reading.\n\n- ${TOM} Tom Holm\n- ${GROUP}\n\n## Sales\n- ${ANNA}\n`,
+		);
+		expect(ok("agents/sections.md", written)).toEqual({
+			kind: "sections",
+			sections: [{ name: "Sales", line: 8, members: [{ id: ANNA, line: 9 }] }],
+			unassigned: [
+				{ id: TOM, line: 5 },
+				{ id: GROUP, line: 6 },
+			],
+		});
 	});
 });
 

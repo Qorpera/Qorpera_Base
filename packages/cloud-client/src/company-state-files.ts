@@ -196,6 +196,10 @@ export interface SectionsFile {
 		/** Agents and group chats, in order, by id. */
 		readonly members: readonly { readonly id: string; readonly line: number }[];
 	}[];
+	/** The agents and group chats in no section that the file orders: the id lines before the first section, in order
+	 * (20260930519000). Absent when there are none, so a file without them parses as it always did. Anyone listed
+	 * nowhere is in no section too, after these. */
+	readonly unassigned?: readonly { readonly id: string; readonly line: number }[];
 }
 
 export interface GroupFile {
@@ -1141,6 +1145,7 @@ function agent(split: Split, fields: Fields, problems: Problems): AgentFile | nu
 function sections(split: Split, problems: Problems): SectionsFile | null {
 	const lines = split.body.split("\n");
 	const found: { name: string; line: number; members: { id: string; line: number }[] }[] = [];
+	const unassigned: { id: string; line: number }[] = [];
 	const names = new Set<string>();
 	const ids = new Set<string>();
 	lines.forEach((raw, index) => {
@@ -1164,7 +1169,13 @@ function sections(split: Split, problems: Problems): SectionsFile | null {
 		const section = found.at(-1);
 		const id = entry?.[1] ?? "";
 		if (!section) {
-			if (UUID_ANY_CASE.test(id)) problems.add("syntax", number, null, "put this line under a ## section");
+			// Before the first section an id line orders the agents and group chats in no section; any other line is
+			// free text.
+			if (!UUID_ANY_CASE.test(id)) return;
+			if (!UUID.test(id)) problems.add("syntax", number, null, "ids are written in lowercase");
+			else if (ids.has(id)) problems.add("value", number, null, `${id} is listed twice`);
+			else unassigned.push({ id, line: number });
+			ids.add(id);
 			return;
 		}
 		if (/^[ \t]*$/.test(line)) return;
@@ -1182,7 +1193,7 @@ function sections(split: Split, problems: Problems): SectionsFile | null {
 		section.members.push({ id, line: number });
 	});
 	if (problems.list.length) return null;
-	return { kind: "sections", sections: found };
+	return { kind: "sections", sections: found, ...(unassigned.length ? { unassigned } : {}) };
 }
 
 function group(split: Split, fields: Fields, problems: Problems): GroupFile | null {
@@ -2340,6 +2351,11 @@ export function writeAgentFile(file: Omit<AgentFile, "kind">): string {
 /** `names` puts each agent's or group chat's name beside its id, for reading. */
 export function writeSectionsFile(file: Omit<SectionsFile, "kind">, names?: ReadonlyMap<string, string>): string {
 	const out = ["# Sections", "", "Each line is an id. The words after it are only for reading."];
+	if (file.unassigned?.length) out.push("");
+	for (const member of file.unassigned ?? []) {
+		const name = readable(names?.get(member.id));
+		out.push(`- ${member.id}${name ? ` ${name}` : ""}`);
+	}
 	for (const section of file.sections) {
 		out.push("", `## ${headingName(section.name)}`);
 		for (const member of section.members) {

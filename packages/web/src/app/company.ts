@@ -3,6 +3,11 @@ import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { type CodingSession, type CodingSessionRead, compareCodingSessions } from "../cloud/coding-session.ts";
 import {
+	rewriteStateFile,
+	WebCompanyFolderRejectedError,
+	type WebMemberFolder,
+} from "../cloud/company-folder-writes.ts";
+import {
 	type EmailDraftAction,
 	EmailDraftClient,
 	type EmailDraftContent,
@@ -32,7 +37,14 @@ import {
 	type SessionInputWriter,
 	selectSessionExecutionSponsor,
 } from "../cloud/session-input.ts";
-import { applySidebarRequest, type CompanySidebar, type SidebarRequest } from "../cloud/sidebar.ts";
+import { applySidebarRequest, type CompanySidebar, containerOrder, type SidebarRequest } from "../cloud/sidebar.ts";
+import {
+	isSectionsRequest,
+	rewriteSectionsFile,
+	SECTIONS_PATH,
+	SectionsChangeRefusal,
+	sectionsChange,
+} from "../cloud/sidebar-sections-file.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -105,6 +117,13 @@ const RECOVERY_RETRY_MS = 5_000;
  * RPC's own refusals are shown as they are: they are written for members ("A section
  * called … already exists"). A network or server failure never shows its text. */
 function sidebarRefusal(error: unknown, request: SidebarRequest): string {
+	if (error instanceof SectionsChangeRefusal) return error.message;
+	if (error instanceof WebCompanyFolderRejectedError) {
+		if (error.outcome === "denied")
+			return t("Only owners, admins and contributors can change the company's sections.");
+		if (error.problems.some((problem) => /^the Co-Founder stands above the sections/.test(problem)))
+			return t("The Co-Founder stays on top, above the sections.");
+	}
 	if (error instanceof CloudRpcError) {
 		const shared = ["create_section", "rename_section", "delete_section", "move_agent", "move_room"].includes(
 			request.action,
@@ -477,6 +496,8 @@ export class CompanyController {
 	/** The group chats of the last sessions list, kept until the list is replaced. */
 	#groupRooms: { sessions: HostedSession[]; rooms: Map<string, HostedSession> } | undefined;
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
+	/** The member's client for the company's folder, where the sections are agents/sections.md. */
+	#sectionsFolder: ((signal: AbortSignal) => WebMemberFolder) | undefined;
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
@@ -971,6 +992,18 @@ export class CompanyController {
 		);
 	}
 
+	/** Makes section changes and moves edits of agents/sections.md through the member's folder client (folder-v2,
+	 * where the sidebar RPC refuses them); pins and hidden items stay with the RPC. */
+	useSectionsFile(folder: (signal: AbortSignal) => WebMemberFolder): void {
+		this.#sectionsFolder = folder;
+	}
+
+	/** Whether a reorder in Unassigned cannot be saved: the sections are agents/sections.md and the cloud predates its
+	 * order of what is in no section (20260930519000). */
+	unassignedOrderLost(): boolean {
+		return this.#sectionsFolder !== undefined && this.store.get().sidebar?.unassignedOrder !== true;
+	}
+
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
 	 * A refusal puts back what the cloud has and says why. */
 	async changeSidebar(change: SidebarRequest): Promise<boolean> {
@@ -982,12 +1015,36 @@ export class CompanyController {
 			current.sidebar.groupChats && (change.action === "set_pins" || change.action === "move_agent")
 				? { ...change, groupChats: true }
 				: change;
-		this.store.set({
-			sidebar: applySidebarRequest(current.sidebar, request, this.sidebarRoster()),
-			railError: undefined,
-		});
+		const folder = this.#sectionsFolder;
+		let send: () => Promise<CompanySidebar>;
+		const roster = this.sidebarRoster();
+		let drawn = applySidebarRequest(current.sidebar, request, roster);
+		if (folder && isSectionsRequest(request)) {
+			const keeps = current.sidebar.unassignedOrder === true;
+			let named: ReturnType<typeof sectionsChange>;
+			try {
+				// The file names sections, so they are named now, as the member sees them; Unassigned is written in the
+				// order drawn, where the cloud keeps it.
+				named = sectionsChange(
+					current.sidebar,
+					request,
+					keeps ? containerOrder(drawn, undefined, roster) : undefined,
+				);
+			} catch (error) {
+				this.store.set({ railError: sidebarRefusal(error, request) });
+				return false;
+			}
+			// A cloud that keeps no order for Unassigned stands it in roster order, as it will answer.
+			if (!keeps)
+				drawn = {
+					...drawn,
+					placements: Object.fromEntries(Object.entries(drawn.placements).filter(([, place]) => place.sectionId)),
+				};
+			send = () => this.#writeSections(folder, named, "unpin" in request && request.unpin === true);
+		} else send = () => this.#api.manageCompanySidebar(this.profile.profileId, request);
+		this.store.set({ sidebar: drawn, railError: undefined });
 		this.#sidebarPending++;
-		const write = this.#sidebarWrites.then(() => this.#api.manageCompanySidebar(this.profile.profileId, request));
+		const write = this.#sidebarWrites.then(send);
 		this.#sidebarWrites = write.catch(() => {});
 		try {
 			const sidebar = await write;
@@ -1003,6 +1060,43 @@ export class CompanyController {
 			if (!this.#sidebarPending) await this.refreshSidebar();
 			return false;
 		}
+	}
+
+	/** Writes a sections change to agents/sections.md and answers the sidebar the commit placed. An item moved out of
+	 * the pinned row is unpinned after, as the RPC did in the same request. */
+	async #writeSections(
+		folder: (signal: AbortSignal) => WebMemberFolder,
+		change: ReturnType<typeof sectionsChange>,
+		unpin: boolean,
+	): Promise<CompanySidebar> {
+		const signal = this.#abort.signal;
+		const check = () => signal.throwIfAborted();
+		const client = folder(signal);
+		const rooms = this.groupChatRooms();
+		const words = (id: string) => this.staffById(id)?.displayName ?? rooms.get(id)?.title;
+		await rewriteStateFile(
+			client,
+			{
+				locate: async () => SECTIONS_PATH,
+				rewrite: (text) => rewriteSectionsFile(text, change, words),
+				key: () => `web:sidebar-sections:${crypto.randomUUID()}`,
+				gone: t("This company has no sections file."),
+				failure: t("The sidebar could not be changed. Try again."),
+			},
+			signal,
+			check,
+		);
+		const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
+		// The member may have left the company or signed out meanwhile: their pins are written only while it is theirs.
+		check();
+		const item =
+			change.action === "move" ? change.item : change.action === "create_section" ? change.item : undefined;
+		if (!unpin || !item || !sidebar.pinned.includes(item)) return sidebar;
+		return this.#api.manageCompanySidebar(this.profile.profileId, {
+			action: "set_pins",
+			order: sidebar.pinned.filter((pinned) => pinned !== item),
+			...(sidebar.groupChats ? { groupChats: true as const } : {}),
+		});
 	}
 
 	/** Says in the rail why a rail action did not happen; undefined clears it. */

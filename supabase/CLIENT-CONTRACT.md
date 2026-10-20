@@ -259,7 +259,15 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
 - `qorpera_read_company_sidebar(p_profile_id)` → `qorpera.company-sidebar/v1`:
   `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,
   `sectionId` or null for Unassigned, `position`), and the caller's own
-  `pinned` (ordered) and `hidden` agent ids. Any member.
+  `pinned` (ordered) and `hidden` agent ids. Any member. Since `20260930519000`
+  also `unassignedOrder: true`: on folder-v2, `agents/sections.md` keeps the order
+  of Unassigned (its id lines before the first section), and placements with a
+  null `sectionId` carry that order. Before it, a folder-v2 sidebar has no
+  Unassigned positions.
+- On folder-v2 the RPC below refuses section changes and moves (55000,
+  `20260928249100`): the web makes them as the member's edits of
+  `agents/sections.md` through the member commit route, and writes the Unassigned
+  order only where the sidebar says `unassignedOrder`.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,

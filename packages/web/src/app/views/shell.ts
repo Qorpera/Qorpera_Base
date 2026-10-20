@@ -1886,6 +1886,16 @@ function pressToOpenMenu(list: HTMLElement, company: CompanyController, parts: R
 	);
 }
 
+/** The section an item stands in, or undefined for Unassigned (a placement in a section that is gone included). */
+function homeSection(sidebar: CompanySidebar, itemId: string): string | undefined {
+	const placed = sidebar.placements[itemId]?.sectionId;
+	return placed && sidebar.sections.some((section) => section.sectionId === placed) ? placed : undefined;
+}
+
+/** A cloud before 20260930519000 keeps no order for what is in no section: it stands in the order it joined. */
+const unassignedOrder = () =>
+	t("Agents outside a section stay in the order they joined. Put them in a section to order them.");
+
 function dragHooks(company: CompanyController, parts: RailParts) {
 	const sidebarOf = () => {
 		const state = company.store.get();
@@ -1915,7 +1925,6 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			const sectionId = zone === "unassigned" ? undefined : zone.slice("section:".length);
 			// Dragged out of Hidden, the item is shown again where it lands.
 			const wasHidden = sidebar.hidden.includes(itemId);
-			if (wasHidden) void company.changeSidebar(hideRequest(item, false));
 			// The rail shows no hidden or pinned items; the new order keeps them where they stood.
 			const roster = company.sidebarRoster();
 			const before = containerOrder(sidebar, sectionId, roster);
@@ -1924,6 +1933,11 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			const at = following ? next.indexOf(following) : -1;
 			next.splice(at < 0 ? next.length : at, 0, itemId);
 			if (!pinned && !wasHidden && next.join() === before.join()) return;
+			if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
+				company.reportRailError(unassignedOrder());
+				return;
+			}
+			if (wasHidden) void company.changeSidebar(hideRequest(item, false));
 			void company.changeSidebar(
 				moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
 			);
@@ -1953,13 +1967,15 @@ function nudgeItem(company: CompanyController, item: RailItem, delta: number): v
 		return;
 	}
 	if (!canOrganize(company)) return;
-	const known = new Set(sidebar.sections.map((section) => section.sectionId));
-	const placed = sidebar.placements[itemId]?.sectionId;
-	const sectionId = placed && known.has(placed) ? placed : undefined;
+	const sectionId = homeSection(sidebar, itemId);
 	const order = containerOrder(sidebar, sectionId, roster);
 	const visible = order.filter((member) => !sidebar.pinned.includes(member) && !sidebar.hidden.includes(member));
 	const neighbour = visible[visible.indexOf(itemId) + delta];
 	if (!neighbour) return;
+	if (!sectionId && company.unassignedOrderLost()) {
+		company.reportRailError(unassignedOrder());
+		return;
+	}
 	order.splice(order.indexOf(itemId), 1);
 	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, itemId);
 	void company.changeSidebar(moveRequest(item, sectionId ?? null, { order }));
