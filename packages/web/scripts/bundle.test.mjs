@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
-import { bundleLayout, bundleOptions, rewriteIndex } from "./bundle.mjs";
+import { bundleLayout, bundleOptions, rewriteIndex, VENDORED_SCRIPTS } from "./bundle.mjs";
 import { prepareDeployment } from "./deployment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -117,7 +117,8 @@ test("theme.js restores appearance before paint without the dictionary", async (
 test("index.html points at the hashed files and preloads what main.js imports", async () => {
 	const { layout } = await built;
 	const template = readFileSync(join(root, "public/index.html"), "utf8");
-	const html = rewriteIndex(template, layout);
+	const versions = Object.fromEntries(VENDORED_SCRIPTS.map((file, index) => [file, `${index}`.repeat(12)]));
+	const html = rewriteIndex(template, layout, versions);
 	const head = html.slice(0, html.indexOf("</head>"));
 	assert.ok(layout.preload.length > 0);
 	for (const file of layout.preload) assert.ok(head.includes(`<link rel="modulepreload" href="./${file}">`), file);
@@ -125,9 +126,12 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	assert.ok(head.includes(`<script src="./${layout.theme}"></script>`));
 	assert.ok(head.includes(`<link rel="stylesheet" href="./${layout.style}">`));
 	assert.ok(html.includes(`<script type="module" src="./${layout.script}"></script>`));
-	// The avatar globals still come before the module that uses them.
+	// The avatar globals still come before the module that uses them, each
+	// fetched by its content hash: /assets/ is cached for a day.
+	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script src="./${file}?v=${versions[file]}"></script>`), file);
 	assert.ok(html.indexOf("avatar-appearance.js") < html.indexOf(layout.script));
-	assert.throws(() => rewriteIndex(template.replace('src="./main.js"', ""), layout), /main\.js/);
+	assert.throws(() => rewriteIndex(template.replace('src="./main.js"', ""), layout, versions), /main\.js/);
+	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[1]]: undefined }), /avatar-appearance\.js/);
 });
 
 test("the deployment manifest checksums every script and stylesheet the build made", async () => {
