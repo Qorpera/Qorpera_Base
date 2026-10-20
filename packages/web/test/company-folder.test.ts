@@ -20,6 +20,7 @@ import {
 } from "../src/app/views/company-folder.ts";
 import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
+import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
 
 const me = id(1);
@@ -534,6 +535,64 @@ describe("a folder-v2 company's Company File", () => {
 		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+	});
+
+	it("keeps the older Recents pages already shown when a background sync reads the newest page again", async () => {
+		vi.useFakeTimers();
+		const set = (seq: number) => ({
+			seq,
+			at,
+			by: { kind: "member" as const, userId: me },
+			paths: [{ path: `change-${seq}.txt`, op: "write" as const, kind: "file" as const, version: id(300 + seq) }],
+			more: false,
+		});
+		const { fake, src, host, browser } = await opened({ embedded: true });
+		const shown = () =>
+			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
+		const older = () =>
+			[...host.querySelectorAll<HTMLButtonElement>(".storage-recents button")].find(
+				(button) => button.textContent === "Show older",
+			);
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 6, items: [set(6), set(5)], next: 5 });
+		browser.showRecents();
+		await settle();
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 6, items: [set(4), set(3)], next: null });
+		await click(older());
+		expect(fake.client.history).toHaveBeenLastCalledWith(5, 20, expect.any(AbortSignal));
+		expect(shown()).toEqual(["change-6.txt", "change-5.txt", "change-4.txt", "change-3.txt"]);
+		expect(older()).toBeUndefined();
+		// A new change lands: the sync reads the newest page again, which overlaps what is shown and has more below it.
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 7, items: [set(7), set(6)], next: 6 });
+		src.hint(7);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(fake.client.history).toHaveBeenLastCalledWith(null, 20, expect.any(AbortSignal));
+		expect(shown()).toEqual(["change-7.txt", "change-6.txt", "change-5.txt", "change-4.txt", "change-3.txt"]);
+		expect(older()).toBeUndefined();
+		// The minute poll with nothing new keeps them too.
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 7, items: [set(7), set(6)], next: 6 });
+		await vi.advanceTimersByTimeAsync(61_000);
+		await settle();
+		expect(shown()).toEqual(["change-7.txt", "change-6.txt", "change-5.txt", "change-4.txt", "change-3.txt"]);
+	});
+
+	it("draws dates again in the time zone chosen since, without reading the folder again", async () => {
+		expect(setTimeZonePreference("UTC")).toBe(true);
+		try {
+			const { fake, host, browser } = await opened({ embedded: true });
+			const modified = () =>
+				[...host.querySelectorAll<HTMLElement>(".files-row-main")]
+					.find((button) => button.querySelector(".files-name")?.textContent === "readme.txt")
+					?.querySelector("time")
+					?.title.replace(/\s/g, " ");
+			expect(modified()).toBe("Oct 3, 2026, 9:12 AM");
+			expect(setTimeZonePreference("Pacific/Auckland")).toBe(true);
+			browser.redraw();
+			expect(modified()).toBe("Oct 3, 2026, 10:12 PM");
+			expect(fake.client.list).toHaveBeenCalledOnce();
+		} finally {
+			setTimeZonePreference("system");
+		}
 	});
 
 	it("retries a failed Recents read in the same section", async () => {

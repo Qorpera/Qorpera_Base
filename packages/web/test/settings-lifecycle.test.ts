@@ -571,6 +571,27 @@ describe("settings session lifecycle", () => {
 		expect(composer.value).toBe("Keep this draft while browsing company storage");
 		expect(folder.source.at(-1)?.signal.aborted).toBe(true);
 	});
+	it("draws Storage's dates again in a time zone chosen in Settings meanwhile", async () => {
+		const folder = storageFixture();
+		expect(setTimeZonePreference("UTC")).toBe(true);
+		try {
+			const f = await setup();
+			open(f.root);
+			click(f.root, '.settings-mode[data-mode="storage"]');
+			await draw();
+			const modified = () =>
+				f.root.querySelector<HTMLElement>(".settings-storage-content time")?.title.replace(/\s/g, " ");
+			expect(modified()).toBe("Sep 5, 2026, 10:00 AM");
+			click(f.root, '.settings-mode[data-mode="settings"]');
+			expect(setTimeZonePreference("Pacific/Auckland")).toBe(true);
+			await draw();
+			click(f.root, '.settings-mode[data-mode="storage"]');
+			expect(modified()).toBe("Sep 5, 2026, 10:00 PM");
+			expect(folder.list).toHaveBeenCalledOnce();
+		} finally {
+			setTimeZonePreference("system");
+		}
+	});
 	it("opens Storage from the Company card in the same dialog and reaches Recents by keyboard", async () => {
 		const folder = storageFixture();
 		const f = await setup();
