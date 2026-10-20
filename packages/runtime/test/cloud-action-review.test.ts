@@ -1309,12 +1309,12 @@ describe("what the reviewer reads as the request", () => {
 		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(4096);
 		expect(long.startsWith(`${CARD}\n\n${CARRIES_ON}\n\nRoutine: ø`)).toBe(true);
 		// A room run without an origin (a plain post, a Deny, another member's answer) reads exactly as before.
-		expect(cloudActionReviewRequest(thread, answered)).toBe(
-			`${CARD}\n\n${EARLIER}\n- Tell Acme the meeting moved.`,
-		);
+		expect(cloudActionReviewRequest(thread, answered)).toBe(`${CARD}\n\n${EARLIER}\n- Tell Acme the meeting moved.`);
 		expect(cloudActionReviewRequest(withOrigin({}), answered)).toBe(cloudActionReviewRequest(thread, answered));
 		const post = context([], [source("p", "historical_human_message", message("Send the price list to Acme."), 1)]);
-		expect(cloudActionReviewRequest(post, wake({ payload: { inputIds: ["p"] } }))).toBe("Send the price list to Acme.");
+		expect(cloudActionReviewRequest(post, wake({ payload: { inputIds: ["p"] } }))).toBe(
+			"Send the price list to Acme.",
+		);
 		// The mark is only for a room run: the member's own run reads its own request, origin or not.
 		expect(
 			cloudActionReviewRequest(
