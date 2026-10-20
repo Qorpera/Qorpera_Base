@@ -14,7 +14,7 @@ import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
-import { presentationDay, presentationLocale, t, timeZoneOption } from "../../ui/preferences.ts";
+import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
@@ -153,6 +153,8 @@ const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
+/** How many newest Recents pages a refresh reads to reach the changes already shown. */
+const RECENTS_CATCH_UP_PAGES = 5;
 const IMAGE_TYPES: Record<string, string> = {
 	png: "image/png",
 	jpg: "image/jpeg",
@@ -730,6 +732,7 @@ export class CompanyFolderBrowser {
 		}
 		let touchedFolder = false,
 			touchedFile = false,
+			authority = false,
 			reset = false;
 		for (let pages = 0; ; pages++) {
 			// At most five pages a sync: past that, reading the folder again is cheaper than following.
@@ -748,6 +751,7 @@ export class CompanyFolderBrowser {
 				if (event.kind === "authority") {
 					touchedFolder = true;
 					touchedFile = this.#opened !== null;
+					authority = true;
 					continue;
 				}
 				for (const change of event.changes) {
@@ -766,14 +770,23 @@ export class CompanyFolderBrowser {
 		}
 		if (touchedFolder) await this.#reloadFolder();
 		if (touchedFile) await this.#refreshOpened();
-		if (this.#section === "recents") await this.#loadRecents("refresh");
+		// What this member may read may have changed: older Recents pages read before are not kept unchecked.
+		if (authority) this.#forgetRecents();
+		if (this.#section === "recents") await this.#loadRecents(authority ? "fresh" : "refresh");
 	}
 
-	/** Reads the open folder and the open file again, from a fresh position. */
+	/** Reads the open folder and the open file again, from a fresh position. Recents starts again from its newest
+	 * page too: after a feed reset nothing read before is known to still be readable. */
 	async #reload(): Promise<void> {
 		await this.#reloadFolder();
 		await this.#refreshOpened();
-		if (this.#section === "recents") await this.#loadRecents("refresh");
+		this.#forgetRecents();
+		if (this.#section === "recents") await this.#loadRecents("fresh");
+	}
+
+	#forgetRecents(): void {
+		this.#recentSets = [];
+		this.#recentNext = null;
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
@@ -983,11 +996,10 @@ export class CompanyFolderBrowser {
 		if (Number.isNaN(date.getTime())) return "";
 		const zone = timeZoneOption();
 		const day = presentationDay(date, zone.timeZone);
-		const now = new Date();
+		const today = presentationDay(new Date(), zone.timeZone);
 		const time = date.toLocaleTimeString(this.#locale, { hour: "2-digit", minute: "2-digit", ...zone });
-		if (day === presentationDay(now, zone.timeZone)) return t("Today {time}", { time });
-		if (day === presentationDay(new Date(now.getTime() - 86_400_000), zone.timeZone))
-			return t("Yesterday {time}", { time });
+		if (day === today) return t("Today {time}", { time });
+		if (day === previousDay(today)) return t("Yesterday {time}", { time });
 		return fmtTime(iso);
 	}
 
@@ -1180,23 +1192,37 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	/** Recents' newest page ("fresh"), the page below what is shown ("older"), or the newest page again on a sync
-	 * ("refresh"), which keeps the older pages already shown below it so "Show older" is not undone by a poll. */
+	/** Recents' newest page ("fresh"), the page below what is shown ("older"), or the newest pages again on a sync
+	 * ("refresh"). A refresh keeps the older pages already shown, so "Show older" is not undone by a poll: it reads
+	 * newest pages until they reach the newest change shown, so nothing between the two is skipped. When that is more
+	 * than a few pages away, it shows only what it read, and "Show older" goes on from there. */
 	async #loadRecents(mode: "fresh" | "older" | "refresh" = "fresh"): Promise<void> {
-		const page = await this.#client!.history(mode === "older" ? this.#recentNext : null, 20, this.#signal());
-		this.#live();
 		if (mode === "older") {
+			const page = await this.#client!.history(this.#recentNext, 20, this.#signal());
+			this.#live();
 			this.#recentSets = [...this.#recentSets, ...page.items];
 			this.#recentNext = page.next;
-		} else {
-			const oldest = page.items.at(-1)?.seq;
-			const kept =
-				mode === "refresh" && page.next !== null && oldest !== undefined
-					? this.#recentSets.filter((set) => set.seq < oldest)
-					: [];
-			this.#recentSets = [...page.items, ...kept];
-			if (kept.length === 0) this.#recentNext = page.next;
+			this.#drawRecents();
+			return;
 		}
+		const shownNewest = mode === "refresh" ? this.#recentSets[0]?.seq : undefined;
+		const read: CloudMemberFolderChangeSet[] = [];
+		let next: number | null = null;
+		let met = false;
+		for (let pages = 0; pages < RECENTS_CATCH_UP_PAGES; pages++) {
+			const page = await this.#client!.history(next, 20, this.#signal());
+			this.#live();
+			read.push(...page.items);
+			next = page.next;
+			const oldest = page.items.at(-1)?.seq;
+			met = shownNewest !== undefined && oldest !== undefined && oldest <= shownNewest;
+			if (shownNewest === undefined || next === null || met) break;
+		}
+		const oldestRead = read.at(-1)?.seq;
+		const kept =
+			met && next !== null && oldestRead !== undefined ? this.#recentSets.filter((set) => set.seq < oldestRead) : [];
+		this.#recentSets = [...read, ...kept];
+		if (kept.length === 0) this.#recentNext = next;
 		this.#drawRecents();
 	}
 
@@ -1231,9 +1257,8 @@ export class CompanyFolderBrowser {
 	/** Recents' change sets under a heading for each day: today, yesterday, then the date. */
 	#recentRows(sets: readonly CloudMemberFolderChangeSet[]): HTMLElement[] {
 		const zone = timeZoneOption();
-		const now = new Date();
-		const today = presentationDay(now, zone.timeZone);
-		const yesterday = presentationDay(new Date(now.getTime() - 86_400_000), zone.timeZone);
+		const today = presentationDay(new Date(), zone.timeZone);
+		const yesterday = previousDay(today);
 		const rows: HTMLElement[] = [];
 		let shownDay = "";
 		for (const set of sets) {

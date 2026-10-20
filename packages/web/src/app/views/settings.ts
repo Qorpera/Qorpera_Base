@@ -499,7 +499,7 @@ export class SettingsView {
 		this.#storageContent.hidden = !storage;
 		this.#storageSearch.hidden = !storage;
 		for (const [value, control] of this.#modeButtons) control.setAttribute("aria-pressed", String(mode === value));
-		if (storage) this.#drawStorage();
+		if (storage) this.#drawStorage(true);
 		else this.#select(this.#tab);
 	}
 
@@ -520,8 +520,10 @@ export class SettingsView {
 	}
 
 	/** The modal owns the browser, but company membership remains its authority. A role or capability change
-	 * tears down in-flight reads and downloads before a browser with the new authority is opened. */
-	#drawStorage(): void {
+	 * tears down in-flight reads and downloads before a browser with the new authority is opened. `shown`: Storage is
+	 * being shown again, so its dates are drawn again in the time zone chosen meanwhile; a company update alone redraws
+	 * nothing in an open browser, so a focused file row keeps its focus. */
+	#drawStorage(shown = false): void {
 		if (this.#lifetime.signal.aborted) return;
 		const company = this.#company;
 		const state = company?.store.get();
@@ -564,8 +566,8 @@ export class SettingsView {
 			return;
 		}
 		if (this.#folder) {
-			// Settings may have changed the time zone or language while Storage was hidden.
-			this.#folder.redraw();
+			// Settings may have changed the time zone while Storage was hidden.
+			if (shown) this.#folder.redraw();
 			return;
 		}
 		const signal = AbortSignal.any([

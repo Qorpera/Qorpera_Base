@@ -592,6 +592,24 @@ describe("settings session lifecycle", () => {
 			setTimeZonePreference("system");
 		}
 	});
+	it("keeps a focused Storage file row when an unrelated company refresh arrives", async () => {
+		const folder = storageFixture();
+		const f = await setup();
+		open(f.root);
+		click(f.root, '.settings-mode[data-mode="storage"]');
+		await draw();
+		const notes = [...f.root.querySelectorAll<HTMLElement>(".settings-storage-content .files-row-main")].find(
+			(row) => row.querySelector(".files-name")?.textContent === "notes",
+		)!;
+		notes.focus();
+		const teamReads = vi.mocked(f.api.getTeam).mock.calls.length;
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBeGreaterThan(teamReads);
+		expect(notes.isConnected).toBe(true);
+		expect(document.activeElement).toBe(notes);
+		expect(folder.list).toHaveBeenCalledOnce();
+	});
 	it("opens Storage from the Company card in the same dialog and reaches Recents by keyboard", async () => {
 		const folder = storageFixture();
 		const f = await setup();

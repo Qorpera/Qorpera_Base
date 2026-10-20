@@ -57,6 +57,16 @@ function entry(path: string, text?: string, seq = 1): CloudMemberFolderEntry {
 		target: null,
 	};
 }
+/** A Recents change set: one write, of `change-<seq>.txt` unless a path is given. */
+function recentSet(seq: number, path = `change-${seq}.txt`) {
+	return {
+		seq,
+		at,
+		by: { kind: "member" as const, userId: me },
+		paths: [{ path, op: "write" as const, kind: "file" as const, version: id(300 + seq) }],
+		more: false,
+	};
+}
 /** A link to `target`: no bytes, and nothing below it. */
 function link(path: string, target: string, seq = 1): CloudMemberFolderEntry {
 	return { path, kind: "symlink", version: id(100 + seq), seq, updatedAt: at, file: null, target };
@@ -539,13 +549,7 @@ describe("a folder-v2 company's Company File", () => {
 
 	it("keeps the older Recents pages already shown when a background sync reads the newest page again", async () => {
 		vi.useFakeTimers();
-		const set = (seq: number) => ({
-			seq,
-			at,
-			by: { kind: "member" as const, userId: me },
-			paths: [{ path: `change-${seq}.txt`, op: "write" as const, kind: "file" as const, version: id(300 + seq) }],
-			more: false,
-		});
+		const set = recentSet;
 		const { fake, src, host, browser } = await opened({ embedded: true });
 		const shown = () =>
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
@@ -574,6 +578,144 @@ describe("a folder-v2 company's Company File", () => {
 		await vi.advanceTimersByTimeAsync(61_000);
 		await settle();
 		expect(shown()).toEqual(["change-7.txt", "change-6.txt", "change-5.txt", "change-4.txt", "change-3.txt"]);
+	});
+
+	it("drops older Recents pages after an access change or a feed reset instead of showing them unchecked", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host, browser } = await opened({ embedded: true });
+		const shown = () =>
+			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
+		const older = () =>
+			[...host.querySelectorAll<HTMLButtonElement>(".storage-recents button")].find(
+				(button) => button.textContent === "Show older",
+			);
+		const showOlderPage = async () => {
+			fake.client.history.mockResolvedValueOnce({ asOfSeq: 6, items: [recentSet(6), recentSet(5)], next: 5 });
+			browser.showDocuments();
+			await settle();
+			browser.showRecents();
+			await settle();
+			fake.client.history.mockResolvedValueOnce({
+				asOfSeq: 6,
+				items: [recentSet(4, "secret/plan.md"), recentSet(3)],
+				next: null,
+			});
+			await click(older());
+			expect(shown()).toEqual(["change-6.txt", "change-5.txt", "secret/plan.md", "change-3.txt"]);
+		};
+		await showOlderPage();
+		// Access to secret/ is taken away: the authority event reads Recents from its newest page again.
+		fake.bump(7);
+		fake.changes.push({
+			asOfSeq: 7,
+			resync: false,
+			events: [{ kind: "authority", seq: 7 }],
+			next: { afterSeq: 7, cursor: null },
+			more: false,
+		});
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 7, items: [recentSet(7), recentSet(6)], next: 6 });
+		src.hint(7);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(shown()).toEqual(["change-7.txt", "change-6.txt"]);
+		expect(older()).toBeDefined();
+		// A feed reset forgets them the same way.
+		await showOlderPage();
+		fake.bump(8);
+		fake.changes.push({ asOfSeq: 8, resync: true, events: [], next: null, more: false });
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 8, items: [recentSet(8), recentSet(6)], next: 6 });
+		src.hint(8);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(shown()).toEqual(["change-8.txt", "change-6.txt"]);
+		expect(older()).toBeDefined();
+	});
+
+	it("reads through every change that arrived between two refreshes before joining the older Recents pages", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host, browser } = await opened({ embedded: true });
+		const seqs = () =>
+			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) =>
+				Number(path.textContent?.match(/\d+/)?.[0]),
+			);
+		const older = () =>
+			[...host.querySelectorAll<HTMLButtonElement>(".storage-recents button")].find(
+				(button) => button.textContent === "Show older",
+			);
+		const page = (from: number, to: number, next: number | null) => ({
+			asOfSeq: from,
+			items: Array.from({ length: from - to + 1 }, (_, index) => recentSet(from - index)),
+			next,
+		});
+		const descending = (from: number, to: number) =>
+			Array.from({ length: from - to + 1 }, (_, index) => from - index);
+		fake.client.history.mockResolvedValueOnce(page(40, 21, 21));
+		browser.showRecents();
+		await settle();
+		fake.client.history.mockResolvedValueOnce(page(20, 1, null));
+		await click(older());
+		expect(seqs()).toEqual(descending(40, 1));
+		// 25 changes arrive: the newest page alone (65-46) would leave 45-41 out.
+		fake.client.history.mockResolvedValueOnce(page(65, 46, 46)).mockResolvedValueOnce(page(45, 26, 26));
+		src.hint(65);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(fake.client.history).toHaveBeenLastCalledWith(46, 20, expect.any(AbortSignal));
+		expect(seqs()).toEqual(descending(65, 1));
+		expect(older()).toBeUndefined();
+		// Far behind: after five pages that never reach what is shown, only those pages show, and "Show older" goes on.
+		for (let from = 200; from > 100; from -= 20)
+			fake.client.history.mockResolvedValueOnce(page(from, from - 19, from - 19));
+		src.hint(200);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(seqs()).toEqual(descending(200, 101));
+		expect(older()).toBeDefined();
+		fake.client.history.mockResolvedValueOnce(page(100, 81, 81));
+		await click(older());
+		expect(fake.client.history).toHaveBeenLastCalledWith(101, 20, expect.any(AbortSignal));
+		expect(seqs()).toEqual(descending(200, 81));
+	});
+
+	it("names yesterday by the calendar, also on the night the clocks change", async () => {
+		// 00:30 on 30 March 2026 in Copenhagen, the first night of summer time: 24 hours earlier is still 28 March.
+		vi.useFakeTimers({ now: new Date("2026-03-29T22:30:00Z") });
+		expect(setTimeZonePreference("Europe/Copenhagen")).toBe(true);
+		try {
+			const fake = folderFake();
+			const dated = (path: string, updatedAt: string) => ({ ...entry(path, "text"), updatedAt });
+			fake.client.list.mockResolvedValueOnce({
+				asOfSeq: 4,
+				entries: [dated("saturday.txt", "2026-03-28T12:00:00Z"), dated("sunday.txt", "2026-03-29T12:00:00Z")],
+				next: null,
+			});
+			fake.client.history.mockResolvedValueOnce({
+				asOfSeq: 4,
+				items: [
+					{ ...recentSet(2), at: "2026-03-29T12:00:00Z" },
+					{ ...recentSet(1), at: "2026-03-28T12:00:00Z" },
+				],
+				next: null,
+			});
+			const src = source(fake),
+				host = document.createElement("section");
+			document.body.append(host);
+			const browser = new CompanyFolderBrowser(host, src.value, people, { embedded: true });
+			disposers.push(() => browser.dispose());
+			await browser.open();
+			await settle();
+			const modified = (name: string) => row(host, name)?.querySelector("time")?.textContent?.replace(/\s/g, " ");
+			expect(modified("sunday.txt")).toBe("Yesterday 02:00 PM");
+			expect(modified("saturday.txt")).toBe("Mar 28, 01:00 PM");
+			browser.showRecents();
+			await settle();
+			expect([...host.querySelectorAll(".storage-recent-day")].map((day) => day.textContent)).toEqual([
+				"Yesterday",
+				"Saturday, March 28, 2026",
+			]);
+		} finally {
+			setTimeZonePreference("system");
+		}
 	});
 
 	it("draws dates again in the time zone chosen since, without reading the folder again", async () => {
