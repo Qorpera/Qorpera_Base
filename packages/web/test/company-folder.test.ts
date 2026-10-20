@@ -631,6 +631,74 @@ describe("a folder-v2 company's Company File", () => {
 		expect(older()).toBeDefined();
 	});
 
+	it("clears Recents at an access change even when the reads after it fail, and the next poll shows the newest page", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host, browser } = await opened({ embedded: true });
+		const shown = () =>
+			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
+		const older = () =>
+			[...host.querySelectorAll<HTMLButtonElement>(".storage-recents button")].find(
+				(button) => button.textContent === "Show older",
+			);
+		const authorityChange = (seq: number) => {
+			fake.bump(seq);
+			fake.changes.push({
+				asOfSeq: seq,
+				resync: false,
+				events: [{ kind: "authority", seq }],
+				next: { afterSeq: seq, cursor: null },
+				more: false,
+			});
+		};
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 6, items: [recentSet(6), recentSet(5)], next: 5 });
+		browser.showRecents();
+		await settle();
+		fake.client.history.mockResolvedValueOnce({
+			asOfSeq: 6,
+			items: [recentSet(4, "secret/plan.md"), recentSet(3)],
+			next: null,
+		});
+		await click(older());
+		expect(shown()).toContain("secret/plan.md");
+		// The folder read after the access change fails: the old rows are gone all the same.
+		authorityChange(7);
+		fake.client.list.mockRejectedValueOnce(new Error("offline"));
+		src.hint(7);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(status(host)).toContain("could not be read just now");
+		expect(shown()).toEqual([]);
+		expect(host.querySelector(".storage-recents")?.textContent).not.toContain("secret/plan.md");
+		// The next poll reads Recents' newest page only; nothing from before comes back.
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 7, items: [recentSet(7), recentSet(6)], next: 6 });
+		await vi.advanceTimersByTimeAsync(61_000);
+		await settle();
+		expect(fake.client.history).toHaveBeenLastCalledWith(null, 20, expect.any(AbortSignal));
+		expect(shown()).toEqual(["change-7.txt", "change-6.txt"]);
+		fake.client.history.mockResolvedValueOnce({
+			asOfSeq: 7,
+			items: [recentSet(4, "secret/plan.md"), recentSet(3)],
+			next: null,
+		});
+		await click(older());
+		expect(shown()).toContain("secret/plan.md");
+		// Now the Recents read after the access change fails: its rows are gone too.
+		authorityChange(8);
+		fake.client.history.mockRejectedValueOnce(new Error("offline"));
+		src.hint(8);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(status(host)).toContain("could not be read just now");
+		expect(shown()).toEqual([]);
+		expect(host.querySelector(".storage-recents")?.textContent).not.toContain("secret/plan.md");
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 8, items: [recentSet(8), recentSet(7)], next: 7 });
+		await vi.advanceTimersByTimeAsync(61_000);
+		await settle();
+		expect(fake.client.history).toHaveBeenLastCalledWith(null, 20, expect.any(AbortSignal));
+		expect(shown()).toEqual(["change-8.txt", "change-7.txt"]);
+		expect(older()).toBeDefined();
+	});
+
 	it("reads through every change that arrived between two refreshes before joining the older Recents pages", async () => {
 		vi.useFakeTimers();
 		const { fake, src, host, browser } = await opened({ embedded: true });

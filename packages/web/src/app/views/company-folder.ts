@@ -751,6 +751,9 @@ export class CompanyFolderBrowser {
 				if (event.kind === "authority") {
 					touchedFolder = true;
 					touchedFile = this.#opened !== null;
+					// What this member may read may have changed: Recents read before goes at once, before any read
+					// below can fail and leave it on screen.
+					if (!authority) this.#forgetRecents();
 					authority = true;
 					continue;
 				}
@@ -770,23 +773,24 @@ export class CompanyFolderBrowser {
 		}
 		if (touchedFolder) await this.#reloadFolder();
 		if (touchedFile) await this.#refreshOpened();
-		// What this member may read may have changed: older Recents pages read before are not kept unchecked.
-		if (authority) this.#forgetRecents();
-		if (this.#section === "recents") await this.#loadRecents(authority ? "fresh" : "refresh");
+		if (this.#section === "recents") await this.#loadRecents("refresh");
 	}
 
 	/** Reads the open folder and the open file again, from a fresh position. Recents starts again from its newest
-	 * page too: after a feed reset nothing read before is known to still be readable. */
+	 * page too: after a feed reset nothing read before is known to still be readable, so it goes first. */
 	async #reload(): Promise<void> {
+		this.#forgetRecents();
 		await this.#reloadFolder();
 		await this.#refreshOpened();
-		this.#forgetRecents();
 		if (this.#section === "recents") await this.#loadRecents("fresh");
 	}
 
+	/** Drops Recents' change sets and, when Recents is shown, its rows too, until it is read again. With nothing kept,
+	 * the next refresh (this sync's, or a later poll's after a failed read) reads only the newest page. */
 	#forgetRecents(): void {
 		this.#recentSets = [];
 		this.#recentNext = null;
+		if (this.#section === "recents") replace(this.#recents, listSkeleton(t("Loading"), 4));
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
