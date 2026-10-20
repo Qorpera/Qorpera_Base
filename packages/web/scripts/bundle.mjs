@@ -117,15 +117,25 @@ export function bundleLayout(metafile, { root, outdir }) {
 	};
 }
 
+/** The vendored classic scripts index.html loads by a fixed name from
+ * `/assets/`, which is cached for a day; each gets its content hash as a
+ * query, so a deploy that changes one is fetched at once. */
+export const VENDORED_SCRIPTS = ["assets/avatars/motion-model.js", "assets/avatars/avatar-appearance.js"];
+
 /** Point index.html at the hashed files and preload main.js's static chunks,
- * so splitting adds no request that waits for main.js to be parsed. */
-export function rewriteIndex(html, layout) {
+ * so splitting adds no request that waits for main.js to be parsed.
+ * `versions` maps each of VENDORED_SCRIPTS to its content hash. */
+export function rewriteIndex(html, layout, versions) {
 	const once = (text, from, to) => {
 		if (text.split(from).length !== 2) throw new Error(`index.html must contain ${from} exactly once`);
 		return text.replace(from, () => to);
 	};
 	const preload = layout.preload.map((file) => `<link rel="modulepreload" href="./${file}">\n`).join("");
 	let result = once(html, 'src="./theme.js"', `src="./${layout.theme}"`);
+	for (const file of VENDORED_SCRIPTS) {
+		if (!/^[\da-f]{12}$/.test(versions?.[file] ?? "")) throw new Error(`No content hash for ${file}`);
+		result = once(result, `src="./${file}"`, `src="./${file}?v=${versions[file]}"`);
+	}
 	result = once(result, 'href="./app.css"', `href="./${layout.style}"`);
 	result = once(result, 'src="./main.js"', `src="./${layout.script}"`);
 	return once(result, "</head>", `${preload}</head>`);
