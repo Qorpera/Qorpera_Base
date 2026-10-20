@@ -1078,6 +1078,8 @@ export class CompanyController {
 			check,
 		);
 		const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
+		// The member may have left the company or signed out meanwhile: their pins are written only while it is theirs.
+		check();
 		const item =
 			change.action === "move" ? change.item : change.action === "create_section" ? change.item : undefined;
 		if (!unpin || !item || !sidebar.pinned.includes(item)) return sidebar;

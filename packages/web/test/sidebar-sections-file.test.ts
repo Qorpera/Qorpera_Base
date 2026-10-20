@@ -146,6 +146,27 @@ describe("agents/sections.md from the rail", () => {
 		).toThrow("This section is no longer there.");
 	});
 
+	it("tells apart sections whose names differ only in their spaces, as the parser does", () => {
+		const text = `## Sales Ops\n- ${ada} Ada\n\n## Sales  Ops\n- ${bo} Bo\n`;
+		expect(read(text)).toEqual([
+			["Sales Ops", ada],
+			["Sales  Ops", bo],
+		]);
+		expect(read(rewriteSectionsFile(text, { action: "delete_section", name: "sales  ops" }, words)!)).toEqual([
+			["Sales Ops", ada],
+		]);
+		expect(read(rewriteSectionsFile(text, { action: "move", item: cy, section: "Sales  Ops" }, words)!)).toEqual([
+			["Sales Ops", ada],
+			["Sales  Ops", bo, cy],
+		]);
+		expect(
+			read(rewriteSectionsFile(text, { action: "rename_section", from: "Sales  Ops", name: "Deals" }, words)!),
+		).toEqual([
+			["Sales Ops", ada],
+			["Deals", bo],
+		]);
+	});
+
 	it("writes a name beside a new id on one line, and refuses a file that does not read as sections", () => {
 		const moved = rewriteSectionsFile(
 			seeded(),

@@ -74,8 +74,9 @@ interface Section {
 	members: { id: string; words: string }[];
 }
 
-/** Section names match ignoring case and runs of spaces, as the runtime's tool finds them. */
-const same = (a: string, b: string) => a.replace(/\s+/g, " ").toLowerCase() === b.replace(/\s+/g, " ").toLowerCase();
+/** Section names match ignoring case only, as the parser and the sidebar's index compare them: "Sales Ops" and
+ * "Sales  Ops" are two sections. */
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** The sections as the parser compares them: names in order, each with its ids in order. */
 const shape = (sections: readonly { name: string; members: readonly { id: string }[] }[]) =>
 	JSON.stringify(sections.map((section) => [section.name, section.members.map((member) => member.id)]));

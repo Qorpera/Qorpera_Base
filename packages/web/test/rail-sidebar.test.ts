@@ -930,6 +930,22 @@ describe("dragging agents in the rail", () => {
 		]);
 		expect(company.store.get().sidebar?.sections.map((section) => section.sectionId)).not.toContain(id(80));
 	});
+	it("sends no unpin once the company is left while the moved sidebar is read", async () => {
+		const { company, rail, read, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id]], [dee.id]);
+		await ready;
+		await settle();
+		const answer = deferred<CompanySidebar>();
+		read.mockImplementationOnce(() => answer.promise);
+		const boxes = layout(rail);
+		drag(rail.querySelector(".rail-pin")!, boxes.get(rowOf(rail, "Ada"))!, rail);
+		await settle();
+		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, dee.id, ada.id]]);
+		company.stop();
+		answer.resolve(structuredClone(company.store.get().sidebar!));
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
 	it("puts the sections back and says why when the company folder refuses the file", async () => {
 		const { rail, fake, ready } = companyWithFile([["Research", bo.id, ada.id]]);
 		await ready;
