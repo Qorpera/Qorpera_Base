@@ -48,7 +48,6 @@ import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
-import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderPlan } from "./views/plan.ts";
@@ -201,15 +200,6 @@ export function mountApplication(
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
 		planReturn = takeChatGptPlanReturn() ?? planReturn;
 		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
-		if (liveFile && liveFile.routeHash !== location.hash) {
-			const message = liveFile.leaveMessage();
-			if (message && !window.confirm(message)) {
-				history.replaceState(null, "", liveFile.routeHash);
-				return;
-			}
-			liveFile.dispose();
-			liveFile = undefined;
-		}
 		closeSettings(false);
 		closeFeedback(false);
 		settingsAfterHome = undefined;
@@ -234,7 +224,6 @@ export function mountApplication(
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
-	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
@@ -338,8 +327,8 @@ export function mountApplication(
 	}
 
 	/** Rebuild the route's screens from the stores, which keep drafts,
-	 * attachments and edits. A new-conversation draft and unsaved Company File
-	 * text live only in their screens, so those stay until they are left. */
+	 * attachments and edits. A new-conversation draft lives only in its screen,
+	 * so that stays until it is left. */
 	function redrawScreens(): void {
 		if (disposed) return;
 		// The founding table's page keeps its text between refreshes; a new language builds it again.
@@ -356,10 +345,6 @@ export function mountApplication(
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
-		}
-		if (liveFile && !liveFile.leaveMessage()) {
-			liveFile.dispose();
-			liveFile = undefined;
 		}
 		render();
 	}
@@ -380,8 +365,6 @@ export function mountApplication(
 		unsubscribeCompany?.();
 		conversation?.dispose();
 		newConversation?.dispose();
-		liveFile?.dispose();
-		liveFile = undefined;
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
@@ -857,8 +840,6 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			mail?.dispose();
 			mail = undefined;
-			liveFile?.dispose();
-			liveFile = undefined;
 			closeSettings(false);
 			conversation?.dispose();
 			newConversation?.dispose();
@@ -1326,71 +1307,10 @@ export function mountApplication(
 				return;
 			}
 			case "file": {
-				if (state.loading) {
-					replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening Company File"))));
-					return;
-				}
-				if (!state.team) {
-					// Company File access follows membership; without it there is nothing to wait for.
-					replace(
-						main,
-						h(
-							"section",
-							{ class: "page" },
-							notice("danger", state.error ?? t("Your membership in this company could not be read.")),
-							button(t("Retry company"), () => {
-								if (!controller.store.get().loading) void controller.refreshAll();
-							}),
-						),
-					);
-					return;
-				}
-				const authorityKey = JSON.stringify([
-					state.team.role,
-					state.team.capabilities.read,
-					state.team.capabilities.write,
-				]);
-				if (!liveFile || liveFile.authorityKey !== authorityKey) {
-					liveFile?.dispose();
-					const stop = new AbortController();
-					const files = new WebCompanyFiles(
-						cloud,
-						controller.profile,
-						controller.userId,
-						state.team.role,
-						AbortSignal.any([stop.signal, controller.signal]),
-						() => {
-							const selected = currentRoute(),
-								team = controller.store.get().team;
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== controller.userId ||
-								controller.store.get().accessLost ||
-								!team?.capabilities.read ||
-								JSON.stringify([team.role, team.capabilities.read, team.capabilities.write]) !== authorityKey ||
-								selected.name !== "company" ||
-								selected.profileId !== controller.profile.profileId ||
-								selected.section !== "file" ||
-								selected.id
-							)
-								throw new Error(t("Company File access changed."));
-						},
-						state.team.capabilities.write,
-					);
-					liveFile = new LiveCompanyFileView(
-						files,
-						stop,
-						authorityKey,
-						// The folder's changes name their members and agents.
-						() => ({
-							me: controller.userId,
-							members: controller.store.get().team?.members ?? [],
-							staff: controller.store.get().staff,
-						}),
-					);
-				}
-				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
+				// Existing Company File links open Storage in Settings. Resolve the company's
+				// home first, so its redirect cannot close the new Settings session.
+				navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+				settingsAfterHome = "storage";
 				return;
 			}
 			case "meet":
