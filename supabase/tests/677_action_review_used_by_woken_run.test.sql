@@ -7,7 +7,8 @@
 -- woke the run is read first, so a newer card of the same action does not hide it. 20260926130000 read this from the
 -- time (used within 30 s of the wake, asked within an hour) and from the latest review only: a later use let the action
 -- run twice under an allow rule, and other runs' calls of it were refused as used. Bob's run in his thread holds; each
--- answer's wake is a real run. Runs on 605's fixture part (its rules and helpers).
+-- answer's wake is a real run. An approval's run carries the holder's run as its origin, whose request its review reads
+-- (20260930518000, C6-8b; G). Runs on 605's fixture part (its rules and helpers).
 
 -- The shape: the patched body, and the same grants.
 do $$
@@ -205,6 +206,53 @@ begin
 		'The woken repeat uses the approval that woke it: ' || v_begin::text);
 	perform pg_temp.base_assert((select answer is null and consumed_at is null from public.qorpera_action_reviews
 		where id = v_newer), 'The newer card still waits for its own answer');
+end
+$$;
+
+-- G. The run an approval woke carries on the holder's work (20260930518000, C6-8b): its wake records the holder's run as
+-- its origin, and describe gives it the holder's request beside the answer, as its review reads them. The approval
+-- still covers the card's action alone, once: the run's other acting calls, a routine change too, are reviewed. A Deny's
+-- run carries no origin.
+do $$
+declare v_holder jsonb := current_setting('qorpera_test.fa_holder')::jsonb; v_id uuid; v_answer jsonb; v_woken jsonb;
+	v_wake public.qorpera_wake_occurrences%rowtype; v_context jsonb; v_begin jsonb;
+	c_call constant jsonb := jsonb_build_object('tool', 'send_email', 'argumentSha256', repeat('7', 64));
+begin
+	v_id := (pg_temp.rv_record(v_holder, 'fa-call-9', repeat('7', 64), 'ask',
+		array['60500000-0000-4000-8000-000000000a02']::uuid[]) ->> 'reviewId')::uuid;
+	perform pg_temp.base_assert(public.qorpera_await_action_review(v_holder, v_id, true, true) ->> 'state' = 'parked',
+		'A hold that ends early parks its card');
+	v_answer := pg_temp.rv_answer('92400000-0000-4000-8000-000000000001', v_id, 'allow_once');
+	v_woken := pg_temp.fa_woken_run(v_answer);
+	select * into strict v_wake from public.qorpera_wake_occurrences where run_id = (v_woken ->> 'runId')::uuid;
+	perform pg_temp.base_assert(v_wake.wake_kind = 'room' and v_wake.source_id = (v_answer ->> 'inputId')::uuid
+		and v_wake.origin_run_id = (v_holder ->> 'runId')::uuid,
+		'The woken run''s wake carries the holder''s run as its origin: ' || to_jsonb(v_wake)::text);
+	v_context := public.qorpera_describe_company_run_context(v_woken);
+	perform pg_temp.base_assert(v_context #>> '{origin,runId}' = v_holder ->> 'runId'
+		and v_context #> '{origin,routineIntent}' = 'null'::jsonb
+		and exists (select 1 from jsonb_array_elements(v_context #> '{origin,inputs}') as input
+			where input #>> '{content,text}' = 'Bob, tell Acme the meeting moved.'
+				and input ->> 'authorUserId' = '92400000-0000-4000-8000-000000000001')
+		and exists (select 1 from jsonb_array_elements(v_context -> 'history') as entry
+			where entry ->> 'id' = v_answer ->> 'inputId'),
+		'Describe gives the woken run the holder''s request beside the answer: ' || coalesce(v_context -> 'origin', 'null')::text);
+	v_begin := public.qorpera_begin_action_review(v_woken, c_call);
+	perform pg_temp.base_assert(v_begin ->> 'state' = 'approved' and v_begin ->> 'reviewId' = v_id::text,
+		'The woken run runs the card''s action on its approval: ' || v_begin::text);
+	perform pg_temp.base_assert(public.qorpera_begin_action_review(v_woken, c_call) ->> 'state' = 'review',
+		'Once: its next call of the action is reviewed afresh');
+	perform pg_temp.base_assert(public.qorpera_begin_action_review(v_woken, jsonb_build_object('tool', 'manage_routine',
+		'argumentSha256', repeat('6', 64))) ->> 'state' = 'review', 'A routine change in the woken run is reviewed');
+
+	v_id := (pg_temp.rv_record(v_holder, 'fa-call-10', repeat('5', 64), 'ask',
+		array['60500000-0000-4000-8000-000000000a02']::uuid[]) ->> 'reviewId')::uuid;
+	perform pg_temp.base_assert(public.qorpera_await_action_review(v_holder, v_id, true, true) ->> 'state' = 'parked',
+		'A hold that ends early parks its card');
+	v_woken := pg_temp.fa_woken_run(pg_temp.rv_answer('92400000-0000-4000-8000-000000000001', v_id, 'deny'));
+	perform pg_temp.base_assert((select origin_run_id is null from public.qorpera_wake_occurrences
+		where run_id = (v_woken ->> 'runId')::uuid) and not public.qorpera_describe_company_run_context(v_woken) ? 'origin',
+		'A Deny''s run carries no origin');
 end
 $$;
 

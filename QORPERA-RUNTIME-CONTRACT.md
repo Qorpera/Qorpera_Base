@@ -3336,6 +3336,20 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    - A coworker's message is never the request, for its own run or for a chain
      it started (9.2): the reviewed steps of such a chain (an agent dispatching
      or steering its worker, say) still have no member request, as before.
+   Amended 2026-10-20 (C6-8b: a routine's run parked a mail card; the run the
+   member's Allow once woke sent the mail, and its routine change was denied
+   as not requested, because its request was the card answer alone):
+   - The run a member's Allow once or Always allow wakes in the agent's
+     thread also carries on the agent's own earlier work. After the card
+     answer, it reads the request of the run that asked the card (or that
+     run's own origin, when it has one), found by the platform from the
+     answer and its card (never from the agent), and marked as such. Only a
+     card of the same agent, answered by the requester of the run that asked
+     it, has one; a Deny, a plain post and a card the agent asked with
+     ask_member have none.
+   - The approval card itself is still not read, and the card answer is
+     still no approval of any other call: every call of that run is
+     reviewed, apart from the identical call the card approved (item 6).
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow

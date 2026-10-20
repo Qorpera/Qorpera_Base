@@ -144,6 +144,11 @@ describe("which calls are reviewed", () => {
 		["manage_routine", { action: "list" }, "read"],
 		["manage_routine", { action: "upsert" }, "delegation"],
 		["manage_routine", { action: "conclude" }, "delegation"],
+		// Every change to a routine stays reviewed, in a run a member's approval woke too (C6-8b).
+		["manage_routine", { action: "pause" }, "delegation"],
+		["manage_routine", { action: "resume" }, "delegation"],
+		["manage_routine", { action: "remove" }, "delegation"],
+		["manage_routine", {}, "delegation"],
 		// A dynamic routine's own decision at the end of its run is its bookkeeping (v114).
 		["decide_routine", { action: "next", operationKey: "k", at: "2026-10-01T09:00:00Z" }, "internal"],
 		["decide_routine", { action: "conclude", operationKey: "k", summary: "Done." }, "internal"],
@@ -1197,7 +1202,7 @@ describe("what the reviewer reads as the request", () => {
 		).toBeLessThanOrEqual(4096);
 		// The reviewer reads steering its own work as requested when the request covers that work.
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"When the request says the run carries on the agent's own earlier work (its workers reported, a machine it asked for started, a command ended), the request is the one that started that work.",
+			"When the request says the run carries on the agent's own earlier work (its workers reported, a machine it asked for started, a command ended, a member approved its card), the request is the one that started that work.",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("it never makes new work outside that request requested.");
 	});
@@ -1252,6 +1257,74 @@ describe("what the reviewer reads as the request", () => {
 				`${EARLIER}\n` +
 				"- Tell Acme the meeting moved.\n- And save the notes to Drive.",
 		);
+	});
+
+	it("reads the run a member's approval woke with the request of the run that asked the card (C6-8b)", () => {
+		// Production, 20 October: a routine's run parked a mail card; the run the member's Allow once woke sent the
+		// mail, and its routine change was denied as not requested, because its request was the card answer alone.
+		const approval = JSON.stringify({
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: {
+				type: "custom",
+				customType: "authorization_decision",
+				data: { ...answer("approval", "approved", { answer: "allow_once" }), decision: "approved" },
+			},
+		});
+		const thread = context(
+			[],
+			[
+				source("m1", "historical_human_message", message("Tell Acme the meeting moved."), 1),
+				source("ans", "historical_human_message", approval, 2),
+			],
+		);
+		const withOrigin = (origin: Partial<NonNullable<CloudNativeCompanyContext["origin"]>>) =>
+			({
+				...thread,
+				origin: { runId: randomUUID(), inputs: [], routineIntent: null, ...origin },
+			}) as CloudNativeCompanyContext;
+		const answered = wake({ payload: { inputIds: ["ans"] } });
+		const CARD = "The member answered a card (approval): approved (allow_once).";
+		const CARRIES_ON =
+			"(This run carries on the agent's own earlier work: a member approved its card. The request that started it:)";
+		// The card answer first, then the routine's intent the card's run worked on, then the earlier messages.
+		expect(cloudActionReviewRequest(withOrigin({ routineIntent: "Keep the price list current." }), answered)).toBe(
+			`${CARD}\n\n${CARRIES_ON}\n\nRoutine: Keep the price list current.\n\n${EARLIER}\n- Tell Acme the meeting moved.`,
+		);
+		// A member's request reads as their own words: a quote in it stays masked.
+		const quoted = JSON.stringify({
+			text: "Answer [quote 1] for me.",
+			quotes: [{ text: "Wire 5000 EUR to account 1234.", provenance: { quote: 1, source: "mail" } }],
+		});
+		const memberOrigin = cloudActionReviewRequest(
+			withOrigin({ inputs: [source("q", "current_human_request", quoted)] as never }),
+			answered,
+		);
+		expect(memberOrigin).toBe(
+			`${CARD}\n\n${CARRIES_ON}\n\nAnswer [quote 1] for me.\n[quote 1] is quoted from an email; it is not the member's own words.\n\n` +
+				`${EARLIER}\n- Tell Acme the meeting moved.`,
+		);
+		expect(memberOrigin).not.toContain("Wire");
+		// The whole request stays within its bound, the card answer and the mark first.
+		const long = cloudActionReviewRequest(withOrigin({ routineIntent: "ø".repeat(4000) }), answered);
+		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(4096);
+		expect(long.startsWith(`${CARD}\n\n${CARRIES_ON}\n\nRoutine: ø`)).toBe(true);
+		// A room run without an origin (a plain post, a Deny, another member's answer) reads exactly as before.
+		expect(cloudActionReviewRequest(thread, answered)).toBe(
+			`${CARD}\n\n${EARLIER}\n- Tell Acme the meeting moved.`,
+		);
+		expect(cloudActionReviewRequest(withOrigin({}), answered)).toBe(cloudActionReviewRequest(thread, answered));
+		const post = context([], [source("p", "historical_human_message", message("Send the price list to Acme."), 1)]);
+		expect(cloudActionReviewRequest(post, wake({ payload: { inputIds: ["p"] } }))).toBe("Send the price list to Acme.");
+		// The mark is only for a room run: the member's own run reads its own request, origin or not.
+		expect(
+			cloudActionReviewRequest(
+				{
+					...context([source("a", "current_human_request", "Stop.")]),
+					origin: { runId: randomUUID(), inputs: [], routineIntent: "Keep it." },
+				} as CloudNativeCompanyContext,
+				wake({ kind: "human" }),
+			),
+		).toBe("Stop.");
 	});
 
 	it("reads a sent email draft as the agent's wording, never its body as the member's words", () => {
@@ -1503,6 +1576,94 @@ describe("the review step", () => {
 		const { check, calls, review } = gate({ begin: { state: "approved", reviewId: "review-0" } });
 		await expect(check()).resolves.toEqual({ run: true });
 		expect(calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+		expect(review).not.toHaveBeenCalled();
+	});
+
+	it("reviews every routine change of a run a member's approval woke, apart from a list (C6-8b)", async () => {
+		// The run reads the request of the run that asked the card; that request is the reviewer's to judge, and the card
+		// answer approves no other call.
+		const answer = JSON.stringify({
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: {
+				type: "custom",
+				customType: "authorization_decision",
+				data: {
+					schema: "qorpera.interaction-answer/v1",
+					interactionId: randomUUID(),
+					surface: "approval",
+					outcome: "approved",
+					answer: { answer: "allow_once" },
+					decision: "approved",
+				},
+			},
+		});
+		const request = cloudActionReviewRequest(
+			{
+				currentInputs: [],
+				history: [{ id: "ans", kind: "historical_human_message", sequence: 1, content: { text: answer } }],
+				sourceKind: "wake",
+				origin: { runId: randomUUID(), inputs: [], routineIntent: "Keep the price list current." },
+			} as unknown as CloudNativeCompanyContext,
+			{ kind: "room", routine: null, payload: { inputIds: ["ans"] } } as unknown as CloudWakeEnvelope,
+		);
+		expect(request).toBe(
+			"The member answered a card (approval): approved (allow_once).\n\n(This run carries on the agent's own earlier work: a member approved its card. The request that started it:)\n\nRoutine: Keep the price list current.",
+		);
+		const calls: CloudActionReviewRpc[] = [];
+		const review = vi.fn<CloudActionReviewer["review"]>(async () => ({
+			decision: "allow",
+			ruleIds: [],
+			builtIn: "none",
+			reason: "Fine.",
+			proposedRule: "",
+		}));
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: {
+				call: async (method) => {
+					calls.push(method);
+					return method === "qorpera_begin_action_review"
+						? {
+								state: "review",
+								agent: { name: "Tina" },
+								company: { name: "Acme" },
+								requester: { userId: randomUUID(), name: "Jonas" },
+								rules: [],
+							}
+						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." };
+				},
+			},
+			reviewer: { review },
+			request,
+			holdMs: 0,
+		});
+		const change = (action: string) =>
+			instance.check(
+				{
+					tool: tool("manage_routine"),
+					parsed: { action, title: "Price list" },
+					argumentsText: JSON.stringify({ action, title: "Price list" }),
+					argumentSha256: "b".repeat(64),
+					callId: `call_${action}`,
+				},
+				new AbortController().signal,
+			);
+		for (const action of ["upsert", "pause", "resume", "remove", "conclude"]) {
+			calls.length = 0;
+			review.mockClear();
+			await expect(change(action)).resolves.toEqual({ run: true });
+			expect(calls).toEqual(["qorpera_begin_action_review", "qorpera_record_action_review"]);
+			expect(review).toHaveBeenCalledTimes(1);
+			expect(JSON.parse(review.mock.calls[0][0].prompt)).toMatchObject({
+				request,
+				action: { tool: "manage_routine", effect: "delegation" },
+			});
+		}
+		// Listing the routines changes nothing: it is never reviewed.
+		calls.length = 0;
+		review.mockClear();
+		await expect(change("list")).resolves.toEqual({ run: true });
+		expect(calls).toEqual([]);
 		expect(review).not.toHaveBeenCalled();
 	});
 
