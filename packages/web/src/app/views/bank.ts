@@ -141,12 +141,14 @@ class BankView {
 	#categoriesShown = true;
 	#monthsShown = true;
 	#dialog: SurfaceDialog | null = null;
+	/** The company closed: the dialog goes with it. */
+	readonly #closed = () => this.dispose();
 	/** The line under the saldo that names the day the pointer is on. */
 	#hoverLine: HTMLElement | null = null;
 
 	constructor(company: CompanyController) {
 		this.#company = company;
-		company.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		company.signal.addEventListener("abort", this.#closed, { once: true });
 	}
 
 	/** Draws the summary when its text, the language or the company's state it shows changed. */
@@ -163,6 +165,7 @@ class BankView {
 	}
 
 	dispose(): void {
+		this.#company.signal.removeEventListener("abort", this.#closed);
 		this.#dialog?.close(false);
 	}
 
@@ -370,7 +373,6 @@ class BankView {
 		const step = axisStep(most - least || Math.abs(most) || 1);
 		const low = Math.floor(least / step) * step;
 		const high = Math.max(low + step, Math.ceil(most / step) * step);
-		const compact = new Intl.NumberFormat(presentationLocale(), { notation: "compact", maximumFractionDigits: 1 });
 		const x = (index: number) => (index / (points.length - 1)) * CHART_WIDTH;
 		const y = (value: number) => CHART_BOTTOM - ((value - low) / (high - low || 1)) * (CHART_BOTTOM - CHART_TOP);
 		const xy = drawn.map((value, index) => [x(index), y(value)] as const);
@@ -393,17 +395,27 @@ class BankView {
 		let grid = "";
 		const plot = h("div", { class: "bank-chart-plot" });
 		const labels: HTMLElement[] = [];
-		for (let line = 0; line <= Math.round((high - low) / step); line++) {
-			const value = low + line * step;
+		const values = Array.from({ length: Math.round((high - low) / step) + 1 }, (_, line) => low + line * step);
+		// Short labels (300K, 1,5M), with as many decimals as the step needs; if two still read the same, whole kroner.
+		const unit = [1e12, 1e9, 1e6, 1e3].find((each) => Math.max(Math.abs(low), Math.abs(high)) >= each) ?? 1;
+		const decimals = Math.min(3, Math.max(0, Math.ceil(Math.log10(unit / step))));
+		const compact = new Intl.NumberFormat(presentationLocale(), {
+			notation: "compact",
+			minimumFractionDigits: 0,
+			maximumFractionDigits: decimals,
+		});
+		let names = values.map((value) => compact.format(value));
+		if (new Set(names).size !== names.length) names = values.map((value) => kroner.format(value));
+		values.forEach((value, index) => {
 			grid += `M0,${y(value).toFixed(1)} L${CHART_WIDTH},${y(value).toFixed(1)} `;
 			plot.append(
 				h(
 					"span",
 					{ class: "bank-axis bank-axis-y", style: `top:${((y(value) / CHART_HEIGHT) * 100).toFixed(2)}%` },
-					compact.format(value),
+					names[index],
 				),
 			);
-		}
+		});
 		const cursor = svg("line", { y1: "0", y2: String(CHART_BOTTOM), class: "bank-cursor" });
 		const dot = svg("circle", { r: "5", class: "bank-dot" });
 		chart.append(

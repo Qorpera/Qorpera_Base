@@ -308,6 +308,23 @@ describe("the Bank page (app/views/bank.ts)", () => {
 		expect(lines).toBeLessThanOrEqual(8);
 	});
 
+	it("names each line of a nearly flat saldo differently", () => {
+		const page = draw(
+			JSON.stringify(
+				summary({
+					history: [
+						{ date: "2026-10-13", saldo: 1_000_000 },
+						{ date: "2026-10-20", saldo: 1_001_000 },
+					],
+					expected: [],
+				}),
+			),
+		);
+		const names = [...page.querySelectorAll(".bank-axis-y")].map((label) => label.textContent);
+		expect(names.length).toBeGreaterThan(1);
+		expect(new Set(names).size).toBe(names.length);
+	});
+
 	it("tints a category in place when it is pointed at, and keeps the focus when one opens", () => {
 		const page = draw(JSON.stringify(summary()));
 		click(page, "Money out");
