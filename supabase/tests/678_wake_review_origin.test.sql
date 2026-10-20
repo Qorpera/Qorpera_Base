@@ -1,7 +1,9 @@
 -- @fixture 842_folder_state_worker_drain.test.sql until "-- 3. A new run's workers: a stopped parent cancels its worker, a cancelled todo its own; a refused start fails ----------"
 -- The review origin (20260930497000, finding 881f1f21): a wake of the agent's own chain (a worker's report, the
 -- worker's own run, a machine event or check-in, an office start) records the run whose request started the chain, and
--- the action review reads that run's request. 842's fixture leaves the drain's real wakes for Ada's two workers.
+-- the action review reads that run's request. So does the run a member's approval of the agent's card woke in its
+-- thread (20260930518000, C6-8b): it records the card's run, or that run's own origin, and the runs it starts in turn
+-- carry the same (§5). 842's fixture leaves the drain's real wakes for Ada's two workers.
 
 -- A run of Ada's chain, its wake written with triggers off (pg_temp.run), then given the trigger's own origin.
 create function pg_temp.child(p_parent jsonb, p_source text, p_staff uuid default '84000000-0000-4000-8000-0000000000e1',
@@ -174,4 +176,121 @@ begin
 		raise exception 'Describe gives a worker''s run its origin: %', r -> 'origin'; end if;
 	if public.qorpera_describe_company_run_context(ada -> 'binding') ? 'origin' then
 		raise exception 'The member''s own run has no origin'; end if;
+end $$;
+
+-- 5. A member's approval of Ada's card wakes a run that carries on the card's run (20260930518000, C6-8b) -------------
+-- A card a run of Ada's asked in a conversation, as qorpera_record_action_review raises it (hand-built: 634's runs are
+-- not the recorder's).
+create function pg_temp.card(p_run jsonb, p_session uuid, p_decision text default 'ask',
+	p_staff uuid default '84000000-0000-4000-8000-0000000000e1') returns uuid language plpgsql as $$
+declare v_id uuid := extensions.gen_random_uuid();
+begin
+	perform pg_temp.fx(format($q$insert into public.qorpera_action_reviews(id, profile_id, run_id, call_id, staff_agent_id,
+			session_id, requester_user_id, tool_name, effect, argument_sha256, action, decision, built_in, reason, reviewer_model,
+			approver_scope, approver_user_id, card_session_id)
+		values (%L, '63400000-0000-4000-8000-000000000010', %L, %L, %L, %L, '63400000-0000-4000-8000-000000000002', 'send_email',
+			'external', repeat('d', 64), '{}', %L, 'none', 'A mail to a customer.', 'gpt-test', %L,
+			'63400000-0000-4000-8000-000000000002', %L)$q$,
+		v_id, p_run ->> 'runId', 'call-' || v_id, p_staff, p_session, p_decision,
+		case when p_decision = 'ask' then 'member' end, p_session));
+	return v_id;
+end $$;
+-- The answer qorpera_answer_action_review writes for a card.
+create function pg_temp.approval(p_card uuid, p_answer text default 'allow_once') returns jsonb language sql as $$
+	select jsonb_build_object('schema', 'qorpera.interaction-answer/v1', 'interactionId', p_card, 'surface', 'approval',
+		'outcome', case when p_answer = 'deny' then 'declined' else 'approved' end, 'answer', jsonb_build_object('answer', p_answer))
+$$;
+create function pg_temp.thread(p jsonb) returns uuid language sql as $$
+	select session_id from public.qorpera_execution_runs where id = (p ->> 'runId')::uuid
+$$;
+-- A member's run in Ada's thread, made the run an answer woke: its input the answer and its wake the room wake
+-- qorpera_answer_action_review writes (triggers off), then the trigger's own origin. Answers that origin.
+create function pg_temp.answered(p_run jsonb, p_body jsonb) returns uuid language plpgsql as $$
+begin
+	perform pg_temp.fx(format($q$update public.qorpera_session_inputs set body = %L
+		where id = (select input_ids[1] from public.qorpera_execution_runs where id = %L)$q$, p_body, p_run ->> 'runId'));
+	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set wake_kind = 'room', source_kind = 'room',
+		trigger_id = 'room' where run_id = %L$q$, p_run ->> 'runId'));
+	perform pg_temp.fx(format('update public.qorpera_wake_occurrences w set origin_run_id = public.qorpera_wake_origin(w)
+		where run_id = %L', p_run ->> 'runId'));
+	return pg_temp.origin(p_run);
+end $$;
+
+do $$
+declare m jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
+	routine jsonb := pg_temp.routine_run(m, 'Keep the price list current.');
+	b jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
+	b2 jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
+	other jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000004');
+	post jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
+	card uuid; r jsonb; body jsonb; k text;
+begin
+	card := pg_temp.card(routine, pg_temp.thread(b));
+	-- Allow once and Always allow: the routine's run, whose intent the review reads (the production run of 20 October).
+	if pg_temp.answered(b, pg_temp.approval(card, 'always_allow')) is distinct from (routine ->> 'runId')::uuid
+		or pg_temp.answered(b, pg_temp.approval(card)) is distinct from (routine ->> 'runId')::uuid then
+		raise exception 'An approval of the card carries the card''s run: %', pg_temp.origin(b); end if;
+	r := pg_temp.review(b);
+	if r ->> 'runId' is distinct from routine ->> 'runId' or r -> 'inputs' <> '[]'::jsonb
+		or r ->> 'routineIntent' is distinct from 'Keep the price list current.' then
+		raise exception 'The approved run reads the routine''s intent: %', r; end if;
+	-- Set once: no one changes it.
+	perform pg_temp.raises_like(format('update public.qorpera_wake_occurrences set origin_run_id = %L where run_id = %L',
+		extensions.gen_random_uuid(), b ->> 'runId'), '42501', '%immutable%');
+	perform pg_temp.raises_like(format('update public.qorpera_wake_occurrences set origin_run_id = null where run_id = %L',
+		b ->> 'runId'), '42501', '%immutable%');
+	-- A run the approved run starts in turn, and that run's own, carries on the routine's run too: its review reads the
+	-- routine's intent, not the card answer alone. A plain post's room run is still its chain's first run, as before.
+	if pg_temp.answered(post, jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'Send the price list.'))
+			is not null then
+		raise exception 'A plain post''s run carries no origin'; end if;
+	foreach k in array array['office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin']
+	loop
+		if pg_temp.origin(pg_temp.child(b, k)) is distinct from (routine ->> 'runId')::uuid
+			or pg_temp.origin(pg_temp.child(pg_temp.child(b, 'worker-dispatch'), k)) is distinct from (routine ->> 'runId')::uuid
+			or pg_temp.origin(pg_temp.child(post, k)) is distinct from (post ->> 'runId')::uuid
+			or pg_temp.origin(pg_temp.child(pg_temp.child(post, 'worker-dispatch'), k)) is distinct from (post ->> 'runId')::uuid then
+			raise exception 'A % run under the approved run carries the routine''s run, under a post''s run that run', k; end if;
+	end loop;
+	r := pg_temp.review(pg_temp.child(pg_temp.child(b, 'worker-dispatch'), 'worker-completion'));
+	if r ->> 'runId' is distinct from routine ->> 'runId' or r -> 'inputs' <> '[]'::jsonb
+		or r ->> 'routineIntent' is distinct from 'Keep the price list current.' then
+		raise exception 'A worker''s report under the approved run reads the routine''s intent: %', r; end if;
+	if pg_temp.origin(pg_temp.child(b, 'coworker')) is not null or pg_temp.origin(pg_temp.child(b, 'event')) is not null
+		or pg_temp.origin(pg_temp.child(b, 'worker-completion', '84000000-0000-4000-8000-0000000000e2')) is not null then
+		raise exception 'A coworker''s message, an event or another agent under the approved run carries no origin'; end if;
+	-- A card the approved run asked in turn carries the same first run; a card a worker's report led to, that chain's.
+	if pg_temp.answered(b2, pg_temp.approval(pg_temp.card(b, pg_temp.thread(b2)))) is distinct from (routine ->> 'runId')::uuid
+		or pg_temp.review(b2) ->> 'routineIntent' is distinct from 'Keep the price list current.' then
+		raise exception 'A second approval in the chain carries its first run: %', pg_temp.review(b2); end if;
+	if pg_temp.answered(b2, pg_temp.approval(pg_temp.card(pg_temp.child(m, 'worker-completion'), pg_temp.thread(b2))))
+			is distinct from (m ->> 'runId')::uuid then
+		raise exception 'A card a worker''s report led to carries the chain''s first run'; end if;
+
+	-- Any other answer or card gives none.
+	foreach body in array array[
+		-- A post, one shaped like the answer, a Deny, an answer to an ask_member card or to an approval card of the agent's
+		-- own (qorpera_answer_interaction's, with no answer), and an id that names no card.
+		jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'Allow once.'),
+		pg_temp.approval(card) || '{"schema":"qorpera.session-prompt/v1"}',
+		pg_temp.approval(card, 'deny'),
+		pg_temp.approval(card) || '{"surface":"question","outcome":"answered"}',
+		pg_temp.approval(card) || '{"answer":{}}',
+		pg_temp.approval(card) || '{"interactionId":"not-a-card"}',
+		-- A card that was not asked, one in another conversation, another agent's, and one of another agent's run.
+		pg_temp.approval(pg_temp.card(routine, pg_temp.thread(b), 'allow')),
+		pg_temp.approval(pg_temp.card(routine, extensions.gen_random_uuid())),
+		pg_temp.approval(pg_temp.card(routine, pg_temp.thread(b), p_staff => '84000000-0000-4000-8000-0000000000e2')),
+		pg_temp.approval(pg_temp.card(pg_temp.run('84000000-0000-4000-8000-0000000000e2', 'agent',
+			'63400000-0000-4000-8000-000000000002', 'schedule', m), pg_temp.thread(b)))] loop
+		if pg_temp.answered(b, body) is not null then raise exception 'No origin from %', body; end if;
+	end loop;
+	-- Another member's approval (an owner or admin answering for the company): the card's run is not their request.
+	if pg_temp.answered(other, pg_temp.approval(pg_temp.card(routine, pg_temp.thread(other)))) is not null then
+		raise exception 'Another member''s approval carries no origin'; end if;
+	-- The answer is the wake's own source, by its requester.
+	perform pg_temp.fx(format($q$update public.qorpera_session_inputs set author_user_id = '63400000-0000-4000-8000-000000000004'
+		where id = (select input_ids[1] from public.qorpera_execution_runs where id = %L)$q$, b2 ->> 'runId'));
+	if pg_temp.answered(b2, pg_temp.approval(pg_temp.card(routine, pg_temp.thread(b2)))) is not null then
+		raise exception 'An answer by someone else than the wake''s requester carries no origin'; end if;
 end $$;
