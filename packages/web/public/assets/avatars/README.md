@@ -2,7 +2,8 @@
 
 `index.html` loads `motion-model.js` (the seven characters and their measured
 eye geometry), then `avatar-appearance.js` (the eleven-color palette and the
-existing linear-light recoloring pipeline). These came from
+painting: one grain-free light field per body and face plate, painted in the
+chosen color through an OKLab tone ramp; October 20, 2026). These came from
 `Qorpera_Website/landing/public/avatars`. `src/ui/avatar.ts` is the only product
 module that touches their globals.
 
