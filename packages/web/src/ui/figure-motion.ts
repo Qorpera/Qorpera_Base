@@ -1,6 +1,6 @@
 import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
 import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
-import { bucketOf, level } from "./figure-levels.ts";
+import { bucketOf, level, reduce } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 import type { WorkingSchedule } from "./working-sequence.ts";
 
@@ -236,15 +236,16 @@ function paint(entry: LiveMotion): void {
 	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, false, step.strokes);
 	else if (!step) strokes(ctx, p.strokes, false, entry.side);
 	if (p.body > 0.001) {
-		// The eyes are drawn at the body's level, not at 512 and shrunk.
 		const bucket = bucketOf(side),
 			surface = entry.id + entry.shown;
-		eyesCanvas ??= document.createElement("canvas");
-		if (eyesCanvas.width !== bucket) eyesCanvas.width = eyesCanvas.height = bucket;
+		if (!eyesCanvas) {
+			eyesCanvas = document.createElement("canvas");
+			eyesCanvas.width = eyesCanvas.height = 512;
+		}
 		const ec = eyesCanvas.getContext("2d")!;
 		ec.setTransform(1, 0, 0, 1, 0, 0);
-		ec.clearRect(0, 0, bucket, bucket);
-		ec.setTransform(bucket / 100, 0, 0, bucket / 100, 0, 0);
+		ec.clearRect(0, 0, 512, 512);
+		ec.setTransform(5.12, 0, 0, 5.12, 0, 0);
 		ec.globalCompositeOperation = "source-over";
 		ec.fillStyle = "#fff";
 		const eyes = artwork.faces[entry.id]!;
@@ -269,7 +270,7 @@ function paint(entry: LiveMotion): void {
 		ec.globalAlpha = 1;
 		ec.setTransform(1, 0, 0, 1, 0, 0);
 		ec.globalCompositeOperation = "destination-in";
-		ec.drawImage(level(`${surface}:source`, asset.source, bucket), 0, 0, bucket, bucket);
+		ec.drawImage(asset.source, 0, 0, 512, 512);
 		ctx.save();
 		ctx.translate(50 + p.x, 50 + p.y);
 		ctx.rotate((p.turn * Math.PI) / 180);
@@ -279,7 +280,9 @@ function paint(entry: LiveMotion): void {
 		// coverage, smoothed by the halving (Jonas, 20 Oct).
 		ctx.drawImage(level(`${surface}:body`, asset.body, bucket), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
-		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
+		// The eyes (recorded ones are a small raster, stretched) are drawn at
+		// 512 as the studio draws them, then halved to the body's level.
+		ctx.drawImage(reduce(eyesCanvas, bucket), 0, 0, 100, 100);
 		ctx.restore();
 	}
 	ctx.fillStyle = entry.shown;
