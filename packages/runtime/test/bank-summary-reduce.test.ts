@@ -136,3 +136,88 @@ describe("the bank summary reduction", () => {
 			for (const item of category.items) expect([...item.name].length).toBeLessThanOrEqual(80);
 	});
 });
+
+describe("the bank summary reduction's edge cases", () => {
+	const reduce = (accounts: Parameters<typeof reduceBankSummary>[0]["accounts"]) =>
+		reduceBankSummary({ bank: "Danske Bank", now, pausedSince: null, payTo: null, accounts });
+	const balance = (type: string, amount: number, daysAgo: number, currency = "DKK") => ({
+		type,
+		amount,
+		currency,
+		referenceDate: date(daysAgo),
+	});
+
+	it("counts only kroner balances", () => {
+		const summary = reduce([
+			{ balances: [balance("CLBD", 10_000, 0)], transactions: [] },
+			{ balances: [balance("CLBD", 2_000, 0, "EUR")], transactions: [] },
+		]);
+		expect(summary.saldo).toBe(10_000);
+	});
+
+	it("takes today's interim balance over yesterday's closing one, and adds what was booked after a balance's day", () => {
+		const both = reduce([
+			{
+				balances: [balance("CLBD", 1_000, 1), balance("ITBD", 900, 0)],
+				transactions: [tx(0, -100, "Shop")],
+			},
+		]);
+		expect(both.saldo).toBe(900);
+		expect(both.history.slice(-2).map((point) => point.saldo)).toEqual([1_000, 900]);
+		const closingOnly = reduce([{ balances: [balance("CLBD", 1_000, 1)], transactions: [tx(0, -100, "Shop")] }]);
+		expect(closingOnly.saldo).toBe(900);
+	});
+
+	it("takes an account's own saldo as disponibel when its bank gives no available balance", () => {
+		const summary = reduce([
+			{ balances: [balance("CLBD", 1_000, 0), balance("ITAV", 1_000, 0)], transactions: [] },
+			{ balances: [balance("CLBD", 2_000, 0)], transactions: [] },
+		]);
+		expect(summary.disponibel).toBe(3_000);
+		expect(summary.reserveret).toBe(0);
+	});
+
+	it("counts a cost that comes every day in what repeats and in the weeks ahead", () => {
+		const daily = Array.from({ length: 60 }, (_, ago) => tx(ago, -100, "Bakery"));
+		const summary = reduce([{ balances: [balance("CLBD", 50_000, 0)], transactions: daily }]);
+		const bakery = summary.moneyOut.categories
+			.flatMap((category) => category.items)
+			.find((item) => item.name === "Bakery");
+		expect(bakery?.rhythm).toBe("daily");
+		expect(summary.moneyOut.repeating).toBe(Math.round(((100 * 365) / 12) * 100) / 100);
+		expect(summary.expected[0]?.saldo).toBe(50_000 - 700);
+	});
+
+	it("takes a payment due today, not yet booked, into the first week", () => {
+		const monthly = [30, 60, 90].map((ago) => tx(ago, -10_000, "Landlord rent"));
+		const summary = reduce([{ balances: [balance("CLBD", 50_000, 0)], transactions: monthly }]);
+		expect(summary.expected[0]?.saldo).toBe(40_000);
+		expect(summary.expected[1]?.saldo).toBe(40_000);
+	});
+
+	it("averages money in over the last three calendar months, a month with nothing counting as nothing", () => {
+		const july = new Date("2026-07-15T12:00:00Z");
+		const daysAgo = Math.round((now.getTime() - july.getTime()) / DAY);
+		const summary = reduce([
+			{ balances: [balance("CLBD", 50_000, 0)], transactions: [tx(daysAgo, 30_000, "Client")] },
+		]);
+		expect(summary.expected[0]?.saldo).toBe(Math.round((50_000 + 30_000 / 3 / (52 / 12)) * 100) / 100);
+	});
+
+	it("keeps every name within 80 UTF-16 code units, as the page counts them, without splitting a character", () => {
+		const name = `${"x".repeat(79)}\u{1F600}`;
+		const summary = reduceBankSummary({
+			bank: name,
+			now,
+			pausedSince: null,
+			payTo: null,
+			accounts: [{ balances: [balance("CLBD", 1, 0)], transactions: [tx(1, 10, name), tx(1, -10, name)] }],
+		});
+		expect(summary.bank.length).toBeLessThanOrEqual(80);
+		for (const category of [...summary.moneyIn.categories, ...summary.moneyOut.categories])
+			for (const item of category.items) {
+				expect(item.name.length).toBeLessThanOrEqual(80);
+				expect(item.name).toBe("x".repeat(79));
+			}
+	});
+});
