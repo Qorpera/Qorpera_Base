@@ -7,8 +7,8 @@
 -- a delegation), was reviewed against the run's request alone, the card answer, and denied as not requested: the
 -- routine's intent, which the agent was carrying on, was not in it.
 --
--- qorpera_wake_origin (20260930497000) gets one more branch: a room wake whose source is a member's approval of the
--- agent's card. Its origin is the card's run, or that run's own origin when it has one (a card a worker's report or a
+-- qorpera_wake_origin (20260930497000) gets one more branch, a room wake whose source is a member's approval of the
+-- agent's card, and its agent branch one more case (4). Its origin is the card's run, or that run's own origin when it has one (a card a worker's report or a
 -- machine event led to). The review then reads that run's request as 497000 gives it (its member inputs, the room posts
 -- its wake named, its routine's intent), after the card answer.
 -- 1. The answer is the wake's source input, a member message in the wake's conversation by the wake's requester, with
@@ -21,6 +21,9 @@
 -- 3. The card's run must be of the same company, environment, agent and requester as the wake (as 497000 requires of a
 --    parent): an answer by another member (an owner or admin answering for the company) gives none. A Deny, a card
 --    answered with ask_member, a plain post and every other kind give none, as before.
+-- 4. A run that run starts in turn (its worker, its worker's report, a machine event or check-in, an office start) carries
+--    the same origin, so the request is not lost one step later: the agent branch's room parent passes on its origin when
+--    it has one. A room run without one (a plain post's) is still the origin of its own chain, as 497000 has it.
 -- Set once by the BEFORE INSERT trigger, as 497000 sets it; qorpera_guard_wake_identity refuses any later change. The
 -- review still decides every call: the origin only adds the request the run carries on (contract, "2026-09-25
 -- amendment: auto-review rules and approvals", item 3, amended 2026-10-20).
@@ -37,7 +40,10 @@ where oid = 'public.qorpera_wake_origin(public.qorpera_wake_occurrences)'::regpr
 create or replace function public.qorpera_wake_origin(p_wake public.qorpera_wake_occurrences)
 returns uuid language sql stable security definer set search_path = '' as $$
 	select case when parent_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event',
-			'machine-checkin') then parent_wake.origin_run_id else parent.id end
+			'machine-checkin') then parent_wake.origin_run_id
+		-- 20260930518000: a run an approval woke passes on the run it carries on; any other room run, itself, as before.
+		when parent_wake.source_kind = 'room' and parent_wake.origin_run_id is not null then parent_wake.origin_run_id
+		else parent.id end
 	from public.qorpera_execution_runs parent
 	left join public.qorpera_wake_occurrences parent_wake on parent_wake.run_id = parent.id
 	where p_wake.wake_kind = 'agent'

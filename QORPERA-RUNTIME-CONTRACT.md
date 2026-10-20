@@ -3346,7 +3346,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
      answer and its card (never from the agent), and marked as such. Only a
      card of the same agent, answered by the requester of the run that asked
      it, has one; a Deny, a plain post and a card the agent asked with
-     ask_member have none.
+     ask_member have none. The agent's chain that run starts (its workers,
+     their reports, a machine event) carries on the same request, not the
+     card answer alone.
    - The approval card itself is still not read, and the card answer is
      still no approval of any other call: every call of that run is
      reviewed, apart from the identical call the card approved (item 6).

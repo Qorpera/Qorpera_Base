@@ -2,8 +2,8 @@
 -- The review origin (20260930497000, finding 881f1f21): a wake of the agent's own chain (a worker's report, the
 -- worker's own run, a machine event or check-in, an office start) records the run whose request started the chain, and
 -- the action review reads that run's request. So does the run a member's approval of the agent's card woke in its
--- thread (20260930518000, C6-8b): it records the card's run, or that run's own origin (§5). 842's fixture leaves the
--- drain's real wakes for Ada's two workers.
+-- thread (20260930518000, C6-8b): it records the card's run, or that run's own origin, and the runs it starts in turn
+-- carry the same (§5). 842's fixture leaves the drain's real wakes for Ada's two workers.
 
 -- A run of Ada's chain, its wake written with triggers off (pg_temp.run), then given the trigger's own origin.
 create function pg_temp.child(p_parent jsonb, p_source text, p_staff uuid default '84000000-0000-4000-8000-0000000000e1',
@@ -222,7 +222,8 @@ declare m jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', 
 	b jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
 	b2 jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
 	other jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000004');
-	card uuid; r jsonb; body jsonb;
+	post jsonb := pg_temp.run('84000000-0000-4000-8000-0000000000e1', 'human', '63400000-0000-4000-8000-000000000002');
+	card uuid; r jsonb; body jsonb; k text;
 begin
 	card := pg_temp.card(routine, pg_temp.thread(b));
 	-- Allow once and Always allow: the routine's run, whose intent the review reads (the production run of 20 October).
@@ -238,6 +239,26 @@ begin
 		extensions.gen_random_uuid(), b ->> 'runId'), '42501', '%immutable%');
 	perform pg_temp.raises_like(format('update public.qorpera_wake_occurrences set origin_run_id = null where run_id = %L',
 		b ->> 'runId'), '42501', '%immutable%');
+	-- A run the approved run starts in turn, and that run's own, carries on the routine's run too: its review reads the
+	-- routine's intent, not the card answer alone. A plain post's room run is still its chain's first run, as before.
+	if pg_temp.answered(post, jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'Send the price list.'))
+			is not null then
+		raise exception 'A plain post''s run carries no origin'; end if;
+	foreach k in array array['office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin']
+	loop
+		if pg_temp.origin(pg_temp.child(b, k)) is distinct from (routine ->> 'runId')::uuid
+			or pg_temp.origin(pg_temp.child(pg_temp.child(b, 'worker-dispatch'), k)) is distinct from (routine ->> 'runId')::uuid
+			or pg_temp.origin(pg_temp.child(post, k)) is distinct from (post ->> 'runId')::uuid
+			or pg_temp.origin(pg_temp.child(pg_temp.child(post, 'worker-dispatch'), k)) is distinct from (post ->> 'runId')::uuid then
+			raise exception 'A % run under the approved run carries the routine''s run, under a post''s run that run', k; end if;
+	end loop;
+	r := pg_temp.review(pg_temp.child(pg_temp.child(b, 'worker-dispatch'), 'worker-completion'));
+	if r ->> 'runId' is distinct from routine ->> 'runId' or r -> 'inputs' <> '[]'::jsonb
+		or r ->> 'routineIntent' is distinct from 'Keep the price list current.' then
+		raise exception 'A worker''s report under the approved run reads the routine''s intent: %', r; end if;
+	if pg_temp.origin(pg_temp.child(b, 'coworker')) is not null or pg_temp.origin(pg_temp.child(b, 'event')) is not null
+		or pg_temp.origin(pg_temp.child(b, 'worker-completion', '84000000-0000-4000-8000-0000000000e2')) is not null then
+		raise exception 'A coworker''s message, an event or another agent under the approved run carries no origin'; end if;
 	-- A card the approved run asked in turn carries the same first run; a card a worker's report led to, that chain's.
 	if pg_temp.answered(b2, pg_temp.approval(pg_temp.card(b, pg_temp.thread(b2)))) is distinct from (routine ->> 'runId')::uuid
 		or pg_temp.review(b2) ->> 'routineIntent' is distinct from 'Keep the price list current.' then
