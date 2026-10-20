@@ -105,6 +105,36 @@ test("the image carries the pinned folder program, every unit the guest package 
 	assert.match(imageScript, /\[\[ -z \$\(ls -A \/var\/lib\/qorpera-folder\/cache\/machine\) \]\]/);
 });
 
+test("the image never updates itself, firmware metadata included, and its checks refuse one that could", () => {
+	// A quiet machine sleeps only if nothing in it works by itself: fwupd's refresh counted as busy (C8 MA-5b).
+	const masked = [...imageScript.matchAll(/\n\tsystemctl mask ([^\n]+)\n/g)].flatMap((match) => words(match[1]));
+	for (const unit of [
+		"apt-daily.timer",
+		"apt-daily-upgrade.timer",
+		"apt-daily.service",
+		"apt-daily-upgrade.service",
+		"unattended-upgrades.service",
+		"fwupd-refresh.timer",
+		"fwupd-refresh.service",
+		"fwupd.service",
+	])
+		assert.ok(masked.includes(unit), `the image masks ${unit}`);
+	// Every masked unit is checked to link to /dev/null.
+	const checked = words(
+		imageScript.match(/for unit in ([^;]+); do\n\t\t\[\[ \$\(readlink "\/etc\/systemd\/system\/\$unit"\) == \/dev\/null \]\]/)[1],
+	);
+	assert.deepEqual(checked.toSorted(), masked.toSorted());
+	// Whatever fwupd names its units: no fwupd timer that is not masked, no other fwupd unit that starts at boot, and no
+	// bus name of fwupd that starts anything but a masked unit.
+	assert.match(imageScript, /\n\tunits=\$\(systemctl list-unit-files --no-legend "\*fwupd\*"\)\n/);
+	assert.match(
+		imageScript,
+		/\[\[ \$state == masked \|\| \( \$unit != \*\.timer && \( \$state == static \|\| \$state == disabled \) \) \]\] \|\|/,
+	);
+	assert.match(imageScript, /grep -q "\^Name=org\\\.freedesktop\\\.fwupd" "\$bus" \|\| continue\n/);
+	assert.match(imageScript, /\[\[ -n \$service && \$\(systemctl is-enabled "\$service" \|\| true\) == masked \]\] \|\|/);
+});
+
 test("the guest package takes only the recorded folder program", async () => {
 	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-guest-test-"));
 	try {
