@@ -288,6 +288,45 @@ describe("mail message", () => {
 		]);
 	});
 
+	it("reads In-Reply-To and References sent as a list, or as a list's text, as <id> tokens on one line", () => {
+		const ids = (headers: Json) => {
+			const normalized = normalizeMessage(EMAIL_ID, { ...message, headers });
+			return [normalized.inReplyTo, normalized.references];
+		};
+		// A plain header is kept as it came.
+		assert.deepEqual(ids({ "In-Reply-To": "<b@example.net>", References: "<a@example.org>\r\n <b@example.net>" }), [
+			"<b@example.net>",
+			"<a@example.org>\r\n <b@example.net>",
+		]);
+		assert.deepEqual(ids({ references: "[<a@example.org>" }), [null, "[<a@example.org>"]);
+		// A list, and the text of one (the shape the provider sends a header with several ids in).
+		for (const references of [
+			["<a@example.org>", "<b@example.net>"],
+			'["<a@example.org>","<b@example.net>"]',
+			' [ "<a@example.org>", "<b@example.net>" ] ',
+		]) {
+			assert.deepEqual(
+				ids({ "in-reply-to": ["<b@example.net>"], references }),
+				["<b@example.net>", "<a@example.org> <b@example.net>"],
+				JSON.stringify(references),
+			);
+		}
+		// Its items' ids, a bare one in brackets; anything else in it is dropped, and a list without ids is none.
+		assert.deepEqual(
+			ids({
+				"in-reply-to": '["<b@example.net>"]',
+				references: ["<a@example.org> <b@example.net>", " c@example.com ", 42, "not an id", `<${"x".repeat(998)}>`],
+			}),
+			["<b@example.net>", "<a@example.org> <b@example.net> <c@example.com>"],
+		);
+		assert.deepEqual(ids({ "in-reply-to": "[]", references: ["", 7, null] }), [null, null]);
+		// A long list keeps its first id and the newest that fit 2048 characters.
+		const long = Array.from({ length: 60 }, (_, n) => `<${String(n).padStart(2, "0")}.${"x".repeat(30)}@example.org>`);
+		const kept = ids({ references: JSON.stringify(long) })[1];
+		assert.equal(kept, [long[0], ...long.slice(19)].join(" "));
+		assert.ok(typeof kept === "string" && kept.length <= 2048 && kept.length + 48 > 2048);
+	});
+
 	it("keeps only text the database can hold", () => {
 		assert.equal(clean("a\u0000b"), "ab");
 		assert.equal(clean("x\ud83dy"), "x�y");

@@ -452,7 +452,8 @@ address on it and stores the message once in every live mailbox among them, as a
 event type `mail.received`, content type JSON and key `mail:<provider message id>` (a retried webhook is
 a duplicate and writes nothing). The text is stored as written, so its size is what the function
 measured and its keys keep their order: subject, sender, recipients, reply-to, received time, message id,
-In-Reply-To and References, whether it was sent automatically (M2b: the Auto-Submitted, Precedence and List-Id
+In-Reply-To and References (one the provider sends as a list, or as the text of one, as `<id>` tokens joined by
+spaces; 20260930521000), whether it was sent automatically (M2b: the Auto-Submitted, Precedence and List-Id
 headers, and `automated`, true for an Auto-Submitted other than `no`, a bulk, list, junk or auto-reply Precedence,
 or a mailing list), the SPF, DKIM and DMARC results, the attachments' descriptions, then the text
 and HTML bodies, cut to 256 KiB (HTML first, `truncated`). Text the database cannot hold (NUL, half a
@@ -487,7 +488,8 @@ again, finds the mailbox (live, of the run's company and environment, not paused
   with such a name (22023). Names are not refused where they are set; the check guards the From line.
 - A reply to a received email of the company (`mail.received`, verified) carries that email's thread:
   `In-Reply-To` its message id, and `References` the thread's first id and its newest ids that fit one header line
-  (980 characters, RFC 5322 3.6.4). An email whose text was cleared (after 7 days), or without a usable message
+  (980 characters, RFC 5322 3.6.4), its message id last. The thread's ids are the `<id>` tokens of the email's stored
+  References, whatever is around them (20260930521000). An email whose text was cleared (after 7 days), or without a usable message
   id, is answered outside its thread.
 - Mail loops: an email the mail door marked `automated` (an auto-reply, a mailing list, bulk mail) is never
   answered (42501); every reply carries `Auto-Submitted: auto-replied` (RFC 3834), so other responders, another
