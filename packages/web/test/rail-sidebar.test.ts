@@ -931,7 +931,10 @@ describe("dragging agents in the rail", () => {
 		expect(company.store.get().sidebar?.sections.map((section) => section.sectionId)).not.toContain(id(80));
 	});
 	it("sends no unpin once the company is left while the moved sidebar is read", async () => {
-		const { company, rail, read, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id]], [dee.id]);
+		const { company, rail, read, manage, fake, placed, ready } = companyWithFile(
+			[["Research", bo.id, ada.id]],
+			[dee.id],
+		);
 		await ready;
 		await settle();
 		const answer = deferred<CompanySidebar>();
@@ -941,7 +944,10 @@ describe("dragging agents in the rail", () => {
 		await settle();
 		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, dee.id, ada.id]]);
 		company.stop();
-		answer.resolve(structuredClone(company.store.get().sidebar!));
+		// What the commit placed: Dee is in Research and still pinned, until the unpin that must not come.
+		const moved = placed();
+		expect(moved.pinned).toEqual([dee.id]);
+		answer.resolve(moved);
 		await settle();
 		expect(manage).not.toHaveBeenCalled();
 		await new Promise((resolve) => setTimeout(resolve, 0));
