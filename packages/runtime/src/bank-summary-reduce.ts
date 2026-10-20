@@ -89,12 +89,14 @@ function clipName(value: string): string {
 function party(transaction: EnableBankingTransaction): string {
 	const raw = (transaction.counterparty ?? transaction.text ?? "").replace(/\s+/g, " ").trim();
 	if (!raw) return transaction.amount >= 0 ? "Unnamed payment in" : "Unnamed payment";
-	const clipped = clipName(raw);
-	return clipped === clipped.toUpperCase() && /[A-ZÆØÅ]/.test(clipped)
-		? clipped
-				.toLowerCase()
-				.replace(/(^|[\s/-])(\p{L})/gu, (_, gap: string, letter: string) => gap + letter.toUpperCase())
-		: clipped;
+	// A name the bank shouts is made readable first, then bounded: changing case can change a name's length.
+	const readable =
+		raw === raw.toUpperCase() && /[A-ZÆØÅ]/.test(raw)
+			? raw
+					.toLowerCase()
+					.replace(/(^|[\s/-])(\p{L})/gu, (_, gap: string, letter: string) => gap + letter.toUpperCase())
+			: raw;
+	return clipName(readable) || (transaction.amount >= 0 ? "Unnamed payment in" : "Unnamed payment");
 }
 
 /** The key payments to the same receiver share: their name without numbers and punctuation. */
@@ -149,29 +151,37 @@ function rhythmOf(days: readonly number[], now: number): { rhythm: BankRhythm; n
 }
 
 const BOOKED = ["ITBD", "CLBD", "XPCD", "OPBD", "PRCD"];
-const AVAILABLE = ["ITAV", "CLAV", "XPCD", "OPAV", "FWAV"];
+const AVAILABLE = ["ITAV", "XPCD", "CLAV", "OPAV"];
 
-/** An account's balance of one kind as of today: its newest DKK balance of those types (a later day first, then the
- * types' order), plus what was booked after that day. Null when the account gives none. */
-function balanceToday(
+/** An account's saldo today: its newest booked DKK balance dated today or before (a later day first, then the types'
+ * order), plus what was booked after it: after its day for a closing or interim balance, from its day on for an
+ * opening one. A balance dated ahead isn't today's. Null when the account gives none. */
+function saldoToday(
 	account: BankSummaryAccount,
-	types: readonly string[],
 	booked: readonly EnableBankingTransaction[],
 	today: string,
 ): number | null {
-	const candidates = account.balances
-		.filter((balance) => balance.currency === "DKK" && types.includes(balance.type))
-		.map((balance) => ({
-			balance,
-			day: balance.referenceDate && balance.referenceDate <= today ? balance.referenceDate : today,
-		}))
-		.sort((a, b) => b.day.localeCompare(a.day) || types.indexOf(a.balance.type) - types.indexOf(b.balance.type));
-	const newest = candidates[0];
+	const newest = account.balances
+		.filter((balance) => balance.currency === "DKK" && BOOKED.includes(balance.type))
+		.filter((balance) => balance.referenceDate === null || balance.referenceDate <= today)
+		.map((balance) => ({ balance, day: balance.referenceDate ?? today }))
+		.sort((a, b) => b.day.localeCompare(a.day) || BOOKED.indexOf(a.balance.type) - BOOKED.indexOf(b.balance.type))[0];
 	if (!newest) return null;
+	const opening = newest.balance.type === "OPBD";
 	const after = booked
-		.filter((transaction) => transaction.date > newest.day)
+		.filter((transaction) => (opening ? transaction.date >= newest.day : transaction.date > newest.day))
 		.reduce((sum, each) => sum + each.amount, 0);
 	return newest.balance.amount + after;
+}
+
+/** An account's available balance today, only from a snapshot of today (or undated): an older one can't be moved
+ * forward, since a card hold that settled since then is in both its reservation and the booked movements. */
+function disponibelToday(account: BankSummaryAccount, today: string): number | null {
+	const current = account.balances
+		.filter((balance) => balance.currency === "DKK" && AVAILABLE.includes(balance.type))
+		.filter((balance) => balance.referenceDate === null || balance.referenceDate === today)
+		.sort((a, b) => AVAILABLE.indexOf(a.type) - AVAILABLE.indexOf(b.type))[0];
+	return current ? current.amount : null;
 }
 
 export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
@@ -188,9 +198,9 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 	let disponibelTotal = 0;
 	for (const account of input.accounts) {
 		const accountBooked = bookedOf(account);
-		const accountSaldo = balanceToday(account, BOOKED, accountBooked, iso(today)) ?? 0;
+		const accountSaldo = saldoToday(account, accountBooked, iso(today)) ?? 0;
 		saldoTotal += accountSaldo;
-		disponibelTotal += balanceToday(account, AVAILABLE, accountBooked, iso(today)) ?? accountSaldo;
+		disponibelTotal += disponibelToday(account, iso(today)) ?? accountSaldo;
 	}
 	const saldo = kr(saldoTotal);
 	const disponibel = kr(disponibelTotal);
@@ -241,9 +251,15 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 			found.set(key, entry);
 		}
 		return [...found.values()].map((entry) => {
-			const days = [...entry.days].sort((a, b) => a - b);
+			// Payments on the same day count as one: the rhythm is read across days, the typical amount is a day's.
+			const byDay = new Map<number, number>();
+			entry.days.forEach((time, index) => {
+				byDay.set(time, (byDay.get(time) ?? 0) + (entry.amounts[index] ?? 0));
+			});
+			const days = [...byDay.keys()].sort((a, b) => a - b);
 			const rhythm = rhythmOf(days, today);
-			const typical = [...entry.amounts].sort((a, b) => a - b)[Math.floor(entry.amounts.length / 2)] ?? 0;
+			const sums = [...byDay.values()].sort((a, b) => a - b);
+			const typical = sums[Math.floor(sums.length / 2)] ?? 0;
 			return { ...entry, ...rhythm, typical };
 		});
 	};

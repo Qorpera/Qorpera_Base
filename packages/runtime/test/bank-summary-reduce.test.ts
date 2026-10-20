@@ -221,3 +221,61 @@ describe("the bank summary reduction's edge cases", () => {
 			}
 	});
 });
+
+describe("balances as the bank's types mean them", () => {
+	const reduce = (accounts: Parameters<typeof reduceBankSummary>[0]["accounts"]) =>
+		reduceBankSummary({ bank: "Danske Bank", now, pausedSince: null, payTo: null, accounts });
+	const balance = (type: string, amount: number, daysAgo: number) => ({
+		type,
+		amount,
+		currency: "DKK",
+		referenceDate: date(daysAgo),
+	});
+
+	it("moves an opening balance forward with its own day's payments", () => {
+		const summary = reduce([
+			{ balances: [balance("CLBD", 1_000, 1), balance("OPBD", 1_000, 0)], transactions: [tx(0, -100, "Shop")] },
+		]);
+		expect(summary.saldo).toBe(900);
+		expect(summary.history.slice(-2).map((point) => point.saldo)).toEqual([1_000, 900]);
+	});
+
+	it("leaves out a balance dated ahead", () => {
+		const summary = reduce([
+			{
+				balances: [balance("CLBD", 1_000, 0), balance("CLAV", 1_000, 1), balance("FWAV", 5_000, -1)],
+				transactions: [],
+			},
+		]);
+		expect(summary.disponibel).toBe(1_000);
+	});
+
+	it("doesn't take a card hold off twice when it settles: an old available balance isn't moved forward", () => {
+		const summary = reduce([
+			{ balances: [balance("CLBD", 1_000, 1), balance("CLAV", 900, 1)], transactions: [tx(0, -100, "Shop")] },
+		]);
+		expect(summary.saldo).toBe(900);
+		expect(summary.disponibel).toBe(900);
+		expect(summary.reserveret).toBe(0);
+	});
+
+	it("reads two payments on one day as one day, not as something that comes every day", () => {
+		const summary = reduce([
+			{ balances: [balance("CLBD", 1_000, 0)], transactions: [tx(0, -100, "Shop"), tx(0, -100, "Shop")] },
+		]);
+		const shop = summary.moneyOut.categories
+			.flatMap((category) => category.items)
+			.find((item) => item.name === "Shop");
+		expect(shop).toMatchObject({ rhythm: "once", amount: 200 });
+		expect(summary.moneyOut.repeating).toBeNull();
+		expect(summary.expected[0]?.saldo).toBe(1_000);
+	});
+
+	it("bounds a shouted name after making it readable, whose length can change", () => {
+		const summary = reduce([
+			{ balances: [balance("CLBD", 1, 0)], transactions: [tx(1, -10, `${"A".repeat(79)}\u0130`)] },
+		]);
+		for (const category of summary.moneyOut.categories)
+			for (const item of category.items) expect(item.name.length).toBeLessThanOrEqual(80);
+	});
+});
