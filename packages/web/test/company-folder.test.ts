@@ -6,16 +6,21 @@ import type {
 	CloudMemberFolderEntry,
 	CloudMemberFolderFile,
 	CloudMemberFolderHistory,
+	CloudMemberFolderListPage,
 	CloudMemberFolderOutcome,
 	CloudMemberFolderPathHistory,
 	CloudMemberFolderProblem,
 	CloudMemberFolderUnit,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyFolderBrowser, type CompanyFolderSource } from "../src/app/views/company-folder.ts";
+import {
+	CompanyFolderBrowser,
+	type CompanyFolderBrowserOptions,
+	type CompanyFolderSource,
+} from "../src/app/views/company-folder.ts";
 import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
 
 const me = id(1);
 const other = id(2);
@@ -109,7 +114,13 @@ function folderFake() {
 		return target === undefined ? null : link(path, target, 7);
 	};
 	const client = {
-		list: vi.fn(async (parent: string | null) => ({ asOfSeq, entries: listed(parent ?? ""), next: null })),
+		list: vi.fn(
+			async (parent: string | null): Promise<CloudMemberFolderListPage> => ({
+				asOfSeq,
+				entries: listed(parent ?? ""),
+				next: null,
+			}),
+		),
 		read: vi.fn(async (path: string) => ({
 			asOfSeq,
 			entry: contents.has(path) ? entry(path, contents.get(path)) : folders.has(path) ? entry(path) : linked(path),
@@ -260,12 +271,12 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
-async function opened() {
+async function opened(options: CompanyFolderBrowserOptions = {}) {
 	const fake = folderFake(),
 		src = source(fake),
 		host = document.createElement("section");
 	document.body.append(host);
-	const browser = new CompanyFolderBrowser(host, src.value, people);
+	const browser = new CompanyFolderBrowser(host, src.value, people, options);
 	disposers.push(() => browser.dispose());
 	await browser.open();
 	await settle();
@@ -346,6 +357,222 @@ describe("a folder-v2 company's Company File", () => {
 		expect(visibleText(host.querySelector(".files-empty"))).toContain("nothing");
 	});
 
+	it("embeds without a second header, searches from Settings, and switches between icon and detailed list views", async () => {
+		const search = document.createElement("input");
+		document.body.append(search);
+		const { host, fake } = await opened({ embedded: true, search });
+		expect(host.querySelector(".files-head")).toBeNull();
+		expect(host.querySelector("input")).toBeNull();
+		expect(search.parentElement).toBe(document.body);
+		expect(host.querySelector(".storage-title")?.textContent).toBe("Documents");
+		expect(host.querySelector(".files-list")?.classList.contains("is-grid")).toBe(true);
+		expect(host.querySelector('[aria-label="Icon view"]')?.getAttribute("aria-pressed")).toBe("true");
+		search.value = "READ";
+		search.dispatchEvent(new Event("input"));
+		expect(rows(host)).toEqual(["readme.txt"]);
+		await click(host.querySelector('[aria-label="List view"]'));
+		expect(host.querySelector(".files-list")?.classList.contains("is-list")).toBe(true);
+		expect(host.querySelector<HTMLElement>(".storage-columns")?.hidden).toBe(false);
+		expect(row(host, "readme.txt")?.querySelector("time")?.getAttribute("datetime")).toBe(at);
+		expect(row(host, "readme.txt")?.querySelector(".files-size")?.textContent).toBe("6 B");
+		expect(row(host, "readme.txt")?.querySelector(".storage-kind-label")?.textContent).toBe("Text document");
+		expect(fake.client.list).toHaveBeenCalledTimes(1);
+		search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(search.value).toBe("");
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+	});
+
+	it("combines file type and name filters, then sorts real metadata without extra reads", async () => {
+		const search = document.createElement("input");
+		const { host, fake } = await opened({ embedded: true, search });
+		const filter = host.querySelector<HTMLSelectElement>('[aria-label="File type"]')!;
+		filter.value = "image";
+		filter.dispatchEvent(new Event("change"));
+		expect(rows(host)).toEqual(["logo.png"]);
+		expect(row(host, "logo.png")?.querySelector(".files-kind")?.classList.contains("is-image")).toBe(true);
+		search.value = "readme";
+		search.dispatchEvent(new Event("input"));
+		expect(rows(host)).toEqual([]);
+		search.value = "";
+		search.dispatchEvent(new Event("input"));
+		expect(rows(host)).toEqual(["logo.png"]);
+		filter.value = "pdf";
+		filter.dispatchEvent(new Event("change"));
+		expect(visibleText(host.querySelector(".files-empty"))).toBe("No files of this type in this folder.");
+		filter.value = "all";
+		filter.dispatchEvent(new Event("change"));
+		const sort = host.querySelector<HTMLSelectElement>('[aria-label="Sort files"]')!;
+		sort.value = "size";
+		sort.dispatchEvent(new Event("change"));
+		expect(rows(host)).toEqual(["big", "notes", "readme.txt", "logo.png"]);
+		expect(fake.client.list).toHaveBeenCalledTimes(1);
+		expect(fake.client.read).not.toHaveBeenCalled();
+		expect(fake.client.readFile).not.toHaveBeenCalled();
+	});
+
+	it("sorts loaded pages by their modification timestamps and makes partial counts explicit", async () => {
+		const { host, fake } = await opened({ embedded: true });
+		fake.client.list.mockResolvedValueOnce({
+			asOfSeq: 4,
+			entries: [
+				{ ...entry("big/older.txt", "old"), updatedAt: "2026-10-02T10:00:00Z" },
+				{ ...entry("big/newer.txt", "new"), updatedAt: "2026-10-03T10:00:00Z" },
+			],
+			next: "big/older.txt",
+		});
+		await click(row(host, "big"));
+		expect(host.querySelector(".storage-count")?.textContent).toBe("2 of 2 loaded items");
+		const sort = host.querySelector<HTMLSelectElement>('[aria-label="Sort files"]')!;
+		sort.value = "modified";
+		sort.dispatchEvent(new Event("change"));
+		expect(rows(host)).toEqual(["newer.txt", "older.txt"]);
+		fake.client.list.mockResolvedValueOnce({
+			asOfSeq: 4,
+			entries: [{ ...entry("big/newest.txt", "newest"), updatedAt: "2026-10-04T10:00:00Z" }],
+			next: null,
+		});
+		await click(host.querySelector(".files-list-more button"));
+		expect(fake.client.list).toHaveBeenLastCalledWith("big", "big/older.txt", 200, expect.any(AbortSignal));
+		expect(rows(host)).toEqual(["newest.txt", "newer.txt", "older.txt"]);
+		expect(host.querySelector(".storage-count")?.textContent).toBe("3 items");
+	});
+
+	it("shows searchable Recents from the company change feed, opens a file, and returns to Documents", async () => {
+		const search = document.createElement("input");
+		const onSectionChange = vi.fn();
+		const { host, browser, fake } = await opened({ embedded: true, search, onSectionChange });
+		browser.showRecents();
+		await settle();
+		expect(fake.client.history).toHaveBeenCalledWith(null, 20, expect.any(AbortSignal));
+		expect(onSectionChange).toHaveBeenLastCalledWith("recents");
+		expect(host.querySelector<HTMLElement>(".storage-documents")?.hidden).toBe(true);
+		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
+		expect(host.classList.contains("has-preview")).toBe(false);
+		search.value = "log";
+		search.dispatchEvent(new Event("input"));
+		expect(
+			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((item) => item.textContent),
+		).toEqual(["notes/log.txt"]);
+		await click(host.querySelector(".storage-recents button.folder-history-path"));
+		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
+		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
+		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
+		expect(search.value).toBe("");
+		browser.showDocuments();
+		await settle();
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(host.classList.contains("has-preview")).toBe(false);
+	});
+
+	it("detaches the shared search field and stops Recents reads when disposed", async () => {
+		const search = document.createElement("input");
+		const { host, browser, fake } = await opened({ embedded: true, search });
+		browser.dispose();
+		search.value = "nothing";
+		search.dispatchEvent(new Event("input"));
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(search.value).toBe("nothing");
+		browser.showRecents();
+		browser.showDocuments();
+		await settle();
+		expect(fake.client.history).not.toHaveBeenCalled();
+		expect(fake.client.list).toHaveBeenCalledTimes(1);
+	});
+
+	it("paginates Recents and ignores an in-flight answer after disposal", async () => {
+		const { host, browser, fake } = await opened({ embedded: true });
+		fake.client.history.mockResolvedValueOnce({ asOfSeq: 4, items: [], next: 3 });
+		browser.showRecents();
+		await settle();
+		const release = deferred<CloudMemberFolderHistory>();
+		fake.client.history.mockReturnValueOnce(release.promise);
+		await click(host.querySelector(".storage-recents button"));
+		expect(fake.client.history).toHaveBeenLastCalledWith(3, 20, expect.any(AbortSignal));
+		const before = host.innerHTML;
+		browser.dispose();
+		release.resolve({
+			asOfSeq: 4,
+			items: [
+				{
+					seq: 2,
+					at,
+					by: { kind: "platform" },
+					more: false,
+					paths: [{ path: "late.txt", kind: "file", op: "write", version: id(2) }],
+				},
+			],
+			next: null,
+		});
+		await settle();
+		expect(host.innerHTML).toBe(before);
+	});
+
+	it("honors a section requested before opening and the latest navigation while a read is in flight", async () => {
+		const fake = folderFake();
+		const src = source(fake);
+		const host = document.createElement("section");
+		document.body.append(host);
+		const onSectionChange = vi.fn();
+		const browser = new CompanyFolderBrowser(host, src.value, people, { embedded: true, onSectionChange });
+		disposers.push(() => browser.dispose());
+		const listing = deferred<CloudMemberFolderListPage>();
+		const history = deferred<CloudMemberFolderHistory>();
+		fake.client.list.mockReturnValueOnce(listing.promise);
+		fake.client.history.mockReturnValueOnce(history.promise);
+		browser.showRecents();
+		expect(fake.client.history).not.toHaveBeenCalled();
+		const opening = browser.open();
+		listing.resolve({ asOfSeq: 4, entries: [entry("notes")], next: null });
+		await opening;
+		await settle();
+		expect(onSectionChange).toHaveBeenLastCalledWith("recents");
+		browser.showDocuments();
+		history.resolve({ asOfSeq: 4, items: [], next: null });
+		await settle();
+		await settle();
+		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
+		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+	});
+
+	it("retries a failed Recents read in the same section", async () => {
+		const { host, browser, fake } = await opened({ embedded: true });
+		fake.client.history.mockRejectedValueOnce(new Error("offline"));
+		browser.showRecents();
+		await settle();
+		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
+		expect(status(host)).toContain("could not be read just now");
+		await click(host.querySelector(".files-status button"));
+		expect(fake.client.history).toHaveBeenCalledTimes(2);
+		expect(fake.client.list).toHaveBeenCalledTimes(1);
+		expect(host.querySelectorAll(".storage-recents .folder-history-row")).toHaveLength(2);
+	});
+
+	it("keeps Documents selected after a failed return from Recents and retries the requested root folder", async () => {
+		const onSectionChange = vi.fn();
+		const { host, browser, fake } = await opened({ embedded: true, onSectionChange });
+		await click(row(host, "notes"));
+		browser.showRecents();
+		await settle();
+		fake.client.list.mockRejectedValueOnce(new Error("offline"));
+		browser.showDocuments();
+		await settle();
+		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
+		expect(host.querySelector<HTMLElement>(".storage-documents")?.hidden).toBe(false);
+		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
+		expect(status(host)).toContain("could not be read just now");
+		fake.client.list.mockRejectedValueOnce(new Error("still offline"));
+		await click(host.querySelector(".files-status button"));
+		expect(fake.client.list).toHaveBeenLastCalledWith(null, null, 200, expect.any(AbortSignal));
+		await click(host.querySelector(".files-status button"));
+		expect(fake.client.list).toHaveBeenLastCalledWith(null, null, 200, expect.any(AbortSignal));
+		expect(fake.client.history).toHaveBeenCalledTimes(1);
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(host.querySelector(".storage-title")?.textContent).toBe("Documents");
+		expect(status(host)).toBe("");
+	});
+
 	it("shows text, Markdown and pictures, and offers a download", async () => {
 		const { host } = await opened();
 		await click(row(host, "readme.txt"));
@@ -357,6 +584,49 @@ describe("a folder-v2 company's Company File", () => {
 		await click(row(host, "plan.md"));
 		expect(host.querySelector(".files-doc h2")?.textContent).toBe("Plan");
 		expect(visibleText(host.querySelector(".files-preview-actions"))).toContain("Download");
+	});
+
+	it("reveals an embedded file after input is enabled, including from Recents, without scrolling for a refresh", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host, browser } = await opened({ embedded: true });
+		const preview = host.querySelector<HTMLElement>(".files-preview")!;
+		const reveal = vi.fn(() => {
+			expect(host.querySelector<HTMLElement>(".files-root")?.inert).toBe(false);
+			expect(preview.hidden).toBe(false);
+		});
+		preview.scrollIntoView = reveal;
+		await click(row(host, "readme.txt"));
+		expect(reveal).toHaveBeenCalledExactlyOnceWith({ block: "nearest", inline: "nearest" });
+		fake.contents.set("readme.txt", "Changed while reading.");
+		fake.bump(5);
+		fake.changes.push({
+			asOfSeq: 5,
+			resync: false,
+			events: [{ kind: "authority", seq: 5 }],
+			next: { afterSeq: 5, cursor: null },
+			more: false,
+		});
+		src.hint(5);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(host.querySelector(".files-text")?.textContent).toBe("Changed while reading.");
+		expect(reveal).toHaveBeenCalledTimes(1);
+		browser.showRecents();
+		await settle();
+		await click(host.querySelector(".storage-recents button.folder-history-path"));
+		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
+		expect(reveal).toHaveBeenCalledTimes(2);
+		await click(row(host, "log.txt"));
+		expect(reveal).toHaveBeenCalledTimes(3);
+	});
+
+	it("leaves scrolling to the standalone file browser layout", async () => {
+		const { host } = await opened();
+		const reveal = vi.fn();
+		host.querySelector<HTMLElement>(".files-preview")!.scrollIntoView = reveal;
+		await click(row(host, "readme.txt"));
+		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
+		expect(reveal).not.toHaveBeenCalled();
 	});
 
 	it("shows a path's history with who and when, a file's and a link's versions, and an earlier one in place of the latest", async () => {

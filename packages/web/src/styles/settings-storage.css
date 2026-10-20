@@ -1,0 +1,79 @@
+/* The approved shared Settings / Storage frame. Sizes use the existing design-pixel scale. */
+:root .settings-dialog.settings-unified {
+	display: flex; flex-direction: column; width: min(1000px, calc(100vw - 72px));
+	height: min(660px, calc(100dvh - 72px)); border-radius: 20px;
+	background: var(--bg); color: var(--text); border-color: var(--border-strong);
+}
+.settings-header { display: flex; flex: none; align-items: center; gap: 22px; min-height: 64px; padding: 0 24px 0 32px; border-bottom: 1px solid var(--border); }
+.settings-search { display: flex; flex: 1; align-items: center; gap: 14px; min-width: 0; }
+.settings-search > .icon { width: 20px; height: 20px; flex: none; color: var(--text-muted); }
+:root .settings-header .settings-search-input { flex: 1; width: 100%; min-width: 0; height: 48px; min-height: 0; padding: 0; border: 0; border-radius: 0; outline: none; background: transparent; box-shadow: none; font-size: 14px; font-weight: 400; color: var(--text); }
+.settings-search-input::placeholder { color: var(--text-muted); opacity: 1; }
+:root .settings-header .settings-search-input:focus-visible { outline: none; }
+.settings-search:focus-within > .icon { color: var(--text); }
+.settings-modes { display: flex; flex: none; align-items: center; gap: 6px; }
+.settings-mode { min-height: 34px; padding: 0 17px; border: 0; border-radius: 999px; background: transparent; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.settings-mode:hover { color: var(--text); background: var(--hover); }
+.settings-mode[aria-pressed=true] { color: var(--text); background: var(--pane-strong); }
+:root .settings-dialog.settings-unified .settings-close { position: static; display: grid; place-items: center; flex: none; width: 38px; height: 36px; border-left: 1px solid var(--border); border-radius: 0; margin-left: 0; padding-left: 16px; color: var(--text-muted); }
+.settings-close > .icon { width: 20px; height: 20px; }
+.settings-body { display: grid; grid-template-columns: 230px minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+:root .settings-dialog.settings-unified .settings-nav { grid-column: 1; grid-row: 1; min-height: 0; padding: 18px 10px 12px; gap: 8px; border-right: 1px solid var(--border); background: var(--bg); font-size: 14px; }
+.settings-nav-heading { padding: 3px 10px 8px; color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
+:root .settings-dialog.settings-unified .settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 4px; }
+:root .settings-dialog.settings-unified .settings-nav :is([role=tab], .settings-back) { min-height: 42px; padding: 9px 13px; gap: 14px; border-radius: 8px; color: var(--text); font-weight: 400; }
+:root .settings-dialog.settings-unified .settings-nav :is([role=tab], .settings-back) > .icon { width: 20px; height: 20px; color: var(--text-muted); }
+:root .settings-dialog.settings-unified .settings-nav :is([role=tab], .settings-back):hover { background: var(--hover); }
+:root .settings-dialog.settings-unified .settings-nav [aria-selected=true] { background: var(--pane-strong); }
+:root .settings-dialog.settings-unified .settings-storage-nav #settings-storage-documents > .icon { color: var(--blue); }
+:root .settings-dialog.settings-unified .settings-back { font-size: 12px; margin-top: auto; }
+:root .settings-dialog.settings-unified .settings-content { grid-column: 2; grid-row: 1; min-height: 0; padding: 28px 36px; font-size: 14px; }
+:root .settings-dialog.settings-unified .settings-content h1 { font-size: 24px; line-height: 1.25; margin: 0 0 32px; }
+:root .settings-dialog.settings-unified .settings-content h2 { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 16px; }
+:root .settings-dialog.settings-unified .settings-account { padding: 0 0 24px; background: transparent; border-radius: 0; border-bottom: 1px solid var(--border); gap: 18px; }
+:root .settings-dialog.settings-unified .settings-account .account-name-input { font-size: 16px; }
+:root .settings-dialog.settings-unified .settings-account .settings-copy small { font-size: 13px; }
+:root .settings-dialog.settings-unified .settings-account .person-avatar { width: 50px; height: 50px; }
+:root .settings-dialog.settings-unified .account .settings-group { margin: 28px 0; }
+:root .settings-dialog.settings-unified .account .settings-rows { background: transparent; border-radius: 0; border-bottom: 1px solid var(--border); }
+:root .settings-dialog.settings-unified .account .settings-preference-row { min-height: 84px; padding: 14px 0; font-size: 14px; }
+:root .settings-dialog.settings-unified .account .settings-copy small { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+:root .settings-dialog.settings-unified .account .preference-picker-button { height: 40px; min-width: 146px; justify-content: space-between; padding: 0 15px; background: transparent; font-size: 13px; }
+:root .settings-dialog.settings-unified .account .btn { min-height: 38px; padding: 0 16px; background: transparent; font-size: 13px; }
+.settings-storage-content { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px; }
+.settings-storage-content:has(.settings-storage-browser) { padding: 24px; }
+:root .settings-dialog.settings-unified .storage-browser { --files-folder: #68acfa; }
+:root .settings-dialog.settings-unified .settings-file-card { width: 100%; border: 1px solid var(--border); color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+:root .settings-dialog.settings-unified .settings-file-card:hover { background: var(--hover); }
+.settings-footer { display: flex; flex: none; align-items: center; justify-content: flex-end; min-height: 58px; padding: 10px 28px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
+.settings-footer kbd { padding: 3px 6px; margin-right: 5px; border: 1px solid var(--border-strong); border-radius: 5px; font: inherit; color: var(--text); }
+:root .settings-dialog.settings-unified [hidden] { display: none; }
+@media (max-width: 1000px) {
+	:root .settings-dialog.settings-unified { width: calc(100vw - 40px); height: calc(100dvh - 40px); }
+	.settings-body { grid-template-columns: 208px minmax(0, 1fr); }
+	:root .settings-dialog.settings-unified .settings-nav { font-size: 13px; }
+	:root .settings-dialog.settings-unified .settings-content { padding: 24px; }
+}
+@media (max-width: 720px) {
+	:root .settings-dialog.settings-unified { width: 100%; height: 100%; border-radius: 14px; }
+	.settings-header { gap: 8px; min-height: 60px; padding: 8px 12px; }
+	.settings-search { gap: 8px; }
+	.settings-search > .icon { width: 18px; height: 18px; }
+	:root .settings-header .settings-search-input { font-size: 13px; }
+	.settings-modes { gap: 2px; }
+	.settings-mode { padding-inline: 10px; font-size: 12px; }
+	:root .settings-dialog.settings-unified .settings-close { width: 26px; padding-left: 5px; }
+	.settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+	:root .settings-dialog.settings-unified .settings-nav { grid-column: 1; grid-row: 1; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border); gap: 0; overflow-x: auto; }
+	:root .settings-dialog.settings-unified .settings-nav [role=tablist] { flex-direction: row; width: max-content; gap: 4px; }
+	:root .settings-dialog.settings-unified .settings-nav [role=tab] { min-height: 36px; gap: 8px; padding: 6px 10px; white-space: nowrap; }
+	:root .settings-dialog.settings-unified .settings-nav [role=tab] > .icon { width: 17px; height: 17px; }
+	:root .settings-dialog.settings-unified .settings-nav .settings-back { align-self: start; margin: 4px 0 0; min-height: 30px; padding: 5px 10px; }
+	.settings-nav-heading { display: none; }
+	:root .settings-dialog.settings-unified .settings-content, .settings-storage-content { grid-column: 1; grid-row: 2; padding: 20px; }
+	.settings-storage-content:has(.settings-storage-browser) { padding: 20px; }
+	:root .settings-dialog.settings-unified .settings-content h1 { font-size: 22px; margin-bottom: 24px; }
+	:root .settings-dialog.settings-unified .account .preference-picker-button { min-width: 0; }
+	:root .settings-dialog.settings-unified .account .settings-preference-row { min-height: 72px; }
+	.settings-footer { min-height: 36px; padding: 6px 16px; }
+}

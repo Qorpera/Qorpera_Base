@@ -12,7 +12,7 @@ import {
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
-import { button, fmtBytes, h, icon, replace } from "../../ui/dom.ts";
+import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
@@ -41,6 +41,36 @@ export interface CompanyFolderPeople {
 	readonly me: string;
 	readonly members: readonly { readonly userId: string; readonly displayName: string }[];
 	readonly staff: readonly { readonly id: string; readonly displayName: string }[];
+}
+
+/** Settings supplies its shared search field and navigation; the standalone browser supplies its own. */
+export interface CompanyFolderBrowserOptions {
+	readonly search?: HTMLInputElement;
+	readonly embedded?: boolean;
+	readonly onSectionChange?: (section: "documents" | "recents") => void;
+}
+
+type FileCategory = "folder" | "document" | "spreadsheet" | "image" | "pdf" | "link" | "other";
+
+function fileCategory(item: Pick<CloudMemberFolderEntry, "kind" | "path">): FileCategory {
+	if (item.kind === "folder") return "folder";
+	if (item.kind === "symlink") return "link";
+	const ext = extension(item.path);
+	if (IMAGE_TYPES[ext] || ["svg", "heic", "ico"].includes(ext)) return "image";
+	if (["csv", "tsv", "xls", "xlsx", "numbers"].includes(ext)) return "spreadsheet";
+	if (ext === "pdf") return "pdf";
+	if (MARKDOWN.has(ext) || ["txt", "rtf", "doc", "docx", "odt", "pages"].includes(ext)) return "document";
+	return "other";
+}
+
+function fileKind(item: Pick<CloudMemberFolderEntry, "kind" | "path">): string {
+	const category = fileCategory(item);
+	if (category === "folder") return t("Folder");
+	if (category === "link") return t("Link");
+	const ext = extension(item.path);
+	if (MARKDOWN.has(ext)) return t("Markdown");
+	if (ext === "txt") return t("Text document");
+	return ext ? ext.toUpperCase() : t("File");
 }
 
 /** An open file, with its text or a picture's object URL when it has a preview, or an open link, which shows its target
@@ -106,6 +136,7 @@ export class CompanyFolderBrowser {
 	readonly #host: HTMLElement;
 	readonly #source: CompanyFolderSource;
 	readonly #people: () => CompanyFolderPeople;
+	readonly #options: CompanyFolderBrowserOptions;
 	readonly #stop: AbortController;
 	readonly #locale = presentationLocale();
 	readonly #when: Intl.DateTimeFormat;
@@ -115,22 +146,37 @@ export class CompanyFolderBrowser {
 	readonly #retries = h("div", { class: "files-retries", role: "status" });
 	readonly #crumbs = h("nav", { class: "files-crumbs", "aria-label": t("Folder path") });
 	readonly #list = h("ul", { class: "files-list", "aria-label": t("Files") });
+	readonly #documents = h("div", { class: "storage-documents" });
+	readonly #recents = h("section", { class: "storage-recents", hidden: true });
+	readonly #title = h("h2", { class: "storage-title" });
+	readonly #columns = h(
+		"div",
+		{ class: "storage-columns", "aria-hidden": "true" },
+		h("span", null, t("Name")),
+		h("span", null, t("Date modified")),
+		h("span", null, t("Size")),
+		h("span", null, t("Kind")),
+	);
+	readonly #count = h("p", { class: "storage-count", role: "status" });
+	readonly #filter = h("select", { class: "storage-select", "aria-label": t("File type") });
+	readonly #sort = h("select", { class: "storage-select", "aria-label": t("Sort files") });
+	readonly #views = h("div", { class: "storage-view-toggle", role: "group", "aria-label": t("File view") });
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
 	readonly #preview = h("aside", { class: "files-preview" });
-	readonly #search = h("input", {
-		type: "search",
-		class: "files-search-input",
-		placeholder: t("Search this folder"),
-		"aria-label": t("Search this folder"),
-		autocomplete: "off",
-		spellcheck: "false",
-	});
+	readonly #search: HTMLInputElement;
 	#client?: Client;
 	#downloads?: WebFileDownloads;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
 	#dir = "";
+	#section: "documents" | "recents" = "documents";
+	#view: "grid" | "list";
+	#recentSets: CloudMemberFolderChangeSet[] = [];
+	#recentNext: number | null = null;
+	#ready = false;
+	#pendingSection: "documents" | "recents" | null = null;
+	#revealPreview = false;
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
 	/** Where the feed is followed from: everything up to it is on screen. */
@@ -141,48 +187,118 @@ export class CompanyFolderBrowser {
 	#busy = false;
 	#disposed = false;
 
-	constructor(host: HTMLElement, source: CompanyFolderSource, people: () => CompanyFolderPeople) {
+	constructor(
+		host: HTMLElement,
+		source: CompanyFolderSource,
+		people: () => CompanyFolderPeople,
+		options: CompanyFolderBrowserOptions = {},
+	) {
 		this.#host = host;
 		this.#source = source;
 		this.#people = people;
+		this.#options = options;
+		this.#view = options.embedded ? "grid" : "list";
+		this.#search =
+			options.search ??
+			h("input", {
+				type: "search",
+				class: "files-search-input",
+				placeholder: t("Search this folder"),
+				"aria-label": t("Search this folder"),
+				autocomplete: "off",
+				spellcheck: "false",
+			});
 		this.#stop = new AbortController();
 		this.#when = new Intl.DateTimeFormat(this.#locale, { dateStyle: "medium", timeStyle: "short" });
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
-		this.#search.addEventListener("input", () => this.#drawList(false));
-		this.#search.addEventListener("keydown", (event) => {
-			if (event.key === "Escape" && this.#search.value) {
-				event.preventDefault();
-				event.stopPropagation();
-				this.#search.value = "";
-				this.#drawList(false);
-			}
-		});
+		this.#search.addEventListener(
+			"input",
+			() => (this.#section === "recents" ? this.#drawRecents() : this.#drawList(false)),
+			{ signal: this.#stop.signal },
+		);
+		this.#search.addEventListener(
+			"keydown",
+			(event) => {
+				if (event.key === "Escape" && this.#search.value) {
+					event.preventDefault();
+					event.stopPropagation();
+					this.#search.value = "";
+					if (this.#section === "recents") this.#drawRecents();
+					else this.#drawList(false);
+				}
+			},
+			{ signal: this.#stop.signal },
+		);
+		for (const [value, label] of [
+			["all", t("All types")],
+			["folder", t("Folders")],
+			["document", t("Documents")],
+			["spreadsheet", t("Spreadsheets")],
+			["image", t("Images")],
+			["pdf", t("PDFs")],
+			["link", t("Links")],
+			["other", t("Other files")],
+		])
+			this.#filter.append(h("option", { value }, label));
+		for (const [value, label] of [
+			["name", t("Name")],
+			["modified", t("Date modified")],
+			["size", t("Size")],
+			["kind", t("Kind")],
+		])
+			this.#sort.append(h("option", { value }, label));
+		this.#filter.addEventListener("change", () => this.#drawList(false), { signal: this.#stop.signal });
+		this.#sort.addEventListener("change", () => this.#drawList(false), { signal: this.#stop.signal });
+		for (const view of ["grid", "list"] as const) {
+			const label = view === "grid" ? t("Icon view") : t("List view");
+			this.#views.append(
+				h(
+					"button",
+					{
+						type: "button",
+						class: "storage-view-button",
+						"aria-label": label,
+						title: label,
+						"data-view": view,
+						"aria-pressed": String(this.#view === view),
+						onclick: () => {
+							this.#view = view;
+							this.#drawList(false);
+						},
+					},
+					icon(view),
+				),
+			);
+		}
 		this.#more.hidden = true;
 		this.#preview.hidden = true;
-		host.classList.add("files-page", "folder-page");
+		host.classList.add("files-page", "folder-page", "storage-browser");
+		host.classList.toggle("is-embedded", options.embedded === true);
 		replace(
 			host,
-			h(
-				"header",
-				{ class: "files-head" },
-				h("h1", null, t("Company File")),
-				h(
-					"div",
-					{ class: "files-tools" },
-					h("label", { class: "files-search" }, icon("search"), this.#search),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "files-tool",
-							title: t("Recent changes"),
-							"aria-label": t("Recent changes"),
-							onclick: () => void this.#run(() => this.#showChanges()),
-						},
-						icon("clock"),
+			options.embedded
+				? null
+				: h(
+						"header",
+						{ class: "files-head" },
+						h("h1", null, t("Company File")),
+						h(
+							"div",
+							{ class: "files-tools" },
+							options.search ? null : h("label", { class: "files-search" }, icon("search"), this.#search),
+							h(
+								"button",
+								{
+									type: "button",
+									class: "files-tool",
+									title: t("Recent changes"),
+									"aria-label": t("Recent changes"),
+									onclick: () => void this.#run(() => this.#showChanges()),
+								},
+								icon("clock"),
+							),
+						),
 					),
-				),
-			),
 			this.#status,
 			this.#retries,
 			this.#root,
@@ -206,15 +322,29 @@ export class CompanyFolderBrowser {
 		this.#client = this.#source.folder();
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
 		replace(
-			this.#root,
+			this.#documents,
 			this.#crumbs,
 			h(
 				"div",
+				{ class: "storage-toolbar" },
+				this.#title,
+				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
+			),
+			h(
+				"div",
 				{ class: "files-body" },
-				h("div", { class: "files-main" }, this.#list, h("div", { class: "files-list-more" }, this.#more)),
+				h(
+					"div",
+					{ class: "files-main" },
+					this.#columns,
+					this.#list,
+					h("div", { class: "files-list-more" }, this.#more),
+					this.#count,
+				),
 				this.#preview,
 			),
 		);
+		replace(this.#root, this.#documents, this.#recents);
 		await this.#load("");
 		replace(this.#status);
 		try {
@@ -223,6 +353,49 @@ export class CompanyFolderBrowser {
 			/* The hint is a nudge; the slow poll keeps the page current without it. */
 		}
 		this.#poll ??= setInterval(() => this.#scheduleSync(), POLL_MS);
+		this.#ready = true;
+		this.#navigate();
+	}
+
+	/** Settings' Documents navigation returns to the top of the company folder. */
+	showDocuments(): void {
+		this.#pendingSection = "documents";
+		this.#navigate();
+	}
+
+	/** Recents is the existing company change feed, rendered as the main storage section. */
+	showRecents(): void {
+		this.#pendingSection = "recents";
+		this.#navigate();
+	}
+
+	/** Keep the last navigation request while opening or another folder action is still in flight. */
+	#navigate(): void {
+		if (!this.#ready || this.#busy || this.#disposed || !this.#pendingSection) return;
+		const section = this.#pendingSection;
+		this.#pendingSection = null;
+		void this.#run(
+			async () => {
+				this.#close();
+				this.#search.value = "";
+				this.#setSection(section);
+				if (section === "documents") {
+					this.#filter.value = "all";
+					await this.#enter("");
+				} else {
+					replace(this.#recents, listSkeleton(t("Loading"), 4));
+					await this.#loadRecents();
+				}
+			},
+			() => (section === "documents" ? this.#enter("") : this.#loadRecents()),
+		);
+	}
+
+	#setSection(section: "documents" | "recents"): void {
+		this.#section = section;
+		this.#documents.hidden = section !== "documents";
+		this.#recents.hidden = section !== "recents";
+		this.#options.onSectionChange?.(section);
 	}
 
 	dispose(): void {
@@ -235,7 +408,7 @@ export class CompanyFolderBrowser {
 		this.#downloads?.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
-		this.#host.classList.remove("files-page", "folder-page", "has-preview");
+		this.#host.classList.remove("files-page", "folder-page", "has-preview", "storage-browser", "is-embedded");
 	}
 
 	// ---- lifetime -------------------------------------------------------------
@@ -250,7 +423,7 @@ export class CompanyFolderBrowser {
 	}
 
 	/** One action at a time; the list and preview stay still while it runs, and focus comes back to where it was. */
-	async #run(action: () => Promise<void>): Promise<void> {
+	async #run(action: () => Promise<void>, retry?: () => Promise<void>): Promise<void> {
 		if (this.#busy || this.#disposed) return;
 		this.#busy = true;
 		const focus = document.activeElement;
@@ -264,13 +437,31 @@ export class CompanyFolderBrowser {
 			if (!this.#disposed)
 				this.#say(
 					t("The Company File could not be read just now."),
-					button(t("Try again"), () => void this.#run(() => this.#load(this.#dir)), { small: true }),
+					button(
+						t("Try again"),
+						() =>
+							void this.#run(
+								retry ?? (() => (this.#section === "recents" ? this.#loadRecents() : this.#load(this.#dir))),
+								retry,
+							),
+						{ small: true },
+					),
 				);
 		} finally {
 			this.#busy = false;
 			this.#root.inert = false;
-			if (focus instanceof HTMLElement && focus.isConnected && !this.#host.contains(document.activeElement))
+			if (
+				focus instanceof HTMLElement &&
+				focus.isConnected &&
+				(!document.activeElement || document.activeElement === document.body)
+			)
 				focus.focus();
+			if (this.#revealPreview) {
+				this.#revealPreview = false;
+				if (!this.#disposed && !this.#pendingSection && !this.#preview.hidden)
+					this.#preview.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+			}
+			this.#navigate();
 		}
 	}
 
@@ -295,6 +486,7 @@ export class CompanyFolderBrowser {
 			this.#position = { afterSeq: page.asOfSeq, cursor: null };
 		if (moved) this.#search.value = "";
 		this.#drawCrumbs();
+		this.#title.textContent = dir ? baseName(dir) : t("Documents");
 		this.#drawList(!append);
 		if (jumped) await this.#refreshOpened();
 	}
@@ -302,6 +494,7 @@ export class CompanyFolderBrowser {
 	async #enter(dir: string): Promise<void> {
 		this.#close();
 		await this.#load(dir);
+		this.#setSection("documents");
 		this.#list.querySelector<HTMLElement>("button.files-row-main")?.focus();
 	}
 
@@ -309,24 +502,35 @@ export class CompanyFolderBrowser {
 		const collator = new Intl.Collator(this.#locale, { numeric: true, sensitivity: "base" });
 		const query = this.#search.value.trim().toLocaleLowerCase(this.#locale);
 		return this.#items
-			.filter((item) => !query || baseName(item.path).toLocaleLowerCase(this.#locale).includes(query))
-			.sort(
-				(a, b) =>
-					Number(a.kind !== "folder") - Number(b.kind !== "folder") ||
-					collator.compare(baseName(a.path), baseName(b.path)),
-			);
+			.filter(
+				(item) =>
+					(!query || baseName(item.path).toLocaleLowerCase(this.#locale).includes(query)) &&
+					(this.#filter.value === "all" || fileCategory(item) === this.#filter.value),
+			)
+			.sort((a, b) => {
+				const folders = Number(a.kind !== "folder") - Number(b.kind !== "folder");
+				if (folders) return folders;
+				let order = 0;
+				if (this.#sort.value === "modified")
+					order = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+				else if (this.#sort.value === "size") order = (b.file?.bytes ?? 0) - (a.file?.bytes ?? 0);
+				else if (this.#sort.value === "kind") order = collator.compare(fileKind(a), fileKind(b));
+				return order || collator.compare(baseName(a.path), baseName(b.path));
+			});
 	}
 
 	#drawCrumbs(): void {
 		const parts = this.#dir ? this.#dir.split("/") : [];
 		const steps: HTMLElement[] = [
+			h("span", { class: "storage-company-crumb" }, t("Company")),
+			h("span", { class: "files-crumb-sep", "aria-hidden": "true" }, icon("chevron")),
 			parts.length
 				? h(
 						"button",
 						{ type: "button", class: "files-crumb", onclick: () => void this.#run(() => this.#enter("")) },
-						t("Company"),
+						t("Documents"),
 					)
-				: h("span", { class: "files-crumb is-current", "aria-current": "page" }, t("Company")),
+				: h("span", { class: "files-crumb is-current", "aria-current": "page" }, t("Documents")),
 		];
 		parts.forEach((part, index) => {
 			const path = parts.slice(0, index + 1).join("/");
@@ -346,6 +550,11 @@ export class CompanyFolderBrowser {
 
 	#drawList(fresh: boolean): void {
 		const items = this.#sorted();
+		this.#list.classList.toggle("is-grid", this.#view === "grid");
+		this.#list.classList.toggle("is-list", this.#view === "list");
+		this.#columns.hidden = this.#view !== "list";
+		for (const control of this.#views.querySelectorAll<HTMLButtonElement>("button"))
+			control.setAttribute("aria-pressed", String(control.dataset.view === this.#view));
 		this.#list.classList.toggle("is-fresh", fresh);
 		const rows = items.map((item, index) => {
 			const row = this.#entryRow(item);
@@ -359,18 +568,36 @@ export class CompanyFolderBrowser {
 					{ class: "files-empty" },
 					this.#search.value.trim()
 						? t("Nothing in this folder matches “{query}”.", { query: this.#search.value.trim() })
-						: t("This folder is empty."),
+						: this.#filter.value !== "all"
+							? t("No files of this type in this folder.")
+							: t("This folder is empty."),
 				),
 			);
 		replace(this.#list, ...rows);
 		this.#more.hidden = this.#next === null;
+		this.#count.textContent =
+			this.#next !== null
+				? t("{shown} of {count} loaded items", { shown: items.length, count: this.#items.length })
+				: items.length === this.#items.length
+					? t("{count} items", { count: items.length })
+					: t("{shown} of {count} items", { shown: items.length, count: this.#items.length });
 	}
 
 	/** A folder's row opens it in the list; a file's or a link's opens it in the preview. A link names its target and
 	 * is never followed: its row shows where it points. */
 	#entryRow(item: CloudMemberFolderEntry): HTMLElement {
 		const folder = item.kind === "folder";
-		const kind = folder ? "folder" : item.target !== null ? "link" : "file";
+		const category = fileCategory(item);
+		const kind = folder
+			? "folder"
+			: category === "link"
+				? "link"
+				: category === "image"
+					? "image"
+					: category === "spreadsheet"
+						? "table"
+						: "file";
+		const label = fileKind(item);
 		return h(
 			"li",
 			{
@@ -384,15 +611,38 @@ export class CompanyFolderBrowser {
 					"data-path": item.path,
 					onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
 				},
-				h("span", { class: `files-kind is-${kind}` }, icon(kind)),
-				h("span", { class: "files-name" }, baseName(item.path)),
-				item.target !== null
-					? h(
-							"span",
-							{ class: "files-target", title: t("Link to {target}", { target: item.target }) },
-							`→ ${item.target}`,
-						)
-					: h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : ""),
+				h(
+					"span",
+					{ class: `files-kind is-${category}`, "aria-hidden": "true" },
+					icon(kind),
+					category === "document" || category === "pdf" || category === "other"
+						? h("span", { class: "storage-extension" }, extension(item.path).slice(0, 5).toUpperCase())
+						: null,
+				),
+				h(
+					"span",
+					{ class: "storage-name-cell" },
+					h("span", { class: "files-name", title: baseName(item.path) }, baseName(item.path)),
+					item.target !== null
+						? h(
+								"span",
+								{ class: "files-target", title: t("Link to {target}", { target: item.target }) },
+								`→ ${item.target}`,
+							)
+						: null,
+					h("span", { class: "storage-grid-meta" }, item.file ? `${label} · ${fmtBytes(item.file.bytes)}` : label),
+				),
+				h(
+					"time",
+					{
+						class: "storage-modified",
+						datetime: item.updatedAt,
+						title: this.#when.format(new Date(item.updatedAt)),
+					},
+					fmtTime(item.updatedAt),
+				),
+				h("span", { class: "files-size" }, item.file ? fmtBytes(item.file.bytes) : "—"),
+				h("span", { class: "storage-kind-label" }, label),
 			),
 		);
 	}
@@ -457,12 +707,14 @@ export class CompanyFolderBrowser {
 		}
 		if (touchedFolder) await this.#reloadFolder();
 		if (touchedFile) await this.#refreshOpened();
+		if (this.#section === "recents") await this.#loadRecents();
 	}
 
 	/** Reads the open folder and the open file again, from a fresh position. */
 	async #reload(): Promise<void> {
 		await this.#reloadFolder();
 		await this.#refreshOpened();
+		if (this.#section === "recents") await this.#loadRecents();
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
@@ -502,8 +754,9 @@ export class CompanyFolderBrowser {
 
 	async #open(entry: CloudMemberFolderEntry, refresh = false): Promise<void> {
 		if (!entry.file && entry.target === null) return;
-		if (!refresh && this.#opened?.path === entry.path && !this.#opened.version) return;
-		await this.#show({ path: entry.path, file: entry.file, target: entry.target });
+		if (refresh || this.#opened?.path !== entry.path || this.#opened?.version)
+			await this.#show({ path: entry.path, file: entry.file, target: entry.target });
+		if (!refresh && this.#options.embedded) this.#revealPreview = true;
 	}
 
 	/** Reads what has a preview, and draws the preview. A link's is its target: nothing is read. */
@@ -526,6 +779,7 @@ export class CompanyFolderBrowser {
 	}
 
 	#close(): void {
+		this.#revealPreview = false;
 		this.#forget(this.#opened);
 		this.#opened = null;
 		this.#preview.hidden = true;
@@ -814,13 +1068,8 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	/** The company's change sets, newest first, with the files in each this member may read. */
-	async #showChanges(before: number | null = null, shown: CloudMemberFolderChangeSet[] = []): Promise<void> {
-		const page = await this.#client!.history(before, 20, this.#signal());
-		this.#live();
-		const sets = [...shown, ...page.items];
-		const title = t("Recent changes");
-		const rows = sets.map((set) =>
+	#changeRows(sets: readonly CloudMemberFolderChangeSet[]): HTMLElement[] {
+		return sets.map((set) =>
 			h(
 				"li",
 				{ class: "folder-history-row is-set" },
@@ -853,6 +1102,60 @@ export class CompanyFolderBrowser {
 				),
 			),
 		);
+	}
+
+	async #loadRecents(append = false): Promise<void> {
+		const page = await this.#client!.history(append ? this.#recentNext : null, 20, this.#signal());
+		this.#live();
+		this.#recentSets = append ? [...this.#recentSets, ...page.items] : [...page.items];
+		this.#recentNext = page.next;
+		this.#drawRecents();
+	}
+
+	#drawRecents(): void {
+		const query = this.#search.value.trim().toLocaleLowerCase(this.#locale);
+		const sets = this.#recentSets
+			.map((set) => ({
+				...set,
+				paths: set.paths.filter((item) => !query || item.path.toLocaleLowerCase(this.#locale).includes(query)),
+			}))
+			.filter((set) => set.paths.length > 0);
+		const rows = this.#changeRows(sets);
+		replace(
+			this.#recents,
+			h(
+				"nav",
+				{ class: "files-crumbs", "aria-label": t("Folder path") },
+				h(
+					"div",
+					{ class: "files-crumb-trail" },
+					h("span", { class: "storage-company-crumb" }, t("Company")),
+					h("span", { class: "files-crumb-sep", "aria-hidden": "true" }, icon("chevron")),
+					h("span", { class: "files-crumb is-current", "aria-current": "page" }, t("Recents")),
+				),
+			),
+			h("h2", { class: "storage-title" }, t("Recents")),
+			h("p", { class: "files-note" }, t("Recent changes to company documents.")),
+			rows.length
+				? h("ul", { class: "folder-history storage-recent-list" }, ...rows)
+				: h(
+						"p",
+						{ class: "files-empty" },
+						query ? t("No recent changes match your search.") : t("Nothing has changed yet."),
+					),
+			this.#recentNext !== null
+				? button(t("Show older"), () => void this.#run(() => this.#loadRecents(true)), { small: true })
+				: null,
+		);
+	}
+
+	/** The standalone browser keeps its existing recent-changes panel. */
+	async #showChanges(before: number | null = null, shown: CloudMemberFolderChangeSet[] = []): Promise<void> {
+		const page = await this.#client!.history(before, 20, this.#signal());
+		this.#live();
+		const sets = [...shown, ...page.items];
+		const title = t("Recent changes");
+		const rows = this.#changeRows(sets);
 		this.#panel(
 			title,
 			rows.length
@@ -874,6 +1177,11 @@ export class CompanyFolderBrowser {
 			return;
 		}
 		if (parentOf(path) !== this.#dir) await this.#load(parentOf(path));
+		this.#search.value = "";
+		this.#filter.value = "all";
+		this.#drawList(false);
+		this.#setSection("documents");
 		await this.#show({ path, file: entry.file, target: entry.target });
+		if (this.#options.embedded) this.#revealPreview = true;
 	}
 }

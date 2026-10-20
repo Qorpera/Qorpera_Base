@@ -7,6 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
+import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
 import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
@@ -73,6 +74,31 @@ function open(root: Element) {
 	click(root, '[data-account-action="settings"]');
 }
 
+/** Read-only folder data for the real browser embedded in Settings. */
+function storageFixture() {
+	const source: WebCompanyFiles[] = [];
+	const list = vi.fn(async () => ({
+		asOfSeq: 1,
+		entries: ["notes", "operations"].map((path) => ({
+			path,
+			kind: "folder",
+			version: id(101),
+			seq: 1,
+			updatedAt: timestamp,
+			file: null,
+			target: null,
+		})),
+		next: null,
+	}));
+	const history = vi.fn(async () => ({ asOfSeq: 1, items: [], next: null }));
+	vi.spyOn(WebCompanyFiles.prototype, "folder").mockImplementation(function (this: WebCompanyFiles) {
+		source.push(this);
+		return { list, history } as never;
+	});
+	vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+	return { source, list, history };
+}
+
 function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
 	expect(root.querySelector(".company-exit")?.textContent).toBe(deleting ? "Delete company" : "Leave company");
 	click(root, ".company-exit");
@@ -120,12 +146,14 @@ describe("settings session lifecycle", () => {
 			if (profiles.length > 1) {
 				// Several companies: the member opens one from the list first.
 				expect(content().textContent).toContain("Open a company to see these settings.");
-				expect(content().querySelector("a[href$='/file']")).toBeNull();
+				expect(content().querySelector(".settings-file-card")).toBeNull();
 				expect(f.api.getTeam).not.toHaveBeenCalled();
 			} else {
 				// The Company tab has no heading of its own.
 				expect(content().querySelector("h1")).toBeNull();
-				expect(content().querySelector(`a[href='#/c/${profileA.profileId}/file']`)).not.toBeNull();
+				expect(
+					content().querySelector(`.settings-file-card[data-profile-id='${profileA.profileId}']`),
+				).not.toBeNull();
 			}
 			// On the company list itself the rail needs no way back to it.
 			expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
@@ -220,9 +248,10 @@ describe("settings session lifecycle", () => {
 			company.stop();
 			auth.dispose();
 		};
-		// The Company tab has no heading of its own: its Company File link names the company.
-		const shown = () => view.el.querySelector("#settings-content a[href$='/file']")?.getAttribute("href");
-		expect(shown()).toBe(`#/c/${profileA.profileId}/file`);
+		// The Company tab's Storage button identifies the company it opens.
+		const shown = () =>
+			view.el.querySelector("#settings-content .settings-file-card")?.getAttribute("data-profile-id");
+		expect(shown()).toBe(profileA.profileId);
 		expect(view.el.querySelector("#settings-content h1")).toBeNull();
 		// Settings over a company never show another one, however often the list repeats.
 		view.updateProfiles([profileB]);
@@ -234,7 +263,7 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		view.updateProfiles([profileA, profileB]);
 		await settle();
-		expect(shown()).toBe(`#/c/${profileA.profileId}/file`);
+		expect(shown()).toBe(profileA.profileId);
 		// The open company is borrowed again: Settings neither start nor stop it.
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		expect(company.signal.aborted).toBe(false);
@@ -264,20 +293,21 @@ describe("settings session lifecycle", () => {
 		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
 			"Open a company to see these settings.",
 		);
-		const shown = () => view.el.querySelector("#settings-content a[href$='/file']")?.getAttribute("href");
+		const shown = () =>
+			view.el.querySelector("#settings-content .settings-file-card")?.getAttribute("data-profile-id");
 		expect(shown()).toBeUndefined();
 		view.updateProfiles([profileB]);
 		await settle();
-		expect(shown()).toBe(`#/c/${profileB.profileId}/file`);
+		expect(shown()).toBe(profileB.profileId);
 		expect(view.el.querySelector("#settings-content h1")).toBeNull();
 		// A company joins: the one shown stays.
 		view.updateProfiles([profileA, profileB]);
 		await settle();
-		expect(shown()).toBe(`#/c/${profileB.profileId}/file`);
+		expect(shown()).toBe(profileB.profileId);
 		// The company shown is removed: the one left is shown.
 		view.updateProfiles([profileA]);
 		await settle();
-		expect(shown()).toBe(`#/c/${profileA.profileId}/file`);
+		expect(shown()).toBe(profileA.profileId);
 	});
 	it("shows the company's pages on the Company tab, and says when one was switched (Interfaces C6a)", async () => {
 		const f = fixture(),
@@ -406,7 +436,11 @@ describe("settings session lifecycle", () => {
 		composer.dispatchEvent(new Event("input", { bubbles: true }));
 		open(f.root);
 		await draw();
-		expect([...f.root.querySelectorAll('.settings-nav [role="tab"]')].map((tab) => tab.textContent)).toEqual([
+		expect(
+			[...f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]')].map(
+				(tab) => tab.textContent,
+			),
+		).toEqual([
 			"General",
 			"Appearance",
 			"Company",
@@ -415,7 +449,7 @@ describe("settings session lifecycle", () => {
 			"My connections",
 			"Company connections",
 		]);
-		for (const tab of f.root.querySelectorAll('.settings-nav [role="tab"]'))
+		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Rules live on General, under the account's settings, for the chosen company.
 		expect(
@@ -426,7 +460,8 @@ describe("settings session lifecycle", () => {
 		});
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
-		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).not.toBeNull();
+		expect(f.root.querySelector(".settings-dialog button.settings-file-card")?.textContent).toContain("Storage");
+		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).toBeNull();
 		// No company execution controls, and no Organization or Approvals pages to link to.
 		expect(
 			f.root.querySelector(
@@ -448,12 +483,12 @@ describe("settings session lifecycle", () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
-		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
 		search.value = "time zone";
 		search.dispatchEvent(new Event("input"));
-		const shownTabs = [...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")].filter(
-			(tab) => !tab.hidden,
-		);
+		const shownTabs = [
+			...f.root.querySelectorAll<HTMLElement>(".settings-nav:not(.settings-storage-nav) [role=tab]"),
+		].filter((tab) => !tab.hidden);
 		expect(shownTabs.map((tab) => tab.id)).toEqual(["settings-tab-general"]);
 		search.value = "team";
 		search.dispatchEvent(new Event("input"));
@@ -472,7 +507,7 @@ describe("settings session lifecycle", () => {
 		search.value = "Delete company";
 		search.dispatchEvent(new Event("input"));
 		expect(
-			[...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")]
+			[...f.root.querySelectorAll<HTMLElement>(".settings-nav:not(.settings-storage-nav) [role=tab]")]
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id),
 		).toEqual(["settings-tab-company"]);
@@ -490,17 +525,135 @@ describe("settings session lifecycle", () => {
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
 		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-appearance"));
 	});
+	it("shares one header between Settings and Storage while preserving each search and the conversation draft", async () => {
+		const folder = storageFixture();
+		const f = await setup();
+		const composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
+		composer.value = "Keep this draft while browsing company storage";
+		composer.dispatchEvent(new Event("input", { bubbles: true }));
+		open(f.root);
+		await draw();
+		const dialog = f.root.querySelector(".settings-dialog")!;
+		const settingsSearch = dialog.querySelector<HTMLInputElement>(
+			'.settings-header input[aria-label="Search settings"]',
+		)!;
+		const storageSearch = dialog.querySelector<HTMLInputElement>(
+			'.settings-header input[aria-label="Search this folder"]',
+		)!;
+		expect(dialog.firstElementChild?.classList.contains("settings-header")).toBe(true);
+		expect(dialog.querySelector(".settings-nav input[type='search']")).toBeNull();
+		settingsSearch.value = "time zone";
+		settingsSearch.dispatchEvent(new Event("input"));
+		click(dialog, '.settings-mode[data-mode="storage"]');
+		await draw();
+		expect(settingsSearch.hidden).toBe(true);
+		expect(storageSearch.hidden).toBe(false);
+		expect(dialog.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(dialog.querySelector("#settings-storage-documents")?.getAttribute("aria-selected")).toBe("true");
+		expect([...dialog.querySelectorAll(".settings-storage-nav [role=tab]")].map((tab) => tab.textContent)).toEqual([
+			"Documents",
+			"Recents",
+		]);
+		storageSearch.value = "notes";
+		storageSearch.dispatchEvent(new Event("input"));
+		expect([...dialog.querySelectorAll(".files-name")].map((name) => name.textContent)).toEqual(["notes"]);
+		click(dialog, '.settings-mode[data-mode="settings"]');
+		expect(settingsSearch.hidden).toBe(false);
+		expect(storageSearch.hidden).toBe(true);
+		expect(settingsSearch.value).toBe("time zone");
+		expect(dialog.querySelector("#settings-tab-general")?.getAttribute("aria-selected")).toBe("true");
+		click(dialog, '.settings-mode[data-mode="storage"]');
+		expect(storageSearch.value).toBe("notes");
+		expect(folder.list).toHaveBeenCalledOnce();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		click(dialog, ".settings-close");
+		expect(f.root.querySelector("textarea")).toBe(composer);
+		expect(composer.value).toBe("Keep this draft while browsing company storage");
+		expect(folder.source.at(-1)?.signal.aborted).toBe(true);
+	});
+	it("opens Storage from the Company card in the same dialog and reaches Recents by keyboard", async () => {
+		const folder = storageFixture();
+		const f = await setup();
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		const dialog = f.root.querySelector(".settings-dialog");
+		click(f.root, "button.settings-file-card");
+		await draw();
+		expect(f.root.querySelector(".settings-dialog")).toBe(dialog);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const documents = f.root.querySelector<HTMLElement>("#settings-storage-documents")!;
+		documents.focus();
+		documents.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+		await draw();
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-storage-recents"));
+		expect(f.root.querySelector("#settings-storage-recents")?.getAttribute("aria-selected")).toBe("true");
+		expect(f.root.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
+		expect(folder.history).toHaveBeenCalledOnce();
+	});
+	it("keeps Tab inside the available Settings controls while a storage folder read is pending", async () => {
+		const folder = storageFixture();
+		const f = await setup();
+		open(f.root);
+		click(f.root, '.settings-mode[data-mode="storage"]');
+		await draw();
+		const files = f.root.querySelector<HTMLElement>(".files-root")!;
+		// jsdom does not reflect HTMLElement.inert to its attribute as browsers do.
+		Object.defineProperty(files, "inert", {
+			configurable: true,
+			get: () => files.hasAttribute("inert"),
+			set: (value: boolean) => files.toggleAttribute("inert", value),
+		});
+		const loading = deferred<Awaited<ReturnType<typeof folder.list>>>();
+		folder.list.mockReturnValueOnce(loading.promise);
+		click(files, '.files-row-main[data-path="notes"]');
+		expect(files.inert).toBe(true);
+		const content = f.root.querySelector<HTMLElement>("#settings-storage-content")!;
+		content.focus();
+		const forwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+		content.dispatchEvent(forwards);
+		expect(forwards.defaultPrevented).toBe(true);
+		expect(document.activeElement?.closest(".settings-header")).not.toBeNull();
+		expect(document.activeElement?.closest("[inert]")).toBeNull();
+		const backwards = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+		document.activeElement!.dispatchEvent(backwards);
+		expect(backwards.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(content);
+		loading.resolve({ asOfSeq: 1, entries: [], next: null });
+		await draw();
+		expect(files.inert).toBe(false);
+	});
+	it.each(["revocation", "sign out"])("ends Storage reads and removes the dialog on %s", async (change) => {
+		const folder = storageFixture();
+		const f = await setup();
+		open(f.root);
+		click(f.root, '.settings-mode[data-mode="storage"]');
+		await draw();
+		const current = folder.source.at(-1)!;
+		expect(current.signal.aborted).toBe(false);
+		if (change === "sign out") f.auth(null);
+		else {
+			vi.mocked(f.api.getTeam).mockRejectedValue(
+				new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
+			);
+			f.hints.get("qorpera_profile_access_state")!();
+		}
+		await draw();
+		expect(current.signal.aborted).toBe(true);
+		expect(() => current.current()).toThrow();
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+	});
 	it("selects the top matching tab when a search hides the open one", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
-		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
 		// Company lists the invitations it sent, Friends the ones waiting for this account.
 		search.value = "invitations";
 		search.dispatchEvent(new Event("input"));
-		const shown = [...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')].filter(
-			(tab) => !tab.hidden,
-		);
+		const shown = [
+			...f.root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]'),
+		].filter((tab) => !tab.hidden);
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
@@ -508,11 +661,11 @@ describe("settings session lifecycle", () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
-		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
 		const shown = (words: string) => {
 			search.value = words;
 			search.dispatchEvent(new Event("input"));
-			return [...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')]
+			return [...f.root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]')]
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id);
 		};
@@ -989,7 +1142,7 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-company");
 		await draw();
 		// A settings search that hides the Friends tab is cleared on the way there.
-		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
 		search.value = "team";
 		search.dispatchEvent(new Event("input"));
 		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(true);
@@ -1414,8 +1567,10 @@ describe("settings session lifecycle", () => {
 		pending.resolve();
 		await draw();
 		expect(f.root.querySelector(".settings-overlay")).toBe(settings);
-		// The new account's only company is shown (the Company tab names it by its Company File link).
-		expect(settings!.querySelector(`#settings-content a[href='#/c/${profileB.profileId}/file']`)).not.toBeNull();
+		// The new account's only company is shown by its Storage button.
+		expect(
+			settings!.querySelector(`#settings-content .settings-file-card[data-profile-id='${profileB.profileId}']`),
+		).not.toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(reads);
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 	});
