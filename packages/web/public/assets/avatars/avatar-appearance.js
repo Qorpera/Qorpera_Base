@@ -32,7 +32,10 @@
 	const lightRange = .16;
 	const rangeWeights = Float32Array.from({ length: 1025 }, (_, index) => Math.exp(-.5 * (index / 256) ** 2));
 	// The material's tone ramp, sampled per 1/256 stop over the stops it reaches.
-	const toneLow = -1.6, toneHigh = .6, toneSamples = 564;
+	const toneLow = -1.6, toneHigh = .8, toneSamples = 615;
+	// The source renders' silhouettes fade over about 6 px at 512; their
+	// coverage is steepened around its middle so a figure's edge is crisp.
+	const edgeGain = 2.5;
 
 	function toOklab([red, green, blue]) {
 		const l = Math.cbrt(.4122214708 * red + .5363325363 * green + .0514459929 * blue);
@@ -142,9 +145,9 @@
 		const dark = lightness < .4;
 		const ramp = new Uint8ClampedArray(toneSamples * 3);
 		for (let sample = 0; sample < toneSamples; sample++) {
-			const tone = (toneLow + (toneHigh - toneLow) * sample / (toneSamples - 1)) * .8;
+			const tone = toneLow + (toneHigh - toneLow) * sample / (toneSamples - 1);
 			const shade = tone < 0;
-			const level = Math.min(.97, Math.max(.12, lightness + .01 + tone * (dark ? (shade ? .16 : .09) : shade ? .11 : .06)));
+			const level = Math.min(.97, Math.max(.12, lightness + .01 + tone * (dark ? (shade ? .16 : .09) : shade ? .16 : .12)));
 			const strength = vivid * (shade ? 1 + Math.min(.18, -tone * .15) : 1 - Math.min(.06, tone * .1));
 			const channels = fromOklch(level, gamutChroma(level, hue, strength), hue);
 			for (let channel = 0; channel < 3; channel++) ramp[sample * 3 + channel] = encode(channels[channel]);
@@ -167,6 +170,7 @@
 			const sample = Math.round((tone - toneLow) / (toneHigh - toneLow) * (toneSamples - 1)) * 3;
 			const eye = eyes ? eyes[index] : 0;
 			for (let channel = 0; channel < 3; channel++) data[offset + channel] = ramp[sample + channel] + (255 - ramp[sample + channel]) * eye;
+			data[offset + 3] = (data[offset + 3] - 127.5) * edgeGain + 127.5;
 		}
 		return pixels;
 	}

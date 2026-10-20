@@ -166,30 +166,6 @@ async function prepare(entry: LiveMotion): Promise<void> {
 	}
 }
 
-/* The trailer's figures carry a soft silhouette: about half a CSS pixel at
- * the rail's 82px, and the same half pixel at every other size. One shared
- * 512px surface cannot hold that, so the feather is built per size bucket
- * (the power of two at or above the painted side) and cached. The blurred
- * body sets the edge coverage; the sharp body keeps the colour. */
-const feathers = new Map<string, HTMLCanvasElement>();
-function featheredBody(key: string, body: HTMLCanvasElement, side: number): HTMLCanvasElement {
-	const bucket = Math.min(512, 2 ** Math.ceil(Math.log2(Math.max(32, side))));
-	const featherKey = `${key}:${bucket}`;
-	let feathered = feathers.get(featherKey);
-	if (feathered) return feathered;
-	feathered = document.createElement("canvas");
-	feathered.width = feathered.height = 512;
-	const fc = feathered.getContext("2d")!;
-	// 3px at 512 read as half a pixel on a 92px canvas; scale for the bucket.
-	fc.filter = `blur(${((3 * 92) / bucket).toFixed(2)}px)`;
-	fc.drawImage(body, 0, 0);
-	fc.filter = "none";
-	fc.globalCompositeOperation = "source-atop";
-	fc.drawImage(body, 0, 0);
-	feathers.set(featherKey, feathered);
-	return feathered;
-}
-
 function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], front: boolean, size: number): void {
 	for (const s of paths) {
 		const tilt = ([-18, 62, -54, 22, 84, -38][s.lane % 6]! * Math.PI) / 180;
@@ -297,7 +273,9 @@ function paint(entry: LiveMotion): void {
 		ctx.rotate((p.turn * Math.PI) / 180);
 		ctx.scale(p.scaleX * p.body, p.scaleY * p.body);
 		ctx.translate(-50, -50);
-		ctx.drawImage(featheredBody(entry.id + entry.shown, asset.body, side), 0, 0, 100, 100);
+		// The silhouette is drawn sharp: its edge comes from the artwork's
+		// own (tightened) coverage, with no feather (Jonas, 20 Oct).
+		ctx.drawImage(asset.body, 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
 		ctx.restore();
