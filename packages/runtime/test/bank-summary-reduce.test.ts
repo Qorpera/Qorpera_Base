@@ -259,6 +259,15 @@ describe("balances as the bank's types mean them", () => {
 		expect(summary.reserveret).toBe(0);
 	});
 
+	it("doesn't take today's opening available balance as what is disponibel now", () => {
+		const summary = reduce([
+			{ balances: [balance("OPBD", 1_000, 0), balance("OPAV", 1_000, 0)], transactions: [tx(0, -100, "Shop")] },
+		]);
+		expect(summary.saldo).toBe(900);
+		expect(summary.disponibel).toBe(900);
+		expect(summary.reserveret).toBe(0);
+	});
+
 	it("reads two payments on one day as one day, not as something that comes every day", () => {
 		const summary = reduce([
 			{ balances: [balance("CLBD", 1_000, 0)], transactions: [tx(0, -100, "Shop"), tx(0, -100, "Shop")] },

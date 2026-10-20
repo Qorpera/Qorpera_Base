@@ -151,7 +151,8 @@ function rhythmOf(days: readonly number[], now: number): { rhythm: BankRhythm; n
 }
 
 const BOOKED = ["ITBD", "CLBD", "XPCD", "OPBD", "PRCD"];
-const AVAILABLE = ["ITAV", "XPCD", "CLAV", "OPAV"];
+/** Available balances that describe now: an opening one (OPAV) is the day's start, before its holds and payments. */
+const AVAILABLE = ["ITAV", "XPCD", "CLAV"];
 
 /** An account's saldo today: its newest booked DKK balance dated today or before (a later day first, then the types'
  * order), plus what was booked after it: after its day for a closing or interim balance, from its day on for an
