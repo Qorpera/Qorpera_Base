@@ -119,7 +119,15 @@ export class CloudFolderSidebar {
 		}));
 		const readUnassigned = (file.unassigned ?? []).map((member) => ({ id: member.id, words: words(member.line) }));
 		const sections: Section[] = structuredClone(read) as Section[];
-		const refusal = request.action === "list" ? null : apply(sections, request, this.#people);
+		const refusal =
+			request.action === "list"
+				? null
+				: apply(
+						sections,
+						request,
+						this.#people,
+						new Map(readUnassigned.map((member) => [member.id, member.words])),
+					);
 		// An id the change put in a section leaves the order of those in no section.
 		const unassigned = readUnassigned.filter(
 			(member) => !sections.some((section) => section.members.some((listed) => listed.id === member.id)),
@@ -245,6 +253,8 @@ function apply(
 	sections: Section[],
 	request: CloudFolderSidebarRequest,
 	people: ReadonlyMap<string, string>,
+	/** The words beside the ordered ids in no section, which a move into a section keeps. */
+	ordered: ReadonlyMap<string, string>,
 ): string | null {
 	const find = (name: string) => sections.find((section) => same(section.name, name));
 	if (request.action === "create_section") {
@@ -273,7 +283,7 @@ function apply(
 		if (request.section != null && !target) return "No such section";
 		// Already in that section: nothing changes, as today.
 		if (target?.members.some((member) => member.id === id)) return null;
-		let words = people.get(id) ?? "";
+		let words = ordered.get(id) || people.get(id) || "";
 		for (const section of sections) {
 			const index = section.members.findIndex((member) => member.id === id);
 			if (index >= 0) {

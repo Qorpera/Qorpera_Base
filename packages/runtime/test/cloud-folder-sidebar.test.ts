@@ -166,10 +166,12 @@ Our own note.
 			{ id: OLE, name: "Ole" },
 		],
 	});
-	// Deleting a section leaves the order as it is.
+	// Into a section, an ordered id keeps the words beside it.
 	await expect(f.call({ action: "move_agent", agentId: PIA, section: "Research" })).resolves.toMatchObject({
 		changed: true,
 	});
+	expect(f.text(PATH)).toContain(`## Research\n- ${NORA}\n- ${PIA} Pia first\n`);
+	// Deleting a section leaves the order as it is.
 	await expect(f.call({ action: "delete_section", section: "Research" })).resolves.toMatchObject({ changed: true });
 	expect(f.text(PATH)).toBe(`# Sections
 
