@@ -37,7 +37,7 @@ import {
 	type SessionInputWriter,
 	selectSessionExecutionSponsor,
 } from "../cloud/session-input.ts";
-import { applySidebarRequest, type CompanySidebar, type SidebarRequest } from "../cloud/sidebar.ts";
+import { applySidebarRequest, type CompanySidebar, containerOrder, type SidebarRequest } from "../cloud/sidebar.ts";
 import {
 	isSectionsRequest,
 	rewriteSectionsFile,
@@ -998,9 +998,10 @@ export class CompanyController {
 		this.#sectionsFolder = folder;
 	}
 
-	/** Whether the sections are agents/sections.md, which keeps no order for Unassigned. */
-	sectionsInFile(): boolean {
-		return this.#sectionsFolder !== undefined;
+	/** Whether a reorder in Unassigned cannot be saved: the sections are agents/sections.md and the cloud predates its
+	 * order of what is in no section (20260930519000). */
+	unassignedOrderLost(): boolean {
+		return this.#sectionsFolder !== undefined && this.store.get().sidebar?.unassignedOrder !== true;
 	}
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
@@ -1016,21 +1017,29 @@ export class CompanyController {
 				: change;
 		const folder = this.#sectionsFolder;
 		let send: () => Promise<CompanySidebar>;
-		let drawn = applySidebarRequest(current.sidebar, request, this.sidebarRoster());
+		const roster = this.sidebarRoster();
+		let drawn = applySidebarRequest(current.sidebar, request, roster);
 		if (folder && isSectionsRequest(request)) {
+			const keeps = current.sidebar.unassignedOrder === true;
 			let named: ReturnType<typeof sectionsChange>;
 			try {
-				// The file names sections, so they are named now, as the member sees them.
-				named = sectionsChange(current.sidebar, request);
+				// The file names sections, so they are named now, as the member sees them; Unassigned is written in the
+				// order drawn, where the cloud keeps it.
+				named = sectionsChange(
+					current.sidebar,
+					request,
+					keeps ? containerOrder(drawn, undefined, roster) : undefined,
+				);
 			} catch (error) {
 				this.store.set({ railError: sidebarRefusal(error, request) });
 				return false;
 			}
-			// The file keeps no order for Unassigned: it stands in roster order, as the cloud will answer.
-			drawn = {
-				...drawn,
-				placements: Object.fromEntries(Object.entries(drawn.placements).filter(([, place]) => place.sectionId)),
-			};
+			// A cloud that keeps no order for Unassigned stands it in roster order, as it will answer.
+			if (!keeps)
+				drawn = {
+					...drawn,
+					placements: Object.fromEntries(Object.entries(drawn.placements).filter(([, place]) => place.sectionId)),
+				};
 			send = () => this.#writeSections(folder, named, "unpin" in request && request.unpin === true);
 		} else send = () => this.#api.manageCompanySidebar(this.profile.profileId, request);
 		this.store.set({ sidebar: drawn, railError: undefined });

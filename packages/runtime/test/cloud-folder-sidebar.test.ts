@@ -118,6 +118,66 @@ Our own note: research sits first.
 	});
 });
 
+it("keeps the order of those in no section, and takes an id out of it when it moves into a section", async () => {
+	const f = await fixture(`# Sections
+
+Each line is an id. The words after it are only for reading.
+- ${PIA} Pia first
+- ${OLE}
+Our own note.
+
+## Research
+- ${NORA}
+`);
+	// The file's order first, then the rest.
+	await expect(f.call({ action: "list" })).resolves.toMatchObject({
+		unassigned: [
+			{ id: PIA, name: "Pia" },
+			{ id: OLE, name: "Ole" },
+		],
+	});
+	await expect(f.call({ action: "move_agent", agentId: OLE, section: "Research" })).resolves.toMatchObject({
+		changed: true,
+		sections: [
+			{
+				name: "Research",
+				agents: [{ id: NORA }, { id: OLE }],
+			},
+		],
+		unassigned: [{ id: PIA, name: "Pia" }],
+	});
+	// The notes stay as they are; the ordered ids follow them, less the one now in a section.
+	expect(f.text(PATH)).toBe(`# Sections
+
+Each line is an id. The words after it are only for reading.
+Our own note.
+
+- ${PIA} Pia first
+
+## Research
+- ${NORA}
+- ${OLE} Ole
+`);
+	// Out of the section again: after the ordered ones.
+	await expect(f.call({ action: "move_agent", agentId: OLE, section: null })).resolves.toMatchObject({
+		changed: true,
+		unassigned: [
+			{ id: PIA, name: "Pia" },
+			{ id: OLE, name: "Ole" },
+		],
+	});
+	// Deleting a section leaves the order as it is.
+	await expect(f.call({ action: "move_agent", agentId: PIA, section: "Research" })).resolves.toMatchObject({
+		changed: true,
+	});
+	await expect(f.call({ action: "delete_section", section: "Research" })).resolves.toMatchObject({ changed: true });
+	expect(f.text(PATH)).toBe(`# Sections
+
+Each line is an id. The words after it are only for reading.
+Our own note.
+`);
+});
+
 it("creates, renames and deletes sections by name, idempotently", async () => {
 	const f = await fixture();
 	await expect(f.call({ action: "create_section", name: "Support" })).resolves.toMatchObject({ changed: true });

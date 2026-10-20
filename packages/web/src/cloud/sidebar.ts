@@ -30,6 +30,9 @@ export interface CompanySidebar {
 	hidden: string[];
 	/** Whether the cloud places group chats too (and takes images in them); an older one places agents only. */
 	groupChats?: boolean;
+	/** Whether agents/sections.md keeps the order of what is in no section (20260930519000); before it, Unassigned
+	 * stands in roster order and a reorder there cannot be saved. */
+	unassignedOrder?: boolean;
 }
 
 export type SidebarRequest =
@@ -109,6 +112,7 @@ export function parseCompanySidebar(value: unknown): CompanySidebar {
 		pinned: ids(input.pinned, "pinned agent"),
 		hidden: ids(input.hidden, "hidden agent"),
 		...(groupChats ? { groupChats } : {}),
+		...(input.unassignedOrder === true ? { unassignedOrder: true } : {}),
 	};
 }
 
@@ -151,6 +155,7 @@ export function applySidebarRequest(
 		pinned: [...sidebar.pinned],
 		hidden: [...sidebar.hidden],
 		...(sidebar.groupChats ? { groupChats: true } : {}),
+		...(sidebar.unassignedOrder ? { unassignedOrder: true } : {}),
 	};
 	// An agent and a group chat are placed alike, by their ids.
 	const place = (itemId: string, sectionId: string | undefined, order?: readonly string[]) => {
