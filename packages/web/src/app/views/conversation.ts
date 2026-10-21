@@ -295,8 +295,12 @@ export class ConversationView {
 	readonly #attach: HTMLButtonElement;
 	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
+	readonly #lifetime = new AbortController();
 	/** The coding sessions still going, as a pill above the composer. */
-	readonly #coding = new CodingPill((workerId, opener) => this.#openCodingSession(workerId, opener));
+	readonly #coding = new CodingPill(
+		(workerId, opener) => this.#openCodingSession(workerId, opener),
+		this.#lifetime.signal,
+	);
 	/** The other members who have this conversation open right now. */
 	readonly #here = h("div", { class: "thread-presence", role: "group", hidden: true });
 	#hereKey = "";
@@ -308,7 +312,6 @@ export class ConversationView {
 	readonly #navigation: HTMLButtonElement;
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
-	readonly #lifetime = new AbortController();
 	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
 	/** Undo of an agent's interface change, by its commit, while the member is in this thread. */

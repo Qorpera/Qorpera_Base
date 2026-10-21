@@ -1339,6 +1339,70 @@ describe("the sessions' pill above the composer", () => {
 		expect(box.dataset.folded).toBeUndefined();
 	});
 
+	it("folds a hovered pill on Escape from the composer, and keeps folded lines out of reach", () => {
+		stubFigureMotion();
+		const lifetime = new AbortController();
+		const pill = new CodingPill(vi.fn(), lifetime.signal);
+		const composer = document.createElement("textarea");
+		document.body.append(composer, pill.el);
+		const second = codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:01:00Z" });
+		pill.update(
+			[codingSession(), second],
+			() => staff,
+			() => owner,
+		);
+		const box = pill.el.querySelector<HTMLElement>(".coding-pill")!;
+		const rows = box.querySelector<HTMLElement>(".coding-pill-rows")!;
+		const summary = box.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
+		// jsdom matches no :hover; the pointer rests on the pill.
+		let hovered = true;
+		const matches = box.matches.bind(box);
+		vi.spyOn(box, "matches").mockImplementation((selector: string) =>
+			selector === ":hover" ? hovered : matches(selector),
+		);
+		const pressEscape = (target: HTMLElement) => {
+			const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			target.dispatchEvent(event);
+			return event;
+		};
+		composer.focus();
+		expect(rows.inert).toBeFalsy();
+		expect(pressEscape(composer).defaultPrevented).toBe(true);
+		expect(box.dataset.folded).toBe("true");
+		// Focus stays in the composer; the folded lines can't be reached (Shift+Tab from the summary skips them).
+		expect(document.activeElement).toBe(composer);
+		expect(rows.inert).toBe(true);
+		// Already folded, the next Escape is the composer's own.
+		expect(pressEscape(composer).defaultPrevented).toBe(false);
+		// The pointer leaving ends the fold and the lines come back.
+		hovered = false;
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+		expect(box.dataset.folded).toBeUndefined();
+		expect(rows.inert).toBe(false);
+		// Not under the pointer, Escape in the composer leaves the pill alone; an Escape handled on the way too.
+		expect(pressEscape(composer).defaultPrevented).toBe(false);
+		hovered = true;
+		composer.addEventListener("keydown", (event) => event.preventDefault(), { once: true });
+		pressEscape(composer);
+		expect(box.dataset.folded).toBeUndefined();
+		// Escape from the summary folds the lines out of reach too, until a click opens them.
+		summary.focus();
+		pressEscape(summary);
+		expect(rows.inert).toBe(true);
+		summary.click();
+		expect(box.dataset.open).toBe("true");
+		expect(rows.inert).toBe(false);
+		// The conversation's end takes the document listener with it.
+		summary.click();
+		hovered = false;
+		box.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+		summary.blur();
+		lifetime.abort();
+		hovered = true;
+		composer.focus();
+		expect(pressEscape(composer).defaultPrevented).toBe(false);
+	});
+
 	it("scrolls past five lines and keeps every session in them", () => {
 		stubFigureMotion();
 		const style = document.createElement("style");

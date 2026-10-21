@@ -1279,7 +1279,7 @@ export class CodingPill {
 	>();
 	#facesKey = "";
 
-	constructor(open: (workerId: string, opener: HTMLElement) => void) {
+	constructor(open: (workerId: string, opener: HTMLElement) => void, signal?: AbortSignal) {
 		this.#open = open;
 		this.#summary = h(
 			"button",
@@ -1306,12 +1306,12 @@ export class CodingPill {
 		this.#pill.addEventListener("pointerleave", (event) => {
 			if (event.pointerType !== "mouse") return;
 			this.#setOpen(false);
-			if (!this.#pill.contains(document.activeElement)) delete this.#pill.dataset.folded;
+			if (!this.#pill.contains(document.activeElement)) this.#setFolded(false);
 		});
 		this.#pill.addEventListener("focusout", (event) => {
 			if (event.relatedTarget instanceof Node && this.#pill.contains(event.relatedTarget)) return;
 			this.#setOpen(false);
-			if (!this.#pill.matches(":hover")) delete this.#pill.dataset.folded;
+			if (!this.#pill.matches(":hover")) this.#setFolded(false);
 		});
 		this.#pill.addEventListener("keydown", (event) => {
 			if (!matchesKey(event, "dismiss") || this.#pill.dataset.folded === "true") return;
@@ -1320,6 +1320,24 @@ export class CodingPill {
 			this.#fold();
 			this.#summary.focus();
 		});
+		// Unfolded under the pointer while the keyboard is elsewhere (the composer): Escape folds it too, when nothing
+		// on the way handled it. Focus stays where it is.
+		document.addEventListener(
+			"keydown",
+			(event) => {
+				if (
+					event.defaultPrevented ||
+					!matchesKey(event, "dismiss") ||
+					this.el.hidden ||
+					this.#pill.dataset.folded === "true" ||
+					!this.#pill.matches(":hover")
+				)
+					return;
+				event.preventDefault();
+				this.#fold();
+			},
+			signal ? { signal } : undefined,
+		);
 	}
 
 	/** The sessions still going, oldest first; the pill hides with none. */
@@ -1382,7 +1400,7 @@ export class CodingPill {
 
 	#setOpen(open: boolean): void {
 		this.#pill.dataset.open = String(open && !this.#single);
-		if (open) delete this.#pill.dataset.folded;
+		if (open) this.#setFolded(false);
 		if (!this.#single) this.#summary.setAttribute("aria-expanded", String(open));
 	}
 
@@ -1390,7 +1408,14 @@ export class CodingPill {
 	 * until the pointer and focus have both left. */
 	#fold(): void {
 		this.#setOpen(false);
-		this.#pill.dataset.folded = "true";
+		this.#setFolded(true);
+	}
+
+	/** Folded lines are out of reach too, so Shift+Tab from the summary never lands on one it can't see. */
+	#setFolded(folded: boolean): void {
+		if (folded) this.#pill.dataset.folded = "true";
+		else delete this.#pill.dataset.folded;
+		this.#rows.inert = folded;
 	}
 
 	#face(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames, size: number) {
