@@ -467,6 +467,9 @@ export class SettingsView {
 	#onKey = (event: KeyboardEvent): void => {
 		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
+		// A dialog opened over Settings (a page shown across the window) keeps its own keys.
+		if (event.target instanceof Element && !this.el.contains(event.target) && event.target.closest("dialog")?.open)
+			return;
 		if (event.key === "Escape") {
 			if (document.activeElement === this.#search && this.#search.value) {
 				this.#search.value = "";
@@ -633,24 +636,33 @@ export class SettingsView {
 		);
 		this.#folder = browser;
 		this.#folderAuthority = authority;
-		void browser.open().catch(() => {
-			if (signal.aborted || this.#folder !== browser) return;
-			browser.dispose();
-			this.#folder = undefined;
-			replace(
-				this.#storageContent,
-				notice("danger", t("The Company File could not be read just now.")),
-				button(t("Retry opening Company File"), () => this.#drawStorage()),
-			);
-		});
+		void browser.open().then(
+			() => {
+				// The browser has taken the link's path: it shows it from here, or says why it can't.
+				if (this.#folder === browser) this.#folderPath = undefined;
+			},
+			() => {
+				if (signal.aborted || this.#folder !== browser) return;
+				browser.dispose();
+				this.#folder = undefined;
+				replace(
+					this.#storageContent,
+					notice("danger", t("The Company File could not be read just now.")),
+					button(t("Retry opening Company File"), () => this.#drawStorage()),
+				);
+			},
+		);
 		if (section === "recents") browser.showRecents();
 		this.#revealFolderPath(browser);
 	}
 
+	/** Hands a folder link's path to the browser. It is kept until a browser has opened, so Retry after a failed open
+	 * still shows what the link names. */
 	#revealFolderPath(browser: CompanyFolderBrowser): void {
 		const path = this.#folderPath;
-		this.#folderPath = undefined;
-		if (path !== undefined) browser.reveal(path);
+		if (path === undefined) return;
+		browser.reveal(path);
+		if (browser.opened) this.#folderPath = undefined;
 	}
 
 	/** The company's storage under Storage's navigation: what is used of what the plan includes. */

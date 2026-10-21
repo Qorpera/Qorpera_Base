@@ -457,6 +457,11 @@ export class CompanyFolderBrowser {
 		this.#navigate();
 	}
 
+	/** Whether the folder's top has been read: from then on, what reveal is handed is shown. */
+	get opened(): boolean {
+		return this.#ready;
+	}
+
 	/** Settings' Documents navigation returns to the top of the company folder. */
 	showDocuments(): void {
 		this.#pendingSection = "documents";

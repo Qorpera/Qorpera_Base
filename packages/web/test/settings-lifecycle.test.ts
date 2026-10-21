@@ -631,16 +631,10 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
 		expect(folder.history).toHaveBeenCalledOnce();
 	});
-	it("opens Storage at a folder link's file or folder, over the conversation", async () => {
+	/** A Storage folder that also reads: `operations` is a folder, any other path an HTML page. */
+	function linkedFolder() {
 		const folder = storageFixture();
 		const html = "<p>Dashboard</p>";
-		const fileOf = (text: string) => ({
-			manifestSha256: "a".repeat(64),
-			fileSha256: "b".repeat(64),
-			bytes: text.length,
-			mediaType: "text/html",
-			executable: false,
-		});
 		const read = vi.fn(async (path: string) => ({
 			asOfSeq: 1,
 			entry:
@@ -652,7 +646,13 @@ describe("settings session lifecycle", () => {
 							version: id(102),
 							seq: 1,
 							updatedAt: timestamp,
-							file: fileOf(html),
+							file: {
+								manifestSha256: "a".repeat(64),
+								fileSha256: "b".repeat(64),
+								bytes: html.length,
+								mediaType: "text/html",
+								executable: false,
+							},
 							target: null,
 						},
 		}));
@@ -661,18 +661,27 @@ describe("settings session lifecycle", () => {
 			folder.source.push(this);
 			return { list: folder.list, history: folder.history, read, readFile } as never;
 		});
-		const f = await setup();
+		return { ...folder, read, readFile };
+	}
+	/** An agent's message with two folder links, in the open conversation. */
+	function linksInMessage(root: Element) {
 		const prose = markdown("See [the dashboard](folder:notes/dashboard.html) and [operations](folder:operations).");
-		f.root.querySelector("main")!.append(prose);
+		root.querySelector("main")!.append(prose);
 		const [dashboard, operations] = prose.querySelectorAll<HTMLButtonElement>(".folder-link");
+		return { prose, dashboard: dashboard!, operations: operations! };
+	}
+	it("opens Storage at a folder link's file or folder, over the conversation", async () => {
+		const folder = linkedFolder();
+		const f = await setup();
+		const { prose, dashboard, operations } = linksInMessage(f.root);
 		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
-		dashboard!.dispatchEvent(followed);
+		dashboard.dispatchEvent(followed);
 		expect(followed.defaultPrevented).toBe(true);
 		await draw();
 		await draw();
 		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
 		expect(f.root.querySelector("#settings-storage-documents")?.getAttribute("aria-selected")).toBe("true");
-		expect(read).toHaveBeenCalledWith("notes/dashboard.html", expect.any(AbortSignal));
+		expect(folder.read).toHaveBeenCalledWith("notes/dashboard.html", expect.any(AbortSignal));
 		expect(folder.list).toHaveBeenLastCalledWith("notes", null, 200, expect.any(AbortSignal));
 		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")?.textContent).toBe(
 			"dashboard.html",
@@ -685,13 +694,84 @@ describe("settings session lifecycle", () => {
 		expect(prose.isConnected).toBe(true);
 		// Closed and followed again, a folder link opens the folder it names.
 		click(f.root, ".settings-close");
-		operations!.click();
+		operations.click();
 		await draw();
 		await draw();
-		expect(read).toHaveBeenLastCalledWith("operations", expect.any(AbortSignal));
+		expect(folder.read).toHaveBeenLastCalledWith("operations", expect.any(AbortSignal));
 		expect(folder.list).toHaveBeenLastCalledWith("operations", null, 200, expect.any(AbortSignal));
 		expect(f.root.querySelector(".settings-storage-content .storage-title")?.textContent).toBe("operations");
 		expect(f.root.querySelector(".settings-storage-content .files-preview")?.hasAttribute("hidden")).toBe(true);
+	});
+	it("still shows a folder link's file when the Company File opens only at Retry", async () => {
+		const folder = linkedFolder();
+		folder.list.mockRejectedValueOnce(new Error("The cloud is away"));
+		const f = await setup();
+		linksInMessage(f.root).dashboard.click();
+		await draw();
+		await draw();
+		expect(folder.read).not.toHaveBeenCalled();
+		const retry = [...f.root.querySelectorAll<HTMLButtonElement>(".settings-storage-content button")].find(
+			(control) => control.textContent === "Retry opening Company File",
+		);
+		retry!.click();
+		await draw();
+		await draw();
+		expect(folder.read).toHaveBeenCalledWith("notes/dashboard.html", expect.any(AbortSignal));
+		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")?.textContent).toBe(
+			"dashboard.html",
+		);
+		// Once shown, it is not shown again: Documents goes to the top.
+		click(f.root, "#settings-storage-documents");
+		await draw();
+		expect(f.root.querySelector(".settings-storage-content .storage-title")?.textContent).toBe("Documents");
+		expect(f.root.querySelector(".settings-storage-content .files-preview")?.hasAttribute("hidden")).toBe(true);
+	});
+	it("lets the keyboard into a page shown across the window, over Settings", async () => {
+		const dialog = HTMLDialogElement.prototype;
+		const { showModal, close } = dialog;
+		dialog.showModal = function () {
+			this.open = true;
+		};
+		dialog.close = function () {
+			this.open = false;
+		};
+		// jsdom lays nothing out; the dialog counts only controls that are drawn.
+		vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
+		try {
+			linkedFolder();
+			const f = await setup();
+			linksInMessage(f.root).dashboard.click();
+			await draw();
+			await draw();
+			f.root
+				.querySelector<HTMLButtonElement>('.files-preview-head [aria-label="Show dashboard.html large"]')!
+				.click();
+			const large = document.querySelector<HTMLDialogElement>("dialog.page-preview-dialog")!;
+			const frame = large.querySelector<HTMLIFrameElement>("iframe.page-preview-frame")!;
+			const closeLarge = large.querySelector<HTMLButtonElement>(".surface-close")!;
+			expect(document.activeElement).toBe(closeLarge);
+			// Tab goes on from Close into the page: neither the dialog nor Settings holds it back.
+			const forwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+			closeLarge.dispatchEvent(forwards);
+			expect(forwards.defaultPrevented).toBe(false);
+			// Shift+Tab from Close, the first control, goes round to the page.
+			const backwards = new KeyboardEvent("keydown", {
+				key: "Tab",
+				shiftKey: true,
+				bubbles: true,
+				cancelable: true,
+			});
+			closeLarge.dispatchEvent(backwards);
+			expect(backwards.defaultPrevented).toBe(true);
+			expect(document.activeElement).toBe(frame);
+			// Escape closes the page and leaves Settings open.
+			closeLarge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
+			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
+		} finally {
+			dialog.showModal = showModal;
+			dialog.close = close;
+		}
 	});
 	it("keeps Tab inside the available Settings controls while a storage folder read is pending", async () => {
 		const folder = storageFixture();

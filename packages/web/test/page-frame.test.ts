@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY, PageFrames } from "../src/ui/page-frame.ts";
+import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY, PageFrames, withoutLinkHints } from "../src/ui/page-frame.ts";
 
 // Read from the package root, where the tests run.
 const headers = readFileSync(resolve("public/_headers"), "utf8");
@@ -69,10 +69,52 @@ describe("an HTML page's frame", () => {
 		ready(one.contentWindow);
 		ready(one.contentWindow);
 		expect(toOne).toHaveBeenCalledTimes(2);
+		// A frame made before another is put in keeps its page; one that had its page and left is forgotten.
+		const three = frames.frame("<p>Three</p>", "Page: three.html", "files-page-frame");
+		const four = frames.frame("<p>Four</p>", "Page: four.html", "files-page-frame");
+		document.body.append(three, four);
+		const toThree = vi.spyOn(three.contentWindow!, "postMessage");
+		ready(three.contentWindow);
+		expect(toThree).toHaveBeenCalledExactlyOnceWith({ type: PAGE_CONTENT, html: "<p>Three</p>" }, "*");
 		// After the view ends, nothing is answered.
 		stop.abort();
 		ready(two.contentWindow);
 		expect(toTwo).toHaveBeenCalledOnce();
+	});
+
+	it("hands a page over without the link hints the browser would act on whatever the policy says", () => {
+		// A page without them goes exactly as written.
+		const plain = '<!doctype html><title>Plan</title><link rel="stylesheet" href="data:text/css,p{}"><p>Hi';
+		expect(withoutLinkHints(plain)).toBe(plain);
+		const page = `<!DOCTYPE html><html lang="da"><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="DNS-Prefetch" href="//cdn.example">
+<link rel="stylesheet preconnect" href="https://x.example"><link rel="icon" href="data:,"></head>
+<body><p>Sales</p><script>const a = "<link rel=preconnect>";</script></body></html>`;
+		const handed = withoutLinkHints(page);
+		expect(handed).not.toMatch(/fonts\.googleapis|cdn\.example|x\.example/);
+		expect(handed.startsWith('<!DOCTYPE html><html lang="da">')).toBe(true);
+		expect(handed).toContain('<link rel="icon" href="data:,">');
+		expect(handed).toContain('<p>Sales</p><script>const a = "<link rel=preconnect>";</script>');
+		// What a frame is handed is the page without them.
+		const stop = new AbortController();
+		const frame = new PageFrames(stop.signal).frame(page, "Page: sales.html", "files-page-frame");
+		document.body.append(frame);
+		const send = vi.spyOn(frame.contentWindow!, "postMessage");
+		ready(frame.contentWindow);
+		expect(send).toHaveBeenCalledExactlyOnceWith({ type: PAGE_CONTENT, html: handed }, "*");
+		stop.abort();
+	});
+
+	it("takes WebRTC and frames inside the page away before the page runs", () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		// Every RTC interface goes for good, before the page is taken.
+		expect(script).toContain("if (/^(?:webkit|moz)?RTC/.test(name))");
+		expect(script).toContain("{ value: undefined, writable: false, configurable: false }");
+		// Frames are taken out as they are put in, with functions taken before the page runs.
+		expect(script).toContain('const frames = "iframe, frame, object, embed, portal, fencedframe";');
+		expect(script).toContain("}).observe(document, { childList: true, subtree: true });");
+		expect(script.indexOf("observe(document")).toBeLessThan(script.indexOf("document.write(data.html)"));
+		expect(script.indexOf("RTC/.test(name)")).toBeLessThan(script.indexOf("document.write(data.html)"));
 	});
 
 	it("keeps the frame document's policy and the site's rule for it in step, and locked down", () => {
