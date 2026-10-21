@@ -244,18 +244,23 @@ begin
 		'69100000-0000-4000-8000-0000000000f0')$q$, '22023');
 end $$;
 
--- 6. After the deep fetch, a fetch starts two weeks before the newest booked day; a failure keeps the summary and
--- backs off.
+-- 6. After the deep fetch, a fetch starts two weeks before the newest booked day the last current fetch reached; a
+-- failure keeps the summary and backs off, and what it kept before failing does not move that day.
 select pg_temp.past();
 do $$
 declare v jsonb := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64));
 begin
 	perform pg_temp.check(not (v ->> 'deep')::boolean and (v ->> 'since')::date = current_date - 15, 'the since day: ' || v::text);
+	-- A newer transaction kept by a fetch that then fails.
+	v := pg_temp.record('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
+		jsonb_build_array(repeat('a', 64)), jsonb_build_array(jsonb_build_object('accountKey', repeat('a', 64),
+			'key', repeat('6', 64), 'date', current_date, 'amount', 3, 'currency', 'DKK', 'counterparty', null, 'text', null)));
 	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
 		'failed', null, 'the bank asked us to wait', 'since');
 	perform pg_temp.check((pg_temp.sync()).status = 'current' and (pg_temp.sync()).last_error = 'the bank asked us to wait'
 		and (pg_temp.sync()).due_at between clock_timestamp() + interval '14 minutes' and clock_timestamp() + interval '15 minutes'
-		and (pg_temp.sync()).summary_generation = 2, 'a failure backs off and keeps the summary');
+		and (pg_temp.sync()).summary_generation = 2 and (pg_temp.sync()).fetched_through = current_date - 1,
+		'a failure backs off, keeps the summary and its day');
 end $$;
 
 -- 7. An ended consent marks the kept summary paused from today and stops until the member connects again.
@@ -263,6 +268,7 @@ select pg_temp.past();
 do $$
 declare v jsonb := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64));
 begin
+	perform pg_temp.check((v ->> 'since')::date = current_date - 15, 'the retry starts where the last current fetch did: ' || v::text);
 	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
 		'ended', null, null, 'since');
 	perform pg_temp.check((pg_temp.sync()).status = 'ended' and (pg_temp.sync()).due_at is null

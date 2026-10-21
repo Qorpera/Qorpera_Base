@@ -34,6 +34,9 @@ create table public.qorpera_bank_syncs (
 	attempts integer not null default 0 check (attempts >= 0),
 	last_error text check (last_error is null or char_length(last_error) between 1 and 300),
 	deep_done boolean not null default false,
+	-- The newest booked day as of the last fetch that ended current: the next fetch starts from it. What a
+	-- failed or unfinished fetch kept never moves it, so no day between is skipped.
+	fetched_through date,
 	consent_until timestamptz,
 	fetched_at timestamptz,
 	summary jsonb check (summary is null or (jsonb_typeof(summary) = 'object'
@@ -84,7 +87,7 @@ begin
 		set secret_id = excluded.secret_id, secret_version = excluded.secret_version,
 			status = case when sync.summary is null then 'waiting' else 'current' end,
 			due_at = clock_timestamp(), lease_until = null, lease_id = null, attempts = 0, last_error = null,
-			deep_done = false, consent_until = null, updated_at = clock_timestamp()
+			deep_done = false, fetched_through = null, consent_until = null, updated_at = clock_timestamp()
 		where sync.secret_id <> excluded.secret_id or sync.secret_version <> excluded.secret_version
 			or sync.status in ('ended', 'disconnected');
 	else
@@ -145,7 +148,7 @@ declare
 	v_lease uuid := extensions.gen_random_uuid();
 begin
 	v_authority := public.qorpera_bank_sync_authority(p_broker_authority_id, p_broker_capability_sha256);
-	select sync.secret_id, sync.secret_version, sync.deep_done, secret.status as secret_status,
+	select sync.secret_id, sync.secret_version, sync.deep_done, sync.fetched_through, secret.status as secret_status,
 		secret.current_version, secret.environment_id, version.key_id, version.encrypted_envelope,
 		version.envelope_sha256, version.broker_authority_id as sealed_for
 	into v_row
@@ -169,12 +172,10 @@ begin
 	update public.qorpera_bank_syncs
 	set lease_until = v_now + interval '10 minutes', lease_id = v_lease, attempts = attempts + 1, updated_at = v_now
 	where profile_id = v_authority.profile_id;
-	-- After the deep fetch, a fetch starts two weeks before the newest booked day it has: a bank may book
-	-- a payment some days after its date.
+	-- After the deep fetch, a fetch starts two weeks before the newest booked day the last current fetch
+	-- reached: a bank may book a payment some days after its date.
 	if v_row.deep_done then
-		select max(booked_on) - 14 into v_since
-		from public.qorpera_bank_transactions
-		where profile_id = v_authority.profile_id;
+		v_since := v_row.fetched_through - 14;
 	end if;
 	return jsonb_build_object(
 		'schema', 'qorpera.bank-sync-claim/v1',
@@ -330,6 +331,10 @@ begin
 		attempts = case when p_outcome = 'failed' then v_sync.attempts else 0 end,
 		last_error = case when p_outcome = 'failed' then v_error end,
 		deep_done = v_sync.deep_done or (p_outcome = 'current' and p_fetch = 'deep'),
+		fetched_through = case when p_outcome = 'current' then (
+			select max(kept.booked_on) from public.qorpera_bank_transactions as kept
+			where kept.profile_id = v_authority.profile_id
+		) else v_sync.fetched_through end,
 		consent_until = coalesce(p_consent_until, v_sync.consent_until),
 		fetched_at = case when p_outcome = 'failed' then v_sync.fetched_at else v_now end,
 		summary = coalesce(v_summary, v_sync.summary),
