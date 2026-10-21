@@ -543,6 +543,24 @@ describe("agent pages", () => {
 });
 
 describe("the card's frame", () => {
+	it("gives focus back to the row the rail rebuilt while the card was open", () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const row = document.createElement("a");
+		row.href = "#row";
+		document.body.append(row);
+		row.focus();
+		const card = new AgentDetails(company, staff, {}, () => {}, row, company.signal, {}, "beside");
+		cleanup.push(() => company.stop());
+		const rebuilt = document.createElement("a");
+		rebuilt.href = "#row";
+		row.replaceWith(rebuilt);
+		card.dialog.findOpener = () => rebuilt;
+		card.dialog.close();
+		expect(document.activeElement).toBe(rebuilt);
+	});
+
 	it("keeps a card beside a rebuilt row inside the window as it grows", () => {
 		vi.stubGlobal("innerHeight", 800);
 		const f = fixture();

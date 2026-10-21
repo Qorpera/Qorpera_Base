@@ -50,9 +50,19 @@ export interface ShellContext {
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
 	/** A right-click on an agent opens its card beside the row; the rail adds Hide and Delete. */
-	openAgentCard?: (agent: HostedStaffAgent, anchor: HTMLElement, card: AgentCardActions) => void;
+	openAgentCard?: (
+		agent: HostedStaffAgent,
+		anchor: HTMLElement,
+		card: AgentCardActions,
+		findAnchor: () => HTMLElement | null,
+	) => void;
 	/** A right-click on a group chat opens its card the same way. */
-	openGroupCard?: (session: HostedSession, anchor: HTMLElement, card: CardFootActions) => void;
+	openGroupCard?: (
+		session: HostedSession,
+		anchor: HTMLElement,
+		card: CardFootActions,
+		findAnchor: () => HTMLElement | null,
+	) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -1613,7 +1623,10 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		const open = parts.context?.openAgentCard;
 		if (agent && open) {
 			event.preventDefault();
-			open(agent, agentElement, agentCard(company, parts, agent));
+			// The row is rebuilt when the agent's state changes; focus goes back to the new one.
+			open(agent, agentElement, agentCard(company, parts, agent), () =>
+				parts.list.querySelector<HTMLElement>(`[data-agent-id="${agent.id}"], [data-cofounder-id="${agent.id}"]`),
+			);
 		}
 		return;
 	} else if (roomElement?.dataset.roomId) {
@@ -1624,7 +1637,10 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		const open = parts.context?.openGroupCard;
 		if (session && open) {
 			event.preventDefault();
-			open(session, roomElement, groupCard(company, parts, session, roomId));
+			// The row is rebuilt when the group changes; focus goes back to the new one.
+			open(session, roomElement, groupCard(company, parts, session, roomId), () =>
+				parts.list.querySelector<HTMLElement>(`[data-room-id="${roomId}"]`),
+			);
 		}
 		return;
 	} else if (titleElement?.dataset.sectionId) {

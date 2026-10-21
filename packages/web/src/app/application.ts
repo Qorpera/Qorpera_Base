@@ -822,7 +822,7 @@ export function mountApplication(
 			agentPage = { agentId, page };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
 		};
-		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card) => {
+		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
 				controller,
@@ -854,9 +854,10 @@ export function mountApplication(
 				},
 				"beside",
 			);
+			opened.dialog.findOpener = findAnchor;
 			agentCard = opened;
 		};
-		const openGroupCard: ShellContext["openGroupCard"] = (session, anchor, card) => {
+		const openGroupCard: ShellContext["openGroupCard"] = (session, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new GroupDetails(
 				controller,
@@ -870,6 +871,7 @@ export function mountApplication(
 				card,
 				"beside",
 			);
+			opened.dialog.findOpener = findAnchor;
 			agentCard = opened;
 		};
 		if (!rail.hidden)

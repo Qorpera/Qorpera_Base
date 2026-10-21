@@ -225,7 +225,8 @@ function rightClick(element: Element) {
 }
 /** What the rail gave the card it opened last (an agent's or a group chat's): Copy, Hide (or Show) and Delete,
  * where the member can use them. */
-const lastCard = <C>(open: { mock: { lastCall: [unknown, HTMLElement, C] | undefined } }) => open.mock.lastCall![2];
+const lastCard = <C>(open: { mock: { lastCall: [unknown, HTMLElement, C, ...unknown[]] | undefined } }) =>
+	open.mock.lastCall![2];
 const menuItems = () =>
 	[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
 const choose = (label: string) =>
@@ -436,7 +437,7 @@ describe("rail right-clicks", () => {
 		await ready;
 		await settle();
 		rightClick(rowOf(rail, "Cy"));
-		expect(openCard).toHaveBeenCalledWith(cy, rowOf(rail, "Cy"), expect.anything());
+		expect(openCard).toHaveBeenCalledWith(cy, rowOf(rail, "Cy"), expect.anything(), expect.any(Function));
 	});
 	it("opens an agent's card beside its row, with Hide and Delete, instead of a menu", async () => {
 		const { rail, manage, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
@@ -446,11 +447,18 @@ describe("rail right-clicks", () => {
 		expect(event.defaultPrevented).toBe(true);
 		expect(openMenu()).toBeUndefined();
 		expect(openCard).toHaveBeenCalledOnce();
-		expect(openCard).toHaveBeenCalledWith(cy, rowOf(rail, "Cy"), {
-			hidden: false,
-			hide: expect.any(Function),
-			remove: expect.any(Function),
-		});
+		expect(openCard).toHaveBeenCalledWith(
+			cy,
+			rowOf(rail, "Cy"),
+			{
+				hidden: false,
+				hide: expect.any(Function),
+				remove: expect.any(Function),
+			},
+			expect.any(Function),
+		);
+		// The card finds the agent's row again for focus, though the rail rebuilds it.
+		expect(openCard.mock.calls[0]![3]()).toBe(rowOf(rail, "Cy"));
 		lastCard(openCard).hide!();
 		await settle();
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
@@ -462,7 +470,12 @@ describe("rail right-clicks", () => {
 		// A pinned agent's card opens beside its pinned card.
 		const pin = rail.querySelector<HTMLElement>(`.rail-pin[data-agent-id="${dee.id}"]`)!;
 		rightClick(pin);
-		expect(openCard).toHaveBeenLastCalledWith(dee, pin, expect.objectContaining({ hidden: false }));
+		expect(openCard).toHaveBeenLastCalledWith(
+			dee,
+			pin,
+			expect.objectContaining({ hidden: false }),
+			expect.any(Function),
+		);
 	});
 	it("leaves a right-click on an agent or a group chat to the browser where the shell opens no card", async () => {
 		const [sidebar, actions, extra] = launchCompany({ deleteAgent: vi.fn(), deleteGroup: vi.fn() });
@@ -535,7 +548,7 @@ describe("rail right-clicks", () => {
 		await settle();
 		const home = rail.querySelector<HTMLElement>(".cofounder-home")!;
 		rightClick(home);
-		expect(openCard).toHaveBeenCalledWith(cofounder, home, { conversationId: id(70) });
+		expect(openCard).toHaveBeenCalledWith(cofounder, home, { conversationId: id(70) }, expect.any(Function));
 	});
 	it("leaves shared sections to members who can write, and deleting to owners and admins", async () => {
 		const { rail, manage, company, openCard, openGroup, ready } = companyWith(
@@ -1138,12 +1151,19 @@ describe("group chats in the rail", () => {
 		const event = rightClick(groupRow(rail));
 		expect(event.defaultPrevented).toBe(true);
 		expect(openMenu()).toBeUndefined();
-		expect(openGroup).toHaveBeenCalledWith(launchSession, groupRow(rail), {
-			conversationId: launchSession.sessionId,
-			hidden: false,
-			hide: expect.any(Function),
-			remove: expect.any(Function),
-		});
+		expect(openGroup).toHaveBeenCalledWith(
+			launchSession,
+			groupRow(rail),
+			{
+				conversationId: launchSession.sessionId,
+				hidden: false,
+				hide: expect.any(Function),
+				remove: expect.any(Function),
+			},
+			expect.any(Function),
+		);
+		// The card finds the group chat's row again for focus, though the rail rebuilds it.
+		expect(openGroup.mock.calls[0]![3]()).toBe(groupRow(rail));
 		lastCard(openGroup).hide!();
 		await ready;
 		await settle();
