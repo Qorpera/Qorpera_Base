@@ -4,6 +4,7 @@ import {
 	type CloudConnectorOAuthProvider,
 	cloudConnector,
 } from "./cloud-connector-catalog.ts";
+import type { EnableBankingClient, EnableBankingSession } from "./cloud-connector-enable-banking.ts";
 import type { GoogleOAuthClient } from "./cloud-connector-google.ts";
 import { connectorRequest, jsonRecord, jsonString, parseJsonResponse } from "./cloud-connector-http.ts";
 
@@ -38,7 +39,17 @@ import { connectorRequest, jsonRecord, jsonString, parseJsonResponse } from "./c
  * the confirmation id. (The web app's CSP allows no cross-origin form, and a
  * cookie set by the app's cross-site request would be a third-party cookie, so
  * the proof lives in the app, not in a broker cookie.)
+ *
+ * The company's bank (`bank`, through Enable Banking) takes the same path with
+ * its own two ends: the start asks Enable Banking for the bank's sign-in page
+ * (the member picks the bank first), and the confirm turns the bank's code into
+ * a session. The sealed fields are the session id and the accounts the member
+ * shared (`accounts`, JSON); the bank is not a catalog connector, since no agent
+ * tool calls it: the vault's bank sync reads it (cloud-bank-sync.ts).
  */
+
+/** The bank connection's connector id: not in the catalog, served when the vault has an Enable Banking app. */
+export const BANK_CONNECTOR_ID = "bank";
 
 export interface CloudConnectorOAuthClients {
 	readonly google?: GoogleOAuthClient;
@@ -55,6 +66,13 @@ export interface CloudConnectorOAuthBegin {
 	/** SHA-256 (hex) of the proof the starting browser keeps; the confirm
 	 * step must present the proof itself. */
 	readonly browserProofSha256: string;
+}
+
+/** The bank the member picked, as Enable Banking names it, and whether they sign in as a business or a person. */
+export interface CloudBankChoice {
+	readonly name: string;
+	readonly country: string;
+	readonly psuType: "business" | "personal";
 }
 
 /** Where the provider's callback leaves the browser: back on the app with a
@@ -141,7 +159,13 @@ export const CLOUD_CONNECTOR_OAUTH_STATE =
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 const TOKEN = /^[A-Za-z0-9_./-]{20,4096}$/;
 const STATE_TTL_MS = 10 * 60_000;
+/** A bank sign-in (MitID, picking accounts) takes longer than a provider consent page. */
+const BANK_STATE_TTL_MS = 20 * 60_000;
 const CONFIRM_TTL_MS = 5 * 60_000;
+/** The longest consent asked for: PSD2 allows 180 days, and a bank may allow less. */
+const BANK_CONSENT_MS = 180 * 24 * 3600_000;
+const BANK_NAME = /^[^\s\0][^\0]{0,199}$/;
+const COUNTRY = /^[A-Z]{2}$/;
 const MAX_PENDING = 256;
 /** One company's share of the flows in flight (started, or back from the provider and waiting for the
  * browser's confirm): a shared vault serves many companies from one set. */
@@ -161,6 +185,8 @@ interface PendingAuthorization {
 	readonly codeVerifier: string | undefined;
 	readonly browserProofSha256: string;
 	readonly expiresAt: number;
+	/** The bank the member picked (bank connections only). */
+	readonly bankName?: string;
 }
 
 /** A provider answer parked until the starting browser confirms it. */
@@ -175,6 +201,7 @@ interface PendingConfirmation {
 	readonly codeVerifier: string | undefined;
 	readonly browserProofSha256: string;
 	readonly expiresAt: number;
+	readonly bankName?: string;
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -257,6 +284,7 @@ export class CloudConnectorOAuthFlows {
 	readonly #fetch: typeof fetch;
 	readonly #now: () => number;
 	readonly #random: (bytes: number) => Uint8Array;
+	readonly #bank: Pick<EnableBankingClient, "banks" | "authorize" | "createSession"> | undefined;
 	readonly #pending = new Map<string, PendingAuthorization>();
 	readonly #confirmations = new Map<string, PendingConfirmation>();
 
@@ -267,6 +295,8 @@ export class CloudConnectorOAuthFlows {
 		fetch?: typeof fetch;
 		now?: () => number;
 		random?: (bytes: number) => Uint8Array;
+		/** Enable Banking, for the company's bank connection; absent, no bank sign-in starts. */
+		bank?: Pick<EnableBankingClient, "banks" | "authorize" | "createSession">;
 	}) {
 		const callback = new URL(options.callbackUrl);
 		if (
@@ -289,15 +319,17 @@ export class CloudConnectorOAuthFlows {
 		this.#fetch = options.fetch ?? fetch;
 		this.#now = options.now ?? Date.now;
 		this.#random = options.random ?? ((bytes) => randomBytes(bytes));
+		this.#bank = options.bank;
 	}
 
-	/** Connectors whose provider has a registered OAuth client. */
+	/** Connectors whose provider has a registered OAuth client, and the bank when Enable Banking is set up. */
 	available(): readonly string[] {
-		return Object.freeze(
-			["github", "gmail", "google_drive"].filter(
+		return Object.freeze([
+			...["github", "gmail", "google_drive"].filter(
 				(connectorId) => this.#client(cloudConnector(connectorId)) !== undefined,
 			),
-		);
+			...(this.#bank ? [BANK_CONNECTOR_ID] : []),
+		]);
 	}
 
 	#client(connector: CloudConnectorDefinition): GoogleOAuthClient | undefined {
@@ -310,7 +342,7 @@ export class CloudConnectorOAuthFlows {
 		for (const [key, parked] of this.#confirmations) if (parked.expiresAt <= now) this.#confirmations.delete(key);
 	}
 
-	begin(input: CloudConnectorOAuthBegin): CloudConnectorOAuthStarted {
+	#checkStart(input: CloudConnectorOAuthBegin): void {
 		if (
 			!UUID.test(input.ticketId) ||
 			!CAPABILITY.test(input.captureCapability) ||
@@ -319,10 +351,10 @@ export class CloudConnectorOAuthFlows {
 			!SHA256_HEX.test(input.browserProofSha256)
 		)
 			throw new Error("Connector OAuth start is invalid");
-		const companyId = input.companyId.toLowerCase();
-		const connector = cloudConnector(input.connectorId);
-		const client = this.#client(connector);
-		if (!client) throw new Error("Connector OAuth client is unavailable");
+	}
+
+	/** The return page, once the vault and the company have room for one more flow. */
+	#admit(input: CloudConnectorOAuthBegin, companyId: string): string {
 		const returnTo = parseConnectorReturnUrl(input.returnTo, this.#returnOrigins);
 		this.#sweep();
 		if (this.#pending.size >= MAX_PENDING) throw new Error("Connector OAuth is busy");
@@ -332,6 +364,16 @@ export class CloudConnectorOAuthFlows {
 		for (const pending of this.#pending.values()) if (pending.companyId === companyId) companyFlows += 1;
 		for (const parked of this.#confirmations.values()) if (parked.companyId === companyId) companyFlows += 1;
 		if (companyFlows >= MAX_PENDING_PER_COMPANY) throw new Error("Connector OAuth is busy");
+		return returnTo;
+	}
+
+	begin(input: CloudConnectorOAuthBegin): CloudConnectorOAuthStarted {
+		this.#checkStart(input);
+		const companyId = input.companyId.toLowerCase();
+		const connector = cloudConnector(input.connectorId);
+		const client = this.#client(connector);
+		if (!client) throw new Error("Connector OAuth client is unavailable");
+		const returnTo = this.#admit(input, companyId);
 		const endpoints = CLOUD_CONNECTOR_OAUTH_PROVIDERS[connector.oauth.provider];
 		const state = `${companyId}.${Buffer.from(this.#random(32)).toString("base64url")}`;
 		const codeVerifier = endpoints.pkce ? Buffer.from(this.#random(32)).toString("base64url") : undefined;
@@ -363,6 +405,64 @@ export class CloudConnectorOAuthFlows {
 			expiresAt,
 		});
 		return { authorizationUrl: url.href, expiresAt: new Date(expiresAt).toISOString() };
+	}
+
+	/** Starts a bank connection: the bank must be one Enable Banking reaches for that kind of customer, and
+	 * the consent lasts as long as the bank allows, up to 180 days. Enable Banking answers with the bank's own
+	 * sign-in page; its callback comes back to the same route as every other connector's. */
+	async beginBank(
+		input: CloudConnectorOAuthBegin & { readonly bank: CloudBankChoice },
+		signal: AbortSignal,
+	): Promise<CloudConnectorOAuthStarted> {
+		this.#checkStart(input);
+		const choice = input.bank;
+		if (
+			input.connectorId !== BANK_CONNECTOR_ID ||
+			!choice ||
+			typeof choice.name !== "string" ||
+			!BANK_NAME.test(choice.name) ||
+			typeof choice.country !== "string" ||
+			!COUNTRY.test(choice.country) ||
+			(choice.psuType !== "business" && choice.psuType !== "personal")
+		)
+			throw new Error("Connector OAuth start is invalid");
+		const bankClient = this.#bank;
+		if (!bankClient) throw new Error("Connector OAuth client is unavailable");
+		const companyId = input.companyId.toLowerCase();
+		this.#admit(input, companyId);
+		const bank = (await bankClient.banks(choice.country, choice.psuType, signal)).find(
+			(item) => item.name === choice.name && item.country === choice.country,
+		);
+		if (!bank) throw new Error("The bank is not available");
+		const longest = bank.maximumConsentSeconds ? bank.maximumConsentSeconds * 1000 : BANK_CONSENT_MS;
+		const state = `${companyId}.${Buffer.from(this.#random(32)).toString("base64url")}`;
+		const authorization = await bankClient.authorize(
+			{
+				bank: { name: bank.name, country: bank.country },
+				// A minute short of the longest, so a clock a little ahead of the bank's is never refused.
+				validUntil: new Date(this.#now() + Math.min(longest, BANK_CONSENT_MS) - 60_000),
+				state,
+				redirectUrl: this.#callbackUrl,
+				psuType: choice.psuType,
+			},
+			signal,
+		);
+		// The room is counted again: other starts may have come in while Enable Banking answered.
+		const returnTo = this.#admit(input, companyId);
+		const expiresAt = this.#now() + BANK_STATE_TTL_MS;
+		this.#pending.set(sha256(state), {
+			stateSha256: sha256(state),
+			ticketId: input.ticketId.toLowerCase(),
+			captureCapability: input.captureCapability,
+			companyId,
+			connectorId: BANK_CONNECTOR_ID,
+			returnTo,
+			codeVerifier: undefined,
+			browserProofSha256: input.browserProofSha256,
+			expiresAt,
+			bankName: bank.name,
+		});
+		return { authorizationUrl: authorization.url, expiresAt: new Date(expiresAt).toISOString() };
 	}
 
 	/** Consumes the provider's callback without sealing anything. The pending
@@ -409,6 +509,7 @@ export class CloudConnectorOAuthFlows {
 			codeVerifier: pending.codeVerifier,
 			browserProofSha256: pending.browserProofSha256,
 			expiresAt: this.#now() + CONFIRM_TTL_MS,
+			...(pending.bankName === undefined ? {} : { bankName: pending.bankName }),
 		});
 		return { connectorId: pending.connectorId, returnTo: pending.returnTo, confirmation };
 	}
@@ -441,6 +542,7 @@ export class CloudConnectorOAuthFlows {
 			throw new CloudConnectorOAuthError("browser_mismatch", parked.returnTo, parked.connectorId);
 		if (parked.expiresAt <= this.#now())
 			throw new CloudConnectorOAuthError("expired", parked.returnTo, parked.connectorId);
+		if (parked.connectorId === BANK_CONNECTOR_ID) return this.#confirmBank(parked, signal);
 		const connector = cloudConnector(parked.connectorId);
 		const client = this.#client(connector);
 		if (!client) throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
@@ -481,6 +583,41 @@ export class CloudConnectorOAuthFlows {
 			returnTo: parked.returnTo,
 			fields,
 			accountLabel,
+		};
+	}
+
+	/** The bank's code becomes a session with the accounts the member shared. A sign-in that shared no account
+	 * connects nothing. */
+	async #confirmBank(parked: PendingConfirmation, signal: AbortSignal): Promise<CloudConnectorOAuthCompletion> {
+		const bankClient = this.#bank;
+		if (!bankClient) throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
+		let session: EnableBankingSession;
+		try {
+			session = await bankClient.createSession(parked.code, signal);
+		} catch {
+			throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
+		}
+		if (session.accounts.length === 0)
+			throw new CloudConnectorOAuthError("declined", parked.returnTo, parked.connectorId);
+		const bankName = (session.bank ?? parked.bankName ?? "").trim();
+		// The connection's label is the first account's last four digits: an account label has no spaces, and the
+		// bank's name travels in the sealed fields for the summary.
+		const first = session.accounts[0];
+		const number = (first?.iban ?? first?.otherIdentification ?? "").replace(/\s/g, "");
+		const label = /^[A-Za-z0-9]{4,}$/.test(number) ? `••${number.slice(-4)}` : null;
+		return {
+			ticketId: parked.ticketId,
+			captureCapability: parked.captureCapability,
+			companyId: parked.companyId,
+			connectorId: parked.connectorId,
+			returnTo: parked.returnTo,
+			fields: {
+				session_id: session.sessionId,
+				accounts: JSON.stringify(session.accounts),
+				...(bankName ? { bank: bankName } : {}),
+				...(session.validUntil ? { valid_until: session.validUntil } : {}),
+			},
+			accountLabel: label,
 		};
 	}
 

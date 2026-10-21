@@ -18,6 +18,8 @@ import {
 	parseCompanyAccountRequest,
 } from "./cloud-company-account-vault.ts";
 import {
+	BANK_CONNECTOR_ID,
+	type CloudBankChoice,
 	CloudConnectorOAuthError,
 	type CloudConnectorOAuthFlows,
 	connectorReturnLocation,
@@ -464,9 +466,21 @@ function parseDescriptor(value: unknown): CloudSecretDescriptor {
 	};
 }
 
-function parseOAuthStart(value: unknown): { captureCapability: string; returnTo: string; browserProofSha256: string } {
+function parseOAuthStart(value: unknown): {
+	captureCapability: string;
+	returnTo: string;
+	browserProofSha256: string;
+	bank?: CloudBankChoice;
+} {
 	const input = record(value, "Connector authorization start");
-	exact(input, ["schema", "captureCapability", "returnTo", "browserProofSha256"], "Connector authorization start");
+	// A bank connection also names the bank the member picked; the flows check it.
+	const bank = Object.hasOwn(input, "bank") ? record(input.bank, "Connector authorization start") : undefined;
+	exact(
+		input,
+		["schema", "captureCapability", "returnTo", "browserProofSha256", ...(bank ? ["bank"] : [])],
+		"Connector authorization start",
+	);
+	if (bank) exact(bank, ["name", "country", "psuType"], "Connector authorization start");
 	if (
 		input.schema !== "qorpera.cloud-connector-oauth-start/v2" ||
 		typeof input.captureCapability !== "string" ||
@@ -481,6 +495,7 @@ function parseOAuthStart(value: unknown): { captureCapability: string; returnTo:
 		captureCapability: input.captureCapability,
 		returnTo: input.returnTo,
 		browserProofSha256: input.browserProofSha256,
+		...(bank ? { bank: bank as unknown as CloudBankChoice } : {}),
 	};
 }
 
@@ -912,14 +927,20 @@ export class HttpCloudSecretBrokerService {
 					if (summary.ownerKind !== "company") throw new Error("Connector sign-in requires a company ticket");
 					// The state starts with the ticket's company so the one shared public
 					// origin can route the provider's callback to this company's broker.
-					const started = this.#oauth.begin({
+					const begin = {
 						ticketId,
 						captureCapability: start.captureCapability,
 						companyId: summary.companyId,
 						connectorId: summary.connectorId,
 						returnTo: start.returnTo,
 						browserProofSha256: start.browserProofSha256,
-					});
+					};
+					// Only a bank ticket names a bank, and a bank ticket always does.
+					if ((summary.connectorId === BANK_CONNECTOR_ID) !== (start.bank !== undefined))
+						throw new Error("Connector authorization start is invalid");
+					const started = start.bank
+						? await this.#oauth.beginBank({ ...begin, bank: start.bank }, AbortSignal.timeout(20_000))
+						: this.#oauth.begin(begin);
 					response(
 						reply,
 						200,
