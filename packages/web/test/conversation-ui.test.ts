@@ -1339,6 +1339,19 @@ describe("conversation UI boundaries", () => {
 		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
 	});
 
+	it("closes the routines for the computer the card asks for, and gives the computer the keyboard", () => {
+		const f = setup();
+		const pane = f.view.el.querySelector<HTMLElement>(".thread-conversation")!;
+		f.view.show(staff.id, "routines");
+		expect(pane.inert).toBe(true);
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.view.el.querySelector(".thread-routines")).toBeNull();
+		expect(pane.inert).toBe(false);
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel).not.toBeNull();
+		expect(document.activeElement).toBe(panel);
+	});
+
 	it("shows one overlay at a time: routines and a coworker's transcript replace each other", async () => {
 		const f = setup();
 		const coworker = { ...staff, id: id(97), displayName: "Helper" };
@@ -1378,6 +1391,14 @@ describe("conversation UI boundaries", () => {
 		expect(pane.inert).toBe(true);
 		button(f.view.el, "Close routines").click();
 		expect(pane.inert).toBe(false);
+		// The computer closes an open transcript too.
+		f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!.click();
+		await settle();
+		expect(f.view.el.querySelector(".pair-transcript")).not.toBeNull();
+		f.view.show(staff.id, "computer");
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		expect(pane.inert).toBe(false);
+		expect(document.activeElement).toBe(f.view.el.querySelector(".computer-panel"));
 	});
 
 	it("places the company notices above the coding sessions' dock, which sits right above the composer", () => {

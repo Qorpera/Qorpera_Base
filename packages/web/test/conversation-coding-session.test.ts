@@ -358,6 +358,42 @@ describe("coding sessions in the thread", () => {
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
 	});
 
+	it("another member's waiting session reads as theirs in the pill, quietly, and opens with Open", async () => {
+		const theirs = codingSession({
+			phase: "awaiting_input",
+			workerState: "blocked",
+			ownerUserId: userB.id,
+			isOwner: false,
+		});
+		const f = mount((store) => {
+			store.set({ projection: { items: [], hiddenCount: 0, lastSequence: 0 }, codingSessions: [theirs] });
+		});
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([theirs]);
+		await settle();
+		const line = f.view.el.querySelector<HTMLElement>(".coding-dock .coding-pill-summary")!;
+		expect(line.querySelector(".coding-pill-note")?.textContent).toMatch(/^Needs Sofie Lund · paused /);
+		expect(line.querySelector<HTMLElement>(".coding-pill-note")?.dataset.tone).toBe("idle");
+		expect(line.querySelector(".coding-pill-action")?.textContent).toBe("Open");
+	});
+
+	it("the card's computer closes a session open as its own thread", async () => {
+		const f = mount((store) => {
+			store.set({
+				projection: { items: [message(1, "On it.", "2026-09-22T10:00:30Z")], hiddenCount: 0, lastSequence: 1 },
+				codingSessions: [codingSession()],
+			});
+		});
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([codingSession()]);
+		vi.mocked(f.api.readCodingSession).mockResolvedValue({ session: codingSession(), isOwner: true, events: [] });
+		await settle();
+		f.view.el.querySelector<HTMLButtonElement>(".coding-dock .coding-pill-summary")!.click();
+		await settle();
+		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.view.el.querySelector(".coding-thread")).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector(".computer-panel"));
+	});
+
 	it("follows the sessions without redrawing the thread, one read at a time, backing off on errors", async () => {
 		const f = mount((store) => {
 			store.set({

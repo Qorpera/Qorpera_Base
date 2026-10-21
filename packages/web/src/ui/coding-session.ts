@@ -1238,6 +1238,17 @@ export function codingSessionActivity(session: Pick<CodingSession, "phase" | "ar
 	return "Working";
 }
 
+/** A session asks the member looking for an answer only when it is theirs; another member's question is theirs. */
+function needsViewer(session: CodingSession, names: CodingSessionNames): boolean {
+	return names.ownerIsViewer && codingSessionStatus(session, names).tone === "attention";
+}
+
+/** The session's status as the pill shows it: another member's question reads as theirs, in a quiet tone. */
+function viewerStatus(session: CodingSession, names: CodingSessionNames): { text: string; tone: CodingSessionTone } {
+	const status = codingSessionStatus(session, names);
+	return status.tone === "attention" && !names.ownerIsViewer ? { ...status, tone: "idle" } : status;
+}
+
 /** The sessions still going, as one pill above the composer: their figures (the agent's
  * figure wearing the harness mark), how many there are and who needs an answer. Hover, focus
  * or a tap unfolds it upward into one line per session; a line opens its session as its
@@ -1276,10 +1287,11 @@ export class CodingPill {
 				type: "button",
 				class: "coding-pill-summary",
 				"aria-expanded": "false",
-				onclick: () =>
-					this.#single
-						? this.#open(this.#single.workerId, this.#summary)
-						: this.#setOpen(this.#pill.dataset.open !== "true"),
+				onclick: () => {
+					if (this.#single) this.#open(this.#single.workerId, this.#summary);
+					else if (this.#pill.dataset.open === "true") this.#fold();
+					else this.#setOpen(true);
+				},
 			},
 			this.#faces,
 			this.#label,
@@ -1289,18 +1301,23 @@ export class CodingPill {
 		) as HTMLButtonElement;
 		this.#pill.append(this.#rows, this.#summary);
 		this.el.append(this.#pill);
-		// Leaving the pill folds a tapped-open pill too, so it never stays over the messages.
+		// Leaving the pill folds a tapped-open pill too, so it never stays over the messages, and ends a fold
+		// the member asked for: the next hover or focus unfolds it again.
 		this.#pill.addEventListener("pointerleave", (event) => {
-			if (event.pointerType === "mouse") this.#setOpen(false);
+			if (event.pointerType !== "mouse") return;
+			this.#setOpen(false);
+			if (!this.#pill.contains(document.activeElement)) delete this.#pill.dataset.folded;
 		});
 		this.#pill.addEventListener("focusout", (event) => {
-			if (!(event.relatedTarget instanceof Node && this.#pill.contains(event.relatedTarget))) this.#setOpen(false);
+			if (event.relatedTarget instanceof Node && this.#pill.contains(event.relatedTarget)) return;
+			this.#setOpen(false);
+			if (!this.#pill.matches(":hover")) delete this.#pill.dataset.folded;
 		});
 		this.#pill.addEventListener("keydown", (event) => {
-			if (!matchesKey(event, "dismiss") || this.#pill.dataset.open !== "true") return;
+			if (!matchesKey(event, "dismiss") || this.#pill.dataset.folded === "true") return;
 			event.preventDefault();
 			event.stopPropagation();
-			this.#setOpen(false);
+			this.#fold();
 			this.#summary.focus();
 		});
 	}
@@ -1334,9 +1351,9 @@ export class CodingPill {
 				...sessions.slice(0, 3).map((session) => this.#face(session, agentFor(session), names(session), 20)),
 			);
 		}
-		const waiting = sessions.filter((session) => codingSessionStatus(session, names(session)).tone === "attention");
+		const waiting = sessions.filter((session) => needsViewer(session, names(session)));
 		const only = this.#single;
-		const status = only ? codingSessionStatus(only, names(only)) : undefined;
+		const status = only ? viewerStatus(only, names(only)) : undefined;
 		this.#label.textContent = only ? only.title : t("{count} coding agents", { count: sessions.length });
 		this.#note.textContent = status
 			? status.text
@@ -1346,7 +1363,7 @@ export class CodingPill {
 					? t("1 needs you")
 					: t("Working");
 		this.#note.dataset.tone = status?.tone ?? (waiting.length ? "attention" : "working");
-		this.#action.textContent = status ? (status.tone === "attention" ? t("Answer") : t("Open")) : "";
+		this.#action.textContent = status ? (only && needsViewer(only, names(only)) ? t("Answer") : t("Open")) : "";
 		const summary = [this.#label.textContent, this.#note.textContent].filter(Boolean).join(" · ");
 		if (only) {
 			this.#setOpen(false);
@@ -1365,7 +1382,15 @@ export class CodingPill {
 
 	#setOpen(open: boolean): void {
 		this.#pill.dataset.open = String(open && !this.#single);
+		if (open) delete this.#pill.dataset.folded;
 		if (!this.#single) this.#summary.setAttribute("aria-expanded", String(open));
+	}
+
+	/** Folded on the member's word (Escape, or the summary while open): hover and focus no longer unfold it
+	 * until the pointer and focus have both left. */
+	#fold(): void {
+		this.#setOpen(false);
+		this.#pill.dataset.folded = "true";
 	}
 
 	#face(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames, size: number) {
@@ -1384,7 +1409,7 @@ export class CodingPill {
 	}
 
 	#row(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames): HTMLButtonElement {
-		const status = codingSessionStatus(session, names);
+		const status = viewerStatus(session, names);
 		let view = this.#rowViews.get(session.workerId);
 		if (!view) {
 			const parts = {
@@ -1423,7 +1448,7 @@ export class CodingPill {
 		view.el.setAttribute("aria-label", t("{label}. Open the session", { label }));
 		if (view.title.textContent !== session.title) view.title.textContent = session.title;
 		if (view.status.textContent !== status.text) view.status.textContent = status.text;
-		replace(view.action, status.tone === "attention" ? t("Answer") : t("Open"), icon("chevron"));
+		replace(view.action, needsViewer(session, names) ? t("Answer") : t("Open"), icon("chevron"));
 		return view.el;
 	}
 }

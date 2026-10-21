@@ -924,8 +924,13 @@ export class ConversationView {
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
-		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
-		else this.#openRoutines(agent);
+		if (page === "computer") {
+			// The computer sits under the pages laid over the thread: they close for it.
+			this.#closeRoutines(false);
+			this.#closePair(false);
+			this.#closeCodingSession();
+			(this.#panel ?? this.#showPanel(agent))?.focus();
+		} else this.#openRoutines(agent);
 		return true;
 	}
 

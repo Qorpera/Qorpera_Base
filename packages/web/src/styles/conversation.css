@@ -790,23 +790,24 @@
 .coding-dock { position: relative; z-index: 6; flex: none; height: 32px; margin: 6px 16px 0; }
 .coding-dock[hidden] { display: none; }
 .coding-pill { position: absolute; left: 0; bottom: 0; display: flex; flex-direction: column; justify-content: flex-end; box-sizing: border-box; width: min(300px, 100%); max-height: 32px; padding: 0 3px; overflow: hidden; border-radius: 16px; background: color-mix(in srgb, var(--text) 5%, var(--bg)); box-shadow: 0 0 0 1px var(--border); transition: width 320ms cubic-bezier(.2, .9, .3, 1), max-height 360ms cubic-bezier(.2, .9, .3, 1), padding 320ms ease, border-radius 300ms ease, background-color 300ms ease, box-shadow 300ms ease; }
-.coding-pill:hover, .coding-pill:focus-within, .coding-pill[data-open="true"] { width: min(500px, 100%); max-height: 240px; padding-top: 5px; border-radius: 17px; background: var(--overlay); box-shadow: 0 12px 34px rgb(18 18 17 / 15%), 0 0 0 1px var(--border); }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) { width: min(500px, 100%); max-height: 240px; padding-top: 5px; border-radius: 17px; background: var(--overlay); box-shadow: 0 12px 34px rgb(18 18 17 / 15%), 0 0 0 1px var(--border); }
 /* A single session is the pill's own line: hover only widens it to the whole title and its action. */
-.coding-pill.is-single:is(:hover, :focus-within) { max-height: 32px; padding-top: 0; }
+.coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) { max-height: 32px; padding-top: 0; }
 .coding-pill.is-single .coding-pill-summary > .icon { display: none; }
 .coding-pill-summary > .coding-pill-action { display: none; }
-.coding-pill.is-single:is(:hover, :focus-within) .coding-pill-summary > .coding-pill-action { display: inline-flex; }
-.coding-pill.is-single:is(:hover, :focus-within) .coding-pill-label { max-width: 60%; }
-.coding-pill-rows { display: flex; flex-direction: column; flex: none; }
+.coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) .coding-pill-summary > .coding-pill-action { display: inline-flex; }
+.coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) .coding-pill-label { max-width: 60%; }
+/* Five lines show at once; more scroll inside the pill, so every session stays reachable and the summary stays put. */
+.coding-pill-rows { display: flex; flex-direction: column; flex: none; max-height: calc(5 * 36px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .coding-pill-summary, .coding-pill-row { display: flex; align-items: center; gap: 9px; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .coding-pill-summary { flex: none; height: 32px; padding: 0 9px 0 6px; font-size: 12.5px; }
 .coding-pill-summary > .icon { flex: none; width: 12px; height: 12px; margin-left: auto; color: var(--text-soft); rotate: -90deg; transition: rotate 300ms ease; }
-.coding-pill:is(:hover, :focus-within, [data-open="true"]) .coding-pill-summary > .icon { rotate: 90deg; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-summary > .icon { rotate: 90deg; }
 .coding-pill-row { flex: none; height: 36px; padding: 0 8px 0 6px; border-radius: 11px; font-size: 13px; opacity: 0; transform: translateY(6px); transition: opacity 200ms ease, transform 300ms cubic-bezier(.2, .9, .3, 1), background-color 120ms ease; }
-.coding-pill:is(:hover, :focus-within, [data-open="true"]) .coding-pill-row { opacity: 1; transform: none; }
-.coding-pill:is(:hover, :focus-within, [data-open="true"]) .coding-pill-row:nth-last-child(1) { transition-delay: 40ms; }
-.coding-pill:is(:hover, :focus-within, [data-open="true"]) .coding-pill-row:nth-last-child(2) { transition-delay: 80ms; }
-.coding-pill:is(:hover, :focus-within, [data-open="true"]) .coding-pill-row:nth-last-child(n + 3) { transition-delay: 120ms; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row { opacity: 1; transform: none; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row:nth-last-child(1) { transition-delay: 40ms; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row:nth-last-child(2) { transition-delay: 80ms; }
+.coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-row:nth-last-child(n + 3) { transition-delay: 120ms; }
 .coding-pill-row:hover, .coding-pill-row:focus-visible, .coding-pill-summary:focus-visible { background: var(--hover); outline: none; }
 .coding-pill-summary:focus-visible { border-radius: 14px; }
 .coding-pill-faces { display: flex; flex: none; gap: 3px; }
