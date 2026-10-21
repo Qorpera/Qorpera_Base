@@ -1515,8 +1515,8 @@ const joinMenu = (groups: MenuEntry[][]): MenuEntry[] =>
 		.filter((group) => group.length)
 		.flatMap((group, index) => (index ? [{ kind: "separator" } as MenuEntry, ...group] : group));
 
-/** An agent's card from the rail: Hide (or Show, for a hidden agent) where the member arranges the
- * sidebar, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
+/** An agent's card from the rail: its conversation's id to copy, Hide (or Show, for a hidden agent) where
+ * the member arranges the sidebar, and Delete for owners and admins. Pinning and moving are drags; the name edits on the card. */
 function agentCard(company: CompanyController, parts: RailParts, agent: HostedStaffAgent): AgentCardActions {
 	const state = company.store.get();
 	const actions = parts.context?.agentActions;
@@ -1524,7 +1524,9 @@ function agentCard(company: CompanyController, parts: RailParts, agent: HostedSt
 	const isCofounder = agent.id === company.cofounderId();
 	const item: RailItem = { id: agent.id, kind: "agent" };
 	const hidden = Boolean(sidebar?.hidden.includes(agent.id));
+	const conversationId = company.primarySessionFor(agent.id)?.sessionId;
 	return {
+		...(conversationId ? { conversationId } : {}),
 		...(sidebar && !isCofounder
 			? { hidden, hide: () => void company.changeSidebar(hideRequest(item, !hidden)) }
 			: {}),

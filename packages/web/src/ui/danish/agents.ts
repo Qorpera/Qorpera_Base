@@ -7,8 +7,7 @@ export const AGENTS: Record<string, string> = {
 	// Agent details (app/views/agent-details.ts, agent-edits.ts)
 	"Agent details": "Agentdetaljer",
 	Routines: "Rutiner",
-	Hide: "Skjul",
-	Show: "Vis",
+	Copied: "Kopieret",
 	"Choose a figure and color": "Vælg en figur og farve",
 	Reset: "Nulstil",
 	"Edit figure": "Rediger figur",

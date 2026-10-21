@@ -473,11 +473,12 @@
 .agent-card-link:hover, .agent-card-link:focus-visible { background: var(--hover); outline: none; }
 .agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
 .agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
-.agent-card-squares { display: flex; gap: 8px; margin-top: 10px; }
-.agent-card-square { display: grid; place-items: center; align-content: center; gap: 3px; width: 50px; height: 46px; padding: 0; border: 0; border-radius: 11px; background: var(--pane-strong); color: var(--text-muted); font: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
-.agent-card-square:hover, .agent-card-square:focus-visible { background: color-mix(in srgb, var(--text) 11%, transparent); color: var(--text); outline: none; }
-.agent-card-square.is-danger { color: var(--danger); }
+/* Copy, Hide and Delete: plain icons at the card's right edge, named by their tooltips. */
+.agent-card-squares { display: flex; justify-content: flex-end; gap: 2px; margin: 8px -6px 0 0; }
+.agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.agent-card-square:hover, .agent-card-square:focus-visible { background: var(--hover); color: var(--text); outline: none; }
 .agent-card-square.is-danger:hover, .agent-card-square.is-danger:focus-visible { background: var(--danger-soft); color: var(--danger); }
+.agent-card-square.is-done { color: #0f7a55; }
 .agent-card-square > .icon { width: 16px; height: 16px; }
 .agent-card .agent-details-status { position: static; height: auto; min-height: 0; margin-top: 8px; }
 .agent-card .agent-details-status:empty { display: none; }

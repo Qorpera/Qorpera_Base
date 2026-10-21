@@ -908,6 +908,7 @@ export class ConversationView {
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
 					computer: () => this.show(agent.id, "computer"),
 					routines: () => this.show(agent.id, "routines"),
+					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
 					this.#company,
