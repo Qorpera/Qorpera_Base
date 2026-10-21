@@ -1037,6 +1037,7 @@ it("moves a file or a folder with the review its call was approved under", async
 			to: "documents/plan.md",
 			operationKey: "move-1",
 			expectedVersion,
+			asOfSeq: null,
 		}),
 	);
 	expect(answer).toMatchObject({
@@ -1055,24 +1056,24 @@ it("moves a file or a folder with the review its call was approved under", async
 	expect(f.commits[0]?.units).toEqual([
 		{ op: "move", from: "drafts/plan.md", to: "documents/plan.md", expectedVersion },
 	]);
-	// A folder moves as of the listing that read it, with everything in it, under its own call's approval.
+	// A folder moves as of the model's own listing of it, which its call carries, with everything in it, under its own
+	// call's approval.
 	const folder = parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version as string;
+	const listing = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(listing.asOfSeq).toEqual(expect.any(Number));
 	const second = { ...f.context, callId: "move-call-2", actionReviewId: randomUUID() };
 	expect(
 		parse(
 			await f.call(
 				"company_move",
-				{ from: "work", to: "projects", operationKey: "move-2", expectedVersion: folder },
+				{ from: "work", to: "projects", operationKey: "move-2", expectedVersion: folder, asOfSeq: listing.asOfSeq },
 				second,
 			),
 		),
 	).toMatchObject({ state: "applied" });
-	expect(f.commits[1]?.units[0]).toMatchObject({
-		op: "move",
-		from: "work",
-		to: "projects",
-		asOfSeq: expect.any(Number),
-	});
+	expect(f.commits[1]?.units).toEqual([
+		{ op: "move", from: "work", to: "projects", expectedVersion: folder, asOfSeq: listing.asOfSeq },
+	]);
 	expect(f.text("projects/a.md")).toBe("a");
 	// A target that is taken is refused by the core, and nothing moves.
 	const taken = parse(
@@ -1083,24 +1084,70 @@ it("moves a file or a folder with the review its call was approved under", async
 				to: "projects/a.md",
 				operationKey: "move-3",
 				expectedVersion: f.files.get("documents/plan.md")?.version as string,
+				asOfSeq: null,
 			},
 			{ ...f.context, callId: "move-call-3", actionReviewId: randomUUID() },
 		),
 	);
 	expect(taken).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
 	expect(taken.next).toContain("COMPANY_FILE_EXISTS: nothing was moved");
-	expect(() =>
-		f.tool("company_move").parseArguments({ from: "a.md", to: "a.md", operationKey: "move-4", expectedVersion }),
-	).toThrow(CloudToolArgumentRefusal);
+	for (const value of [
+		{ from: "a.md", to: "a.md", operationKey: "move-4", expectedVersion, asOfSeq: null },
+		{ from: "a.md", to: "b.md", operationKey: "move-4", expectedVersion },
+		{ from: "a.md", to: "b.md", operationKey: "move-4", expectedVersion, asOfSeq: -1 },
+	])
+		expect(() => f.tool("company_move").parseArguments(value)).toThrow(CloudToolArgumentRefusal);
 	// Without the automatic review's approval nothing is moved.
 	const { actionReviewId: _approval, ...unreviewed } = f.context;
 	await refuses(
 		f.call(
 			"company_move",
-			{ from: "documents/plan.md", to: "documents/plan-2.md", operationKey: "move-5", expectedVersion },
+			{
+				from: "documents/plan.md",
+				to: "documents/plan-2.md",
+				operationKey: "move-5",
+				expectedVersion,
+				asOfSeq: null,
+			},
 			unreviewed,
 		),
 		CloudToolRefusal,
 		"A move needs the automatic review's approval",
 	);
+});
+
+it("moves a folder only as of the model's own listing, so a change in it since stops the move", async () => {
+	const f = await fixture({ files: { "work/a.md": "a" } });
+	const folder = parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version as string;
+	const move = (operationKey: string, asOfSeq: number | null) =>
+		f.call(
+			"company_move",
+			{ from: "work", to: "projects", operationKey, expectedVersion: folder, asOfSeq },
+			{ ...f.context, callId: operationKey, actionReviewId: randomUUID() },
+		);
+	// A folder needs the listing: refused before anything is written.
+	await refuses(move("move-unlisted", null), CloudToolRefusal, "COMPANY_MOVE_NEEDS_LISTING");
+	expect(f.commits).toHaveLength(0);
+	// The model listed the folder, then someone changed something in it: the folder's own version is the same, and the
+	// move as of the listing is the core's conflict. Nothing moves.
+	const listing = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(
+		parse(
+			await f.call("company_write", {
+				path: "work/b.md",
+				operationKey: "write-b",
+				expectedVersion: null,
+				text: "b",
+			}),
+		),
+	).toMatchObject({ state: "applied" });
+	expect(parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version).toBe(folder);
+	const stale = parse(await move("move-stale", listing.asOfSeq));
+	expect(stale).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "unseen_change" });
+	expect(stale.next).toContain("something in the folder changed after your listing");
+	expect(f.files.has("work/b.md") && !f.folders.has("projects")).toBe(true);
+	// Listed again, it moves.
+	const again = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(parse(await move("move-listed", again.asOfSeq))).toMatchObject({ state: "applied" });
+	expect(f.text("projects/b.md")).toBe("b");
 });

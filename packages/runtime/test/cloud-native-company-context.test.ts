@@ -1695,3 +1695,88 @@ it("gives a card answer the card it answers, and keeps the excerpt when a page c
 		quiet.mockRestore();
 	}
 });
+
+it("reads an answered card the history no longer holds by its id, and lets read_context read on from it", async () => {
+	const f = nativeCompanyContextFixture();
+	const author = f.context.identity.requesterUserId;
+	const cardId = randomUUID();
+	const answerId = randomUUID();
+	const card = JSON.stringify({
+		entry: {
+			type: "custom",
+			customType: "authorization_request",
+			id: cardId,
+			data: { surface: "approval", title: "Send the offer?", body: "y".repeat(18000) },
+		},
+	});
+	const answer = JSON.stringify({
+		entry: {
+			type: "custom",
+			customType: "authorization_decision",
+			id: answerId,
+			data: {
+				schema: "qorpera.interaction-answer/v1",
+				interactionId: cardId,
+				requestEventId: cardId,
+				outcome: "allow",
+			},
+		},
+	});
+	f.context.currentInputs = [];
+	// More than 32 entries came between the card and its answer: the history holds the answer only.
+	f.context.history = [historyEntry(answerId, 40, answer, author)];
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const wake = roomWake(context, answerId);
+	// The card's first page, as the history would show it: cut at 16 KiB, with the whole text's hash.
+	const first = historyEntry(cardId, 4, card, null, 16000);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => first);
+	const request = await composeCloudRoomRequest(context, wake, { call }, f.binding, new AbortController().signal);
+	expect(request).toEqual([{ input: context.history[0], question: first }]);
+	expect(call).toHaveBeenCalledTimes(1);
+	expect(call.mock.calls[0]?.slice(0, 2)).toEqual([
+		"qorpera_read_company_run_card",
+		{ p_binding: f.binding, p_card_id: cardId },
+	]);
+	// read_context admits the card the request showed, and only once the request is composed.
+	let admitted: CloudCompanyContextSource[] = [];
+	const read = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+		...first,
+		content: {
+			...first.content,
+			text: card.slice(16000),
+			offset: 16000,
+			nextOffset: null,
+			truncated: true,
+		},
+	}));
+	const tool = cloudCompanyContextTool(context, f.binding, { call: read }, () => admitted);
+	const argumentsValue = {
+		sourceKind: "history",
+		id: cardId,
+		sha256: first.content.sha256,
+		offset: 16000,
+		limit: 16384,
+	};
+	expect(() => tool.parseArguments(argumentsValue)).toThrow("Context source is unavailable");
+	admitted = [first];
+	const result = await tool.execute(tool.parseArguments(argumentsValue), {
+		companyId: context.identity.companyId,
+		runId: f.binding.runId,
+		callId: "card-page",
+		argumentSha256: "a".repeat(64),
+		signal: new AbortController().signal,
+	});
+	expect(JSON.parse(String(result.value)).content.text).toBe(card.slice(16000));
+	// A card the conversation does not hold leaves the answer alone; the run goes on.
+	const missing = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+		throw new Error("Cloud context history is unavailable");
+	});
+	const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		expect(
+			await composeCloudRoomRequest(context, wake, { call: missing }, f.binding, new AbortController().signal),
+		).toEqual([{ input: context.history[0] }]);
+	} finally {
+		quiet.mockRestore();
+	}
+});

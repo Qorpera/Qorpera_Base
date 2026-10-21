@@ -1,5 +1,5 @@
 -- @fixture 769_folder_core_review_recorder.test.sql until "-- 1. The run's own allow"
--- 20260930525000 (QORPERA-RUNTIME-CONTRACT.md, the 2026-10-21 amendment, items 5 and 6): an agent moves or renames a
+-- 20260930525000 (QORPERA-RUNTIME-CONTRACT.md, the 2026-10-21 amendment, item 5): an agent moves or renames a
 -- file with company_move, which the folder core reviews as a deletion. The recorder takes a company_move approval
 -- (destructive, as company_delete's) for the run's move, and the commit then saves the move under that review; without
 -- a review it waits. An approval of company_edit or company_write, which write no reviewed change sets, stays refused.

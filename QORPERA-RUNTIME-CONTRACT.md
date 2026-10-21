@@ -5842,8 +5842,9 @@ an agent starts work and where the results go.
    folder's view.
 3. **A post is the request.** A run woken by a post in a conversation gets the post its wake names as `request` in
    its context. For a card answer, it also gets the card the answer is for. Each is read in full, up to one 16 KiB
-   page, and the history no longer repeats the post. A page that cannot be read leaves the history's 2 KiB excerpt,
-   which `read_context` reads on from. No SQL changes.
+   page, and the history no longer repeats the post. A card asked before the history's 32 latest entries is read by
+   its id (`qorpera_read_company_run_card`, migration `20260930525000`), and `read_context` reads on from it. A page
+   that cannot be read leaves the history's 2 KiB excerpt, which `read_context` reads on from.
 4. **Workers save into the real folder.** `manage_worker` dispatch takes `saveTo`, a company folder such as
    `designs/`, and only with write access. The brief's context then says where the finished files belong. The worker
    saves them there and lists them in its report. The folder core already lets a writing worker write wherever its
@@ -5856,9 +5857,10 @@ an agent starts work and where the results go.
    - `company_write` takes up to 512 KiB of text. A tool may raise its own argument bound to 960 KiB, which stays
      below the native session's 1 MiB message.
    - `company_edit` replaces one exact span, found once in the file at the version the agent read.
-   - `company_move` moves or renames a file, link or folder in one move unit. The folder core reviews it as a
-     deletion. Migration `20260930525000` adds it to the review recorder, and adds both tools to the observation
-     vocabulary.
+   - `company_move` moves or renames a file, link or folder in one move unit. A folder moves as of the agent's own
+     listing of it: `company_list` answers the folder clock it read (`asOfSeq`), the move carries it through review
+     and commit, and a change in the folder since stops the move. The folder core reviews a move as a deletion.
+     Migration `20260930525000` adds it to the review recorder, and adds both tools to the observation vocabulary.
 6. **Search.** `company_search` is offered whenever the host has the node's folder search. On the shared execution
    host that is off until the coordinator switches it on (`QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`, with the
    node's folder service), so no chat run had it. No code changes.

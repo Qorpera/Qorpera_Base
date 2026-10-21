@@ -730,8 +730,38 @@ export async function composeCloudRoomRequest(
 	if (!posted) return [];
 	const input = await whole(posted);
 	const cardId = answeredCard(input.content.text);
-	const card = cardId === undefined ? undefined : context.history.find((source) => source.id === cardId);
-	return [{ input, ...(card ? { question: await whole(card) } : {}) }];
+	if (cardId === undefined) return [{ input }];
+	// A card asked before the history's latest entries is read from the conversation itself: its first page, which
+	// read_context then admits (cloudCompanyContextTool's `admitted`).
+	const listed = context.history.find((source) => source.id === cardId);
+	const question = listed
+		? await whole(listed)
+		: await readCloudRunCard(control, binding, cardId, signal).catch((error: unknown) => {
+				signal.throwIfAborted();
+				console.error(`A request's card was not read (${cloudRuntimeErrorCategory(error, signal)})`);
+				return undefined;
+			});
+	return [{ input, ...(question ? { question } : {}) }];
+}
+
+/** A card of the run's own conversation, by its id, as its history would show it with the first 16 KiB of its text
+ * (qorpera_read_company_run_card, 20260930525000): for a card answer whose card the history no longer holds. */
+async function readCloudRunCard(
+	control: CloudCompanyPathControl,
+	binding: CloudNativeToolBinding,
+	cardId: string,
+	signal: AbortSignal,
+): Promise<CloudCompanyContextSource> {
+	const card = contextSource(
+		await cloudToolRequest(
+			(requestSignal) =>
+				control.call("qorpera_read_company_run_card", { p_binding: binding, p_card_id: cardId }, requestSignal),
+			signal,
+		),
+	);
+	if (card.id !== cardId || card.sourceKind !== "history" || card.content.offset !== 0)
+		throw new Error("Context source changed");
+	return card;
 }
 
 /** The last thing read before acting: how this run must end. A missing required
@@ -990,6 +1020,8 @@ export function cloudCompanyContextTool(
 	context: CloudNativeCompanyContext,
 	binding: CloudNativeToolBinding,
 	control: CloudCompanyPathControl,
+	/** Sources the run's request showed beyond its context (a card its history no longer holds), once composed. */
+	admitted: () => readonly CloudCompanyContextSource[] = () => [],
 ): CloudNativeTool {
 	const sources = new Map(
 		[
@@ -1000,6 +1032,9 @@ export function cloudCompanyContextTool(
 			...context.history,
 		].map((source) => [`${source.sourceKind}:${source.id}`, source]),
 	);
+	const admittedSource = (sourceKind: string, id: string) =>
+		sources.get(`${sourceKind}:${id}`) ??
+		admitted().find((source) => source.sourceKind === sourceKind && source.id === id);
 	return {
 		name: "read_context" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -1021,7 +1056,7 @@ export function cloudCompanyContextTool(
 		},
 		parseArguments(value) {
 			const args = closed(value, ["sourceKind", "id", "sha256", "offset", "limit"]);
-			const source = sources.get(`${String(args.sourceKind)}:${String(args.id)}`);
+			const source = admittedSource(String(args.sourceKind), String(args.id));
 			if (
 				!source ||
 				args.sha256 !== source.content.sha256 ||
@@ -1045,7 +1080,7 @@ export function cloudCompanyContextTool(
 			if (toolContext.companyId !== context.identity.companyId || toolContext.runId !== context.identity.runId)
 				throw new Error("Context run changed");
 			const args = value as Record<string, JsonValue>;
-			const original = sources.get(`${String(args.sourceKind)}:${String(args.id)}`);
+			const original = admittedSource(String(args.sourceKind), String(args.id));
 			if (!original) throw new Error("Context source is unavailable");
 			const page = await readCloudContextPage(
 				control,

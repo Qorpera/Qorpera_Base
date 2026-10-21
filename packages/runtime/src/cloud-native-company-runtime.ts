@@ -51,6 +51,7 @@ import { cloudMachineTools } from "./cloud-machine-tools.ts";
 import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
+	type CloudCompanyContextSource,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudNativeStableInstructions,
@@ -353,6 +354,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
 			roomRequest.catch(() => undefined);
+			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
@@ -529,6 +531,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					openingSignal.throwIfAborted();
 					const head = composeCloudAgentHead(context, vision, memory);
 					const request = await roomRequest;
+					// read_context admits the request's sources the context did not list.
+					requestSources = request.flatMap((entry) => [entry.input, ...(entry.question ? [entry.question] : [])]);
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
 					const views = view?.views ?? "";
 					const prompt = composeCloudNativeCompanyPrompt(
@@ -883,7 +887,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											}),
 										]
 									: []),
-								cloudCompanyContextTool(context, binding, this.#paths),
+								cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
 								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 								// A worker has no outbound effects: no mouth, no connectors.
 								...(this.#secretBroker && !work.isWorker

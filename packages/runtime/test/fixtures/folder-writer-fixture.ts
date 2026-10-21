@@ -338,6 +338,9 @@ export async function folderWriterFixture(
 								return { ...moved, outcome: "conflict", reason: "version_changed" };
 							if (unit.asOfSeq === undefined)
 								return { ...moved, outcome: "refused", reason: "as_of_seq_required" };
+							const inside = (candidate: string) => candidate.startsWith(`${from}/`);
+							if ([...files.keys(), ...folders].some(inside) && (unit.asOfSeq as number) < seq)
+								return { ...moved, outcome: "conflict", reason: "unseen_change" };
 						} else {
 							const current = files.get(from) ?? links.get(from);
 							if (current?.version !== unit.expectedVersion)

@@ -242,7 +242,9 @@ function mutationText(
 						? "COMPANY_FILE_EXISTS: nothing was moved; something is already at the new path. Choose another path, or move or delete what is there first, with a new operationKey."
 						: "COMPANY_FILE_EXISTS: nothing was written; something is already at that path. Read it and change it under its version, or choose another path, with a new operationKey."
 					: unit.outcome === "conflict"
-						? `COMPANY_FILE_VERSION_CHANGED: nothing was ${tool === "company_move" ? "moved" : "written"}; the path ${reason === "missing" ? "is gone" : "changed"} since your version. Read it again and make the change on its current version under a new operationKey.`
+						? tool === "company_move" && reason === "unseen_change"
+							? "COMPANY_FILE_VERSION_CHANGED: nothing was moved; something in the folder changed after your listing. List it again with company_list and move it with that listing's asOfSeq under a new operationKey."
+							: `COMPANY_FILE_VERSION_CHANGED: nothing was ${tool === "company_move" ? "moved" : "written"}; the path ${reason === "missing" ? "is gone" : "changed"} since your version. Read it again and make the change on its current version under a new operationKey.`
 						: reason === "parent_missing"
 							? "COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When a member or your assignment named it, or a category of files needs it as its home, create it with company_mkdir first (outermost first) and repeat with a new operationKey; otherwise put a single file in an existing folder where it fits."
 							: reason === "review_required"
@@ -608,6 +610,8 @@ export function cloudFolderFileTools(options: {
 						path: input.path,
 						kind: "folder",
 						version: parent?.version ?? null,
+						// The folder clock the page was read at: a folder's move names it (company_move).
+						asOfSeq: page.asOfSeq,
 						entries: page.entries.slice(0, count).map((entry, index) => ({
 							path: entry.path,
 							kind: entry.kind,
@@ -839,20 +843,21 @@ export function cloudFolderFileTools(options: {
 			name: "company_move" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
 			description:
-				"Move or rename one file, link or folder of the company folder (a folder moves with everything in it). from is where it is now, to is its new path: nothing may be there yet (a change of letter case alone is fine), and the folder it goes in must exist. Read from first and give its version as expectedVersion. A move needs the automatic review's approval of this call, as a deletion does. A changed version is COMPANY_FILE_VERSION_CHANGED and nothing is moved. Links and mentions of the old path in other files stay as they are. Keep operationKey for the same change.",
+				"Move or rename one file, link or folder of the company folder (a folder moves with everything in it). from is where it is now, to is its new path: nothing may be there yet (a change of letter case alone is fine), and the folder it goes in must exist. Read from first and give its version as expectedVersion. For a folder, list it with company_list first and give that listing's asOfSeq (its first page's): a change in the folder after it stops the move. For a file or a link, asOfSeq is null. A move needs the automatic review's approval of this call, as a deletion does. A changed version is COMPANY_FILE_VERSION_CHANGED and nothing is moved. Links and mentions of the old path in other files stay as they are. Keep operationKey for the same change.",
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,
-				required: ["from", "to", "operationKey", "expectedVersion"],
+				required: ["from", "to", "operationKey", "expectedVersion", "asOfSeq"],
 				properties: {
 					from: pathSchema,
 					to: pathSchema,
 					operationKey: { type: "string", pattern: OPERATION_KEY.source },
 					expectedVersion: { type: "string", pattern: UUID_PATTERN.source },
+					asOfSeq: { type: ["integer", "null"], minimum: 0 },
 				},
 			},
 			parseArguments(value) {
-				const input = args(value, "company_move", ["from", "to", "operationKey", "expectedVersion"]);
+				const input = args(value, "company_move", ["from", "to", "operationKey", "expectedVersion", "asOfSeq"]);
 				const from = path(input.from, false);
 				const to = path(input.to, false);
 				if (from === to) throw new CloudToolArgumentRefusal("to must differ from from");
@@ -861,38 +866,45 @@ export function cloudFolderFileTools(options: {
 					to,
 					operationKey: operationKey(input.operationKey),
 					expectedVersion: version(input.expectedVersion, false),
+					asOfSeq:
+						input.asOfSeq === null
+							? null
+							: integer(input.asOfSeq, "asOfSeq (null for a file or a link)", 0, Number.MAX_SAFE_INTEGER),
 				};
 			},
 			refused: cloudFolderRefusal,
 			async execute(value, context) {
-				const input = value as { from: string; to: string; operationKey: string; expectedVersion: string };
+				const input = value as {
+					from: string;
+					to: string;
+					operationKey: string;
+					expectedVersion: string;
+					asOfSeq: number | null;
+				};
 				const review = context.actionReviewId;
 				if (!review)
 					throw new CloudToolRefusal(
 						"A move needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
-				// A folder moves as of the listing that read it (the core refuses a change under it since). Gone once this
-				// call's own move is saved, so a replay of the call reaches its receipt.
-				let asOfSeq: number | undefined;
+				// A folder moves as of the model's own listing of it, which its call and review carry: the core refuses a
+				// change under it since. Checked before the receipt, and passed once this call's own move is saved (the path
+				// is then gone), so a replay of the call reaches its receipt.
 				const entry = await read(input.from, "moved", context.signal);
-				if (entry?.kind === "folder") {
-					try {
-						asOfSeq = (await folder.list(input.from, { limit: 1 }, context.signal)).asOfSeq;
-					} catch (error) {
-						return unavailable(error, "moved");
-					}
-				}
+				if (entry?.kind === "folder" && input.asOfSeq === null)
+					throw new CloudToolRefusal(
+						"COMPANY_MOVE_NEEDS_LISTING: that path is a folder; list it with company_list and give that listing's asOfSeq",
+					);
 				return change(
 					"company_move",
 					{ operationKey: input.operationKey, path: input.from, to: input.to },
-					{ from: input.from, to: input.to, expectedVersion: input.expectedVersion },
+					{ from: input.from, to: input.to, expectedVersion: input.expectedVersion, asOfSeq: input.asOfSeq },
 					[
 						{
 							op: "move",
 							from: input.from,
 							to: input.to,
 							expectedVersion: input.expectedVersion,
-							...(asOfSeq === undefined ? {} : { asOfSeq }),
+							...(entry?.kind === "folder" && input.asOfSeq !== null ? { asOfSeq: input.asOfSeq } : {}),
 						},
 					],
 					context,
