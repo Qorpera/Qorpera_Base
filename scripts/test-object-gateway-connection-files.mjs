@@ -9,8 +9,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 // The vault's connection-file writer (P22b) against a real database: test 704's folder-v2 company, every migration,
 // the object gateway's writer and file store as built, and its RPCs answered by the database as the service role.
-// It writes the files the vault marked, keeps a member's text through a rewrite, deletes a disconnected account's
-// file, and puts nothing of the vault's secrets into any file.
+// It writes the files the vault marked (under QorperaOS/connections/, 20260930527000), keeps a member's text through a
+// rewrite, deletes a disconnected account's file, and puts nothing of the vault's secrets into any file.
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_connection_files";
@@ -44,8 +44,9 @@ async function main() {
 			return out ? JSON.parse(out) : null;
 		};
 
-		// 704's company, committed: its vault rows predate the folder, then the seed tree and the Co-Founder, whose hire
-		// grants it the two shared connections' operations, and so marks them due.
+		// 704's company, committed: its vault rows predate the folder, then the seed tree under QorperaOS/ and the
+		// Co-Founder, whose hire grants it the two shared connections' operations, and so marks them due. The units are
+		// spelled here, from 704's helpers that take a path, so the layout is this script's own.
 		const source = await readFile(join(repositoryRoot, "supabase/tests/704_folder_state_connections.test.sql"), "utf8");
 		const marker = "-- 1. The company, and the platform writing its first connection file";
 		assert(source.includes(marker));
@@ -56,12 +57,22 @@ async function main() {
 			declare r jsonb;
 			begin
 				r := pg_temp.commit(pg_temp.platform(), 'seed-0001', jsonb_build_array(
-					jsonb_build_object('op','mkdir','path','vision'), pg_temp.vision('Nordlys Connections'),
-					jsonb_build_object('op','mkdir','path','agents'),
-					pg_temp.write('agents/sections.md', 'sections', E'# Sections\\n', '{"kind":"sections","sections":[]}'),
-					pg_temp.hire('co-founder', '70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
-					jsonb_build_object('op','mkdir','path','connections')));
-				if (select count(*) from jsonb_array_elements(r -> 'units') u where u ->> 'outcome' = 'saved') <> 6 then
+					jsonb_build_object('op','mkdir','path','QorperaOS'),
+					jsonb_build_object('op','mkdir','path','QorperaOS/vision'),
+					pg_temp.write('QorperaOS/vision/vision.md', 'vision', E'# Nordlys Connections\\n\\n## What we build\\n',
+						'{"kind":"vision","name":"Nordlys Connections"}'),
+					jsonb_build_object('op','mkdir','path','QorperaOS/agents'),
+					pg_temp.write('QorperaOS/agents/sections.md', 'sections', E'# Sections\\n', '{"kind":"sections","sections":[]}'),
+					jsonb_build_object('op','new_folder','path','QorperaOS/agents/co-founder',
+						'contents', jsonb_build_array(
+							jsonb_build_object('path','agent.md','kind','file','file',pg_temp.stage(
+								pg_temp.agent_text('70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'))),
+							jsonb_build_object('path','memory','kind','folder'), jsonb_build_object('path','todos','kind','folder')),
+						'structured', jsonb_build_array(pg_temp.entry('QorperaOS/agents/co-founder/agent.md', 'agent',
+							pg_temp.agent_text('70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder'),
+							pg_temp.agent_parse('70400000-0000-4000-8000-0000000000c0', 'Co-Founder', 'co-founder')))),
+					jsonb_build_object('op','mkdir','path','QorperaOS/connections')));
+				if (select count(*) from jsonb_array_elements(r -> 'units') u where u ->> 'outcome' = 'saved') <> 7 then
 					raise exception 'seed: %', r; end if;
 			end $$;
 			commit;`,
@@ -76,7 +87,7 @@ async function main() {
 				contents: [
 					'export {ConnectionFileWriter} from "./packages/object-gateway/src/connection-files.ts";',
 					'export {FileSystemObjectStore} from "./packages/object-gateway/src/object-store.ts";',
-					'export {parseCompanyStateFile, COMPANY_STATE_PARSER_VERSION} from "./packages/cloud-client/src/company-state-files.ts";',
+					'export {parseCompanyStateFile, COMPANY_STATE_PARSER_VERSION, osPath} from "./packages/cloud-client/src/company-state-files.ts";',
 				].join("\n"),
 			},
 			platform: "node",
@@ -104,9 +115,12 @@ async function main() {
 		});
 		const file = (path) => {
 			const row = query(`select to_jsonb(e) from public.qorpera_folder_entries e
-				where e.environment_id = '${environmentId}' and e.key_text = ${literal(path)} and e.kind = 'file'`);
+				where e.environment_id = '${environmentId}' and e.key_text = public.qorpera_folder_key(${literal(path)})
+					and e.kind = 'file'`);
 			return row ? JSON.parse(row) : null;
 		};
+		const gmailFile = code.osPath("connections/gmail.md");
+		const githubFile = code.osPath("connections/github.md");
 		const text = async (path) => {
 			const entry = file(path);
 			assert(entry, `${path} exists`);
@@ -125,7 +139,9 @@ async function main() {
 
 		// 1. The two marked connections get their files, as the vault says.
 		assert.equal(await drain(), 2);
-		const hello = await parse("connections/gmail.md");
+		assert.equal(file(gmailFile)?.path, "QorperaOS/connections/gmail.md", "the file is stored under QorperaOS/");
+		assert.equal(file("connections/gmail.md"), null, "nothing is written at the top");
+		const hello = await parse(gmailFile);
 		assert.deepEqual(
 			{ id: hello.id, service: hello.service, account: hello.account, status: hello.status, purpose: hello.purpose },
 			{ id: gmail, service: "gmail", account: "hello@nordlys.test", status: "connected", purpose: "" },
@@ -135,11 +151,11 @@ async function main() {
 			JSON.parse(query(`select jsonb_agg(distinct operation_id order by operation_id) from public.qorpera_cloud_secret_operation_grants
 				where secret_id = '${gmail}' and status = 'active'`)),
 		);
-		assert.equal((await parse("connections/github.md")).account, "nordlys");
+		assert.equal((await parse(githubFile)).account, "nordlys");
 		assert.equal(await drain(), 0);
 
 		// 2. A member writes the text below the settings; a new account name is rewritten around it.
-		const memberText = (await text("connections/gmail.md")).replace(/\n---\n$/, "\n---\nThe shared inbox.\n");
+		const memberText = (await text(gmailFile)).replace(/\n---\n$/, "\n---\nThe shared inbox.\n");
 		const memberBytes = new TextEncoder().encode(memberText);
 		const manifest = JSON.stringify({
 			schema: "qorpera.cloud-file-manifest/v2",
@@ -168,30 +184,31 @@ async function main() {
 			p_operation_key: "member-edit-0001",
 			p_units: [{
 				op: "write",
-				path: "connections/gmail.md",
+				path: gmailFile,
 				file: sealed.file,
-				expectedVersion: file("connections/gmail.md").version,
-				structured: [{ path: "connections/gmail.md", kind: "connection", text: memberText,
-					parse: code.parseCompanyStateFile("connections/gmail.md", memberText).file, parserVersion: code.COMPANY_STATE_PARSER_VERSION }],
+				expectedVersion: file(gmailFile).version,
+				structured: [{ path: gmailFile, kind: "connection", text: memberText,
+					parse: code.parseCompanyStateFile(gmailFile, memberText).file, parserVersion: code.COMPANY_STATE_PARSER_VERSION }],
 			}],
 		});
 		assert.equal(edit.units[0].outcome, "saved", JSON.stringify(edit));
 		query(`update public.qorpera_cloud_secrets set account_label = 'team@nordlys.test' where id = '${gmail}'`);
 		assert.equal(await drain(), 1);
-		const after = await text("connections/gmail.md");
+		const after = await text(gmailFile);
 		assert.equal(after, memberText.replace("account: hello@nordlys.test", "account: team@nordlys.test"));
-		assert.equal((await parse("connections/gmail.md")).purpose, "The shared inbox.");
+		assert.equal((await parse(gmailFile)).purpose, "The shared inbox.");
 
 		// 3. A Disconnect removes the account's file.
 		query(`update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = clock_timestamp(),
 			revoked_by_user_id = '70400000-0000-4000-8000-000000000001' where id = '${github}'`);
 		assert.equal(await drain(), 1);
-		assert.equal(file("connections/github.md"), null);
+		assert.equal(file(githubFile), null);
 
 		// 4. Nothing of the vault beyond the allow-list is in any connection file version, or in the writer's commits.
 		const written = JSON.parse(query(`select coalesce(jsonb_agg(jsonb_build_object('sha', v.file_sha256, 'bytes', v.bytes)), '[]')
 			from public.qorpera_folder_path_versions v
-			where v.environment_id = '${environmentId}' and v.path like 'connections/%' and v.file_sha256 is not null`));
+			where v.environment_id = '${environmentId}' and public.qorpera_folder_key(v.path) like 'qorperaos/connections/%'
+				and v.file_sha256 is not null`));
 		const commits = query(`select coalesce(string_agg(to_jsonb(c)::text, ' '), '') from public.qorpera_folder_commits c
 			where c.environment_id = '${environmentId}' and c.operation_key like 'connection-file:%'`);
 		assert(written.length >= 4 && commits.includes("connection-file:"));

@@ -6,6 +6,8 @@ import {
 	HOOK_PROOFS,
 	type HookFile,
 	type MailboxFile,
+	osPath,
+	osRelative,
 	parseCompanyStateFile,
 	setCompanyStateSettings,
 	WEBSITE_TWO_STEP,
@@ -31,9 +33,9 @@ import type { ObjectGatewayReplication } from "./replication.ts";
 /*
  * The vault's connection-file writer (core C3, P22b; deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2 "How it is
  * written"). The vault marks a company connection's file due in its own transaction (P22a); this writer claims one
- * due connection at a time, brings `connections/<name>.md` to what the claim says (write, or delete when the account
- * is gone), commits it as the platform in one unit, and finishes the claim. The vault stays the authority: no tool
- * reads the file to act, and the file may trail the vault by seconds.
+ * due connection at a time, brings `QorperaOS/connections/<name>.md` to what the claim says (write, or delete when the
+ * account is gone), commits it as the platform in one unit, and finishes the claim. The vault stays the authority: no
+ * tool reads the file to act, and the file may trail the vault by seconds.
  *
  * Nothing secret ever reaches the file: the settings come from the claim's allow-list only, a claim carrying any
  * other field is refused unread, and the text below the settings is the company's own (kept as it is). Problems are
@@ -41,14 +43,15 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * QORPERA_CONNECTION_FILE_WRITER=1.
  *
  * Since E1 (folder core C4, 20260930060000) a claim's subject is a vault secret, a hook or a mailbox (`subjectKind`), and
- * the file is connections/<name>.md, connections/hook-<name>.md or connections/mailbox-<name>.md. A hook's file never
- * shows its address (a capability) or a signing secret, and a new one starts with the hook's purpose (`body`). A claim
- * without `subjectKind` (before E1's migration) is a vault secret's.
+ * the file is QorperaOS/connections/<name>.md, QorperaOS/connections/hook-<name>.md or
+ * QorperaOS/connections/mailbox-<name>.md. A hook's file never shows its address (a capability) or a signing secret, and
+ * a new one starts with the hook's purpose (`body`). A claim without `subjectKind` (before E1's migration) is a vault
+ * secret's.
  */
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const OPERATION = /^[a-z][a-z0-9_]{0,63}$/;
-/** Each subject's own file names: a vault file never takes a hook's or a mailbox's prefix. */
+/** Each subject's own file names, below QorperaOS/: a vault file never takes a hook's or a mailbox's prefix. */
 const SUBJECT_PATHS = {
 	vault: /^connections\/(?!hook-|mailbox-)[a-z0-9]+(?:-[a-z0-9]+)*\.md$/,
 	hook: /^connections\/hook-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/,
@@ -240,7 +243,7 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		const file = record(input.current, CURRENT_KEYS, "claim_invalid");
 		if (
 			typeof file.path !== "string" ||
-			!file.path.startsWith("connections/") ||
+			!osRelative(file.path)?.startsWith("connections/") ||
 			typeof file.version !== "string" ||
 			!UUID.test(file.version) ||
 			typeof file.manifestSha256 !== "string" ||
@@ -255,7 +258,8 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		current = file as unknown as CurrentFile;
 	}
 	const present = input.present as boolean;
-	if (present && (typeof input.path !== "string" || !SUBJECT_PATHS[kind].test(input.path))) problem("claim_invalid");
+	if (present && (typeof input.path !== "string" || !SUBJECT_PATHS[kind].test(osRelative(input.path) ?? "")))
+		problem("claim_invalid");
 	if (!present && (input.settings !== null || input.path !== null)) problem("claim_invalid");
 	let body: string | null = null;
 	if (kind !== "vault") {
@@ -402,11 +406,14 @@ function bodyOf(text: string): string {
 	return (close < 0 ? text : lines.slice(close + 1).join("\n")).trim();
 }
 
-/** The next name to try after `path` was taken: -2, -3 …, cut so the name stays within the name rule. */
+/** The next name to try after `path` (QorperaOS/connections/<name>.md) was taken: -2, -3 …, cut so the name stays
+ * within the name rule. */
 export function numberedConnectionPath(path: string, number: number): string {
-	const base = path.slice("connections/".length, -".md".length);
+	const base = (osRelative(path) ?? "").slice("connections/".length, -".md".length);
 	const suffix = `-${number}`;
-	return `connections/${base.slice(0, COMPANY_STATE_NAME_MAX_CHARS - suffix.length).replace(/-$/, "")}${suffix}.md`;
+	return osPath(
+		`connections/${base.slice(0, COMPANY_STATE_NAME_MAX_CHARS - suffix.length).replace(/-$/, "")}${suffix}.md`,
+	);
 }
 
 export interface ConnectionFileWriterOptions {

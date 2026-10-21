@@ -207,7 +207,7 @@ describe("a member's change set to a folder-v2 company", () => {
 		const g = await gateway();
 		const text = agentText("Nora B.");
 		const response = await g.send(
-			request([{ op: "write", path: "agents/nora/agent.md", text, expectedVersion: version }]),
+			request([{ op: "write", path: "QorperaOS/agents/nora/agent.md", text, expectedVersion: version }]),
 		);
 		expect(response.status).toBe(200);
 		expect(((await response.json()) as { units: unknown }).units).toEqual([{ unit: 1, outcome: "saved" }]);
@@ -228,13 +228,13 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect(commit?.args.p_operation_key).toBe(`member:${userId}:web:34000000-0000-4000-8000-0000000000d1`);
 		const [unit] = commit?.args.p_units as Record<string, unknown>[];
 		const file = unit?.file as { fileSha256: string; mediaType: string; executable: boolean };
-		expect(unit).toMatchObject({ op: "write", path: "agents/nora/agent.md", expectedVersion: version });
+		expect(unit).toMatchObject({ op: "write", path: "QorperaOS/agents/nora/agent.md", expectedVersion: version });
 		expect(file.mediaType).toBe("text/markdown");
 		expect(file.executable).toBe(false);
 		// The parse is made from exactly the bytes staged.
 		expect(new TextDecoder().decode(g.stored.get(file.fileSha256))).toBe(text);
 		expect(unit?.structured).toEqual([
-			expect.objectContaining({ path: "agents/nora/agent.md", kind: "agent", text, parserVersion: 1 }),
+			expect.objectContaining({ path: "QorperaOS/agents/nora/agent.md", kind: "agent", text, parserVersion: 1 }),
 		]);
 		expect((unit?.structured as { parse: { name: string } }[])[0]?.parse.name).toBe("Nora B.");
 	});
@@ -245,19 +245,19 @@ describe("a member's change set to a folder-v2 company", () => {
 			request([
 				{
 					op: "new_folder",
-					path: "agents/ada",
+					path: "QorperaOS/agents/ada",
 					contents: [
 						{ path: "agent.md", kind: "file", text: agentText("Ada") },
 						{ path: "memory", kind: "folder" },
 						{ path: "notes.txt", kind: "file", text: "plain" },
 					],
 				},
-				{ op: "write", path: "agents/nora/agent.md", text: "not front matter at all" },
+				{ op: "write", path: "QorperaOS/agents/nora/agent.md", text: "not front matter at all" },
 			]),
 		);
 		expect(response.status).toBe(200);
 		const [folder, broken] = g.commits()[0]?.args.p_units as Record<string, unknown>[];
-		expect(folder).toMatchObject({ op: "new_folder", path: "agents/ada" });
+		expect(folder).toMatchObject({ op: "new_folder", path: "QorperaOS/agents/ada" });
 		expect((folder?.contents as Record<string, unknown>[]).map((c) => [c.path, c.kind, "file" in c])).toEqual([
 			["agent.md", "file", true],
 			["memory", "folder", false],
@@ -266,10 +266,10 @@ describe("a member's change set to a folder-v2 company", () => {
 		const notes = (folder?.contents as { file?: { mediaType: string } }[])[2]?.file;
 		expect(notes?.mediaType).toBe("text/plain");
 		expect((folder?.structured as { path: string; kind: string }[]).map((e) => [e.path, e.kind])).toEqual([
-			["agents/ada/agent.md", "agent"],
+			["QorperaOS/agents/ada/agent.md", "agent"],
 		]);
 		const entry = (broken?.structured as Record<string, unknown>[])[0];
-		expect(entry).toMatchObject({ path: "agents/nora/agent.md", kind: "agent" });
+		expect(entry).toMatchObject({ path: "QorperaOS/agents/nora/agent.md", kind: "agent" });
 		expect(entry).not.toHaveProperty("text");
 		expect(entry).not.toHaveProperty("parse");
 		expect(Array.isArray(entry?.problems) && entry.problems.length > 0).toBe(true);
@@ -280,7 +280,7 @@ describe("a member's change set to a folder-v2 company", () => {
 		const response = await g.send(
 			request([
 				{ op: "mkdir", path: "drafts" },
-				{ op: "delete", path: "agents/otto", expectedVersion: version, asOfSeq: 8 },
+				{ op: "delete", path: "QorperaOS/agents/otto", expectedVersion: version, asOfSeq: 8 },
 				{ op: "move", from: "drafts", to: "notes", expectedVersion: version, asOfSeq: 8 },
 			]),
 		);
@@ -288,7 +288,7 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect(g.staged()).toEqual([]);
 		expect(g.commits()[0]?.args.p_units).toEqual([
 			{ op: "mkdir", path: "drafts" },
-			{ op: "delete", path: "agents/otto", expectedVersion: version, asOfSeq: 8 },
+			{ op: "delete", path: "QorperaOS/agents/otto", expectedVersion: version, asOfSeq: 8 },
 			{ op: "move", from: "drafts", to: "notes", expectedVersion: version, asOfSeq: 8 },
 		]);
 	});
@@ -345,7 +345,7 @@ describe("a member's change set to a folder-v2 company", () => {
 		const g = await gateway({ readable: new Map([...agent.objects, ...scan.objects]) });
 		const response = await g.send(
 			request([
-				{ op: "write", path: "agents/nora/agent.md", file: agent.file, expectedVersion: version },
+				{ op: "write", path: "QorperaOS/agents/nora/agent.md", file: agent.file, expectedVersion: version },
 				{ op: "write", path: "drafts/scan.pdf", file: scan.file },
 			]),
 		);
@@ -355,12 +355,12 @@ describe("a member's change set to a folder-v2 company", () => {
 		const [restored, plain] = g.commits()[0]?.args.p_units as Record<string, unknown>[];
 		expect(restored).toEqual({
 			op: "write",
-			path: "agents/nora/agent.md",
+			path: "QorperaOS/agents/nora/agent.md",
 			expectedVersion: version,
 			file: agent.file,
 			structured: [
 				expect.objectContaining({
-					path: "agents/nora/agent.md",
+					path: "QorperaOS/agents/nora/agent.md",
 					kind: "agent",
 					text: agentText("Nora A."),
 					parserVersion: 1,
@@ -380,12 +380,12 @@ describe("a member's change set to a folder-v2 company", () => {
 		const broken = existing(new Uint8Array([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0x0a]));
 		const agent = existing(agentText());
 		const g = await gateway({ readable: new Map([...broken.objects, ...agent.objects]) });
-		expect((await g.send(request([{ op: "write", path: "agents/nora/agent.md", file: broken.file }]))).status).toBe(
-			200,
-		);
+		expect(
+			(await g.send(request([{ op: "write", path: "QorperaOS/agents/nora/agent.md", file: broken.file }]))).status,
+		).toBe(200);
 		expect((g.commits()[0]?.args.p_units as Record<string, unknown>[])[0]?.structured).toEqual([
 			{
-				path: "agents/nora/agent.md",
+				path: "QorperaOS/agents/nora/agent.md",
 				kind: "agent",
 				problems: [{ line: null, key: null, code: "encoding", message: "the file must be plain UTF-8 text" }],
 			},
@@ -397,7 +397,7 @@ describe("a member's change set to a folder-v2 company", () => {
 			g.send(
 				request([
 					{ op: "mkdir", path: "drafts" },
-					{ op: "write", path: "agents/nora/agent.md", file, ...unit },
+					{ op: "write", path: "QorperaOS/agents/nora/agent.md", file, ...unit },
 				]),
 			);
 		expect((await sent(unreadable.file)).status).toBe(403);
@@ -446,7 +446,7 @@ describe("a member's change set to a folder-v2 company", () => {
 		const g = await gateway({
 			readable: new Map([[digest(chunk), chunk], ...manifests.map((m) => [m.file.manifestSha256, m.text] as const)]),
 		});
-		const write = (file: unknown) => g.send(request([{ op: "write", path: "agents/nora/agent.md", file }]));
+		const write = (file: unknown) => g.send(request([{ op: "write", path: "QorperaOS/agents/nora/agent.md", file }]));
 		for (const manifest of manifests) expect((await write(manifest.file)).status).toBe(400);
 		// A readable object over a manifest's bound, named as the manifest.
 		expect((await write({ ...manifests[1]?.file, manifestSha256: digest(chunk) })).status).toBe(400);
@@ -476,15 +476,15 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect(g.commits()).toEqual([]);
 	});
 
-	it("refuses anything at or under human-tasks/ until P31, whatever its case, before staging", async () => {
+	it("refuses anything at or under QorperaOS/human-tasks/ until P31, whatever its case, before staging", async () => {
 		for (const unit of [
-			{ op: "write", path: "human-tasks/sign-lease.md", text: "x" },
-			{ op: "mkdir", path: "human-tasks/sign-lease" },
-			{ op: "symlink", path: "human-tasks/latest", target: "sign-lease.md" },
-			{ op: "new_folder", path: "Human-Tasks/sign-lease", contents: [] },
-			{ op: "delete", path: "human-tasks", expectedVersion: version },
-			{ op: "move", from: "agents/nora/proof.pdf", to: "HUMAN-TASKS/sign-lease/proof.pdf" },
-			{ op: "move", from: "human-tasks/sign-lease/proof.pdf", to: "drafts/proof.pdf" },
+			{ op: "write", path: "QorperaOS/human-tasks/sign-lease.md", text: "x" },
+			{ op: "mkdir", path: "QorperaOS/human-tasks/sign-lease" },
+			{ op: "symlink", path: "QorperaOS/human-tasks/latest", target: "sign-lease.md" },
+			{ op: "new_folder", path: "qorperaos/Human-Tasks/sign-lease", contents: [] },
+			{ op: "delete", path: "QorperaOS/human-tasks", expectedVersion: version },
+			{ op: "move", from: "QorperaOS/agents/nora/proof.pdf", to: "QorperaOS/HUMAN-TASKS/sign-lease/proof.pdf" },
+			{ op: "move", from: "QorperaOS/human-tasks/sign-lease/proof.pdf", to: "drafts/proof.pdf" },
 		]) {
 			const g = await gateway();
 			const response = await g.send(request([{ op: "mkdir", path: "drafts" }, unit]));
@@ -493,7 +493,9 @@ describe("a member's change set to a folder-v2 company", () => {
 			expect(g.commits()).toEqual([]);
 		}
 		const g = await gateway();
-		expect((await g.send(request([{ op: "mkdir", path: "human-tasks-archive" }]))).status).toBe(200);
+		expect((await g.send(request([{ op: "mkdir", path: "QorperaOS/human-tasks-archive" }]))).status).toBe(200);
+		// A human-tasks/ folder of the company's own, outside QorperaOS/, is an ordinary folder.
+		expect((await g.send(request([{ op: "mkdir", path: "human-tasks" }]))).status).toBe(200);
 	});
 
 	it("refuses a caller the database doesn't name, and a request out of shape, before staging", async () => {

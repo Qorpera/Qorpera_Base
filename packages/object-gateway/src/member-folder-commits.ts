@@ -5,7 +5,7 @@ import {
 	companyStatePath,
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
-import { companyPathKey } from "@qorpera/cloud-client/company-state-shared";
+import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-shared";
 import { SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
@@ -30,10 +30,10 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * (RUNTIME-FOLDER-LINKS.md, LK3), so a restore of a link's old version saves its target. A `write` names its text, or
  * a file already in the folder by its reference (the restore of a file's old version, LK6): the core checks that the
  * member may read it, and at a state path the gateway reads those bytes back for the parse. A unit at or under
- * human-tasks/ is refused until P31 delivers the wakes a person's save there queues (H2c). Members share the platform's
- * operation-key scope in the core, so the member's key is sent as `member:<userId>:<key>`, a namespace the platform's
- * writers never use. Every shape, size and the hold are checked before any byte is staged, and a member has at most
- * one change set in flight here. After a commit that saved anything, the route asks the core to follow it up at once
+ * QorperaOS/human-tasks/ is refused until P31 delivers the wakes a person's save there queues (H2c). Members share the
+ * platform's operation-key scope in the core, so the member's key is sent as `member:<userId>:<key>`, a namespace the
+ * platform's writers never use. Every shape, size and the hold are checked before any byte is staged, and a member has
+ * at most one change set in flight here. After a commit that saved anything, the route asks the core to follow it up at once
  * (F2's P15: a hire's grants, connectors and first run, an archive's clean-up), one subject a call while it says there
  * is more, as a best effort: the core's own step does whatever is left within seconds.
  */
@@ -257,11 +257,12 @@ export function memberFolderCommitRequest(value: unknown): { operationKey: strin
 	return { operationKey: input.operationKey as string, units };
 }
 
-/** A unit at or under human-tasks/: a person's save there queues a wake only P31 delivers (H2c), so it waits. */
+/** A unit at or under QorperaOS/human-tasks/: a person's save there queues a wake only P31 delivers (H2c), so it
+ * waits. */
 export function memberFolderUnitHeld(item: Unit): boolean {
 	const held = (value: string) => {
-		const key = companyPathKey(value);
-		return key === "human-tasks" || key.startsWith("human-tasks/");
+		const below = osRelative(companyPathKey(value));
+		return below === "human-tasks" || below?.startsWith("human-tasks/") === true;
 	};
 	return item.op === "move" ? held(item.from) || held(item.to) : held(item.path);
 }

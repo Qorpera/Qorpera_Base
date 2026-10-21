@@ -242,7 +242,7 @@ describe("folder core answers", () => {
 			asOfSeq: 4,
 			entries: [
 				{ ...entry, authority: receipt },
-				{ ...entry, path: "rules", authority: rules },
+				{ ...entry, path: "QorperaOS/rules", authority: rules },
 			],
 			next: null,
 		});

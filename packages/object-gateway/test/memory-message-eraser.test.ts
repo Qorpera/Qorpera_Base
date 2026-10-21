@@ -13,7 +13,7 @@ const intentId = "96000000-0000-4000-8000-0000000000f0";
 const sessionId = "96000000-0000-4000-8000-0000000000a1";
 const eventId = "96000000-0000-4000-8000-0000000000a2";
 const version = "96000000-0000-4000-8000-0000000000c1";
-const root = "agents/co-founder/memory/thread";
+const root = "QorperaOS/agents/co-founder/memory/thread";
 const ERASE = "qorpera_memory_message_erase_";
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const bytesOf = (text: string) => new TextEncoder().encode(text).byteLength;

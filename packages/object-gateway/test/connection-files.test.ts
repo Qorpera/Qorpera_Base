@@ -54,7 +54,7 @@ function claim(overrides: Record<string, unknown> = {}) {
 		marks: 1,
 		present: true,
 		settings: gmail,
-		path: "connections/gmail.md",
+		path: "QorperaOS/connections/gmail.md",
 		current: null,
 		...overrides,
 	};
@@ -205,10 +205,11 @@ describe("connection file claims", () => {
 			secretId,
 			generation: 3,
 			settings: gmail,
-			path: "connections/gmail.md",
+			path: "QorperaOS/connections/gmail.md",
 		});
 		expect(
-			parseConnectionFileClaim(claim({ settings: website, path: "connections/portal-example-com.md" }))?.settings,
+			parseConnectionFileClaim(claim({ settings: website, path: "QorperaOS/connections/portal-example-com.md" }))
+				?.settings,
 		).toEqual(website);
 		expect(parseConnectionFileClaim(claim({ present: false, settings: null, path: null }))?.present).toBe(false);
 	});
@@ -220,7 +221,8 @@ describe("connection file claims", () => {
 		["website keys on another service", { settings: { ...gmail, site: "mail.example.com" } }],
 		["a website status on another service", { settings: { ...gmail, status: "pending" } }],
 		["another operation key", { operationKey: `connection-file:${secretId}:4` }],
-		["a path outside connections/", { path: "rules/gmail.md" }],
+		["a path outside connections/", { path: "QorperaOS/rules/gmail.md" }],
+		["a connection file outside QorperaOS/", { path: "connections/gmail.md" }],
 		["settings for a file that goes", { present: false, path: null }],
 	])("refuses %s", (_name, overrides) => {
 		expect(() => parseConnectionFileClaim(claim(overrides))).toThrow(PlatformFolderProblem);
@@ -229,27 +231,31 @@ describe("connection file claims", () => {
 
 describe("connection file text", () => {
 	it("writes a new file with the canonical writer", () => {
-		const text = connectionFileText("connections/gmail.md", gmailSettings, null);
+		const text = connectionFileText("QorperaOS/connections/gmail.md", gmailSettings, null);
 		expect(text).toBe(writeConnectionFile({ ...gmailSettings, purpose: "" }));
-		expect(parseCompanyStateFile("connections/gmail.md", text)).toMatchObject({ ok: true });
+		expect(parseCompanyStateFile("QorperaOS/connections/gmail.md", text)).toMatchObject({ ok: true });
 	});
 
 	it("changes only the settings that differ and keeps the company's text and layout", () => {
 		const before = `---\r\nid: ${secretId}\r\nservice: gmail\r\naccount: old@nordlys.test # renamed later\r\nstatus: connected\r\nactions: [read_message, send_message]\r\nconnected_by: ${memberId}\r\nconnected_at: 2026-10-03T08:00:00.5Z\r\n---\r\nThe team inbox.\r\n`;
-		const after = connectionFileText("connections/gmail.md", gmailSettings, before);
+		const after = connectionFileText("QorperaOS/connections/gmail.md", gmailSettings, before);
 		expect(after).toBe(before.replace("account: old@nordlys.test # renamed later", "account: team@nordlys.test"));
-		expect(connectionFileText("connections/gmail.md", gmailSettings, after)).toBe(after);
+		expect(connectionFileText("QorperaOS/connections/gmail.md", gmailSettings, after)).toBe(after);
 	});
 
 	it("keeps the text below a settings block the parser refuses", () => {
-		const text = connectionFileText("connections/gmail.md", gmailSettings, "---\nid: nope\n---\nWhat it is for.\n");
+		const text = connectionFileText(
+			"QorperaOS/connections/gmail.md",
+			gmailSettings,
+			"---\nid: nope\n---\nWhat it is for.\n",
+		);
 		expect(text).toBe(writeConnectionFile({ ...gmailSettings, purpose: "What it is for." }));
 	});
 
 	it("numbers a taken name within the name rule", () => {
-		expect(numberedConnectionPath("connections/gmail.md", 2)).toBe("connections/gmail-2.md");
-		expect(numberedConnectionPath(`connections/${"a".repeat(60)}-bbb.md`, 12)).toBe(
-			`connections/${"a".repeat(60)}-12.md`,
+		expect(numberedConnectionPath("QorperaOS/connections/gmail.md", 2)).toBe("QorperaOS/connections/gmail-2.md");
+		expect(numberedConnectionPath(`QorperaOS/connections/${"a".repeat(60)}-bbb.md`, 12)).toBe(
+			`QorperaOS/connections/${"a".repeat(60)}-12.md`,
 		);
 	});
 });
@@ -273,7 +279,7 @@ describe("ConnectionFileWriter", () => {
 		const unit = (commit.p_units as Record<string, unknown>[])[0];
 		expect(unit).toMatchObject({
 			op: "write",
-			path: "connections/gmail.md",
+			path: "QorperaOS/connections/gmail.md",
 			structured: [{ kind: "connection", parserVersion: 1 }],
 		});
 		expect(unit).not.toHaveProperty("expectedVersion");
@@ -286,10 +292,13 @@ describe("ConnectionFileWriter", () => {
 	it("rewrites an existing file at its version, keeping its text, and skips one that already matches", async () => {
 		const run = folder();
 		const current = run.existing(
-			"connections/team.md",
+			"QorperaOS/connections/team.md",
 			writeConnectionFile({ ...gmailSettings, account: "old@nordlys.test", purpose: "Ours." }),
 		);
-		const matching = run.existing("connections/team.md", writeConnectionFile({ ...gmailSettings, purpose: "Ours." }));
+		const matching = run.existing(
+			"QorperaOS/connections/team.md",
+			writeConnectionFile({ ...gmailSettings, purpose: "Ours." }),
+		);
 		run.queue(
 			claim({ current }),
 			claim({ current: matching, generation: 4, operationKey: `connection-file:${secretId}:4` }),
@@ -297,7 +306,9 @@ describe("ConnectionFileWriter", () => {
 		expect(await run.writer.writeOne()).toBe(true);
 		expect(await run.writer.writeOne()).toBe(true);
 		expect(run.commits()).toHaveLength(1);
-		expect(run.commits()[0]?.args.p_units).toMatchObject([{ path: "connections/team.md", expectedVersion: version }]);
+		expect(run.commits()[0]?.args.p_units).toMatchObject([
+			{ path: "QorperaOS/connections/team.md", expectedVersion: version },
+		]);
 		expect(run.committedText()).toBe(writeConnectionFile({ ...gmailSettings, purpose: "Ours." }));
 		expect(run.finishes()).toEqual([null, null]);
 	});
@@ -315,9 +326,9 @@ describe("ConnectionFileWriter", () => {
 		expect(
 			commits().map((call) => [call.args.p_operation_key, (call.args.p_units as { path: string }[])[0]?.path]),
 		).toEqual([
-			[`connection-file:${secretId}:3`, "connections/gmail.md"],
-			[`connection-file:${secretId}:3:2`, "connections/gmail-2.md"],
-			[`connection-file:${secretId}:3:3`, "connections/gmail-3.md"],
+			[`connection-file:${secretId}:3`, "QorperaOS/connections/gmail.md"],
+			[`connection-file:${secretId}:3:2`, "QorperaOS/connections/gmail-2.md"],
+			[`connection-file:${secretId}:3:3`, "QorperaOS/connections/gmail-3.md"],
 		]);
 		expect(finishes()).toEqual([null]);
 	});
@@ -325,7 +336,7 @@ describe("ConnectionFileWriter", () => {
 	it("backs off with the commit's reason when a member changed the file meanwhile", async () => {
 		const run = folder({ outcomes: [{ outcome: "conflict", reason: "version_changed" }] });
 		const current = run.existing(
-			"connections/gmail.md",
+			"QorperaOS/connections/gmail.md",
 			writeConnectionFile({ ...gmailSettings, account: "old@nordlys.test", purpose: "" }),
 		);
 		run.queue(claim({ current }));
@@ -335,7 +346,10 @@ describe("ConnectionFileWriter", () => {
 
 	it("deletes the file of a connection that is gone, at its version", async () => {
 		const run = folder();
-		const current = run.existing("connections/gmail.md", writeConnectionFile({ ...gmailSettings, purpose: "" }));
+		const current = run.existing(
+			"QorperaOS/connections/gmail.md",
+			writeConnectionFile({ ...gmailSettings, purpose: "" }),
+		);
 		run.queue(
 			claim({ present: false, settings: null, path: null, current }),
 			claim({
@@ -349,7 +363,7 @@ describe("ConnectionFileWriter", () => {
 		await run.writer.writeOne();
 		await run.writer.writeOne();
 		expect(run.commits().map((call) => call.args.p_units)).toEqual([
-			[{ op: "delete", path: "connections/gmail.md", expectedVersion: version }],
+			[{ op: "delete", path: "QorperaOS/connections/gmail.md", expectedVersion: version }],
 		]);
 		expect(run.finishes()).toEqual([null, null]);
 	});
@@ -368,10 +382,10 @@ describe("ConnectionFileWriter", () => {
 
 	it("writes a website account's file with its own keys", async () => {
 		const { writer, committedText } = folder({
-			claims: [claim({ settings: website, path: "connections/portal-example-com.md" })],
+			claims: [claim({ settings: website, path: "QorperaOS/connections/portal-example-com.md" })],
 		});
 		await writer.writeOne();
-		expect(parseCompanyStateFile("connections/portal-example-com.md", committedText())).toMatchObject({
+		expect(parseCompanyStateFile("QorperaOS/connections/portal-example-com.md", committedText())).toMatchObject({
 			ok: true,
 			file: {
 				kind: "connection",
@@ -398,7 +412,7 @@ describe("connection file writer, review round 1", () => {
 
 	it("keeps a setting that did not change exactly as written, note included", () => {
 		const before = `---\nid: ${secretId}\nservice: gmail # the shared one\naccount: old@nordlys.test\nstatus: connected\nactions: [read_message, send_message]\nconnected_by: ${memberId}\nconnected_at: 2026-10-03T08:00:00.5Z\n---\n`;
-		const after = connectionFileText("connections/gmail.md", gmailSettings, before);
+		const after = connectionFileText("QorperaOS/connections/gmail.md", gmailSettings, before);
 		expect(after).toContain("service: gmail # the shared one\n");
 		expect(after).toContain("account: team@nordlys.test\n");
 	});
@@ -416,7 +430,7 @@ describe("connection file writer, review round 1", () => {
 	it("reads a file its own store lacks from the Storage copy", async () => {
 		const run = folder({ storeMisses: true });
 		const current = run.existing(
-			"connections/gmail.md",
+			"QorperaOS/connections/gmail.md",
 			writeConnectionFile({ ...gmailSettings, account: "old@nordlys.test", purpose: "Ours." }),
 		);
 		run.queue(claim({ current }));
@@ -449,7 +463,10 @@ describe("connection file writer, review round 1", () => {
 describe("connection file writer, review round 2", () => {
 	it("backs off when a delete finds the file moved, so the next claim finds it through the index", async () => {
 		const run = folder({ outcomes: [{ outcome: "conflict", reason: "missing" }] });
-		const current = run.existing("connections/gmail.md", writeConnectionFile({ ...gmailSettings, purpose: "" }));
+		const current = run.existing(
+			"QorperaOS/connections/gmail.md",
+			writeConnectionFile({ ...gmailSettings, purpose: "" }),
+		);
 		run.queue(claim({ present: false, settings: null, path: null, current }));
 		await run.writer.writeOne();
 		expect(run.finishes()).toEqual(["missing"]);
@@ -490,7 +507,10 @@ describe("connection file writer, review round 2", () => {
 describe("connection file writer, review round 3", () => {
 	it("maps an unreadable reason on the delete path to refused", async () => {
 		const run = folder({ outcomes: [{ outcome: "refused", reason: "Gone? Maybe!" }] });
-		const current = run.existing("connections/gmail.md", writeConnectionFile({ ...gmailSettings, purpose: "" }));
+		const current = run.existing(
+			"QorperaOS/connections/gmail.md",
+			writeConnectionFile({ ...gmailSettings, purpose: "" }),
+		);
 		run.queue(claim({ present: false, settings: null, path: null, current }));
 		await run.writer.writeOne();
 		expect(run.finishes()).toEqual(["refused"]);
@@ -529,7 +549,7 @@ describe("hook and mailbox files (E1)", () => {
 			subjectKind: "hook",
 			operationKey: `hook-file:${secretId}:3`,
 			settings: hookSettings,
-			path: "connections/hook-stripe-payments.md",
+			path: "QorperaOS/connections/hook-stripe-payments.md",
 			body: hookBody,
 			...overrides,
 		});
@@ -542,7 +562,7 @@ describe("hook and mailbox files (E1)", () => {
 					subjectKind: "mailbox",
 					operationKey: `mailbox-file:${secretId}:3`,
 					settings: mailboxSettings,
-					path: "connections/mailbox-support.md",
+					path: "QorperaOS/connections/mailbox-support.md",
 					body: "Customer support.",
 				}),
 			)?.settings,
@@ -555,32 +575,38 @@ describe("hook and mailbox files (E1)", () => {
 			{ settings: { ...hookSettings, signingSecret: "whsec_x" } },
 			// The vault's key, a vault's name, or a body on a vault claim.
 			{ operationKey: `connection-file:${secretId}:3` },
-			{ path: "connections/stripe-payments.md" },
+			{ path: "QorperaOS/connections/stripe-payments.md" },
 			{
 				subjectKind: "vault",
 				operationKey: `connection-file:${secretId}:3`,
 				settings: gmail,
-				path: "connections/gmail.md",
+				path: "QorperaOS/connections/gmail.md",
 			},
 			{ settings: { ...hookSettings, id: memberId } },
 			{ subjectKind: "website" },
 		])
 			expect(() => parseConnectionFileClaim(hookClaim(overrides))).toThrow(PlatformFolderProblem);
-		expect(() => parseConnectionFileClaim(claim({ path: "connections/hook-gmail.md" }))).toThrow(
+		expect(() => parseConnectionFileClaim(claim({ path: "QorperaOS/connections/hook-gmail.md" }))).toThrow(
 			PlatformFolderProblem,
 		);
 	});
 
 	it("starts a new hook's file with its purpose, and changes only the settings that differ", () => {
-		const fresh = hookFileText("hook", "connections/hook-x.md", hookSettings as never, null, "Stripe payments.");
-		expect(parseCompanyStateFile("connections/hook-x.md", fresh)).toMatchObject({
+		const fresh = hookFileText(
+			"hook",
+			"QorperaOS/connections/hook-x.md",
+			hookSettings as never,
+			null,
+			"Stripe payments.",
+		);
+		expect(parseCompanyStateFile("QorperaOS/connections/hook-x.md", fresh)).toMatchObject({
 			ok: true,
 			file: { kind: "hook", name: "stripe-payments", purpose: "Stripe payments." },
 		});
 		const edited = fresh.replace("Stripe payments.", "Payments, and what the Analyst does with them.");
 		const paused = hookFileText(
 			"hook",
-			"connections/hook-x.md",
+			"QorperaOS/connections/hook-x.md",
 			{ ...hookSettings, status: "paused" } as never,
 			edited,
 			"x",
@@ -595,7 +621,7 @@ describe("hook and mailbox files (E1)", () => {
 			path: string;
 			structured: { kind: string }[];
 		};
-		expect(unit.path).toBe("connections/hook-stripe-payments.md");
+		expect(unit.path).toBe("QorperaOS/connections/hook-stripe-payments.md");
 		expect(unit.structured[0]?.kind).toBe("hook");
 		expect(commits()[0]?.args.p_operation_key).toBe(`hook-file:${secretId}:3`);
 		expect(committedText()).toContain("Payments from Stripe wake the Analyst.");

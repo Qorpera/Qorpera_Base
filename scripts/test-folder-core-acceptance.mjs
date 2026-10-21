@@ -124,7 +124,7 @@ async function bundle(scratch) {
 				'export {MountGrants, parseOperatorMounts} from "./packages/object-gateway/src/folder-service/mounts.ts";',
 				'export {createObjectGatewayHandler} from "./packages/object-gateway/src/service.ts";',
 				'export {SupabaseObjectAuthority} from "./packages/object-gateway/src/supabase-authority.ts";',
-				'export {companyStateSeedTree} from "./packages/cloud-client/src/company-state-files.ts";',
+				'export {companyStateSeedTree, osPath, QORPERA_OS_ROOT} from "./packages/cloud-client/src/company-state-files.ts";',
 			].join("\n"),
 		},
 		platform: "node",
@@ -275,7 +275,7 @@ const LINES = [
 	"a same-path conflict keeps a conflict copy",
 	"a move and a subtree delete work, and a subtree delete refuses a change it did not see",
 	"hiring, archiving, a routine file, a group chat and sections each update their index, and pass or skip review as 5.6 says",
-	"a coding session cannot write agents/, and is never reviewed",
+	"a coding session cannot write QorperaOS/agents/, and is never reviewed",
 	"a file change wakes a listener exactly once",
 	"the web file page and history show the change",
 	"revocation of one agent's grant stops that agent's send and no other",
@@ -422,6 +422,8 @@ async function hosted(report) {
 			() => database.cluster.spawnPsql(databaseName, ["-qAt", "-v", "ON_ERROR_STOP=1"]),
 		);
 		const code = await bundle(scratch);
+		/** A platform path, under QorperaOS/. */
+		const os = code.osPath;
 		const objectRoot = join(scratch, "objects");
 		const store = new code.FileSystemObjectStore(objectRoot);
 		const replication = {
@@ -596,16 +598,16 @@ async function hosted(report) {
 		let routineSeq = 0;
 		await report.check(5, async () => {
 			const agentMd = agentText(nora, "Nora", "active");
-			const hire = await commit(env, "hire", [{ op: "new_folder", path: "agents/nora", contents: [
+			const hire = await commit(env, "hire", [{ op: "new_folder", path: os("agents/nora"), contents: [
 				{ path: "agent.md", kind: "file", file: await stage(env, agentMd) },
 				{ path: "memory", kind: "folder" }, { path: "skills", kind: "folder" },
 				{ path: "routines", kind: "folder" }, { path: "todos", kind: "folder" }],
-				structured: structured("agents/nora/agent.md", agentMd) }]);
+				structured: structured(os("agents/nora/agent.md"), agentMd) }]);
 			saved(hire, "the hire");
 			const staff = db.json(`select to_jsonb(s) from public.qorpera_profile_staff s where s.profile_id = ${literal(profileId)}
 				and s.staff_agent_id = ${literal(nora)}`);
-			assert.equal(staff?.folder_path, "agents/nora/agent.md", "the agent's index row");
-			assert.equal(staff.folder_path_version, entry(env, "agents/nora/agent.md").version);
+			assert.equal(staff?.folder_path, "QorperaOS/agents/nora/agent.md", "the agent's index row");
+			assert.equal(staff.folder_path_version, entry(env, os("agents/nora/agent.md")).version);
 			assert.equal(staff.employment_status, "active");
 			// The hire's follow-up: Nora's default grant and her kickoff.
 			const followUps = db.rpc("qorpera_folder_follow_up_status", { p_environment_id: env });
@@ -616,20 +618,20 @@ async function hosted(report) {
 				"the hire's kickoff");
 
 			const routineMd = `---\nid: ${routine}\ntitle: Watch docs\nstatus: active\nwhen: file-change\nwatch: docs\nmatch: subtree\ntimezone: Europe/Copenhagen\neffort: medium\nreply: optional\n---\nRead what changed.\n`;
-			const routineSave = saved(await commit(env, "routine", [await writeUnit(env, "agents/nora/routines/watch-docs.md", routineMd)]), "the routine");
+			const routineSave = saved(await commit(env, "routine", [await writeUnit(env, os("agents/nora/routines/watch-docs.md"), routineMd)]), "the routine");
 			routineSeq = routineSave.seq;
 			const routineRow = db.json(`select to_jsonb(r) from public.qorpera_cloud_routines r where r.id = ${literal(routine)}`);
-			assert.equal(routineRow?.folder_path_version, entry(env, "agents/nora/routines/watch-docs.md").version, "the routine's index row");
+			assert.equal(routineRow?.folder_path_version, entry(env, os("agents/nora/routines/watch-docs.md")).version, "the routine's index row");
 
 			const groupMd = `---\nid: ${group}\nname: Launch\nagents:\n  - ${cofounderId}\n  - ${nora}\npeople:\n  - ${OWNER}\n---\nPlan the launch.\n`;
-			saved(await commit(env, "group", [{ op: "new_folder", path: "agents/groups/launch", contents: [
+			saved(await commit(env, "group", [{ op: "new_folder", path: os("agents/groups/launch"), contents: [
 				{ path: "group.md", kind: "file", file: await stage(env, groupMd) }],
-				structured: structured("agents/groups/launch/group.md", groupMd) }]), "the group chat");
+				structured: structured(os("agents/groups/launch/group.md"), groupMd) }]), "the group chat");
 			const room = db.json(`select to_jsonb(r) from public.qorpera_company_rooms r where r.id = ${literal(group)}`);
-			assert.equal(room?.folder_path, "agents/groups/launch/group.md", "the group's index row");
+			assert.equal(room?.folder_path, "QorperaOS/agents/groups/launch/group.md", "the group's index row");
 
 			const sectionsMd = `# Sections\n\nEach line is an id. The words after it are only for reading.\n\n## Sales\n- ${nora} Nora\n- ${group} Launch\n`;
-			saved(await commit(env, "sections", [await writeUnit(env, "agents/sections.md", sectionsMd, entry(env, "agents/sections.md").version)]), "sections");
+			saved(await commit(env, "sections", [await writeUnit(env, os("agents/sections.md"), sectionsMd, entry(env, os("agents/sections.md")).version)]), "sections");
 			const placed = db.query(`select count(*) from public.qorpera_company_sidebar_sections s
 				join public.qorpera_company_sidebar_placements p on p.section_id = s.id
 				where s.profile_id = ${literal(profileId)} and s.name = 'Sales' and p.staff_agent_id = ${literal(nora)}`);
@@ -637,7 +639,7 @@ async function hosted(report) {
 			return "hire, routine, group chat and sections each updated their index; a member's units skip review (5.6), archiving below";
 		});
 
-		report.notRun(6, "needs a real coding session on a machine (C1c-3h/3i); SQL tests 639 and 644 pin that coding cannot write agents/ and is never reviewed");
+		report.notRun(6, "needs a real coding session on a machine (C1c-3h/3i); SQL tests 639 and 644 pin that coding cannot write QorperaOS/agents/ and is never reviewed");
 
 		await report.check(7, async () => {
 			if (!routineSeq) throw new Error("the routine was not saved (C5-05)");
@@ -655,8 +657,8 @@ async function hosted(report) {
 		await report.check(5, async () => {
 			if (report.results.get(5)?.state !== "PASS") return;
 			const archived = agentText(nora, "Nora", "archived");
-			saved(await commit(env, "archive", [await writeUnit(env, "agents/nora/agent.md", archived,
-				entry(env, "agents/nora/agent.md").version)]), "the archive");
+			saved(await commit(env, "archive", [await writeUnit(env, os("agents/nora/agent.md"), archived,
+				entry(env, os("agents/nora/agent.md")).version)]), "the archive");
 			const status = db.query(`select employment_status from public.qorpera_profile_staff where profile_id = ${literal(profileId)}
 				and staff_agent_id = ${literal(nora)}`);
 			assert.equal(status, "archived");
@@ -669,12 +671,12 @@ async function hosted(report) {
 		await report.check(12, async () => {
 			const erin = "90300000-0000-4000-8000-0000000000e1";
 			const erinMd = agentText(erin, "Erin", "active");
-			saved(await commit(env, "hire-erin", [{ op: "new_folder", path: "agents/erin", contents: [
+			saved(await commit(env, "hire-erin", [{ op: "new_folder", path: os("agents/erin"), contents: [
 				{ path: "agent.md", kind: "file", file: await stage(env, erinMd) }],
-				structured: structured("agents/erin/agent.md", erinMd) }]), "Erin's hire");
-			saved(await commit(env, "delete-erin", [{ op: "delete", path: "agents/erin", expectedVersion: entry(env, "agents/erin").version,
+				structured: structured(os("agents/erin/agent.md"), erinMd) }]), "Erin's hire");
+			saved(await commit(env, "delete-erin", [{ op: "delete", path: os("agents/erin"), expectedVersion: entry(env, os("agents/erin")).version,
 				asOfSeq: lastSeq(env) }]), "Erin's folder deleted");
-			const erased = db.rpc("qorpera_folder_erase", { p_environment_id: env, p_actor: member, p_paths: ["agents/erin"],
+			const erased = db.rpc("qorpera_folder_erase", { p_environment_id: env, p_actor: member, p_paths: [os("agents/erin")],
 				p_operation_key: "acceptance-erase-erin" });
 			assert.equal(erased?.schema, "qorpera.folder-erasure/v1", JSON.stringify(erased));
 			for (let step = 0; step < 50; step++) {
@@ -684,7 +686,8 @@ async function hosted(report) {
 			}
 			assert.equal(db.query(`select state from public.qorpera_folder_erasures where id = ${literal(erased.erasureId)}`), "done");
 			assert.equal(db.query(`select count(*) from public.qorpera_folder_path_versions where environment_id = ${literal(env)}
-				and public.qorpera_folder_key(path) >= 'agents/erin' and public.qorpera_folder_key(path) < 'agents/erin0'`), "0");
+				and public.qorpera_folder_key(path) >= public.qorpera_folder_key(${literal(os("agents/erin"))})
+				and public.qorpera_folder_key(path) < public.qorpera_folder_key(${literal(os("agents/erin0"))})`), "0");
 			assert.equal(db.query(`select count(*) from public.qorpera_folder_commits where environment_id = ${literal(env)}
 				and units::text like '%agents/erin%'`), "0", "no change set still names the path");
 			const staff = db.json(`select to_jsonb(s) from public.qorpera_profile_staff s where s.staff_agent_id = ${literal(erin)}`);
@@ -1358,6 +1361,8 @@ async function existing(report, db, code, profileId, write, objectRoot, hooks = 
 	const env = db.query(`select environment_id from public.qorpera_company_files where profile_id = ${literal(profileId)}
 		and core = 'folder-v2'`);
 	if (!env) throw new Error("That company has no folder-v2 environment");
+	/** A platform path, under QorperaOS/. */
+	const os = code.osPath;
 	const platform = { kind: "platform" };
 	const entry = (path) =>
 		db.json(`select to_jsonb(e) from public.qorpera_folder_entries e where e.environment_id = ${literal(env)}
@@ -1367,7 +1372,8 @@ async function existing(report, db, code, profileId, write, objectRoot, hooks = 
 		and role = 'owner' order by joined_at nulls last limit 1`);
 
 	await report.check(1, () => {
-		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md", "skills/human-task/skill.md"])
+		for (const path of [os("vision/vision.md"), os("agents/sections.md"), os("agents/co-founder/agent.md"),
+			os("skills/human-task/skill.md")])
 			assert.equal(entry(path)?.kind, "file", `${path} is in the folder`);
 		// The founding's kickoff is the first run of the creation's Co-Founder; agents hired since have first runs of their own.
 		const kickoffs = db.json(`select coalesce(jsonb_agg(f.session_id), '[]') from public.qorpera_agent_first_runs f
@@ -1426,11 +1432,11 @@ async function existing(report, db, code, profileId, write, objectRoot, hooks = 
 	};
 
 	await report.check(2, async () => {
-		const read = db.rpc("qorpera_folder_read", { p_environment_id: env, p_actor: platform, p_path: "vision/vision.md" });
-		assert.equal(read?.found, true, "vision/vision.md reads");
+		const read = db.rpc("qorpera_folder_read", { p_environment_id: env, p_actor: platform, p_path: os("vision/vision.md") });
+		assert.equal(read?.found, true, `${os("vision/vision.md")} reads`);
 		const list = db.rpc("qorpera_folder_list", { p_environment_id: env, p_actor: platform, p_parent: "", p_after: null,
 			p_limit: 1000, p_recursive: false });
-		assert(list.entries.some((e) => e.path === "agents"), "the root lists agents/");
+		assert(list.entries.some((e) => e.path === code.QORPERA_OS_ROOT), `the root lists ${code.QORPERA_OS_ROOT}/`);
 		const details = [`read and list as the platform (${list.entries.length} top-level entries)`];
 		if (objectRoot) {
 			const found = await searchFolder(db, code, objectRoot, env, platform, "Co-Founder");
@@ -1477,12 +1483,12 @@ async function existing(report, db, code, profileId, write, objectRoot, hooks = 
 
 	await report.check(5, () => {
 		const stale = db.json(`select coalesce(jsonb_agg(e.path), '[]') from public.qorpera_folder_entries e
-			where e.environment_id = ${literal(env)} and e.kind = 'file' and e.path ~ '^agents/[^/]+/agent\\.md$'
+			where e.environment_id = ${literal(env)} and e.kind = 'file' and e.key_text ~ '^qorperaos/agents/[^/]+/agent\\.md$'
 				and not exists (select 1 from public.qorpera_profile_staff s where s.profile_id = ${literal(profileId)}
 					and s.folder_path = e.path and s.folder_path_version = e.version)`);
 		assert.deepEqual(stale, [], "every agent file has its index row at its version");
 		const routines = db.json(`select coalesce(jsonb_agg(e.path), '[]') from public.qorpera_folder_entries e
-			where e.environment_id = ${literal(env)} and e.kind = 'file' and e.path ~ '^agents/[^/]+/routines/[^/]+\\.md$'
+			where e.environment_id = ${literal(env)} and e.kind = 'file' and e.key_text ~ '^qorperaos/agents/[^/]+/routines/[^/]+\\.md$'
 				and not exists (select 1 from public.qorpera_cloud_routines r where r.folder_path = e.path
 					and r.folder_path_version = e.version)`);
 		assert.deepEqual(routines, [], "every routine file has its index row at its version");
@@ -1497,9 +1503,9 @@ async function existing(report, db, code, profileId, write, objectRoot, hooks = 
 		const asOwner = { role: "authenticated", sub: owner };
 		const history = db.rpc("qorpera_member_folder_history", { p_environment_id: env, p_before: null, p_limit: 10 }, asOwner);
 		assert(history.items.length > 0, "the history has change sets");
-		const versions = db.rpc("qorpera_member_folder_path_history", { p_environment_id: env, p_path: "vision/vision.md",
+		const versions = db.rpc("qorpera_member_folder_path_history", { p_environment_id: env, p_path: os("vision/vision.md"),
 			p_before: null, p_limit: 10 }, asOwner);
-		assert.equal(versions.items[0]?.version, entry("vision/vision.md").version);
+		assert.equal(versions.items[0]?.version, entry(os("vision/vision.md")).version);
 		return "the owner's history and vision.md's versions read as the web page reads them";
 	});
 

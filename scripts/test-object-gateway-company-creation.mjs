@@ -10,7 +10,7 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // as the operator's path does (P14a's open and seed), the object gateway's worker and file store as built, and its
 // RPCs answered by the database as the service role. The worker's seeded tree is the one the creation commit takes:
 // every unit saves, the Co-Founder and its kickoff are written, the company is ready, and every structured file reads
-// back through the shared parser.
+// back through the shared parser. The platform's folders are under QorperaOS/ (20260930527000).
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_company_creation";
@@ -65,7 +65,7 @@ async function main() {
 				contents: [
 					'export {CompanyFolderCreator} from "./packages/object-gateway/src/company-folder-creation.ts";',
 					'export {FileSystemObjectStore} from "./packages/object-gateway/src/object-store.ts";',
-					'export {parseCompanyStateFile, companyStateSeedTree} from "./packages/cloud-client/src/company-state-files.ts";',
+					'export {parseCompanyStateFile, companyStateSeedTree, osPath, QORPERA_OS_ROOT} from "./packages/cloud-client/src/company-state-files.ts";',
 				].join("\n"),
 			},
 			platform: "node",
@@ -144,29 +144,43 @@ async function main() {
 		assert.equal(query(`select public.qorpera_folder_company_ready('${profileId}')`), "t");
 		assert.equal(await creator.createDue(5), 0);
 
-		// 2. Every seeded path is in the folder; every structured file reads back through the parser as written.
+		// 2. Every seeded path is in the folder, under QorperaOS/ (stored so, keyed in lowercase); every structured file
+		// reads back through the parser as written.
 		const entries = JSON.parse(query(`select jsonb_object_agg(e.key_text, jsonb_build_object('kind', e.kind,
-				'sha', e.file_sha256, 'bytes', e.bytes))
+				'path', e.path, 'sha', e.file_sha256, 'bytes', e.bytes))
 			from public.qorpera_folder_entries e where e.environment_id = '${environmentId}' and e.kind <> 'claim'`));
+		const os = code.osPath;
+		/** A platform path's key: the whole path in lowercase. */
+		const key = (path) => path.toLowerCase();
+		assert.equal(entries[key(code.QORPERA_OS_ROOT)]?.kind, "folder", "QorperaOS is a folder");
+		assert.equal(entries[key(code.QORPERA_OS_ROOT)]?.path, "QorperaOS", "QorperaOS is stored as written");
+		assert.equal(entries[key(os("agents/co-founder/agent.md"))]?.path, "QorperaOS/agents/co-founder/agent.md");
 		for (const path of ["vision", "agents", "agents/co-founder", "agents/co-founder/memory", "agents/co-founder/skills",
 			"agents/co-founder/routines", "agents/co-founder/todos", "agents/groups", "connections", "human-tasks", "contacts",
 			"skills", "skills/human-task", "rules", "interfaces", "interfaces/mailbox", "interfaces/members", "tables",
-			"tables/areas"])
-			assert.equal(entries[path]?.kind, "folder", `${path} is a folder`);
+			"tables/areas"]) {
+			assert.equal(entries[key(os(path))]?.kind, "folder", `${os(path)} is a folder`);
+			// Nothing of the platform's is at the top.
+			assert.equal(entries[path], undefined, `no ${path} at the top`);
+		}
 		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md",
 			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/skill.md", "interfaces/order.md",
 			"interfaces/mailbox/interface.toml", "tables/areas/table.toml", "tables/areas/rows.csv"])
-			assert.equal(entries[path]?.kind, "file", `${path} is a file`);
+			assert.equal(entries[key(os(path))]?.kind, "file", `${os(path)} is a file`);
 		// Pulse, its numbers table and the cards table are no longer seeded, and no folder gets a README.md.
-		for (const path of ["interfaces/pulse", "tables/numbers", "tables/cards"]) assert.equal(entries[path], undefined, path);
-		assert.deepEqual(Object.keys(entries).filter((key) => key.endsWith("readme.md")), [], "no README.md is seeded");
-		const text = async (key) =>
-			new TextDecoder().decode(await store.get(profileId, entries[key].sha, Number(entries[key].bytes)));
+		for (const path of ["interfaces/pulse", "tables/numbers", "tables/cards"])
+			assert.equal(entries[key(os(path))], undefined, os(path));
+		assert.deepEqual(Object.keys(entries).filter((name) => name.endsWith("readme.md")), [], "no README.md is seeded");
+		const text = async (path) => {
+			const entry = entries[key(path)];
+			return new TextDecoder().decode(await store.get(profileId, entry.sha, Number(entry.bytes)));
+		};
 		// Every file of the seed tree (built as the worker builds it, from the creation's input and ids, and the library's
 		// ids as the stored files carry them, in the order the library draws them) is stored as written, and every
 		// structured one reads back through the parser.
 		const library = [];
-		for (const path of ["interfaces/mailbox/interface.toml", "interfaces/members/interface.toml", "tables/areas/table.toml"]) {
+		for (const path of [os("interfaces/mailbox/interface.toml"), os("interfaces/members/interface.toml"),
+			os("tables/areas/table.toml")]) {
 			const parsed = code.parseCompanyStateFile(path, await text(path));
 			assert(parsed?.ok, `${path} parses`);
 			library.push(parsed.file.id);
@@ -179,20 +193,21 @@ async function main() {
 			founders: [{ userId: owner, displayName: "Ida", role: "Brewing and the cafés." }],
 			firstTodo: { id: made.first_todo_id, requestedBy: owner },
 		});
+		assert.equal(tree[0]?.path, "QorperaOS", "the seed tree starts with QorperaOS");
 		for (const entry of tree) {
-			const key = entry.path.toLowerCase();
-			assert.equal(entries[key]?.kind, entry.kind, `${entry.path} is a ${entry.kind}`);
+			assert.equal(entries[key(entry.path)]?.kind, entry.kind, `${entry.path} is a ${entry.kind}`);
+			assert.equal(entries[key(entry.path)]?.path, entry.path, `${entry.path} is stored as the tree writes it`);
 			if (entry.kind !== "file") continue;
-			assert.equal(await text(key), entry.text, `${entry.path} holds the seed tree's text`);
+			assert.equal(await text(entry.path), entry.text, `${entry.path} holds the seed tree's text`);
 			const parsed = code.parseCompanyStateFile(entry.path, entry.text);
 			assert(parsed === null || parsed.ok, `${entry.path} parses`);
 		}
-		const vision = code.parseCompanyStateFile("vision/vision.md", await text("vision/vision.md"));
+		const vision = code.parseCompanyStateFile(os("vision/vision.md"), await text(os("vision/vision.md")));
 		assert(vision?.ok && vision.file.name === "Nordlys Bryggeri", "the vision names the company");
-		const agent = code.parseCompanyStateFile("agents/co-founder/agent.md", await text("agents/co-founder/agent.md"));
+		const agent = code.parseCompanyStateFile(os("agents/co-founder/agent.md"), await text(os("agents/co-founder/agent.md")));
 		assert(agent?.ok && agent.file.id === made.cofounder_id && agent.file.agentKind === "co-founder");
-		const todo = code.parseCompanyStateFile("agents/co-founder/todos/start-with-the-founders.md",
-			await text("agents/co-founder/todos/start-with-the-founders.md"));
+		const todo = code.parseCompanyStateFile(os("agents/co-founder/todos/start-with-the-founders.md"),
+			await text(os("agents/co-founder/todos/start-with-the-founders.md")));
 		assert(todo?.ok && todo.file.id === made.first_todo_id && todo.file.requestedBy === owner);
 
 		// 3. The Co-Founder, its thread and its silent first run; no turn request (no login) and no wake.
@@ -209,7 +224,7 @@ async function main() {
 				companyId: profileId,
 				creationId: made.id,
 				cofounderStaffAgentId: made.cofounder_id,
-				firstTodo: "agents/co-founder/todos/start-with-the-founders.md",
+				firstTodo: "QorperaOS/agents/co-founder/todos/start-with-the-founders.md",
 			},
 		});
 		assert.equal(query(`select count(*) from public.qorpera_session_turn_requests where profile_id = '${profileId}'`), "0");
@@ -225,8 +240,8 @@ async function main() {
 		assert.deepEqual(grants, [{ path: "", scope: "company_shared", permissions: ["read", "write"], origin: "default_agent_read" }]);
 		const run = JSON.stringify({ kind: "staff_agent", staffAgentId: made.cofounder_id, requesterUserId: owner,
 			audience: { kind: "company" }, sessionKind: "in_house", workerAccess: "write" });
-		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md",
-			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/SKILL.md"])
+		for (const path of [os("vision/vision.md"), os("agents/sections.md"), os("agents/co-founder/agent.md"),
+			os("agents/co-founder/todos/start-with-the-founders.md"), os("skills/human-task/SKILL.md")])
 			for (const permission of ["read", "write"])
 				assert.equal(query(`select public.qorpera_folder_actor_allowed('${environmentId}', '${profileId}', '${run}'::jsonb,
 					'${path}', '${permission}')`), "t", `the Co-Founder may ${permission} ${path}`);
