@@ -25,7 +25,8 @@ import {
 export const ENABLE_BANKING_ORIGIN = "https://api.enablebanking.com";
 /** A token lives an hour; Enable Banking refuses more than a day. */
 const TOKEN_SECONDS = 3600;
-/** At most this many transaction pages per account and fetch; a bank that pages further is cut off there. */
+/** At most this many transaction pages per account and fetch by default; a bank that pages further is cut off there
+ * and the answer says it is not complete. */
 const TRANSACTION_PAGES = 40;
 const AMOUNT = /^-?\d+(\.\d+)?$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -304,15 +305,17 @@ export class EnableBankingClient {
 		});
 	}
 
-	/** Every transaction from `from` on (or as far back as the bank allows, `longest`), page by page. */
+	/** Every transaction from `from` on (or as far back as the bank allows, `longest`), page by page, up to `pages`
+	 * pages; `complete` is false when the bank had more. */
 	async transactions(
 		uid: string,
 		from: string | null,
 		signal: AbortSignal,
+		pages = TRANSACTION_PAGES,
 	): Promise<{ transactions: EnableBankingTransaction[]; complete: boolean }> {
 		const transactions: EnableBankingTransaction[] = [];
 		let continuation: string | undefined;
-		for (let page = 0; page < TRANSACTION_PAGES; page++) {
+		for (let page = 0; page < pages; page++) {
 			const body = await this.#call("GET", `/accounts/${encodeURIComponent(uid)}/transactions`, signal, {
 				query: {
 					...(from ? { date_from: from } : { strategy: "longest" }),

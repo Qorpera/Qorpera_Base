@@ -1,7 +1,9 @@
 -- The company bank connection, part 2 (migration 20260930523000): the vault's bank sync follows the company's bank
 -- secret, is claimed by the company's own authority, keeps booked transactions once each, records the summary, backs
--- off after a failure, marks the summary paused when the consent ends, starts over (deep) on a connect-again, and
--- stops on a Disconnect. The shared vault asks which of its companies are due. Nothing else reaches the tables.
+-- off after a failure, marks the summary paused when the consent ends, starts over (deep) on a connect-again and after
+-- an incomplete fetch, refuses a late answer from an earlier claim, and stops on a Disconnect, which also queues the
+-- session's close at Enable Banking (as does a company's deletion). The shared vault asks which of its companies are
+-- due. Nothing else reaches the tables.
 begin;
 
 insert into auth.users(id, email) values ('69100000-0000-4000-8000-000000000001', 'bank-owner@example.test');
@@ -66,23 +68,28 @@ begin
 	return v;
 end
 $$;
+-- The lease is the current claim's unless a test names an earlier one.
+create function pg_temp.lease(p_secret uuid) returns uuid language sql as $$
+	select lease_id from public.qorpera_bank_syncs where secret_id = p_secret
+$$;
 create function pg_temp.record(p_authority uuid, p_capability text, p_secret uuid, p_version bigint, p_keys jsonb,
-	p_transactions jsonb) returns jsonb language plpgsql as $$
-declare v jsonb;
+	p_transactions jsonb, p_lease uuid default null) returns jsonb language plpgsql as $$
+declare v jsonb; v_lease uuid := coalesce(p_lease, pg_temp.lease(p_secret));
 begin
 	set local session authorization qorpera_secret_broker;
-	v := public.qorpera_record_bank_transactions(p_authority, p_capability, p_secret, p_version, p_keys, p_transactions);
+	v := public.qorpera_record_bank_transactions(p_authority, p_capability, p_secret, p_version, v_lease, p_keys, p_transactions);
 	reset session authorization;
 	return v;
 end
 $$;
 create function pg_temp.finish(p_authority uuid, p_capability text, p_secret uuid, p_version bigint, p_outcome text,
-	p_summary jsonb, p_error text default null, p_deep boolean default true) returns jsonb language plpgsql as $$
-declare v jsonb;
+	p_summary jsonb, p_error text default null, p_fetch text default 'deep', p_lease uuid default null)
+returns jsonb language plpgsql as $$
+declare v jsonb; v_lease uuid := coalesce(p_lease, pg_temp.lease(p_secret));
 begin
 	set local session authorization qorpera_secret_broker;
-	v := public.qorpera_finish_bank_sync(p_authority, p_capability, p_secret, p_version, p_outcome, p_summary,
-		'2027-01-19T11:59:00.000000+00:00', p_deep, p_error);
+	v := public.qorpera_finish_bank_sync(p_authority, p_capability, p_secret, p_version, v_lease, p_outcome, p_summary,
+		'2027-01-19T11:59:00.000000+00:00', p_fetch, p_error);
 	reset session authorization;
 	return v;
 end
@@ -96,8 +103,9 @@ begin
 	return v;
 end
 $$;
-grant execute on function pg_temp.claim(uuid, text), pg_temp.record(uuid, text, uuid, bigint, jsonb, jsonb),
-	pg_temp.finish(uuid, text, uuid, bigint, text, jsonb, text, boolean), pg_temp.due(uuid, text) to qorpera_secret_broker;
+grant execute on function pg_temp.claim(uuid, text), pg_temp.record(uuid, text, uuid, bigint, jsonb, jsonb, uuid),
+	pg_temp.finish(uuid, text, uuid, bigint, text, jsonb, text, text, uuid), pg_temp.due(uuid, text),
+	pg_temp.lease(uuid) to qorpera_secret_broker;
 create function pg_temp.sync() returns public.qorpera_bank_syncs language sql as $$
 	select * from public.qorpera_bank_syncs where profile_id = '69100000-0000-4000-8000-000000000010'
 $$;
@@ -119,8 +127,8 @@ begin
 			v_role || ' reads no transaction');
 	end loop;
 	foreach v_function in array array['public.qorpera_claim_bank_sync(uuid,text)',
-		'public.qorpera_record_bank_transactions(uuid,text,uuid,bigint,jsonb,jsonb)',
-		'public.qorpera_finish_bank_sync(uuid,text,uuid,bigint,text,jsonb,timestamptz,boolean,text)',
+		'public.qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
+		'public.qorpera_finish_bank_sync(uuid,text,uuid,bigint,uuid,text,jsonb,timestamptz,text,text)',
 		'public.qorpera_broker_principal_bank_syncs_due(uuid,text)'] loop
 		foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 			perform pg_temp.check(not has_function_privilege(v_role, v_function, 'execute'), v_role || ' may not call ' || v_function);
@@ -148,6 +156,7 @@ declare v jsonb := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat(
 begin
 	perform pg_temp.check(v ->> 'schema' = 'qorpera.bank-sync-claim/v1' and v ->> 'secretId' = '69100000-0000-4000-8000-0000000000e1'
 		and (v ->> 'secretVersion')::bigint = 1 and v ->> 'keyId' = 'key-1' and (v ->> 'deep')::boolean and v -> 'since' = 'null'::jsonb
+		and (v ->> 'lease')::uuid = (pg_temp.sync()).lease_id
 		and v ->> 'companyId' = '69100000-0000-4000-8000-000000000010'
 		and v ->> 'environmentId' = '69100000-0000-4000-8000-000000000020'
 		and v ->> 'encryptedEnvelopeBase64' !~ E'\n'
@@ -209,6 +218,36 @@ begin
 		'69100000-0000-4000-8000-0000000000e1', 1, 'failed', null, null)$q$, '22023');
 end $$;
 
+-- 5b. A claim whose lease ran out cannot answer once another claim holds the sync; a fetch that ran out of pages
+-- leaves the next fetch deep again.
+select pg_temp.past();
+do $$
+declare
+	v_first uuid := (pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64)) ->> 'lease')::uuid;
+	v_second uuid;
+	v jsonb;
+begin
+	update public.qorpera_bank_syncs set lease_until = clock_timestamp() - interval '1 second'
+	where profile_id = '69100000-0000-4000-8000-000000000010';
+	v_second := (pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64)) ->> 'lease')::uuid;
+	perform pg_temp.check(v_second is not null and v_second <> v_first, 'a new claim, a new lease');
+	perform pg_temp.refused(format($q$select pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64),
+		'69100000-0000-4000-8000-0000000000e1', 1, 'current', pg_temp.summary(5), null, 'deep', %L)$q$, v_first), '55000');
+	perform pg_temp.refused(format($q$select pg_temp.record('69100000-0000-4000-8000-0000000000d1', repeat('1', 64),
+		'69100000-0000-4000-8000-0000000000e1', 1, jsonb_build_array(repeat('a', 64)), '[]', %L)$q$, v_first), '55000');
+	perform pg_temp.check((pg_temp.sync()).lease_id = v_second, 'the earlier claim left the lease alone');
+	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
+		'current', pg_temp.summary(2000), null, 'incomplete');
+	perform pg_temp.check(not (pg_temp.sync()).deep_done and (pg_temp.sync()).summary_generation = 2
+		and (pg_temp.sync()).lease_id is null, 'an incomplete fetch: ' || v::text);
+	perform pg_temp.past();
+	v := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64));
+	perform pg_temp.check((v ->> 'deep')::boolean and v -> 'since' = 'null'::jsonb, 'deep again after an incomplete fetch: ' || v::text);
+	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
+		'current', pg_temp.summary(1000), null, 'deep');
+	perform pg_temp.check((pg_temp.sync()).deep_done and (pg_temp.sync()).summary_generation = 3, 'deep once more');
+end $$;
+
 -- 6. After the deep fetch, a fetch starts two weeks before the newest booked day; a failure keeps the summary and
 -- backs off.
 select pg_temp.past();
@@ -217,10 +256,10 @@ declare v jsonb := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat(
 begin
 	perform pg_temp.check(not (v ->> 'deep')::boolean and (v ->> 'since')::date = current_date - 15, 'the since day: ' || v::text);
 	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
-		'failed', null, 'the bank asked us to wait', false);
+		'failed', null, 'the bank asked us to wait', 'since');
 	perform pg_temp.check((pg_temp.sync()).status = 'current' and (pg_temp.sync()).last_error = 'the bank asked us to wait'
 		and (pg_temp.sync()).due_at between clock_timestamp() + interval '14 minutes' and clock_timestamp() + interval '15 minutes'
-		and (pg_temp.sync()).summary_generation = 1, 'a failure backs off and keeps the summary');
+		and (pg_temp.sync()).summary_generation = 3, 'a failure backs off and keeps the summary');
 end $$;
 
 -- 7. An ended consent marks the kept summary paused from today and stops until the member connects again.
@@ -229,10 +268,10 @@ do $$
 declare v jsonb := pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64));
 begin
 	v := pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64), '69100000-0000-4000-8000-0000000000e1', 1,
-		'ended', null, null, false);
+		'ended', null, null, 'since');
 	perform pg_temp.check((pg_temp.sync()).status = 'ended' and (pg_temp.sync()).due_at is null
 		and (pg_temp.sync()).summary ->> 'pausedSince' = to_char(current_date, 'YYYY-MM-DD')
-		and (pg_temp.sync()).summary_generation = 2, 'ended: ' || to_jsonb(pg_temp.sync())::text);
+		and (pg_temp.sync()).summary_generation = 4, 'ended: ' || to_jsonb(pg_temp.sync())::text);
 	perform pg_temp.check(pg_temp.claim('69100000-0000-4000-8000-0000000000d1', repeat('1', 64)) is null, 'nothing due when ended');
 end $$;
 
@@ -248,6 +287,11 @@ update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = stateme
 where id = '69100000-0000-4000-8000-0000000000e1';
 select pg_temp.check((pg_temp.sync()).status = 'disconnected' and (pg_temp.sync()).due_at is null and (pg_temp.sync()).lease_until is null,
 	'a Disconnect stops the sync');
+-- Each sealed session of the connection is queued for its close at Enable Banking.
+select pg_temp.check((select array_agg(version order by version) = array[1, 2]::bigint[]
+		and bool_and(connector_id = 'bank' and reason = 'disconnected' and completed_at is null)
+	from public.qorpera_connector_token_revocations where secret_id = '69100000-0000-4000-8000-0000000000e1'),
+	'the Disconnect queues every version''s close');
 select pg_temp.refused($q$select pg_temp.finish('69100000-0000-4000-8000-0000000000d1', repeat('1', 64),
 	'69100000-0000-4000-8000-0000000000e1', 2, 'current', pg_temp.summary(1))$q$, '55000');
 
@@ -258,5 +302,13 @@ select pg_temp.check(pg_temp.due('69100000-0000-4000-8000-000000000050', repeat(
 	'schema', 'qorpera.broker-principal-bank-syncs/v1', 'companyIds', jsonb_build_array('69100000-0000-4000-8000-000000000011')),
 	'the principal sees its due company');
 select pg_temp.refused($$select pg_temp.due('69100000-0000-4000-8000-000000000050', repeat('b', 64))$$, '42501');
+
+-- 10. A deleting company's finisher revokes its bank connection too, which queues the session's close.
+select pg_temp.check(public.qorpera_revoke_company_connector_secrets('69100000-0000-4000-8000-000000000011') = 1,
+	'the company''s bank secret is revoked with its other connections');
+select pg_temp.check(exists (select 1 from public.qorpera_connector_token_revocations
+	where secret_id = '69100000-0000-4000-8000-0000000000e2' and connector_id = 'bank' and completed_at is null)
+	and (select status = 'disconnected' from public.qorpera_bank_syncs where profile_id = '69100000-0000-4000-8000-000000000011'),
+	'its close is queued and its sync stopped');
 
 rollback;

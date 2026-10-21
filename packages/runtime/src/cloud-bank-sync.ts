@@ -29,6 +29,7 @@ export interface BankSyncAuthority {
 		input: {
 			secretId: string;
 			version: number;
+			lease: string;
 			accountKeys: readonly string[];
 			transactions: readonly KeptBankTransaction[];
 		},
@@ -38,10 +39,13 @@ export interface BankSyncAuthority {
 		input: {
 			secretId: string;
 			version: number;
+			lease: string;
 			outcome: "current" | "ended" | "failed";
 			summary: BankSummaryFile | null;
 			consentUntil: string | null;
-			deep: boolean;
+			/** What the fetch covered: the whole history (`deep`), from the claim's day (`since`), or less than the
+			 * bank had (`incomplete`, so the next fetch is deep again). */
+			fetch: BankFetchCover;
 			error: string | null;
 		},
 		signal: AbortSignal,
@@ -61,6 +65,8 @@ export interface KeptBankTransaction {
 
 export type BankSyncOutcome = "idle" | "current" | "ended" | "failed";
 
+export type BankFetchCover = "deep" | "since" | "incomplete";
+
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -72,12 +78,16 @@ const DATABASE_DEADLINE_MS = 10_000;
 /** The whole fetch: every account's balances and transaction pages. */
 const FETCH_DEADLINE_MS = 4 * 60_000;
 const PASS_EVERY_MS = 60_000;
+/** Transaction pages per account: a deep fetch reads far back once, a later fetch only some weeks. */
+const DEEP_PAGES = 250;
+const SINCE_PAGES = 40;
 
 interface Claim {
 	readonly companyId: string;
 	readonly environmentId: string;
 	readonly secretId: string;
 	readonly version: number;
+	readonly lease: string;
 	readonly keyId: string;
 	readonly encryptedEnvelopeBase64: string;
 	readonly envelopeSha256: string;
@@ -94,9 +104,9 @@ function parseClaim(value: unknown): Claim | null {
 		!input ||
 		typeof input !== "object" ||
 		Object.keys(input).sort().join() !==
-			"companyId,deep,encryptedEnvelopeBase64,envelopeSha256,environmentId,keyId,schema,secretId,secretVersion,since" ||
+			"companyId,deep,encryptedEnvelopeBase64,envelopeSha256,environmentId,keyId,lease,schema,secretId,secretVersion,since" ||
 		input.schema !== "qorpera.bank-sync-claim/v1" ||
-		![input.companyId, input.environmentId, input.secretId].every(
+		![input.companyId, input.environmentId, input.secretId, input.lease].every(
 			(id) => typeof id === "string" && UUID_PATTERN.test(id),
 		) ||
 		!Number.isSafeInteger(input.secretVersion) ||
@@ -116,6 +126,7 @@ function parseClaim(value: unknown): Claim | null {
 		environmentId: input.environmentId as string,
 		secretId: input.secretId as string,
 		version: input.secretVersion as number,
+		lease: input.lease as string,
 		keyId: input.keyId,
 		encryptedEnvelopeBase64: base64,
 		envelopeSha256: input.envelopeSha256,
@@ -231,6 +242,8 @@ export function bankTransactionKeys(accountKey: string, transactions: readonly E
 interface Fetched {
 	readonly bank: string;
 	readonly validUntil: string | null;
+	/** Every account's transactions came to their end. */
+	readonly complete: boolean;
 	readonly accounts: readonly {
 		readonly key: string;
 		readonly account: EnableBankingAccount;
@@ -270,16 +283,18 @@ export class CloudBankSyncs {
 			summary: BankSummaryFile | null,
 			consentUntil: string | null,
 			error: string | null,
+			fetch: BankFetchCover = claim.deep ? "deep" : "since",
 		) =>
 			// Recorded even when the pass is closing: the bank has been asked.
 			this.#authority.finishBankSync(
 				{
 					secretId: claim.secretId,
 					version: claim.version,
+					lease: claim.lease,
 					outcome,
 					summary,
 					consentUntil,
-					deep: claim.deep,
+					fetch,
 					error,
 				},
 				AbortSignal.timeout(DATABASE_DEADLINE_MS),
@@ -302,6 +317,7 @@ export class CloudBankSyncs {
 					{
 						secretId: claim.secretId,
 						version: claim.version,
+						lease: claim.lease,
 						accountKeys: fetched.accounts.map((account) => account.key),
 						transactions: fetched.accounts.flatMap((account) => {
 							const booked = account.transactions.filter((transaction) => transaction.status === "BOOK");
@@ -349,7 +365,9 @@ export class CloudBankSyncs {
 					],
 				})),
 			});
-			await finish("current", summary, consentUntil, null);
+			// A fetch that ran out of pages before the bank's end summarizes what it has, and the next fetch reads the
+			// whole history again instead of only the weeks after the newest day kept.
+			await finish("current", summary, consentUntil, null, fetched.complete ? undefined : "incomplete");
 			return "current";
 		} catch {
 			await finish("failed", null, consentUntil, "the bank data could not be kept or summarized");
@@ -377,16 +395,24 @@ export class CloudBankSyncs {
 					try {
 						const session = parseSession(fields);
 						const accounts = [];
+						let complete = true;
 						for (const account of session.accounts) {
 							const balances = await this.#bank.balances(account.uid, signal);
-							const { transactions } = await this.#bank.transactions(
+							const fetchedTransactions = await this.#bank.transactions(
 								account.uid,
 								claim.deep ? null : claim.since,
 								signal,
+								claim.deep ? DEEP_PAGES : SINCE_PAGES,
 							);
-							accounts.push({ key: bankAccountKey(account), account, balances, transactions });
+							complete &&= fetchedTransactions.complete;
+							accounts.push({
+								key: bankAccountKey(account),
+								account,
+								balances,
+								transactions: fetchedTransactions.transactions,
+							});
 						}
-						return { fetched: { bank: session.bank, validUntil: session.validUntil, accounts } };
+						return { fetched: { bank: session.bank, validUntil: session.validUntil, complete, accounts } };
 					} catch (error) {
 						return { error };
 					}

@@ -155,6 +155,7 @@ export function composeCloudConnectorService(
 		revoker: new CloudConnectorTokenRevoker({
 			...(config.github ? { github: config.github } : {}),
 			fetch: fetchImplementation,
+			...(bank ? { bank } : {}),
 		}),
 		...(bank ? { bank } : {}),
 	});

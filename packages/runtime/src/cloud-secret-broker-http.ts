@@ -939,7 +939,10 @@ export class HttpCloudSecretBrokerService {
 					if ((summary.connectorId === BANK_CONNECTOR_ID) !== (start.bank !== undefined))
 						throw new Error("Connector authorization start is invalid");
 					const started = start.bank
-						? await this.#oauth.beginBank({ ...begin, bank: start.bank }, AbortSignal.timeout(20_000))
+						? await this.#oauth.beginBank(
+								{ ...begin, bank: start.bank, ticketExpiresAt: summary.expiresAt },
+								AbortSignal.timeout(20_000),
+							)
 						: this.#oauth.begin(begin);
 					response(
 						reply,
@@ -990,6 +993,9 @@ export class HttpCloudSecretBrokerService {
 						completion.accountLabel,
 					);
 				} catch {
+					// A bank session that could not be sealed is closed again rather than left open, after the answer:
+					// the member's confirm does not wait for it.
+					void this.#oauth.abandon(completion, AbortSignal.timeout(20_000));
 					response(reply, 403, { schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "expired" }, cors);
 					return;
 				}

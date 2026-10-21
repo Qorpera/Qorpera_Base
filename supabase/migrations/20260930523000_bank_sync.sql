@@ -15,6 +15,10 @@
 --
 -- Only the vault's own functions reach these tables (as the broker role, with the company's authority);
 -- they go with the company when it is deleted.
+--
+-- A bank connection's session is closed at Enable Banking when it is disconnected and when its company is
+-- deleted, through the queue that already cancels Gmail, Drive and GitHub tokens (20260928269500): 'bank'
+-- joins its connectors, and the vault closes the sealed session as that queue's revoke.
 
 create table public.qorpera_bank_syncs (
 	profile_id uuid primary key references public.qorpera_profiles(id) on delete cascade,
@@ -25,6 +29,8 @@ create table public.qorpera_bank_syncs (
 	status text not null check (status in ('waiting', 'current', 'failed', 'ended', 'disconnected')),
 	due_at timestamptz,
 	lease_until timestamptz,
+	-- The claim that holds the lease: a late answer from an earlier claim of the same version is refused.
+	lease_id uuid,
 	attempts integer not null default 0 check (attempts >= 0),
 	last_error text check (last_error is null or char_length(last_error) between 1 and 300),
 	deep_done boolean not null default false,
@@ -77,13 +83,13 @@ begin
 		on conflict (profile_id) do update
 		set secret_id = excluded.secret_id, secret_version = excluded.secret_version,
 			status = case when sync.summary is null then 'waiting' else 'current' end,
-			due_at = clock_timestamp(), lease_until = null, attempts = 0, last_error = null,
+			due_at = clock_timestamp(), lease_until = null, lease_id = null, attempts = 0, last_error = null,
 			deep_done = false, consent_until = null, updated_at = clock_timestamp()
 		where sync.secret_id <> excluded.secret_id or sync.secret_version <> excluded.secret_version
 			or sync.status in ('ended', 'disconnected');
 	else
 		update public.qorpera_bank_syncs
-		set status = 'disconnected', due_at = null, lease_until = null, updated_at = clock_timestamp()
+		set status = 'disconnected', due_at = null, lease_until = null, lease_id = null, updated_at = clock_timestamp()
 		where profile_id = new.profile_id and secret_id = new.id;
 	end if;
 	return new;
@@ -121,8 +127,9 @@ $$;
 revoke all on function public.qorpera_bank_sync_authority(uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- The company's due bank sync, leased for ten minutes, with its sealed session: null when nothing is
--- due. A secret no longer active, or sealed by another authority, stops the sync here.
+-- The company's due bank sync, leased for ten minutes to this claim (its lease id), with its sealed
+-- session: null when nothing is due. A secret no longer active, or sealed by another authority, stops the
+-- sync here.
 create function public.qorpera_claim_bank_sync(p_broker_authority_id uuid, p_broker_capability_sha256 text)
 returns jsonb
 language plpgsql
@@ -135,6 +142,7 @@ declare
 	v_row record;
 	v_now timestamptz := clock_timestamp();
 	v_since date;
+	v_lease uuid := extensions.gen_random_uuid();
 begin
 	v_authority := public.qorpera_bank_sync_authority(p_broker_authority_id, p_broker_capability_sha256);
 	select sync.secret_id, sync.secret_version, sync.deep_done, secret.status as secret_status,
@@ -154,12 +162,12 @@ begin
 	if v_row.secret_status is distinct from 'active' or v_row.current_version <> v_row.secret_version
 		or v_row.encrypted_envelope is null or v_row.sealed_for <> v_authority.id then
 		update public.qorpera_bank_syncs
-		set status = 'disconnected', due_at = null, lease_until = null, updated_at = v_now
+		set status = 'disconnected', due_at = null, lease_until = null, lease_id = null, updated_at = v_now
 		where profile_id = v_authority.profile_id;
 		return null;
 	end if;
 	update public.qorpera_bank_syncs
-	set lease_until = v_now + interval '10 minutes', attempts = attempts + 1, updated_at = v_now
+	set lease_until = v_now + interval '10 minutes', lease_id = v_lease, attempts = attempts + 1, updated_at = v_now
 	where profile_id = v_authority.profile_id;
 	-- After the deep fetch, a fetch starts two weeks before the newest booked day it has: a bank may book
 	-- a payment some days after its date.
@@ -171,7 +179,7 @@ begin
 	return jsonb_build_object(
 		'schema', 'qorpera.bank-sync-claim/v1',
 		'companyId', v_authority.profile_id, 'environmentId', v_row.environment_id,
-		'secretId', v_row.secret_id, 'secretVersion', v_row.secret_version, 'keyId', v_row.key_id,
+		'secretId', v_row.secret_id, 'secretVersion', v_row.secret_version, 'lease', v_lease, 'keyId', v_row.key_id,
 		-- Postgres breaks base64 lines at 76 characters; the claim carries one line.
 		'encryptedEnvelopeBase64', translate(encode(v_row.encrypted_envelope, 'base64'), E'\n', ''),
 		'envelopeSha256', v_row.envelope_sha256,
@@ -184,7 +192,7 @@ revoke all on function public.qorpera_claim_bank_sync(uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_claim_bank_sync(uuid, text) to qorpera_secret_broker;
 
--- The leased sync's booked transactions, kept once each; the answer is every kept transaction of the
+-- The leased sync's booked transactions (this claim's lease only), kept once each; the answer is every kept transaction of the
 -- accounts the session reaches (the last 13 months: the summary draws a year), for the summary. A transaction already kept
 -- keeps its first form.
 create function public.qorpera_record_bank_transactions(
@@ -192,6 +200,7 @@ create function public.qorpera_record_bank_transactions(
 	p_broker_capability_sha256 text,
 	p_secret_id uuid,
 	p_secret_version bigint,
+	p_lease_id uuid,
 	p_account_keys jsonb,
 	p_transactions jsonb
 )
@@ -218,7 +227,7 @@ begin
 	where sync.profile_id = v_authority.profile_id
 	for update;
 	if v_sync.profile_id is null or v_sync.secret_id is distinct from p_secret_id
-		or v_sync.secret_version is distinct from p_secret_version
+		or v_sync.secret_version is distinct from p_secret_version or v_sync.lease_id is distinct from p_lease_id
 		or v_sync.lease_until is null or v_sync.lease_until <= clock_timestamp() then
 		raise exception 'bank sync is not leased' using errcode = '55000';
 	end if;
@@ -246,13 +255,15 @@ begin
 	return jsonb_build_object('schema', 'qorpera.bank-transactions-kept/v1', 'transactions', v_kept);
 end
 $$;
-revoke all on function public.qorpera_record_bank_transactions(uuid, text, uuid, bigint, jsonb, jsonb)
+revoke all on function public.qorpera_record_bank_transactions(uuid, text, uuid, bigint, uuid, jsonb, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_record_bank_transactions(uuid, text, uuid, bigint, jsonb, jsonb)
+grant execute on function public.qorpera_record_bank_transactions(uuid, text, uuid, bigint, uuid, jsonb, jsonb)
 	to qorpera_secret_broker;
 
--- The end of a leased sync:
--- - current: a new summary; due again in six hours.
+-- The end of a leased sync (this claim's lease only):
+-- - current: a new summary; due again in six hours. What the fetch covered decides the next one: after a
+--   whole history ('deep') or the weeks since the newest kept day ('since') the next reads from there; a
+--   fetch that ran out of pages ('incomplete') leaves the next one deep again.
 -- - ended: the bank's consent ended; the summary kept is marked paused from today (the Bank page says
 --   so), and nothing is due until the member connects again.
 -- - failed: offered again after 15 minutes, doubling to six hours; the summary kept is unchanged.
@@ -262,10 +273,11 @@ create function public.qorpera_finish_bank_sync(
 	p_broker_capability_sha256 text,
 	p_secret_id uuid,
 	p_secret_version bigint,
+	p_lease_id uuid,
 	p_outcome text,
 	p_summary jsonb,
 	p_consent_until timestamptz,
-	p_deep boolean,
+	p_fetch text,
 	p_error text
 )
 returns jsonb
@@ -282,7 +294,8 @@ declare
 	v_summary jsonb;
 begin
 	v_authority := public.qorpera_bank_sync_authority(p_broker_authority_id, p_broker_capability_sha256);
-	if p_outcome is null or p_outcome not in ('current', 'ended', 'failed') or p_deep is null
+	if p_outcome is null or p_outcome not in ('current', 'ended', 'failed')
+		or p_fetch is null or p_fetch not in ('deep', 'since', 'incomplete')
 		or (p_outcome = 'current' and p_summary is null)
 		or (p_outcome <> 'current' and p_summary is not null)
 		or (p_outcome = 'failed' and v_error is null)
@@ -295,7 +308,7 @@ begin
 	where sync.profile_id = v_authority.profile_id
 	for update;
 	if v_sync.profile_id is null or v_sync.secret_id is distinct from p_secret_id
-		or v_sync.secret_version is distinct from p_secret_version
+		or v_sync.secret_version is distinct from p_secret_version or v_sync.lease_id is distinct from p_lease_id
 		or v_sync.lease_until is null or v_sync.lease_until <= v_now then
 		raise exception 'bank sync is not leased' using errcode = '55000';
 	end if;
@@ -313,9 +326,11 @@ begin
 				interval '6 hours')
 		end,
 		lease_until = null,
+		lease_id = null,
 		attempts = case when p_outcome = 'failed' then v_sync.attempts else 0 end,
 		last_error = case when p_outcome = 'failed' then v_error end,
-		deep_done = v_sync.deep_done or (p_outcome = 'current' and p_deep),
+		deep_done = case when p_outcome <> 'current' then v_sync.deep_done
+			when p_fetch = 'deep' then true when p_fetch = 'incomplete' then false else v_sync.deep_done end,
 		consent_until = coalesce(p_consent_until, v_sync.consent_until),
 		fetched_at = case when p_outcome = 'failed' then v_sync.fetched_at else v_now end,
 		summary = coalesce(v_summary, v_sync.summary),
@@ -328,9 +343,9 @@ begin
 		'summaryGeneration', v_sync.summary_generation, 'dueAt', v_sync.due_at);
 end
 $$;
-revoke all on function public.qorpera_finish_bank_sync(uuid, text, uuid, bigint, text, jsonb, timestamptz, boolean, text)
+revoke all on function public.qorpera_finish_bank_sync(uuid, text, uuid, bigint, uuid, text, jsonb, timestamptz, text, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_finish_bank_sync(uuid, text, uuid, bigint, text, jsonb, timestamptz, boolean, text)
+grant execute on function public.qorpera_finish_bank_sync(uuid, text, uuid, bigint, uuid, text, jsonb, timestamptz, text, text)
 	to qorpera_secret_broker;
 
 -- The shared vault's served companies with a bank sync due: one call a pass.
@@ -364,3 +379,51 @@ $$;
 revoke all on function public.qorpera_broker_principal_bank_syncs_due(uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_broker_principal_bank_syncs_due(uuid, text) to qorpera_secret_broker;
+
+-- A disconnected or deleted company's bank session is closed at Enable Banking: 'bank' joins the connectors
+-- whose stored versions are queued when their secret is revoked (the vault's revoke closes the sealed
+-- session), and the connectors a deleting company's finisher revokes. Nothing else of the queue changes.
+alter table public.qorpera_connector_token_revocations
+	drop constraint qorpera_connector_token_revocations_connector_id_check;
+alter table public.qorpera_connector_token_revocations
+	add constraint qorpera_connector_token_revocations_connector_id_check
+	check (connector_id in ('gmail', 'google_drive', 'github', 'bank'));
+drop trigger qorpera_cloud_secrets_queue_token_revocations on public.qorpera_cloud_secrets;
+create trigger qorpera_cloud_secrets_queue_token_revocations
+	after update of status on public.qorpera_cloud_secrets
+	for each row
+	when (old.status = 'active' and new.status = 'revoked' and new.connector_id in ('gmail', 'google_drive', 'github', 'bank'))
+	execute function public.qorpera_queue_connector_token_revocations();
+
+create or replace function public.qorpera_revoke_company_connector_secrets(p_profile_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_count integer;
+begin
+	-- Secrets first, in id order, then their grants: the order Disconnect uses for one secret.
+	perform 1 from public.qorpera_cloud_secrets
+	where profile_id = p_profile_id and status = 'active' and connector_id in ('gmail', 'google_drive', 'github', 'bank')
+	order by id
+	for update;
+	with revoked as (
+		update public.qorpera_cloud_secrets
+		set status = 'revoked', revoked_at = statement_timestamp(), updated_at = statement_timestamp()
+		where profile_id = p_profile_id and status = 'active' and connector_id in ('gmail', 'google_drive', 'github', 'bank')
+		returning id
+	), grants as (
+		update public.qorpera_cloud_secret_operation_grants as grant_row
+		set status = 'revoked', revoked_at = statement_timestamp()
+		from revoked
+		where grant_row.secret_id = revoked.id and grant_row.status = 'active'
+		returning grant_row.id
+	)
+	select count(*) into v_count from revoked;
+	return v_count;
+end
+$$;
+revoke all on function public.qorpera_revoke_company_connector_secrets(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;

@@ -2084,12 +2084,13 @@ export class PostgresCloudSecretBrokerAuthority
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_record_bank_transactions($1::uuid,$2::text,$3::uuid,$4::bigint,$5::jsonb,$6::jsonb) as result",
+			"select public.qorpera_record_bank_transactions($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::jsonb,$7::jsonb) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
 				input.secretId,
 				input.version,
+				input.lease,
 				JSON.stringify(input.accountKeys),
 				JSON.stringify(input.transactions),
 			],
@@ -2099,16 +2100,17 @@ export class PostgresCloudSecretBrokerAuthority
 
 	finishBankSync(input: Parameters<BankSyncAuthority["finishBankSync"]>[0], signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_finish_bank_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::text,$6::jsonb,$7::timestamptz,$8::boolean,$9::text) as result",
+			"select public.qorpera_finish_bank_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::text,$7::jsonb,$8::timestamptz,$9::text,$10::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
 				input.secretId,
 				input.version,
+				input.lease,
 				input.outcome,
 				input.summary === null ? null : JSON.stringify(input.summary),
 				input.consentUntil,
-				input.deep,
+				input.fetch,
 				input.error,
 			],
 			signal,

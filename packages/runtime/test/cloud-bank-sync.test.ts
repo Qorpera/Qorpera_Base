@@ -36,6 +36,7 @@ function claim(overrides: Record<string, unknown> = {}) {
 		environmentId: randomUUID(),
 		secretId: randomUUID(),
 		secretVersion: 1,
+		lease: "0c0c0c0c-0000-4000-8000-00000000c1a1",
 		keyId: "k1",
 		encryptedEnvelopeBase64: envelope.toString("base64"),
 		envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
@@ -55,6 +56,7 @@ function fixture(options: {
 	bankError?: Error;
 	fields?: Record<string, string>;
 	kept?: (sent: readonly KeptBankTransaction[]) => unknown[];
+	complete?: boolean;
 }) {
 	const finished: Parameters<BankSyncAuthority["finishBankSync"]>[0][] = [];
 	const recorded: Parameters<BankSyncAuthority["recordBankTransactions"]>[0][] = [];
@@ -103,7 +105,7 @@ function fixture(options: {
 				booked("2026-10-05", -99, "Figma", "ref-figma"),
 				{ ...booked("2026-10-21", -20, "Café"), status: "PDNG" },
 			],
-			complete: true,
+			complete: options.complete ?? true,
 		})),
 	};
 	const syncs = new CloudBankSyncs({
@@ -127,7 +129,8 @@ it("fetches each shared account deep after a connect, keeps the booked transacti
 	expect(await f.syncs.pass(signal)).toBe("current");
 	// The deep fetch asks for the longest history (no start day).
 	expect(f.bank.balances).toHaveBeenCalledWith("uid-1", expect.anything());
-	expect(f.bank.transactions).toHaveBeenCalledWith("uid-1", null, expect.anything());
+	// The deep fetch reads far back: up to 250 pages an account.
+	expect(f.bank.transactions).toHaveBeenCalledWith("uid-1", null, expect.anything(), 250);
 	// Only booked transactions are kept, each under the account's hash and its own key.
 	const accountKey = bankAccountKey(account);
 	expect(f.recorded[0]?.accountKeys).toEqual([accountKey]);
@@ -138,7 +141,8 @@ it("fetches each shared account deep after a connect, keeps the booked transacti
 	const done = f.finished[0];
 	expect(done).toMatchObject({
 		outcome: "current",
-		deep: true,
+		fetch: "deep",
+		lease: "0c0c0c0c-0000-4000-8000-00000000c1a1",
 		consentUntil: "2027-01-19T11:59:00.000000+00:00",
 		error: null,
 	});
@@ -163,11 +167,21 @@ it("after the deep fetch, fetches from the day the database names and summarizes
 		kept: (sent) => [older, ...sent.map(({ key: _key, ...rest }) => rest)],
 	});
 	expect(await f.syncs.pass(signal)).toBe("current");
-	expect(f.bank.transactions).toHaveBeenCalledWith("uid-1", "2026-10-07", expect.anything());
+	expect(f.bank.transactions).toHaveBeenCalledWith("uid-1", "2026-10-07", expect.anything(), 40);
 	const summary = f.finished[0]?.summary;
-	expect(f.finished[0]?.deep).toBe(false);
+	expect(f.finished[0]?.fetch).toBe("since");
+	expect(f.recorded[0]?.lease).toBe("0c0c0c0c-0000-4000-8000-00000000c1a1");
 	// June's payment, kept from an earlier fetch, is in the year's months.
 	expect(summary?.months.find((month) => month.month === "2026-06")?.in).toBe(12_000);
+});
+
+it("summarizes a fetch the bank had more pages for, and leaves the next one deep again", async () => {
+	for (const deep of [true, false]) {
+		const f = fixture({ claim: claim({ deep, since: deep ? null : "2026-10-07" }), complete: false });
+		expect(await f.syncs.pass(signal)).toBe("current");
+		expect(f.finished[0]).toMatchObject({ outcome: "current", fetch: "incomplete" });
+		expect(f.finished[0]?.summary?.schema).toBe("qorpera.bank-summary/v1");
+	}
 });
 
 it("reports an ended consent so the member is asked to connect again", async () => {

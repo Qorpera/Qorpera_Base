@@ -162,6 +162,8 @@ const STATE_TTL_MS = 10 * 60_000;
 /** A bank sign-in (MitID, picking accounts) takes longer than a provider consent page. */
 const BANK_STATE_TTL_MS = 20 * 60_000;
 const CONFIRM_TTL_MS = 5 * 60_000;
+/** A bank's code is turned into a session only while the ticket has this long left to seal it. */
+const BANK_SEAL_MARGIN_MS = 30_000;
 /** The longest consent asked for: PSD2 allows 180 days, and a bank may allow less. */
 const BANK_CONSENT_MS = 180 * 24 * 3600_000;
 const BANK_NAME = /^[^\s\0][^\0]{0,199}$/;
@@ -187,6 +189,8 @@ interface PendingAuthorization {
 	readonly expiresAt: number;
 	/** The bank the member picked (bank connections only). */
 	readonly bankName?: string;
+	/** When the capture ticket ends (bank connections only): nothing outlives it. */
+	readonly ticketExpiresAt?: number;
 }
 
 /** A provider answer parked until the starting browser confirms it. */
@@ -202,6 +206,7 @@ interface PendingConfirmation {
 	readonly browserProofSha256: string;
 	readonly expiresAt: number;
 	readonly bankName?: string;
+	readonly ticketExpiresAt?: number;
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -284,7 +289,7 @@ export class CloudConnectorOAuthFlows {
 	readonly #fetch: typeof fetch;
 	readonly #now: () => number;
 	readonly #random: (bytes: number) => Uint8Array;
-	readonly #bank: Pick<EnableBankingClient, "banks" | "authorize" | "createSession"> | undefined;
+	readonly #bank: Pick<EnableBankingClient, "banks" | "authorize" | "createSession" | "closeSession"> | undefined;
 	readonly #pending = new Map<string, PendingAuthorization>();
 	readonly #confirmations = new Map<string, PendingConfirmation>();
 
@@ -296,7 +301,7 @@ export class CloudConnectorOAuthFlows {
 		now?: () => number;
 		random?: (bytes: number) => Uint8Array;
 		/** Enable Banking, for the company's bank connection; absent, no bank sign-in starts. */
-		bank?: Pick<EnableBankingClient, "banks" | "authorize" | "createSession">;
+		bank?: Pick<EnableBankingClient, "banks" | "authorize" | "createSession" | "closeSession">;
 	}) {
 		const callback = new URL(options.callbackUrl);
 		if (
@@ -409,13 +414,17 @@ export class CloudConnectorOAuthFlows {
 
 	/** Starts a bank connection: the bank must be one Enable Banking reaches for that kind of customer, and
 	 * the consent lasts as long as the bank allows, up to 180 days. Enable Banking answers with the bank's own
-	 * sign-in page; its callback comes back to the same route as every other connector's. */
+	 * sign-in page; its callback comes back to the same route as every other connector's. The sign-in may take
+	 * twenty minutes, but never longer than the capture ticket that seals it (`ticketExpiresAt`). */
 	async beginBank(
-		input: CloudConnectorOAuthBegin & { readonly bank: CloudBankChoice },
+		input: CloudConnectorOAuthBegin & { readonly bank: CloudBankChoice; readonly ticketExpiresAt: string },
 		signal: AbortSignal,
 	): Promise<CloudConnectorOAuthStarted> {
 		this.#checkStart(input);
 		const choice = input.bank;
+		const ticketExpiresAt = Date.parse(input.ticketExpiresAt);
+		if (!Number.isFinite(ticketExpiresAt) || ticketExpiresAt - this.#now() <= BANK_SEAL_MARGIN_MS)
+			throw new Error("Connector OAuth start is invalid");
 		if (
 			input.connectorId !== BANK_CONNECTOR_ID ||
 			!choice ||
@@ -449,7 +458,7 @@ export class CloudConnectorOAuthFlows {
 		);
 		// The room is counted again: other starts may have come in while Enable Banking answered.
 		const returnTo = this.#admit(input, companyId);
-		const expiresAt = this.#now() + BANK_STATE_TTL_MS;
+		const expiresAt = Math.min(this.#now() + BANK_STATE_TTL_MS, ticketExpiresAt);
 		this.#pending.set(sha256(state), {
 			stateSha256: sha256(state),
 			ticketId: input.ticketId.toLowerCase(),
@@ -461,6 +470,7 @@ export class CloudConnectorOAuthFlows {
 			browserProofSha256: input.browserProofSha256,
 			expiresAt,
 			bankName: bank.name,
+			ticketExpiresAt,
 		});
 		return { authorizationUrl: authorization.url, expiresAt: new Date(expiresAt).toISOString() };
 	}
@@ -508,8 +518,9 @@ export class CloudConnectorOAuthFlows {
 			code: query.code,
 			codeVerifier: pending.codeVerifier,
 			browserProofSha256: pending.browserProofSha256,
-			expiresAt: this.#now() + CONFIRM_TTL_MS,
+			expiresAt: Math.min(this.#now() + CONFIRM_TTL_MS, pending.ticketExpiresAt ?? Number.POSITIVE_INFINITY),
 			...(pending.bankName === undefined ? {} : { bankName: pending.bankName }),
+			...(pending.ticketExpiresAt === undefined ? {} : { ticketExpiresAt: pending.ticketExpiresAt }),
 		});
 		return { connectorId: pending.connectorId, returnTo: pending.returnTo, confirmation };
 	}
@@ -591,6 +602,9 @@ export class CloudConnectorOAuthFlows {
 	async #confirmBank(parked: PendingConfirmation, signal: AbortSignal): Promise<CloudConnectorOAuthCompletion> {
 		const bankClient = this.#bank;
 		if (!bankClient) throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
+		// A session made too late to seal would stay open at Enable Banking with no one holding it.
+		if ((parked.ticketExpiresAt ?? 0) - this.#now() <= BANK_SEAL_MARGIN_MS)
+			throw new CloudConnectorOAuthError("expired", parked.returnTo, parked.connectorId);
 		let session: EnableBankingSession;
 		try {
 			session = await bankClient.createSession(parked.code, signal);
@@ -619,6 +633,18 @@ export class CloudConnectorOAuthFlows {
 			},
 			accountLabel: label,
 		};
+	}
+
+	/** A bank session the vault could not seal is closed at Enable Banking again, so no consent is left open;
+	 * a failure here is only logged by fact. */
+	async abandon(completion: CloudConnectorOAuthCompletion, signal: AbortSignal): Promise<void> {
+		const session = completion.fields.session_id;
+		if (completion.connectorId !== BANK_CONNECTOR_ID || !session || !this.#bank?.closeSession) return;
+		try {
+			await this.#bank.closeSession(session, signal);
+		} catch {
+			console.error("Bank connection: a session that could not be sealed was not closed at Enable Banking.");
+		}
 	}
 
 	async #exchange(

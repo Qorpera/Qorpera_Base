@@ -59,6 +59,7 @@ function enableBanking(options: { accounts?: unknown[] } = {}) {
 				url: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
 				authorization_id: "auth-1",
 			});
+		if (url.pathname.startsWith("/sessions/") && init?.method === "DELETE") return Response.json({});
 		if (url.pathname === "/sessions")
 			return Response.json({
 				session_id: "session-7f3e",
@@ -80,17 +81,17 @@ function enableBanking(options: { accounts?: unknown[] } = {}) {
 	return { client, calls, fetchImplementation };
 }
 
-function flows(bank = enableBanking()) {
+function flows(bank = enableBanking(), now = () => NOW) {
 	return new CloudConnectorOAuthFlows({
 		clients: {},
 		callbackUrl: CALLBACK,
 		returnOrigins: [WEB],
-		now: () => NOW,
+		now,
 		bank: bank.client,
 	});
 }
 
-function bankStart(companyId = randomUUID()) {
+function bankStart(companyId = randomUUID(), ticketMinutes = 30) {
 	const browserProof = randomBytes(32).toString("base64url");
 	return {
 		browserProof,
@@ -102,6 +103,7 @@ function bankStart(companyId = randomUUID()) {
 			returnTo: `${WEB}/#/settings`,
 			browserProofSha256: proofHash(browserProof),
 			bank: { name: "Danske Bank", country: "DK", psuType: "business" as const },
+			ticketExpiresAt: new Date(NOW + ticketMinutes * 60_000).toISOString(),
 		},
 	};
 }
@@ -132,6 +134,52 @@ it("starts a bank sign-in at Enable Banking with the shared callback, a company-
 	expect(started.expiresAt).toBe(new Date(NOW + 20 * 60_000).toISOString());
 });
 
+it("never lets a bank sign-in outlive its capture ticket, and makes no session for a return after it", async () => {
+	const bank = enableBanking();
+	let now = NOW;
+	const oauth = flows(bank, () => now);
+	// The capture ticket lasts ten minutes: the sign-in is offered for those ten, not twenty.
+	const { input } = bankStart(randomUUID(), 10);
+	const started = await oauth.beginBank(input, signal);
+	expect(started.expiresAt).toBe(new Date(NOW + 10 * 60_000).toISOString());
+	const state = (bank.calls[1]?.body as Record<string, string>).state as string;
+	// Back from the bank after twelve minutes: refused before any session is made.
+	now = NOW + 12 * 60_000;
+	expect(() => oauth.receive({ state, code: "late-code" })).toThrow(expect.objectContaining({ reason: "expired" }));
+	// Back with half a minute left: the confirm comes too close to the ticket's end to seal, so nothing is made.
+	const second = bankStart(randomUUID(), 10);
+	now = NOW;
+	await oauth.beginBank(second.input, signal);
+	now = NOW + 9 * 60_000 + 40_000;
+	const receipt = oauth.receive({ state: (bank.calls[3]?.body as Record<string, string>).state, code: "c" });
+	await expect(
+		oauth.confirm(
+			{ ticketId: second.input.ticketId, confirmation: receipt.confirmation, browserProof: second.browserProof },
+			signal,
+		),
+	).rejects.toMatchObject({ reason: "expired" });
+	expect(bank.calls.some((call) => call.path === "/sessions")).toBe(false);
+	// A ticket that is nearly over starts nothing.
+	now = NOW;
+	await expect(oauth.beginBank(bankStart(randomUUID(), 0.25).input, signal)).rejects.toThrow("invalid");
+});
+
+it("closes a bank session the vault could not seal, and leaves other connectors alone", async () => {
+	const bank = enableBanking();
+	const oauth = flows(bank);
+	const completion = {
+		ticketId: randomUUID(),
+		captureCapability: "c".repeat(43),
+		companyId: randomUUID(),
+		returnTo: `${WEB}/`,
+		accountLabel: null,
+	};
+	await oauth.abandon({ ...completion, connectorId: "bank", fields: { session_id: "session-7f3e" } }, signal);
+	expect(bank.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /sessions/session-7f3e"]);
+	await oauth.abandon({ ...completion, connectorId: "gmail", fields: { refresh_token: "x" } }, signal);
+	expect(bank.calls).toHaveLength(1);
+});
+
 it("refuses a bank Enable Banking does not list, a malformed choice, and a bank start without the application", async () => {
 	const oauth = flows();
 	const { input } = bankStart();
@@ -144,7 +192,12 @@ it("refuses a bank Enable Banking does not list, a malformed choice, and a bank 
 	await expect(oauth.beginBank({ ...input, connectorId: "gmail" }, signal)).rejects.toThrow("invalid");
 	// The bank is not a catalog connector: the plain start refuses it.
 	expect(() => oauth.begin(input)).toThrow("unknown");
-	const without = new CloudConnectorOAuthFlows({ clients: {}, callbackUrl: CALLBACK, returnOrigins: [WEB] });
+	const without = new CloudConnectorOAuthFlows({
+		clients: {},
+		callbackUrl: CALLBACK,
+		returnOrigins: [WEB],
+		now: () => NOW,
+	});
 	expect(without.available()).toEqual([]);
 	await expect(without.beginBank(input, signal)).rejects.toThrow("unavailable");
 });
