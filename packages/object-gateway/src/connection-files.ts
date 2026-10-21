@@ -5,7 +5,6 @@ import {
 	type ConnectionFile,
 	HOOK_PROOFS,
 	type HookFile,
-	isCompanyFolderReadme,
 	type MailboxFile,
 	parseCompanyStateFile,
 	setCompanyStateSettings,
@@ -511,10 +510,6 @@ export class ConnectionFileWriter {
 			}
 		}
 		let path = current?.path ?? (claim.path as string);
-		// connections/README.md says what the folder is for and is never an account's file: a new file that would take
-		// its name starts at -2.
-		const readme = !current && isCompanyFolderReadme(path);
-		if (readme) path = numberedConnectionPath(path, 2);
 		const next =
 			claim.subjectKind === "vault"
 				? connectionFileText(path, claim.settings as ConnectionSettings, existing)
@@ -565,7 +560,7 @@ export class ConnectionFileWriter {
 			if (unit.outcome === "saved") return;
 			// A new file whose name another file took gets the next number; anything else is the claim's problem.
 			if (current || unit.reason !== "exists") return problem(reasonCode(unit.reason ?? unit.outcome));
-			path = numberedConnectionPath(claim.path as string, attempt + (readme ? 2 : 1));
+			path = numberedConnectionPath(claim.path as string, attempt + 1);
 		}
 		problem("name_taken");
 	}

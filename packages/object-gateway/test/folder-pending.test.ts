@@ -884,7 +884,6 @@ describe("a view's pending changes", () => {
 			vision: null,
 			"vision/vision.md": "v",
 			agents: null,
-			"agents/README.md": "r",
 			"agents/nora": null,
 			"agents/nora/agent.md": "a",
 			docs: null,
@@ -895,8 +894,6 @@ describe("a view's pending changes", () => {
 		refused(() => f.view.unlink("vision/vision.md"), "NOT_PERMITTED");
 		refused(() => f.view.unlink("agents/nora/agent.md"), "NOT_PERMITTED");
 		refused(() => f.view.rename("agents/nora", "docs/nora"), "NOT_PERMITTED");
-		// agents/README.md is a note, not an agent's folder: it moves as any file does.
-		f.view.rename("agents/README.md", "docs/agents.md");
 		refused(() => f.view.mkdir("docs/con.txt"), "BAD_REQUEST");
 		refused(() => f.view.mkdir("docs/a:b"), "BAD_REQUEST");
 		refused(() => f.view.mkdir("Secrets"), "NOT_PERMITTED");
