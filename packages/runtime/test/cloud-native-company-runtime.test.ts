@@ -2888,9 +2888,11 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again. Since the scope reset (C6b) the catalog has no
 	// interface_read and no save_interface, so they moved again. On 21 October 2026 company_edit and company_move came
 	// after company_write, and the file tools' and the dispatcher's descriptions changed (larger reads and writes,
-	// saveTo), so they moved again. Since the platform's folders moved under QorperaOS/ (21 October 2026), table_read's,
-	// table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there, so they moved
-	// again; every other tool is as on master.
+	// saveTo), so they moved again. When the company's own work was kept by area first (21 October 2026), company_write's,
+	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again. Since
+	// the platform's folders moved under QorperaOS/ (21 October 2026), table_read's, table_write's, organize_sidebar's,
+	// hire_agent's and create_group_chat's descriptions name them there, so they moved again; every other tool is as on
+	// master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",

@@ -57,21 +57,51 @@ it("puts the computer's work in the company folder at /company, not on a workben
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
 });
 
-it("tells agents to make folders for a category of files while a member's or assignment's folder always stands", () => {
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Create a folder only as the home for a category of files");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never create a folder on your own just to hold a single file");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"a folder a member asks for, or one your assignment names (such as a worker's output folder), is always fine",
-	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("Do not add files, folders");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"When no folder fits, even for one file, create one named for the file's category",
-	);
+// Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
+it("tells every run, a worker's and a routine's too, to keep the company's work by area first, then by kind", () => {
+	const f = nativeCompanyContextFixture();
+	const runs = [
+		cloudCompanyRuntimeInstructions(null, false),
+		cloudCompanyRuntimeInstructions(
+			{
+				kind: "agent",
+				source: { kind: "worker-dispatch", id: f.context.identity.runId, occurrenceKey: "w" },
+			} as never,
+			false,
+		),
+		cloudCompanyRuntimeInstructions(
+			{
+				kind: "routine",
+				source: { kind: "schedule", id: randomUUID(), occurrenceKey: "r" },
+				routine: null,
+			} as never,
+			false,
+		),
+	];
+	for (const instructions of runs)
+		for (const rule of [
+			"never put the company's work in them. code/ holds git repositories only.",
+			"\n# Keeping the company's work in order\nEverything outside the platform's folders is the company's own work. Keep it so a person finds anything in a few clicks:\n",
+			"A place a member or your assignment names always wins.",
+			"The top level holds areas of the business: sales/, marketing/, product/, finance/, legal/, operations/, people/ and so on. Use an area that fits, and make an area's folder when its first file arrives. Never make two folders for one area (no selling/ beside sales/).",
+			"When an area gets crowded (about 15 files), group its files into subfolders by kind, such as sales/proposals/ or product/designs/, and move the files you made into them.",
+			"may get its own folder in its area, such as marketing/spring-launch/",
+			"Name files and folders in lowercase words joined by hyphens",
+			"Add a date only when it is part of what the thing is (board-meeting-2026-10.md). Never use final, v2, copy, new or your own name.",
+			"One file per thing: update the file instead of making a new copy. The folder keeps every version.",
+			"Your own notes and scratch go in your memory, not in the company's folders. Delete scratch files you made that nobody needs.",
+			"Move or rename files you made that are out of place. Before you move or rename anyone else's work, or delete, overwrite or reorganize it on an unclear instruction, say exactly what you would change and wait for a yes.",
+			"Link every file you made or changed as a markdown link with the folder: scheme",
+		])
+			expect(instructions).toContain(rule);
+	// The kind-first rule of the first 21 October amendment is gone, in the prompt and in the tools' guidance.
+	for (const text of [CLOUD_COMPANY_RUNTIME_INSTRUCTIONS, CLOUD_TOOL_RESULT_INSTRUCTIONS])
+		expect(text).not.toMatch(
+			/category|kind of thing|growth\/|acme-nda|designs\/sales-dashboard|just to hold a single file/,
+		);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS.match(/wait for a yes/g)).toHaveLength(1);
 	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
-		"When a member or your assignment named that folder, or a category of files needs it as its home, create it with company_mkdir",
-	);
-	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
-		"if none fits, create one named for its category (contracts/, not acme-nda/)",
+		"When that folder is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir and repeat the call; otherwise write the file in the folder where it belongs.",
 	);
 });
 
@@ -1426,9 +1456,9 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
 // images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
 // folder at /company replaced the workbench line), and taken again for the 21 October 2026 amendment (how agents start
-// work and use the company folder: constitution v3, overlay v5, the new rules), and taken again for QorperaOS (the
-// platform's folders under QorperaOS/, overlay v6; Jonas, 21 October 2026). A change to either is a change to every
-// run's bytes.
+// work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
+// work was kept by area first, then by kind, and for QorperaOS (the platform's folders under QorperaOS/, overlay v6)
+// (Jonas, 21 October 2026). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
@@ -1479,13 +1509,17 @@ it("tells every agent the seeded folders, how to make files and how to link them
 		"At its top, the platform keeps QorperaOS/, which holds the platform's own folders, and code/:\n- QorperaOS/vision/ — ",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"\n- code/ — Code projects (git repositories).\nEverything else is the company's own work, in category folders the agents create.",
+		"\n- code/ — Code projects (git repositories).\nThey belong to the platform:",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("the company's vision, QorperaOS/vision/vision.md: the file's");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("such as QorperaOS/vision/vision.md. Keep the first messages");
-	expect(CLOUD_FOLDER_LINK_EXAMPLE).toBe("[sales-dashboard.html](folder:designs/sales-dashboard.html)");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		`Link a file you made or changed as a markdown link with the folder: scheme and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}`,
+		"Everything outside the platform's folders is the company's own work.",
+	);
+	expect(CLOUD_FOLDER_LINK_EXAMPLE).toBe("[sales-dashboard.html](folder:sales/sales-dashboard.html)");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("take company paths such as sales/sales-dashboard.html");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		`Link every file you made or changed as a markdown link with the folder: scheme and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}`,
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Write it self-contained, with its CSS and JavaScript inline and nothing loaded from the network",
@@ -1493,7 +1527,9 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"A file the member asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
 	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("never for a team (growth/)");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"its context names the company folder where the results belong, such as product/designs/.",
+	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(
 		/work\/report\.md|docs\/plan\.md|private scratch|public websites/,
 	);

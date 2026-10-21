@@ -97,7 +97,7 @@ export function path(value: JsonValue | undefined, root: boolean): string {
 		return parseCloudCompanyPath(value as string, root);
 	} catch {
 		throw new CloudToolArgumentRefusal(
-			`path must be a company-relative path like designs/sales-dashboard.html${root ? ", or empty for the top of the folder" : ""} (no leading or trailing /)`,
+			`path must be a company-relative path like sales/sales-dashboard.html${root ? ", or empty for the top of the folder" : ""} (no leading or trailing /)`,
 		);
 	}
 }
@@ -246,7 +246,7 @@ function mutationText(
 							? "COMPANY_FILE_VERSION_CHANGED: nothing was moved; something in the folder changed after your listing. List it again with company_list and move it with that listing's asOfSeq under a new operationKey."
 							: `COMPANY_FILE_VERSION_CHANGED: nothing was ${tool === "company_move" ? "moved" : "written"}; the path ${reason === "missing" ? "is gone" : "changed"} since your version. Read it again and make the change on its current version under a new operationKey.`
 						: reason === "parent_missing"
-							? "COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When a member or your assignment named it, or a category of files needs it as its home, create it with company_mkdir first (outermost first) and repeat with a new operationKey; otherwise put a single file in an existing folder where it fits."
+							? "COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When it is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir first (outermost first) and repeat with a new operationKey; otherwise write the file in the folder where it belongs."
 							: reason === "review_required"
 								? tool === "company_delete"
 									? "Nothing was deleted: the deletion needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
@@ -648,7 +648,7 @@ export function cloudFolderFileTools(options: {
 			source: "company_file",
 			// Up to 512 KiB of text, escaped (21 October 2026).
 			maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-			description: `Write UTF-8 text (up to ${MAX_WRITE_BYTES / 1024} KiB) to one file of the company folder, such as a page, a document or a self-contained HTML prototype. To change part of a long file, use company_edit instead. Read it first and give its version as expectedVersion, or null to create a file that does not exist. The folder it goes in must exist (COMPANY_FILE_PARENT_MISSING otherwise; create a folder with company_mkdir for a category of files). A changed version is COMPANY_FILE_VERSION_CHANGED and nothing is written: read again and redo the change on its current version. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when it was written.`,
+			description: `Write UTF-8 text (up to ${MAX_WRITE_BYTES / 1024} KiB) to one file of the company folder, such as a page, a document or a self-contained HTML prototype. To change part of a long file, use company_edit instead. Read it first and give its version as expectedVersion, or null to create a file that does not exist. The folder it goes in must exist (COMPANY_FILE_PARENT_MISSING otherwise; make it first with company_mkdir). A changed version is COMPANY_FILE_VERSION_CHANGED and nothing is written: read again and redo the change on its current version. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when it was written.`,
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,
@@ -920,7 +920,7 @@ export function cloudFolderFileTools(options: {
 			name: "company_mkdir" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
 			description:
-				"Create one folder in the company folder: the home for a category of files, or a folder a member or your assignment names; never one you invent for a single file. expectedVersion is null. The folder it goes in must exist (COMPANY_FILE_PARENT_MISSING otherwise): create missing folders outermost first. Keep operationKey for the same change.",
+				"Create one folder in the company folder: an area of the business when its first file arrives (sales/), a subfolder by kind in a crowded area (sales/proposals/), a folder for one project in its area, or a folder a member or your assignment names. Name it in lowercase words joined by hyphens. expectedVersion is null. The folder it goes in must exist (COMPANY_FILE_PARENT_MISSING otherwise): create missing folders outermost first. Keep operationKey for the same change.",
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,
