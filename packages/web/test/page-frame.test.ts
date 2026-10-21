@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY, PageFrames, withoutLinkHints } from "../src/ui/page-frame.ts";
+import { framePage, PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY, PageFrames } from "../src/ui/page-frame.ts";
 
 // Read from the package root, where the tests run.
 const headers = readFileSync(resolve("public/_headers"), "utf8");
@@ -85,12 +85,12 @@ describe("an HTML page's frame", () => {
 	it("hands a page over without the link hints the browser would act on whatever the policy says", () => {
 		// A page without them goes exactly as written.
 		const plain = '<!doctype html><title>Plan</title><link rel="stylesheet" href="data:text/css,p{}"><p>Hi';
-		expect(withoutLinkHints(plain)).toBe(plain);
+		expect(framePage(plain)).toBe(plain);
 		const page = `<!DOCTYPE html><html lang="da"><head><meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="DNS-Prefetch" href="//cdn.example">
 <link rel="stylesheet preconnect" href="https://x.example"><link rel="icon" href="data:,"></head>
 <body><p>Sales</p><script>const a = "<link rel=preconnect>";</script></body></html>`;
-		const handed = withoutLinkHints(page);
+		const handed = framePage(page);
 		expect(handed).not.toMatch(/fonts\.googleapis|cdn\.example|x\.example/);
 		expect(handed.startsWith('<!DOCTYPE html><html lang="da">')).toBe(true);
 		expect(handed).toContain('<link rel="icon" href="data:,">');
@@ -105,16 +105,39 @@ describe("an HTML page's frame", () => {
 		stop.abort();
 	});
 
-	it("takes WebRTC and frames inside the page away before the page runs", () => {
+	it("hands a page over with its declarative shadow roots left as plain templates, in templates too", () => {
+		const page = `<!doctype html><body><div><template shadowrootmode="closed"><p>In</p></template></div>
+<template id="outer"><section><template SHADOWROOTMODE="open" shadowrootdelegatesfocus><b>Deep</b></template></section></template>
+<template shadowroot="open"><i>Old</i></template><template id="plain"><u>Plain</u></template></body>`;
+		const handed = framePage(page);
+		expect(handed).not.toMatch(/shadowroot(mode)?=/i);
+		expect(handed).toContain("<div><template><p>In</p></template></div>");
+		expect(handed).toContain(
+			'<template id="outer"><section><template shadowrootdelegatesfocus=""><b>Deep</b></template></section></template>',
+		);
+		expect(handed).toContain('<template id="plain"><u>Plain</u></template>');
+	});
+
+	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {
 		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
-		// Every RTC interface goes for good, before the page is taken.
-		expect(script).toContain("if (/^(?:webkit|moz)?RTC/.test(name))");
-		expect(script).toContain("{ value: undefined, writable: false, configurable: false }");
-		// Frames are taken out as they are put in, with functions taken before the page runs.
-		expect(script).toContain('const frames = "iframe, frame, object, embed, portal, fencedframe";');
-		expect(script).toContain("}).observe(document, { childList: true, subtree: true });");
-		expect(script.indexOf("observe(document")).toBeLessThan(script.indexOf("document.write(data.html)"));
-		expect(script.indexOf("RTC/.test(name)")).toBeLessThan(script.indexOf("document.write(data.html)"));
+		const guarded = (text: string) => {
+			expect(script, text).toContain(text);
+			expect(script.indexOf(text), text).toBeLessThan(script.indexOf('addEventListener("message"'));
+		};
+		// Every RTC interface goes for good.
+		guarded("if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);");
+		guarded("Object.defineProperty(target, name, { value, writable: false, configurable: false })");
+		// Frames go as they are put into the document or any shadow root the page makes, never cloned along.
+		guarded('const frames = "iframe, frame, object, embed, portal, fencedframe";');
+		guarded("watch(document);");
+		guarded('define(Element.prototype, "attachShadow", function attachShadowWatched(init) {');
+		guarded("{ mode: options.mode, delegatesFocus: options.delegatesFocus, slotAssignment: options.slotAssignment }");
+		// No markup makes a shadow root the frame doesn't watch.
+		guarded('[Element.prototype, "setHTMLUnsafe"],');
+		guarded('[Document, "parseHTMLUnsafe"],');
+		guarded('if (apply(includes, apply(lower, written, []), ["shadowroot"])) return;');
+		guarded('define(Document.prototype, "write", pageWrite(write));');
+		guarded('define(Document.prototype, "open", function openRefused() {');
 	});
 
 	it("keeps the frame document's policy and the site's rule for it in step, and locked down", () => {

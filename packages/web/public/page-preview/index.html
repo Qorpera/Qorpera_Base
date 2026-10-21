@@ -18,14 +18,10 @@
 	// Only a frame shows a page, and only the one its own app hands it.
 	if (window.parent === window) return;
 	const app = window.parent;
-	// WebRTC reaches the network whatever the policy says (STUN and TURN servers, and the names they are given), so its
-	// interfaces are gone for good before the page runs.
-	for (const name of Object.getOwnPropertyNames(window))
-		if (/^(?:webkit|moz)?RTC/.test(name))
-			Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false });
-	// A frame inside the page would be a window of its own, with WebRTC: each one is taken out as soon as it is put in,
-	// before it loads. The page can't undo this: every function used here is taken now, before the page runs.
+	// Every function used below is taken now, before the page runs, so the page can't change what it does.
 	const apply = Reflect.apply;
+	const define = (target, name, value) =>
+		Object.defineProperty(target, name, { value, writable: false, configurable: false });
 	const getter = (prototype, name) => Object.getOwnPropertyDescriptor(prototype, name).get;
 	const nodeType = getter(Node.prototype, "nodeType");
 	const addedNodes = getter(MutationRecord.prototype, "addedNodes");
@@ -33,26 +29,84 @@
 	const item = NodeList.prototype.item;
 	const matches = Element.prototype.matches;
 	const within = Element.prototype.querySelectorAll;
+	const withinFragment = DocumentFragment.prototype.querySelectorAll;
 	const remove = Element.prototype.remove;
+	const observe = MutationObserver.prototype.observe;
+	const attachShadow = Element.prototype.attachShadow;
+	const [open, write, writeln, close] = ["open", "write", "writeln", "close"].map((name) => Document.prototype[name]);
+	const join = Array.prototype.join;
+	const lower = String.prototype.toLowerCase;
+	const includes = String.prototype.includes;
+
+	// WebRTC reaches the network whatever the policy says (STUN and TURN servers, and the names they are given), so its
+	// interfaces are gone for good.
+	for (const name of Object.getOwnPropertyNames(window)) if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
+
+	// A frame inside the page would be a window of its own, with WebRTC. Each one is taken out as soon as it is put
+	// into the page or into a shadow tree, before it loads: the document and every shadow root are watched from the
+	// start. A shadow root is only ever made by attachShadow (watched at once, and never cloned along with its host);
+	// the ways to make one from markup are gone (the app takes declarative shadow roots out of the page it hands over,
+	// and a write during the page's parse can't add one).
 	const frames = "iframe, frame, object, embed, portal, fencedframe";
 	const each = (list, act) => {
 		for (let index = apply(count, list, []) - 1; index >= 0; index--) act(apply(item, list, [index]));
 	};
 	const strip = (node) => {
-		if (apply(nodeType, node, []) !== 1) return;
-		if (apply(matches, node, [frames])) apply(remove, node, []);
-		else each(apply(within, node, [frames]), (inner) => apply(remove, inner, []));
+		const type = apply(nodeType, node, []);
+		if (type === 1 && apply(matches, node, [frames])) apply(remove, node, []);
+		else if (type === 1) each(apply(within, node, [frames]), (inner) => apply(remove, inner, []));
+		else if (type === 11) each(apply(withinFragment, node, [frames]), (inner) => apply(remove, inner, []));
 	};
-	new MutationObserver((records) => {
+	const watcher = new MutationObserver((records) => {
 		for (let index = 0; index < records.length; index++) each(apply(addedNodes, records[index], []), strip);
-	}).observe(document, { childList: true, subtree: true });
+	});
+	const watch = (target) => apply(observe, watcher, [target, { childList: true, subtree: true }]);
+	watch(document);
+	define(Element.prototype, "attachShadow", function attachShadowWatched(init) {
+		const options = init ?? {};
+		const root = apply(attachShadow, this, [
+			{ mode: options.mode, delegatesFocus: options.delegatesFocus, slotAssignment: options.slotAssignment },
+		]);
+		watch(root);
+		return root;
+	});
+	for (const [target, name] of [
+		[Element.prototype, "setHTMLUnsafe"],
+		[ShadowRoot.prototype, "setHTMLUnsafe"],
+		[Element.prototype, "setHTML"],
+		[ShadowRoot.prototype, "setHTML"],
+		[Document, "parseHTMLUnsafe"],
+		[Document, "parseHTML"],
+	])
+		if (name in target) define(target, name, undefined);
+
+	// The page may write into itself while it is parsed, as pages do, but never a shadow root, and nothing after.
+	let parsing = false;
+	let written = "";
+	const pageWrite = (original) =>
+		function writeDuringParse(...parts) {
+			if (!parsing) return;
+			const text = apply(join, parts, [""]);
+			written += text;
+			if (apply(includes, apply(lower, written, []), ["shadowroot"])) return;
+			apply(original, this, [text]);
+		};
+	define(Document.prototype, "write", pageWrite(write));
+	define(Document.prototype, "writeln", pageWrite(writeln));
+	define(Document.prototype, "open", function openRefused() {
+		return this;
+	});
+	define(Document.prototype, "close", function closeRefused() {});
+
 	addEventListener("message", function take(event) {
 		const data = event.data;
 		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
 		removeEventListener("message", take);
-		document.open();
-		document.write(data.html);
-		document.close();
+		parsing = true;
+		apply(open, document, []);
+		apply(write, document, [data.html]);
+		apply(close, document, []);
+		parsing = false;
 	});
 	app.postMessage({ type: "qorpera-page-ready" }, "*");
 })();

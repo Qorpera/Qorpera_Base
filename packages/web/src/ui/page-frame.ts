@@ -7,10 +7,12 @@
  *   no request, connection or frame of another site;
  * - no browser lets a policy stop WebRTC, so the frame document takes its interfaces away before the page runs, and
  *   takes out any frame put into the page before it loads (a frame would be a window of its own, with them);
+ *   A frame in a shadow tree counts too: the frame document watches every shadow root the page makes, and the
+ *   page's own declarative shadow roots are taken out before it is handed over (framePage);
  * - link hints that make the browser look up a name or open a connection (dns-prefetch, preconnect) obey no policy
- *   either: the page's own are taken out before it is handed over (withoutLinkHints). A hint the page's script adds
- *   while it runs still reaches the network: nothing in a page can stop the browser acting on it. What it can carry
- *   out is what the frame holds: the page itself and what the member types into it, nothing of the app;
+ *   either: the page's own are taken out before it is handed over (framePage). A hint the page's script adds while
+ *   it runs still reaches the network: nothing in a page can stop the browser acting on it. What it can carry out is
+ *   what the frame holds: the page itself and what the member types into it, nothing of the app;
  * - this app's own policy (default-src 'self', so frame-src 'self') keeps the frame on this site, and every page of
  *   this site but the frame document refuses to be framed (frame-ancestors 'none').
  * The app's policy also governs a srcdoc or blob: frame, whose inline styles and scripts it would block: that is why
@@ -28,18 +30,38 @@ function isReady(data: unknown): boolean {
 	return typeof data === "object" && data !== null && (data as { type?: unknown }).type === PAGE_READY;
 }
 
-/** The page without its dns-prefetch and preconnect links. A page that has none is handed over exactly as written;
- * one that has some is handed over as the browser parsed it, without them. */
-export function withoutLinkHints(html: string): string {
+/** Template attributes that make the parser attach a shadow root (the second is the older spelling). */
+const DECLARATIVE_SHADOW_ROOT = ["shadowrootmode", "shadowroot"];
+
+/** The page as the frame is handed it: without its dns-prefetch and preconnect links, and with its declarative shadow
+ * roots left as plain templates (in templates too), so no shadow tree is made that the frame document doesn't watch.
+ * A page with none of them is handed over exactly as written; one with some, as the browser parsed it, without them. */
+export function framePage(html: string): string {
 	const page = new DOMParser().parseFromString(html, "text/html");
-	const hints = [...page.querySelectorAll("link[rel]")].filter((link) =>
-		(link.getAttribute("rel") ?? "")
-			.toLowerCase()
-			.split(/[\t\n\f\r ]+/)
-			.some((token) => NETWORK_HINTS.has(token)),
-	);
-	if (hints.length === 0) return html;
-	for (const hint of hints) hint.remove();
+	let changed = false;
+	const scopes: ParentNode[] = [page];
+	for (let index = 0; index < scopes.length; index++) {
+		const scope = scopes[index]!;
+		for (const template of scope.querySelectorAll("template")) {
+			scopes.push(template.content);
+			for (const name of DECLARATIVE_SHADOW_ROOT)
+				if (template.hasAttribute(name)) {
+					template.removeAttribute(name);
+					changed = true;
+				}
+		}
+		for (const link of scope.querySelectorAll("link[rel]"))
+			if (
+				(link.getAttribute("rel") ?? "")
+					.toLowerCase()
+					.split(/[\t\n\f\r ]+/)
+					.some((token) => NETWORK_HINTS.has(token))
+			) {
+				link.remove();
+				changed = true;
+			}
+	}
+	if (!changed) return html;
 	return `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
 }
 
@@ -66,7 +88,7 @@ export class PageFrames {
 		frame.setAttribute("referrerpolicy", "no-referrer");
 		frame.setAttribute("src", PAGE_FRAME_URL);
 		frame.title = title;
-		this.#pages.set(frame, withoutLinkHints(html));
+		this.#pages.set(frame, framePage(html));
 		return frame;
 	}
 

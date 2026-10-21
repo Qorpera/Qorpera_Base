@@ -2,7 +2,8 @@
 // (packages/web/src/ui/page-frame.ts) in a page under the site's policy, the frame document
 // (packages/web/public/page-preview/index.html) under its rule from packages/web/public/_headers. Checks that the page's
 // own inline styles and scripts run and that nothing it tries reaches the network: requests, a WebSocket, WebRTC (also
-// from a frame inside the page) and the link hints in its markup. Each attempt aims at a listener here (HTTP, a STUN
+// from a frame inside the page, in a shadow tree made by script, cloned or declared in any way markup can) and the
+// link hints in its markup. Each attempt aims at a listener here (HTTP, a STUN
 // port on UDP, a TCP port), and Chrome's net log shows every host name it looked up.
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-page-frame-browser.mjs
 // PAGE_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail).
@@ -90,6 +91,13 @@ const peer = (tag) => `(async () => {
 	await connection.setLocalDescription(await connection.createOffer());
 	${say('"WebRTC on"')};
 })().catch((error) => ${say('"WebRTC refused: " + error.name')});`;
+/** A frame whose own page says it ran and then tries WebRTC: the attribute escaped, so it can go anywhere. */
+const childFrame = (tag) =>
+	`<iframe srcdoc="${`<script>${say('"frame ran"')}; ${peer(tag)}</script>`
+		.replaceAll("&", "&amp;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")}"></iframe>`;
 const variants = {
 	runs: (origin) =>
 		`<!doctype html><style>p { color: rgb(1, 2, 3) }</style><p>Inline</p><script>
@@ -115,6 +123,25 @@ child.srcdoc = "<script>" + ${JSON.stringify(`${say('"frame ran"')}; ${peer("scr
 document.body.append(child); ${say('"frame added"')};</script></body>`,
 	"webrtc from a frame in the markup": () =>
 		`<!doctype html><body><iframe srcdoc="<script>${`${say("'frame ran'")}; ${peer("markup")}`.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}</script>"></iframe><script>${say('"markup written"')}</script></body>`,
+	"webrtc from a frame in a closed shadow root": () =>
+		`<!doctype html><body><script>const host = document.createElement("div");
+const root = host.attachShadow({ mode: "closed" });
+root.innerHTML = ${JSON.stringify(childFrame("closed"))};
+document.body.append(host); ${say('"shadow added"')};</script></body>`,
+	"webrtc from a frame in a cloned shadow root": () =>
+		`<!doctype html><body><script>const host = document.createElement("div");
+const root = host.attachShadow({ mode: "open", clonable: true, serializable: true });
+root.innerHTML = ${JSON.stringify(childFrame("clone"))};
+document.body.append(host.cloneNode(true)); ${say('"clone added"')};</script></body>`,
+	"webrtc from a frame in a declarative shadow root": () =>
+		`<!doctype html><body><div><template shadowrootmode="closed">${childFrame("declared")}</template></div><script>${say('"declared"')}</script></body>`,
+	"webrtc from a declarative shadow root in a template": () =>
+		`<!doctype html><body><template id="kept"><div><template shadowrootmode="open">${childFrame("kept")}</template></div></template>
+<script>document.body.append(document.getElementById("kept").content); ${say('"template added"')};</script></body>`,
+	"webrtc from a declarative shadow root written during the parse": () =>
+		`<!doctype html><body><script>document.write(${JSON.stringify(`<div><template shadowrootmode="open">${childFrame("written")}</template></div>`)}); ${say('"written"')};</script></body>`,
+	"webrtc from a declarative shadow root by setHTMLUnsafe": () =>
+		`<!doctype html><body><div id="target"></div><script>try { document.getElementById("target").setHTMLUnsafe(${JSON.stringify(`<template shadowrootmode="open">${childFrame("unsafe")}</template>`)}); ${say('"set"')}; } catch (error) { ${say('"refused " + error.name')}; }</script></body>`,
 	"link hints in the markup": () =>
 		`<!doctype html><head><link rel="preconnect" href="http://127.0.0.1:${hint}/"><link rel="dns-prefetch" href="//dns-hint.leak.invalid">
 <link rel="preconnect" href="https://preconnect-hint.leak.invalid"></head><body><script>${say('"hinted"')}</script></body>`,
@@ -125,6 +152,12 @@ const expected = {
 	webrtc: ["no WebRTC"],
 	"webrtc from a frame made by script": ["frame added"],
 	"webrtc from a frame in the markup": ["markup written"],
+	"webrtc from a frame in a closed shadow root": ["shadow added"],
+	"webrtc from a frame in a cloned shadow root": ["clone added"],
+	"webrtc from a frame in a declarative shadow root": ["declared"],
+	"webrtc from a declarative shadow root in a template": ["template added"],
+	"webrtc from a declarative shadow root written during the parse": ["written"],
+	"webrtc from a declarative shadow root by setHTMLUnsafe": ["refused TypeError"],
 	"link hints in the markup": ["hinted"],
 };
 
