@@ -526,7 +526,7 @@ describe("rail right-clicks", () => {
 		expect(rowOf(rail, "Ada")).not.toBe(ada2);
 		expect(document.activeElement).toBe(rowOf(rail, "Ada"));
 	});
-	it("gives the Co-Founder's card no hide or delete", async () => {
+	it("gives the Co-Founder's card its conversation ID to copy, and no hide or delete", async () => {
 		const { rail, company, openCard, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		company.store.set({
 			sessions: [
@@ -537,7 +537,7 @@ describe("rail right-clicks", () => {
 		await settle();
 		const home = rail.querySelector<HTMLElement>(".cofounder-home")!;
 		rightClick(home);
-		expect(openCard).toHaveBeenCalledWith(cofounder, home, {});
+		expect(openCard).toHaveBeenCalledWith(cofounder, home, { conversationId: id(70) });
 	});
 	it("leaves shared sections to members who can write, and deleting agents to owners and admins", async () => {
 		const { rail, company, openCard, ready } = companyWith(

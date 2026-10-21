@@ -27,6 +27,8 @@ export interface AgentCardActions {
 	hide?: () => void;
 	hidden?: boolean;
 	remove?: () => void;
+	/** The agent's conversation, whose id the card copies. */
+	conversationId?: string;
 }
 
 /** An agent's card: what a right-click on the agent in the rail opens (and, on a phone,
@@ -53,6 +55,8 @@ export class AgentDetails {
 	#drawn = "";
 	#discarded = false;
 	#statusTimer: ReturnType<typeof setTimeout> | undefined;
+	#copyButton: HTMLButtonElement | null = null;
+	#copiedTimer: ReturnType<typeof setTimeout> | undefined;
 	constructor(
 		company: CompanyController,
 		agent: HostedStaffAgent,
@@ -87,20 +91,34 @@ export class AgentDetails {
 						icon("chevron"),
 					)
 				: null;
+		// Icon-only squares at the card's foot; the name is the tooltip and what a screen reader says.
 		const square = (label: string, glyph: string, act: (() => void) | undefined, danger = false) =>
 			act
 				? h(
 						"button",
-						{ type: "button", class: `agent-card-square${danger ? " is-danger" : ""}`, onclick: then(act) },
+						{
+							type: "button",
+							class: `agent-card-square${danger ? " is-danger" : ""}`,
+							title: label,
+							"aria-label": label,
+							onclick: act,
+						},
 						icon(glyph),
-						h("span", null, label),
 					)
 				: null;
+		const conversationId = card.conversationId;
+		const copy = conversationId
+			? square(t("Copy conversation ID"), "copy", () => void this.#copy(conversationId))
+			: null;
 		const links = [link(t("Computer"), "computer", card.computer), link(t("Routines"), "clock", card.routines)];
 		const squares = [
-			card.hidden ? square(t("Show"), "show", card.hide) : square(t("Hide"), "hide", card.hide),
-			square(t("Delete"), "trash", card.remove, true),
+			copy,
+			card.hidden
+				? square(t("Show in sidebar"), "show", card.hide && then(card.hide))
+				: square(t("Hide from sidebar"), "hide", card.hide && then(card.hide)),
+			square(t("Delete"), "trash", card.remove && then(card.remove), true),
 		];
+		this.#copyButton = copy;
 
 		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), { keepColor: true });
 		this.#picker = h(
@@ -197,6 +215,7 @@ export class AgentDetails {
 		}
 		this.#lifetime.abort();
 		clearTimeout(this.#statusTimer);
+		clearTimeout(this.#copiedTimer);
 		this.#unsubscribe();
 		this.#unsubscribeEdits();
 		onClose();
@@ -302,6 +321,28 @@ export class AgentDetails {
 		this.#sync();
 		const { status, failed, saved } = this.#edits.store.get();
 		this.#say(status, saved, failed);
+	}
+
+	/** The card stays open: its button turns into a check for a moment, or the status says it failed. */
+	async #copy(conversationId: string): Promise<void> {
+		const button = this.#copyButton;
+		try {
+			if (!navigator.clipboard) throw new Error("No clipboard");
+			await navigator.clipboard.writeText(conversationId);
+		} catch {
+			this.#say(t("The conversation ID could not be copied."), true);
+			return;
+		}
+		if (!button || this.#lifetime.signal.aborted) return;
+		clearTimeout(this.#copiedTimer);
+		replace(button, icon("check"));
+		button.classList.add("is-done");
+		button.setAttribute("aria-label", t("Copied"));
+		this.#copiedTimer = setTimeout(() => {
+			replace(button, icon("copy"));
+			button.classList.remove("is-done");
+			button.setAttribute("aria-label", t("Copy conversation ID"));
+		}, 1600);
 	}
 
 	#say(text: string, fade = false, retry = false): void {

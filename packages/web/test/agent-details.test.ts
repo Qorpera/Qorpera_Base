@@ -413,10 +413,11 @@ describe("agent pages", () => {
 			"Computer",
 			"Routines",
 		]);
-		expect([...f.dialog.querySelectorAll(".agent-card-square")].map((item) => item.textContent)).toEqual([
-			"Hide",
-			"Delete",
-		]);
+		// Icon-only squares, named by their tooltips.
+		const squares = [...f.dialog.querySelectorAll<HTMLButtonElement>(".agent-card-square")];
+		expect(squares.map((item) => item.getAttribute("aria-label"))).toEqual(["Hide from sidebar", "Delete"]);
+		expect(squares.map((item) => item.title)).toEqual(["Hide from sidebar", "Delete"]);
+		expect(squares.every((item) => item.textContent === "" && item.querySelector("svg"))).toBe(true);
 		expect(f.dialog.querySelector(".agent-card-square:last-child")?.classList.contains("is-danger")).toBe(true);
 		named("Routines").click();
 		expect(card.routines).toHaveBeenCalledTimes(1);
@@ -430,10 +431,42 @@ describe("agent pages", () => {
 
 	it("shows a hidden agent's square as Show, and leaves out what the member can't do", () => {
 		const f = open({}, staff, undefined, { hidden: true, hide: vi.fn() });
-		expect([...f.dialog.querySelectorAll(".agent-card-square")].map((item) => item.textContent)).toEqual(["Show"]);
+		expect(
+			[...f.dialog.querySelectorAll(".agent-card-square")].map((item) => item.getAttribute("aria-label")),
+		).toEqual(["Show in sidebar"]);
 		expect(f.dialog.querySelector(".agent-card-links")).toBeNull();
 		const bare = open();
 		expect(bare.dialog.querySelector(".agent-card-links, .agent-card-squares")).toBeNull();
+	});
+
+	it("copies the conversation ID in place: a check for a moment, or a line when the clipboard refuses", async () => {
+		vi.useFakeTimers();
+		cleanup.push(() => vi.useRealTimers());
+		const writeText = vi.fn(async (_text: string) => {});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		cleanup.push(() => Reflect.deleteProperty(navigator, "clipboard"));
+		const f = open({}, staff, undefined, { conversationId: id(77), hide: vi.fn() });
+		const squares = [...f.dialog.querySelectorAll<HTMLButtonElement>(".agent-card-square")];
+		expect(squares.map((item) => item.getAttribute("aria-label"))).toEqual([
+			"Copy conversation ID",
+			"Hide from sidebar",
+		]);
+		const copy = squares[0]!;
+		copy.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(writeText).toHaveBeenCalledWith(id(77));
+		// The card stays open, and the button says it worked.
+		expect(f.dialog.open).toBe(true);
+		expect(copy.classList.contains("is-done")).toBe(true);
+		expect(copy.getAttribute("aria-label")).toBe("Copied");
+		await vi.advanceTimersByTimeAsync(1600);
+		expect(copy.classList.contains("is-done")).toBe(false);
+		expect(copy.getAttribute("aria-label")).toBe("Copy conversation ID");
+		writeText.mockRejectedValueOnce(new Error("denied"));
+		copy.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.dialog.textContent).toContain("The conversation ID could not be copied.");
+		expect(copy.classList.contains("is-done")).toBe(false);
 	});
 
 	it("keeps responsibilities as the description, not a page of their own", async () => {
@@ -461,7 +494,9 @@ describe("the card's frame", () => {
 		expect(f.dialog.classList.contains("agent-card")).toBe(true);
 		expect(declared(".agent-details", "height")).toBeFalsy();
 		expect(declared(".agent-card", "height")).toBeFalsy();
-		expect(declared(".agent-card-square", "width")).toBe("50px");
+		expect(declared(".agent-card-square", "width")).toBe("32px");
+		expect(declared(".agent-card-square", "background")).toBe("transparent");
+		expect(declared(".agent-card-squares", "justify-content")).toBe("flex-end");
 		// The description grows with its text up to eight lines; elsewhere the sizer still grows it to 13.
 		expect(declared(".agent-card .agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
 			/8 \* 1\.5em|12em/,
