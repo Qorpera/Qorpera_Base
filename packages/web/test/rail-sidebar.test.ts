@@ -451,6 +451,8 @@ describe("rail right-clicks", () => {
 			cy,
 			rowOf(rail, "Cy"),
 			{
+				pinned: false,
+				pin: expect.any(Function),
 				hidden: false,
 				hide: expect.any(Function),
 				remove: expect.any(Function),
@@ -565,10 +567,25 @@ describe("rail right-clicks", () => {
 		await settle();
 		// A viewer keeps their own pins and hidden agents and group chats.
 		rightClick(rowOf(rail, "Cy"));
-		expect(lastCard(openCard)).toEqual({ hidden: false, hide: expect.any(Function) });
+		expect(lastCard(openCard)).toEqual({
+			pinned: false,
+			pin: expect.any(Function),
+			hidden: false,
+			hide: expect.any(Function),
+		});
+		// Pinning is theirs too: a tap on the card's Pin works with no edit rights and no drag (a phone).
+		lastCard(openCard).pin!();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ action: "set_pins", order: expect.arrayContaining([cy.id]) }),
+		);
+		manage.mockClear();
 		rightClick(groupRow(rail));
 		expect(lastCard(openGroup)).toEqual({
 			conversationId: launchSession.sessionId,
+			pinned: false,
+			pin: expect.any(Function),
 			hidden: false,
 			hide: expect.any(Function),
 		});
@@ -1156,6 +1173,8 @@ describe("group chats in the rail", () => {
 			groupRow(rail),
 			{
 				conversationId: launchSession.sessionId,
+				pinned: false,
+				pin: expect.any(Function),
 				hidden: false,
 				hide: expect.any(Function),
 				remove: expect.any(Function),
@@ -1267,6 +1286,8 @@ describe("group chats in the rail", () => {
 		rightClick(groupRow(rail));
 		expect(lastCard(openGroup)).toEqual({
 			conversationId: launchSession.sessionId,
+			pinned: false,
+			pin: expect.any(Function),
 			hidden: false,
 			hide: expect.any(Function),
 		});

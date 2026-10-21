@@ -511,6 +511,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Section name": "Sektionens navn",
 	"A section called {name} already exists.": "Der findes allerede en sektion, der hedder {name}.",
 	Rename: "Omdøb",
+	Unpin: "Frigør",
+	Pin: "Fastgør",
 	"Copy conversation ID": "Kopiér samtale-id",
 	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
 	"Show in sidebar": "Vis i sidepanelet",
