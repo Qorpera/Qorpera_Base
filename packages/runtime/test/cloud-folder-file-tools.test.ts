@@ -1091,11 +1091,12 @@ it("moves a file or a folder with the review its call was approved under", async
 	);
 	expect(taken).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
 	expect(taken.next).toContain("COMPANY_FILE_EXISTS: nothing was moved");
-	for (const value of [
+	const refused: { [key: string]: JsonValue }[] = [
 		{ from: "a.md", to: "a.md", operationKey: "move-4", expectedVersion, asOfSeq: null },
 		{ from: "a.md", to: "b.md", operationKey: "move-4", expectedVersion },
 		{ from: "a.md", to: "b.md", operationKey: "move-4", expectedVersion, asOfSeq: -1 },
-	])
+	];
+	for (const value of refused)
 		expect(() => f.tool("company_move").parseArguments(value)).toThrow(CloudToolArgumentRefusal);
 	// Without the automatic review's approval nothing is moved.
 	const { actionReviewId: _approval, ...unreviewed } = f.context;
