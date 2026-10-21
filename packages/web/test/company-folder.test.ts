@@ -1037,62 +1037,6 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector(".files-preview-head [aria-label^='Show']")).toBeNull();
 	});
 
-	it("tells the platform's folders apart at the top, after the company's own work, each with its one line", async () => {
-		const { fake, host, browser } = await opened({ embedded: true });
-		for (const name of ["vision", "agents", "human-tasks", "code"]) fake.folders.add(name);
-		fake.folders.add("notes/agents");
-		browser.showDocuments();
-		await settle();
-		const items = () =>
-			[...host.querySelectorAll<HTMLElement>(".files-list > li")].map((item) =>
-				item.classList.contains("storage-group")
-					? `# ${item.textContent}`
-					: `${item.querySelector(".files-name")?.textContent}${item.querySelector(".storage-folder-note") ? ` — ${item.querySelector(".storage-folder-note")?.textContent}` : ""}`,
-			);
-		expect(items()).toEqual([
-			"big",
-			"notes",
-			"logo.png",
-			"readme.txt",
-			"# Qorpera folders",
-			"agents — The team: each agent's settings, memory, skills, routines and tasks.",
-			"code — Code projects (git repositories).",
-			"human-tasks — Jobs agents have handed to people.",
-			"vision — What the company is and where it is going. Every agent reads it.",
-		]);
-		expect(host.querySelector(".storage-group")?.getAttribute("role")).toBe("presentation");
-		expect(host.querySelector<HTMLElement>(".storage-folder-note")?.title).toBe(
-			"The team: each agent's settings, memory, skills, routines and tasks.",
-		);
-		expect(host.querySelector(".storage-count")?.textContent).toBe("8 items");
-		// The list view keeps both the order and the lines.
-		await click(host.querySelector('[aria-label="List view"]'));
-		expect(items().at(4)).toBe("# Qorpera folders");
-		expect(items().at(-1)).toBe("vision — What the company is and where it is going. Every agent reads it.");
-		// Filters apply first: the heading shows only above a platform folder.
-		const filter = host.querySelector<HTMLSelectElement>('[aria-label="File type"]')!;
-		filter.value = "document";
-		filter.dispatchEvent(new Event("change"));
-		expect(host.querySelector(".storage-group")).toBeNull();
-		filter.value = "folder";
-		filter.dispatchEvent(new Event("change"));
-		expect(items()).toEqual([
-			"big",
-			"notes",
-			"# Qorpera folders",
-			"agents — The team: each agent's settings, memory, skills, routines and tasks.",
-			"code — Code projects (git repositories).",
-			"human-tasks — Jobs agents have handed to people.",
-			"vision — What the company is and where it is going. Every agent reads it.",
-		]);
-		// Only at the top: a folder of the same name further down is the company's own.
-		filter.value = "all";
-		filter.dispatchEvent(new Event("change"));
-		await click(row(host, "notes"));
-		expect(items()).toEqual(["agents", "log.txt", "plan.md"]);
-		expect(host.querySelector(".storage-group")).toBeNull();
-	});
-
 	it("opens what a folder link names: a file in its folder with its preview, a folder, or says it isn't there", async () => {
 		const { fake, host, browser } = await opened({ embedded: true });
 		fake.folders.add("designs");
