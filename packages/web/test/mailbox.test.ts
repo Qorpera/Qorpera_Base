@@ -124,6 +124,7 @@ describe("the Inbox", () => {
 		expect(waiting!.querySelector(".mailbox-who")?.textContent).toBe("Sender 13");
 		expect(texts(waiting!, ".mailbox-line > span")).toEqual([
 			"Waiting for you",
+			"to sender1@outside.example",
 			"Re: Subject 1",
 			" — Ada: Paid today.",
 		]);
@@ -438,7 +439,9 @@ describe("what a member sees before answering, and who did what", () => {
 			};
 		});
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
-		expect(lines(main)[0]!.querySelector(".mailbox-recipients")?.textContent).toBe("cc boss@outside.example");
+		expect(lines(main)[0]!.querySelector(".mailbox-recipients")?.textContent).toBe(
+			"to sender1@outside.example · cc boss@outside.example",
+		);
 		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Re: Subject 1 (changed)");
 		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-draft")).not.toBeNull());
@@ -446,6 +449,18 @@ describe("what a member sees before answering, and who did what", () => {
 			"cc boss@outside.example",
 			"Re: Subject 1 (changed)",
 		]);
+	});
+
+	it("shows where a reply goes when it goes to someone other than the thread's sender", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { state: "waiting" })];
+			mail.waiting = [waitingItem(id(904), { to: ["someone.else@outside.example"] })];
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		const line = lines(main)[0]!;
+		expect(line.querySelector(".mailbox-who")?.textContent).toBe("Sender 1");
+		expect(line.querySelector(".mailbox-recipients")?.textContent).toBe("to someone.else@outside.example");
+		expect(texts(line, ".mailbox-actions button")).toEqual(["Don't send", "Send"]);
 	});
 
 	it("answers a send that starts a new email, which has no thread, and links its line to the agent's thread", async () => {

@@ -616,6 +616,12 @@ function waitingLine(page: Page, item: MailWaitingItem, summary: MailThreadSumma
 	const answered = page.company.store.get().mail?.answers[item.reviewId]?.answered !== undefined;
 	const to = summary ? partyText(summary) : (item.to[0] ?? t("New email"));
 	const href = agentHref(page, agentId);
+	const recipients = [
+		item.to.length ? t("to {who}", { who: item.to.join(", ") }) : null,
+		item.cc.length ? t("cc {who}", { who: item.cc.join(", ") }) : null,
+	]
+		.filter((part): part is string => part !== null)
+		.join(" · ");
 	const content = [
 		h("span", { class: "mailbox-dot", "aria-hidden": "true" }),
 		h(
@@ -628,19 +634,9 @@ function waitingLine(page: Page, item: MailWaitingItem, summary: MailThreadSumma
 			"span",
 			{ class: "mailbox-line" },
 			h("span", { class: "mailbox-state is-waiting" }, t("Waiting for you")),
-			// Every recipient beyond the first shows on the line it is answered from.
-			item.to.length > 1 || item.cc.length
-				? h(
-						"span",
-						{ class: "mailbox-recipients" },
-						[
-							item.to.length > 1 ? t("to {who}", { who: item.to.join(", ") }) : null,
-							item.cc.length ? t("cc {who}", { who: item.cc.join(", ") }) : null,
-						]
-							.filter((part): part is string => part !== null)
-							.join(" · "),
-					)
-				: null,
+			// Every recipient the send goes to shows on the line it is answered from: a reply may go to someone other
+			// than the thread's sender.
+			recipients ? h("span", { class: "mailbox-recipients", title: recipients }, recipients) : null,
 			h("span", { class: "mailbox-subject" }, item.subject || summary?.subject || t("(no subject)")),
 			item.snippet ? h("span", { class: "mailbox-snippet" }, ` — ${agent}: ${item.snippet}`) : null,
 		),
