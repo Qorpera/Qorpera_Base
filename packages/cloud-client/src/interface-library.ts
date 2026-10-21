@@ -4,9 +4,10 @@
  * stay here as examples of the format, which tests read. Every file parses with ./interfaces.ts; the tests hold them to
  * it. The ids are the library's; a copy gets fresh ones (`interfaceLibraryFiles`). */
 
+import { osPath } from "./company-state-shared.ts";
 import { writeInterfaceOrderFile } from "./interfaces.ts";
 
-export const PULSE_INTERFACE = `# interfaces/pulse/interface.toml
+export const PULSE_INTERFACE = `# QorperaOS/interfaces/pulse/interface.toml
 format = "qorpera.interface/v0"
 
 [interface]
@@ -105,7 +106,7 @@ to = "{kept_by}"
 text = "About {number}: "
 `;
 
-export const NUMBERS_TABLE = `# tables/numbers/table.toml (rows in tables/numbers/rows.csv)
+export const NUMBERS_TABLE = `# QorperaOS/tables/numbers/table.toml (rows in QorperaOS/tables/numbers/rows.csv)
 format = "qorpera.table/v0"
 
 [table]
@@ -148,7 +149,7 @@ agents = "all"
 members = "all"
 `;
 
-export const MAILBOX_INTERFACE = `# interfaces/mailbox/interface.toml
+export const MAILBOX_INTERFACE = `# QorperaOS/interfaces/mailbox/interface.toml
 format = "qorpera.interface/v0"
 
 [interface]
@@ -227,7 +228,7 @@ to = "co-founder"
 text = "Please have another agent handle {address}: "
 `;
 
-export const MEMBERS_INTERFACE = `# interfaces/members/interface.toml
+export const MEMBERS_INTERFACE = `# QorperaOS/interfaces/members/interface.toml
 format = "qorpera.interface/v0"
 
 [interface]
@@ -288,10 +289,10 @@ holds = { from = "table:cards", match = "holder", count = true }
 
 [[view.block]]
 kind = "text"
-from = "file:rules/shared-areas.md"
+from = "file:QorperaOS/rules/shared-areas.md"
 `;
 
-export const AREAS_TABLE = `# tables/areas/table.toml (rows in tables/areas/rows.csv)
+export const AREAS_TABLE = `# QorperaOS/tables/areas/table.toml (rows in QorperaOS/tables/areas/rows.csv)
 format = "qorpera.table/v0"
 
 [table]
@@ -339,7 +340,7 @@ agents = "all"
 members = "all"
 `;
 
-export const CARDS_TABLE = `# tables/cards/table.toml (rows in tables/cards/rows.csv)
+export const CARDS_TABLE = `# QorperaOS/tables/cards/table.toml (rows in QorperaOS/tables/cards/rows.csv)
 format = "qorpera.table/v0"
 
 [table]
@@ -413,7 +414,7 @@ function rowsHeader(table: string): string {
 }
 
 /** The files a new company gets (path → text): each interface and table with fresh ids, empty rows files, and
- * `interfaces/order.md`. `newId` makes a uuid. */
+ * `QorperaOS/interfaces/order.md`. `newId` makes a uuid. */
 export function interfaceLibraryFiles(newId: () => string): Record<string, string> {
 	const files: Record<string, string> = {};
 	const order: string[] = [];
@@ -424,14 +425,14 @@ export function interfaceLibraryFiles(newId: () => string): Record<string, strin
 	};
 	for (const entry of INTERFACE_LIBRARY) {
 		const page = fresh(entry.interface);
-		files[`interfaces/${entry.name}/interface.toml`] = page.text;
+		files[osPath(`interfaces/${entry.name}/interface.toml`)] = page.text;
 		order.push(page.id);
 		names.set(page.id, entry.name[0]?.toUpperCase() + entry.name.slice(1));
 		for (const [table, text] of Object.entries(entry.tables)) {
-			files[`tables/${table}/table.toml`] = fresh(text).text;
-			files[`tables/${table}/rows.csv`] = rowsHeader(text);
+			files[osPath(`tables/${table}/table.toml`)] = fresh(text).text;
+			files[osPath(`tables/${table}/rows.csv`)] = rowsHeader(text);
 		}
 	}
-	files["interfaces/order.md"] = writeInterfaceOrderFile(order, names);
+	files[osPath("interfaces/order.md")] = writeInterfaceOrderFile(order, names);
 	return files;
 }

@@ -8,7 +8,7 @@
  * Browser-safe, and the same bytes always give the same result, problems included. */
 
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
+import { AGENT_COLOURS, type AgentColour, companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
 import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 
 export const INTERFACE_FORMAT = "qorpera.interface/v0";
@@ -138,7 +138,7 @@ export type InterfaceProblemCode =
 	| "row"
 	| "claim"
 	/** The save check's own codes (RUNTIME-INTERFACES.md §6.1): a file the format doesn't place or keep; no main
-	 * interface or two; an owners-only interface changed by someone else; `[write]`; `tables/areas/`'s rules. */
+	 * interface or two; an owners-only interface changed by someone else; `[write]`; `QorperaOS/tables/areas/`'s rules. */
 	| "placement"
 	| "main"
 	| "owners"
@@ -319,7 +319,7 @@ export type InterfaceStatePathKind = "interface" | "interface-order" | "table" |
 
 export interface InterfaceStatePath {
 	readonly kind: InterfaceStatePathKind;
-	/** The interface's folder name, or the table's stem; null for `interfaces/order.md`. */
+	/** The interface's folder name, or the table's stem; null for `QorperaOS/interfaces/order.md`. */
 	readonly name: string | null;
 }
 
@@ -355,10 +355,12 @@ export function decodeInterfaceFile(bytes: Uint8Array): string | null {
 	}
 }
 
-/** Which interface file a path is, decided on the folder's key like the state files. */
+/** Which interface file a path is, decided on the folder's key like the state files: under QorperaOS/interfaces/ and
+ * QorperaOS/tables/. */
 export function interfaceStatePath(path: string): InterfaceStatePath | null {
-	const key = companyPathKey(path);
-	const parts = key.split("/");
+	const below = osRelative(companyPathKey(path));
+	if (below === null) return null;
+	const parts = below.split("/");
 	if (parts[0] === "interfaces") {
 		if (parts.length === 2 && parts[1] === "order.md") return { kind: "interface-order", name: null };
 		if (parts.length === 3 && parts[2] === "interface.toml" && isInterfaceName(parts[1] ?? "")) {
@@ -378,11 +380,12 @@ export function isInterfaceName(value: string): boolean {
 	return value.length > 0 && value.length <= NAME_MAX_CHARS && NAME.test(value);
 }
 
-/** Problems with the path itself: a file under `interfaces/` or `tables/` that the format doesn't place. */
+/** Problems with the path itself: a file under `QorperaOS/interfaces/` or `QorperaOS/tables/` that the format doesn't
+ * place. */
 export function interfacePathProblems(path: string): InterfaceProblem[] {
 	if (encoder.encode(path).length > 4096) {
 		// Too long to be anywhere in the folder; only this format's own paths are refused here.
-		const head = path.replace(/^\/+/, "").slice(0, 11).toLowerCase();
+		const head = (osRelative(path.replace(/^\/+/, "").slice(0, 32)) ?? "").slice(0, 11).toLowerCase();
 		return head.startsWith("interfaces/") || head.startsWith("tables/") || head === "interfaces" || head === "tables"
 			? [problem(null, null, "too_large", "The path is longer than the folder allows (4,096 bytes).")]
 			: [];
@@ -391,11 +394,14 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 	let end = path.length;
 	while (start < end && path[start] === "/") start++;
 	while (end > start && path[end - 1] === "/") end--;
-	const written = path.slice(start, end);
+	// Below QorperaOS/, whose own spelling is the folder's.
+	const written = osRelative(path.slice(start, end));
+	if (written === null) return [];
 	const key = companyPathKey(written);
 	const parts = key.split("/");
 	if (parts[0] !== "interfaces" && parts[0] !== "tables") return [];
-	// Names are written as the format names them, like the state files: `interfaces/Pulse/` is refused, not read.
+	// Names are written as the format names them, like the state files: `QorperaOS/interfaces/Pulse/` is refused, not
+	// read.
 	if (written !== key && written.replace(/README\.md$/, "readme.md") !== key) {
 		return [
 			problem(
@@ -407,7 +413,7 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 		];
 	}
 	if (parts.length === 1) return [];
-	if (interfaceStatePath(written)) return [];
+	if (interfaceStatePath(osPath(written))) return [];
 	if (parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
 		return [];
 	}
@@ -418,8 +424,8 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 			null,
 			"bad_value",
 			parts[0] === "interfaces"
-				? "Under interfaces/ go order.md and one folder per interface, with interface.toml and an optional README.md."
-				: "Under tables/ goes one folder per table, named with lowercase letters, digits and hyphens, holding table.toml and rows.csv.",
+				? "Under QorperaOS/interfaces/ go order.md and one folder per interface, with interface.toml and an optional README.md."
+				: "Under QorperaOS/tables/ goes one folder per table, named with lowercase letters, digits and hyphens, holding table.toml and rows.csv.",
 		),
 	];
 }
@@ -789,7 +795,7 @@ function readQuery(reader: Reader, bag: Bag, path: string): InterfaceQuery {
 }
 
 /** The columns of each source that carry outside content (RUNTIME-INTERFACES.md §4; contract 11.1), apart from a
- * `file:` source's text under `hooks/` or `human-tasks/`, which `interfaceOutsideColumns` adds. */
+ * `file:` source's text under `hooks/` or `QorperaOS/human-tasks/`, which `interfaceOutsideColumns` adds. */
 export const INTERFACE_OUTSIDE_COLUMNS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 	mail: Object.freeze(["from_name", "from_address", "subject"]),
 });
@@ -806,11 +812,12 @@ export const INTERFACE_OUTSIDE_VALUES_MAX = 16;
 export const INTERFACE_OUTSIDE_VALUE_MAX_CHARS = 2000;
 
 /** The columns of a source that carry outside content. A `file:` source's text is outside content under `hooks/`
- * (saved events) or `human-tasks/` (what a contact sent back), found by folder key as the folder finds files. */
+ * (saved events) or `QorperaOS/human-tasks/` (what a contact sent back), found by folder key as the folder finds
+ * files. */
 export function interfaceOutsideColumns(source: string): readonly string[] {
 	if (source.startsWith("file:")) {
 		const key = companyPathKey(source.slice("file:".length));
-		return key.startsWith("hooks/") || key.startsWith("human-tasks/") ? ["text"] : [];
+		return key.startsWith("hooks/") || osRelative(key)?.startsWith("human-tasks/") ? ["text"] : [];
 	}
 	return Object.hasOwn(INTERFACE_OUTSIDE_COLUMNS, source) ? (INTERFACE_OUTSIDE_COLUMNS[source] ?? []) : [];
 }
@@ -1590,7 +1597,7 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 	});
 }
 
-/* ---------------- interfaces/order.md ---------------- */
+/* ---------------- QorperaOS/interfaces/order.md ---------------- */
 
 export function parseInterfaceOrderFile(text: string): InterfaceParseResult<InterfaceOrderFile> {
 	if (encoder.encode(text).length > INTERFACE_ORDER_MAX_BYTES) {
@@ -1916,7 +1923,7 @@ export interface InterfaceStateFilePath {
 	readonly kind: InterfaceStatePathKind;
 	readonly agent: null;
 	readonly group: null;
-	/** The interface's folder name or the table's name, as its key; null for `interfaces/order.md`. */
+	/** The interface's folder name or the table's name, as its key; null for `QorperaOS/interfaces/order.md`. */
 	readonly name: string | null;
 	readonly todo: null;
 	readonly worker: null;
@@ -1972,7 +1979,9 @@ export function parseTableRowsText(text: string): InterfaceParseResult<TableRows
 /** An interface file's kind, decided on the path's shape like the state files: a badly named folder is still this
  * kind, and its name is one of the parse's problems, so no interface or table file is ever saved unchecked. */
 function interfaceStateShape(path: string): InterfaceStateFilePath | null {
-	const parts = companyPathKey(path.replace(/^\/+|\/+$/g, "")).split("/");
+	const below = osRelative(companyPathKey(path.replace(/^\/+|\/+$/g, "")));
+	if (below === null) return null;
+	const parts = below.split("/");
 	const at = (kind: InterfaceStatePathKind, name: string | null): InterfaceStateFilePath => ({
 		kind,
 		agent: null,
@@ -1992,8 +2001,8 @@ function interfaceStateShape(path: string): InterfaceStateFilePath | null {
 
 /**
  * The folder hook's one call for interface files (RUNTIME-INTERFACES.md §2, §6; F2's P16): the result of
- * `parseCompanyStateFile`'s shape for `interfaces/order.md`, `interfaces/<name>/interface.toml`,
- * `tables/<name>/table.toml` and `tables/<name>/rows.csv`, and null for every other path. The parse is what the
+ * `parseCompanyStateFile`'s shape for `QorperaOS/interfaces/order.md`, `QorperaOS/interfaces/<name>/interface.toml`,
+ * `QorperaOS/tables/<name>/table.toml` and `QorperaOS/tables/<name>/rows.csv`, and null for every other path. The parse is what the
  * client sends with its unit; the database checks its shape and the rules that need other files (§6.1).
  */
 export function parseInterfaceStateFile(path: string, text: string): InterfaceStateFileResult | null {
@@ -2031,7 +2040,7 @@ export interface InterfaceOffer {
 	readonly was: string | null;
 }
 
-/** The columns of `tables/areas/` that agents never change: who owns an area, who supervises it, its agents. */
+/** The columns of `QorperaOS/tables/areas/` that agents never change: who owns an area, who supervises it, its agents. */
 export const AREA_MEMBER_ONLY_COLUMNS = Object.freeze(["owner", "supervisor", "agents"] as const);
 
 /** The key a row is matched on across versions of its file. */
@@ -2045,7 +2054,7 @@ export function tableRowKey(table: TableFile, row: TableRow): string {
  * - accept: the member an open offer names puts their own id in that cell, while the cell still holds what it held
  *   when the offer was made, and the offer came from that holder (or the cell was empty);
  * - an agent acts for its supervisor, taking for them and releasing what they hold, and never touches the
- *   member-only columns (by default those of `tables/areas/`), needs_yes or not;
+ *   member-only columns (by default those of `QorperaOS/tables/areas/`), needs_yes or not;
  * - given the company's `members`, a cell that names someone who left counts as empty for a member's take and accept
  *   (C6d). Nothing clears it, and an agent's check never counts it as empty.
  * A removed row counts as clearing its cells. Anything else that changes a needs_yes column is a problem; an offer

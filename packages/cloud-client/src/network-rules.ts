@@ -1,4 +1,4 @@
-/** A company's network rules, `rules/network.toml` (RUNTIME-AGENT-EXIT.md §10, E8): which names the agent exit
+/** A company's network rules, `QorperaOS/rules/network.toml` (RUNTIME-AGENT-EXIT.md §10, E8): which names the agent exit
  * refuses for the company's machines, and whether they reach only listed names. Owners and admins write it; the
  * platform projects it to every node. A company without the file is open. Browser-safe.
  *
@@ -12,10 +12,11 @@
  * refused when it is also covered by `allow`. `allow` does nothing in "open", so a list is kept while the mode
  * changes. */
 
+import { osPath } from "./company-state-shared.ts";
 import type { InterfaceProblem } from "./interfaces.ts";
 import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 
-export const NETWORK_RULES_PATH = "rules/network.toml";
+export const NETWORK_RULES_PATH = osPath("rules/network.toml");
 export const NETWORK_RULES_MODES = Object.freeze(["open", "only-listed"] as const);
 export type NetworkRulesMode = (typeof NETWORK_RULES_MODES)[number];
 /** The most names one list holds. */
@@ -69,7 +70,7 @@ function nameProblem(value: string): string {
 	return `"${shown}" is not a name. Names are lowercase letters, digits, hyphens and dots, as "example.com".`;
 }
 
-/** Reads `rules/network.toml`. Checks everything the file says by itself; the database checks the parse's shape
+/** Reads `QorperaOS/rules/network.toml`. Checks everything the file says by itself; the database checks the parse's shape
  * again and keeps the rules the nodes read. */
 export function parseNetworkRulesFile(text: string): NetworkRulesParseResult {
 	const problems: InterfaceProblem[] = [];

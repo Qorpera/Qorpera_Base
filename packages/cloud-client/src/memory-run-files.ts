@@ -25,7 +25,7 @@ export interface MemoryRunOrigin {
 
 const UUID_TEXT = UUID.source.slice(1, -1);
 const PATH = new RegExp(
-	`^agents/(?:groups/([^/]+)/memory|([^/]+)/memory/thread)/runs/(${UUID_TEXT})/(run\\.toml|log/[0-9]{8}\\.jsonl|t([0-9]|1[0-4])/[0-9]{8}\\.jsonl)$`,
+	`^qorperaos/agents/(?:groups/([^/]+)/memory|([^/]+)/memory/thread)/runs/(${UUID_TEXT})/(run\\.toml|log/[0-9]{8}\\.jsonl|t([0-9]|1[0-4])/[0-9]{8}\\.jsonl)$`,
 );
 const TOML = new RegExp(
 	`^format = 1\nrun = "(${UUID_TEXT})"\nconversation = "(${UUID_TEXT})"\n` +
@@ -33,9 +33,9 @@ const TOML = new RegExp(
 		`(?:continues = "(${UUID_TEXT})"\n)?(narrow = true\n)?$`,
 );
 // A conversation's tree, at its owner's memory folder (qorpera_structured_path_kind): a group's patterns come first, and
-// no agent is named groups or sections.md.
+// no agent is named groups or sections.md. Both match keys, under QorperaOS/.
 const TREE_PATH =
-	/^agents\/(?:groups\/([^/]+)\/memory|(?!(?:groups|sections\.md)\/)([^/]+)\/memory\/thread)\/(tree\.toml|t([0-9]|1[0-4])\/[0-9]{8}\.jsonl)$/;
+	/^qorperaos\/agents\/(?:groups\/([^/]+)\/memory|(?!(?:groups|sections\.md)\/)([^/]+)\/memory\/thread)\/(tree\.toml|t([0-9]|1[0-4])\/[0-9]{8}\.jsonl)$/;
 const TREE_TOML = new RegExp(`^format = 1\nconversation = "(${UUID_TEXT})"\nnode_bytes = ([1-9][0-9]{0,3})\n$`);
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;

@@ -7,7 +7,7 @@ import {
 	writeRoutineFile,
 } from "../src/company-state-files.ts";
 
-const PATH = "agents/nora/routines/inbox.md";
+const PATH = "QorperaOS/agents/nora/routines/inbox.md";
 const id = "89900000-0000-4000-8000-0000000000e1";
 
 function file(update: Partial<Omit<RoutineFile, "kind">> = {}): RoutineFile {

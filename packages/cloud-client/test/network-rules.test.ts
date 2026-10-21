@@ -282,7 +282,7 @@ describe("isNetworkRulesName", () => {
 	});
 });
 
-describe("rules/network.toml as a company state file", () => {
+describe("QorperaOS/rules/network.toml as a company state file", () => {
 	it("is read by its own parser through the one dispatch", () => {
 		const result = parseCompanyStateFile(NETWORK_RULES_PATH, nordlys);
 		expect(result).toMatchObject({
@@ -298,31 +298,44 @@ describe("rules/network.toml as a company state file", () => {
 	});
 
 	it("asks for the path in lowercase before reading the rules", () => {
-		const result = parseCompanyStateFile("Rules/Network.toml", 'mode = "closed"\n');
+		const result = parseCompanyStateFile("QorperaOS/Rules/Network.toml", 'mode = "closed"\n');
 		expect(result?.ok).toBe(false);
 		if (result?.ok !== false) return;
 		expect(result.problems).toHaveLength(1);
 		expect(result.problems[0]).toMatchObject({ line: null, key: null, code: "name" });
-		expect(result.problems[0]?.message).toMatch(/^write the path in lowercase, as /);
+		expect(result.problems[0]?.message).toBe(
+			"write the path below QorperaOS/ in lowercase, as QorperaOS/rules/network.toml",
+		);
+	});
+
+	it("lives under QorperaOS/, whose own spelling is the folder's", () => {
+		expect(NETWORK_RULES_PATH).toBe("QorperaOS/rules/network.toml");
+		expect(parseCompanyStateFile("qorperaos/rules/network.toml", nordlys)?.ok).toBe(true);
+		expect(parseCompanyStateFile("rules/network.toml", nordlys)).toBeNull();
+		expect(companyStatePathProblems("rules/network.toml", true)).toEqual([]);
 	});
 
 	it("leaves a review rule a review rule", () => {
-		expect(parseCompanyStateFile("rules/network.md", "x")?.path.kind).toBe("rule");
-		expect(parseCompanyStateFile("rules/other.toml", 'mode = "open"\n')).toBeNull();
+		expect(parseCompanyStateFile("QorperaOS/rules/network.md", "x")?.path.kind).toBe("rule");
+		expect(parseCompanyStateFile("QorperaOS/rules/other.toml", 'mode = "open"\n')).toBeNull();
 	});
 
 	it("keeps its path for the file: no folder takes the name", () => {
-		for (const folder of ["rules/network.toml", "Rules/Network.TOML/", "rules/network.toml//"])
+		for (const folder of [
+			"QorperaOS/rules/network.toml",
+			"QorperaOS/Rules/Network.TOML/",
+			"QorperaOS/rules/network.toml//",
+		])
 			expect(companyStatePathProblems(folder, true)).toEqual([
 				{
 					line: null,
 					key: null,
 					code: "name",
-					message: "rules/network.toml is the name of the network rules file, not a folder",
+					message: "QorperaOS/rules/network.toml is the name of the network rules file, not a folder",
 				},
 			]);
-		expect(companyStatePathProblems("rules/network.toml")).toEqual([]);
-		expect(companyStatePathProblems("rules/network", true)).toEqual([]);
-		expect(companyStatePathProblems("rules/drafts/network.toml", true)).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/rules/network.toml")).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/rules/network", true)).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/rules/drafts/network.toml", true)).toEqual([]);
 	});
 });

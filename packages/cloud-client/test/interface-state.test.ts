@@ -37,26 +37,35 @@ describe("the folder hook's entry point for interface files (P16)", () => {
 	});
 
 	it("refuses a misplaced path for that alone, before its content", () => {
-		const result = parseInterfaceStateFile("interfaces/Bad_Name/interface.toml", "not toml at all [");
+		const result = parseInterfaceStateFile("QorperaOS/interfaces/Bad_Name/interface.toml", "not toml at all [");
 		expect(result?.ok).toBe(false);
 		expect(codes(result)).toEqual(["bad_value"]);
 	});
 
 	it("decides the kind on the path's shape, so a badly named folder is checked, never plain", () => {
-		expect(parseInterfaceStateFile("interfaces/order.md", "")?.path.kind).toBe("interface-order");
-		expect(parseInterfaceStateFile("Interfaces/Order.md", "")?.ok).toBe(false);
-		for (const path of ["interfaces/A Page/interface.toml", "tables/my_table/table.toml", "tables/x--y/rows.csv"]) {
+		expect(parseInterfaceStateFile("QorperaOS/interfaces/order.md", "")?.path.kind).toBe("interface-order");
+		expect(parseInterfaceStateFile("QorperaOS/Interfaces/Order.md", "")?.ok).toBe(false);
+		expect(parseInterfaceStateFile("qorperaos/interfaces/order.md", "")).toMatchObject({ ok: true });
+		for (const path of [
+			"QorperaOS/interfaces/A Page/interface.toml",
+			"QorperaOS/tables/my_table/table.toml",
+			"QorperaOS/tables/x--y/rows.csv",
+		]) {
 			const result = parseInterfaceStateFile(path, "");
 			expect(result, path).not.toBeNull();
 			expect(result?.ok, path).toBe(false);
 		}
 		for (const path of [
-			"interfaces/pulse/README.md",
-			"interfaces/pulse/notes.txt",
-			"tables/numbers/README.md",
-			"interfaces",
-			"tables/numbers",
-			"agents/scout/agent.md",
+			"QorperaOS/interfaces/pulse/README.md",
+			"QorperaOS/interfaces/pulse/notes.txt",
+			"QorperaOS/tables/numbers/README.md",
+			"QorperaOS/interfaces",
+			"QorperaOS/tables/numbers",
+			"QorperaOS/agents/scout/agent.md",
+			// Under QorperaOS/ only.
+			"interfaces/order.md",
+			"interfaces/pulse/interface.toml",
+			"tables/numbers/rows.csv",
 		])
 			expect(parseInterfaceStateFile(path, "x"), path).toBeNull();
 	});

@@ -567,13 +567,13 @@ describe("member writes (P34a)", () => {
 	it("reads the agents' and group chats' files as test 898 pins them", () => {
 		const answer = {
 			schema: "qorpera.member-company-state-folders/v1",
-			agents: [{ staffAgentId: agent, file: "agents/nora/agent.md" }],
-			groups: [{ roomId: room, file: "agents/groups/launch/group.md" }],
+			agents: [{ staffAgentId: agent, file: "QorperaOS/agents/nora/agent.md" }],
+			groups: [{ roomId: room, file: "QorperaOS/agents/groups/launch/group.md" }],
 		};
 		// Before P34r's SQL the answer has no routines: routines' files are not known.
 		expect(parseCloudMemberCompanyStateFolders(answer)).toEqual({
-			agents: [{ staffAgentId: agent, file: "agents/nora/agent.md" }],
-			groups: [{ roomId: room, file: "agents/groups/launch/group.md" }],
+			agents: [{ staffAgentId: agent, file: "QorperaOS/agents/nora/agent.md" }],
+			groups: [{ roomId: room, file: "QorperaOS/agents/groups/launch/group.md" }],
 			routines: null,
 		});
 		expect(parseCloudMemberCompanyStateFolders({ ...answer, agents: [], groups: [] })).toEqual({
@@ -582,19 +582,19 @@ describe("member writes (P34a)", () => {
 			routines: null,
 		});
 		// As test 899 pins them.
-		const routine = { routineId: commitId, staffAgentId: agent, file: "agents/nora/routines/inbox.md" };
+		const routine = { routineId: commitId, staffAgentId: agent, file: "QorperaOS/agents/nora/routines/inbox.md" };
 		expect(parseCloudMemberCompanyStateFolders({ ...answer, routines: [routine] }).routines).toEqual([routine]);
 		expect(parseCloudMemberCompanyStateFolders({ ...answer, routines: [] }).routines).toEqual([]);
 		for (const bad of [
 			{ ...answer, schema: "qorpera.member-company-state-folders/v2" },
 			{ ...answer, extra: 1 },
-			{ ...answer, agents: [{ staffAgentId: agent, file: "agents/nora/agent.md", path: "x" }] },
-			{ ...answer, groups: [{ roomId: "nope", file: "agents/groups/launch/group.md" }] },
+			{ ...answer, agents: [{ staffAgentId: agent, file: "QorperaOS/agents/nora/agent.md", path: "x" }] },
+			{ ...answer, groups: [{ roomId: "nope", file: "QorperaOS/agents/groups/launch/group.md" }] },
 			{ ...answer, routines: {} },
-			{ ...answer, routines: [{ routineId: commitId, file: "agents/nora/routines/inbox.md" }] },
+			{ ...answer, routines: [{ routineId: commitId, file: "QorperaOS/agents/nora/routines/inbox.md" }] },
 			{
 				...answer,
-				routines: [{ routineId: commitId, staffAgentId: "nope", file: "agents/nora/routines/inbox.md" }],
+				routines: [{ routineId: commitId, staffAgentId: "nope", file: "QorperaOS/agents/nora/routines/inbox.md" }],
 			},
 		])
 			expect(() => parseCloudMemberCompanyStateFolders(bad)).toThrow();
@@ -602,8 +602,8 @@ describe("member writes (P34a)", () => {
 
 	it("reads a commit's answer unit by unit, as the core gives it", () => {
 		const units = [
-			{ op: "write", path: "agents/nora/agent.md", text: "x" },
-			{ op: "delete", path: "agents/otto", expectedVersion: version, asOfSeq: 3 },
+			{ op: "write", path: "QorperaOS/agents/nora/agent.md", text: "x" },
+			{ op: "delete", path: "QorperaOS/agents/otto", expectedVersion: version, asOfSeq: 3 },
 		] as const;
 		expect(
 			parseCloudMemberFolderCommit(
@@ -613,11 +613,11 @@ describe("member writes (P34a)", () => {
 					seq: 9,
 					replay: false,
 					units: [
-						{ unit: 1, op: "write", path: "agents/nora/agent.md", outcome: "saved", version },
+						{ unit: 1, op: "write", path: "QorperaOS/agents/nora/agent.md", outcome: "saved", version },
 						{
 							unit: 2,
 							op: "delete",
-							path: "agents/otto",
+							path: "QorperaOS/agents/otto",
 							outcome: "refused",
 							reason: "structured_rule",
 							problems: [
@@ -636,7 +636,7 @@ describe("member writes (P34a)", () => {
 				{
 					unit: 1,
 					op: "write",
-					path: "agents/nora/agent.md",
+					path: "QorperaOS/agents/nora/agent.md",
 					to: null,
 					version,
 					outcome: "saved",
@@ -646,7 +646,7 @@ describe("member writes (P34a)", () => {
 				{
 					unit: 2,
 					op: "delete",
-					path: "agents/otto",
+					path: "QorperaOS/agents/otto",
 					to: null,
 					version: null,
 					outcome: "refused",

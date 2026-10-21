@@ -9,7 +9,7 @@ import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts"
  * member's own token; bytes come from the object gateway's member folder route, one manifest or chunk at a time, each
  * checked against its hash. Every answer is parsed with closed key sets, the shapes test 834 pins on the real SQL.
  * A member's change set goes to the object gateway's member commit route (P34a, §5), which stages it and commits it as
- * the member; a change under human-tasks/ waits for P31. Browser-safe.
+ * the member; a change under QorperaOS/human-tasks/ waits for P31. Browser-safe.
  */
 
 const SHA = SHA256_HEX_PATTERN;
@@ -732,7 +732,7 @@ export class CloudMemberFolderClient {
 	}
 
 	/** Commits `units` as the member through the object gateway (P34a): each unit saved, refused or in conflict on its
-	 * own. Send the same `operationKey` again to retry the same change set. A change under human-tasks/ is refused
+	 * own. Send the same `operationKey` again to retry the same change set. A change under QorperaOS/human-tasks/ is refused
 	 * (access denied) until P31. */
 	commit(
 		operationKey: string,
