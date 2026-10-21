@@ -62,8 +62,8 @@ function fixture(group = false) {
 		continues: null,
 		narrow: false,
 	};
-	// The place names the run's folder by its key, as SQL keeps it: qorperaos/agents/...
-	let root = `${group ? "qorperaos/agents/groups/research/memory" : "qorperaos/agents/scout/memory/thread"}/runs/${runId}`;
+	// The place names the run's folder as the database spells it: QorperaOS/agents/...
+	let root = `${group ? "QorperaOS/agents/groups/research/memory" : "QorperaOS/agents/scout/memory/thread"}/runs/${runId}`;
 	let gone = false;
 	let generation = 0;
 	let seq = 0;
@@ -410,7 +410,7 @@ describe("run log persistence through the ordinary folder client", () => {
 			{ path: `projects/runs/${f.runId}` },
 			{ path: `${f.root}/extra` },
 			{ missing: ["projects"] },
-			{ missing: ["qorperaos/agents/scout/memory/thread", "qorperaos/agents/scout/memory"] },
+			{ missing: ["QorperaOS/agents/scout/memory/thread", "QorperaOS/agents/scout/memory"] },
 			{ path: `agents/scout/memory/thread/runs/${f.runId}` },
 			{ generation: -1 },
 			{ last: 0 },

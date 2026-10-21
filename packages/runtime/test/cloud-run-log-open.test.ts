@@ -30,11 +30,11 @@ type Write = Extract<CloudCompanyFolderUnit, { op: "write" }>;
 
 function fixture() {
 	const runId = randomUUID();
-	const root = `qorperaos/agents/scout/memory/thread/runs/${runId}`;
+	const root = `QorperaOS/agents/scout/memory/thread/runs/${runId}`;
 	const place: { -readonly [K in keyof CloudRunLogPlace]: CloudRunLogPlace[K] } = {
 		path: root,
 		exists: false,
-		missing: ["qorperaos/agents/scout/memory/thread/runs"],
+		missing: ["QorperaOS/agents/scout/memory/thread/runs"],
 		last: null,
 		generation: 3,
 		origin: { conversation: randomUUID(), parent: null, step: null, continues: null, narrow: false },

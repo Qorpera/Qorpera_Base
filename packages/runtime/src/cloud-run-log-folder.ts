@@ -129,8 +129,8 @@ export class CloudRunLogCompanyFolder implements CloudRunLogFolder {
 		} catch {
 			invalid();
 		}
-		// The place is a key (qorperaos/agents/...): the position checks are on the part below the root, and the folders on
-		// the way keep the root as the path spells it.
+		// The place is under the root (the database spells it QorperaOS/...): the position checks are on the part below it,
+		// and the folders on the way keep the root as the path spells it.
 		const below = osRelative(path);
 		if (below === null) invalid();
 		const top = path.slice(0, path.length - below.length);
