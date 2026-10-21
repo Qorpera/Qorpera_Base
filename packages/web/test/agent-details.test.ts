@@ -469,6 +469,29 @@ describe("agent pages", () => {
 		expect(copy.classList.contains("is-done")).toBe(false);
 	});
 
+	it("brings a failed save's line and Try again back after a clipboard failure's line", async () => {
+		const updateAgent = saving().mockRejectedValueOnce(new Error("offline"));
+		const writeText = vi.fn(async (_text: string) => {
+			throw new Error("denied");
+		});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		cleanup.push(() => Reflect.deleteProperty(navigator, "clipboard"));
+		const f = open({ updateAgent }, staff, undefined, { conversationId: id(77) });
+		press(type("Agent name", "Unsaved name"), "Enter");
+		await settle();
+		expect(status()).toContain("could not be saved");
+		expect(named("Try again")).toBeDefined();
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		cleanup.push(() => vi.useRealTimers());
+		f.dialog.querySelector<HTMLButtonElement>('[aria-label="Copy conversation ID"]')!.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(status()).toBe("The conversation ID could not be copied.");
+		await vi.advanceTimersByTimeAsync(2400);
+		expect(status()).toContain("could not be saved");
+		expect(named("Try again")).toBeDefined();
+		expect(field("Agent name").value).toBe("Unsaved name");
+	});
+
 	it("keeps responsibilities as the description, not a page of their own", async () => {
 		const f = open();
 		f.company.store.set({ organization });

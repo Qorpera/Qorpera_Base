@@ -330,7 +330,9 @@ export class AgentDetails {
 			if (!navigator.clipboard) throw new Error("No clipboard");
 			await navigator.clipboard.writeText(conversationId);
 		} catch {
-			this.#say(t("The conversation ID could not be copied."), true);
+			this.#say(t("The conversation ID could not be copied."));
+			// Then the edits' own line comes back, a failed save's Try again with it.
+			this.#statusTimer = setTimeout(() => this.#syncEdits(), 2400);
 			return;
 		}
 		if (!button || this.#lifetime.signal.aborted) return;
