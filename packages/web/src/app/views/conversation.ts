@@ -2010,7 +2010,8 @@ export class ConversationView {
 			return [staff?.id, staff?.displayName, staff?.appearance, staff?.templateId];
 		};
 		// An agent's interface change names each table by its title as the folder has it now (a folder's name is one
-		// name in any case). An interface is named by its folder: the folder's interfaces/ is not read (Interfaces C6a).
+		// name in any case). An interface is named by its folder: the folder's QorperaOS/interfaces/ is not read
+		// (Interfaces C6a).
 		const folder = this.#company.store.get().interfaceFolder;
 		const titleOf = (subject: InterfaceChangeSubject) => {
 			if (subject.kind === "interface") return undefined;

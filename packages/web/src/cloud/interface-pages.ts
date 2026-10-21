@@ -3,7 +3,7 @@ import { array, CloudShapeError, oneOf, record } from "./parse.ts";
 
 /* Which pages a company shows (Interfaces C6a; migration 20260930509000_interface_pages, supabase/CLIENT-CONTRACT.md
  * "Pages"). A company shows at most two, Mailbox and Members, each off until an owner or admin switches it on. The
- * web draws a page from the definition it ships, never from the folder's interfaces/. */
+ * web draws a page from the definition it ships, never from the folder's QorperaOS/interfaces/. */
 
 export const INTERFACE_PAGES = ["mailbox", "members"] as const;
 export type InterfacePageName = (typeof INTERFACE_PAGES)[number];

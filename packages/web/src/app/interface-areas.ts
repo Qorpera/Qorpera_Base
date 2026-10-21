@@ -1,4 +1,5 @@
 import type { CloudMemberFolderUnit } from "@qorpera/cloud-client/cloud-member-folder";
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import {
 	csvField,
@@ -23,15 +24,18 @@ import { t } from "../ui/preferences.ts";
 import { ClaimLostError, rowsLocator, withCell } from "./interface-claims.ts";
 
 /* The Members page's areas (Interfaces C6d; deploy/first-node/RUNTIME-INTERFACES.md §5.1): a member adds an area,
- * which is then theirs, and changes which agents an area has. A company whose folder has no `tables/areas/` gets it
- * with the first such change: the table's two files as founding writes them (`interfaceLibraryFiles`), in one new
- * folder, before the change itself; an areas table with no rows file yet gets one, its first line alone. Each change
- * rewrites `tables/areas/rows.csv` the way a claim does (app/interface-claims.ts): the rows are read and checked
- * against the table's current definition, the claim rule is checked here before anything is sent, and the write names
- * the version it read. When the file changed in between it is read and checked again; an area that changed meanwhile
- * ends the change with that said. */
+ * which is then theirs, and changes which agents an area has. A company whose folder has no `QorperaOS/tables/areas/`
+ * gets it with the first such change: the table's two files as founding writes them (`interfaceLibraryFiles`), in one
+ * new folder, before the change itself; an areas table with no rows file yet gets one, its first line alone. Each
+ * change rewrites `QorperaOS/tables/areas/rows.csv` the way a claim does (app/interface-claims.ts): the rows are read
+ * and checked against the table's current definition, the claim rule is checked here before anything is sent, and the
+ * write names the version it read. When the file changed in between it is read and checked again; an area that changed
+ * meanwhile ends the change with that said. */
 
 const AREAS = "areas";
+/** The areas table's folder, and the folder of the company's tables it is in. */
+const AREAS_FOLDER = osPath(`tables/${AREAS}`);
+const TABLES_FOLDER = osPath("tables");
 /** Tries of the first write when another writer made a folder it makes meanwhile. */
 const FIRST_WRITE_TRIES = 3;
 /** The byte order mark a rows file may start with, which stays where it is. */
@@ -57,27 +61,27 @@ interface AreaChange {
 	readonly check: () => void;
 }
 
-/** Makes `tables/areas/` with the library's `table.toml` and `rows.csv`, byte for byte, when the folder has no such
- * folder; nothing else is written. Without `tables/` the one new folder is `tables`, with the table inside. A folder
- * another writer made meanwhile (`exists`) is looked for again, at most three tries in all. */
+/** Makes `QorperaOS/tables/areas/` with the library's `table.toml` and `rows.csv`, byte for byte, when the folder has
+ * no such folder; nothing else is written. Without `QorperaOS/tables/` the one new folder is that, with the table
+ * inside. A folder another writer made meanwhile (`exists`) is looked for again, at most three tries in all. */
 export async function ensureAreasTable(change: AreaChange, failure: string): Promise<void> {
 	const { folder, signal, check } = change;
 	const library = interfaceLibraryFiles(() => crypto.randomUUID());
 	const files = ["table.toml", "rows.csv"].map((name) => {
-		const text = library[`tables/${AREAS}/${name}`];
+		const text = library[`${AREAS_FOLDER}/${name}`];
 		if (text === undefined) throw new Error(failure);
 		return { name, text };
 	});
 	for (let attempt = 1; ; attempt++) {
-		const read = await folder.read(`tables/${AREAS}`, signal);
+		const read = await folder.read(AREAS_FOLDER, signal);
 		check();
 		if (read.entry !== null) return;
-		const tables = await folder.read("tables", signal);
+		const tables = await folder.read(TABLES_FOLDER, signal);
 		check();
 		const nested = tables.entry === null;
 		const unit: CloudMemberFolderUnit = {
 			op: "new_folder",
-			path: nested ? "tables" : `tables/${AREAS}`,
+			path: nested ? TABLES_FOLDER : AREAS_FOLDER,
 			contents: [
 				...(nested ? [{ path: AREAS, kind: "folder" as const }] : []),
 				...files.map(({ name, text }) => ({
@@ -95,16 +99,16 @@ export async function ensureAreasTable(change: AreaChange, failure: string): Pro
 	}
 }
 
-/** Makes `tables/areas/rows.csv` with its first line alone, naming the table's current columns, when the table has no
- * rows file yet (a table without one is valid and has no rows, RUNTIME-INTERFACES.md §5 "Rows"); nothing else is
- * written. A rows file another writer made meanwhile (`exists`) is the one the change then adds its row to. */
+/** Makes `QorperaOS/tables/areas/rows.csv` with its first line alone, naming the table's current columns, when the
+ * table has no rows file yet (a table without one is valid and has no rows, RUNTIME-INTERFACES.md §5 "Rows"); nothing
+ * else is written. A rows file another writer made meanwhile (`exists`) is the one the change then adds its row to. */
 async function ensureAreaRows(change: AreaChange, failure: string): Promise<void> {
 	const { folder, signal, check } = change;
-	const path = `tables/${AREAS}/rows.csv`;
+	const path = `${AREAS_FOLDER}/rows.csv`;
 	const rows = await folder.read(path, signal);
 	check();
 	if (rows.entry !== null) return;
-	const read = await readStateFile(folder, `tables/${AREAS}/table.toml`, signal);
+	const read = await readStateFile(folder, `${AREAS_FOLDER}/table.toml`, signal);
 	check();
 	if (read === null) throw new Error(t("The areas are no longer here."));
 	const parsed = parseTableFile(read.text);

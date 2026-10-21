@@ -15,8 +15,8 @@ import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { staff } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
-/* The agent editor on the company folder (P34a-2): an agent is agents/<handle>/agent.md, written through the member
- * commit route. The fake folder keeps the core's rules (folder-fake.ts). */
+/* The agent editor on the company folder (P34a-2): an agent is QorperaOS/agents/<handle>/agent.md, written through
+ * the member commit route. The fake folder keeps the core's rules (folder-fake.ts). */
 
 function setup() {
 	const fake = folderFake();
@@ -57,7 +57,7 @@ function agentFile(fake: FolderFake, path: string): AgentFile {
 async function created(f: ReturnType<typeof setup>, overrides: Partial<WebCompanyAgentDraft> = {}) {
 	const creation = prepareWebCompanyAgentCreation({ ...draft, ...overrides });
 	await createWebCompanyAgents(f.files).create(creation, f.signal);
-	const path = "agents/ledger/agent.md";
+	const path = "QorperaOS/agents/ledger/agent.md";
 	const file = agentFile(f.fake, path);
 	const agent: HostedStaffAgent = {
 		...staff,
@@ -93,7 +93,7 @@ describe("preparing an agent", () => {
 });
 
 describe("creating an agent", () => {
-	it("creates agents/<handle> with its agent.md and the four folders a hired agent has", async () => {
+	it("creates QorperaOS/agents/<handle> with its agent.md and the four folders a hired agent has", async () => {
 		const f = setup();
 		const creation = prepareWebCompanyAgentCreation(draft);
 		await expect(createWebCompanyAgents(f.files).create(creation, f.signal)).resolves.toBe(creation.id);
@@ -103,7 +103,7 @@ describe("creating an agent", () => {
 		expect(commit?.units).toEqual([
 			{
 				op: "new_folder",
-				path: "agents/ledger",
+				path: "QorperaOS/agents/ledger",
 				contents: [
 					{ path: "agent.md", kind: "file", text: expect.any(String) },
 					{ path: "memory", kind: "folder" },
@@ -113,14 +113,14 @@ describe("creating an agent", () => {
 				],
 			},
 		]);
-		expect(f.fake.children("agents/ledger")).toEqual([
-			"agents/ledger/agent.md",
-			"agents/ledger/memory",
-			"agents/ledger/routines",
-			"agents/ledger/skills",
-			"agents/ledger/todos",
+		expect(f.fake.children("QorperaOS/agents/ledger")).toEqual([
+			"QorperaOS/agents/ledger/agent.md",
+			"QorperaOS/agents/ledger/memory",
+			"QorperaOS/agents/ledger/routines",
+			"QorperaOS/agents/ledger/skills",
+			"QorperaOS/agents/ledger/todos",
 		]);
-		const file = agentFile(f.fake, "agents/ledger/agent.md");
+		const file = agentFile(f.fake, "QorperaOS/agents/ledger/agent.md");
 		expect(file).toMatchObject({
 			id: creation.id,
 			name: "Ledger",
@@ -137,7 +137,7 @@ describe("creating an agent", () => {
 		expect(file.instructions).toContain("No responsibilities have been written");
 		expect(file.instructions).not.toContain("Ledger");
 		expect(await f.fake.folder.stateFolders(f.signal)).toEqual({
-			agents: [{ staffAgentId: creation.id, file: "agents/ledger/agent.md" }],
+			agents: [{ staffAgentId: creation.id, file: "QorperaOS/agents/ledger/agent.md" }],
 			groups: [],
 			routines: [],
 		});
@@ -152,7 +152,7 @@ describe("creating an agent", () => {
 			color: "qorpera-coral",
 		});
 		await createWebCompanyAgents(f.files).create(creation, f.signal);
-		expect(agentFile(f.fake, "agents/ledger/agent.md")).toMatchObject({
+		expect(agentFile(f.fake, "QorperaOS/agents/ledger/agent.md")).toMatchObject({
 			instructions: "Own the ledger.",
 			figure: "rocket",
 			colour: "coral",
@@ -191,7 +191,7 @@ describe("creating an agent", () => {
 			prepareWebCompanyAgentCreation({ ...draft, figure: "rocket", color: NATIVE.rocket }),
 			f.signal,
 		);
-		expect(agentFile(f.fake, "agents/ledger/agent.md")).toMatchObject({ figure: "rocket", colour: null });
+		expect(agentFile(f.fake, "QorperaOS/agents/ledger/agent.md")).toMatchObject({ figure: "rocket", colour: null });
 		await agents.create(
 			prepareWebCompanyAgentCreation({
 				...draft,
@@ -201,28 +201,28 @@ describe("creating an agent", () => {
 			}),
 			f.signal,
 		);
-		expect(agentFile(f.fake, "agents/teal/agent.md")).toMatchObject({ figure: "rocket", colour: "teal" });
+		expect(agentFile(f.fake, "QorperaOS/agents/teal/agent.md")).toMatchObject({ figure: "rocket", colour: "teal" });
 		// The crown's own gold, picked for the rocket, is the rocket's colour.
 		await agents.create(
 			prepareWebCompanyAgentCreation({ ...draft, displayName: "Gold", figure: "rocket", color: NATIVE.crown }),
 			f.signal,
 		);
-		expect(agentFile(f.fake, "agents/gold/agent.md")).toMatchObject({ figure: "rocket", colour: "gold" });
+		expect(agentFile(f.fake, "QorperaOS/agents/gold/agent.md")).toMatchObject({ figure: "rocket", colour: "gold" });
 	});
 
 	it("takes the next handle when the name is listed, and never a reserved one", async () => {
 		const f = setup();
-		f.fake.mkdir("agents/ledger");
+		f.fake.mkdir("QorperaOS/agents/ledger");
 		const first = prepareWebCompanyAgentCreation(draft);
 		await createWebCompanyAgents(f.files).create(first, f.signal);
 		expect(f.fake.commits.map((commit) => commit.operationKey)).toEqual([`web:staff-create:${first.id}:ledger-2`]);
 		const groups = prepareWebCompanyAgentCreation({ ...draft, displayName: "Groups" });
 		await createWebCompanyAgents(f.files).create(groups, f.signal);
-		expect(f.fake.commits.at(-1)?.units[0]).toMatchObject({ op: "new_folder", path: "agents/groups-2" });
-		expect(agentFile(f.fake, "agents/groups-2/agent.md").id).toBe(groups.id);
+		expect(f.fake.commits.at(-1)?.units[0]).toMatchObject({ op: "new_folder", path: "QorperaOS/agents/groups-2" });
+		expect(agentFile(f.fake, "QorperaOS/agents/groups-2/agent.md").id).toBe(groups.id);
 	});
 
-	/** Another writer makes these folders just after the member's listing of `agents/`. */
+	/** Another writer makes these folders just after the member's listing of `QorperaOS/agents/`. */
 	function takenAfterListing(f: ReturnType<typeof setup>, ...paths: string[]) {
 		const list = f.fake.folder.list.getMockImplementation()!;
 		f.fake.folder.list.mockImplementationOnce(async (...args) => {
@@ -234,21 +234,21 @@ describe("creating an agent", () => {
 
 	it("takes the next handle, as a new change set, when the name was taken since the listing", async () => {
 		const f = setup();
-		takenAfterListing(f, "agents/ledger");
+		takenAfterListing(f, "QorperaOS/agents/ledger");
 		const creation = prepareWebCompanyAgentCreation(draft);
 		await createWebCompanyAgents(f.files).create(creation, f.signal);
 		expect(f.fake.commits.map((commit) => [commit.operationKey, (commit.units[0] as { path: string }).path])).toEqual(
 			[
-				[`web:staff-create:${creation.id}:ledger`, "agents/ledger"],
-				[`web:staff-create:${creation.id}:ledger-2`, "agents/ledger-2"],
+				[`web:staff-create:${creation.id}:ledger`, "QorperaOS/agents/ledger"],
+				[`web:staff-create:${creation.id}:ledger-2`, "QorperaOS/agents/ledger-2"],
 			],
 		);
-		expect(agentFile(f.fake, "agents/ledger-2/agent.md").id).toBe(creation.id);
+		expect(agentFile(f.fake, "QorperaOS/agents/ledger-2/agent.md").id).toBe(creation.id);
 	});
 
 	it("stops after three taken handles and says the agent was not created", async () => {
 		const f = setup();
-		takenAfterListing(f, "agents/ledger", "agents/ledger-2", "agents/ledger-3");
+		takenAfterListing(f, "QorperaOS/agents/ledger", "QorperaOS/agents/ledger-2", "QorperaOS/agents/ledger-3");
 		const error = await createWebCompanyAgents(f.files)
 			.create(prepareWebCompanyAgentCreation(draft), f.signal)
 			.catch((caught: unknown) => caught);
@@ -264,8 +264,8 @@ describe("creating an agent", () => {
 	it("reports a name closed to the member as denied, without trying another", async () => {
 		const f = setup();
 		// The core decides authority before existence: a folder the member may not read or write is `denied`.
-		f.fake.mkdir("agents/ledger");
-		f.fake.deny("agents/ledger");
+		f.fake.mkdir("QorperaOS/agents/ledger");
+		f.fake.deny("QorperaOS/agents/ledger");
 		const error = await createWebCompanyAgents(f.files)
 			.create(prepareWebCompanyAgentCreation(draft), f.signal)
 			.catch((caught: unknown) => caught);
@@ -282,7 +282,7 @@ describe("creating an agent", () => {
 		// The application makes a new adapter for each call; the identity is the draft's.
 		await expect(createWebCompanyAgents(f.files).create(creation, f.signal)).resolves.toBe(creation.id);
 		expect(f.fake.commits).toHaveLength(1);
-		expect(f.fake.children("agents")).toEqual(["agents/groups", "agents/ledger"]);
+		expect(f.fake.children("QorperaOS/agents")).toEqual(["QorperaOS/agents/groups", "QorperaOS/agents/ledger"]);
 	});
 
 	it("sends the same change set again when the first never reached the core", async () => {
@@ -293,7 +293,7 @@ describe("creating an agent", () => {
 		await createWebCompanyAgents(f.files).create(creation, f.signal);
 		expect(f.fake.commits).toHaveLength(2);
 		expect(f.fake.commits[1]).toEqual(f.fake.commits[0]);
-		expect(agentFile(f.fake, "agents/ledger/agent.md").id).toBe(creation.id);
+		expect(agentFile(f.fake, "QorperaOS/agents/ledger/agent.md").id).toBe(creation.id);
 	});
 
 	it.each([
@@ -311,7 +311,7 @@ describe("creating an agent", () => {
 			reason,
 			message: "The agent could not be created: agents may only be hired by an owner or admin.",
 		});
-		expect(f.fake.has("agents/ledger")).toBe(false);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(false);
 	});
 
 	it("treats an answer waiting for review as uncertain, never as a rejection", async () => {
@@ -520,7 +520,7 @@ describe("changing an agent", () => {
 	it("says the agent is gone when its folder is, and writes nothing", async () => {
 		const f = setup();
 		const { agent } = await created(f);
-		f.fake.remove("agents/ledger");
+		f.fake.remove("QorperaOS/agents/ledger");
 		await expect(
 			createWebCompanyAgents(f.files).update(agent, { ...draft, displayName: "Ledger II" }, f.signal),
 		).rejects.toThrow("This agent is no longer available.");
@@ -556,15 +556,15 @@ describe("deleting an agent", () => {
 	it("deletes the agent's folder at the version and seq it read", async () => {
 		const f = setup();
 		const { agent } = await created(f);
-		const version = f.fake.version("agents/ledger");
+		const version = f.fake.version("QorperaOS/agents/ledger");
 		const seq = f.fake.seq;
 		await createWebCompanyAgents(f.files).delete(agent, f.signal);
 		expect(f.fake.commits).toHaveLength(1);
 		expect(f.fake.commits[0]?.operationKey).toMatch(new RegExp(`^web:staff-delete:${agent.id}:[0-9a-f-]{36}$`));
 		expect(f.fake.commits[0]?.units).toEqual([
-			{ op: "delete", path: "agents/ledger", expectedVersion: version, asOfSeq: seq },
+			{ op: "delete", path: "QorperaOS/agents/ledger", expectedVersion: version, asOfSeq: seq },
 		]);
-		expect(f.fake.has("agents/ledger")).toBe(false);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(false);
 	});
 
 	it("reads again and retries when the agent's run wrote under its folder in between", async () => {
@@ -573,23 +573,23 @@ describe("deleting an agent", () => {
 		const read = f.fake.folder.read.getMockImplementation()!;
 		f.fake.folder.read.mockImplementationOnce(async (...args) => {
 			const answer = await read(...args);
-			f.fake.put("agents/ledger/memory/notes.md", "A note.");
+			f.fake.put("QorperaOS/agents/ledger/memory/notes.md", "A note.");
 			return answer;
 		});
 		const seq = f.fake.seq;
 		await createWebCompanyAgents(f.files).delete(agent, f.signal);
 		expect(f.fake.commits.map((commit) => commit.units[0])).toEqual([
-			{ op: "delete", path: "agents/ledger", expectedVersion: expect.any(String), asOfSeq: seq },
+			{ op: "delete", path: "QorperaOS/agents/ledger", expectedVersion: expect.any(String), asOfSeq: seq },
 			// The note came at seq + 1; the second read saw it.
-			{ op: "delete", path: "agents/ledger", expectedVersion: expect.any(String), asOfSeq: seq + 1 },
+			{ op: "delete", path: "QorperaOS/agents/ledger", expectedVersion: expect.any(String), asOfSeq: seq + 1 },
 		]);
-		expect(f.fake.has("agents/ledger")).toBe(false);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(false);
 	});
 
 	it("is done when the agent is already gone", async () => {
 		const f = setup();
 		const { agent } = await created(f);
-		f.fake.remove("agents/ledger");
+		f.fake.remove("QorperaOS/agents/ledger");
 		await createWebCompanyAgents(f.files).delete(agent, f.signal);
 		expect(f.fake.commits).toHaveLength(0);
 		// Gone between the read and the delete: the core answers missing, which is done as well.
@@ -598,7 +598,7 @@ describe("deleting an agent", () => {
 		const read = g.fake.folder.read.getMockImplementation()!;
 		g.fake.folder.read.mockImplementationOnce(async (...args) => {
 			const answer = await read(...args);
-			g.fake.remove("agents/ledger");
+			g.fake.remove("QorperaOS/agents/ledger");
 			return answer;
 		});
 		await createWebCompanyAgents(g.files).delete(other.agent, g.signal);
@@ -613,7 +613,7 @@ describe("deleting an agent", () => {
 			createWebCompanyAgents(f.files).delete({ ...agent, templateId: "co-founder" }, f.signal),
 		).rejects.toThrow("The Co-Founder cannot be deleted.");
 		expect(f.folder).not.toHaveBeenCalled();
-		expect(f.fake.has("agents/ledger")).toBe(true);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(true);
 	});
 
 	it("reports a refusal with its problems, and keeps the folder", async () => {
@@ -629,6 +629,6 @@ describe("deleting an agent", () => {
 			reason: "hook",
 			message: "The agent could not be deleted: the agent still has open human tasks.",
 		});
-		expect(f.fake.has("agents/ledger")).toBe(true);
+		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(true);
 	});
 });

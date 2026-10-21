@@ -26,7 +26,7 @@ import {
 	userA,
 } from "./fixtures.ts";
 
-const agentFile = "agents/sales-lead/agent.md";
+const agentFile = "QorperaOS/agents/sales-lead/agent.md";
 
 function unitJson(unit: number, overrides: Record<string, unknown> = {}) {
 	return { unit, op: "write", path: `notes/plan-${unit}.md`, ...overrides };
@@ -201,14 +201,14 @@ describe("a proposal's changes in plain words", () => {
 		expect(proposalChange(agent({ name: "Sales Lead", status: "archived" }), false)).toBe(
 			"Archive the agent “Sales Lead”",
 		);
-		const group = "agents/groups/launch-team/group.md";
+		const group = "QorperaOS/agents/groups/launch-team/group.md";
 		expect(proposalChange(unit({ path: group, structured: [structured("group", group)] }), false)).toBe(
 			"Start the group chat “Launch team”",
 		);
 		const routine = (parse: Record<string, string>) =>
 			unit({
-				path: "agents/sales-lead/routines/weekly-report.md",
-				structured: [structured("routine", "agents/sales-lead/routines/weekly-report.md", parse)],
+				path: "QorperaOS/agents/sales-lead/routines/weekly-report.md",
+				structured: [structured("routine", "QorperaOS/agents/sales-lead/routines/weekly-report.md", parse)],
 			});
 		expect(proposalChange(routine({ title: "Friday report" }), false)).toBe(
 			"Set up or change the routine “Friday report”",
@@ -220,12 +220,15 @@ describe("a proposal's changes in plain words", () => {
 		expect(proposalChange(routine({ title: "Friday report", status: "concluded" }), false)).toBe(
 			"End the routine “Friday report”",
 		);
-		const shown = "interfaces/leads/interface.md";
+		const shown = "QorperaOS/interfaces/leads/interface.md";
 		expect(proposalChange(unit({ path: shown, structured: [structured("interface", shown)] }), false)).toBe(
 			"Set up or change the interface “Leads”",
 		);
 		expect(
-			proposalChange(unit({ structured: [structured("table", "tables/leads.json", { name: "Leads" })] }), false),
+			proposalChange(
+				unit({ structured: [structured("table", "QorperaOS/tables/leads.json", { name: "Leads" })] }),
+				false,
+			),
 		).toBe("Set up or change the table “Leads”");
 		const long = "x".repeat(200);
 		expect(proposalChange(agent({ name: long }), false)).toBe(`Make the agent “${"x".repeat(119)}…” active again`);

@@ -2220,10 +2220,10 @@ interface AreaSupervision {
 	readonly mayWrite: boolean;
 }
 
-/** A row of `tables/areas`' supervision, where the page can change it: the consents are read and the page writes, and
- * the table keeps `supervisor` as a member cell that needs a yes; else null, and nothing of it is drawn. A live consent
- * counts before the cell, so a consent read since the folder was shows at once: the save that changes the cell makes
- * or ends it. */
+/** A row of `QorperaOS/tables/areas`' supervision, where the page can change it: the consents are read and the page
+ * writes, and the table keeps `supervisor` as a member cell that needs a yes; else null, and nothing of it is drawn. A
+ * live consent counts before the cell, so a consent read since the folder was shows at once: the save that changes the
+ * cell makes or ends it. */
 function areaSupervision(
 	context: Pick<BlockContext, "company" | "supervisions" | "writes">,
 	source: string,

@@ -51,7 +51,7 @@ const observed: NativeExecutionConnections = {
 };
 
 /** The group chat's folder the two fixture agents get: its name is theirs, joined. */
-const GROUP = "agents/groups/fixture-agent-other-agent";
+const GROUP = "QorperaOS/agents/groups/fixture-agent-other-agent";
 
 function setup() {
 	const f = fixture();
@@ -280,7 +280,7 @@ describe("starting a conversation on first send", () => {
 		// The same recipients, in another order, are the same draft: its group chat is found, not made again.
 		expect(await f.start([f.other.id, staff.id], "Keep this", f.signal)).toBe(session.sessionId);
 		expect(f.fake.commits).toHaveLength(1);
-		expect(f.fake.children("agents/groups")).toEqual([GROUP]);
+		expect(f.fake.children("QorperaOS/agents/groups")).toEqual([GROUP]);
 		expect(f.write.mock.calls[0]?.[6]).toMatchObject({ roomId: room });
 	});
 	it("finds the group chat a lost answer created instead of creating a second one", async () => {
@@ -289,7 +289,7 @@ describe("starting a conversation on first send", () => {
 		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toThrow("Failed to fetch");
 		expect(await f.start([staff.id, f.other.id], "Hello", f.signal)).toBe(session.sessionId);
 		expect(f.fake.commits).toHaveLength(1);
-		expect(f.fake.children("agents/groups")).toEqual([GROUP]);
+		expect(f.fake.children("QorperaOS/agents/groups")).toEqual([GROUP]);
 	});
 	it("sends the same change set again when the first never reached the core", async () => {
 		const f = setup();

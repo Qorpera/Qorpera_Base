@@ -202,7 +202,7 @@ const CASES: readonly {
 	},
 	{
 		name: "on a file change",
-		file: routine({ when: "file-change", watch: "vision", match: "exact" }),
+		file: routine({ when: "file-change", watch: "QorperaOS/vision", match: "exact" }),
 		after: "2026-10-06T10:00:00Z",
 		next: null,
 	},

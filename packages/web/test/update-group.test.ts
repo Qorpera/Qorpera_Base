@@ -14,8 +14,8 @@ import type { GroupChatDetails, GroupChatDraft } from "../src/cloud/group-detail
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 
-/* A group chat's details on the company folder (P34a-2): agents/groups/<handle>/group.md, rewritten (only what the
- * member changed) and deleted with its folder through the member commit route. */
+/* A group chat's details on the company folder (P34a-2): QorperaOS/agents/groups/<handle>/group.md, rewritten (only
+ * what the member changed) and deleted with its folder through the member commit route. */
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-const FOLDER = "agents/groups/original-group";
+const FOLDER = "QorperaOS/agents/groups/original-group";
 const PATH = `${FOLDER}/group.md`;
 
 function setup() {
@@ -340,11 +340,11 @@ describe("editing group details", () => {
 		const f = setup();
 		vi.mocked(f.fake.folder.stateFolders).mockResolvedValueOnce({
 			agents: [],
-			groups: [{ roomId: f.observed.roomId, file: "agents/groups/other/group.md" }],
+			groups: [{ roomId: f.observed.roomId, file: "QorperaOS/agents/groups/other/group.md" }],
 			routines: [],
 		});
 		f.fake.put(
-			"agents/groups/other/group.md",
+			"QorperaOS/agents/groups/other/group.md",
 			writeGroupFile({
 				id: id(80),
 				name: "Other",

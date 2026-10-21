@@ -13,7 +13,7 @@ export interface MemberInterfaceOffer {
 	readonly id: string;
 	/** The table's id, which follows the table through a move. */
 	readonly table: string;
-	/** The table's folder now (`tables/<name>`). */
+	/** The table's folder now (`QorperaOS/tables/<name>`). */
 	readonly folder: string | null;
 	/** The row's typed key, as the client's table parse gives it; null once the offer is closed. */
 	readonly key: readonly TableValue[] | null;

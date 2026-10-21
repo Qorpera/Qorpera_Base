@@ -31,8 +31,8 @@ import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 /* The interfaces' folder pages (RUNTIME-INTERFACES.md §10, "Built: folder pages"): the sources from the company
  * folder's own files, and the text, numbers and calendar blocks, drawn from a member's folder (folder-fake.ts). The
- * folder's interfaces/ is never read or shown (Interfaces C6a), so each test hands its page to the reader and draws it
- * directly: these test the reader and the blocks, not a page a company can show. */
+ * folder's QorperaOS/interfaces/ is never read or shown (Interfaces C6a), so each test hands its page to the reader and
+ * draws it directly: these test the reader and the blocks, not a page a company can show. */
 
 /** Tuesday 6 October 2026, 10:00 UTC. */
 const NOW = Date.parse("2026-10-06T10:00:00Z");
@@ -193,9 +193,9 @@ const contact = (name = "Ida Holm") =>
 /** The company folder's own files: the vision, two agents in a section, their todos and a routine, a group chat, a
  * connection, a contact, and three human tasks, one of them done. */
 function companyFiles(fake: FolderFake): void {
-	fake.put("vision/vision.md", writeVisionFile("Acme", VISION));
+	fake.put("QorperaOS/vision/vision.md", writeVisionFile("Acme", VISION));
 	fake.put(
-		"agents/sections.md",
+		"QorperaOS/agents/sections.md",
 		writeSectionsFile({
 			sections: [
 				{
@@ -209,20 +209,23 @@ function companyFiles(fake: FolderFake): void {
 			],
 		}),
 	);
-	fake.put("agents/co-founder/agent.md", agent(cofounder));
-	fake.put("agents/ada/agent.md", agent(ada));
-	fake.put("agents/ada/todos/close-books.md", todo(ids.books, "Close the books", { requestedBy: userA.id }));
-	fake.put("agents/ada/todos/send-invoices.md", todo(ids.invoices, "Send the invoices", { status: "done" }));
-	fake.put("agents/ada/routines/morning-brief.md", routine());
-	fake.put("agents/groups/finance/group.md", group());
-	fake.put("connections/github-acme.md", connection());
-	fake.put("contacts/ida-holm.md", contact());
-	fake.put("human-tasks/fit-disk.md", task(ids.disk, "Fit the second disk"));
+	fake.put("QorperaOS/agents/co-founder/agent.md", agent(cofounder));
+	fake.put("QorperaOS/agents/ada/agent.md", agent(ada));
+	fake.put("QorperaOS/agents/ada/todos/close-books.md", todo(ids.books, "Close the books", { requestedBy: userA.id }));
+	fake.put("QorperaOS/agents/ada/todos/send-invoices.md", todo(ids.invoices, "Send the invoices", { status: "done" }));
+	fake.put("QorperaOS/agents/ada/routines/morning-brief.md", routine());
+	fake.put("QorperaOS/agents/groups/finance/group.md", group());
+	fake.put("QorperaOS/connections/github-acme.md", connection());
+	fake.put("QorperaOS/contacts/ida-holm.md", contact());
+	fake.put("QorperaOS/human-tasks/fit-disk.md", task(ids.disk, "Fit the second disk"));
 	fake.put(
-		"human-tasks/file-vat.md",
+		"QorperaOS/human-tasks/file-vat.md",
 		task(ids.vat, "File the VAT", { member: null, contact: ids.ida, due: "2026-10-09T09:00:00Z" }),
 	);
-	fake.put("human-tasks/old-task.md", task(ids.old, "Order disks", { status: "done", due: "2026-10-08T09:00:00Z" }));
+	fake.put(
+		"QorperaOS/human-tasks/old-task.md",
+		task(ids.old, "Order disks", { status: "done", due: "2026-10-08T09:00:00Z" }),
+	);
 }
 
 /** An interface named Everything with one view of `blocks`. */
@@ -272,8 +275,8 @@ function seeded(rows: string, text: string): FolderFake {
 	let next = 500;
 	for (const [path, file] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, file);
 	companyFiles(fake);
-	fake.put("tables/numbers/table.toml", NUMBERS_TABLE);
-	fake.put("tables/numbers/rows.csv", rows);
+	fake.put("QorperaOS/tables/numbers/table.toml", NUMBERS_TABLE);
+	fake.put("QorperaOS/tables/numbers/rows.csv", rows);
 	pageOf.set(fake, parsed(text));
 	return fake;
 }
@@ -462,16 +465,16 @@ describe("the folder's own sources", () => {
 		const { controller } = company();
 		const { hint } = await follow(fake, controller);
 		const main = shown(controller);
-		fake.put("vision/vision.md", writeVisionFile("Acme", "We keep the books."));
-		fake.put("agents/ada/agent.md", agent(ada, { role: "Controller" }));
-		fake.put("agents/groups/finance/group.md", group("Money"));
-		fake.put("agents/ada/todos/close-books.md", todo(ids.books, "Close the books", { status: "blocked" }));
+		fake.put("QorperaOS/vision/vision.md", writeVisionFile("Acme", "We keep the books."));
+		fake.put("QorperaOS/agents/ada/agent.md", agent(ada, { role: "Controller" }));
+		fake.put("QorperaOS/agents/groups/finance/group.md", group("Money"));
+		fake.put("QorperaOS/agents/ada/todos/close-books.md", todo(ids.books, "Close the books", { status: "blocked" }));
 		// A new folder: the Co-Founder's first todo.
-		fake.put("agents/co-founder/todos/hire.md", todo(ids.hire, "Hire a seller"));
-		fake.put("agents/ada/routines/morning-brief.md", routine({ status: "paused" }));
-		fake.put("connections/github-acme.md", connection("broken"));
-		fake.put("contacts/ida-holm.md", contact("Ida Berg"));
-		fake.put("human-tasks/fit-disk.md", task(ids.disk, "Fit the second disk", { status: "done" }));
+		fake.put("QorperaOS/agents/co-founder/todos/hire.md", todo(ids.hire, "Hire a seller"));
+		fake.put("QorperaOS/agents/ada/routines/morning-brief.md", routine({ status: "paused" }));
+		fake.put("QorperaOS/connections/github-acme.md", connection("broken"));
+		fake.put("QorperaOS/contacts/ida-holm.md", contact("Ida Berg"));
+		fake.put("QorperaOS/human-tasks/fit-disk.md", task(ids.disk, "Fit the second disk", { status: "done" }));
 		await hint();
 		await vi.waitFor(() =>
 			expect(texts(titled(main, "Work"), "tbody td")).toEqual([
@@ -501,14 +504,14 @@ describe("the folder's own sources", () => {
 
 	it("leaves out a file that doesn't parse and lists it as its source's problem", async () => {
 		const fake = bare(page(list("todos", "{title}")));
-		fake.put("agents/ada/todos/broken.md", "---\nid: not-an-id\n---\n");
+		fake.put("QorperaOS/agents/ada/todos/broken.md", "---\nid: not-an-id\n---\n");
 		const { controller } = company();
 		await follow(fake, controller);
 		const block = titled(shown(controller), "todos");
 		expect(block?.querySelector(".interface-note p")?.textContent).toBe("Some rows can't be shown.");
 		const problems = texts(block, ".interface-problems li");
 		expect(problems.length).toBeGreaterThan(0);
-		for (const problem of problems) expect(problem).toMatch(/^agents\/ada\/todos\/broken\.md(:\d+)?: \S/);
+		for (const problem of problems) expect(problem).toMatch(/^QorperaOS\/agents\/ada\/todos\/broken\.md(:\d+)?: \S/);
 		expect(texts(block, ".interface-item strong")).toEqual(["Close the books", "Send the invoices"]);
 	});
 
@@ -517,8 +520,17 @@ describe("the folder's own sources", () => {
 		const { controller } = company();
 		await follow(fake, controller);
 		const listed = fake.folder.list.mock.calls.map(([folder]) => folder);
-		expect(listed).toEqual(expect.arrayContaining(["agents", "agents/ada", "agents/ada/todos"]));
-		for (const folder of ["vision", "connections", "contacts", "human-tasks", "agents/groups", "agents/ada/routines"])
+		expect(listed).toEqual(
+			expect.arrayContaining(["QorperaOS/agents", "QorperaOS/agents/ada", "QorperaOS/agents/ada/todos"]),
+		);
+		for (const folder of [
+			"QorperaOS/vision",
+			"QorperaOS/connections",
+			"QorperaOS/contacts",
+			"QorperaOS/human-tasks",
+			"QorperaOS/agents/groups",
+			"QorperaOS/agents/ada/routines",
+		])
 			expect(listed).not.toContain(folder);
 		expect(rowsOf(controller, "routines")).toBeUndefined();
 	});
@@ -550,7 +562,7 @@ from = "file:notes/today.md"
 [[view.block]]
 kind = "text"
 title = "Task"
-from = "file:human-tasks/fit-disk.md"
+from = "file:QorperaOS/human-tasks/fit-disk.md"
 `);
 	const FIRST = "We make bookkeeping calm. A ledger <b>Always</b>.";
 
@@ -579,7 +591,7 @@ from = "file:human-tasks/fit-disk.md"
 		).toBeNull();
 		// A human task's file is outside content: it stays unread and its block isn't drawn.
 		expect(fake.folder.read.mock.calls.map(([path]) => path)).toContain("notes/today.md");
-		expect(fake.folder.read.mock.calls.map(([path]) => path)).not.toContain("human-tasks/fit-disk.md");
+		expect(fake.folder.read.mock.calls.map(([path]) => path)).not.toContain("QorperaOS/human-tasks/fit-disk.md");
 	});
 
 	it("draws a detail's text the same way: a link as its text and an image as its alt text", async () => {
@@ -614,7 +626,7 @@ from = "vision"
 [[view.block]]
 kind = "text"
 title = "Shared areas"
-from = "file:rules/shared-areas.md"
+from = "file:QorperaOS/rules/shared-areas.md"
 
 [[view.block]]
 kind = "text"
@@ -623,7 +635,7 @@ from = "file:notes/plan.md"
 `),
 		);
 		fake.put(
-			"rules/shared-areas.md",
+			"QorperaOS/rules/shared-areas.md",
 			writeRuleFile({ id: ids.rule, outcome: "ask-first", text: "change a **shared** area." }),
 		);
 		fake.put("notes/plan.md", "---\ntitle: The plan\n---\nShip it.\n");
@@ -725,7 +737,7 @@ value = "total"
 `),
 		);
 		fake.put(
-			"tables/sales/table.toml",
+			"QorperaOS/tables/sales/table.toml",
 			`format = "qorpera.table/v0"
 
 [table]
@@ -749,7 +761,7 @@ type = "number"
 `,
 		);
 		fake.put(
-			"tables/sales/rows.csv",
+			"QorperaOS/tables/sales/rows.csv",
 			"shop,month,total\nCity,2026-08-01,900\nCity,2026-09-01,1000\nHarbour,2025-12-01,50\nHarbour,2026-09-01,50\n",
 		);
 		const { controller } = company();
@@ -818,7 +830,7 @@ from = ["table:missing"]
 `),
 		);
 		fake.put(
-			"tables/events/table.toml",
+			"QorperaOS/tables/events/table.toml",
 			`format = "qorpera.table/v0"
 
 [table]
@@ -836,7 +848,7 @@ name = "on"
 type = "date"
 `,
 		);
-		fake.put("tables/events/rows.csv", "event,on\nBoard meeting,2026-10-08\nSummer party,2026-09-01\n");
+		fake.put("QorperaOS/tables/events/rows.csv", "event,on\nBoard meeting,2026-10-08\nSummer party,2026-09-01\n");
 		const { controller } = company();
 		await follow(fake, controller);
 		const main = shown(controller);

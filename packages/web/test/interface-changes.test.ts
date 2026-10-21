@@ -66,9 +66,9 @@ function body(value: InterfaceChange): HostedSessionEvent["body"] {
 
 describe("an interface change's note", () => {
 	const made = change([
-		path(1, "mkdir", "interfaces/Leads"),
-		path(2, "write", "interfaces/Leads/interface.toml"),
-		path(3, "write", "interfaces/order.md", V(90)),
+		path(1, "mkdir", "QorperaOS/interfaces/Leads"),
+		path(2, "write", "QorperaOS/interfaces/Leads/interface.toml"),
+		path(3, "write", "QorperaOS/interfaces/order.md", V(90)),
 	]);
 
 	it("reads a well-formed note", () => {
@@ -80,13 +80,20 @@ describe("an interface change's note", () => {
 		["no changes", { changes: [] }],
 		["a run that is not an id", { runId: "run" }],
 		["no seq", { seq: 0 }],
-		["a path outside interfaces/ and tables/", { changes: [path(1, "write", "agents/sales/agent.md")] }],
-		["the interfaces folder itself", { changes: [path(1, "write", "interfaces")] }],
-		["a path that climbs", { changes: [path(1, "write", "interfaces/../agents/sales/agent.md")] }],
-		["an unknown op", { changes: [{ ...path(1, "write", "interfaces/a/b.md"), op: "rename" }] }],
-		["a unit 0", { changes: [path(0, "write", "interfaces/a/b.md")] }],
-		["a version that is not an id", { changes: [{ ...path(1, "write", "interfaces/a/b.md"), version: "v1" }] }],
-		["no prior version", { changes: [{ ...path(1, "write", "interfaces/a/b.md"), priorVersion: undefined }] }],
+		["a path outside interfaces/ and tables/", { changes: [path(1, "write", "QorperaOS/agents/sales/agent.md")] }],
+		["a path outside QorperaOS/", { changes: [path(1, "write", "interfaces/a/b.md")] }],
+		["the interfaces folder itself", { changes: [path(1, "write", "QorperaOS/interfaces")] }],
+		["a path that climbs", { changes: [path(1, "write", "QorperaOS/interfaces/../agents/sales/agent.md")] }],
+		["an unknown op", { changes: [{ ...path(1, "write", "QorperaOS/interfaces/a/b.md"), op: "rename" }] }],
+		["a unit 0", { changes: [path(0, "write", "QorperaOS/interfaces/a/b.md")] }],
+		[
+			"a version that is not an id",
+			{ changes: [{ ...path(1, "write", "QorperaOS/interfaces/a/b.md"), version: "v1" }] },
+		],
+		[
+			"no prior version",
+			{ changes: [{ ...path(1, "write", "QorperaOS/interfaces/a/b.md"), priorVersion: undefined }] },
+		],
 	])("refuses %s", (_label, overrides) => {
 		expect(parseInterfaceChange({ ...(body(made) as Record<string, unknown>), ...overrides })).toBeNull();
 	});
@@ -114,13 +121,13 @@ describe("an interface change's note", () => {
 
 	it("names what it touched, each interface and table once, in the note's order", () => {
 		const touched = change([
-			path(1, "mkdir", "interfaces/Leads"),
-			path(2, "write", "interfaces/Leads/interface.toml"),
-			path(3, "write", "Tables/Clients/table.toml", V(91)),
-			path(4, "write", "interfaces/order.md", V(90)),
-			path(5, "delete", "tables/old", V(92)),
-			path(6, "move_out", "interfaces/Offers", V(93)),
-			path(7, "write", "interfaces/leads/view.html"),
+			path(1, "mkdir", "QorperaOS/interfaces/Leads"),
+			path(2, "write", "QorperaOS/interfaces/Leads/interface.toml"),
+			path(3, "write", "qorperaos/Tables/Clients/table.toml", V(91)),
+			path(4, "write", "QorperaOS/interfaces/order.md", V(90)),
+			path(5, "delete", "QorperaOS/tables/old", V(92)),
+			path(6, "move_out", "QorperaOS/interfaces/Offers", V(93)),
+			path(7, "write", "QorperaOS/interfaces/leads/view.html"),
 		]);
 		expect(interfaceChangeSubjects(touched)).toEqual({
 			subjects: [
@@ -141,11 +148,11 @@ describe("an interface change in plain words", () => {
 	it("says what it made, changed and deleted, each by its title when it has one", () => {
 		const text = interfaceChangeText(
 			change([
-				path(1, "mkdir", "interfaces/Leads"),
-				path(2, "write", "tables/clients/table.toml", V(91)),
-				path(3, "write", "interfaces/order.md", V(90)),
-				path(4, "delete", "tables/old", V(92)),
-				path(5, "delete", "interfaces/offers", V(93)),
+				path(1, "mkdir", "QorperaOS/interfaces/Leads"),
+				path(2, "write", "QorperaOS/tables/clients/table.toml", V(91)),
+				path(3, "write", "QorperaOS/interfaces/order.md", V(90)),
+				path(4, "delete", "QorperaOS/tables/old", V(92)),
+				path(5, "delete", "QorperaOS/interfaces/offers", V(93)),
 			]),
 			(subject) =>
 				subject.name === "Leads" ? "  Leads\n board " : subject.name === "clients" ? "Clients" : undefined,
@@ -158,18 +165,20 @@ describe("an interface change in plain words", () => {
 
 	it("names four and counts the rest", () => {
 		const many = change(
-			["a", "b", "c", "d", "e", "f"].map((name, index) => path(index + 1, "mkdir", `interfaces/${name}`)),
+			["a", "b", "c", "d", "e", "f"].map((name, index) => path(index + 1, "mkdir", `QorperaOS/interfaces/${name}`)),
 		);
 		expect(interfaceChangeText(many, () => undefined)).toBe(
 			"Made the interface “a”, the interface “b”, the interface “c”, and the interface “d” and 2 other changes",
 		);
-		const five = change(["a", "b", "c", "d", "e"].map((name, index) => path(index + 1, "mkdir", `tables/${name}`)));
+		const five = change(
+			["a", "b", "c", "d", "e"].map((name, index) => path(index + 1, "mkdir", `QorperaOS/tables/${name}`)),
+		);
 		expect(interfaceChangeText(five, () => undefined)).toMatch(/and 1 other change$/);
 	});
 
 	it("draws one line with Undo, and says how Undo went", () => {
 		const undo = vi.fn();
-		const leads = change([path(1, "mkdir", "interfaces/leads")]);
+		const leads = change([path(1, "mkdir", "QorperaOS/interfaces/leads")]);
 		const line = renderInterfaceChangeLine(leads, "Made the interface “Leads”", { undo });
 		expect(line.getAttribute("role")).toBe("note");
 		expect(line.dataset.interfaceChange).toBe(id(60));
@@ -214,7 +223,7 @@ describe("an interface change in plain words", () => {
 		const result = (outcome: CloudMemberFolderUnitResult["outcome"], messages: string[] = []) => ({
 			unit: 1,
 			op: "delete" as const,
-			path: "interfaces/leads",
+			path: "QorperaOS/interfaces/leads",
 			to: null,
 			version: null,
 			outcome,
@@ -446,19 +455,19 @@ describe("Undo of an interface change", () => {
 
 	function seeded() {
 		const f = historyFolder();
-		f.mkdir("interfaces");
-		f.mkdir("tables");
-		f.put("interfaces/order.md", "- clients\n");
+		f.mkdir("QorperaOS/interfaces");
+		f.mkdir("QorperaOS/tables");
+		f.put("QorperaOS/interfaces/order.md", "- clients\n");
 		return f;
 	}
 
 	it("deletes what the change made, a folder as of its commit, and gives a rewritten file its text back", async () => {
 		const f = seeded();
 		const leads = f.agent([
-			{ op: "mkdir", path: "interfaces/leads" },
-			{ op: "write", path: "interfaces/leads/interface.toml", text: "# Leads\n" },
-			{ op: "write", path: "interfaces/leads/view.html", text: "<main></main>\n" },
-			{ op: "write", path: "interfaces/order.md", text: "- clients\n- leads\n" },
+			{ op: "mkdir", path: "QorperaOS/interfaces/leads" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/interface.toml", text: "# Leads\n" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/view.html", text: "<main></main>\n" },
+			{ op: "write", path: "QorperaOS/interfaces/order.md", text: "- clients\n- leads\n" },
 		]);
 		await expect(undo(f, leads)).resolves.toEqual({ outcome: "undone", already: false });
 		// One change set, the last unit's change first: the folder goes with what the change made in it.
@@ -468,22 +477,22 @@ describe("Undo of an interface change", () => {
 				units: [
 					{
 						op: "write",
-						path: "interfaces/order.md",
+						path: "QorperaOS/interfaces/order.md",
 						text: "- clients\n",
 						expectedVersion: leads.changes[3]?.version,
 					},
 					{
 						op: "delete",
-						path: "interfaces/leads",
+						path: "QorperaOS/interfaces/leads",
 						expectedVersion: leads.changes[0]?.version,
 						asOfSeq: leads.seq,
 					},
 				],
 			},
 		]);
-		expect(f.has("interfaces/leads")).toBe(false);
-		expect(f.has("interfaces/leads/view.html")).toBe(false);
-		expect(f.text("interfaces/order.md")).toBe("- clients\n");
+		expect(f.has("QorperaOS/interfaces/leads")).toBe(false);
+		expect(f.has("QorperaOS/interfaces/leads/view.html")).toBe(false);
+		expect(f.text("QorperaOS/interfaces/order.md")).toBe("- clients\n");
 		// Pressed again (another tab, a redraw), it finds it undone and sends nothing.
 		await expect(undo(f, leads)).resolves.toEqual({ outcome: "undone", already: true });
 		expect(f.commits).toHaveLength(1);
@@ -491,85 +500,90 @@ describe("Undo of an interface change", () => {
 
 	it("deletes a file the change wrote where an earlier one was deleted", async () => {
 		const f = seeded();
-		f.mkdir("tables/clients");
-		f.put("tables/clients/table.toml", 'title = "Clients"\n');
-		f.remove("tables/clients/table.toml");
-		const again = f.agent([{ op: "write", path: "tables/clients/table.toml", text: 'title = "Kunder"\n' }]);
+		f.mkdir("QorperaOS/tables/clients");
+		f.put("QorperaOS/tables/clients/table.toml", 'title = "Clients"\n');
+		f.remove("QorperaOS/tables/clients/table.toml");
+		const again = f.agent([{ op: "write", path: "QorperaOS/tables/clients/table.toml", text: 'title = "Kunder"\n' }]);
 		expect(again.changes[0]?.priorVersion).not.toBeNull();
 		await expect(undo(f, again)).resolves.toEqual({ outcome: "undone", already: false });
 		expect(f.commits.at(-1)?.units).toEqual([
-			{ op: "delete", path: "tables/clients/table.toml", expectedVersion: again.changes[0]?.version },
+			{ op: "delete", path: "QorperaOS/tables/clients/table.toml", expectedVersion: again.changes[0]?.version },
 		]);
-		expect(f.has("tables/clients/table.toml")).toBe(false);
+		expect(f.has("QorperaOS/tables/clients/table.toml")).toBe(false);
 	});
 
 	it("changes nothing when what the change made changed since", async () => {
 		const f = seeded();
 		const leads = f.agent([
-			{ op: "mkdir", path: "interfaces/leads" },
-			{ op: "write", path: "interfaces/leads/interface.toml", text: "# Leads\n" },
+			{ op: "mkdir", path: "QorperaOS/interfaces/leads" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/interface.toml", text: "# Leads\n" },
 		]);
-		f.put("interfaces/leads/interface.toml", "# Our leads\n");
+		f.put("QorperaOS/interfaces/leads/interface.toml", "# Our leads\n");
 		await expect(undo(f, leads)).resolves.toEqual({ outcome: "changed" });
-		const order = f.agent([{ op: "write", path: "interfaces/order.md", text: "- leads\n" }]);
-		f.put("interfaces/order.md", "- offers\n");
+		const order = f.agent([{ op: "write", path: "QorperaOS/interfaces/order.md", text: "- leads\n" }]);
+		f.put("QorperaOS/interfaces/order.md", "- offers\n");
 		await expect(undo(f, order)).resolves.toEqual({ outcome: "changed" });
 		expect(f.commits).toEqual([]);
 
 		// Something new in a folder the change made: the core refuses the folder's delete as of the commit.
-		const offers = f.agent([{ op: "mkdir", path: "interfaces/offers" }]);
-		f.put("interfaces/offers/notes.md", "Mine\n");
+		const offers = f.agent([{ op: "mkdir", path: "QorperaOS/interfaces/offers" }]);
+		f.put("QorperaOS/interfaces/offers/notes.md", "Mine\n");
 		await expect(undo(f, offers)).resolves.toEqual({ outcome: "changed" });
 		expect(f.commits).toHaveLength(1);
-		expect(f.text("interfaces/offers/notes.md")).toBe("Mine\n");
+		expect(f.text("QorperaOS/interfaces/offers/notes.md")).toBe("Mine\n");
 	});
 
 	it("undoes what is left when the member took part of it back already", async () => {
 		const f = seeded();
-		f.mkdir("interfaces/leads");
+		f.mkdir("QorperaOS/interfaces/leads");
 		const two = f.agent([
-			{ op: "write", path: "interfaces/leads/a.md", text: "A\n" },
-			{ op: "write", path: "interfaces/leads/b.md", text: "B\n" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/a.md", text: "A\n" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/b.md", text: "B\n" },
 		]);
-		f.remove("interfaces/leads/a.md");
+		f.remove("QorperaOS/interfaces/leads/a.md");
 		await expect(undo(f, two)).resolves.toEqual({ outcome: "undone", already: false });
 		expect(f.commits).toEqual([
 			{
 				operationKey: `interface-undo:${two.commitId}:1`,
-				units: [{ op: "delete", path: "interfaces/leads/b.md", expectedVersion: two.changes[1]?.version }],
+				units: [
+					{ op: "delete", path: "QorperaOS/interfaces/leads/b.md", expectedVersion: two.changes[1]?.version },
+				],
 			},
 		]);
 	});
 
 	it("says which part the core did not save", async () => {
 		const f = seeded();
-		f.mkdir("interfaces/leads");
+		f.mkdir("QorperaOS/interfaces/leads");
 		const two = f.agent([
-			{ op: "write", path: "interfaces/leads/a.md", text: "A\n" },
-			{ op: "write", path: "interfaces/leads/b.md", text: "B\n" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/a.md", text: "A\n" },
+			{ op: "write", path: "QorperaOS/interfaces/leads/b.md", text: "B\n" },
 		]);
-		f.deny("interfaces/leads/b.md");
+		f.deny("QorperaOS/interfaces/leads/b.md");
 		await expect(undo(f, two)).resolves.toMatchObject({
 			outcome: "not_saved",
 			saved: 1,
-			result: { path: "interfaces/leads/b.md", outcome: "denied" },
+			result: { path: "QorperaOS/interfaces/leads/b.md", outcome: "denied" },
 		});
-		expect([f.has("interfaces/leads/a.md"), f.has("interfaces/leads/b.md")]).toEqual([false, true]);
+		expect([f.has("QorperaOS/interfaces/leads/a.md"), f.has("QorperaOS/interfaces/leads/b.md")]).toEqual([
+			false,
+			true,
+		]);
 	});
 
 	it("is too large past the member route's limits, and sends nothing", async () => {
 		const f = seeded();
-		f.mkdir("interfaces/leads");
+		f.mkdir("QorperaOS/interfaces/leads");
 		const many = f.agent(
 			Array.from({ length: 17 }, (_, index) => ({
 				op: "write" as const,
-				path: `interfaces/leads/page-${index + 1}.md`,
+				path: `QorperaOS/interfaces/leads/page-${index + 1}.md`,
 				text: "Page\n",
 			})),
 		);
 		await expect(undo(f, many)).resolves.toEqual({ outcome: "too_large" });
-		f.put("interfaces/leads/big.md", "x".repeat(64 * 1024 + 1));
-		const big = f.agent([{ op: "write", path: "interfaces/leads/big.md", text: "small\n" }]);
+		f.put("QorperaOS/interfaces/leads/big.md", "x".repeat(64 * 1024 + 1));
+		const big = f.agent([{ op: "write", path: "QorperaOS/interfaces/leads/big.md", text: "small\n" }]);
 		await expect(undo(f, big)).resolves.toEqual({ outcome: "too_large" });
 		expect(f.folder.readFile).not.toHaveBeenCalled();
 		expect(f.commits).toEqual([]);
@@ -577,12 +591,12 @@ describe("Undo of an interface change", () => {
 
 	it("can't undo a delete, a version the history does not hold, or text that is not UTF-8", async () => {
 		const f = seeded();
-		f.mkdir("interfaces/leads");
-		const deleted = f.agent([{ op: "delete", path: "interfaces/leads" }]);
+		f.mkdir("QorperaOS/interfaces/leads");
+		const deleted = f.agent([{ op: "delete", path: "QorperaOS/interfaces/leads" }]);
 		await expect(undo(f, deleted)).resolves.toEqual({ outcome: "unavailable" });
 		expect(f.folder.read).not.toHaveBeenCalled();
 
-		const order = f.agent([{ op: "write", path: "interfaces/order.md", text: "- leads\n" }]);
+		const order = f.agent([{ op: "write", path: "QorperaOS/interfaces/order.md", text: "- leads\n" }]);
 		const [unit] = order.changes;
 		const elsewhere = { ...order, changes: [{ ...unit!, priorVersion: V(99) }] };
 		await expect(undo(f, elsewhere)).resolves.toEqual({ outcome: "unavailable" });
@@ -596,18 +610,21 @@ describe("Undo of an interface change", () => {
 		const f = seeded();
 		// The move's source is outside interfaces/ and tables/, so the note names only where the file went.
 		const moved = change([
-			path(1, "mkdir", "interfaces/leads"),
-			path(2, "move_in", "interfaces/leads/README.md", V(40)),
+			path(1, "mkdir", "QorperaOS/interfaces/leads"),
+			path(2, "move_in", "QorperaOS/interfaces/leads/README.md", V(40)),
 		]);
-		const copied = change([path(1, "mkdir", "interfaces/leads"), path(2, "copy", "interfaces/leads/notes.md")]);
+		const copied = change([
+			path(1, "mkdir", "QorperaOS/interfaces/leads"),
+			path(2, "copy", "QorperaOS/interfaces/leads/notes.md"),
+		]);
 		const nested = change([
-			path(1, "mkdir", "tables/leads"),
-			path(2, "mkdir", "tables/leads/files"),
-			path(3, "move_in", "tables/leads/files/brief.md", V(41)),
+			path(1, "mkdir", "QorperaOS/tables/leads"),
+			path(2, "mkdir", "QorperaOS/tables/leads/files"),
+			path(3, "move_in", "QorperaOS/tables/leads/files/brief.md", V(41)),
 		]);
 		const twice = f.agent([
-			{ op: "write", path: "interfaces/order.md", text: "- leads\n" },
-			{ op: "write", path: "interfaces/order.md", text: "- leads\n- offers\n" },
+			{ op: "write", path: "QorperaOS/interfaces/order.md", text: "- leads\n" },
+			{ op: "write", path: "QorperaOS/interfaces/order.md", text: "- leads\n- offers\n" },
 		]);
 		for (const value of [moved, copied, nested, twice]) {
 			expect(interfaceChangeUndoable(value)).toBe(false);
@@ -619,7 +636,7 @@ describe("Undo of an interface change", () => {
 
 	it("stops when the member's access changed while it read", async () => {
 		const f = seeded();
-		const leads = f.agent([{ op: "mkdir", path: "interfaces/leads" }]);
+		const leads = f.agent([{ op: "mkdir", path: "QorperaOS/interfaces/leads" }]);
 		const check = vi
 			.fn<() => void>()
 			.mockImplementationOnce(() => {})
@@ -628,7 +645,7 @@ describe("Undo of an interface change", () => {
 			});
 		await expect(undo(f, leads, check)).rejects.toThrow("Conversation access changed.");
 		expect(f.commits).toEqual([]);
-		expect(f.has("interfaces/leads")).toBe(true);
+		expect(f.has("QorperaOS/interfaces/leads")).toBe(true);
 	});
 });
 
@@ -648,7 +665,10 @@ afterEach(() => {
 });
 
 describe("an interface change in the agent's thread", () => {
-	const leads = change([path(1, "mkdir", "interfaces/leads"), path(2, "write", "interfaces/leads/interface.toml")]);
+	const leads = change([
+		path(1, "mkdir", "QorperaOS/interfaces/leads"),
+		path(2, "write", "QorperaOS/interfaces/leads/interface.toml"),
+	]);
 	const note = (value: InterfaceChange, sequence = 5): HostedSessionEvent => ({
 		sessionId: session.sessionId,
 		sequence,
@@ -733,15 +753,15 @@ describe("an interface change in the agent's thread", () => {
 		expect(reader.line().querySelector("button")).toBeNull();
 		dispose?.();
 
-		const deleted = change([path(1, "delete", "interfaces/offers", V(93))]);
+		const deleted = change([path(1, "delete", "QorperaOS/interfaces/offers", V(93))]);
 		const writer = await mount({ undoInterfaceChange }, [note(deleted)]);
 		expect(writer.line().querySelector(".interface-change-text")?.textContent).toBe("Deleted the interface “offers”");
 		expect(writer.line().querySelector("button")).toBeNull();
 		dispose?.();
 
 		const moved = change([
-			path(1, "mkdir", "interfaces/leads"),
-			path(2, "move_in", "interfaces/leads/README.md", V(40)),
+			path(1, "mkdir", "QorperaOS/interfaces/leads"),
+			path(2, "move_in", "QorperaOS/interfaces/leads/README.md", V(40)),
 		]);
 		const mover = await mount({ undoInterfaceChange }, [note(moved)]);
 		expect(mover.line().querySelector(".interface-change-text")?.textContent).toBe("Made the interface “leads”");

@@ -41,7 +41,7 @@ import { UUID_PATTERN } from "./parse.ts";
 import type { HostedProfile } from "./types.ts";
 
 /*
- * A routine is a file, `agents/<handle>/routines/<key>.md` (folder core C4, P34r;
+ * A routine is a file, `QorperaOS/agents/<handle>/routines/<key>.md` (folder core C4, P34r;
  * deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §6): every company is folder-v2, so a member's new routine,
  * edit, pause and resume write that file through the member commit route, as the member. The list and the runs still
  * come from the routine index. The file does not say who pays: before a save that needs a login (a new routine, a
@@ -605,8 +605,8 @@ export function createWebRoutines(
 		check();
 		return answer.units;
 	};
-	/** A new routine's file: `agents/<handle>/routines/<key>.md`, its key from the title, free in the member's listing.
-	 * The routines folder comes first in the same change set when it is missing. */
+	/** A new routine's file: `QorperaOS/agents/<handle>/routines/<key>.md`, its key from the title, free in the member's
+	 * listing. The routines folder comes first in the same change set when it is missing. */
 	const createFile = async (
 		from: WebMemberFolder,
 		state: SaveState,

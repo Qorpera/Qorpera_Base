@@ -1,11 +1,12 @@
-import { parseCompanyStateFile, type SectionsFile } from "@qorpera/cloud-client/company-state-files";
+import { osPath, parseCompanyStateFile, type SectionsFile } from "@qorpera/cloud-client/company-state-files";
 import { t } from "../ui/preferences.ts";
 import { type CompanySidebar, type SidebarRequest, sidebarItem } from "./sidebar.ts";
 
 /*
- * A folder-v2 company's sections are its file `agents/sections.md` (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
- * §2): the sections in order, each listing agents and group chats by id. The id lines before the first section order
- * those in no section (Unassigned, 20260930519000); anyone listed nowhere is Unassigned too, after them.
+ * A folder-v2 company's sections are its file `QorperaOS/agents/sections.md`
+ * (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2): the sections in order, each listing agents and group chats by
+ * id. The id lines before the first section order those in no section (Unassigned, 20260930519000); anyone listed
+ * nowhere is Unassigned too, after them.
  * qorpera_manage_company_sidebar refuses section changes and moves there, so the rail's are edits of the file, made as
  * the runtime's organize_sidebar makes them (packages/runtime/src/cloud-folder-sidebar.ts): the lines before the first
  * section are kept as they are but for the ordered ids, which follow them, and the sections are written back in the
@@ -13,7 +14,7 @@ import { type CompanySidebar, type SidebarRequest, sidebarItem } from "./sidebar
  * file.
  */
 
-export const SECTIONS_PATH = "agents/sections.md";
+export const SECTIONS_PATH = osPath("agents/sections.md");
 
 /** The sidebar requests the file decides; pins and hidden items stay the member's own settings. */
 export type SectionsRequest = Extract<
@@ -116,7 +117,9 @@ export function rewriteSectionsFile(
 	const parsed = parseCompanyStateFile(SECTIONS_PATH, text);
 	if (!parsed?.ok || parsed.file.kind !== "sections")
 		throw new SectionsChangeRefusal(
-			t("The company's sections file does not read as sections. Ask the Co-Founder to correct agents/sections.md."),
+			t("The company's sections file does not read as sections. Ask the Co-Founder to correct {path}.", {
+				path: SECTIONS_PATH,
+			}),
 		);
 	const lines = text.split("\n");
 	const file = parsed.file as SectionsFile;

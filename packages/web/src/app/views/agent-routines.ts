@@ -299,8 +299,8 @@ interface Choice {
 }
 
 /** An agent's Routines page, over its conversation: standing work the cloud starts on a schedule. Each routine is a
- * file in the company's folder, `agents/<handle>/routines/<key>.md`, which the switch and the composer write as the
- * member (folder core C4, P34r). */
+ * file in the company's folder, `QorperaOS/agents/<handle>/routines/<key>.md`, which the switch and the composer write
+ * as the member (folder core C4, P34r). */
 export class AgentRoutines {
 	readonly el = h("section", { class: "agent-routines" });
 	/** The agent as it is now, so a rename shows here without reopening. */

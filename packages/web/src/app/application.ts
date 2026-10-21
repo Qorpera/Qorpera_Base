@@ -460,7 +460,7 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
-			// The company's sections are agents/sections.md: the rail's moves are the member's edits of it.
+			// The company's sections are QorperaOS/agents/sections.md: the rail's moves are the member's edits of it.
 			controller.useSectionsFile((signal) => {
 				const current = () => {
 					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -748,7 +748,7 @@ export function mountApplication(
 			);
 			return;
 		}
-		// Agents are company folders (agents/<handle>/agent.md). Each write re-checks
+		// Agents are company folders (QorperaOS/agents/<handle>/agent.md). Each write re-checks
 		// that this member still holds the authority the company showed when it began.
 		const agents = () => {
 			const team = controller.store.get().team;
@@ -1339,8 +1339,9 @@ export function mountApplication(
 								check();
 								return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
 							},
-							// Routines are files (agents/<handle>/routines/<key>.md): the editor and the switch write them
-							// through the member's own folder client, with the same checks as every other routine call.
+							// Routines are files (QorperaOS/agents/<handle>/routines/<key>.md): the editor and the switch
+							// write them through the member's own folder client, with the same checks as every other routine
+							// call.
 							routines: createWebRoutines(
 								cloud,
 								controller.profile,
@@ -1349,7 +1350,7 @@ export function mountApplication(
 								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 							),
 							// No Undo on an agent's interface change: agents don't make pages (Interfaces C6a), and the save
-							// check refuses an agent's change under interfaces/ or to a table's definition (C6c).
+							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
 							messageErases: {

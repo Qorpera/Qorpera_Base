@@ -30,8 +30,8 @@ export interface CompanySidebar {
 	hidden: string[];
 	/** Whether the cloud places group chats too (and takes images in them); an older one places agents only. */
 	groupChats?: boolean;
-	/** Whether agents/sections.md keeps the order of what is in no section (20260930519000); before it, Unassigned
-	 * stands in roster order and a reorder there cannot be saved. */
+	/** Whether QorperaOS/agents/sections.md keeps the order of what is in no section (20260930519000); before it,
+	 * Unassigned stands in roster order and a reorder there cannot be saved. */
 	unassignedOrder?: boolean;
 }
 

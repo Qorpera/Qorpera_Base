@@ -25,7 +25,7 @@ const ENVIRONMENT = id(60);
 const row = {
 	id: id(901),
 	table: TABLE,
-	folder: "tables/cards",
+	folder: "QorperaOS/tables/cards",
 	key: [id(701)],
 	column: "holder",
 	from: id(42),
@@ -39,7 +39,7 @@ const row = {
 const offer = {
 	id: row.id,
 	table: TABLE,
-	folder: "tables/cards",
+	folder: "QorperaOS/tables/cards",
 	key: [id(701)],
 	column: "holder",
 	from: id(42),
@@ -52,7 +52,7 @@ const offer = {
 const supervision: MemberInterfaceSupervision = {
 	id: id(911),
 	table: TABLE,
-	folder: "tables/areas",
+	folder: "QorperaOS/tables/areas",
 	key: ["Sales"],
 	user: id(42),
 	state: "live",
@@ -89,13 +89,16 @@ describe("the offer calls (I9c)", () => {
 		const agent = cloudOf({
 			schema: "qorpera.member-interface-offers/v1",
 			offers: [
-				{ ...row, folder: "tables/areas", key: ["Sales"], column: "agents", agent: id(81) },
+				{ ...row, folder: "QorperaOS/tables/areas", key: ["Sales"], column: "agents", agent: id(81) },
 				{ ...row, agent: undefined },
 			],
 			truncated: false,
 		});
 		await expect(agent.calls.list()).resolves.toEqual({
-			offers: [{ ...offer, folder: "tables/areas", key: ["Sales"], column: "agents", agent: id(81) }, offer],
+			offers: [
+				{ ...offer, folder: "QorperaOS/tables/areas", key: ["Sales"], column: "agents", agent: id(81) },
+				offer,
+			],
 			truncated: false,
 		});
 	});
@@ -284,7 +287,7 @@ describe("the company's offers reader (I9c)", () => {
 		const agent = {
 			...offer,
 			id: id(905),
-			folder: "tables/areas",
+			folder: "QorperaOS/tables/areas",
 			key: ["Sales"],
 			column: "agents",
 			agent: id(81),

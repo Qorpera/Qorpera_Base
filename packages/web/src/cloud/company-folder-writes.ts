@@ -15,10 +15,10 @@ import {
 /*
  * A member's changes to a folder-v2 company's state files (folder core C4, P34a-2;
  * deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §5): the web's agent and group chat editors write
- * `agents/<handle>/agent.md` and `agents/groups/<handle>/group.md` through the member commit route, as the member.
- * Each file is checked with the shared parser before it is sent, so a member sees a problem without a round trip; the
- * core and its hook decide the rest. Concurrency is the path's version: a write names the version it read, a folder
- * delete names the folder's version and the seq it was read at.
+ * `QorperaOS/agents/<handle>/agent.md` and `QorperaOS/agents/groups/<handle>/group.md` through the member commit route,
+ * as the member. Each file is checked with the shared parser before it is sent, so a member sees a problem without a
+ * round trip; the core and its hook decide the rest. Concurrency is the path's version: a write names the version it
+ * read, a folder delete names the folder's version and the seq it was read at.
  */
 
 /** What these writers need of the member's folder client. */
@@ -144,7 +144,7 @@ export function withStateBody(text: string, body: string): string {
 }
 
 export interface WebStateFolderCreation {
-	/** Where the folder goes: `agents` or `agents/groups`. */
+	/** Where the folder goes: `QorperaOS/agents` or `QorperaOS/agents/groups`. */
 	readonly parent: string;
 	/** The display name its handle comes from (`freeCompanyStateName`), and the handle when none is left of it. */
 	readonly name: string;

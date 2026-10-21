@@ -500,8 +500,8 @@ export const WORKSPACE: Record<string, string> = {
 	"This section is no longer there.": "Sektionen findes ikke længere.",
 	"The Co-Founder stays on top, above the sections.": "Co-Founderen står øverst, over sektionerne.",
 	"This company has no sections file.": "Virksomheden har ingen sektionsfil.",
-	"The company's sections file does not read as sections. Ask the Co-Founder to correct agents/sections.md.":
-		"Virksomhedens sektionsfil kan ikke læses som sektioner. Bed Co-Founderen om at rette agents/sections.md.",
+	"The company's sections file does not read as sections. Ask the Co-Founder to correct {path}.":
+		"Virksomhedens sektionsfil kan ikke læses som sektioner. Bed Co-Founderen om at rette {path}.",
 	"Agents outside a section stay in the order they joined. Put them in a section to order them.":
 		"Agenter uden sektion står i den rækkefølge, de kom til. Læg dem i en sektion for at ordne dem.",
 	Pinned: "Fastgjorte",

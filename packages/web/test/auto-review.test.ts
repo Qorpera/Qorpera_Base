@@ -393,7 +393,7 @@ describe("the rules client", () => {
 		]);
 	});
 
-	it("lists a company rule that comes from the company's rules/ folder", () => {
+	it("lists a company rule that comes from the company's QorperaOS/rules/ folder", () => {
 		const listed = parseReviewRules({
 			schema: "qorpera.review-rules/v1",
 			canManageCompanyRules: true,

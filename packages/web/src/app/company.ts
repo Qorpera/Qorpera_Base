@@ -496,7 +496,7 @@ export class CompanyController {
 	/** The group chats of the last sessions list, kept until the list is replaced. */
 	#groupRooms: { sessions: HostedSession[]; rooms: Map<string, HostedSession> } | undefined;
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
-	/** The member's client for the company's folder, where the sections are agents/sections.md. */
+	/** The member's client for the company's folder, where the sections are QorperaOS/agents/sections.md. */
 	#sectionsFolder: ((signal: AbortSignal) => WebMemberFolder) | undefined;
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
@@ -992,14 +992,14 @@ export class CompanyController {
 		);
 	}
 
-	/** Makes section changes and moves edits of agents/sections.md through the member's folder client (folder-v2,
-	 * where the sidebar RPC refuses them); pins and hidden items stay with the RPC. */
+	/** Makes section changes and moves edits of QorperaOS/agents/sections.md through the member's folder client
+	 * (folder-v2, where the sidebar RPC refuses them); pins and hidden items stay with the RPC. */
 	useSectionsFile(folder: (signal: AbortSignal) => WebMemberFolder): void {
 		this.#sectionsFolder = folder;
 	}
 
-	/** Whether a reorder in Unassigned cannot be saved: the sections are agents/sections.md and the cloud predates its
-	 * order of what is in no section (20260930519000). */
+	/** Whether a reorder in Unassigned cannot be saved: the sections are QorperaOS/agents/sections.md and the cloud
+	 * predates its order of what is in no section (20260930519000). */
 	unassignedOrderLost(): boolean {
 		return this.#sectionsFolder !== undefined && this.store.get().sidebar?.unassignedOrder !== true;
 	}
@@ -1062,8 +1062,8 @@ export class CompanyController {
 		}
 	}
 
-	/** Writes a sections change to agents/sections.md and answers the sidebar the commit placed. An item moved out of
-	 * the pinned row is unpinned after, as the RPC did in the same request. */
+	/** Writes a sections change to QorperaOS/agents/sections.md and answers the sidebar the commit placed. An item moved
+	 * out of the pinned row is unpinned after, as the RPC did in the same request. */
 	async #writeSections(
 		folder: (signal: AbortSignal) => WebMemberFolder,
 		change: ReturnType<typeof sectionsChange>,

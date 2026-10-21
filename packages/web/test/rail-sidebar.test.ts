@@ -127,8 +127,8 @@ function companyWith(
 	return { f, company, rail, draw, manage, read, openCard, openGroup, ready: company.refreshSidebar() };
 }
 
-/** A folder-v2 company: its sections are agents/sections.md, whose commit places the sidebar (sections keep their ids
- * by name), and the sidebar RPC refuses section changes and moves, as the cloud does; pins stay the RPC's. */
+/** A folder-v2 company: its sections are QorperaOS/agents/sections.md, whose commit places the sidebar (sections keep
+ * their ids by name), and the sidebar RPC refuses section changes and moves, as the cloud does; pins stay the RPC's. */
 function companyWithFile(
 	sections: [string, ...string[]][],
 	pinned: string[] = [],
@@ -153,7 +153,7 @@ function companyWithFile(
 	let pins = [...pinned];
 	const placed = (): CompanySidebar => {
 		const parsed = parseCompanyStateFile(SECTIONS_PATH, fake.text(SECTIONS_PATH) ?? "");
-		if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
+		if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error(`${SECTIONS_PATH} does not parse`);
 		const placements: CompanySidebar["placements"] = {};
 		const list = parsed.file.sections.map((section) => {
 			const key = section.name.toLowerCase();
@@ -183,7 +183,7 @@ function companyWithFile(
 		if (request.action !== "set_pins")
 			throw new CloudRpcError(
 				"qorpera_manage_company_sidebar",
-				{ message: "This company keeps its sections in agents/sections.md; edit that file", code: "55000" },
+				{ message: `This company keeps its sections in ${SECTIONS_PATH}; edit that file`, code: "55000" },
 				400,
 			);
 		pins = [...request.order];
@@ -196,13 +196,13 @@ function companyWithFile(
 /** The file's sections as names, each with its ids. */
 function fileSections(text: string | undefined): [string, ...string[]][] {
 	const parsed = parseCompanyStateFile(SECTIONS_PATH, text ?? "");
-	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
+	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error(`${SECTIONS_PATH} does not parse`);
 	return parsed.file.sections.map((section) => [section.name, ...section.members.map((member) => member.id)]);
 }
 /** The ids the file orders in no section. */
 function fileUnassigned(text: string | undefined): string[] {
 	const parsed = parseCompanyStateFile(SECTIONS_PATH, text ?? "");
-	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error("agents/sections.md does not parse");
+	if (!parsed?.ok || parsed.file.kind !== "sections") throw new Error(`${SECTIONS_PATH} does not parse`);
 	return (parsed.file.unassigned ?? []).map((member) => member.id);
 }
 
@@ -972,7 +972,7 @@ describe("dragging agents in the rail", () => {
 		await settle();
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [dee.id, bo.id] });
 	});
-	it("moves agents by editing agents/sections.md, where the sidebar RPC refuses moves", async () => {
+	it("moves agents by editing QorperaOS/agents/sections.md, where the sidebar RPC refuses moves", async () => {
 		const { rail, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id], ["Ops"]], [dee.id]);
 		await ready;
 		await settle();
