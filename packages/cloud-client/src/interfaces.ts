@@ -411,8 +411,6 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 	if (parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
 		return [];
 	}
-	// The root's own README.md, which says what the folder is for (20260930526000).
-	if (parts.length === 2 && parts[1] === "readme.md") return [];
 	if (parts.length === 2 && isInterfaceName(parts[1] ?? "")) return [];
 	return [
 		problem(
@@ -420,8 +418,8 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 			null,
 			"bad_value",
 			parts[0] === "interfaces"
-				? "Under interfaces/ go README.md, order.md and one folder per interface, with interface.toml and an optional README.md."
-				: "Under tables/ go README.md and one folder per table, named with lowercase letters, digits and hyphens, holding table.toml and rows.csv.",
+				? "Under interfaces/ go order.md and one folder per interface, with interface.toml and an optional README.md."
+				: "Under tables/ goes one folder per table, named with lowercase letters, digits and hyphens, holding table.toml and rows.csv.",
 		),
 	];
 }

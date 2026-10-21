@@ -58,13 +58,11 @@ with `interface_read`, and changes one with `save_interface` (§7).
 
 ```
 interfaces/                       seeded; can't be deleted or moved
-  README.md                       seeded: what the folder is for (contract 5.6)
   order.md                        the Interfaces tab's order
   <interface>/                    named like an agent's folder (contract 5.6)
     interface.toml                the page
     README.md                     optional: what it is for
 tables/                           seeded; can't be deleted or moved
-  README.md                       seeded: what the folder is for (contract 5.6)
   <table>/                        one folder per table, created, moved and deleted as one unit
     table.toml                    the table: its columns, key and writers
     rows.csv                      its rows
@@ -72,8 +70,8 @@ tables/                           seeded; can't be deleted or moved
 
 - **Names.** Folder names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most 64
   characters, `-2`, `-3` when taken. A table's name is its folder's name.
-- **Seeded at founding** (§8): `interfaces/` and `tables/`, each with its `README.md`, Mailbox and Members, and the
-  `areas` table. Pulse and the `numbers` and `cards` tables were seeded until 21 October 2026.
+- **Seeded at founding** (§8): `interfaces/` and `tables/`, Mailbox and Members, and the `areas` table. Pulse and the
+  `numbers` and `cards` tables were seeded until 21 October 2026.
 - **Cannot be deleted or moved:**
   - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
   - `tables/`, and the `tables/areas/` folder, which the platform reads supervision from (§5.1);

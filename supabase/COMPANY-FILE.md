@@ -54,11 +54,6 @@ interfaces/                  order.md, mailbox/ and members/: the app's pages
 tables/areas/                table.toml and rows.csv: the company's areas
 ```
 
-Each folder above but `vision/` also holds a `README.md` that says what the
-folder is for, who writes in it, and that the company's own work goes in
-folders of its own. It is an ordinary file, never data, and the company may
-change or delete it (contract 5.6).
-
 `code/<owner>/<name>/` holds repositories and is created when coding starts.
 Everything else the company makes goes in folders it creates, one per
 category of files, such as `designs/` or `documents/`.

@@ -322,21 +322,6 @@ describe("ConnectionFileWriter", () => {
 		expect(finishes()).toEqual([null]);
 	});
 
-	it("never names an account's file connections/README.md: a new one starts at -2", async () => {
-		const { writer, commits, finishes } = folder({
-			claims: [claim({ path: "connections/readme.md" })],
-			outcomes: [{ outcome: "conflict", reason: "exists" }, { outcome: "saved" }],
-		});
-		await writer.writeOne();
-		expect(
-			commits().map((call) => [call.args.p_operation_key, (call.args.p_units as { path: string }[])[0]?.path]),
-		).toEqual([
-			[`connection-file:${secretId}:3`, "connections/readme-2.md"],
-			[`connection-file:${secretId}:3:2`, "connections/readme-3.md"],
-		]);
-		expect(finishes()).toEqual([null]);
-	});
-
 	it("backs off with the commit's reason when a member changed the file meanwhile", async () => {
 		const run = folder({ outcomes: [{ outcome: "conflict", reason: "version_changed" }] });
 		const current = run.existing(
